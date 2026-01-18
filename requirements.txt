@@ -1,0 +1,46 @@
+# Discord Bot - Production Dependencies
+# Generated: 2026-01-12
+# Python 3.11+
+
+# ==================== Core ====================
+discord.py[voice]==2.6.4      # Discord API wrapper with voice support
+python-dotenv==1.2.1          # Environment variable management
+aiohttp==3.13.2               # Async HTTP client
+psutil==7.1.3                 # Process and system utilities
+
+# ==================== AI ====================
+google-genai==1.56.0          # Google Gemini API
+Pillow==12.0.0                # Image processing
+numpy==2.2.6                  # Numerical operations (for RAG embeddings)
+faiss-cpu==1.13.2             # Vector similarity search (optional)
+imageio[ffmpeg]==2.37.0       # GIF to video conversion for Gemini
+
+# ==================== Music ====================
+yt-dlp==2025.12.8             # YouTube downloader
+spotipy==2.25.2               # Spotify API wrapper
+PyNaCl==1.5.0                 # Voice encryption (discord.py requires <1.6)
+
+# ==================== Database ====================
+aiosqlite==0.22.1             # Async SQLite
+
+# ==================== Development ====================
+watchdog==6.0.0               # File watcher for hot reload
+colorama==0.4.6               # Windows ANSI color support
+
+# ==================== Monitoring (Optional) ====================
+sentry-sdk==2.49.0            # Error tracking (optional)
+# prometheus-client>=0.17.1   # Metrics (uncomment if needed)
+
+# ==================== Performance ====================
+orjson==3.10.14               # 10x faster JSON parsing (drop-in replacement)
+uvloop==0.21.0; sys_platform != 'win32'  # 2-4x faster event loop (Unix only)
+
+# ==================== Testing ====================
+pytest==9.0.2                 # Test framework
+pytest-asyncio==1.3.0         # Async test support
+
+# ==================== Implicit Dependencies ====================
+# These are auto-installed with the packages above:
+# - aiosignal, frozenlist (aiohttp)
+# - google-auth, googleapis-common-protos, protobuf (google-genai)
+# - requests, urllib3, certifi (spotipy)

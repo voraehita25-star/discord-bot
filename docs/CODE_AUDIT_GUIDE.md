@@ -1,0 +1,294 @@
+# 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
+
+> เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
+> **Last Updated:** January 17, 2026 | **Ruff Issues:** 0 ✅
+
+## 🛠️ วิธีการตรวจสอบ
+
+### 0. Ruff Check (ตรวจ Code Quality - ควรได้ 0 issues!)
+```powershell
+python -m ruff check .
+# Expected: All checks passed!
+```
+
+### 1. Syntax Check (ตรวจ Syntax Error)
+```powershell
+# ตรวจไฟล์เดียว
+python -m py_compile <filename.py>
+
+# ตรวจหลายไฟล์
+python -m py_compile bot.py config.py bot_dashboard.py
+```
+
+### 2. Import Check (ตรวจ Import Error)
+```powershell
+python -c "from cogs.ai_core.ai_cog import AI; print('OK')"
+python -c "from cogs.music import Music; print('OK')"
+python -c "import bot; print('OK')"
+```
+
+### 3. Test Collection (ตรวจว่า Tests พร้อมรัน)
+```powershell
+python -m pytest tests/ --collect-only -q
+```
+
+### 4. Run All Tests
+```powershell
+python -m pytest tests/ -v
+```
+
+---
+
+## 📁 รายการไฟล์ทั้งหมด (86 ไฟล์)
+
+### Core Files (3 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `bot.py` | Main entry point, Discord bot initialization |
+| `config.py` | Configuration management with dataclasses |
+| `create_shortcut.py` | Desktop shortcut creator |
+
+---
+
+### cogs/ (4 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `music.py` | Music playback cog (YouTube/Spotify) |
+| `music_utils.py` | Music utilities (colors, emojis, formatting) |
+| `spotify_handler.py` | Spotify API integration |
+
+---
+
+### cogs/ai_core/ (10 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `ai_cog.py` | Main AI cog - handles Discord commands |
+| `logic.py` | ChatManager - core AI logic |
+| `storage.py` | Chat history storage (SQLite) |
+| `tools.py` | Server management tools, webhooks |
+| `emoji.py` | Discord emoji handling |
+| `voice.py` | Voice channel integration |
+| `fallback_responses.py` | Fallback responses when AI fails |
+| `debug_commands.py` | Debug/admin commands |
+| `memory_commands.py` | Memory management commands |
+
+---
+
+### cogs/ai_core/cache/ (4 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `ai_cache.py` | LRU cache for AI responses |
+| `analytics.py` | AI usage analytics |
+| `token_tracker.py` | Token usage tracking |
+
+---
+
+### cogs/ai_core/data/ (4 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `constants.py` | Guild IDs, channel IDs, API keys |
+| `faust_data.py` | Faust persona instructions |
+| `roleplay_data.py` | Roleplay assistant instructions |
+
+---
+
+### cogs/ai_core/memory/ (10 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `rag.py` | RAG system with FAISS |
+| `history_manager.py` | Chat history trimming/management |
+| `summarizer.py` | Conversation summarization |
+| `entity_memory.py` | Entity/facts extraction |
+| `long_term_memory.py` | Permanent facts storage |
+| `memory_consolidator.py` | Memory consolidation |
+| `conversation_branch.py` | Conversation branching |
+| `state_tracker.py` | Character state tracking |
+| `consolidator.py` | Memory consolidator (alt) |
+
+---
+
+### cogs/ai_core/processing/ (5 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `guardrails.py` | Input/output validation, safety |
+| `intent_detector.py` | User intent detection |
+| `prompt_manager.py` | Prompt template management |
+| `self_reflection.py` | AI self-reflection |
+
+---
+
+### scripts/ (6 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `bot_manager.py` | CLI bot manager (start/stop/restart) |
+| `dev_watcher.py` | Development hot-reload watcher |
+| `load_test.py` | Load testing script |
+| `test_bot_manager.py` | Bot manager tests |
+| `verify_system.py` | System verification script |
+
+---
+
+### scripts/maintenance/ (7 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `add_local_id.py` | Add local IDs to database |
+| `check_db.py` | Database health check |
+| `clean_history.py` | Clean old chat history |
+| `find_unused.py` | Find unused code |
+| `migrate_to_db.py` | Migrate JSON to SQLite |
+| `reindex_db.py` | Reindex database |
+| `view_db.py` | View database contents |
+
+---
+
+### tests/ (13 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `conftest.py` | Pytest fixtures |
+| `test_ai_core.py` | AI core tests |
+| `test_ai_integration.py` | AI integration tests |
+| `test_circuit_breaker.py` | Circuit breaker tests |
+| `test_database.py` | Database tests |
+| `test_emoji_voice.py` | Emoji/voice tests |
+| `test_memory_modules.py` | Memory module tests |
+| `test_music_integration.py` | Music integration tests |
+| `test_rate_limiter.py` | Rate limiter tests |
+| `test_spotify_integration.py` | Spotify integration tests |
+| `test_tools.py` | Tools tests |
+| `test_webhooks.py` | Webhook tests |
+
+---
+
+### utils/ (2 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init with re-exports |
+| `localization.py` | Thai/English localization |
+
+---
+
+### utils/database/ (2 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `database.py` | Async SQLite database manager |
+
+---
+
+### utils/media/ (3 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `colors.py` | Color constants |
+| `ytdl_source.py` | YouTube-DL audio source |
+
+---
+
+### utils/monitoring/ (9 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `health_api.py` | HTTP health check API |
+| `logger.py` | Smart logging system |
+| `metrics.py` | Performance metrics |
+| `sentry_integration.py` | Sentry error tracking |
+| `structured_logger.py` | Structured logging |
+| `token_tracker.py` | API token tracking |
+| `audit_log.py` | Audit logging |
+| `feedback.py` | User feedback collection |
+
+---
+
+### utils/reliability/ (4 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `rate_limiter.py` | Rate limiting with token bucket |
+| `circuit_breaker.py` | Circuit breaker pattern |
+| `self_healer.py` | Auto-healing system |
+
+---
+
+## ⚠️ Common Issues to Check
+
+### 1. Import Path Errors
+- ตรวจสอบ relative imports (`.module` vs `..module`)
+- ตรวจสอบว่า `__init__.py` มี re-exports ถูกต้อง
+
+### 2. Missing Dependencies
+```powershell
+pip install -r requirements.txt
+```
+
+### 3. Environment Variables
+- `DISCORD_TOKEN` - Required
+- `GEMINI_API_KEY` - Required
+- ดูรายละเอียดใน `config.py`
+
+### 4. Database Issues
+```powershell
+python scripts/maintenance/check_db.py
+```
+
+---
+
+## 📅 Audit Log
+
+| วันที่ | ผู้ตรวจ | บัคที่พบ | สถานะ |
+|--------|---------|---------|-------|
+| 2026-01-17 | AI Agent | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
+| 2026-01-17 | AI Agent | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
+| 2026-01-17 | AI Agent | 19 tests out of sync with implementation | ✅ Fixed |
+| 2026-01-16 | AI Agent | `ai_cog.py` import path error | ✅ Fixed |
+
+---
+
+## 🔧 Quick Commands
+
+```powershell
+# ตรวจสอบทุกไฟล์
+Get-ChildItem -Recurse -Filter "*.py" -File | 
+  Where-Object { $_.FullName -notmatch "node_modules|__pycache__|\.venv|temp" } | 
+  ForEach-Object { python -m py_compile $_.FullName }
+
+# รันบอท
+python bot.py
+
+# รัน Dashboard (Tauri)
+cd native_dashboard && .\target\release\bot-dashboard.exe
+
+# รัน Tests
+python -m pytest tests/ -v
+```
+
+---
+
+## 🖥️ Native Dashboard (Tauri)
+
+Dashboard ถูกเขียนใหม่เป็น Tauri (Rust + HTML/CSS/JS):
+
+| Component | Path |
+|-----------|------|
+| Rust Backend | `native_dashboard/src/` |
+| Frontend UI | `native_dashboard/ui/` |
+| Executable | `native_dashboard/target/release/bot-dashboard.exe` |
+
+### Features
+- Bot Control (Start/Stop/Restart/Dev)
+- Real-time Status
+- Log Viewer
+- Database Stats
+
+### Build
+```powershell
+cd native_dashboard
+cargo build --release
+```

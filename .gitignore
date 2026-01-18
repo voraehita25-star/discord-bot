@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temp files
+temp/
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+bot.pid
+dev_watcher.pid
+.cache
+
+# Data files (keep structure but ignore content)
+data/brain_model.pkl
+data/players.db
+data/*.json
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/bot_database.db*
+data_backup_*/
+chat_history/
+history_*.json
+
+# Assets (keep in repo)
+# assets/ directory is tracked
+
+# Keep example files
+!env.example

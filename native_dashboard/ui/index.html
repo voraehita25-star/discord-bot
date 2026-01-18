@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>디스코드 봇 대시보드</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <!-- Sakura Petals Animation -->
+    <div id="sakura-container"></div>
+
+    <div class="app">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">🤖</span>
+                <span class="logo-text">Bot Dashboard</span>
+            </div>
+
+            <div class="nav-items">
+                <button class="nav-item active" data-page="status">
+                    <span class="nav-icon">📊</span>
+                    <span>Status</span>
+                </button>
+                <button class="nav-item" data-page="logs">
+                    <span class="nav-icon">📜</span>
+                    <span>Logs</span>
+                </button>
+                <button class="nav-item" data-page="database">
+                    <span class="nav-icon">💾</span>
+                    <span>Database</span>
+                </button>
+                <button class="nav-item" data-page="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span>Settings</span>
+                </button>
+            </div>
+
+            <div class="status-badge" id="status-badge">
+                <span class="status-dot"></span>
+                <span class="status-text">Offline</span>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Status Page -->
+            <section id="page-status" class="page active">
+                <h1>Bot Control</h1>
+
+                <div class="control-card">
+                    <div class="control-info">
+                        <h2>Discord Bot</h2>
+                        <p id="bot-status-text">Status: Checking...</p>
+                    </div>
+                    <div class="control-buttons">
+                        <button id="btn-start" class="btn btn-primary">▶ Start</button>
+                        <button id="btn-dev" class="btn btn-warning">🧪 Dev</button>
+                        <button id="btn-stop" class="btn btn-danger">■ Stop</button>
+                        <button id="btn-restart" class="btn btn-secondary">↻ Restart</button>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">⏱️</div>
+                        <div class="stat-value" id="stat-uptime">-</div>
+                        <div class="stat-label">Uptime</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🔧</div>
+                        <div class="stat-value" id="stat-mode">-</div>
+                        <div class="stat-label">Mode</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">💾</div>
+                        <div class="stat-value" id="stat-memory">0 MB</div>
+                        <div class="stat-label">Memory</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">💬</div>
+                        <div class="stat-value" id="stat-messages">0</div>
+                        <div class="stat-label">Messages</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📢</div>
+                        <div class="stat-value" id="stat-channels">0</div>
+                        <div class="stat-label">Channels</div>
+                    </div>
+                </div>
+
+                <div class="quick-actions">
+                    <h2>Quick Actions</h2>
+                    <div class="action-buttons">
+                        <button class="btn" onclick="openFolder('logs')">📁 Open Logs</button>
+                        <button class="btn" onclick="openFolder('data')">📁 Open Data</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Logs Page -->
+            <section id="page-logs" class="page">
+                <div class="page-header">
+                    <h1>Log Viewer <span id="live-indicator" class="live-indicator">🔴 LIVE</span></h1>
+                    <div class="log-controls">
+                        <select id="log-filter">
+                            <option value="all">All Levels</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                        </select>
+                        <button id="btn-auto-scroll" class="btn" onclick="toggleAutoScroll()">⏸ Pause</button>
+                        <button class="btn" onclick="clearLogs()">🗑️ Clear</button>
+                        <button class="btn" onclick="loadLogs()">↻ Refresh</button>
+                    </div>
+                </div>
+                <div class="log-container" id="log-container">
+                    <pre id="log-content">Loading logs...</pre>
+                </div>
+            </section>
+
+            <!-- Database Page -->
+            <section id="page-database" class="page">
+                <h1>Database Statistics</h1>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="db-messages">0</div>
+                        <div class="stat-label">Total Messages</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="db-channels">0</div>
+                        <div class="stat-label">Active Channels</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="db-entities">0</div>
+                        <div class="stat-label">Entities</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="db-rag">0</div>
+                        <div class="stat-label">RAG Memories</div>
+                    </div>
+                </div>
+
+                <div class="data-section">
+                    <h2>Recent Channels</h2>
+                    <div class="data-list" id="channels-list"></div>
+                </div>
+
+                <div class="data-section">
+                    <h2>Top Users</h2>
+                    <div class="data-list" id="users-list"></div>
+                </div>
+
+                <div class="danger-zone">
+                    <h2>⚠️ Danger Zone</h2>
+                    <p>These actions are irreversible.</p>
+                    <button class="btn btn-danger" onclick="clearHistory()">🗑️ Clear All History</button>
+                </div>
+            </section>
+
+            <!-- Settings Page -->
+            <section id="page-settings" class="page">
+                <h1>Settings</h1>
+
+                <div class="settings-card">
+                    <h2>About</h2>
+                    <p><strong>Discord Bot Dashboard</strong></p>
+                    <p>Version 1.0.0</p>
+                    <p>Built with Tauri + Rust</p>
+                </div>
+
+                <div class="settings-card">
+                    <h2>Paths</h2>
+                    <p><strong>Bot Script:</strong> C:\Users\ME\BOT\bot.py</p>
+                    <p><strong>Log File:</strong> C:\Users\ME\BOT\logs\bot.log</p>
+                    <p><strong>Database:</strong> C:\Users\ME\BOT\data\bot_database.db</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

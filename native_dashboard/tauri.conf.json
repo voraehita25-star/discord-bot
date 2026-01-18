@@ -1,0 +1,36 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "디스코드 봇 대시보드",
+    "version": "1.0.0",
+    "identifier": "com.botdashboard.desktop",
+    "build": {
+        "frontendDist": "./ui"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "windows": [
+            {
+                "title": "디스코드 봇 대시보드",
+                "width": 1200,
+                "height": 800,
+                "resizable": true,
+                "fullscreen": false,
+                "decorations": true
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": [
+            "nsis"
+        ],
+        "icon": [
+            "icons/icon.ico",
+            "icons/32x32.png",
+            "icons/128x128.png"
+        ]
+    }
+}

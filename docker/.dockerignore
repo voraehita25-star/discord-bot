@@ -1,0 +1,67 @@
+# =============================================================================
+# Docker Build Exclusions
+# Patterns to exclude from Docker build context for faster builds
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (IMPORTANT: don't include secrets in image)
+.env
+.env.local
+.env.*.local
+
+# Logs and data (mounted as volumes instead)
+logs/
+data/
+temp/
+*.log
+
+# Test files
+tests/
+test_*.py
+*_test.py
+pytest.ini
+.pytest_cache/
+
+# Documentation
+*.md
+docs/
+
+# Development files
+scripts/
+tools/
+*.bat
+*.ps1
+*.vbs
+
+# Gemini/AI artifacts
+.gemini/
+
+# Other
+*.bak
+*.tmp
+*.temp
+Thumbs.db
+.DS_Store

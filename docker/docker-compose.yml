@@ -1,0 +1,90 @@
+# =============================================================================
+# Discord Bot - Docker Compose Configuration
+# Production deployment with volume mounts and restart policies
+# =============================================================================
+
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discord-bot
+    restart: unless-stopped
+
+    # Environment configuration
+    env_file:
+      - .env
+
+    environment:
+      # Override these in .env or here
+      - TZ=Asia/Bangkok
+      - PYTHONUNBUFFERED=1
+
+    # Volume mounts for persistence
+    volumes:
+      # Persist data directory (database, cache)
+      - ./data:/app/data
+      # Persist logs
+      - ./logs:/app/logs
+      # Persist temporary files (optional)
+      - ./temp:/app/temp
+      # Mount cookies.txt if using YouTube authentication
+      - ./cookies.txt:/app/cookies.txt:ro
+
+    # Health check (uses bot's health API)
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits (optional - adjust based on your server)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # Network (optional - for multi-container setups)
+    networks:
+      - bot-network
+
+# Network definition
+networks:
+  bot-network:
+    driver: bridge
+
+# =============================================================================
+# Usage:
+#
+# Start bot:
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f bot
+#
+# Restart bot:
+#   docker-compose restart bot
+#
+# Stop bot:
+#   docker-compose down
+#
+# Rebuild and restart:
+#   docker-compose up -d --build
+#
+# Check health:
+#   docker-compose ps
+# =============================================================================
