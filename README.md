@@ -15,7 +15,6 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 | 🤖 **AI Chat** | Gemini 3 Pro powered conversations with context memory |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
-| 🎤 **Voice Recognition** | Whisper-based speech-to-text for voice commands |
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
 | 🛡️ **Reliability** | Circuit breaker, rate limiting, and auto-recovery |
 | 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
