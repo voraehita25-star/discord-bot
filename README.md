@@ -150,6 +150,8 @@ This project is private. All rights reserved.
 | 💬 **Discord** | `@me_no_you` |
 | 🐙 **GitHub** | [@voraehita25-star](https://github.com/voraehita25-star) |
 
+> 📬 *Feel free to DM me on Discord for questions or help with this bot! There's a solid 19.99% chance I'll actually respond. The other 80.01%? I'm either sleeping, gaming, or pretending I didn't see it. Good luck!* 🎲
+
 ---
 
 **Version:** See `version.txt` | **Python:** 3.11+ | **Tests:** 204 passing ✅
