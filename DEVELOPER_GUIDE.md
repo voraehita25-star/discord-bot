@@ -50,11 +50,14 @@ BOT/
 │       ├── memory_commands.py # User memory commands
 │       │
 │       ├── data/             # Static data & prompts
-│       │   ├── __init__.py
-│       │   ├── constants.py  # ⚙️ Config constants, API keys
-│       │   ├── faust_data.py # Faust persona instructions
-│       │   └── roleplay_data.py # RP server lore & characters
+│       │   ├── __init__.py   # Auto-fallback to example files
+│       │   ├── constants.py  # ⚙️ Config constants (from env)
+│       │   ├── faust_data_example.py    # 📝 Example persona template
+│       │   ├── faust_data.py            # Your custom persona (gitignored)
+│       │   ├── roleplay_data_example.py # 📝 Example RP template
+│       │   └── roleplay_data.py         # Your custom RP data (gitignored)
 │       │
+
 │       ├── memory/           # 🧠 Memory Systems
 │       │   ├── __init__.py
 │       │   ├── rag.py        # FAISS-based RAG system
@@ -238,6 +241,40 @@ CREATOR_ID=your_discord_id
 - `GEMINI_API_KEY` - API key
 - `GAME_SEARCH_KEYWORDS` - Keywords ที่ force Google Search
 
+### Persona & Roleplay Files
+
+Bot จะ auto-fallback ไปใช้ `*_example.py` ถ้าไม่มี custom files:
+
+```bash
+# Copy examples to create your own
+cp cogs/ai_core/data/faust_data_example.py cogs/ai_core/data/faust_data.py
+cp cogs/ai_core/data/roleplay_data_example.py cogs/ai_core/data/roleplay_data.py
+```
+
+**faust_data.py** - AI Personality:
+| Variable | Description |
+|----------|-------------|
+| `FAUST_INSTRUCTION` | Main system prompt / personality |
+| `FAUST_DM_INSTRUCTION` | DM-specific behavior |
+| `FAUST_SANDBOX` | Unrestricted mode prompt |
+| `FAUST_CODE_OVERRIDE` | Code mode prompt |
+| `ESCALATION_FRAMINGS` | Fallback prompts when AI refuses |
+
+**roleplay_data.py** - RP System:
+| Variable | Description |
+|----------|-------------|
+| `WORLD_LORE` | Universe/setting description |
+| `ROLEPLAY_PROMPT` | RP assistant instructions |
+| `SERVER_CHARACTERS` | Character list with image paths |
+| `SERVER_AVATARS` | Guild-specific webhook avatar mappings |
+| `SERVER_LORE` | Guild-to-lore mapping |
+
+**Character Images:**
+```
+assets/RP/              # Large images for AI to see
+└── AVATARS/            # Small images for webhook avatars
+```
+
 ---
 
 ## 🧠 AI Core Deep Dive
@@ -245,6 +282,7 @@ CREATOR_ID=your_discord_id
 ### 1. Chat Processing (`logic.py`)
 
 **Main method:** `ChatManager.process_chat()`
+
 
 ```
 1. Request Deduplication (ป้องกัน double-submit)

@@ -45,9 +45,15 @@ pip install -r requirements.txt
 cp env.example .env
 # Edit .env with your tokens
 
-# 5. Run the bot
+# 5. (Optional) Customize persona - the bot works without this!
+# Copy example files and edit them:
+# cp cogs/ai_core/data/faust_data_example.py cogs/ai_core/data/faust_data.py
+# cp cogs/ai_core/data/roleplay_data_example.py cogs/ai_core/data/roleplay_data.py
+
+# 6. Run the bot
 python bot.py
 ```
+
 
 ## 🔑 Environment Variables
 
@@ -128,6 +134,34 @@ cargo tauri dev  # Development
 cargo tauri build  # Production build
 ```
 
+## 🎭 Customization
+
+The bot includes example persona files that work out of the box. To customize:
+
+### AI Persona
+```bash
+# Copy the example and customize
+cp cogs/ai_core/data/faust_data_example.py cogs/ai_core/data/faust_data.py
+```
+
+Edit `faust_data.py` to change:
+- `FAUST_INSTRUCTION` - Main personality/behavior
+- `FAUST_SANDBOX` - Unrestricted mode behavior
+- `ESCALATION_FRAMINGS` - Fallback prompts
+
+### Roleplay System
+```bash
+cp cogs/ai_core/data/roleplay_data_example.py cogs/ai_core/data/roleplay_data.py
+```
+
+Edit `roleplay_data.py` to add:
+- `WORLD_LORE` - Your RP universe/setting
+- `SERVER_CHARACTERS` - Character definitions
+- `SERVER_AVATARS` - Webhook avatar mappings
+
+### Character Images
+Create `assets/RP/` and `assets/RP/AVATARS/` folders with character images for RP webhooks.
+
 ## 📖 Documentation
 
 See **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for detailed documentation including:
@@ -135,6 +169,7 @@ See **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for detailed documentation incl
 - AI system design
 - Memory system internals
 - Contributing guidelines
+
 
 ## 📜 License
 
