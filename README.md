@@ -143,4 +143,13 @@ This project is private. All rights reserved.
 
 ---
 
+## 👤 Creator
+
+| | |
+|---|---|
+| 💬 **Discord** | `@me_no_you` |
+| 🐙 **GitHub** | [@voraehita25-star](https://github.com/voraehita25-star) |
+
+---
+
 **Version:** See `version.txt` | **Python:** 3.11+ | **Tests:** 204 passing ✅
