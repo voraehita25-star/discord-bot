@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/voraehita25-star/discord-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/voraehita25-star/discord-bot/actions/workflows/ci.yml)
 
+> ⚠️ **Fair Warning:** Most of the documentation and comments are in Thai (ภาษาไทย). Will I translate it to English? *Absolutely not.* Learn Thai or use Google Translate. Good luck! 🇹🇭✨
+
 Production-ready Discord bot with Gemini AI chat, music player, and advanced memory system.
 
 ## ✨ Features
