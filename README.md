@@ -4,6 +4,8 @@
 
 > ⚠️ **Fair Warning:** Most of the documentation and comments are in Thai (ภาษาไทย). Will I translate it to English? *Absolutely not.* Learn Thai or use Google Translate. Good luck! 🇹🇭✨
 
+> 🧩 **Another Fair Warning:** This codebase is NOT 100% complete. Some pieces are missing like a puzzle from your childhood that the dog ate. Various files were yeeted into the void for *✨privacy reasons✨*. Can you still use it? Sure! Will it work out of the box? *LOL no.* You'll need to fill in the gaps, fix some paths, and maybe sacrifice a rubber duck to the debugging gods. Consider this a *"some assembly required"* situation. You've been warned! 🔧💀
+
 Production-ready Discord bot with Gemini AI chat, music player, and advanced memory system.
 
 ## ✨ Features
