@@ -244,10 +244,10 @@ python scripts/maintenance/check_db.py
 
 | วันที่ | ผู้ตรวจ | บัคที่พบ | สถานะ |
 |--------|---------|---------|-------|
-| 2026-01-17 | AI Agent | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
-| 2026-01-17 | AI Agent | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
-| 2026-01-17 | AI Agent | 19 tests out of sync with implementation | ✅ Fixed |
-| 2026-01-16 | AI Agent | `ai_cog.py` import path error | ✅ Fixed |
+| 2026-01-17 | ME | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
+| 2026-01-17 | ME | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
+| 2026-01-17 | ME | 19 tests out of sync with implementation | ✅ Fixed |
+| 2026-01-16 | ME | `ai_cog.py` import path error | ✅ Fixed |
 
 ---
 
