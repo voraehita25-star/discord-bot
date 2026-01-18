@@ -272,7 +272,7 @@ class MusicBot(commands.AutoShardedBot):
             perf_status.append("uvloop")
         # Check for orjson
         try:
-            import orjson  # noqa: F401
+            import orjson
 
             perf_status.append("orjson")
         except ImportError:

@@ -10,7 +10,6 @@ import asyncio
 import base64
 import contextlib
 import datetime
-from zoneinfo import ZoneInfo
 import io
 import logging
 import re
@@ -18,10 +17,19 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from google import genai
 from google.genai import types
 from PIL import Image
+
+# Import API handler module
+from .api_handler import (
+    build_api_config,
+    call_gemini_api,
+    call_gemini_api_streaming,
+    detect_search_intent,
+)
 
 # Import extracted modules
 from .data.constants import (
@@ -38,6 +46,18 @@ from .data.faust_data import (
 )
 from .data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_CHARACTERS
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
+
+# Import media processing module
+from .media_processor import (
+    IMAGEIO_AVAILABLE,
+    convert_gif_to_video,
+    is_animated_gif,
+    load_cached_image_bytes as _load_cached_image_bytes,
+    load_character_image,
+    pil_to_inline_data,
+    prepare_user_avatar,
+    process_attachments,
+)
 from .memory.consolidator import memory_consolidator
 from .memory.entity_memory import entity_memory
 from .memory.rag import rag_system
@@ -54,26 +74,6 @@ from .voice import (
     join_voice_channel as voice_join,
     leave_voice_channel as voice_leave,
     parse_voice_command as voice_parse_command,
-)
-
-# Import media processing module
-from .media_processor import (
-    load_cached_image_bytes as _load_cached_image_bytes,
-    pil_to_inline_data,
-    is_animated_gif,
-    convert_gif_to_video,
-    load_character_image,
-    prepare_user_avatar,
-    process_attachments,
-    IMAGEIO_AVAILABLE,
-)
-
-# Import API handler module
-from .api_handler import (
-    build_api_config,
-    detect_search_intent,
-    call_gemini_api,
-    call_gemini_api_streaming,
 )
 
 # TTS module removed - not used
@@ -113,28 +113,28 @@ except ImportError:
 
 
 try:
-    from .processing.intent_detector import Intent, detect_intent  # noqa: F401
+    from .processing.intent_detector import Intent, detect_intent
 
     INTENT_DETECTOR_AVAILABLE = True
 except ImportError:
     INTENT_DETECTOR_AVAILABLE = False
 
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction  # noqa: F401
+    from .cache.analytics import get_ai_stats, log_ai_interaction
 
     ANALYTICS_AVAILABLE = True
 except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher  # noqa: F401
+    from .cache.ai_cache import ai_cache, context_hasher
 
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 try:
-    from .memory.history_manager import history_manager  # noqa: F401
+    from .memory.history_manager import history_manager
 
     HISTORY_MANAGER_AVAILABLE = True
 except ImportError:
@@ -196,8 +196,8 @@ except ImportError:
 # Import error recovery for graceful degradation
 try:
     from utils.reliability.error_recovery import (
-        service_monitor,
         GracefulDegradation,
+        service_monitor,
     )
 
     ERROR_RECOVERY_AVAILABLE = True
@@ -272,20 +272,8 @@ PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 # NOTE: convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 # are imported from .emoji module (line 45) - DO NOT redefine here
 
-
-# ==================== Image Caching ====================
-
-
-@lru_cache(maxsize=200)
-def _load_cached_image_bytes(full_path: str) -> bytes | None:
-    """Load and cache image bytes from disk."""
-    path = Path(full_path)
-    if path.exists():
-        try:
-            return path.read_bytes()
-        except OSError:
-            return None
-    return None
+# NOTE: _load_cached_image_bytes is imported from .media_processor (line 61)
+# DO NOT redefine here - removed duplicate @lru_cache function
 
 
 class ChatManager(SessionMixin, ResponseMixin):

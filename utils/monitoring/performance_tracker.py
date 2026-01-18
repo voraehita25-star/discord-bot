@@ -135,7 +135,7 @@ class PerformanceTracker:
     class _TimerContext:
         """Context manager for timing operations."""
 
-        def __init__(self, tracker: "PerformanceTracker", operation: str):
+        def __init__(self, tracker: PerformanceTracker, operation: str):
             self.tracker = tracker
             self.operation = operation
             self.start_time = 0.0

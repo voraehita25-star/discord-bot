@@ -19,9 +19,10 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord.ext import commands
 
-from .utils import Colors, Emojis, create_progress_bar, format_duration
 from cogs.spotify_handler import SpotifyHandler
 from utils.media.ytdl_source import YTDLSource, get_ffmpeg_options
+
+from .utils import Colors, Emojis, create_progress_bar, format_duration
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context

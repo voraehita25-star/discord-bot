@@ -7,10 +7,10 @@ from .cog import Music, MusicControlView
 from .utils import Colors, Emojis, create_progress_bar, format_duration
 
 __all__ = [
-    "Music",
-    "MusicControlView",
     "Colors",
     "Emojis",
+    "Music",
+    "MusicControlView",
     "create_progress_bar",
     "format_duration",
 ]

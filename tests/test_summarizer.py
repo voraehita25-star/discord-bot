@@ -6,7 +6,7 @@ Tests summarization logic and history compression.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -75,7 +75,7 @@ class TestSummarizerSingleton:
 
     def test_singleton_is_correct_type(self):
         """Test that singleton is ConversationSummarizer instance."""
-        from cogs.ai_core.memory.summarizer import summarizer, ConversationSummarizer
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer, summarizer
 
         assert isinstance(summarizer, ConversationSummarizer)
 

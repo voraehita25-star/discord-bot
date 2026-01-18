@@ -64,7 +64,7 @@ class TestRetryAsync:
 
     async def test_success_on_first_try(self):
         """Test successful execution without retries."""
-        from utils.reliability.error_recovery import retry_async, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, retry_async
 
         async def success_func():
             return "success"
@@ -76,7 +76,7 @@ class TestRetryAsync:
 
     async def test_success_after_retry(self):
         """Test success after initial failures."""
-        from utils.reliability.error_recovery import retry_async, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, retry_async
 
         call_count = 0
 
@@ -95,7 +95,7 @@ class TestRetryAsync:
 
     async def test_fallback_on_all_failures(self):
         """Test fallback value returned when all retries fail."""
-        from utils.reliability.error_recovery import retry_async, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, retry_async
 
         async def always_fails():
             raise ValueError("Always fails")
@@ -107,7 +107,7 @@ class TestRetryAsync:
 
     async def test_on_retry_callback(self):
         """Test on_retry callback is called."""
-        from utils.reliability.error_recovery import retry_async, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, retry_async
 
         retry_calls = []
 
@@ -130,7 +130,7 @@ class TestWithRetryDecorator:
 
     async def test_decorator_success(self):
         """Test decorator on successful function."""
-        from utils.reliability.error_recovery import with_retry, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, with_retry
 
         @with_retry(config=RetryConfig(max_retries=2))
         async def my_func():
@@ -141,7 +141,7 @@ class TestWithRetryDecorator:
 
     async def test_decorator_with_fallback(self):
         """Test decorator with fallback value."""
-        from utils.reliability.error_recovery import with_retry, RetryConfig
+        from utils.reliability.error_recovery import RetryConfig, with_retry
 
         @with_retry(config=RetryConfig(max_retries=1, base_delay=0.01), fallback="fallback")
         async def always_fails():

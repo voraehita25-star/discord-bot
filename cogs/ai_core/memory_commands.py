@@ -11,7 +11,7 @@ import discord
 from discord.ext import commands
 from discord.ext.commands import Context
 
-from utils.color_config import Colors
+from utils.media.colors import Colors
 
 
 class MemoryCommands(commands.Cog):

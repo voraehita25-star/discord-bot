@@ -4,6 +4,9 @@ Core AI functionality for the Discord Bot.
 Reorganized into subdirectories for better organization.
 """
 
+# Main AI Cog
+from .ai_cog import AI
+
 # Backward compatibility re-exports from new locations
 from .cache.ai_cache import AICache, ai_cache
 from .cache.analytics import AIAnalytics, ai_analytics
@@ -19,6 +22,7 @@ from .processing.intent_detector import detect_intent
 from .processing.prompt_manager import prompt_manager
 
 __all__ = [
+    "AI",
     "CREATOR_ID",
     "FAUST_INSTRUCTION",
     "GUILD_ID_MAIN",
@@ -37,3 +41,8 @@ __all__ = [
     "summarizer",
     "validate_response",
 ]
+
+
+async def setup(bot):
+    """Setup function to add the AI cog to the bot."""
+    await bot.add_cog(AI(bot))

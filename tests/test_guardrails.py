@@ -7,8 +7,6 @@ Tests refusal detection, confidence scoring, and unrestricted mode bypass.
 from __future__ import annotations
 
 
-
-
 class TestRefusalDetection:
     """Tests for refusal pattern detection.
 

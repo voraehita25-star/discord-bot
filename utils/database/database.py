@@ -815,7 +815,7 @@ class Database:
     # ==================== Export ====================
 
     async def export_to_json(self) -> None:
-        """Export database tables to JSON files."""
+        """Export database tables to JSON files (AI history is exported per channel)."""
         try:
             async with self.get_connection() as conn:
                 # Get all tables
@@ -826,6 +826,43 @@ class Database:
 
                 summary = {}
                 for table in tables:
+                    # Special handling for ai_history - export per channel
+                    if table == "ai_history":
+                        ai_history_dir = EXPORT_DIR / "ai_history"
+                        ai_history_dir.mkdir(exist_ok=True)
+
+                        # Get all channel IDs
+                        cursor = await conn.execute("SELECT DISTINCT channel_id FROM ai_history")
+                        channel_ids = [row[0] for row in await cursor.fetchall()]
+
+                        total_messages = 0
+                        for channel_id in channel_ids:
+                            cursor = await conn.execute(
+                                """SELECT local_id, channel_id, role, content, message_id,
+                                          timestamp, created_at
+                                   FROM ai_history WHERE channel_id = ?
+                                   ORDER BY local_id ASC""",
+                                (channel_id,),
+                            )
+                            rows = await cursor.fetchall()
+                            data = []
+                            for row in rows:
+                                item = dict(row)
+                                item["id"] = item.pop("local_id")  # Rename local_id to id
+                                data.append(item)
+
+                            if data:
+                                output_file = ai_history_dir / f"{channel_id}.json"
+                                output_file.write_text(
+                                    json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                                    encoding="utf-8",
+                                )
+                                total_messages += len(data)
+
+                        summary[table] = {"channels": len(channel_ids), "messages": total_messages}
+                        continue
+
+                    # Normal tables - export as before
                     cursor = await conn.execute(f"SELECT * FROM {table}")
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
@@ -842,7 +879,7 @@ class Database:
                     json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
-                logging.info("📤 Exported database to JSON")
+                logging.info("📤 Exported database to JSON (AI history per channel)")
         except Exception as e:
             logging.error("Export failed: %s", e)
 

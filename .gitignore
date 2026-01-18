@@ -74,3 +74,11 @@ history_*.json
 
 # Keep example files
 !env.example
+
+# Sensitive AI data (persona prompts, RP lore)
+cogs/ai_core/data/faust_data.py
+cogs/ai_core/data/roleplay_data.py
+cogs/ai_core/data/unrestricted_channels.json
+
+# RP character images (private)
+assets/RP/

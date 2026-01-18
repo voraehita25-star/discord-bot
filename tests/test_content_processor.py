@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import io
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image

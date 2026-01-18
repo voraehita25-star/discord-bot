@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** January 17, 2026 | **Ruff Issues:** 0 ✅
+> **Last Updated:** January 19, 2026 | **Ruff Issues:** 0 ✅ | **Tests:** 204 passed ✅
 
 ## 🛠️ วิธีการตรวจสอบ
 
@@ -39,7 +39,7 @@ python -m pytest tests/ -v
 
 ---
 
-## 📁 รายการไฟล์ทั้งหมด (86 ไฟล์)
+## 📁 รายการไฟล์ทั้งหมด (103 ไฟล์)
 
 ### Core Files (3 ไฟล์)
 | ไฟล์ | คำอธิบาย |
@@ -244,6 +244,14 @@ python scripts/maintenance/check_db.py
 
 | วันที่ | ผู้ตรวจ | บัคที่พบ | สถานะ |
 |--------|---------|---------|-------|
+| 2026-01-19 | ME | `constants.py` missing `GAME_SEARCH_KEYWORDS` | ✅ Fixed |
+| 2026-01-19 | ME | `faust_data.py` missing `ESCALATION_FRAMINGS` | ✅ Fixed |
+| 2026-01-19 | ME | `roleplay_data.py` missing `SERVER_LORE` dict | ✅ Fixed |
+| 2026-01-19 | ME | `logic.py` duplicate function redefinition (F811) | ✅ Fixed |
+| 2026-01-19 | ME | `memory_commands.py` wrong import path for Colors | ✅ Fixed |
+| 2026-01-19 | ME | `ai_core/__init__.py` missing AI cog export | ✅ Fixed |
+| 2026-01-19 | ME | `migrate_to_db.py` wrong PROJECT_ROOT path | ✅ Fixed |
+| 2026-01-19 | ME | `database.py` export_to_json now splits by channel | ✅ Enhanced |
 | 2026-01-17 | ME | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
 | 2026-01-17 | ME | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
 | 2026-01-17 | ME | 19 tests out of sync with implementation | ✅ Fixed |

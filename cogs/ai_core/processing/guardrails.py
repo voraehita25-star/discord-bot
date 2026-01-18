@@ -534,6 +534,4 @@ def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
     Detect if response appears to be a silent block from the API.
     Only checks for truly empty responses, not short ones.
     """
-    if not response or not response.strip():
-        return True
-    return False
+    return bool(not response or not response.strip())
