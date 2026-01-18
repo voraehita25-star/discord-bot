@@ -1,80 +1,142 @@
 # 🤖 Discord AI Bot
 
-Production-ready Discord bot with Gemini AI chat and music player.
+[![CI](https://github.com/voraehita25-star/discord-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/voraehita25-star/discord-bot/actions/workflows/ci.yml)
 
-## ✨ Quick Start
+Production-ready Discord bot with Gemini AI chat, music player, and advanced memory system.
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🤖 **AI Chat** | Gemini 2.0 Flash powered conversations with context memory |
+| 🎵 **Music** | YouTube/Spotify playback with queue management |
+| 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
+| 🎤 **Voice Recognition** | Whisper-based speech-to-text for voice commands |
+| 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
+| 🛡️ **Reliability** | Circuit breaker, rate limiting, and auto-recovery |
+| 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.11+
+- Discord Bot Token
+- Google Gemini API Key
+
+### Installation
 
 ```bash
-# 1. Install dependencies
+# 1. Clone the repository
+git clone https://github.com/voraehita25-star/discord-bot.git
+cd discord-bot
+
+# 2. Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/Mac
+
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 2. Configure environment
+# 4. Configure environment
 cp env.example .env
 # Edit .env with your tokens
 
-# 3. Run the bot
+# 5. Run the bot
 python bot.py
 ```
 
-## 🔑 Required Environment Variables
+## 🔑 Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_TOKEN` | Discord bot token |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `CREATOR_ID` | Your Discord user ID |
-
-## 📋 Features
-
-- **🤖 AI Chat** - Gemini-powered conversations with context memory
-- **🎵 Music** - YouTube/Spotify playback with queue management
-- **🧠 Memory** - Long-term memory via RAG (FAISS)
-- **🛡️ Reliability** - Circuit breaker, rate limiting, auto-recovery
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DISCORD_TOKEN` | ✅ | Discord bot token |
+| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
+| `CREATOR_ID` | ✅ | Your Discord user ID |
+| `SPOTIFY_CLIENT_ID` | ❌ | Spotify API client ID |
+| `SPOTIFY_CLIENT_SECRET` | ❌ | Spotify API secret |
+| `SENTRY_DSN` | ❌ | Sentry error tracking |
 
 ## 📂 Project Structure
 
 ```
-bot.py          # Entry point
-config.py       # Configuration
-cogs/           # Discord extensions
-├── ai_core/    # AI chat system
-└── music.py    # Music player
-utils/          # Utilities
-tests/          # Test suite (177 tests)
+discord-bot/
+├── bot.py              # Entry point
+├── config.py           # Configuration
+├── cogs/               # Discord extensions
+│   ├── ai_core/        # AI chat system
+│   │   ├── ai_cog.py       # Main AI cog
+│   │   ├── logic.py        # Core AI logic
+│   │   ├── memory/         # Memory systems
+│   │   └── tools/          # AI tools
+│   ├── music.py        # Music player
+│   └── spotify_handler.py
+├── utils/              # Utilities
+│   ├── database/       # Database handlers
+│   ├── monitoring/     # Logging & metrics
+│   └── reliability/    # Circuit breaker, rate limiter
+├── native_dashboard/   # Tauri desktop app
+├── tests/              # Test suite (204 tests)
+└── scripts/            # Maintenance & startup scripts
 ```
 
 ## 🧪 Testing
 
 ```bash
+# Run all tests
 python -m pytest tests/ -v
+
+# Run with coverage
+python -m pytest tests/ --cov=. --cov-report=html
+
+# Run specific test file
+python -m pytest tests/test_ai_core.py -v
 ```
-
-## 📖 Documentation
-
-See **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for detailed documentation.
-
-## 📊 Monitoring
-
-The bot includes built-in monitoring:
-
-- **Health API** - HTTP endpoint for health checks
-- **Token Tracking** - Per-user/channel token usage
-- **Performance Metrics** - Response times with percentiles
-- **Sentry Integration** - Error tracking (optional)
 
 ## 🛠️ Development
 
 ```bash
-# Hot-reload development
+# Hot-reload development mode
 python scripts/dev_watcher.py
 
 # Run linter
 ruff check .
 
-# Run tests
-python -m pytest tests/ -q
+# Auto-fix lint issues
+ruff check . --fix
 ```
+
+## 📊 Monitoring
+
+The bot includes built-in monitoring capabilities:
+
+- **Health API** - HTTP endpoint for health checks (`/health`)
+- **Token Tracking** - Per-user/channel token usage metrics
+- **Performance Metrics** - Response times with percentiles
+- **Sentry Integration** - Error tracking (optional)
+
+## 🖥️ Native Dashboard
+
+A Tauri-based desktop application for managing the bot:
+
+```bash
+cd native_dashboard
+cargo tauri dev  # Development
+cargo tauri build  # Production build
+```
+
+## 📖 Documentation
+
+See **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for detailed documentation including:
+- Architecture overview
+- AI system design
+- Memory system internals
+- Contributing guidelines
+
+## 📜 License
+
+This project is private. All rights reserved.
 
 ---
 
-**Version:** See `version.txt` | **Python:** 3.11+ | **Tests:** 177 passing ✅
+**Version:** See `version.txt` | **Python:** 3.11+ | **Tests:** 204 passing ✅

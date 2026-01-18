@@ -30,9 +30,14 @@ ENV/
 # IDE
 .vscode/
 .idea/
+.cursor/
+.gemini/
 *.swp
 *.swo
 *~
+
+# Rust/Tauri build artifacts
+native_dashboard/target/
 
 # Logs
 *.log
