@@ -8,7 +8,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 
 | Feature | Description |
 |---------|-------------|
-| 🤖 **AI Chat** | Gemini 2.0 Flash powered conversations with context memory |
+| 🤖 **AI Chat** | Gemini 3 Pro powered conversations with context memory |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
 | 🎤 **Voice Recognition** | Whisper-based speech-to-text for voice commands |
