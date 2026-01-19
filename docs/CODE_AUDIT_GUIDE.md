@@ -157,7 +157,7 @@ python -m pytest tests/ -v
 
 ---
 
-### tests/ (13 ไฟล์)
+### tests/ (17 ไฟล์)
 | ไฟล์ | คำอธิบาย |
 |------|---------|
 | `__init__.py` | Package init |
@@ -165,12 +165,18 @@ python -m pytest tests/ -v
 | `test_ai_core.py` | AI core tests |
 | `test_ai_integration.py` | AI integration tests |
 | `test_circuit_breaker.py` | Circuit breaker tests |
+| `test_consolidator.py` | Memory consolidator tests |
+| `test_content_processor.py` | Content processor tests |
 | `test_database.py` | Database tests |
 | `test_emoji_voice.py` | Emoji/voice tests |
+| `test_error_recovery.py` | Error recovery tests |
+| `test_guardrails.py` | Guardrails tests |
 | `test_memory_modules.py` | Memory module tests |
 | `test_music_integration.py` | Music integration tests |
+| `test_performance_tracker.py` | Performance tracker tests |
 | `test_rate_limiter.py` | Rate limiter tests |
 | `test_spotify_integration.py` | Spotify integration tests |
+| `test_summarizer.py` | Summarizer tests |
 | `test_tools.py` | Tools tests |
 | `test_webhooks.py` | Webhook tests |
 

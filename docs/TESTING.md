@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: January 17, 2026 | Total: 144 Tests | 14 Test Files | Ruff: 0 issues ✅
+> Last Updated: January 19, 2026 | Total: 204 Tests | 17 Test Files | Ruff: 0 issues ✅
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -26,7 +26,7 @@ python -m pytest tests/test_database.py::TestRateLimiter::test_token_consumption
 python -m pytest tests/ --collect-only -q
 ```
 
-## Test Structure (13 Files, 144 Tests)
+## Test Structure (17 Files, 204 Tests)
 
 ```
 tests/
@@ -35,12 +35,18 @@ tests/
 ├── test_ai_core.py          # AI core functionality
 ├── test_ai_integration.py   # AI integration tests
 ├── test_circuit_breaker.py  # Circuit breaker pattern
+├── test_consolidator.py     # Memory consolidator tests
+├── test_content_processor.py # Content processor tests
 ├── test_database.py         # Database, sanitization
 ├── test_emoji_voice.py      # Emoji/voice handling
+├── test_error_recovery.py   # Error recovery tests
+├── test_guardrails.py       # Guardrails tests
 ├── test_memory_modules.py   # Memory systems
 ├── test_music_integration.py # Music player tests
+├── test_performance_tracker.py # Performance tracker tests
 ├── test_rate_limiter.py     # Rate limiting
 ├── test_spotify_integration.py # Spotify integration
+├── test_summarizer.py       # Summarizer tests
 ├── test_tools.py            # Server tools
 └── test_webhooks.py         # Webhook handling
 ```

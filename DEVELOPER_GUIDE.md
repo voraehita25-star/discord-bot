@@ -140,19 +140,24 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (144 tests)
+├── tests/                    # 🧪 Test Suite (204 tests)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
 │   ├── test_ai_integration.py # AI integration tests
 │   ├── test_circuit_breaker.py
-│   ├── test_dashboard.py
+│   ├── test_consolidator.py  # Memory consolidator
+│   ├── test_content_processor.py
 │   ├── test_database.py
 │   ├── test_emoji_voice.py
+│   ├── test_error_recovery.py
+│   ├── test_guardrails.py
 │   ├── test_memory_modules.py
 │   ├── test_music_integration.py
+│   ├── test_performance_tracker.py
 │   ├── test_rate_limiter.py
 │   ├── test_spotify_integration.py
+│   ├── test_summarizer.py
 │   ├── test_tools.py
 │   └── test_webhooks.py
 │
