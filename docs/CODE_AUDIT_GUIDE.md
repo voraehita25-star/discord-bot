@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** January 19, 2026 | **Ruff Issues:** 0 ✅ | **Tests:** 204 passed ✅
+> **Last Updated:** January 19, 2026 | **Ruff Issues:** 0 ✅ | **Tests:** 204 passed ✅ | **Files:** 105
 
 ## 🛠️ วิธีการตรวจสอบ
 
@@ -39,7 +39,7 @@ python -m pytest tests/ -v
 
 ---
 
-## 📁 รายการไฟล์ทั้งหมด (103 ไฟล์)
+## 📁 รายการไฟล์ทั้งหมด (105 ไฟล์)
 
 ### Core Files (3 ไฟล์)
 | ไฟล์ | คำอธิบาย |
@@ -50,13 +50,22 @@ python -m pytest tests/ -v
 
 ---
 
-### cogs/ (4 ไฟล์)
+### cogs/ (2 ไฟล์)
 | ไฟล์ | คำอธิบาย |
 |------|---------|
 | `__init__.py` | Package init |
-| `music.py` | Music playback cog (YouTube/Spotify) |
-| `music_utils.py` | Music utilities (colors, emojis, formatting) |
 | `spotify_handler.py` | Spotify API integration |
+
+---
+
+### cogs/music/ (5 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `cog.py` | Music playback cog (YouTube/Spotify) |
+| `queue.py` | Queue management |
+| `utils.py` | Music utilities (colors, emojis, formatting) |
+| `views.py` | Discord UI components |
 
 ---
 
@@ -244,6 +253,7 @@ python scripts/maintenance/check_db.py
 
 | วันที่ | ผู้ตรวจ | บัคที่พบ | สถานะ |
 |--------|---------|---------|-------|
+| 2026-01-19 | ME | `music/cog.py` circular import with spotify_handler | ✅ Fixed |
 | 2026-01-19 | ME | `constants.py` missing `GAME_SEARCH_KEYWORDS` | ✅ Fixed |
 | 2026-01-19 | ME | `faust_data.py` missing `ESCALATION_FRAMINGS` | ✅ Fixed |
 | 2026-01-19 | ME | `roleplay_data.py` missing `SERVER_LORE` dict | ✅ Fixed |

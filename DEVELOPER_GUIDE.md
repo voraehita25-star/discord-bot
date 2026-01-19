@@ -3,8 +3,8 @@
 > **Last Updated:** January 19, 2026  
 > **Python Version:** 3.11+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 103 Python files | 204 Tests  
-> **Code Quality:** Ruff 0 issues ✅ | All imports verified ✅
+> **Total Files:** 105 Python files | 204 Tests  
+> **Code Quality:** All imports verified ✅ | Circular imports fixed ✅
 
 ---
 
@@ -21,7 +21,7 @@ Discord Bot ที่รวม AI Chat (Gemini API) และ Music Player ไ�
 
 ---
 
-## 📁 Directory Structure (88 Python Files)
+## 📁 Directory Structure (105 Python Files)
 
 ```
 BOT/
@@ -33,9 +33,14 @@ BOT/
 │
 ├── cogs/                     # 🔌 Discord Cogs (Extensions)
 │   ├── __init__.py
-│   ├── music.py              # Music player cog
-│   ├── music_utils.py        # Music utilities (colors, emojis)
 │   ├── spotify_handler.py    # Spotify integration
+│   │
+│   ├── music/                # 🎵 Music Module
+│   │   ├── __init__.py
+│   │   ├── cog.py            # Music player cog
+│   │   ├── queue.py          # Queue management
+│   │   ├── utils.py          # Colors, emojis, formatting
+│   │   └── views.py          # Discord UI components
 │   │
 │   └── ai_core/              # 🧠 AI Core Module
 │       ├── __init__.py
@@ -339,9 +344,13 @@ Real-time response updates via Discord message editing:
 ## 🎵 Music System
 
 ### Key Files
-- `cogs/music.py` - Main music cog
+- `cogs/music/cog.py` - Main music cog  
+- `cogs/music/queue.py` - Queue management
+- `cogs/music/utils.py` - Colors, emojis, formatting
+- `cogs/music/views.py` - Discord UI components
 - `cogs/spotify_handler.py` - Spotify URL processing  
-- `cogs/music_utils.py` - UI constants
+
+> **Note:** `spotify_handler.py` uses lazy import for `SpotifyHandler` to avoid circular import.
 
 ### Features
 - YouTube/Spotify support

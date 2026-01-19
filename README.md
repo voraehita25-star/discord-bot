@@ -77,8 +77,11 @@ discord-bot/
 │   │   ├── ai_cog.py       # Main AI cog
 │   │   ├── logic.py        # Core AI logic
 │   │   ├── memory/         # Memory systems
-│   │   └── tools/          # AI tools
-│   ├── music.py        # Music player
+│   │   └── data/           # Prompts & constants
+│   ├── music/          # Music player module
+│   │   ├── cog.py          # Main music cog
+│   │   ├── queue.py        # Queue management
+│   │   └── utils.py        # Colors, emojis
 │   └── spotify_handler.py
 ├── utils/              # Utilities
 │   ├── database/       # Database handlers

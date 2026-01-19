@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord.ext import commands
 
-from cogs.spotify_handler import SpotifyHandler
 from utils.media.ytdl_source import YTDLSource, get_ffmpeg_options
 
 from .utils import Colors, Emojis, create_progress_bar, format_duration
@@ -124,6 +123,8 @@ class Music(commands.Cog):
         self.auto_disconnect_tasks: dict[int, asyncio.Task] = {}  # Guild ID -> asyncio.Task
         self.mode_247: dict[int, bool] = {}  # Guild ID -> Boolean (24/7 mode enabled)
         self.last_text_channel: dict[int, int] = {}  # Guild ID -> Channel ID (last used)
+        # Lazy import to avoid circular dependency with spotify_handler
+        from cogs.spotify_handler import SpotifyHandler
         self.spotify: SpotifyHandler = SpotifyHandler(bot)
         self.auto_disconnect_delay: int = 180  # 3 minutes
 
