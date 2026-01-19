@@ -25,8 +25,8 @@ URL_PATTERN = re.compile(
 )
 
 # Maximum content length per URL (characters)
-# Reduced from 8000 to prevent context overflow causing Gemini silent blocks
-MAX_CONTENT_LENGTH = 3000
+# Balanced between context and preventing Gemini silent blocks
+MAX_CONTENT_LENGTH = 4500
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = 10
