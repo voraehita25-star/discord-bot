@@ -78,6 +78,18 @@ from .voice import (
 
 # TTS module removed - not used
 
+# Import URL fetcher for web content extraction
+try:
+    from utils.web.url_fetcher import (
+        extract_urls,
+        fetch_all_urls,
+        format_url_content_for_context,
+    )
+
+    URL_FETCHER_AVAILABLE = True
+except ImportError:
+    URL_FETCHER_AVAILABLE = False
+
 # Import new AI enhancement modules
 try:
     from .processing.guardrails import (
@@ -692,8 +704,23 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # <:smile:123456789> -> [:smile:]
                     display_message = convert_discord_emojis(display_message)
 
+                    # --- URL Content Fetching ---
+                    url_context = ""
+                    if URL_FETCHER_AVAILABLE:
+                        try:
+                            urls = extract_urls(message or "")
+                            if urls:
+                                logging.info("🔗 Found %d URL(s) in message, fetching content...", len(urls))
+                                fetched = await fetch_all_urls(urls, max_urls=2)
+                                url_context = format_url_content_for_context(fetched)
+                                if url_context:
+                                    logging.info("🔗 Fetched content from %d URL(s)", len(fetched))
+                        except Exception as e:
+                            logging.debug("URL fetching failed: %s", e)
+
                     # --- RAG: Retrieve Relevant Memories ---
                     rag_context = ""
+
                     try:
                         # Search global memories + channel specific
                         _rag_start = time.time()
@@ -748,8 +775,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                         memory_context += f"\n{entity_context}"
                     if state_context:
                         memory_context += f"\n{state_context}"
+                    if url_context:
+                        memory_context += f"\n{url_context}"
                     if rag_context:
                         memory_context += rag_context
+
 
                     # Build prompt with context
                     # For DM (guild_id is None), add voice status and chat history access

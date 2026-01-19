@@ -107,16 +107,20 @@ BOT/
 │   │   ├── rate_limiter.py   # Token bucket rate limiting
 │   │   └── self_healer.py    # Auto-recovery from issues
 │   │
-│   └── monitoring/           # 📈 Monitoring & Metrics
+│   ├── monitoring/           # 📈 Monitoring & Metrics
+│   │   ├── __init__.py
+│   │   ├── health_api.py     # HTTP health check API
+│   │   ├── logger.py         # Smart logging system
+│   │   ├── metrics.py        # Performance metrics
+│   │   ├── structured_logger.py # Structured logging
+│   │   ├── sentry_integration.py # Sentry error tracking
+│   │   ├── token_tracker.py  # API token tracking
+│   │   ├── audit_log.py      # Audit logging
+│   │   └── feedback.py       # User feedback collection
+│   │
+│   └── web/                  # 🔗 Web Utilities
 │       ├── __init__.py
-│       ├── health_api.py     # HTTP health check API
-│       ├── logger.py         # Smart logging system
-│       ├── metrics.py        # Performance metrics
-│       ├── structured_logger.py # Structured logging
-│       ├── sentry_integration.py # Sentry error tracking
-│       ├── token_tracker.py  # API token tracking
-│       ├── audit_log.py      # Audit logging
-│       └── feedback.py       # User feedback collection
+│       └── url_fetcher.py    # URL content extraction
 │
 ├── scripts/                  # 🔧 Management Scripts
 │   ├── __init__.py

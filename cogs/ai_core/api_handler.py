@@ -474,7 +474,11 @@ async def call_gemini_api(
                     break
 
             if is_silent_block(temp_text):
-                logging.warning("⚠️ Silent block detected (attempt %s)", attempt + 1)
+                logging.warning(
+                    "⚠️ Silent block detected (attempt %s). AI response: %s",
+                    attempt + 1,
+                    repr(temp_text) if temp_text else "(empty)",
+                )
 
             if function_calls and not temp_text:
                 break

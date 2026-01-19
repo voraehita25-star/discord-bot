@@ -15,6 +15,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 | 🤖 **AI Chat** | Gemini 3 Pro powered conversations with context memory |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
+| 🔗 **URL Reading** | Auto-fetch and summarize web pages & GitHub repos |
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
 | 🛡️ **Reliability** | Circuit breaker, rate limiting, and auto-recovery |
 | 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
@@ -86,7 +87,8 @@ discord-bot/
 ├── utils/              # Utilities
 │   ├── database/       # Database handlers
 │   ├── monitoring/     # Logging & metrics
-│   └── reliability/    # Circuit breaker, rate limiter
+│   ├── reliability/    # Circuit breaker, rate limiter
+│   └── web/            # URL content fetcher
 ├── native_dashboard/   # Tauri desktop app
 ├── tests/              # Test suite (204 tests)
 └── scripts/            # Maintenance & startup scripts
