@@ -149,14 +149,26 @@ fn main() {
                 let window_clone = window.clone();
                 let app_handle = window.app_handle().clone();
                 
-                // Use confirm dialog with callback
-                tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                    .message("กด OK เพื่อปิดโปรแกรม หรือ Cancel เพื่อซ่อนไปที่ System Tray")
-                    .title("ปิดโปรแกรม")
-                    .blocking_show();
-                
-                // For simplicity: always hide on close, user can quit from tray menu
-                let _ = window_clone.hide();
+                // Use confirm dialog - OK = quit, Cancel = hide to tray  
+                tauri::async_runtime::spawn(async move {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
+                    
+                    let confirmed = app_handle
+                        .dialog()
+                        .message("กด Yes เพื่อปิดโปรแกรม หรือ No เพื่อซ่อนไปที่ System Tray")
+                        .title("ปิดโปรแกรม")
+                        .kind(MessageDialogKind::Info)
+                        .buttons(MessageDialogButtons::YesNo)
+                        .blocking_show();
+                    
+                    if confirmed {
+                        // User clicked Yes - quit the app
+                        app_handle.exit(0);
+                    } else {
+                        // User clicked No - hide to tray
+                        let _ = window_clone.hide();
+                    }
+                });
             }
         })
         .invoke_handler(tauri::generate_handler![
