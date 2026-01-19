@@ -1519,7 +1519,7 @@ class Music(commands.Cog):
 
         if self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-        embed.set_footer(text="Music Bot v3.1 Pro • !h for help")
+        embed.set_footer(text="Music Bot v3.2 Pro • !h for help")
 
         await ctx.send(embed=embed)
 
