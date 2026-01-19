@@ -157,7 +157,7 @@ python -m pytest tests/ -v
 
 ---
 
-### tests/ (17 ไฟล์)
+### tests/ (18 ไฟล์)
 | ไฟล์ | คำอธิบาย |
 |------|---------|
 | `__init__.py` | Package init |
@@ -178,6 +178,7 @@ python -m pytest tests/ -v
 | `test_spotify_integration.py` | Spotify integration tests |
 | `test_summarizer.py` | Summarizer tests |
 | `test_tools.py` | Tools tests |
+| `test_url_fetcher.py` | URL content fetcher tests |
 | `test_webhooks.py` | Webhook tests |
 
 ---
@@ -187,6 +188,14 @@ python -m pytest tests/ -v
 |------|---------|
 | `__init__.py` | Package init with re-exports |
 | `localization.py` | Thai/English localization |
+
+---
+
+### utils/web/ (2 ไฟล์)
+| ไฟล์ | คำอธิบาย |
+|------|---------|
+| `__init__.py` | Package init |
+| `url_fetcher.py` | URL content fetching for AI context |
 
 ---
 

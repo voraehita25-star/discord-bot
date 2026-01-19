@@ -304,4 +304,4 @@ cd native_dashboard && cargo build --release
 
 ---
 
-*Last Updated: January 2026 | Version: 3.2.1*
+*Last Updated: January 2026 | Version: 3.2.3*

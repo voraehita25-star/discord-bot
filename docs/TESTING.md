@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: January 19, 2026 | Total: 204 Tests | 17 Test Files | Ruff: 0 issues ✅
+> Last Updated: January 19, 2026 | Total: 218 Tests | 18 Test Files | Ruff: 0 issues ✅
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -26,7 +26,7 @@ python -m pytest tests/test_database.py::TestRateLimiter::test_token_consumption
 python -m pytest tests/ --collect-only -q
 ```
 
-## Test Structure (17 Files, 204 Tests)
+## Test Structure (18 Files, 218 Tests)
 
 ```
 tests/
@@ -48,6 +48,7 @@ tests/
 ├── test_spotify_integration.py # Spotify integration
 ├── test_summarizer.py       # Summarizer tests
 ├── test_tools.py            # Server tools
+├── test_url_fetcher.py      # URL content fetcher (NEW)
 └── test_webhooks.py         # Webhook handling
 ```
 
