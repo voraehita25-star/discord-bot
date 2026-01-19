@@ -25,7 +25,8 @@ URL_PATTERN = re.compile(
 )
 
 # Maximum content length per URL (characters)
-MAX_CONTENT_LENGTH = 8000
+# Reduced from 8000 to prevent context overflow causing Gemini silent blocks
+MAX_CONTENT_LENGTH = 3000
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = 10
@@ -262,8 +263,11 @@ def format_url_content_for_context(fetched_urls: list[tuple[str, str, str | None
 
     for url, title, content in fetched_urls:
         if content:
+            # Truncate very long content to prevent context overflow
+            truncated = content[:MAX_CONTENT_LENGTH] if len(content) > MAX_CONTENT_LENGTH else content
             parts.append(f"\n--- {title} ({url}) ---")
-            parts.append(content)
+            parts.append(truncated)
+            logger.debug("URL content size: %d chars (truncated: %s)", len(content), len(content) > MAX_CONTENT_LENGTH)
         else:
             parts.append(f"\n--- {url} ---")
             parts.append("[Failed to fetch content]")
