@@ -9,6 +9,7 @@ Tauri-based native desktop dashboard for managing Discord Bot.
 - **Log Viewer**: Live logs with filtering (INFO/WARNING/ERROR)
 - **Database Stats**: Messages, Channels, Users, RAG Memories
 - **Quick Actions**: Open Logs/Data folders
+- **System Tray**: Minimize to tray, quick access menu
 
 ## 🏗️ Tech Stack
 
