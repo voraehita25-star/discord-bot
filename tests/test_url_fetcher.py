@@ -1,10 +1,11 @@
 """Unit tests for URL Content Fetcher module."""
 
 import pytest
+
 from utils.web.url_fetcher import (
+    MAX_CONTENT_LENGTH,
     extract_urls,
     format_url_content_for_context,
-    MAX_CONTENT_LENGTH,
 )
 
 
@@ -71,7 +72,7 @@ class TestFormatUrlContentForContext:
         """Test formatting single URL with content."""
         fetched = [("https://example.com", "Example Site", "This is the content")]
         result = format_url_content_for_context(fetched)
-        
+
         assert "[Web Content from URLs]" in result
         assert "Example Site" in result
         assert "https://example.com" in result
@@ -81,7 +82,7 @@ class TestFormatUrlContentForContext:
         """Test formatting URL where fetch failed."""
         fetched = [("https://example.com", "Example Site", None)]
         result = format_url_content_for_context(fetched)
-        
+
         assert "[Failed to fetch content]" in result
 
     def test_format_truncates_long_content(self):
@@ -89,7 +90,7 @@ class TestFormatUrlContentForContext:
         long_content = "x" * (MAX_CONTENT_LENGTH + 1000)
         fetched = [("https://example.com", "Example", long_content)]
         result = format_url_content_for_context(fetched)
-        
+
         # Content should be truncated to MAX_CONTENT_LENGTH
         assert len(result) < len(long_content) + 200  # Some overhead for formatting
 

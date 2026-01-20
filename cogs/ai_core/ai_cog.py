@@ -164,7 +164,7 @@ class AI(commands.Cog):
         while True:
             await asyncio.sleep(60)  # Every 60 seconds
             self.chat_manager.cleanup_pending_requests()
-            
+
             # Run storage cache cleanup every 5 minutes (every 5 iterations)
             cleanup_counter += 1
             if cleanup_counter >= 5:
@@ -267,13 +267,13 @@ class AI(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
         """Clean up resources when a channel is deleted.
-        
+
         This prevents memory leaks from orphaned webhook caches
         and cleans up any channel-specific data.
         """
         # Invalidate webhook cache for deleted channel
         invalidate_webhook_cache_on_channel_delete(channel.id)
-        
+
         # Clean up chat manager data for this channel
         if channel.id in self.chat_manager.chats:
             del self.chat_manager.chats[channel.id]

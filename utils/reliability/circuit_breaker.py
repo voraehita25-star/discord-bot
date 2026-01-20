@@ -57,7 +57,7 @@ class CircuitBreaker:
     @property
     def state(self) -> CircuitState:
         """Get current state, auto-transitioning from OPEN to HALF_OPEN if timeout elapsed.
-        
+
         Thread-safe: Uses lock to prevent race conditions during state transition.
         """
         with self._lock:
@@ -100,7 +100,7 @@ class CircuitBreaker:
                 and (time.time() - self._last_failure_time >= self.reset_timeout)
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
-            
+
             current_state = self._state
 
             if current_state == CircuitState.CLOSED:

@@ -402,7 +402,7 @@ class Database:
 
         Yields:
             Database connection
-            
+
         Note:
             Uses @asynccontextmanager to ensure proper cleanup even if
             the consumer code raises an exception.
@@ -438,7 +438,7 @@ class Database:
                     finally:
                         await conn.close()
                         self._connection_count -= 1
-                        
+
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:

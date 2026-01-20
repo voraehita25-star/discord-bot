@@ -235,7 +235,7 @@ async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     fetched = []
-    for url, result in zip(urls_to_fetch, results):
+    for url, result in zip(urls_to_fetch, results, strict=False):
         if isinstance(result, Exception):
             logger.warning("Failed to fetch %s: %s", url, result)
             fetched.append((url, url, None))

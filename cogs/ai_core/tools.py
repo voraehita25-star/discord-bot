@@ -171,12 +171,12 @@ def _set_cached_webhook(channel_id: int, webhook_name: str, webhook: discord.Web
 
 def _invalidate_webhook_cache(channel_id: int, webhook_name: str | None = None) -> None:
     """Invalidate webhook cache for a channel.
-    
+
     Call this when:
     - A channel is deleted
     - A webhook operation fails with 404
     - Cache needs to be refreshed
-    
+
     Args:
         channel_id: The channel ID to invalidate
         webhook_name: Optional specific webhook name, or None to clear all for channel
@@ -191,9 +191,9 @@ def _invalidate_webhook_cache(channel_id: int, webhook_name: str | None = None) 
 
 def invalidate_webhook_cache_on_channel_delete(channel_id: int) -> None:
     """Public function to invalidate webhook cache when a channel is deleted.
-    
+
     This should be called from an on_guild_channel_delete event listener.
-    
+
     Args:
         channel_id: The ID of the deleted channel
     """

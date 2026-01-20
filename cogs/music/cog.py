@@ -856,7 +856,7 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         channel = ctx.message.author.voice.channel
-        
+
         # Check channel-specific permissions
         permissions = channel.permissions_for(ctx.guild.me)
         if not permissions.connect or not permissions.speak:
@@ -867,7 +867,7 @@ class Music(commands.Cog):
                 color=Colors.ERROR
             )
             return await ctx.send(embed=embed)
-        
+
         if ctx.voice_client is not None:
             await ctx.voice_client.move_to(channel)
             embed = discord.Embed(
@@ -911,7 +911,7 @@ class Music(commands.Cog):
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
             )
             return await ctx.send(embed=embed)
-        
+
         # Check channel-specific permissions before connecting
         channel = ctx.message.author.voice.channel
         permissions = channel.permissions_for(ctx.guild.me)
@@ -1613,7 +1613,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     # ==================== Error Handlers ====================
-    
+
     @join.error
     async def join_error(self, ctx, error):
         """Handle errors for join command."""
@@ -1628,7 +1628,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
         else:
             raise error
-    
+
     @play.error
     async def play_error(self, ctx, error):
         """Handle errors for play command."""

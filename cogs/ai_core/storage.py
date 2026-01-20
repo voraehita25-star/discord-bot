@@ -73,30 +73,30 @@ MAX_CACHE_SIZE = 1000  # Maximum number of channels to cache
 
 def _cleanup_expired_cache() -> int:
     """Remove expired cache entries proactively.
-    
+
     Returns:
         Number of entries removed.
     """
     now = time.time()
     expired_history = [k for k, (t, _) in _history_cache.items() if now - t >= CACHE_TTL]
     expired_metadata = [k for k, (t, _) in _metadata_cache.items() if now - t >= CACHE_TTL]
-    
+
     for k in expired_history:
         _history_cache.pop(k, None)
     for k in expired_metadata:
         _metadata_cache.pop(k, None)
-    
+
     return len(expired_history) + len(expired_metadata)
 
 
 def _enforce_cache_size_limit() -> int:
     """Enforce max cache size by removing oldest entries.
-    
+
     Returns:
         Number of entries removed.
     """
     removed = 0
-    
+
     # Check history cache
     if len(_history_cache) > MAX_CACHE_SIZE:
         # Sort by timestamp (oldest first) and remove excess
@@ -105,7 +105,7 @@ def _enforce_cache_size_limit() -> int:
         for k, _ in sorted_items[:excess]:
             _history_cache.pop(k, None)
             removed += 1
-    
+
     # Check metadata cache
     if len(_metadata_cache) > MAX_CACHE_SIZE:
         sorted_items = sorted(_metadata_cache.items(), key=lambda x: x[1][0])
@@ -113,10 +113,10 @@ def _enforce_cache_size_limit() -> int:
         for k, _ in sorted_items[:excess]:
             _metadata_cache.pop(k, None)
             removed += 1
-    
+
     if removed > 0:
         logging.debug("🧹 Cache size limit enforced: removed %d entries", removed)
-    
+
     return removed
 
 
@@ -134,9 +134,9 @@ def invalidate_all_cache() -> None:
 
 def cleanup_cache() -> int:
     """Perform full cache maintenance: expire old entries and enforce size limit.
-    
+
     Call this periodically (e.g., every 5 minutes) to prevent memory growth.
-    
+
     Returns:
         Total number of entries removed.
     """

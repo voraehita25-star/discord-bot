@@ -208,7 +208,7 @@ class PerformanceTracker:
 
     def start_cleanup_task(self, interval: float = 3600.0) -> None:
         """Start background task to periodically clean up old stats.
-        
+
         Args:
             interval: Cleanup interval in seconds (default: 1 hour)
         """

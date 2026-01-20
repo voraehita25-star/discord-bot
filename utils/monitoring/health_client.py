@@ -24,21 +24,21 @@ HEALTH_API_URL = f"http://{HEALTH_API_HOST}:{HEALTH_API_PORT}"
 class HealthAPIClient:
     """
     Client for Go Health API service.
-    
+
     Usage:
         client = HealthAPIClient()
         await client.push_counter("requests", 1, endpoint="/api")
         await client.push_histogram("response_time", 0.5, endpoint="/api")
         status = await client.get_health()
     """
-    
+
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or HEALTH_API_URL
         self._session: aiohttp.ClientSession | None = None
         self._service_available: bool | None = None
         self._metrics_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
-    
+
     async def connect(self):
         """Initialize the client session."""
         if self._session is None:
@@ -46,7 +46,7 @@ class HealthAPIClient:
                 timeout=aiohttp.ClientTimeout(total=5)
             )
         await self._check_service()
-    
+
     async def close(self):
         """Close the client session."""
         if self._session:
@@ -54,12 +54,12 @@ class HealthAPIClient:
             await self._flush_buffer()
             await self._session.close()
             self._session = None
-    
+
     async def _check_service(self) -> bool:
         """Check if Go service is available."""
         if self._service_available is not None:
             return self._service_available
-        
+
         try:
             async with self._session.get(f"{self.base_url}/health/live") as resp:
                 self._service_available = resp.status == 200
@@ -70,35 +70,35 @@ class HealthAPIClient:
             self._service_available = False
             logger.warning("⚠️ Go Health API not available, metrics disabled")
             return False
-    
+
     async def get_health(self) -> dict[str, Any]:
         """Get health status."""
         if not self._service_available:
             return {"status": "unknown", "error": "service unavailable"}
-        
+
         try:
             async with self._session.get(f"{self.base_url}/health") as resp:
                 return await resp.json()
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    
+
     async def is_ready(self) -> bool:
         """Check if service is ready."""
         if not self._service_available:
             return True  # Assume ready if no health service
-        
+
         try:
             async with self._session.get(f"{self.base_url}/health/ready") as resp:
                 return resp.status == 200
         except Exception as e:
             logger.debug("Health ready check failed: %s", e)
             return True
-    
+
     async def set_service_status(self, name: str, healthy: bool):
         """Update a service's health status."""
         if not self._service_available:
             return
-        
+
         try:
             await self._session.post(
                 f"{self.base_url}/health/service",
@@ -106,51 +106,51 @@ class HealthAPIClient:
             )
         except Exception as e:
             logger.debug("Failed to set service status for %s: %s", name, e)
-    
+
     async def push_counter(self, name: str, value: float = 1, **labels):
         """Push a counter metric."""
         await self._push_metric("counter", name, value, labels)
-    
+
     async def push_histogram(self, name: str, value: float, **labels):
         """Push a histogram metric."""
         await self._push_metric("histogram", name, value, labels)
-    
+
     async def push_gauge(self, name: str, value: float, **labels):
         """Push a gauge metric."""
         await self._push_metric("gauge", name, value, labels)
-    
+
     async def _push_metric(self, metric_type: str, name: str, value: float, labels: dict):
         """Push a metric to the buffer."""
         if not self._service_available:
             return
-        
+
         metric = {
             "type": metric_type,
             "name": name,
             "value": value,
             "labels": labels,
         }
-        
+
         async with self._buffer_lock:
             self._metrics_buffer.append(metric)
-            
+
             # Auto-flush if buffer is large
             if len(self._metrics_buffer) >= 50:
                 await self._flush_buffer_locked()
-    
+
     async def _flush_buffer(self):
         """Flush metrics buffer to service."""
         async with self._buffer_lock:
             await self._flush_buffer_locked()
-    
+
     async def _flush_buffer_locked(self):
         """Flush buffer (must hold lock)."""
         if not self._metrics_buffer or not self._service_available:
             return
-        
+
         metrics = self._metrics_buffer[:]
         self._metrics_buffer.clear()
-        
+
         try:
             await self._session.post(
                 f"{self.base_url}/metrics/batch",
@@ -161,7 +161,7 @@ class HealthAPIClient:
             logger.debug("Failed to flush metrics batch: %s", e)
             if len(metrics) < 100:
                 self._metrics_buffer.extend(metrics)
-    
+
     @property
     def is_available(self) -> bool:
         """Check if service is available."""

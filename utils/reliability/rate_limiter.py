@@ -447,7 +447,7 @@ class RateLimiter:
 
     async def cleanup_old_buckets(self, max_age: float = 3600.0) -> int:
         """Remove buckets that haven't been used in max_age seconds.
-        
+
         Thread-safe: Collects keys to remove first, then removes them
         while avoiding iteration during modification.
         """
