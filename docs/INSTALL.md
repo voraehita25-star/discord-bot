@@ -9,7 +9,7 @@
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
 | **OS** | Windows 10 / Ubuntu 20.04 | Windows 11 / Ubuntu 22.04 |
-| **Python** | 3.11+ | 3.12+ |
+| **Python** | 3.10+ | 3.12+ |
 | **RAM** | 2GB | 4GB |
 | **Storage** | 500MB | 1GB |
 | **FFmpeg** | Required for voice | Required |
@@ -18,7 +18,7 @@
 
 ## 🔧 Prerequisites
 
-### 1. Python 3.11+
+### 1. Python 3.10+
 
 **Windows:**
 ```bash

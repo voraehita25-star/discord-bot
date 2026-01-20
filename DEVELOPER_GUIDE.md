@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 21, 2026  
-> **Version:** 3.3.3  
-> **Python Version:** 3.11+  
+> **Version:** 3.3.4  
+> **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
 > **Total Files:** 108 Python files | 218 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅
 
 ---
 
@@ -653,4 +653,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 21, 2026 - Full Code Audit Complete | 17 Bug Fixes Applied | Race Conditions Fixed | Silent Exceptions Logged*
+*Documentation last updated: January 21, 2026 - Full Code Audit Complete | 17 Bug Fixes Applied | Race Conditions Fixed | Silent Exceptions Logged | Config Cleanup (removed duplicate pytest.ini) | Added pyyaml dependency*

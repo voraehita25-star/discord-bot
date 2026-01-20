@@ -1,6 +1,6 @@
 # Discord Bot - Production Dependencies
-# Generated: 2026-01-12
-# Python 3.11+
+# Generated: 2026-01-21
+# Python 3.10+
 
 # ==================== Core ====================
 discord.py[voice]==2.6.4      # Discord API wrapper with voice support
@@ -28,6 +28,7 @@ aiosqlite==0.22.1             # Async SQLite
 # ==================== Development ====================
 watchdog==6.0.0               # File watcher for hot reload
 colorama==0.4.6               # Windows ANSI color support
+pyyaml>=6.0.1                 # YAML parsing for prompt templates
 
 # ==================== Monitoring (Optional) ====================
 sentry-sdk==2.49.0            # Error tracking (optional)

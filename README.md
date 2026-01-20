@@ -24,7 +24,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.10+
 - Discord Bot Token
 - Google Gemini API Key
 
@@ -235,4 +235,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.3 | **Python:** 3.11+ | **Tests:** 218 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 21, 2026
+**Version:** 3.3.4 | **Python:** 3.10+ | **Tests:** 218 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 21, 2026
