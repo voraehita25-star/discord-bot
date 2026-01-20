@@ -235,4 +235,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.1 | **Python:** 3.11+ | **Tests:** 218 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 20, 2026
+**Version:** 3.3.2 | **Python:** 3.11+ | **Tests:** 218 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 20, 2026

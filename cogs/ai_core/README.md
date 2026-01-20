@@ -1,7 +1,7 @@
 # AI Core Module
 
 > Last Updated: January 20, 2026  
-> Version: 3.3.1
+> Version: 3.3.2
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
@@ -126,4 +126,7 @@ python -m pytest tests/test_webhooks.py -v
 - ✅ Added `guild.me` None check in `cmd_add_role` and `cmd_remove_role`
 - ✅ Changed `storage.py` cache to use `copy.deepcopy()` instead of shallow copy
 - ✅ Replaced magic number `max_history = 2000` with `MAX_HISTORY_ITEMS` constant
+- ✅ Added `MAX_CACHE_SIZE` limit (1000) and proactive cache cleanup in `storage.py`
+- ✅ Added `bot_has_guild_permissions` checks for `join` and `play` commands
+- ✅ Added periodic storage cache cleanup in AI cog (every 5 minutes)
 

@@ -846,6 +846,7 @@ class Music(commands.Cog):
             self.fixing[guild_id] = False
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"])
+    @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def join(self, ctx):
         """เข้าร่วมช่องเสียง."""
         if not ctx.message.author.voice:
@@ -855,6 +856,18 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         channel = ctx.message.author.voice.channel
+        
+        # Check channel-specific permissions
+        permissions = channel.permissions_for(ctx.guild.me)
+        if not permissions.connect or not permissions.speak:
+            embed = discord.Embed(
+                title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
+                description=f"Bot ไม่มีสิทธิ์เข้าหรือพูดในห้อง **{channel.name}**\n"
+                            f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
+                color=Colors.ERROR
+            )
+            return await ctx.send(embed=embed)
+        
         if ctx.voice_client is not None:
             await ctx.voice_client.move_to(channel)
             embed = discord.Embed(
@@ -872,6 +885,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="play", aliases=["p"])
+    @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def play(self, ctx: Context, *, query: str | None = None) -> None:
         """เล่นเพลงจาก YouTube หรือ Spotify."""
         # Validate query parameter
@@ -895,6 +909,18 @@ class Music(commands.Cog):
         if not ctx.message.author.voice:
             embed = discord.Embed(
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
+            )
+            return await ctx.send(embed=embed)
+        
+        # Check channel-specific permissions before connecting
+        channel = ctx.message.author.voice.channel
+        permissions = channel.permissions_for(ctx.guild.me)
+        if not permissions.connect or not permissions.speak:
+            embed = discord.Embed(
+                title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
+                description=f"Bot ไม่มีสิทธิ์เข้าหรือพูดในห้อง **{channel.name}**\n"
+                            f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
+                color=Colors.ERROR
             )
             return await ctx.send(embed=embed)
 
@@ -1585,6 +1611,38 @@ class Music(commands.Cog):
                 color=Colors.INFO,
             )
             await ctx.send(embed=embed)
+
+    # ==================== Error Handlers ====================
+    
+    @join.error
+    async def join_error(self, ctx, error):
+        """Handle errors for join command."""
+        if isinstance(error, commands.BotMissingPermissions):
+            missing = ", ".join(error.missing_permissions)
+            embed = discord.Embed(
+                title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
+                description=f"Bot ต้องมีสิทธิ์ `{missing}` เพื่อเข้าห้องเสียง\n"
+                            f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
+                color=Colors.ERROR
+            )
+            await ctx.send(embed=embed)
+        else:
+            raise error
+    
+    @play.error
+    async def play_error(self, ctx, error):
+        """Handle errors for play command."""
+        if isinstance(error, commands.BotMissingPermissions):
+            missing = ", ".join(error.missing_permissions)
+            embed = discord.Embed(
+                title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
+                description=f"Bot ต้องมีสิทธิ์ `{missing}` เพื่อเล่นเพลง\n"
+                            f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
+                color=Colors.ERROR
+            )
+            await ctx.send(embed=embed)
+        else:
+            raise error
 
     @commands.Cog.listener()
     async def on_ready(self):

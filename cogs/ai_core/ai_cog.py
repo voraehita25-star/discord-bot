@@ -28,6 +28,7 @@ from .data.constants import (
 from .logic import ChatManager
 from .memory.rag import rag_system
 from .storage import (
+    cleanup_cache as cleanup_storage_cache,
     copy_history,
     delete_history,
     get_all_channel_ids,
@@ -158,10 +159,19 @@ class AI(commands.Cog):
         logging.info("🧠 AI Cog unloaded - all sessions saved")
 
     async def _cleanup_pending_requests_loop(self) -> None:
-        """Periodic cleanup of pending requests to prevent memory leaks."""
+        """Periodic cleanup of pending requests and caches to prevent memory leaks."""
+        cleanup_counter = 0
         while True:
             await asyncio.sleep(60)  # Every 60 seconds
             self.chat_manager.cleanup_pending_requests()
+            
+            # Run storage cache cleanup every 5 minutes (every 5 iterations)
+            cleanup_counter += 1
+            if cleanup_counter >= 5:
+                cleanup_counter = 0
+                removed = cleanup_storage_cache()
+                if removed > 0:
+                    logging.debug("🧹 Storage cache cleanup: removed %d entries", removed)
 
     @commands.hybrid_command(name="chat", aliases=["ask"])
     @commands.cooldown(1, 3, commands.BucketType.user)  # 1 use per 3 seconds per user

@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 20, 2026  
-> **Version:** 3.3.1  
+> **Version:** 3.3.2  
 > **Python Version:** 3.11+  
 > **Framework:** discord.py 2.x  
 > **Total Files:** 108 Python files | 218 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 8 bug fixes applied ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 11 bug fixes applied ✅
 
 ---
 
@@ -344,6 +344,8 @@ CREATOR_ID=your_discord_id
 | `STREAMING_TIMEOUT_INITIAL` | 30s | Initial chunk timeout |
 | `MAX_HISTORY_ITEMS` | 2000 | Max items in chat history |
 | `PERFORMANCE_SAMPLES_MAX` | 100 | Max samples per metric |
+| `MAX_CACHE_SIZE` | 1000 | Max channels in history/metadata cache |
+| `CACHE_TTL` | 300s | Cache entry time-to-live |
 
 ### Persona & Roleplay Files
 
@@ -599,6 +601,8 @@ async def mycommand(self, ctx):
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
 6. **Webhook Cache:** Auto-cleared when channels are deleted via `on_guild_channel_delete` listener
 7. **History Cache:** Uses `copy.deepcopy()` to prevent mutation of cached nested objects
+8. **Cache Size Limit:** Max 1000 channels cached, oldest entries evicted when exceeded
+9. **Permission Checks:** Music commands require `connect` and `speak` permissions in target channel
 
 ---
 
@@ -614,6 +618,9 @@ async def mycommand(self, ctx):
 | Missing `guild.me` None check | Added null check in `cmd_add_role`/`cmd_remove_role` | `tools.py` |
 | Shallow copy in cache return | Changed to `copy.deepcopy()` | `storage.py` |
 | Magic number `max_history = 2000` | Uses `MAX_HISTORY_ITEMS` constant | `logic.py` |
+| Cache memory can grow unbounded | Added `MAX_CACHE_SIZE=1000` and cleanup functions | `storage.py` |
+| Missing permission check in music | Added `@bot_has_guild_permissions(connect, speak)` | `cog.py` |
+| No periodic cache cleanup | Added cleanup every 5 min in AI cog | `ai_cog.py` |
 
 ---
 
@@ -625,4 +632,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 20, 2026 - Code Audit Complete | 8 Bug Fixes Applied | Thread-Safety Verified*
+*Documentation last updated: January 20, 2026 - Code Audit Complete | 11 Bug Fixes Applied | Thread-Safety Verified | Cache Management Added*
