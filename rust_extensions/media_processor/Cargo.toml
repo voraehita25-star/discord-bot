@@ -1,0 +1,18 @@
+[package]
+name = "media_processor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "media_processor"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+base64 = "0.22"
