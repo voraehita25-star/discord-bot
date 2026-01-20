@@ -1,10 +1,11 @@
 # AI Core Module
 
-> Last Updated: January 20, 2026
+> Last Updated: January 20, 2026  
+> Version: 3.3.0
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
-## Structure (36 ไฟล์)
+## Structure (37 ไฟล์)
 
 ```
 cogs/ai_core/
@@ -25,9 +26,10 @@ cogs/ai_core/
 │   ├── faust_data.py  # Faust persona instructions
 │   └── roleplay_data.py  # RP server lore & characters
 │
-├── memory/            # 🧠 Memory systems (10 files)
+├── memory/            # 🧠 Memory systems (11 files)
 │   ├── __init__.py
 │   ├── rag.py         # FAISS-based RAG system
+│   ├── rag_rust.py    # 🦀 Rust RAG wrapper (auto-fallback)
 │   ├── history_manager.py # Smart history trimming
 │   ├── summarizer.py  # Conversation summarization
 │   ├── entity_memory.py   # Character/entity facts
@@ -58,10 +60,32 @@ cogs/ai_core/
 | `AI` | `ai_cog.py` | Main Discord cog - commands & events |
 | `ChatManager` | `logic.py` | AI handler - sessions, API, streaming (uses `asyncio.wait_for` for lock timeout) |
 | `MemorySystem` | `memory/rag.py` | FAISS-based long-term memory |
+| `RagEngineWrapper` | `memory/rag_rust.py` | 🦀 Rust RAG with Python fallback (10-25x faster) |
 | `HistoryManager` | `memory/history_manager.py` | Smart context trimming |
 | `EntityMemoryManager` | `memory/entity_memory.py` | Character facts storage |
 | `AICache` | `cache/ai_cache.py` | Response caching |
 | `AIAnalytics` | `cache/analytics.py` | Usage metrics |
+
+## Native Extensions
+
+AI Core รองรับ Rust extensions สำหรับ performance:
+
+```python
+# Auto-selects Rust if available, else Python
+from cogs.ai_core.memory.rag_rust import RagEngine
+
+engine = RagEngine(dimension=384, similarity_threshold=0.7)
+engine.add(entry)  # SIMD-optimized vector ops
+results = engine.search(query_embedding, top_k=5)
+
+# Check backend
+print(f"Using Rust: {engine.is_rust}")  # True if Rust loaded
+```
+
+Build Rust extension:
+```powershell
+.\scripts\build_rust.ps1 -Release
+```
 
 ## Usage
 

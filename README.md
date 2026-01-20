@@ -19,6 +19,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
 | 🛡️ **Reliability** | Circuit breaker, rate limiting, and auto-recovery |
 | 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
+| 🦀 **Native Extensions** | Optional Rust (RAG, media) & Go (URL fetch, metrics) for 5-25x speedup |
 
 ## 🚀 Quick Start
 
@@ -77,21 +78,25 @@ discord-bot/
 │   ├── ai_core/        # AI chat system
 │   │   ├── ai_cog.py       # Main AI cog
 │   │   ├── logic.py        # Core AI logic
-│   │   ├── memory/         # Memory systems
+│   │   ├── memory/         # Memory systems (incl. Rust RAG)
 │   │   └── data/           # Prompts & constants
 │   ├── music/          # Music player module
-│   │   ├── cog.py          # Main music cog
-│   │   ├── queue.py        # Queue management
-│   │   └── utils.py        # Colors, emojis
 │   └── spotify_handler.py
 ├── utils/              # Utilities
 │   ├── database/       # Database handlers
-│   ├── monitoring/     # Logging & metrics
+│   ├── media/          # Media processing (Rust backend)
+│   ├── monitoring/     # Logging, metrics & Go Health API
 │   ├── reliability/    # Circuit breaker, rate limiter
-│   └── web/            # URL content fetcher
+│   └── web/            # URL fetcher (Go backend)
+├── rust_extensions/    # 🦀 High-performance Rust modules
+│   ├── rag_engine/     # SIMD vector similarity search
+│   └── media_processor/# Fast image processing
+├── go_services/        # 🐹 Go microservices
+│   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
+│   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
 ├── tests/              # Test suite (218 tests)
-└── scripts/            # Maintenance & startup scripts
+└── scripts/            # Build & maintenance scripts
 ```
 
 ## 🧪 Testing
@@ -128,6 +133,40 @@ The bot includes built-in monitoring capabilities:
 - **Token Tracking** - Per-user/channel token usage metrics
 - **Performance Metrics** - Response times with percentiles
 - **Sentry Integration** - Error tracking (optional)
+- **Go Health Service** - Prometheus-compatible metrics (optional)
+
+## 🦀 Native Extensions (Optional)
+
+High-performance extensions for CPU/IO-intensive operations. **Fully optional** - bot works without them using Python fallbacks.
+
+### Rust Extensions
+
+| Component | Speedup | Features |
+|-----------|---------|----------|
+| **RAG Engine** | 10-25x | SIMD cosine similarity, parallel search |
+| **Media Processor** | 5-6x | Lanczos resize, GIF detection |
+
+### Go Microservices
+
+| Service | Port | Features |
+|---------|------|----------|
+| **URL Fetcher** | 8081 | Concurrent fetching, rate limiting |
+| **Health API** | 8082 | Prometheus metrics, K8s probes |
+
+### Building Native Extensions
+
+```powershell
+# Prerequisites: Rust 1.75+, Go 1.22+
+
+# Build everything
+.\scripts\build_all.ps1 -Release
+
+# Or separately
+.\scripts\build_rust.ps1 -Release
+.\scripts\build_go.ps1 -Release -Run
+```
+
+See [rust_extensions/README.md](rust_extensions/README.md) and [go_services/README.md](go_services/README.md) for details.
 
 ## 🖥️ Native Dashboard
 
@@ -193,4 +232,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.2.4 | **Python:** 3.11+ | **Tests:** 218 passing ✅
+**Version:** 3.3.0 | **Python:** 3.11+ | **Tests:** 218 passing ✅ | **Native Extensions:** Rust + Go

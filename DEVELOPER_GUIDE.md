@@ -1,9 +1,11 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 20, 2026  
+> **Version:** 3.3.0  
 > **Python Version:** 3.11+  
 > **Framework:** discord.py 2.x  
 > **Total Files:** 108 Python files | 218 Tests  
+> **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
 > **Code Quality:** All imports verified ✅ | Circular imports fixed ✅ | Thread-safety audited ✅
 
 ---
@@ -184,9 +186,78 @@ BOT/
 │   └── icons/
 │       └── icon.ico          # App icon
 │
+├── rust_extensions/          # 🦀 Rust Native Extensions
+│   ├── Cargo.toml            # Workspace config
+│   ├── rag_engine/           # SIMD vector similarity
+│   │   ├── src/lib.rs        # PyO3 bindings
+│   │   ├── src/cosine.rs     # SIMD cosine similarity
+│   │   └── src/storage.rs    # Memory-mapped storage
+│   └── media_processor/      # Image processing
+│       ├── src/lib.rs        # PyO3 bindings
+│       ├── src/resize.rs     # Lanczos resizing
+│       └── src/gif.rs        # GIF detection
+│
+├── go_services/              # 🐹 Go Microservices
+│   ├── go.mod                # Go module
+│   ├── url_fetcher/          # URL fetching service (port 8081)
+│   │   └── main.go           # Rate limiting, HTML extraction
+│   └── health_api/           # Health monitoring (port 8082)
+│       └── main.go           # Prometheus metrics, health probes
+│
 └── data/                     # 💾 Runtime Data
     ├── bot_database.db       # SQLite database
     └── db_export/            # JSON exports for backup
+```
+
+---
+
+## 🦀 Native Extensions
+
+### Overview
+
+Bot มี native extensions ที่เขียนด้วย **Rust** และ **Go** สำหรับ operations ที่ใช้ CPU/IO เยอะ
+Extensions เหล่านี้เป็น **optional** - bot ทำงานได้ปกติด้วย Python fallback
+
+### Rust Extensions (PyO3)
+
+| Module | Location | Performance |
+|--------|----------|-------------|
+| RAG Engine | `rust_extensions/rag_engine/` | 10-25x faster cosine similarity |
+| Media Processor | `rust_extensions/media_processor/` | 5-6x faster image resize |
+
+**Build Rust:**
+```powershell
+.\scripts\build_rust.ps1 -Release
+```
+
+### Go Microservices
+
+| Service | Port | Features |
+|---------|------|----------|
+| URL Fetcher | 8081 | Concurrent fetch, rate limit (20 req/s) |
+| Health API | 8082 | Prometheus metrics, K8s probes |
+
+**Build & Run Go:**
+```powershell
+.\scripts\build_go.ps1 -Release -Run
+```
+
+### Python Wrappers
+
+Python wrappers จะ auto-detect และใช้ native extensions ถ้ามี:
+
+```python
+# RAG - uses Rust if available, else Python
+from cogs.ai_core.memory.rag_rust import RagEngine
+
+# Media - uses Rust if available, else PIL
+from utils.media.media_rust import MediaProcessor
+
+# URL Fetch - uses Go service if running, else aiohttp
+from utils.web.url_fetcher_client import fetch_url
+
+# Health - uses Go service if running
+from utils.monitoring.health_client import push_request_metric
 ```
 
 ---
