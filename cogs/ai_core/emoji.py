@@ -6,6 +6,7 @@ Handles Discord custom emoji extraction, conversion, and fetching.
 from __future__ import annotations
 
 import io
+import logging
 import re
 
 from PIL import Image
