@@ -72,7 +72,7 @@ async def fetch_emoji_images(emojis: list[dict]) -> list[tuple[str, Image.Image]
                         if img.mode in ("RGBA", "P"):
                             img = img.convert("RGB")
                         results.append((emoji["name"], img))
-            except Exception:
-                pass  # Skip failed emoji fetches
+            except Exception as e:
+                logging.debug("Failed to fetch emoji %s: %s", emoji.get("name", "unknown"), e)
 
     return results

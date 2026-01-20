@@ -144,8 +144,8 @@ class BotHealthData:
                 ai_cog = self.bot.cogs.get("AI")
                 if ai_cog and hasattr(ai_cog, "chat_manager"):
                     return ai_cog.chat_manager.get_performance_stats()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug("Failed to get AI performance stats: %s", e)
         return {"error": "AI cog not available or no stats collected"}
 
 

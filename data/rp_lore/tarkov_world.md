@@ -1,6 +1,10 @@
 # Tarkov RP - World Lore & Data
 # สำหรับใช้เป็น context ให้ AI Bot
 
+> ⚠️ **หมายเหตุ:** ไฟล์นี้ยังไม่ได้ถูกนำไปใช้งานจริงในระบบ  
+> เขียนเก็บไว้เป็น draft สำหรับอนาคต  
+> หากต้องการใช้งาน ต้อง copy เนื้อหาไปใส่ใน `cogs/ai_core/data/roleplay_data.py` → `WORLD_LORE`
+
 ---
 
 ## 🌍 World Setting

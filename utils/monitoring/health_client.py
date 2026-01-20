@@ -90,7 +90,8 @@ class HealthAPIClient:
         try:
             async with self._session.get(f"{self.base_url}/health/ready") as resp:
                 return resp.status == 200
-        except Exception:
+        except Exception as e:
+            logger.debug("Health ready check failed: %s", e)
             return True
     
     async def set_service_status(self, name: str, healthy: bool):
@@ -103,8 +104,8 @@ class HealthAPIClient:
                 f"{self.base_url}/health/service",
                 json={"name": name, "healthy": healthy}
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to set service status for %s: %s", name, e)
     
     async def push_counter(self, name: str, value: float = 1, **labels):
         """Push a counter metric."""
@@ -155,8 +156,9 @@ class HealthAPIClient:
                 f"{self.base_url}/metrics/batch",
                 json=metrics
             )
-        except Exception:
+        except Exception as e:
             # Re-add to buffer on failure (limited)
+            logger.debug("Failed to flush metrics batch: %s", e)
             if len(metrics) < 100:
                 self._metrics_buffer.extend(metrics)
     

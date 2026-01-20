@@ -592,16 +592,14 @@ class ChatManager(SessionMixin, ResponseMixin):
             self._pending_requests.pop(request_key, None)
             return
 
-        # Create lock for this channel if not exists
-        if channel_id not in self.processing_locks:
-            self.processing_locks[channel_id] = asyncio.Lock()
+        # Create lock for this channel if not exists (atomic operation to prevent race condition)
+        lock = self.processing_locks.setdefault(channel_id, asyncio.Lock())
 
-        # Initialize pending messages list for this channel
-        if channel_id not in self.pending_messages:
-            self.pending_messages[channel_id] = []
+        # Initialize pending messages list for this channel (atomic operation)
+        self.pending_messages.setdefault(channel_id, [])
 
         # If already processing, queue this message and signal cancellation
-        if self.processing_locks[channel_id].locked():
+        if lock.locked():
             # Add to pending queue
             self.pending_messages[channel_id].append(
                 {
@@ -623,7 +621,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Use asyncio.wait_for for lock acquisition with timeout to prevent deadlock
         try:
             await asyncio.wait_for(
-                self.processing_locks[channel_id].acquire(),
+                lock.acquire(),
                 timeout=LOCK_TIMEOUT
             )
         except asyncio.TimeoutError:
@@ -1214,9 +1212,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Cleanup request deduplication key
                     self._pending_requests.pop(request_key, None)
         finally:
-            # Always release the lock properly
-            if self.processing_locks[channel_id].locked():
-                self.processing_locks[channel_id].release()
+            # Always release the lock properly (use 'lock' variable from setdefault)
+            if lock.locked():
+                lock.release()
             # Clear lock time tracking
             self._lock_times.pop(channel_id, None)
 

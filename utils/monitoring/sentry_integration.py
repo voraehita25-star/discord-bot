@@ -119,7 +119,8 @@ def capture_exception(
 
             return sentry_sdk.capture_exception(error)
 
-    except Exception:
+    except Exception as e:
+        logging.debug("Failed to capture exception to Sentry: %s", e)
         return None
 
 
@@ -147,7 +148,8 @@ def capture_message(
 
             return sentry_sdk.capture_message(message, level=level)
 
-    except Exception:
+    except Exception as e:
+        logging.debug("Failed to capture message to Sentry: %s", e)
         return None
 
 

@@ -213,8 +213,8 @@ class FAISSIndex:
                 try:
                     if temp_file.exists():
                         temp_file.unlink()
-                except Exception:
-                    pass
+                except Exception as cleanup_error:
+                    logging.debug("Failed to cleanup temp file %s: %s", temp_file, cleanup_error)
             return False
 
     def load_from_disk(self) -> bool:

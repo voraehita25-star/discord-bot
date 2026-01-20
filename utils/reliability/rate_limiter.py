@@ -266,10 +266,9 @@ class RateLimiter:
         config = self._configs[config_name]
         key = self._get_bucket_key(config_name, config, user_id, channel_id, guild_id)
 
-        # Use per-bucket lock - create if doesn't exist
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        async with self._locks[key]:
+        # Use per-bucket lock - atomic get-or-create to prevent race condition
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
             bucket = self._get_or_create_bucket(key, config)
 
             # Apply adaptive multiplier for adaptive configs
@@ -413,7 +412,8 @@ class RateLimiter:
         try:
             state = gemini_circuit.state.name
             return self.ADAPTIVE_MULTIPLIERS.get(state, 1.0)
-        except Exception:
+        except Exception as e:
+            logging.debug("Failed to get circuit breaker state: %s", e)
             return 1.0
 
     def update_all_adaptive_limits(self) -> None:

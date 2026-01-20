@@ -132,7 +132,8 @@ class MediaProcessorWrapper:
                 return True
             except EOFError:
                 return False
-        except Exception:
+        except Exception as e:
+            logging.debug("PIL animated GIF check failed: %s", e)
             return False
     
     def get_dimensions(self, data: bytes) -> tuple[int, int]:

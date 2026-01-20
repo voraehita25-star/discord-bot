@@ -59,8 +59,9 @@ class URLFetcherClient:
                 if self._service_available:
                     logger.info("✅ Go URL Fetcher service available")
                 return self._service_available
-        except Exception:
+        except Exception as e:
             self._service_available = False
+            logger.debug("Go URL Fetcher health check failed: %s", e)
             logger.warning("⚠️ Go URL Fetcher not available, using aiohttp fallback")
             return False
     

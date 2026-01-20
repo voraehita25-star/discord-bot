@@ -301,7 +301,8 @@ def is_animated_gif(image_data: bytes) -> bool:
             return True
         except EOFError:
             return False  # Only one frame = static GIF
-    except Exception:
+    except Exception as e:
+        logging.debug("Failed to check if GIF is animated: %s", e)
         return False
 
 
