@@ -1,7 +1,18 @@
 """
 AI Core Package
 Core AI functionality for the Discord Bot.
-Reorganized into subdirectories for better organization.
+
+Reorganized into subdirectories (v3.3.7):
+- api/       - Gemini API handlers
+- cache/     - Caching and analytics
+- commands/  - Debug, memory, server commands
+- core/      - Performance, message queue, context building
+- data/      - Constants and configuration
+- memory/    - RAG, entity memory, history
+- processing/ - Guardrails, intent detection
+- prompts/   - System prompts
+- response/  - Response sending, webhooks
+- tools/     - Tool definitions and execution
 """
 
 # Main AI Cog
@@ -20,6 +31,22 @@ from .memory.summarizer import summarizer
 from .processing.guardrails import validate_response
 from .processing.intent_detector import detect_intent
 from .processing.prompt_manager import prompt_manager
+
+# Modular components (via backward compatible re-exports)
+from .context_builder import AIContext, ContextBuilder, context_builder
+from .message_queue import MessageQueue, PendingMessage, message_queue
+from .performance import (
+    PerformanceTracker, RequestDeduplicator,
+    performance_tracker, request_deduplicator
+)
+from .response_sender import ResponseSender, SendResult, response_sender
+
+# New subdirectory modules
+from .api import build_api_config, call_gemini_api
+from .commands import DebugCommands, MemoryCommands, ServerCommands
+from .core import PERFORMANCE_SAMPLES_MAX
+from .response import ResponseMixin
+from .tools import execute_tool_call, send_as_webhook, get_tool_definitions
 
 __all__ = [
     "AI",
@@ -40,6 +67,31 @@ __all__ = [
     "rag_system",
     "summarizer",
     "validate_response",
+    # Modular components
+    "AIContext",
+    "ContextBuilder",
+    "context_builder",
+    "MessageQueue",
+    "PendingMessage",
+    "message_queue",
+    "PerformanceTracker",
+    "RequestDeduplicator",
+    "performance_tracker",
+    "request_deduplicator",
+    "ResponseSender",
+    "SendResult",
+    "response_sender",
+    # New subdirectory exports
+    "build_api_config",
+    "call_gemini_api",
+    "DebugCommands",
+    "MemoryCommands",
+    "ServerCommands",
+    "PERFORMANCE_SAMPLES_MAX",
+    "ResponseMixin",
+    "execute_tool_call",
+    "send_as_webhook",
+    "get_tool_definitions",
 ]
 
 

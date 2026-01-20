@@ -183,8 +183,10 @@ class EntityMemoryManager:
             async with db_manager.get_connection() as conn:
                 cursor = await conn.execute(
                     """
-                    INSERT INTO entity_memories
-                    (name, entity_type, facts, channel_id, guild_id, confidence, source, created_at, updated_at)
+                    INSERT INTO entity_memories (
+                        name, entity_type, facts, channel_id, guild_id,
+                        confidence, source, created_at, updated_at
+                    )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name, channel_id, guild_id) DO UPDATE SET
                         facts = excluded.facts,

@@ -75,10 +75,17 @@ discord-bot/
 ├── bot.py              # Entry point
 ├── config.py           # Configuration
 ├── cogs/               # Discord extensions
-│   ├── ai_core/        # AI chat system
+│   ├── ai_core/        # AI chat system (reorganized v3.3.8)
 │   │   ├── ai_cog.py       # Main AI cog
 │   │   ├── logic.py        # Core AI logic
-│   │   ├── memory/         # Memory systems (incl. Rust RAG)
+│   │   ├── api/            # 🔌 Gemini API integration
+│   │   ├── core/           # 🏗️ Performance, queue, context
+│   │   ├── response/       # 📤 Response handling & webhooks
+│   │   ├── commands/       # 🔧 Debug, memory, server commands
+│   │   ├── tools/          # ⚡ AI function calling
+│   │   ├── memory/         # 🧠 Memory systems (incl. Rust RAG)
+│   │   ├── processing/     # 🔄 Guardrails, intent detection
+│   │   ├── cache/          # 📊 Caching & analytics
 │   │   └── data/           # Prompts & constants
 │   ├── music/          # Music player module
 │   └── spotify_handler.py
@@ -95,7 +102,7 @@ discord-bot/
 │   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
 │   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (285 tests)
+├── tests/              # Test suite (362 tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -235,4 +242,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.5 | **Python:** 3.10+ | **Tests:** 285 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 21, 2026
+**Version:** 3.3.8 | **Python:** 3.10+ | **Tests:** 362 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 21, 2026

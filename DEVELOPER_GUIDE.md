@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 21, 2026  
-> **Version:** 3.3.5  
+> **Version:** 3.3.8  
 > **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 118 Python files | 285 Tests  
+> **Total Files:** 125 Python files | 362 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅ | ai_core reorganized ✅
 
 ---
 
@@ -44,22 +44,61 @@ BOT/
 │   │   ├── utils.py          # Colors, emojis, formatting
 │   │   └── views.py          # Discord UI components
 │   │
-│   └── ai_core/              # 🧠 AI Core Module
+│   └── ai_core/              # 🧠 AI Core Module (Reorganized v3.3.8)
 │       ├── __init__.py
 │       ├── ai_cog.py         # ⭐ Main AI cog (commands & events)
 │       ├── logic.py          # ⭐ ChatManager - core AI logic
 │       ├── storage.py        # History persistence (SQLite)
-│       ├── tools.py          # 🔌 Facade module (re-exports submodules)
 │       ├── sanitization.py   # 🛡️ Input sanitization
-│       ├── webhook_cache.py  # 📦 Webhook caching
-│       ├── server_commands.py # 🔧 Server management commands
-│       ├── tool_definitions.py # 📋 Gemini API tool definitions
-│       ├── tool_executor.py  # ⚡ Tool execution logic
 │       ├── emoji.py          # Discord emoji processing
 │       ├── voice.py          # Voice channel management
 │       ├── fallback_responses.py  # Fallback when AI fails
-│       ├── debug_commands.py # Debug/admin commands
-│       ├── memory_commands.py # User memory commands
+│       ├── session_mixin.py  # Session management mixin
+│       ├── content_processor.py # Content processing
+│       ├── media_processor.py # Media processing
+│       │
+│       ├── # Re-export files (backward compat)
+│       ├── tools.py → tools/
+│       ├── api_handler.py → api/
+│       ├── performance.py → core/
+│       ├── message_queue.py → core/
+│       ├── context_builder.py → core/
+│       ├── response_sender.py → response/
+│       ├── response_mixin.py → response/
+│       ├── webhook_cache.py → response/
+│       ├── debug_commands.py → commands/
+│       ├── memory_commands.py → commands/
+│       ├── server_commands.py → commands/
+│       ├── tool_definitions.py → tools/
+│       ├── tool_executor.py → tools/
+│       │
+│       ├── api/              # 🔌 Gemini API Integration
+│       │   ├── __init__.py
+│       │   └── api_handler.py # API calls, streaming, retry
+│       │
+│       ├── core/             # 🏗️ Core Components
+│       │   ├── __init__.py
+│       │   ├── performance.py # 📊 Performance tracking
+│       │   ├── message_queue.py # 📬 Message queue
+│       │   └── context_builder.py # AI context building
+│       │
+│       ├── response/         # 📤 Response Handling
+│       │   ├── __init__.py
+│       │   ├── response_sender.py # Webhook sending, chunking
+│       │   ├── response_mixin.py  # Response processing mixin
+│       │   └── webhook_cache.py   # Webhook caching
+│       │
+│       ├── commands/         # 🔧 Command Modules
+│       │   ├── __init__.py
+│       │   ├── debug_commands.py  # Debug/admin commands
+│       │   ├── memory_commands.py # User memory commands
+│       │   └── server_commands.py # Server management
+│       │
+│       ├── tools/            # ⚡ AI Function Calling
+│       │   ├── __init__.py
+│       │   ├── tools.py      # Facade module
+│       │   ├── tool_definitions.py # Gemini tool definitions
+│       │   └── tool_executor.py   # Tool execution
 │       │
 │       ├── data/             # Static data & prompts
 │       │   ├── __init__.py   # Auto-fallback to example files
@@ -69,10 +108,10 @@ BOT/
 │       │   ├── roleplay_data_example.py # 📝 Example RP template
 │       │   └── roleplay_data.py         # Your custom RP data (gitignored)
 │       │
-
 │       ├── memory/           # 🧠 Memory Systems
 │       │   ├── __init__.py
 │       │   ├── rag.py        # FAISS-based RAG system
+│       │   ├── rag_rust.py   # 🦀 Rust RAG wrapper
 │       │   ├── history_manager.py # Smart history trimming
 │       │   ├── summarizer.py # Conversation summarization
 │       │   ├── entity_memory.py # Character/entity facts
@@ -152,7 +191,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (285 tests)
+├── tests/                    # 🧪 Test Suite (362 tests)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -661,6 +700,16 @@ async def mycommand(self, ctx):
 | **CI/CD improvements** | Added Python 3.10, coverage, Codecov, Dependabot | `.github/workflows/ci.yml`, `.github/dependabot.yml` |
 | **Dependency updates** | google-genai 1.59.0, aiohttp 3.13.3, certifi | `requirements.txt` |
 
+### Phase 4 - ai_core Reorganization (January 21, 2026)
+
+| Change | Description | Files |
+|--------|-------------|-------|
+| **logic.py refactoring** | Split into 4 modular components | `performance.py`, `message_queue.py`, `context_builder.py`, `response_sender.py` |
+| **ai_core reorganization** | Created 5 new subdirectories | `api/`, `core/`, `response/`, `commands/`, `tools/` |
+| **Backward compatibility** | Created 14 re-export files | All moved modules have root-level re-exports |
+| **E501 lint fixes** | Fixed 16 line-too-long errors | `api_handler.py`, `debug_commands.py`, `entity_memory.py`, `tool_definitions.py`, `tool_executor.py` |
+| **Test count** | Increased from 285 to 362 | New tests for modular components |
+
 ---
 
 ## 📚 Further Reading
@@ -671,4 +720,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 21, 2026 - Version 3.3.5 | tools.py refactored into 5 modules | 67 new tests (285 total) | CI/CD improved with Codecov & Dependabot*
+*Documentation last updated: January 21, 2026 - Version 3.3.8 | tools.py refactored into 5 modules | ai_core reorganized into subdirectories | 362 tests | CI/CD improved with Codecov & Dependabot*

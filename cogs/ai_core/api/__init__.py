@@ -1,9 +1,8 @@
 """
-Backward compatibility re-export for api_handler module.
-This file re-exports from api/ subdirectory.
+API Module - Gemini API handler, streaming, and configuration.
 """
 
-from .api.api_handler import (
+from .api_handler import (
     build_api_config,
     call_gemini_api,
     call_gemini_api_streaming,

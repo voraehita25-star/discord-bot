@@ -10,20 +10,16 @@ import asyncio
 import base64
 import contextlib
 import datetime
-import io
 import logging
 import re
 import time
-from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from google import genai
-from google.genai import types
 from PIL import Image
 
-# Import API handler module
+# Import API handler module (via backward compatible re-export)
 from .api_handler import (
     build_api_config,
     call_gemini_api,
@@ -40,22 +36,19 @@ from .data.constants import (
     GUILD_ID_RP,
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
-    PERFORMANCE_SAMPLES_MAX,
 )
-from .data.faust_data import (
-    ESCALATION_FRAMINGS,
-    FAUST_DM_INSTRUCTION,
-    FAUST_INSTRUCTION,
-)
-from .data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_CHARACTERS
+from .data.roleplay_data import SERVER_CHARACTERS
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
+
+# Import new modular components (v3.3.6 - via backward compatible re-exports)
+from .performance import PerformanceTracker, RequestDeduplicator
+from .message_queue import MessageQueue
+from .response_sender import ResponseSender
 
 # Import media processing module
 from .media_processor import (
-    IMAGEIO_AVAILABLE,
     convert_gif_to_video,
     is_animated_gif,
-    load_cached_image_bytes as _load_cached_image_bytes,
     load_character_image,
     pil_to_inline_data,
     prepare_user_avatar,
@@ -128,28 +121,28 @@ except ImportError:
 
 
 try:
-    from .processing.intent_detector import Intent, detect_intent
+    from .processing.intent_detector import Intent, detect_intent  # noqa: F401
 
     INTENT_DETECTOR_AVAILABLE = True
 except ImportError:
     INTENT_DETECTOR_AVAILABLE = False
 
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction
+    from .cache.analytics import get_ai_stats, log_ai_interaction  # noqa: F401
 
     ANALYTICS_AVAILABLE = True
 except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher
+    from .cache.ai_cache import ai_cache, context_hasher  # noqa: F401
 
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 try:
-    from .memory.history_manager import history_manager
+    from .memory.history_manager import history_manager  # noqa: F401
 
     HISTORY_MANAGER_AVAILABLE = True
 except ImportError:
@@ -304,29 +297,24 @@ class ChatManager(SessionMixin, ResponseMixin):
         self.target_model: str | None = None
         self.processing_locks: dict[int, asyncio.Lock] = {}  # Channel ID -> Lock
 
-        # Message queue system for handling multiple messages
-        self.pending_messages: dict[int, list[dict]] = {}  # Channel ID -> List of pending messages
-        self.cancel_flags: dict[int, bool] = {}  # Channel ID -> Should cancel current processing
-        self.current_typing_msg: dict[int, Any] = {}  # Channel ID -> Current "typing" message
-
         # Streaming mode settings
         self.streaming_enabled: dict[int, bool] = {}  # Channel ID -> Streaming enabled
 
-        # Request deduplication - prevent double-submit (with timestamps for age-based cleanup)
-        self._pending_requests: dict[str, float] = {}  # request_key -> timestamp
+        # Current typing message tracking
+        self.current_typing_msg: dict[int, Any] = {}  # Channel ID -> Current "typing" message
 
-        # Lock acquisition time tracking - for timeout detection
-        # Using separate dict instead of adding attributes to asyncio.Lock
-        self._lock_times: dict[int, float] = {}  # channel_id -> lock_acquisition_time
+        # Use new modular components (v3.3.6)
+        self._message_queue = MessageQueue()
+        self._performance = PerformanceTracker()
+        self._deduplicator = RequestDeduplicator()
+        self._response_sender = ResponseSender()
 
-        # Performance metrics for each step
-        self._performance_metrics: dict[str, list[float]] = {
-            "rag_search": [],
-            "api_call": [],
-            "streaming": [],
-            "post_process": [],
-            "total": [],
-        }
+        # Legacy aliases for backward compatibility
+        self.pending_messages = self._message_queue.pending_messages
+        self.cancel_flags = self._message_queue.cancel_flags
+        self._pending_requests = self._deduplicator._pending_requests
+        self._lock_times = self._message_queue._lock_times
+        self._performance_metrics = self._performance._metrics
 
         self.setup_ai()
 
@@ -349,30 +337,20 @@ class ChatManager(SessionMixin, ResponseMixin):
             self.client = None
 
     def get_performance_stats(self) -> dict[str, Any]:
-        """Get performance statistics for AI processing steps."""
-        stats = {}
-        for key, values in self._performance_metrics.items():
-            if values:
-                stats[key] = {
-                    "count": len(values),
-                    "avg_ms": round(sum(values) / len(values) * 1000, 2),
-                    "max_ms": round(max(values) * 1000, 2),
-                    "min_ms": round(min(values) * 1000, 2),
-                }
-            else:
-                stats[key] = {"count": 0, "avg_ms": 0, "max_ms": 0, "min_ms": 0}
-        return stats
+        """Get performance statistics for AI processing steps.
+        Delegates to PerformanceTracker module.
+        """
+        return self._performance.get_stats()
 
     def record_timing(self, step: str, duration: float) -> None:
-        """Record timing for a processing step."""
-        if step in self._performance_metrics:
-            # Keep only last PERFORMANCE_SAMPLES_MAX samples per step
-            if len(self._performance_metrics[step]) >= PERFORMANCE_SAMPLES_MAX:
-                self._performance_metrics[step].pop(0)
-            self._performance_metrics[step].append(duration)
+        """Record timing for a processing step.
+        Delegates to PerformanceTracker module.
+        """
+        self._performance.record_timing(step, duration)
 
     def cleanup_pending_requests(self, max_age: float = 60.0) -> int:
         """Clean up old pending requests to prevent memory leaks.
+        Delegates to RequestDeduplicator module.
 
         Args:
             max_age: Maximum age in seconds before a request is considered stale
@@ -380,13 +358,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         Returns:
             Number of requests cleaned up
         """
-        now = time.time()
-        old_keys = [k for k, t in self._pending_requests.items() if now - t > max_age]
-        for k in old_keys:
-            del self._pending_requests[k]
-        if old_keys:
-            logging.debug("🧹 Cleaned up %d stale pending request keys", len(old_keys))
-        return len(old_keys)
+        return self._deduplicator.cleanup(max_age)
 
     # ==================== Voice Channel Management ====================
 
@@ -516,46 +488,25 @@ class ChatManager(SessionMixin, ResponseMixin):
         return response_text
 
     async def _process_pending_messages(self, channel_id: int) -> None:
-        """Process any pending messages for a channel."""
-        if channel_id not in self.pending_messages:
+        """Process any pending messages for a channel.
+        Uses MessageQueue module for message merging.
+        """
+        if not self._message_queue.has_pending(channel_id):
             return
 
-        pending = self.pending_messages[channel_id]
-        if not pending:
-            return
-
-        # Get the latest message (discard older ones, but keep their text)
-        # Merge all pending messages into one
-        all_messages = []
-        latest_msg = None
-
-        for msg_data in pending:
-            all_messages.append(f"[{msg_data['user'].display_name}]: {msg_data['message']}")
-            latest_msg = msg_data
-
-        # Clear pending queue
-        self.pending_messages[channel_id] = []
-        self.cancel_flags[channel_id] = False
+        # Merge pending messages using MessageQueue
+        latest_msg, combined_message = self._message_queue.merge_pending_messages(channel_id)
 
         if latest_msg:
-            # Combine messages if multiple
-            if len(all_messages) > 1:
-                combined_message = "\n".join(all_messages)
-                logging.info(
-                    "📝 Processing %d merged messages for channel %s", len(all_messages), channel_id
-                )
-            else:
-                combined_message = latest_msg["message"]
-
             # Process the combined message
             await self.process_chat(
-                channel=latest_msg["channel"],
-                user=latest_msg["user"],
+                channel=latest_msg.channel,
+                user=latest_msg.user,
                 message=combined_message,
-                attachments=latest_msg["attachments"],
-                output_channel=latest_msg["output_channel"],
-                generate_response=latest_msg["generate_response"],
-                user_message_id=latest_msg.get("user_message_id"),
+                attachments=latest_msg.attachments,
+                output_channel=latest_msg.output_channel,
+                generate_response=latest_msg.generate_response,
+                user_message_id=latest_msg.user_message_id,
             )
 
     async def process_chat(
@@ -578,44 +529,40 @@ class ChatManager(SessionMixin, ResponseMixin):
         channel_id = context_channel.id
 
         # Request deduplication - prevent double processing of same message
-        request_key = f"{channel_id}:{user.id}:{hash(message[:50] if message else '')}"
-        if request_key in self._pending_requests:
+        request_key = self._deduplicator.generate_key(channel_id, user.id, message or "")
+        if self._deduplicator.is_duplicate(request_key):
             logging.debug("🔄 Duplicate request blocked: %s", request_key[:30])
             return
-        self._pending_requests[request_key] = time.time()
+        self._deduplicator.add_request(request_key)
 
         # Graceful degradation - check circuit breaker before processing
         if CIRCUIT_BREAKER_AVAILABLE and not gemini_circuit.can_execute():
             await send_channel.send(
                 "⏳ ระบบ AI กำลังพักผ่อนสักครู่ กรุณาลองใหม่อีกครั้งในอีก 1 นาที", delete_after=30
             )
-            self._pending_requests.pop(request_key, None)
+            self._deduplicator.remove_request(request_key)
             return
 
         # Create lock for this channel if not exists (atomic operation to prevent race condition)
         lock = self.processing_locks.setdefault(channel_id, asyncio.Lock())
 
-        # Initialize pending messages list for this channel (atomic operation)
-        self.pending_messages.setdefault(channel_id, [])
-
         # If already processing, queue this message and signal cancellation
         if lock.locked():
-            # Add to pending queue
-            self.pending_messages[channel_id].append(
-                {
-                    "channel": channel,
-                    "user": user,
-                    "message": message,
-                    "attachments": attachments,
-                    "output_channel": output_channel,
-                    "generate_response": generate_response,
-                    "user_message_id": user_message_id,
-                }
+            # Add to pending queue using MessageQueue
+            self._message_queue.queue_message(
+                channel_id=channel_id,
+                channel=channel,
+                user=user,
+                message=message,
+                attachments=attachments,
+                output_channel=output_channel,
+                generate_response=generate_response,
+                user_message_id=user_message_id,
             )
             # Signal to cancel current processing
-            self.cancel_flags[channel_id] = True
+            self._message_queue.signal_cancel(channel_id)
             logging.info("📝 Queued new message, signaling cancel for channel %s", channel_id)
-            self._pending_requests.pop(request_key, None)
+            self._deduplicator.remove_request(request_key)
             return
 
         # Use asyncio.wait_for for lock acquisition with timeout to prevent deadlock
@@ -625,18 +572,21 @@ class ChatManager(SessionMixin, ResponseMixin):
                 timeout=LOCK_TIMEOUT
             )
         except asyncio.TimeoutError:
-            logging.error("⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT)
-            self._pending_requests.pop(request_key, None)
+            logging.error(
+                "⚠️ Lock acquisition timeout for channel %s (>%ss)",
+                channel_id, LOCK_TIMEOUT
+            )
+            self._deduplicator.remove_request(request_key)
             await send_channel.send(
                 "⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15
             )
             return
 
         try:  # Manual lock management with timeout protection
-            # Track lock acquisition time for timeout detection (using separate dict)
-            self._lock_times[channel_id] = time.time()
+            # Track lock acquisition time for timeout detection
+            self._message_queue._lock_times[channel_id] = time.time()
             # Reset cancel flag
-            self.cancel_flags[channel_id] = False
+            self._message_queue.reset_cancel(channel_id)
             typing_context = (
                 send_channel.typing() if generate_response else contextlib.nullcontext()
             )
@@ -671,9 +621,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                     )
                     if avatar_image:
                         content_parts.append(
-                            f"[System Notice: The following image is {user_name}'s Discord profile picture. "
-                            f"This was automatically fetched by the system for user identification purposes. "
-                            f"The user did NOT send this image - do NOT comment on or ask about it unless they mention their appearance.]"
+                            f"[System Notice: The following image is {user_name}'s "
+                            f"Discord profile picture. This was automatically fetched "
+                            f"by the system for user identification purposes. "
+                            f"The user did NOT send this image - do NOT comment on or "
+                            f"ask about it unless they mention their appearance.]"
                         )
                         content_parts.append(avatar_image)
 
@@ -714,7 +666,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                         try:
                             urls = extract_urls(message or "")
                             if urls:
-                                logging.info("🔗 Found %d URL(s) in message, fetching content...", len(urls))
+                                logging.info(
+                                    "🔗 Found %d URL(s) in message, fetching content...",
+                                    len(urls)
+                                )
                                 fetched = await fetch_all_urls(urls, max_urls=2)
                                 url_context = format_url_content_for_context(fetched)
                                 if url_context:
@@ -876,8 +831,8 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Auto-compress very long histories using summarizer
                     # COMPRESS_THRESHOLD should be slightly higher than MAX_HISTORY_ITEMS
-                    COMPRESS_THRESHOLD = MAX_HISTORY_ITEMS + 500  # Compress when history exceeds this
-                    if len(history) > COMPRESS_THRESHOLD:
+                    compress_threshold = MAX_HISTORY_ITEMS + 500  # Compress when exceeded
+                    if len(history) > compress_threshold:
                         try:
                             compressed = await summarizer.compress_history(
                                 history,
@@ -893,7 +848,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         except Exception as e:
                             logging.warning("Auto-summarize failed: %s", e)
 
-                    # Use only recent history if still too long (use constant from data/constants.py)
+                    # Use only recent history if too long (constant in data/constants.py)
                     if len(history) > MAX_HISTORY_ITEMS:
                         history = history[-MAX_HISTORY_ITEMS:]
                         logging.info(
@@ -949,12 +904,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # _process_pending_messages). The messages will be merged there.
                     # If cancel was requested, reset flag and continue with this message,
                     # then process pending messages after completion.
-                    if self.cancel_flags.get(channel_id, False):
+                    if self._message_queue.is_cancelled(channel_id):
                         logging.info(
-                            "📝 Cancel requested for channel %s - will process pending after this response",
+                            "📝 Cancel requested for channel %s - pending after",
                             channel_id,
                         )
-                        self.cancel_flags[channel_id] = False  # Reset flag, continue processing
+                        self._message_queue.reset_cancel(channel_id)
 
                     # 8. Build API config and call Gemini API
                     # Check for game-related keywords that should ALWAYS use search
@@ -996,7 +951,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         )
 
                     # Check for cancellation after API call
-                    was_cancelled = self.cancel_flags.get(channel_id, False)
+                    was_cancelled = self._message_queue.is_cancelled(channel_id)
                     if was_cancelled:
                         logging.info("⏹️ Cancelled after API call for channel %s", channel_id)
                         # Save user message to history
@@ -1194,8 +1149,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                     await send_channel.send(f"❌ เกิดข้อผิดพลาดจาก AI: {error_msg}")
                 finally:
                     # Cleanup: Close any remaining PIL images to prevent memory leaks
-                    # Note: Most images are closed during processing, this is a safety net
-                    # Variables are now initialized before async with block, so no NameError possible
+                    # Most images are closed during processing, this is a safety net
+                    # Variables initialized before async with block, so no NameError
                     for part in content_parts:
                         if isinstance(part, Image.Image):
                             try:
@@ -1210,14 +1165,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 pass
 
                     # Cleanup request deduplication key
-                    self._pending_requests.pop(request_key, None)
+                    self._deduplicator.remove_request(request_key)
         finally:
             # Always release the lock properly (use 'lock' variable from setdefault)
             if lock.locked():
                 lock.release()
             # Clear lock time tracking
-            self._lock_times.pop(channel_id, None)
+            self._message_queue._lock_times.pop(channel_id, None)
 
         # After processing, check for pending messages
-        if self.pending_messages.get(channel_id):
+        if self._message_queue.has_pending(channel_id):
             await self._process_pending_messages(channel_id)
