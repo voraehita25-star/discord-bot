@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** January 19, 2026 | **Ruff Issues:** 0 ✅ | **Tests:** 204 passed ✅ | **Files:** 105
+> **Last Updated:** January 20, 2026 | **Ruff Issues:** 0 ✅ | **Tests:** 218 passed ✅ | **Files:** 108 | **Bug Fixes:** 8 ✅
 
 ## 🛠️ วิธีการตรวจสอบ
 
@@ -281,6 +281,14 @@ python scripts/maintenance/check_db.py
 | 2026-01-17 | ME | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
 | 2026-01-17 | ME | 19 tests out of sync with implementation | ✅ Fixed |
 | 2026-01-16 | ME | `ai_cog.py` import path error | ✅ Fixed |
+| 2026-01-20 | ME | `logic.py` duplicate IMAGEIO_AVAILABLE import | ✅ Fixed |
+| 2026-01-20 | ME | `logic.py` dead code knowledge_context | ✅ Fixed |
+| 2026-01-20 | ME | `logic.py` PIL Images NameError in finally | ✅ Fixed |
+| 2026-01-20 | ME | `tools.py` webhook cache not cleared on channel delete | ✅ Fixed |
+| 2026-01-20 | ME | `tools.py` background task only catches RuntimeError | ✅ Fixed |
+| 2026-01-20 | ME | `tools.py` missing guild.me None check | ✅ Fixed |
+| 2026-01-20 | ME | `storage.py` shallow copy in cache return | ✅ Fixed |
+| 2026-01-20 | ME | `logic.py` magic number max_history | ✅ Fixed |
 
 ---
 

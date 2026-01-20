@@ -35,7 +35,12 @@ from .storage import (
     get_message_by_local_id,
     move_history,
 )
-from .tools import send_as_webhook, start_webhook_cache_cleanup, stop_webhook_cache_cleanup
+from .tools import (
+    invalidate_webhook_cache_on_channel_delete,
+    send_as_webhook,
+    start_webhook_cache_cleanup,
+    stop_webhook_cache_cleanup,
+)
 
 # Import guardrails for unrestricted mode
 try:
@@ -248,6 +253,22 @@ class AI(commands.Cog):
             await ctx.send("⛔ คำสั่งนี้สำหรับเจ้าของบอทเท่านั้น")
         else:
             raise error
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        """Clean up resources when a channel is deleted.
+        
+        This prevents memory leaks from orphaned webhook caches
+        and cleans up any channel-specific data.
+        """
+        # Invalidate webhook cache for deleted channel
+        invalidate_webhook_cache_on_channel_delete(channel.id)
+        
+        # Clean up chat manager data for this channel
+        if channel.id in self.chat_manager.chats:
+            del self.chat_manager.chats[channel.id]
+        if channel.id in self.chat_manager.seen_users:
+            del self.chat_manager.seen_users[channel.id]
 
     @commands.Cog.listener()
     async def on_message(self, message):

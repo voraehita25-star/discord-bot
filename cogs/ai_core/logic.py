@@ -39,6 +39,7 @@ from .data.constants import (
     GEMINI_MODEL,
     GUILD_ID_RP,
     LOCK_TIMEOUT,
+    MAX_HISTORY_ITEMS,
     PERFORMANCE_SAMPLES_MAX,
 )
 from .data.faust_data import (
@@ -244,13 +245,8 @@ except ImportError:
         return key
 
 
-try:
-    import imageio.v3 as iio
-
-    IMAGEIO_AVAILABLE = True
-except ImportError:
-    IMAGEIO_AVAILABLE = False
-    logging.warning("imageio not available - animated GIF support disabled")
+# NOTE: IMAGEIO_AVAILABLE is imported from .media_processor (line 61)
+# No need to re-import imageio here
 
 if TYPE_CHECKING:
     import discord
@@ -647,10 +643,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                 send_channel.typing() if generate_response else contextlib.nullcontext()
             )
 
+            # Initialize variables BEFORE async with to prevent NameError in finally block
+            content_parts: list[Any] = []
+            image_parts: list[Image.Image] = []
+
             async with typing_context:
-                # Initialize variables early to prevent NameError in finally block
-                content_parts: list[Any] = []
-                image_parts: list[Image.Image] = []
 
                 try:
                     # Get guild_id if available
@@ -742,9 +739,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                     except OSError as e:
                         logging.error("RAG search failed: %s", e)
 
-                    # NOTE: Knowledge Base disabled - using Google Search for game data
-                    knowledge_context = ""
-
                     # --- Entity Memory: Retrieve verified character/location facts ---
                     entity_context = ""
                     try:
@@ -778,8 +772,6 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Combine all memory contexts
                     memory_context = ""
-                    if knowledge_context:
-                        memory_context += knowledge_context
                     if entity_context:
                         memory_context += f"\n{entity_context}"
                     if state_context:
@@ -882,10 +874,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Limit history - Gemini 3.0 Pro has 2M token context
                     # Using maximum context for all contexts (RP, DM, normal servers)
                     # to preserve AI personality and conversation continuity
-                    max_history = 2000
+                    # Note: MAX_HISTORY_ITEMS constant defined in data/constants.py
 
                     # Auto-compress very long histories using summarizer
-                    COMPRESS_THRESHOLD = 2500  # Compress when history exceeds this
+                    # COMPRESS_THRESHOLD should be slightly higher than MAX_HISTORY_ITEMS
+                    COMPRESS_THRESHOLD = MAX_HISTORY_ITEMS + 500  # Compress when history exceeds this
                     if len(history) > COMPRESS_THRESHOLD:
                         try:
                             compressed = await summarizer.compress_history(
@@ -902,13 +895,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                         except Exception as e:
                             logging.warning("Auto-summarize failed: %s", e)
 
-                    # Use only recent history if still too long
-                    if len(history) > max_history:
-                        history = history[-max_history:]
+                    # Use only recent history if still too long (use constant from data/constants.py)
+                    if len(history) > MAX_HISTORY_ITEMS:
+                        history = history[-MAX_HISTORY_ITEMS:]
                         logging.info(
                             "📚 Trimmed history from %d to %d messages for API call",
                             len(chat_data.get("history", [])),
-                            max_history,
+                            MAX_HISTORY_ITEMS,
                         )
 
                     contents = []
@@ -1204,22 +1197,19 @@ class ChatManager(SessionMixin, ResponseMixin):
                 finally:
                     # Cleanup: Close any remaining PIL images to prevent memory leaks
                     # Note: Most images are closed during processing, this is a safety net
-                    try:
-                        for part in content_parts:
-                            if isinstance(part, Image.Image):
-                                try:
-                                    part.close()
-                                except OSError:
-                                    pass
-                        for img in image_parts:
-                            if isinstance(img, Image.Image):
-                                try:
-                                    img.close()
-                                except OSError:
-                                    pass
-                    except NameError:
-                        # Variables might not exist if exception happened early
-                        pass
+                    # Variables are now initialized before async with block, so no NameError possible
+                    for part in content_parts:
+                        if isinstance(part, Image.Image):
+                            try:
+                                part.close()
+                            except OSError:
+                                pass
+                    for img in image_parts:
+                        if isinstance(img, Image.Image):
+                            try:
+                                img.close()
+                            except OSError:
+                                pass
 
                     # Cleanup request deduplication key
                     self._pending_requests.pop(request_key, None)

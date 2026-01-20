@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 20, 2026  
-> **Version:** 3.3.0  
+> **Version:** 3.3.1  
 > **Python Version:** 3.11+  
 > **Framework:** discord.py 2.x  
 > **Total Files:** 108 Python files | 218 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Circular imports fixed ✅ | Thread-safety audited ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 8 bug fixes applied ✅
 
 ---
 
@@ -597,6 +597,23 @@ async def mycommand(self, ctx):
 3. **Streaming Timeout:** 45s default, falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
+6. **Webhook Cache:** Auto-cleared when channels are deleted via `on_guild_channel_delete` listener
+7. **History Cache:** Uses `copy.deepcopy()` to prevent mutation of cached nested objects
+
+---
+
+## 🛠️ Recent Bug Fixes (January 20, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| Duplicate `IMAGEIO_AVAILABLE` import | Removed redundant import | `logic.py` |
+| Dead code `knowledge_context` | Removed unused variable | `logic.py` |
+| PIL Images NameError in finally | Variables initialized before `async with` | `logic.py` |
+| Webhook cache not cleared on channel delete | Added `on_guild_channel_delete` listener | `ai_cog.py`, `tools.py` |
+| Background task catches only RuntimeError | Changed to catch all `Exception` with backoff | `tools.py` |
+| Missing `guild.me` None check | Added null check in `cmd_add_role`/`cmd_remove_role` | `tools.py` |
+| Shallow copy in cache return | Changed to `copy.deepcopy()` | `storage.py` |
+| Magic number `max_history = 2000` | Uses `MAX_HISTORY_ITEMS` constant | `logic.py` |
 
 ---
 
@@ -608,4 +625,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 20, 2026 - Zero-Bug Baseline Achieved | Thread-Safety Audit Complete*
+*Documentation last updated: January 20, 2026 - Code Audit Complete | 8 Bug Fixes Applied | Thread-Safety Verified*

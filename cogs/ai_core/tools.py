@@ -133,8 +133,10 @@ async def _cleanup_expired_webhook_cache() -> None:
                 )
         except asyncio.CancelledError:
             break
-        except RuntimeError as e:
+        except Exception as e:
+            # Catch all exceptions to prevent task death, log and continue
             logging.error("Error in webhook cache cleanup: %s", e)
+            await asyncio.sleep(60)  # Backoff on error before retrying
 
 
 def start_webhook_cache_cleanup(bot) -> None:
@@ -168,13 +170,35 @@ def _set_cached_webhook(channel_id: int, webhook_name: str, webhook: discord.Web
 
 
 def _invalidate_webhook_cache(channel_id: int, webhook_name: str | None = None) -> None:
-    """Invalidate webhook cache for a channel."""
+    """Invalidate webhook cache for a channel.
+    
+    Call this when:
+    - A channel is deleted
+    - A webhook operation fails with 404
+    - Cache needs to be refreshed
+    
+    Args:
+        channel_id: The channel ID to invalidate
+        webhook_name: Optional specific webhook name, or None to clear all for channel
+    """
     if webhook_name:
         if channel_id in _webhook_cache:
             _webhook_cache[channel_id].pop(webhook_name, None)
     else:
         _webhook_cache.pop(channel_id, None)
         _webhook_cache_time.pop(channel_id, None)
+
+
+def invalidate_webhook_cache_on_channel_delete(channel_id: int) -> None:
+    """Public function to invalidate webhook cache when a channel is deleted.
+    
+    This should be called from an on_guild_channel_delete event listener.
+    
+    Args:
+        channel_id: The ID of the deleted channel
+    """
+    _invalidate_webhook_cache(channel_id)
+    logging.debug("🧹 Invalidated webhook cache for deleted channel %s", channel_id)
 
 
 async def cmd_create_text(
@@ -468,6 +492,9 @@ async def cmd_add_role(
 
     if role and member:
         # Pre-validation: Check role hierarchy before API call
+        if guild.me is None:
+            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            return
         bot_top_role = guild.me.top_role
         if role >= bot_top_role:
             await origin_channel.send(
@@ -519,6 +546,9 @@ async def cmd_remove_role(
 
     if role and member:
         # Pre-validation: Check role hierarchy before API call
+        if guild.me is None:
+            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            return
         bot_top_role = guild.me.top_role
         if role >= bot_top_role:
             await origin_channel.send(

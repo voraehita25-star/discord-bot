@@ -6,6 +6,8 @@ Optimized with in-memory caching for better performance.
 
 from __future__ import annotations
 
+import copy  # For deep copy of cached data
+
 # ==================== Performance: Faster JSON ====================
 # orjson is ~10x faster than standard json for parsing and dumping
 try:
@@ -274,7 +276,8 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
         cached_time, cached_data = _history_cache[channel_id]
         if now - cached_time < CACHE_TTL:
             logging.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
-            return [item.copy() for item in cached_data]  # Return copy to prevent mutation
+            # Use deep copy to prevent mutation of cached nested objects
+            return copy.deepcopy(cached_data)
 
     if DATABASE_AVAILABLE:
         # Try database

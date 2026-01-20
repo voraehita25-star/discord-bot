@@ -1,7 +1,7 @@
 # AI Core Module
 
 > Last Updated: January 20, 2026  
-> Version: 3.3.0
+> Version: 3.3.1
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
@@ -115,4 +115,15 @@ python -m pytest tests/test_memory_modules.py -v
 python -m pytest tests/test_tools.py -v
 python -m pytest tests/test_webhooks.py -v
 ```
+
+## Recent Fixes (January 20, 2026)
+
+- ✅ Removed duplicate `IMAGEIO_AVAILABLE` import in `logic.py`
+- ✅ Removed dead code `knowledge_context` variable
+- ✅ Fixed PIL Images NameError in finally block - variables now initialized before `async with`
+- ✅ Added `on_guild_channel_delete` listener to cleanup webhook cache
+- ✅ Changed background task exception handling from `RuntimeError` to `Exception` with backoff
+- ✅ Added `guild.me` None check in `cmd_add_role` and `cmd_remove_role`
+- ✅ Changed `storage.py` cache to use `copy.deepcopy()` instead of shallow copy
+- ✅ Replaced magic number `max_history = 2000` with `MAX_HISTORY_ITEMS` constant
 
