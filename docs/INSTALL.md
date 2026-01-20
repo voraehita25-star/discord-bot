@@ -222,6 +222,39 @@ cargo build --release
 
 ---
 
+## 🦀 Rust Extensions (Optional)
+
+High-performance native extensions สำหรับ RAG และ Media processing
+
+> **Pre-built Status:** ✅ พร้อมใช้งาน (January 20, 2026)  
+> **Files:** `rag_engine.pyd`, `media_processor.pyd`
+
+### Prerequisites
+
+1. **Rust Toolchain:**
+```bash
+# ติดตั้ง rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Windows: ดาวน์โหลดจาก https://rustup.rs
+```
+
+### Build Rust Extensions
+
+```powershell
+# จาก project root
+.\scripts\build_rust.ps1 -Release
+```
+
+### Verify
+
+```bash
+python -c "import sys; sys.path.insert(0, 'cogs/ai_core/memory'); import rag_engine; print('RAG OK')"
+python -c "import sys; sys.path.insert(0, 'utils/media'); import media_processor; print('Media OK')"
+```
+
+---
+
 ## 🔍 Verify Installation
 
 ```bash
@@ -304,4 +337,4 @@ cd native_dashboard && cargo build --release
 
 ---
 
-*Last Updated: January 2026 | Version: 3.2.3*
+*Last Updated: January 2026 | Version: 3.3.0*

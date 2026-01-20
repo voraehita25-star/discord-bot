@@ -14,6 +14,7 @@ mod errors;
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyBytes;
+use image::GenericImageView;
 
 pub use resize::{resize_image, ResizeMode};
 pub use gif::is_animated_gif;
@@ -43,7 +44,7 @@ impl ImageData {
     }
 
     fn get_data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.data)
+        PyBytes::new_bound(py, &self.data)
     }
 
     fn to_base64(&self) -> String {
@@ -93,7 +94,7 @@ impl MediaProcessor {
     }
 
     /// Resize image to fit within max dimensions
-    fn resize<'py>(&self, py: Python<'py>, data: &Bound<'py, PyBytes>, max_width: Option<u32>, max_height: Option<u32>) -> PyResult<ImageData> {
+    fn resize<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, max_width: Option<u32>, max_height: Option<u32>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         let max_w = max_width.unwrap_or(self.max_dimension);
         let max_h = max_height.unwrap_or(self.max_dimension);
@@ -105,7 +106,7 @@ impl MediaProcessor {
     }
 
     /// Resize image to exact dimensions (with cropping)
-    fn resize_exact<'py>(&self, py: Python<'py>, data: &Bound<'py, PyBytes>, width: u32, height: u32) -> PyResult<ImageData> {
+    fn resize_exact<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, width: u32, height: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         
         let result = resize_image(bytes, width, height, ResizeMode::Fill, self.jpeg_quality)
@@ -115,7 +116,7 @@ impl MediaProcessor {
     }
 
     /// Create thumbnail
-    fn thumbnail<'py>(&self, py: Python<'py>, data: &Bound<'py, PyBytes>, size: u32) -> PyResult<ImageData> {
+    fn thumbnail<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, size: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         
         let result = resize_image(bytes, size, size, ResizeMode::Fit, self.jpeg_quality)
@@ -135,7 +136,7 @@ impl MediaProcessor {
     fn get_dimensions<'py>(data: &Bound<'py, PyBytes>) -> PyResult<(u32, u32)> {
         let bytes = data.as_bytes();
         
-        let reader = image::io::Reader::new(std::io::Cursor::new(bytes))
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         
@@ -156,11 +157,11 @@ impl MediaProcessor {
     fn decode_base64<'py>(py: Python<'py>, encoded: &str) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = from_base64(encoded)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new(py, &bytes))
+        Ok(PyBytes::new_bound(py, &bytes))
     }
 
     /// Batch resize multiple images (parallel)
-    fn batch_resize<'py>(&self, py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
+    fn batch_resize<'py>(&self, _py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
         use rayon::prelude::*;
         
         let bytes_list: Vec<Vec<u8>> = images.iter()

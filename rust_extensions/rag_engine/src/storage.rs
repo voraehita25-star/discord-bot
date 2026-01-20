@@ -1,14 +1,14 @@
 //! Memory-mapped vector storage for persistent RAG
 
 use memmap2::{MmapMut, MmapOptions};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::Path;
 use bytemuck::{Pod, Zeroable};
 
 use crate::errors::RagError;
 
 /// Header for the vector storage file
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct StorageHeader {
     magic: [u8; 4],      // "RAGV"

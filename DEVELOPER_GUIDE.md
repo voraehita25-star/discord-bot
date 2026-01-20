@@ -218,6 +218,9 @@ BOT/
 Bot มี native extensions ที่เขียนด้วย **Rust** และ **Go** สำหรับ operations ที่ใช้ CPU/IO เยอะ
 Extensions เหล่านี้เป็น **optional** - bot ทำงานได้ปกติด้วย Python fallback
 
+> **Build Status:** ✅ Rust extensions built successfully (January 20, 2026)  
+> **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
+
 ### Rust Extensions (PyO3)
 
 | Module | Location | Performance |

@@ -27,7 +27,7 @@ fn simd_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     use simsimd::SpatialSimilarity;
     
     // simsimd provides hardware-accelerated similarity
-    f32::cosine(a, b).ok()
+    f32::cosine(a, b).map(|v| v as f32)
 }
 
 /// Scalar fallback for cosine similarity

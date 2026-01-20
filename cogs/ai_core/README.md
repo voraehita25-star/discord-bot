@@ -70,6 +70,9 @@ cogs/ai_core/
 
 AI Core รองรับ Rust extensions สำหรับ performance:
 
+> **Build Status:** ✅ Rust RAG engine built (January 20, 2026)  
+> **File:** `rag_engine.pyd` (651 KB) - SIMD cosine similarity, 10-25x faster
+
 ```python
 # Auto-selects Rust if available, else Python
 from cogs.ai_core.memory.rag_rust import RagEngine

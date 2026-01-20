@@ -19,7 +19,7 @@ memmap2.workspace = true
 bytemuck.workspace = true
 
 # SIMD optimizations
-simsimd = "0.5"
+simsimd = "6.5"
 
 [features]
 default = []

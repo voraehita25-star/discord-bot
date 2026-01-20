@@ -139,6 +139,9 @@ The bot includes built-in monitoring capabilities:
 
 High-performance extensions for CPU/IO-intensive operations. **Fully optional** - bot works without them using Python fallbacks.
 
+> **Build Status:** ✅ Rust extensions pre-built (January 20, 2026)  
+> **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
+
 ### Rust Extensions
 
 | Component | Speedup | Features |
