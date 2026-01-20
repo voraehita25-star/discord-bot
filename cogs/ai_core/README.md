@@ -1,11 +1,11 @@
 # AI Core Module
 
-> Last Updated: January 20, 2026  
-> Version: 3.3.2
+> Last Updated: January 21, 2026  
+> Version: 3.3.5
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
-## Structure (37 ไฟล์)
+## Structure (42 ไฟล์)
 
 ```
 cogs/ai_core/
@@ -13,7 +13,12 @@ cogs/ai_core/
 ├── ai_cog.py          # ⭐ Main AI cog (commands & events)
 ├── logic.py           # ⭐ ChatManager - core AI logic
 ├── storage.py         # History persistence (SQLite)
-├── tools.py           # Agentic tools (webhooks, server commands)
+├── tools.py           # 🔌 Facade module (re-exports from submodules)
+├── sanitization.py    # 🛡️ Input sanitization (channels, roles, messages)
+├── webhook_cache.py   # 📦 Webhook caching system
+├── server_commands.py # 🔧 Server management commands
+├── tool_definitions.py # 📋 Gemini API tool definitions
+├── tool_executor.py   # ⚡ Tool execution & webhook sending
 ├── emoji.py           # Discord emoji processing
 ├── voice.py           # Voice channel management
 ├── fallback_responses.py  # Fallback when AI fails
@@ -116,17 +121,28 @@ python -m pytest tests/test_tools.py -v
 python -m pytest tests/test_webhooks.py -v
 ```
 
-## Recent Fixes (January 20, 2026)
+## Recent Updates (January 21, 2026)
 
+### v3.3.5 - Tools Module Refactoring
+- 🔨 **Refactored `tools.py`** (1,405 lines) into 5 focused modules:
+  - `sanitization.py` - Input sanitization (72 lines)
+  - `webhook_cache.py` - Webhook caching (139 lines)
+  - `server_commands.py` - Server commands (606 lines)
+  - `tool_definitions.py` - Gemini API tools (228 lines)
+  - `tool_executor.py` - Execution logic (307 lines)
+  - `tools.py` - Facade for backward compatibility (110 lines)
+- ✅ All 285 tests passing
+- 🔄 Backward compatible - existing imports work unchanged
+
+### v3.3.4 - Bug Fixes (January 20, 2026)
 - ✅ Removed duplicate `IMAGEIO_AVAILABLE` import in `logic.py`
 - ✅ Removed dead code `knowledge_context` variable
-- ✅ Fixed PIL Images NameError in finally block - variables now initialized before `async with`
+- ✅ Fixed PIL Images NameError in finally block
 - ✅ Added `on_guild_channel_delete` listener to cleanup webhook cache
-- ✅ Changed background task exception handling from `RuntimeError` to `Exception` with backoff
-- ✅ Added `guild.me` None check in `cmd_add_role` and `cmd_remove_role`
-- ✅ Changed `storage.py` cache to use `copy.deepcopy()` instead of shallow copy
-- ✅ Replaced magic number `max_history = 2000` with `MAX_HISTORY_ITEMS` constant
-- ✅ Added `MAX_CACHE_SIZE` limit (1000) and proactive cache cleanup in `storage.py`
-- ✅ Added `bot_has_guild_permissions` checks for `join` and `play` commands
-- ✅ Added periodic storage cache cleanup in AI cog (every 5 minutes)
+- ✅ Changed background task exception handling with backoff
+- ✅ Added `guild.me` None check in role commands
+- ✅ Changed `storage.py` cache to use `copy.deepcopy()`
+- ✅ Added `MAX_CACHE_SIZE` limit (1000) in `storage.py`
+- ✅ Added `bot_has_guild_permissions` checks for music commands
+- ✅ Added periodic storage cache cleanup (every 5 minutes)
 

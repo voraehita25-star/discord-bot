@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** January 21, 2026  
-> **Version:** 3.3.4  
+> **Version:** 3.3.5  
 > **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 108 Python files | 218 Tests  
+> **Total Files:** 118 Python files | 285 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅
 
 ---
 
@@ -49,7 +49,12 @@ BOT/
 │       ├── ai_cog.py         # ⭐ Main AI cog (commands & events)
 │       ├── logic.py          # ⭐ ChatManager - core AI logic
 │       ├── storage.py        # History persistence (SQLite)
-│       ├── tools.py          # Server tools, webhooks
+│       ├── tools.py          # 🔌 Facade module (re-exports submodules)
+│       ├── sanitization.py   # 🛡️ Input sanitization
+│       ├── webhook_cache.py  # 📦 Webhook caching
+│       ├── server_commands.py # 🔧 Server management commands
+│       ├── tool_definitions.py # 📋 Gemini API tool definitions
+│       ├── tool_executor.py  # ⚡ Tool execution logic
 │       ├── emoji.py          # Discord emoji processing
 │       ├── voice.py          # Voice channel management
 │       ├── fallback_responses.py  # Fallback when AI fails
@@ -147,7 +152,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (218 tests)
+├── tests/                    # 🧪 Test Suite (285 tests)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -158,11 +163,15 @@ BOT/
 │   ├── test_database.py
 │   ├── test_emoji_voice.py
 │   ├── test_error_recovery.py
+│   ├── test_fast_json.py     # 🆕 Fast JSON utilities tests
 │   ├── test_guardrails.py
 │   ├── test_memory_modules.py
 │   ├── test_music_integration.py
+│   ├── test_music_queue.py   # 🆕 QueueManager tests
 │   ├── test_performance_tracker.py
 │   ├── test_rate_limiter.py
+│   ├── test_self_reflection.py # 🆕 SelfReflector tests
+│   ├── test_spotify_handler.py # 🆕 SpotifyHandler tests
 │   ├── test_spotify_integration.py
 │   ├── test_summarizer.py
 │   ├── test_tools.py
@@ -643,6 +652,15 @@ async def mycommand(self, ctx):
 | Silent exception in `_pil_is_animated()` | Added `logging.debug()` | `media_rust.py` |
 | Silent exception in FAISS temp cleanup | Added `logging.debug()` | `rag.py` |
 
+### Phase 3 - Refactoring & Testing (January 21, 2026)
+
+| Change | Description | Files |
+|--------|-------------|-------|
+| **tools.py refactoring** | Split 1,405 lines into 5 modules | `sanitization.py`, `webhook_cache.py`, `server_commands.py`, `tool_definitions.py`, `tool_executor.py` |
+| **New test files** | Added 67 new tests | `test_music_queue.py`, `test_fast_json.py`, `test_self_reflection.py`, `test_spotify_handler.py` |
+| **CI/CD improvements** | Added Python 3.10, coverage, Codecov, Dependabot | `.github/workflows/ci.yml`, `.github/dependabot.yml` |
+| **Dependency updates** | google-genai 1.59.0, aiohttp 3.13.3, certifi | `requirements.txt` |
+
 ---
 
 ## 📚 Further Reading
@@ -653,4 +671,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 21, 2026 - Full Code Audit Complete | 17 Bug Fixes Applied | Race Conditions Fixed | Silent Exceptions Logged | Config Cleanup (removed duplicate pytest.ini) | Added pyyaml dependency*
+*Documentation last updated: January 21, 2026 - Version 3.3.5 | tools.py refactored into 5 modules | 67 new tests (285 total) | CI/CD improved with Codecov & Dependabot*
