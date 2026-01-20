@@ -7,27 +7,38 @@ Provides fallback to PIL if Rust extension is not available.
 from __future__ import annotations
 
 import base64
+import importlib
 import io
 import logging
 from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
-# Try to import Rust extension
+# Try to import Rust extension dynamically to avoid Pylance warnings
+RUST_AVAILABLE = False
+RustMediaProcessor = None
+is_animated = None
+get_dimensions = None
+to_base64 = None
+
 try:
-    from media_processor import MediaProcessor as RustMediaProcessor, is_animated, get_dimensions, to_base64
-    RUST_AVAILABLE = True
-    logger.info("✅ Rust Media Processor loaded successfully")
+    _media_module = importlib.import_module("media_processor")
+    RustMediaProcessor = getattr(_media_module, "MediaProcessor", None)
+    is_animated = getattr(_media_module, "is_animated", None)
+    get_dimensions = getattr(_media_module, "get_dimensions", None)
+    to_base64 = getattr(_media_module, "to_base64", None)
+    if RustMediaProcessor:
+        RUST_AVAILABLE = True
+        logger.info("✅ Rust Media Processor loaded successfully")
 except ImportError:
-    RUST_AVAILABLE = False
     logger.warning("⚠️ Rust Media Processor not available, using PIL fallback")
     
-    # PIL fallback
-    try:
-        from PIL import Image
-        PIL_AVAILABLE = True
-    except ImportError:
-        PIL_AVAILABLE = False
+# PIL fallback
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 class MediaProcessorWrapper:

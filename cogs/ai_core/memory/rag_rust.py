@@ -6,21 +6,30 @@ Provides fallback to pure Python implementation if Rust extension is not availab
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
-# Try to import Rust extension
+# Try to import Rust extension dynamically to avoid Pylance warnings
+RUST_AVAILABLE = False
+RustRagEngine = None
+MemoryEntry = None
+SearchResult = None
+
 try:
-    from rag_engine import RagEngine as RustRagEngine, MemoryEntry, SearchResult
-    RUST_AVAILABLE = True
-    logger.info("✅ Rust RAG Engine loaded successfully")
+    _rag_module = importlib.import_module("rag_engine")
+    RustRagEngine = getattr(_rag_module, "RagEngine", None)
+    MemoryEntry = getattr(_rag_module, "MemoryEntry", None)
+    SearchResult = getattr(_rag_module, "SearchResult", None)
+    if RustRagEngine:
+        RUST_AVAILABLE = True
+        logger.info("✅ Rust RAG Engine loaded successfully")
 except ImportError:
-    RUST_AVAILABLE = False
     logger.warning("⚠️ Rust RAG Engine not available, using Python fallback")
 
 
