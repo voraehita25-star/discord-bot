@@ -27,7 +27,7 @@ class TestWebhookCache:
 
     def test_webhook_cache_initialization(self):
         """Test that webhook cache is properly initialized."""
-        from cogs.ai_core.tools import _webhook_cache
+        from cogs.ai_core.webhook_cache import _webhook_cache
 
         # Cache should be a dictionary
         assert isinstance(_webhook_cache, dict)
@@ -69,18 +69,22 @@ class TestWebhookCacheInternals:
     """Tests for internal webhook cache functions that DO exist."""
 
     def test_get_cached_webhook_returns_none_for_empty_cache(self):
-        """Test that _get_cached_webhook returns None when cache is empty."""
-        from cogs.ai_core.tools import _get_cached_webhook, _webhook_cache
+        """Test that get_cached_webhook returns None when cache is empty."""
+        from cogs.ai_core.webhook_cache import _webhook_cache, get_cached_webhook
 
         # Clear cache
         _webhook_cache.clear()
 
-        result = _get_cached_webhook(123456789, "TestBot")
+        result = get_cached_webhook(123456789, "TestBot")
         assert result is None
 
     def test_set_and_get_cached_webhook(self):
         """Test storing and retrieving webhooks from cache."""
-        from cogs.ai_core.tools import _get_cached_webhook, _set_cached_webhook, _webhook_cache
+        from cogs.ai_core.webhook_cache import (
+            _webhook_cache,
+            get_cached_webhook,
+            set_cached_webhook,
+        )
 
         # Clear cache
         _webhook_cache.clear()
@@ -92,18 +96,18 @@ class TestWebhookCacheInternals:
         channel_id = 987654321
 
         # Store in cache
-        _set_cached_webhook(channel_id, "Faust", mock_webhook)
+        set_cached_webhook(channel_id, "Faust", mock_webhook)
 
         # Retrieve from cache
-        result = _get_cached_webhook(channel_id, "Faust")
+        result = get_cached_webhook(channel_id, "Faust")
         assert result == mock_webhook
 
     def test_invalidate_webhook_cache(self):
         """Test invalidating webhook cache for a channel."""
-        from cogs.ai_core.tools import (
-            _invalidate_webhook_cache,
-            _set_cached_webhook,
+        from cogs.ai_core.webhook_cache import (
             _webhook_cache,
+            invalidate_webhook_cache,
+            set_cached_webhook,
         )
 
         # Clear cache
@@ -114,9 +118,9 @@ class TestWebhookCacheInternals:
         channel_id = 111222333
 
         # Store in cache
-        _set_cached_webhook(channel_id, "TestBot", mock_webhook)
+        set_cached_webhook(channel_id, "TestBot", mock_webhook)
         assert channel_id in _webhook_cache
 
         # Invalidate
-        _invalidate_webhook_cache(channel_id)
+        invalidate_webhook_cache(channel_id)
         assert channel_id not in _webhook_cache
