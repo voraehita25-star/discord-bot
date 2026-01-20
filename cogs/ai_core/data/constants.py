@@ -30,6 +30,28 @@ CREATOR_ID = _safe_int_env("CREATOR_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
 
+# ==================== AI Processing Limits ====================
+# History limits (number of messages to keep per channel type)
+HISTORY_LIMIT_DEFAULT = 1500  # Default for regular channels
+HISTORY_LIMIT_MAIN = 8000  # Main server (higher traffic)
+HISTORY_LIMIT_RP = 30000  # Roleplay server (critical for continuity)
+
+# Processing timeouts (in seconds)
+LOCK_TIMEOUT = 120.0  # Max wait time for lock acquisition
+API_TIMEOUT = 120.0  # Max wait time for Gemini API response
+STREAMING_TIMEOUT_INITIAL = 30.0  # Initial chunk timeout
+STREAMING_TIMEOUT_CHUNK = 10.0  # Subsequent chunk timeout
+MAX_STALL_TIME = 60.0  # Max time before considering stream stalled
+
+# Content limits
+MAX_HISTORY_ITEMS = 2000  # Max items in chat history
+MAX_TEXT_TRUNCATE_LENGTH = 10000  # Truncate text longer than this
+TEXT_TRUNCATE_HEAD = 5000  # Keep first N chars when truncating
+TEXT_TRUNCATE_TAIL = 3000  # Keep last N chars when truncating
+
+# Performance tracking
+PERFORMANCE_SAMPLES_MAX = 100  # Max samples to keep per metric
+
 # Game-specific keywords that should force Google Search for accurate data
 GAME_SEARCH_KEYWORDS = [
     # Limbus Company

@@ -47,7 +47,8 @@ class Database:
         self._schema_initialized = False
         self._export_pending = False
         self._export_delay = 3  # seconds
-        self._export_task: asyncio.Task | None = None  # Track export task for cleanup
+        # Track multiple export tasks to prevent task destruction warnings
+        self._export_tasks: set[asyncio.Task] = set()
         # Connection pool semaphore - increased for high-performance machines
         self._pool_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent connections
         self._connection_count = 0
@@ -84,8 +85,11 @@ class Database:
                     else:
                         logging.error("Auto-export failed after %d attempts: %s", max_retries, e)
 
-        # Store the task reference so we can cancel it during shutdown
-        self._export_task = asyncio.create_task(do_export())
+        # Create and track the task
+        task = asyncio.create_task(do_export())
+        self._export_tasks.add(task)
+        # Auto-remove task when done
+        task.add_done_callback(self._export_tasks.discard)
 
     async def flush_pending_exports(self) -> None:
         """Flush any pending exports immediately (call during shutdown).
@@ -93,14 +97,15 @@ class Database:
         This ensures data is exported before the bot shuts down,
         bypassing the debounce delay and properly cancelling pending tasks.
         """
-        # Cancel the pending export task first to prevent "Task was destroyed" warning
-        if self._export_task is not None and not self._export_task.done():
-            self._export_task.cancel()
-            try:
-                await self._export_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            self._export_task = None
+        # Cancel all pending export tasks to prevent "Task was destroyed" warning
+        for task in list(self._export_tasks):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when we cancel the task
+        self._export_tasks.clear()
 
         if self._export_pending:
             logging.info("💾 Flushing pending database exports...")
@@ -387,6 +392,7 @@ class Database:
 
         logging.info("🔄 Connection pool reinitialized")
 
+    @asynccontextmanager
     async def get_connection_with_retry(self, max_retries: int = 3):
         """
         Get a connection with automatic retry on failure.
@@ -396,14 +402,43 @@ class Database:
 
         Yields:
             Database connection
+            
+        Note:
+            Uses @asynccontextmanager to ensure proper cleanup even if
+            the consumer code raises an exception.
         """
         last_error = None
+        conn = None
 
         for attempt in range(max_retries):
             try:
-                async with self.get_connection() as conn:
-                    yield conn
-                    return
+                # Acquire semaphore slot
+                async with self._pool_semaphore:
+                    self._connection_count += 1
+                    conn = await aiosqlite.connect(self.db_path, timeout=30.0)
+                    conn.row_factory = aiosqlite.Row
+
+                    # Performance optimizations
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.execute("PRAGMA synchronous=NORMAL")
+                    await conn.execute("PRAGMA cache_size=100000")
+                    await conn.execute("PRAGMA temp_store=MEMORY")
+                    await conn.execute("PRAGMA mmap_size=1073741824")
+                    await conn.execute("PRAGMA foreign_keys=ON")
+                    await conn.execute("PRAGMA page_size=8192")
+                    await conn.execute("PRAGMA wal_autocheckpoint=1000")
+
+                    try:
+                        yield conn
+                        await conn.commit()
+                        return  # Success, exit
+                    except Exception:
+                        await conn.rollback()
+                        raise
+                    finally:
+                        await conn.close()
+                        self._connection_count -= 1
+                        
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:

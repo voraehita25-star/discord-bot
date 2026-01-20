@@ -446,20 +446,30 @@ class RateLimiter:
         logging.info("⏱️ Adaptive rate limiting: %s", "enabled" if enabled else "disabled")
 
     async def cleanup_old_buckets(self, max_age: float = 3600.0) -> int:
-        """Remove buckets that haven't been used in max_age seconds."""
+        """Remove buckets that haven't been used in max_age seconds.
+        
+        Thread-safe: Collects keys to remove first, then removes them
+        while avoiding iteration during modification.
+        """
         now = time.time()
         removed = 0
 
-        # Collect keys to remove first
-        keys_to_remove = []
-        for key, bucket in list(self._buckets.items()):
-            if now - bucket.last_update > max_age:
-                keys_to_remove.append(key)
+        # Collect keys to remove first (snapshot of items)
+        keys_to_remove = [
+            key for key, bucket in list(self._buckets.items())
+            if now - bucket.last_update > max_age
+        ]
 
-        # Remove buckets and their associated locks
+        # Remove buckets and their associated locks atomically per key
         for key in keys_to_remove:
-            self._buckets.pop(key, None)
-            self._locks.pop(key, None)  # Also clean up per-bucket locks
+            # Get and remove the lock first to prevent new operations
+            lock = self._locks.pop(key, None)
+            if lock:
+                # Ensure no one is holding the lock before removing bucket
+                async with lock:
+                    self._buckets.pop(key, None)
+            else:
+                self._buckets.pop(key, None)
             removed += 1
 
         if removed > 0:

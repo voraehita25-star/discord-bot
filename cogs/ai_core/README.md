@@ -1,6 +1,6 @@
 # AI Core Module
 
-> Last Updated: January 16, 2026
+> Last Updated: January 20, 2026
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
@@ -21,7 +21,7 @@ cogs/ai_core/
 │
 ├── data/              # Static data & prompts
 │   ├── __init__.py
-│   ├── constants.py   # ⚙️ Config constants, API keys
+│   ├── constants.py   # ⚙️ Config constants, API keys, processing limits
 │   ├── faust_data.py  # Faust persona instructions
 │   └── roleplay_data.py  # RP server lore & characters
 │
@@ -56,7 +56,7 @@ cogs/ai_core/
 | Class | File | Purpose |
 |-------|------|---------|
 | `AI` | `ai_cog.py` | Main Discord cog - commands & events |
-| `ChatManager` | `logic.py` | AI handler - sessions, API, streaming |
+| `ChatManager` | `logic.py` | AI handler - sessions, API, streaming (uses `asyncio.wait_for` for lock timeout) |
 | `MemorySystem` | `memory/rag.py` | FAISS-based long-term memory |
 | `HistoryManager` | `memory/history_manager.py` | Smart context trimming |
 | `EntityMemoryManager` | `memory/entity_memory.py` | Character facts storage |

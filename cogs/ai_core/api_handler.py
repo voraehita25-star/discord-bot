@@ -198,8 +198,7 @@ async def call_gemini_api_streaming(
     placeholder_msg = None
     last_update_time = 0
     update_interval = 1.0
-
-    _api_start = time.time() if PERF_TRACKER_AVAILABLE else 0
+    stream_start_time = 0.0  # Track start time for performance
 
     try:
         # Check circuit breaker
@@ -511,7 +510,7 @@ async def call_gemini_api(
                     if isinstance(part, dict) and "text" in part:
                         text = part["text"]
                         if len(text) > 10000:
-                            truncated = text[:5000] + "\n\n[... content truncated ...]""\n\n" + text[-3000:]
+                            truncated = text[:5000] + "\n\n[... content truncated ...]\n\n" + text[-3000:]
                             part["text"] = truncated
                             logging.warning("⚠️ Fallback Tier 2: Truncated large text (was %d chars)", len(text))
 

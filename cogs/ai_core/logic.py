@@ -38,6 +38,8 @@ from .data.constants import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
     GUILD_ID_RP,
+    LOCK_TIMEOUT,
+    PERFORMANCE_SAMPLES_MAX,
 )
 from .data.faust_data import (
     ESCALATION_FRAMINGS,
@@ -368,8 +370,8 @@ class ChatManager(SessionMixin, ResponseMixin):
     def record_timing(self, step: str, duration: float) -> None:
         """Record timing for a processing step."""
         if step in self._performance_metrics:
-            # Keep only last 100 samples per step
-            if len(self._performance_metrics[step]) >= 100:
+            # Keep only last PERFORMANCE_SAMPLES_MAX samples per step
+            if len(self._performance_metrics[step]) >= PERFORMANCE_SAMPLES_MAX:
                 self._performance_metrics[step].pop(0)
             self._performance_metrics[step].append(duration)
 
@@ -604,32 +606,39 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         # If already processing, queue this message and signal cancellation
         if self.processing_locks[channel_id].locked():
-            # Check if lock might be stuck (track lock acquisition time)
-            lock_time = self._lock_times.get(channel_id)
-            if lock_time and (time.time() - lock_time) > 120:  # 2 minute timeout
-                logging.warning("⚠️ Lock stuck for channel %s (>120s), force resetting", channel_id)
-                # Force create a new lock to recover
-                self.processing_locks[channel_id] = asyncio.Lock()
-            else:
-                # Add to pending queue
-                self.pending_messages[channel_id].append(
-                    {
-                        "channel": channel,
-                        "user": user,
-                        "message": message,
-                        "attachments": attachments,
-                        "output_channel": output_channel,
-                        "generate_response": generate_response,
-                        "user_message_id": user_message_id,
-                    }
-                )
-                # Signal to cancel current processing
-                self.cancel_flags[channel_id] = True
-                logging.info("📝 Queued new message, signaling cancel for channel %s", channel_id)
-                self._pending_requests.pop(request_key, None)
-                return
+            # Add to pending queue
+            self.pending_messages[channel_id].append(
+                {
+                    "channel": channel,
+                    "user": user,
+                    "message": message,
+                    "attachments": attachments,
+                    "output_channel": output_channel,
+                    "generate_response": generate_response,
+                    "user_message_id": user_message_id,
+                }
+            )
+            # Signal to cancel current processing
+            self.cancel_flags[channel_id] = True
+            logging.info("📝 Queued new message, signaling cancel for channel %s", channel_id)
+            self._pending_requests.pop(request_key, None)
+            return
 
-        async with self.processing_locks[channel_id]:
+        # Use asyncio.wait_for for lock acquisition with timeout to prevent deadlock
+        try:
+            await asyncio.wait_for(
+                self.processing_locks[channel_id].acquire(),
+                timeout=LOCK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logging.error("⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT)
+            self._pending_requests.pop(request_key, None)
+            await send_channel.send(
+                "⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15
+            )
+            return
+
+        try:  # Manual lock management with timeout protection
             # Track lock acquisition time for timeout detection (using separate dict)
             self._lock_times[channel_id] = time.time()
             # Reset cancel flag
@@ -1214,6 +1223,12 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Cleanup request deduplication key
                     self._pending_requests.pop(request_key, None)
+        finally:
+            # Always release the lock properly
+            if self.processing_locks[channel_id].locked():
+                self.processing_locks[channel_id].release()
+            # Clear lock time tracking
+            self._lock_times.pop(channel_id, None)
 
         # After processing, check for pending messages
         if self.pending_messages.get(channel_id):

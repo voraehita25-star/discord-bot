@@ -34,7 +34,13 @@ from typing import Any
 
 from discord.ext.commands import Bot
 
-from .data.constants import GUILD_ID_MAIN, GUILD_ID_RP
+from .data.constants import (
+    GUILD_ID_MAIN,
+    GUILD_ID_RP,
+    HISTORY_LIMIT_DEFAULT,
+    HISTORY_LIMIT_MAIN,
+    HISTORY_LIMIT_RP,
+)
 
 # Import database module
 try:
@@ -89,14 +95,14 @@ async def save_history(
 
     try:
         # Determine limit based on Guild (optimized for memory)
-        limit = 1500  # Default limit (reduced from 2000)
+        limit = HISTORY_LIMIT_DEFAULT
 
         channel = bot.get_channel(channel_id)
         if channel and hasattr(channel, "guild") and channel.guild:
             if channel.guild.id == GUILD_ID_MAIN:
-                limit = 8000  # Reduced from 10000
+                limit = HISTORY_LIMIT_MAIN
             elif channel.guild.id == GUILD_ID_RP:
-                limit = 30000  # Reduced from 50000
+                limit = HISTORY_LIMIT_RP
 
         if DATABASE_AVAILABLE:
             # Use database storage

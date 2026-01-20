@@ -90,7 +90,7 @@ discord-bot/
 │   ├── reliability/    # Circuit breaker, rate limiter
 │   └── web/            # URL content fetcher
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (204 tests)
+├── tests/              # Test suite (218 tests)
 └── scripts/            # Maintenance & startup scripts
 ```
 
@@ -193,4 +193,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** See `version.txt` | **Python:** 3.11+ | **Tests:** 204 passing ✅
+**Version:** 3.2.4 | **Python:** 3.11+ | **Tests:** 218 passing ✅

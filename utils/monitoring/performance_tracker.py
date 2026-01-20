@@ -5,6 +5,7 @@ Tracks response times and provides percentile statistics.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import statistics
 import time
@@ -114,6 +115,7 @@ class PerformanceTracker:
             lambda: defaultdict(PerformanceStats)
         )
         self._max_history_hours = max_history_hours
+        self._cleanup_task: asyncio.Task | None = None
         self.logger = logging.getLogger("PerformanceTracker")
 
     def start_timer(self) -> float:
@@ -203,6 +205,28 @@ class PerformanceTracker:
             self.logger.info("Cleaned up %d old performance records", removed)
 
         return removed
+
+    def start_cleanup_task(self, interval: float = 3600.0) -> None:
+        """Start background task to periodically clean up old stats.
+        
+        Args:
+            interval: Cleanup interval in seconds (default: 1 hour)
+        """
+        async def _cleanup_loop():
+            while True:
+                await asyncio.sleep(interval)
+                self.cleanup_old_stats()
+
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(_cleanup_loop())
+            self.logger.info("Started periodic cleanup task (interval: %.0fs)", interval)
+
+    def stop_cleanup_task(self) -> None:
+        """Stop the cleanup background task."""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            self._cleanup_task = None
+            self.logger.info("Stopped periodic cleanup task")
 
     def get_summary(self) -> dict[str, Any]:
         """Get a summary of all tracked operations."""

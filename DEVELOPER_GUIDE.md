@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** January 19, 2026  
+> **Last Updated:** January 20, 2026  
 > **Python Version:** 3.11+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 105 Python files | 204 Tests  
-> **Code Quality:** All imports verified ✅ | Circular imports fixed ✅
+> **Total Files:** 108 Python files | 218 Tests  
+> **Code Quality:** All imports verified ✅ | Circular imports fixed ✅ | Thread-safety audited ✅
 
 ---
 
@@ -21,7 +21,7 @@ Discord Bot ที่รวม AI Chat (Gemini API) และ Music Player ไ�
 
 ---
 
-## 📁 Directory Structure (105 Python Files)
+## 📁 Directory Structure (108 Python Files)
 
 ```
 BOT/
@@ -112,7 +112,8 @@ BOT/
 │   │   ├── health_api.py     # HTTP health check API
 │   │   ├── logger.py         # Smart logging system
 │   │   ├── metrics.py        # Performance metrics
-│   │   ├── structured_logger.py # Structured logging
+│   │   ├── performance_tracker.py # Response time tracking with percentiles
+│   │   ├── structured_logger.py # Structured JSON logging
 │   │   ├── sentry_integration.py # Sentry error tracking
 │   │   ├── token_tracker.py  # API token tracking
 │   │   ├── audit_log.py      # Audit logging
@@ -144,7 +145,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (204 tests)
+├── tests/                    # 🧪 Test Suite (218 tests)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -220,8 +221,9 @@ User Message
 | `HistoryManager` | `history_manager.py` | Smart context trimming |
 | `EntityMemoryManager` | `entity_memory.py` | Character facts storage |
 | `Database` | `database.py` | Async SQLite singleton |
-| `CircuitBreaker` | `circuit_breaker.py` | API failure protection |
-| `RateLimiter` | `rate_limiter.py` | Request throttling |
+| `CircuitBreaker` | `circuit_breaker.py` | Thread-safe API failure protection |
+| `RateLimiter` | `rate_limiter.py` | Thread-safe request throttling |
+| `PerformanceTracker` | `performance_tracker.py` | Response time tracking with auto-cleanup |
 
 ---
 
@@ -249,11 +251,25 @@ CREATOR_ID=your_discord_id
 
 ### constants.py
 
-ไฟล์ `cogs/ai_core/data/constants.py` เก็บ config ที่ load จาก environment:
+ไฟล์ `cogs/ai_core/data/constants.py` เก็บ config ที่ load จาก environment และค่าคงที่:
+
+**Environment-based:**
 - `GUILD_ID_*` - Server IDs
 - `CHANNEL_ID_*` - Channel IDs  
 - `GEMINI_API_KEY` - API key
 - `GAME_SEARCH_KEYWORDS` - Keywords ที่ force Google Search
+
+**Processing Limits:**
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `HISTORY_LIMIT_DEFAULT` | 1500 | Messages to keep per channel |
+| `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) |
+| `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) |
+| `LOCK_TIMEOUT` | 120s | Max wait for lock acquisition |
+| `API_TIMEOUT` | 120s | Max wait for Gemini API |
+| `STREAMING_TIMEOUT_INITIAL` | 30s | Initial chunk timeout |
+| `MAX_HISTORY_ITEMS` | 2000 | Max items in chat history |
+| `PERFORMANCE_SAMPLES_MAX` | 100 | Max samples per metric |
 
 ### Persona & Roleplay Files
 
@@ -374,7 +390,7 @@ Real-time response updates via Discord message editing:
 
 ### Circuit Breaker (`circuit_breaker.py`)
 
-ป้องกัน cascading failures:
+Thread-safe protection against cascading failures with `threading.Lock`:
 ```python
 from utils.reliability.circuit_breaker import gemini_circuit
 
@@ -388,17 +404,24 @@ if gemini_circuit.can_execute():
 
 ### Rate Limiter (`rate_limiter.py`)
 
-Token bucket algorithm:
+Thread-safe token bucket algorithm:
 - Per-user, per-channel, per-guild limits
 - Adaptive limits based on circuit state
 - Configurable cooldown messages
+- Atomic cleanup of old buckets
 
 ### Self Healer (`self_healer.py`)
 
 Auto-recovery:
 - Detect duplicate bot instances
-- Force-reset stuck locks (>120s)
 - PID file management
+
+### Performance Tracker (`performance_tracker.py`)
+
+Response time tracking with automatic memory management:
+- Percentile calculations (p50, p90, p99)
+- Hourly trend analysis
+- Auto-cleanup of old samples (prevents memory growth)
 
 ---
 
@@ -495,10 +518,11 @@ async def mycommand(self, ctx):
 
 ## ⚠️ Known Gotchas
 
-1. **Lock Timeout:** Locks stuck >120s will auto-reset (see `process_chat`)
+1. **Lock Timeout:** Uses `asyncio.wait_for()` with 120s timeout (see `LOCK_TIMEOUT` in constants.py)
 2. **Short Response Detection:** `detect_refusal()` only checks patterns, not length
 3. **Streaming Timeout:** 45s default, falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
+5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
 
 ---
 
@@ -510,4 +534,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 19, 2026 - Zero-Bug Baseline Achieved*
+*Documentation last updated: January 20, 2026 - Zero-Bug Baseline Achieved | Thread-Safety Audit Complete*
