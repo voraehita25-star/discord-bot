@@ -16,7 +16,7 @@ Tauri-based native desktop dashboard for managing Discord Bot.
 | Component | Technology |
 |-----------|------------|
 | Backend | Rust + Tauri v2 |
-| Frontend | HTML + CSS + JavaScript |
+| Frontend | HTML + CSS + **TypeScript** |
 | Database | SQLite (rusqlite) |
 | Process Control | sysinfo, std::process |
 
@@ -35,15 +35,19 @@ native_dashboard/
 ├── Cargo.toml              # Rust dependencies
 ├── tauri.conf.json         # Tauri config
 ├── build.rs                # Build script
+├── package.json            # npm dependencies
+├── tsconfig.json           # TypeScript config
 ├── src/
 │   ├── main.rs             # App entry + Tauri commands
 │   ├── lib.rs              # Module exports
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
+├── src-ts/
+│   └── app.ts              # TypeScript source
 ├── ui/
 │   ├── index.html          # Main UI
 │   ├── styles.css          # Dark theme styling
-│   └── app.js              # Frontend logic
+│   └── app.js              # Compiled JS (from TypeScript)
 └── icons/
     ├── icon.ico            # Windows icon
     ├── 32x32.png
@@ -55,17 +59,21 @@ native_dashboard/
 ### Prerequisites
 - Rust toolchain (`rustup`)
 - Tauri CLI (`cargo install tauri-cli`)
+- Node.js + npm (for TypeScript)
 
 ### Development
 ```bash
 cd native_dashboard
+npm install          # First time only
+npm run build        # Compile TypeScript
 cargo tauri dev
 ```
 
 ### Production Build
 ```bash
 cd native_dashboard
-cargo build --release
+npm run build
+cargo tauri build --release
 ```
 
 ### Run

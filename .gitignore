@@ -40,6 +40,13 @@ ENV/
 native_dashboard/target/
 rust_extensions/target/
 
+# Node modules
+native_dashboard/node_modules/
+
+# TypeScript compiled output (regenerated from src-ts/)
+native_dashboard/ui/app.js
+native_dashboard/ui/app.js.map
+
 # Logs
 *.log
 logs/
