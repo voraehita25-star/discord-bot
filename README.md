@@ -245,4 +245,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.8 | **Python:** 3.10+ | **Tests:** 452 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 21, 2026
+**Version:** 3.3.9 | **Python:** 3.10+ | **Tests:** 452 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 22, 2026

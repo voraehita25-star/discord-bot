@@ -325,18 +325,26 @@ class ShutdownManager:
             asyncio.run(self.shutdown(signal_name))
 
     def _atexit_handler(self) -> None:
-        """Handler for atexit - run sync cleanups."""
+        """Handler for atexit - run sync cleanups silently.
+        
+        Note: During interpreter shutdown, stdout/stderr may be closed.
+        We suppress logging here to avoid ValueError on closed streams.
+        """
         if self._state.phase == ShutdownPhase.RUNNING:
-            self.logger.info("🛑 atexit handler triggered")
+            # Suppress logging errors during interpreter shutdown
+            old_raise_exceptions = logging.raiseExceptions
+            logging.raiseExceptions = False
 
-            # Run sync handlers only (no event loop available)
-            for handler in self._handlers:
-                if not handler.is_async:
-                    try:
-                        handler.callback()
-                        self.logger.debug("atexit cleanup: %s", handler.name)
-                    except Exception as e:
-                        self.logger.error("atexit cleanup failed %s: %s", handler.name, e)
+            try:
+                # Run sync handlers only (no event loop available)
+                for handler in self._handlers:
+                    if not handler.is_async:
+                        try:
+                            handler.callback()
+                        except Exception:
+                            pass  # Silently ignore errors during shutdown
+            finally:
+                logging.raiseExceptions = old_raise_exceptions
 
     def setup_signal_handlers(self) -> None:
         """Setup signal handlers for graceful shutdown."""

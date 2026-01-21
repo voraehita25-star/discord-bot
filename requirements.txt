@@ -1,5 +1,5 @@
 # Discord Bot - Production Dependencies
-# Generated: 2026-01-21
+# Generated: 2026-01-22
 # Python 3.10+
 
 # ==================== Core ====================
@@ -33,11 +33,18 @@ pyyaml>=6.0.1                 # YAML parsing for prompt templates
 
 # ==================== Monitoring (Optional) ====================
 sentry-sdk==2.49.0            # Error tracking (optional)
-# prometheus-client>=0.17.1   # Metrics (uncomment if needed)
+prometheus-client==0.24.1     # Metrics & monitoring
 
 # ==================== Performance ====================
 orjson==3.10.14               # 10x faster JSON parsing (drop-in replacement)
 uvloop==0.21.0; sys_platform != 'win32'  # 2-4x faster event loop (Unix only)
+
+# ==================== Windows Utilities ====================
+winshell==0.6                 # Windows shell integration
+pywin32==311                  # Windows COM automation
+
+# ==================== Token Counting ====================
+tiktoken==0.12.0              # Accurate token counting for AI
 
 # ==================== Testing ====================
 pytest==9.0.2                 # Test framework

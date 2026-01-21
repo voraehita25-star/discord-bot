@@ -81,11 +81,11 @@ class TestPerformanceTracker:
         tracker = PerformanceTracker()
 
         with tracker.measure("test_op"):
-            time.sleep(0.01)  # 10ms
+            time.sleep(0.015)  # 15ms - slightly longer for timing tolerance
 
         stats = tracker.get_stats("test_op")
         assert stats["count"] == 1
-        assert stats["avg_ms"] >= 10  # At least 10ms
+        assert stats["avg_ms"] >= 9  # At least 9ms (with tolerance for Windows timing)
 
     def test_manual_timing(self):
         """Test manual timing with start_timer and record."""
