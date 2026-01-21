@@ -1,12 +1,20 @@
 /**
- * Discord Bot Dashboard - TypeScript Frontend
+ * Discord Bot Dashboard - Enhanced TypeScript Frontend
  * Tauri v2 Desktop Application
+ * 
+ * Features:
+ * - Toast Notifications
+ * - Real-time Auto-refresh
+ * - Performance Charts
+ * - Dark/Light Theme
+ * - Enhanced Settings Panel
+ * - Optimized Performance with Caching
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
 // ============================================================================
-// Types
+// Types & Interfaces
 // ============================================================================
 
 interface BotStatus {
@@ -33,81 +41,432 @@ interface UserInfo {
     message_count: number;
 }
 
+interface ToastOptions {
+    type: 'success' | 'error' | 'warning' | 'info';
+    duration?: number;
+}
+
+interface ChartDataPoint {
+    timestamp: number;
+    value: number;
+}
+
+interface CacheEntry<T> {
+    data: T;
+    timestamp: number;
+    ttl: number;
+}
+
+interface Settings {
+    theme: 'dark' | 'light';
+    refreshInterval: number;
+    autoScroll: boolean;
+    notifications: boolean;
+    chartHistory: number;
+}
+
 // ============================================================================
-// State
+// Performance Cache System
 // ============================================================================
 
-let _currentPage = 'status';
-let _refreshInterval: number | null = null;
+class DataCache {
+    private cache: Map<string, CacheEntry<unknown>> = new Map();
+
+    set<T>(key: string, data: T, ttlMs: number = 5000): void {
+        this.cache.set(key, {
+            data,
+            timestamp: Date.now(),
+            ttl: ttlMs
+        });
+    }
+
+    get<T>(key: string): T | null {
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        
+        if (Date.now() - entry.timestamp > entry.ttl) {
+            this.cache.delete(key);
+            return null;
+        }
+        
+        return entry.data as T;
+    }
+
+    invalidate(key: string): void {
+        this.cache.delete(key);
+    }
+
+    clear(): void {
+        this.cache.clear();
+    }
+}
+
+const dataCache = new DataCache();
+
+// ============================================================================
+// State Management
+// ============================================================================
+
+let currentPage = 'status';
+let refreshInterval: number | null = null;
 let logsRefreshInterval: number | null = null;
 let logsAutoScrollEnabled = true;
 let lastLogCount = 0;
+
+// Chart data history
+const memoryHistory: ChartDataPoint[] = [];
+const messagesHistory: ChartDataPoint[] = [];
+const MAX_CHART_POINTS = 60;
+
+// Settings with defaults
+let settings: Settings = {
+    theme: 'dark',
+    refreshInterval: 2000,
+    autoScroll: true,
+    notifications: true,
+    chartHistory: 60
+};
+
+// Debounce timers
+const debounceTimers: Map<string, number> = new Map();
 
 // ============================================================================
 // Initialization
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
+    loadSettings();
     initNavigation();
+    initTheme();
+    initToastContainer();
+    initCharts();
     startRefreshLoop();
     loadAllData();
     initSakuraAnimation();
+    initKeyboardShortcuts();
 });
 
 // ============================================================================
-// Sakura Petals Animation
+// Keyboard Shortcuts
+// ============================================================================
+
+function initKeyboardShortcuts(): void {
+    document.addEventListener('keydown', (e) => {
+        // Ctrl+1-4 for page navigation
+        if (e.ctrlKey && e.key >= '1' && e.key <= '4') {
+            const pages = ['status', 'logs', 'database', 'settings'];
+            const index = parseInt(e.key) - 1;
+            if (pages[index]) {
+                e.preventDefault();
+                switchPage(pages[index]);
+            }
+        }
+        
+        // Ctrl+R to refresh
+        if (e.ctrlKey && e.key === 'r') {
+            e.preventDefault();
+            loadAllData();
+            showToast('Refreshed!', { type: 'info', duration: 1500 });
+        }
+        
+        // Ctrl+T to toggle theme
+        if (e.ctrlKey && e.key === 't') {
+            e.preventDefault();
+            toggleTheme();
+        }
+    });
+}
+
+// ============================================================================
+// Toast Notification System
+// ============================================================================
+
+function initToastContainer(): void {
+    if (!document.getElementById('toast-container')) {
+        const container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+}
+
+function showToast(message: string, options: ToastOptions = { type: 'info' }): void {
+    if (!settings.notifications) return;
+
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${options.type}`;
+    
+    const icons: Record<string, string> = {
+        success: '✅',
+        error: '❌',
+        warning: '⚠️',
+        info: 'ℹ️'
+    };
+
+    toast.innerHTML = `
+        <span class="toast-icon">${icons[options.type]}</span>
+        <span class="toast-message">${escapeHtml(message)}</span>
+        <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+    `;
+
+    container.appendChild(toast);
+
+    // Animate in
+    requestAnimationFrame(() => {
+        toast.classList.add('toast-visible');
+    });
+
+    // Auto remove
+    const duration = options.duration ?? 4000;
+    setTimeout(() => {
+        toast.classList.remove('toast-visible');
+        toast.classList.add('toast-hiding');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+// ============================================================================
+// Theme System
+// ============================================================================
+
+function initTheme(): void {
+    applyTheme(settings.theme);
+    
+    // Add theme toggle button listener
+    const themeToggle = document.getElementById('theme-toggle');
+    themeToggle?.addEventListener('click', toggleTheme);
+}
+
+function toggleTheme(): void {
+    settings.theme = settings.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(settings.theme);
+    saveSettings();
+    showToast(`Theme: ${settings.theme === 'dark' ? '🌙 Dark' : '☀️ Light'}`, { type: 'info', duration: 1500 });
+}
+
+function applyTheme(theme: 'dark' | 'light'): void {
+    document.documentElement.setAttribute('data-theme', theme);
+    
+    const themeIcon = document.getElementById('theme-icon');
+    if (themeIcon) {
+        themeIcon.textContent = theme === 'dark' ? '🌙' : '☀️';
+    }
+}
+
+// ============================================================================
+// Settings Management
+// ============================================================================
+
+function loadSettings(): void {
+    try {
+        const saved = localStorage.getItem('dashboard-settings');
+        if (saved) {
+            settings = { ...settings, ...JSON.parse(saved) };
+        }
+    } catch (e) {
+        console.warn('Failed to load settings:', e);
+    }
+}
+
+function saveSettings(): void {
+    try {
+        localStorage.setItem('dashboard-settings', JSON.stringify(settings));
+    } catch (e) {
+        console.warn('Failed to save settings:', e);
+    }
+}
+
+function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
+    settings[key] = value;
+    saveSettings();
+    
+    // Apply changes
+    if (key === 'refreshInterval') {
+        restartRefreshLoop();
+    } else if (key === 'theme') {
+        applyTheme(value as 'dark' | 'light');
+    }
+}
+
+// ============================================================================
+// Lightweight Charts (Canvas-based for performance)
+// ============================================================================
+
+function initCharts(): void {
+    // Charts will be initialized when the status page loads
+    window.addEventListener('resize', debounce(updateCharts, 'resize', 250));
+}
+
+function addChartDataPoint(history: ChartDataPoint[], value: number): void {
+    history.push({
+        timestamp: Date.now(),
+        value
+    });
+    
+    while (history.length > MAX_CHART_POINTS) {
+        history.shift();
+    }
+}
+
+function drawChart(canvasId: string, data: ChartDataPoint[], color: string, label: string): void {
+    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+
+    const width = rect.width;
+    const height = rect.height;
+    const padding = 30;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (data.length < 2) {
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Collecting data...', width / 2, height / 2);
+        return;
+    }
+
+    const values = data.map(d => d.value);
+    const minVal = Math.min(...values) * 0.9;
+    const maxVal = Math.max(...values) * 1.1 || 1;
+
+    // Draw grid
+    ctx.strokeStyle = 'rgba(168, 85, 247, 0.15)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = padding + (height - padding * 2) * (i / 4);
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+    }
+
+    // Draw gradient fill
+    const gradient = ctx.createLinearGradient(0, padding, 0, height - padding);
+    gradient.addColorStop(0, color.replace('1)', '0.3)'));
+    gradient.addColorStop(1, color.replace('1)', '0.05)'));
+
+    ctx.beginPath();
+    ctx.moveTo(padding, height - padding);
+
+    data.forEach((point, i) => {
+        const x = padding + (width - padding * 2) * (i / (data.length - 1));
+        const y = height - padding - ((point.value - minVal) / (maxVal - minVal)) * (height - padding * 2);
+        ctx.lineTo(x, y);
+    });
+
+    ctx.lineTo(width - padding, height - padding);
+    ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // Draw line
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    data.forEach((point, i) => {
+        const x = padding + (width - padding * 2) * (i / (data.length - 1));
+        const y = height - padding - ((point.value - minVal) / (maxVal - minVal)) * (height - padding * 2);
+        
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    });
+    ctx.stroke();
+
+    // Draw current value
+    const currentValue = data[data.length - 1]?.value ?? 0;
+    ctx.fillStyle = color;
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${label}: ${currentValue.toFixed(1)}`, width - padding, 20);
+
+    // Draw min/max labels
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(maxVal.toFixed(1), 5, padding + 10);
+    ctx.fillText(minVal.toFixed(1), 5, height - padding);
+}
+
+function updateCharts(): void {
+    drawChart('memory-chart', memoryHistory, 'rgba(255, 107, 157, 1)', 'Memory MB');
+    drawChart('messages-chart', messagesHistory, 'rgba(34, 211, 238, 1)', 'Messages');
+}
+
+// ============================================================================
+// Sakura Petals Animation (Optimized with Object Pool)
 // ============================================================================
 
 function initSakuraAnimation(): void {
     const container = document.getElementById('sakura-container');
     if (!container) return;
 
-    // Petal SVG shapes - variety of sakura petal designs
     const petalShapes: string[] = [
-        // Classic sakura petal
         `<svg viewBox="0 0 40 40"><path d="M20 0 C25 10, 35 15, 40 20 C35 25, 25 30, 20 40 C15 30, 5 25, 0 20 C5 15, 15 10, 20 0" fill="currentColor"/></svg>`,
-        // Round petal
         `<svg viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="18" ry="12" fill="currentColor"/></svg>`,
-        // Heart-shaped petal
         `<svg viewBox="0 0 40 40"><path d="M20 35 C10 25, 0 15, 10 5 C15 0, 20 5, 20 10 C20 5, 25 0, 30 5 C40 15, 30 25, 20 35" fill="currentColor"/></svg>`,
-        // Simple oval
         `<svg viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="10" ry="18" fill="currentColor"/></svg>`,
-        // Pointed petal
         `<svg viewBox="0 0 40 40"><path d="M20 0 C30 15, 30 25, 20 40 C10 25, 10 15, 20 0" fill="currentColor"/></svg>`,
-        // Wide petal
-        `<svg viewBox="0 0 40 40"><path d="M20 5 C35 10, 40 20, 35 30 C25 40, 15 40, 5 30 C0 20, 5 10, 20 5" fill="currentColor"/></svg>`,
-        // Double curve
-        `<svg viewBox="0 0 40 40"><path d="M20 0 C35 5, 40 20, 35 35 C20 40, 5 35, 0 20 C5 5, 15 0, 20 0" fill="currentColor"/></svg>`,
-        // Star-like
-        `<svg viewBox="0 0 40 40"><path d="M20 0 L25 15 L40 20 L25 25 L20 40 L15 25 L0 20 L15 15 Z" fill="currentColor"/></svg>`
     ];
 
-    // Color palette - various sakura pink shades
     const colors: string[] = [
-        'rgba(255, 183, 197, 0.9)',  // Light pink
-        'rgba(255, 145, 175, 0.85)', // Medium pink
-        'rgba(255, 107, 157, 0.8)',  // Hot pink
-        'rgba(255, 192, 203, 0.9)',  // Pink
-        'rgba(255, 174, 201, 0.85)', // Soft pink
-        'rgba(255, 209, 220, 0.9)',  // Pale pink
-        'rgba(255, 130, 171, 0.8)',  // Rose pink
-        'rgba(248, 200, 220, 0.9)',  // Blush
-        'rgba(255, 160, 190, 0.85)', // Coral pink
-        'rgba(255, 220, 230, 0.9)'   // Very light pink
+        'rgba(255, 183, 197, 0.9)',
+        'rgba(255, 145, 175, 0.85)',
+        'rgba(255, 107, 157, 0.8)',
+        'rgba(255, 192, 203, 0.9)',
+        'rgba(255, 174, 201, 0.85)',
     ];
 
-    function createPetal(): HTMLDivElement {
-        const petal = document.createElement('div');
-        petal.className = 'sakura-petal';
+    const petalPool: HTMLDivElement[] = [];
+    const activePetals: Set<HTMLDivElement> = new Set();
+    const MAX_PETALS = 30;
 
-        // Random properties
-        const size = Math.random() * 20 + 10; // 10-30px
+    function getPetal(): HTMLDivElement {
+        let petal = petalPool.pop();
+        if (!petal) {
+            petal = document.createElement('div');
+            petal.className = 'sakura-petal';
+        }
+        return petal;
+    }
+
+    function returnPetal(petal: HTMLDivElement): void {
+        activePetals.delete(petal);
+        petal.remove();
+        petalPool.push(petal);
+    }
+
+    function createPetal(): void {
+        if (activePetals.size >= MAX_PETALS) return;
+
+        const petal = getPetal();
+        activePetals.add(petal);
+
+        const size = Math.random() * 15 + 10;
         const startX = Math.random() * window.innerWidth;
-        const duration = Math.random() * 8 + 8; // 8-16s
+        const duration = Math.random() * 6 + 6;
         const delay = Math.random() * 2;
         const rotateStart = Math.random() * 360;
         const rotateEnd = rotateStart + (Math.random() * 720 - 360);
-        const swayAmount = Math.random() * 100 + 50;
+        const swayAmount = Math.random() * 80 + 40;
         const color = colors[Math.floor(Math.random() * colors.length)];
         const shape = petalShapes[Math.floor(Math.random() * petalShapes.length)];
 
@@ -122,28 +481,22 @@ function initSakuraAnimation(): void {
             pointer-events: none;
             z-index: 1;
             opacity: 0;
-            filter: blur(${Math.random() < 0.3 ? '1px' : '0px'}) drop-shadow(0 0 ${Math.random() * 5 + 2}px ${color});
-            animation: sakuraFall${Math.floor(Math.random() * 3)} ${duration}s linear ${delay}s infinite;
+            will-change: transform, opacity;
+            animation: sakuraFall${Math.floor(Math.random() * 3)} ${duration}s linear ${delay}s;
             --sway: ${swayAmount}px;
             --rotate-start: ${rotateStart}deg;
             --rotate-end: ${rotateEnd}deg;
         `;
 
         container!.appendChild(petal);
-        return petal;
+        setTimeout(() => returnPetal(petal), (duration + delay) * 1000);
     }
 
-    // Create initial petals
-    for (let i = 0; i < 35; i++) {
-        setTimeout(() => createPetal(), i * 200);
+    for (let i = 0; i < 15; i++) {
+        setTimeout(createPetal, i * 300);
     }
 
-    // Continuously create new petals
-    setInterval(() => {
-        if (container.children.length < 50) {
-            createPetal();
-        }
-    }, 800);
+    setInterval(createPetal, 1000);
 }
 
 // ============================================================================
@@ -159,106 +512,161 @@ function initNavigation(): void {
     });
 
     // Button handlers
-    const btnStart = document.getElementById('btn-start');
-    const btnDev = document.getElementById('btn-dev');
-    const btnStop = document.getElementById('btn-stop');
-    const btnRestart = document.getElementById('btn-restart');
-
-    btnStart?.addEventListener('click', startBot);
-    btnDev?.addEventListener('click', startDevBot);
-    btnStop?.addEventListener('click', stopBot);
-    btnRestart?.addEventListener('click', restartBot);
+    document.getElementById('btn-start')?.addEventListener('click', startBot);
+    document.getElementById('btn-dev')?.addEventListener('click', startDevBot);
+    document.getElementById('btn-stop')?.addEventListener('click', stopBot);
+    document.getElementById('btn-restart')?.addEventListener('click', restartBot);
+    
+    // Settings handlers
+    document.getElementById('refresh-interval')?.addEventListener('change', (e) => {
+        const value = parseInt((e.target as HTMLSelectElement).value);
+        updateSetting('refreshInterval', value);
+        showToast(`Refresh interval: ${value / 1000}s`, { type: 'info' });
+    });
+    
+    document.getElementById('notifications-toggle')?.addEventListener('change', (e) => {
+        updateSetting('notifications', (e.target as HTMLInputElement).checked);
+    });
 }
 
 function switchPage(page: string): void {
-    _currentPage = page;
+    currentPage = page;
 
-    // Update nav
     document.querySelectorAll('.nav-item').forEach(item => {
         const itemPage = (item as HTMLElement).dataset.page;
         item.classList.toggle('active', itemPage === page);
     });
 
-    // Update pages
     document.querySelectorAll('.page').forEach(p => {
         p.classList.toggle('active', p.id === `page-${page}`);
     });
 
-    // Handle logs page real-time refresh
     if (page === 'logs') {
         loadLogs();
-        startLogsRefresh();  // Start real-time updates
+        startLogsRefresh();
     } else {
-        stopLogsRefresh();   // Stop when leaving logs page
+        stopLogsRefresh();
     }
 
     if (page === 'database') loadDbStats();
+    if (page === 'settings') loadSettingsUI();
 }
 
 // ============================================================================
-// Refresh Loop
+// Optimized Refresh Loop
 // ============================================================================
 
 function startRefreshLoop(): void {
-    _refreshInterval = window.setInterval(updateStatus, 2000);
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+    }
+    refreshInterval = window.setInterval(updateStatus, settings.refreshInterval);
     updateStatus();
 }
 
+function restartRefreshLoop(): void {
+    startRefreshLoop();
+}
+
+// Debounce helper for performance
+function debounce(fn: () => void, key: string, delay: number): () => void {
+    return () => {
+        const existing = debounceTimers.get(key);
+        if (existing) {
+            clearTimeout(existing);
+        }
+        debounceTimers.set(key, window.setTimeout(() => {
+            fn();
+            debounceTimers.delete(key);
+        }, delay));
+    };
+}
+
+// Batch DOM updates for performance
+function batchDOMUpdate(updates: (() => void)[]): void {
+    requestAnimationFrame(() => {
+        updates.forEach(update => update());
+    });
+}
+
 async function updateStatus(): Promise<void> {
+    // Check cache first
+    const cachedStatus = dataCache.get<BotStatus>('status');
+    const cachedDbStats = dataCache.get<DbStats>('dbStats');
+
     try {
-        const status = await invoke<BotStatus>('get_status');
+        // Parallel fetch
+        const [status, dbStats] = await Promise.all([
+            cachedStatus ?? invoke<BotStatus>('get_status'),
+            cachedDbStats ?? invoke<DbStats>('get_db_stats')
+        ]);
 
-        // Update status badge
-        const badge = document.getElementById('status-badge');
-        const statusText = badge?.querySelector('.status-text');
+        // Cache the results
+        if (!cachedStatus) dataCache.set('status', status, 1500);
+        if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
 
-        if (badge && statusText) {
-            if (status.is_running) {
-                badge.classList.add('online');
-                statusText.textContent = 'Online';
-            } else {
-                badge.classList.remove('online');
-                statusText.textContent = 'Offline';
-            }
-        }
+        // Add to chart history
+        addChartDataPoint(memoryHistory, status.memory_mb);
+        addChartDataPoint(messagesHistory, dbStats.total_messages);
 
-        // Update status text
-        const botStatusText = document.getElementById('bot-status-text');
-        if (botStatusText) {
-            botStatusText.textContent = status.is_running ? 'Status: Online' : 'Status: Offline';
-        }
-
-        // Update buttons
-        const btnStart = document.getElementById('btn-start') as HTMLButtonElement | null;
-        const btnDev = document.getElementById('btn-dev') as HTMLButtonElement | null;
-        const btnStop = document.getElementById('btn-stop') as HTMLButtonElement | null;
-        const btnRestart = document.getElementById('btn-restart') as HTMLButtonElement | null;
-
-        if (btnStart) btnStart.disabled = status.is_running;
-        if (btnDev) btnDev.disabled = status.is_running;
-        if (btnStop) btnStop.disabled = !status.is_running;
-        if (btnRestart) btnRestart.disabled = !status.is_running;
-
-        // Update stats
-        const statUptime = document.getElementById('stat-uptime');
-        const statMode = document.getElementById('stat-mode');
-        const statMemory = document.getElementById('stat-memory');
-
-        if (statUptime) statUptime.textContent = status.uptime;
-        if (statMode) statMode.textContent = status.mode;
-        if (statMemory) statMemory.textContent = `${status.memory_mb.toFixed(1)} MB`;
-
-        // Get DB stats
-        const dbStats = await invoke<DbStats>('get_db_stats');
-        const statMessages = document.getElementById('stat-messages');
-        const statChannels = document.getElementById('stat-channels');
-
-        if (statMessages) statMessages.textContent = dbStats.total_messages.toLocaleString();
-        if (statChannels) statChannels.textContent = dbStats.active_channels.toString();
+        // Batch all DOM updates
+        batchDOMUpdate([
+            () => updateStatusBadge(status),
+            () => updateStatusText(status),
+            () => updateButtons(status),
+            () => updateStats(status, dbStats),
+            () => updateCharts()
+        ]);
 
     } catch (error) {
         console.error('Failed to update status:', error);
     }
+}
+
+function updateStatusBadge(status: BotStatus): void {
+    const badge = document.getElementById('status-badge');
+    const statusText = badge?.querySelector('.status-text');
+
+    if (badge && statusText) {
+        badge.classList.toggle('online', status.is_running);
+        statusText.textContent = status.is_running ? 'Online' : 'Offline';
+    }
+}
+
+function updateStatusText(status: BotStatus): void {
+    const botStatusText = document.getElementById('bot-status-text');
+    if (botStatusText) {
+        botStatusText.textContent = status.is_running ? 'Status: 🟢 Online' : 'Status: 🔴 Offline';
+    }
+}
+
+function updateButtons(status: BotStatus): void {
+    const btnStart = document.getElementById('btn-start') as HTMLButtonElement | null;
+    const btnDev = document.getElementById('btn-dev') as HTMLButtonElement | null;
+    const btnStop = document.getElementById('btn-stop') as HTMLButtonElement | null;
+    const btnRestart = document.getElementById('btn-restart') as HTMLButtonElement | null;
+
+    if (btnStart) btnStart.disabled = status.is_running;
+    if (btnDev) btnDev.disabled = status.is_running;
+    if (btnStop) btnStop.disabled = !status.is_running;
+    if (btnRestart) btnRestart.disabled = !status.is_running;
+}
+
+function updateStats(status: BotStatus, dbStats: DbStats): void {
+    const updates: [string, string][] = [
+        ['stat-uptime', status.uptime],
+        ['stat-mode', status.mode],
+        ['stat-memory', `${status.memory_mb.toFixed(1)} MB`],
+        ['stat-messages', dbStats.total_messages.toLocaleString()],
+        ['stat-channels', dbStats.active_channels.toString()]
+    ];
+
+    updates.forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el && el.textContent !== value) {
+            el.textContent = value;
+        }
+    });
 }
 
 // ============================================================================
@@ -267,46 +675,54 @@ async function updateStatus(): Promise<void> {
 
 async function startBot(): Promise<void> {
     try {
+        showToast('Starting bot...', { type: 'info', duration: 2000 });
         const result = await invoke<string>('start_bot');
-        showMessage(result);
+        showToast(result, { type: 'success' });
+        dataCache.invalidate('status');
         updateStatus();
     } catch (error) {
-        showMessage(String(error), true);
+        showToast(String(error), { type: 'error' });
     }
 }
 
 async function stopBot(): Promise<void> {
     try {
+        showToast('Stopping bot...', { type: 'info', duration: 2000 });
         const result = await invoke<string>('stop_bot');
-        showMessage(result);
+        showToast(result, { type: 'success' });
+        dataCache.invalidate('status');
         updateStatus();
     } catch (error) {
-        showMessage(String(error), true);
+        showToast(String(error), { type: 'error' });
     }
 }
 
 async function restartBot(): Promise<void> {
     try {
+        showToast('Restarting bot...', { type: 'info', duration: 2000 });
         const result = await invoke<string>('restart_bot');
-        showMessage(result);
+        showToast(result, { type: 'success' });
+        dataCache.invalidate('status');
         updateStatus();
     } catch (error) {
-        showMessage(String(error), true);
+        showToast(String(error), { type: 'error' });
     }
 }
 
 async function startDevBot(): Promise<void> {
     try {
+        showToast('Starting dev mode...', { type: 'info', duration: 2000 });
         const result = await invoke<string>('start_dev_bot');
-        showMessage(result);
+        showToast(result, { type: 'success' });
+        dataCache.invalidate('status');
         updateStatus();
     } catch (error) {
-        showMessage(String(error), true);
+        showToast(String(error), { type: 'error' });
     }
 }
 
 // ============================================================================
-// Logs - Real-time Streaming
+// Logs - Optimized Real-time Streaming
 // ============================================================================
 
 async function loadLogs(): Promise<void> {
@@ -318,11 +734,12 @@ async function loadLogs(): Promise<void> {
 
         if (!container) return;
 
-        // Check if new logs arrived
         const hasNewLogs = logs.length !== lastLogCount;
         lastLogCount = logs.length;
 
-        let html = '';
+        // Use DocumentFragment for better performance
+        const fragment = document.createDocumentFragment();
+        
         logs.forEach(line => {
             let level = 'info';
             if (line.includes('ERROR')) level = 'error';
@@ -330,27 +747,33 @@ async function loadLogs(): Promise<void> {
             else if (line.includes('DEBUG')) level = 'debug';
 
             if (filter === 'all' || line.includes(filter)) {
-                html += `<div class="log-line ${level}">${escapeHtml(line)}</div>`;
+                const div = document.createElement('div');
+                div.className = `log-line ${level}`;
+                div.textContent = line;
+                fragment.appendChild(div);
             }
         });
 
-        container.innerHTML = html || 'No logs found.';
+        container.innerHTML = '';
+        container.appendChild(fragment);
 
-        // Auto-scroll only if enabled and new logs arrived
+        if (!container.firstChild) {
+            container.textContent = 'No logs found.';
+        }
+
         if (logsAutoScrollEnabled && hasNewLogs) {
             container.scrollTop = container.scrollHeight;
         }
     } catch (error) {
         console.error('Failed to load logs:', error);
+        showToast('Failed to load logs', { type: 'error' });
     }
 }
 
 function startLogsRefresh(): void {
-    // Clear existing interval if any
     if (logsRefreshInterval) {
         clearInterval(logsRefreshInterval);
     }
-    // Refresh logs every 1 second for real-time feel
     logsRefreshInterval = window.setInterval(loadLogs, 1000);
 }
 
@@ -368,12 +791,14 @@ function toggleAutoScroll(): void {
         btn.textContent = logsAutoScrollEnabled ? '⏸ Pause' : '▶️ Resume';
         btn.classList.toggle('paused', !logsAutoScrollEnabled);
     }
+    showToast(`Auto-scroll ${logsAutoScrollEnabled ? 'enabled' : 'disabled'}`, { type: 'info', duration: 1500 });
 }
 
 function clearLogs(): void {
     const container = document.getElementById('log-content');
     if (container) container.innerHTML = '';
     lastLogCount = 0;
+    showToast('Logs cleared', { type: 'info', duration: 1500 });
 }
 
 // ============================================================================
@@ -384,42 +809,49 @@ async function loadDbStats(): Promise<void> {
     try {
         const stats = await invoke<DbStats>('get_db_stats');
         
-        const dbMessages = document.getElementById('db-messages');
-        const dbChannels = document.getElementById('db-channels');
-        const dbEntities = document.getElementById('db-entities');
-        const dbRag = document.getElementById('db-rag');
+        batchDOMUpdate([
+            () => {
+                const dbMessages = document.getElementById('db-messages');
+                const dbChannels = document.getElementById('db-channels');
+                const dbEntities = document.getElementById('db-entities');
+                const dbRag = document.getElementById('db-rag');
 
-        if (dbMessages) dbMessages.textContent = stats.total_messages.toLocaleString();
-        if (dbChannels) dbChannels.textContent = stats.active_channels.toString();
-        if (dbEntities) dbEntities.textContent = stats.total_entities.toString();
-        if (dbRag) dbRag.textContent = stats.rag_memories.toString();
+                if (dbMessages) dbMessages.textContent = stats.total_messages.toLocaleString();
+                if (dbChannels) dbChannels.textContent = stats.active_channels.toString();
+                if (dbEntities) dbEntities.textContent = stats.total_entities.toString();
+                if (dbRag) dbRag.textContent = stats.rag_memories.toString();
+            }
+        ]);
 
-        // Load channels
-        const channels = await invoke<ChannelInfo[]>('get_recent_channels', { limit: 10 });
+        // Load channels and users in parallel
+        const [channels, users] = await Promise.all([
+            invoke<ChannelInfo[]>('get_recent_channels', { limit: 10 }),
+            invoke<UserInfo[]>('get_top_users', { limit: 10 })
+        ]);
+
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
             channelsList.innerHTML = channels.map(ch => `
                 <div class="data-item">
                     <span class="data-item-id">${ch.channel_id}</span>
-                    <span class="data-item-value">${ch.message_count} messages</span>
+                    <span class="data-item-value">${ch.message_count.toLocaleString()} messages</span>
                 </div>
-            `).join('') || '<p>No channels found.</p>';
+            `).join('') || '<p class="no-data">No channels found.</p>';
         }
 
-        // Load users
-        const users = await invoke<UserInfo[]>('get_top_users', { limit: 10 });
         const usersList = document.getElementById('users-list');
         if (usersList) {
             usersList.innerHTML = users.map(u => `
                 <div class="data-item">
                     <span class="data-item-id">${u.user_id}</span>
-                    <span class="data-item-value">${u.message_count} messages</span>
+                    <span class="data-item-value">${u.message_count.toLocaleString()} messages</span>
                 </div>
-            `).join('') || '<p>No users found.</p>';
+            `).join('') || '<p class="no-data">No users found.</p>';
         }
 
     } catch (error) {
         console.error('Failed to load DB stats:', error);
+        showToast('Failed to load database stats', { type: 'error' });
     }
 }
 
@@ -430,10 +862,27 @@ async function clearHistory(): Promise<void> {
 
     try {
         const count = await invoke<number>('clear_history');
-        showMessage(`Deleted ${count} messages.`);
+        showToast(`Deleted ${count.toLocaleString()} messages`, { type: 'success' });
+        dataCache.invalidate('dbStats');
         loadDbStats();
     } catch (error) {
-        showMessage(String(error), true);
+        showToast(String(error), { type: 'error' });
+    }
+}
+
+// ============================================================================
+// Settings UI
+// ============================================================================
+
+function loadSettingsUI(): void {
+    const refreshSelect = document.getElementById('refresh-interval') as HTMLSelectElement | null;
+    if (refreshSelect) {
+        refreshSelect.value = settings.refreshInterval.toString();
+    }
+    
+    const notificationsToggle = document.getElementById('notifications-toggle') as HTMLInputElement | null;
+    if (notificationsToggle) {
+        notificationsToggle.checked = settings.notifications;
     }
 }
 
@@ -446,17 +895,18 @@ async function openFolder(type: 'logs' | 'data'): Promise<void> {
         ? 'C:\\Users\\ME\\BOT\\logs'
         : 'C:\\Users\\ME\\BOT\\data';
 
-    await invoke('open_folder', { path });
+    try {
+        await invoke('open_folder', { path });
+    } catch (error) {
+        showToast(`Failed to open folder: ${error}`, { type: 'error' });
+    }
 }
 
 function loadAllData(): void {
+    dataCache.clear();
     updateStatus();
     loadLogs();
     loadDbStats();
-}
-
-function showMessage(msg: string, isError = false): void {
-    alert(isError ? `Error: ${msg}` : msg);
 }
 
 function escapeHtml(text: string): string {
@@ -469,7 +919,6 @@ function escapeHtml(text: string): string {
 // Export for global access (Tauri needs these on window)
 // ============================================================================
 
-// Make functions available globally for HTML onclick handlers
 declare global {
     interface Window {
         toggleAutoScroll: typeof toggleAutoScroll;
@@ -477,6 +926,8 @@ declare global {
         clearHistory: typeof clearHistory;
         openFolder: typeof openFolder;
         loadLogs: typeof loadLogs;
+        toggleTheme: typeof toggleTheme;
+        showToast: typeof showToast;
     }
 }
 
@@ -485,3 +936,5 @@ window.clearLogs = clearLogs;
 window.clearHistory = clearHistory;
 window.openFolder = openFolder;
 window.loadLogs = loadLogs;
+window.toggleTheme = toggleTheme;
+window.showToast = showToast;

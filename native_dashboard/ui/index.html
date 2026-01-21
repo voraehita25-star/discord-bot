@@ -1,14 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>디스코드 봇 대시보드</title>
+    <title>Discord Bot Dashboard</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
     <!-- Sakura Petals Animation -->
     <div id="sakura-container"></div>
 
@@ -24,20 +27,29 @@
                 <button class="nav-item active" data-page="status">
                     <span class="nav-icon">📊</span>
                     <span>Status</span>
+                    <kbd class="shortcut">Ctrl+1</kbd>
                 </button>
                 <button class="nav-item" data-page="logs">
                     <span class="nav-icon">📜</span>
                     <span>Logs</span>
+                    <kbd class="shortcut">Ctrl+2</kbd>
                 </button>
                 <button class="nav-item" data-page="database">
                     <span class="nav-icon">💾</span>
                     <span>Database</span>
+                    <kbd class="shortcut">Ctrl+3</kbd>
                 </button>
                 <button class="nav-item" data-page="settings">
                     <span class="nav-icon">⚙️</span>
                     <span>Settings</span>
+                    <kbd class="shortcut">Ctrl+4</kbd>
                 </button>
             </div>
+
+            <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">
+                <span id="theme-icon">🌙</span>
+                <span>Toggle Theme</span>
+            </button>
 
             <div class="status-badge" id="status-badge">
                 <span class="status-dot"></span>
@@ -92,12 +104,29 @@
                     </div>
                 </div>
 
+                <!-- Performance Charts -->
+                <div class="charts-section">
+                    <h2>📈 Performance Graphs</h2>
+                    <div class="charts-grid">
+                        <div class="chart-card">
+                            <h3>Memory Usage</h3>
+                            <canvas id="memory-chart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Message Count</h3>
+                            <canvas id="messages-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="quick-actions">
                     <h2>Quick Actions</h2>
                     <div class="action-buttons">
                         <button class="btn" onclick="openFolder('logs')">📁 Open Logs</button>
                         <button class="btn" onclick="openFolder('data')">📁 Open Data</button>
                     </div>
+                </div>
+            </section>
                 </div>
             </section>
 
@@ -164,17 +193,84 @@
 
             <!-- Settings Page -->
             <section id="page-settings" class="page">
-                <h1>Settings</h1>
+                <h1>⚙️ Settings</h1>
 
                 <div class="settings-card">
-                    <h2>About</h2>
-                    <p><strong>Discord Bot Dashboard</strong></p>
-                    <p>Version 1.0.0</p>
-                    <p>Built with Tauri + Rust</p>
+                    <h2>🎨 Appearance</h2>
+                    <div class="setting-row">
+                        <label for="theme-select">Theme</label>
+                        <div class="setting-control">
+                            <button class="btn" onclick="toggleTheme()">
+                                <span id="theme-icon-settings">🌙</span> Toggle Theme (Ctrl+T)
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="settings-card">
-                    <h2>Paths</h2>
+                    <h2>🔄 Refresh Settings</h2>
+                    <div class="setting-row">
+                        <label for="refresh-interval">Auto-refresh Interval</label>
+                        <select id="refresh-interval" class="setting-select">
+                            <option value="1000">1 second</option>
+                            <option value="2000" selected>2 seconds</option>
+                            <option value="5000">5 seconds</option>
+                            <option value="10000">10 seconds</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="notifications-toggle">Toast Notifications</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="notifications-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <h2>⌨️ Keyboard Shortcuts</h2>
+                    <div class="shortcuts-list">
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 1</kbd> <span>Go to Status</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 2</kbd> <span>Go to Logs</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 3</kbd> <span>Go to Database</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 4</kbd> <span>Go to Settings</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + R</kbd> <span>Refresh All Data</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + T</kbd> <span>Toggle Theme</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <h2>ℹ️ About</h2>
+                    <p><strong>Discord Bot Dashboard</strong></p>
+                    <p>Version 2.0.0 - Enhanced Edition</p>
+                    <p>Built with Tauri + Rust + TypeScript</p>
+                    <div class="features-list">
+                        <h4>Features:</h4>
+                        <ul>
+                            <li>✅ Toast Notifications</li>
+                            <li>✅ Real-time Charts</li>
+                            <li>✅ Dark/Light Theme</li>
+                            <li>✅ Keyboard Shortcuts</li>
+                            <li>✅ Performance Caching</li>
+                            <li>✅ Live Log Streaming</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <h2>📁 Paths</h2>
                     <p><strong>Bot Script:</strong> C:\Users\ME\BOT\bot.py</p>
                     <p><strong>Log File:</strong> C:\Users\ME\BOT\logs\bot.log</p>
                     <p><strong>Database:</strong> C:\Users\ME\BOT\data\bot_database.db</p>
