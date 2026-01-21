@@ -10,8 +10,6 @@ from pathlib import Path
 
 import discord
 
-from ..data.roleplay_data import SERVER_AVATARS
-from ..memory.rag import rag_system
 from ..commands.server_commands import (
     COMMAND_HANDLERS,
     cmd_add_role,
@@ -30,6 +28,8 @@ from ..commands.server_commands import (
     cmd_set_channel_perm,
     cmd_set_role_perm,
 )
+from ..data.roleplay_data import SERVER_AVATARS
+from ..memory.rag import rag_system
 from ..response.webhook_cache import (
     get_cached_webhook,
     invalidate_webhook_cache,

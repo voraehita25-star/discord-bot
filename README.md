@@ -17,7 +17,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
 | 🔗 **URL Reading** | Auto-fetch and summarize web pages & GitHub repos |
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
-| 🛡️ **Reliability** | Circuit breaker, rate limiting, and auto-recovery |
+| 🛡️ **Reliability** | Circuit breaker, rate limiting, auto-recovery, graceful shutdown, memory management |
 | 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
 | 🦀 **Native Extensions** | Optional Rust (RAG, media) & Go (URL fetch, metrics) for 5-25x speedup |
 
@@ -102,7 +102,7 @@ discord-bot/
 │   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
 │   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (362 tests)
+├── tests/              # Test suite (452 tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -139,8 +139,11 @@ The bot includes built-in monitoring capabilities:
 - **Health API** - HTTP endpoint for health checks (`/health`)
 - **Token Tracking** - Per-user/channel token usage metrics
 - **Performance Metrics** - Response times with percentiles
+- **Structured Logging** - JSON-formatted logs for ELK/monitoring
 - **Sentry Integration** - Error tracking (optional)
 - **Go Health Service** - Prometheus-compatible metrics (optional)
+- **Memory Management** - TTL caches, WeakRef caching, memory monitoring
+- **Graceful Shutdown** - Coordinated cleanup with signal handling
 
 ## 🦀 Native Extensions (Optional)
 
@@ -242,4 +245,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.8 | **Python:** 3.10+ | **Tests:** 362 passing ✅ | **Native Extensions:** Rust + Go | **Last Audit:** January 21, 2026
+**Version:** 3.3.8 | **Python:** 3.10+ | **Tests:** 452 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 21, 2026

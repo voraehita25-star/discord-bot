@@ -14,24 +14,6 @@ Submodules:
 
 from __future__ import annotations
 
-# Re-export sanitization functions
-from ..sanitization import (
-    sanitize_channel_name,
-    sanitize_message_content,
-    sanitize_role_name,
-)
-
-# Re-export webhook cache functions
-from ..response.webhook_cache import (
-    WEBHOOK_CACHE_TTL,
-    get_cached_webhook,
-    invalidate_webhook_cache,
-    invalidate_webhook_cache_on_channel_delete,
-    set_cached_webhook,
-    start_webhook_cache_cleanup,
-    stop_webhook_cache_cleanup,
-)
-
 # Re-export server commands
 from ..commands.server_commands import (
     COMMAND_HANDLERS,
@@ -55,6 +37,24 @@ from ..commands.server_commands import (
     send_long_message,
 )
 
+# Re-export webhook cache functions
+from ..response.webhook_cache import (
+    WEBHOOK_CACHE_TTL,
+    get_cached_webhook,
+    invalidate_webhook_cache,
+    invalidate_webhook_cache_on_channel_delete,
+    set_cached_webhook,
+    start_webhook_cache_cleanup,
+    stop_webhook_cache_cleanup,
+)
+
+# Re-export sanitization functions
+from ..sanitization import (
+    sanitize_channel_name,
+    sanitize_message_content,
+    sanitize_role_name,
+)
+
 # Re-export tool definitions
 from .tool_definitions import get_tool_definitions
 
@@ -72,24 +72,14 @@ _invalidate_webhook_cache = invalidate_webhook_cache
 
 
 __all__ = [
-    # Sanitization
-    "sanitize_channel_name",
-    "sanitize_message_content",
-    "sanitize_role_name",
+    # Server commands
+    "COMMAND_HANDLERS",
     # Webhook cache
     "WEBHOOK_CACHE_TTL",
-    "get_cached_webhook",
-    "invalidate_webhook_cache",
-    "invalidate_webhook_cache_on_channel_delete",
-    "set_cached_webhook",
-    "start_webhook_cache_cleanup",
-    "stop_webhook_cache_cleanup",
     # Legacy aliases
     "_get_cached_webhook",
     "_invalidate_webhook_cache",
     "_set_cached_webhook",
-    # Server commands
-    "COMMAND_HANDLERS",
     "cmd_add_role",
     "cmd_create_category",
     "cmd_create_role",
@@ -106,12 +96,22 @@ __all__ = [
     "cmd_remove_role",
     "cmd_set_channel_perm",
     "cmd_set_role_perm",
-    "find_member",
-    "send_long_message",
-    # Tool definitions
-    "get_tool_definitions",
     # Tool executor
     "execute_server_command",
     "execute_tool_call",
+    "find_member",
+    "get_cached_webhook",
+    # Tool definitions
+    "get_tool_definitions",
+    "invalidate_webhook_cache",
+    "invalidate_webhook_cache_on_channel_delete",
+    # Sanitization
+    "sanitize_channel_name",
+    "sanitize_message_content",
+    "sanitize_role_name",
     "send_as_webhook",
+    "send_long_message",
+    "set_cached_webhook",
+    "start_webhook_cache_cleanup",
+    "stop_webhook_cache_cleanup",
 ]

@@ -1,6 +1,12 @@
 """
 Error Recovery Module for Discord Bot.
 Provides retry logic and graceful degradation utilities.
+
+Enhanced with:
+- Multiple jitter strategies (Full, Equal, Decorrelated)
+- Circuit breaker integration
+- Adaptive retry based on service health
+- Slot-based backoff for API rate limits
 """
 
 from __future__ import annotations
@@ -8,63 +14,201 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import random
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 
+class JitterStrategy(Enum):
+    """Jitter strategies for exponential backoff.
+
+    See: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+    """
+
+    NONE = "none"  # No jitter (not recommended)
+    FULL = "full"  # sleep = random(0, min(cap, base * 2^attempt))
+    EQUAL = "equal"  # sleep = min(cap, base * 2^attempt) / 2 + random(0, same/2)
+    DECORRELATED = "decorrelated"  # sleep = min(cap, random(base, prev_sleep * 3))
+
+
+@dataclass
 class RetryConfig:
     """Configuration for retry behavior."""
 
-    def __init__(
-        self,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 30.0,
-        exponential_base: float = 2.0,
-        jitter: bool = True,
-        recoverable_errors: tuple = (Exception,),
-    ):
-        """
-        Initialize retry configuration.
+    max_retries: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    exponential_base: float = 2.0
+    jitter_strategy: JitterStrategy = JitterStrategy.DECORRELATED
+    recoverable_errors: tuple = (Exception,)
+    # Advanced options
+    respect_circuit_breaker: bool = True  # Stop retry if circuit is open
+    respect_retry_after: bool = True  # Honor Retry-After headers (429s)
+    adaptive_multiplier: bool = True  # Adjust based on service health
 
-        Args:
-            max_retries: Maximum number of retry attempts
-            base_delay: Initial delay between retries in seconds
-            max_delay: Maximum delay between retries
-            exponential_base: Base for exponential backoff
-            jitter: Add random jitter to prevent thundering herd
-            recoverable_errors: Tuple of exception types to retry on
-        """
-        self.max_retries = max_retries
-        self.base_delay = base_delay
-        self.max_delay = max_delay
-        self.exponential_base = exponential_base
-        self.jitter = jitter
-        self.recoverable_errors = recoverable_errors
+    # Legacy compatibility
+    @property
+    def jitter(self) -> bool:
+        return self.jitter_strategy != JitterStrategy.NONE
 
 
 # Preset configurations for common scenarios
-RETRY_AGGRESSIVE = RetryConfig(max_retries=5, base_delay=0.5, max_delay=10.0)
-RETRY_STANDARD = RetryConfig(max_retries=3, base_delay=1.0, max_delay=30.0)
-RETRY_CONSERVATIVE = RetryConfig(max_retries=2, base_delay=2.0, max_delay=60.0)
+RETRY_AGGRESSIVE = RetryConfig(
+    max_retries=5,
+    base_delay=0.5,
+    max_delay=10.0,
+    jitter_strategy=JitterStrategy.FULL,
+)
+RETRY_STANDARD = RetryConfig(
+    max_retries=3,
+    base_delay=1.0,
+    max_delay=30.0,
+    jitter_strategy=JitterStrategy.DECORRELATED,
+)
+RETRY_CONSERVATIVE = RetryConfig(
+    max_retries=2,
+    base_delay=2.0,
+    max_delay=60.0,
+    jitter_strategy=JitterStrategy.EQUAL,
+)
+# API-specific preset (respects rate limits)
+RETRY_API = RetryConfig(
+    max_retries=4,
+    base_delay=1.0,
+    max_delay=60.0,
+    jitter_strategy=JitterStrategy.DECORRELATED,
+    respect_retry_after=True,
+    adaptive_multiplier=True,
+)
 
 
-async def calculate_delay(attempt: int, config: RetryConfig) -> float:
-    """Calculate delay for retry attempt with optional jitter."""
-    import random
+@dataclass
+class BackoffState:
+    """Tracks state for decorrelated jitter across retries."""
 
-    delay = min(
-        config.base_delay * (config.exponential_base**attempt),
-        config.max_delay,
-    )
+    previous_delay: float = 0.0
+    consecutive_failures: int = 0
+    last_failure_time: float = 0.0
 
-    if config.jitter:
-        # Add 0-50% jitter
-        delay *= 1.0 + random.random() * 0.5
+
+# Global backoff state per service/function
+_backoff_states: dict[str, BackoffState] = {}
+
+
+def _get_backoff_state(key: str) -> BackoffState:
+    """Get or create backoff state for a key."""
+    if key not in _backoff_states:
+        _backoff_states[key] = BackoffState()
+    return _backoff_states[key]
+
+
+def _reset_backoff_state(key: str) -> None:
+    """Reset backoff state after success."""
+    if key in _backoff_states:
+        _backoff_states[key] = BackoffState()
+
+
+def calculate_delay_sync(
+    attempt: int,
+    config: RetryConfig,
+    state: BackoffState | None = None,
+    service_health: float = 1.0,
+) -> float:
+    """
+    Calculate delay for retry attempt with smart jitter.
+
+    Args:
+        attempt: Current attempt number (0-indexed)
+        config: Retry configuration
+        state: Optional backoff state for decorrelated jitter
+        service_health: Service health score (0.0-1.0), lower = longer delays
+
+    Returns:
+        Delay in seconds before next retry
+    """
+    base_exp_delay = config.base_delay * (config.exponential_base ** attempt)
+    cap = config.max_delay
+
+    if config.jitter_strategy == JitterStrategy.NONE:
+        delay = min(base_exp_delay, cap)
+
+    elif config.jitter_strategy == JitterStrategy.FULL:
+        # Full Jitter: sleep = random(0, min(cap, base * 2^attempt))
+        delay = random.uniform(0, min(cap, base_exp_delay))
+
+    elif config.jitter_strategy == JitterStrategy.EQUAL:
+        # Equal Jitter: sleep = temp/2 + random(0, temp/2)
+        temp = min(cap, base_exp_delay)
+        delay = temp / 2 + random.uniform(0, temp / 2)
+
+    elif config.jitter_strategy == JitterStrategy.DECORRELATED:
+        # Decorrelated Jitter: sleep = min(cap, random(base, prev * 3))
+        if state and state.previous_delay > 0:
+            delay = min(cap, random.uniform(config.base_delay, state.previous_delay * 3))
+        else:
+            delay = min(cap, random.uniform(config.base_delay, base_exp_delay))
+        if state:
+            state.previous_delay = delay
+
+    else:
+        delay = min(base_exp_delay, cap)
+
+    # Adaptive multiplier: increase delay if service is unhealthy
+    if config.adaptive_multiplier and service_health < 1.0:
+        # Unhealthy service = longer delays (up to 2x)
+        health_multiplier = 1.0 + (1.0 - service_health)
+        delay *= health_multiplier
 
     return delay
+
+
+async def calculate_delay(
+    attempt: int,
+    config: RetryConfig,
+    state: BackoffState | None = None,
+    service_health: float = 1.0,
+) -> float:
+    """Async wrapper for calculate_delay_sync."""
+    return calculate_delay_sync(attempt, config, state, service_health)
+
+
+def extract_retry_after(error: Exception) -> float | None:
+    """
+    Extract Retry-After value from HTTP errors.
+
+    Supports:
+    - aiohttp.ClientResponseError with headers
+    - requests.Response exceptions
+    - Google API errors with retry_delay
+    """
+    # Check for Google API retry_delay
+    if hasattr(error, "retry_delay"):
+        return error.retry_delay
+
+    # Check for response headers
+    if hasattr(error, "headers"):
+        retry_after = error.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+
+    # Check for wrapped response
+    if hasattr(error, "response") and hasattr(error.response, "headers"):
+        retry_after = error.response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+
+    return None
 
 
 async def retry_async(
@@ -73,10 +217,17 @@ async def retry_async(
     config: RetryConfig | None = None,
     fallback: Any = None,
     on_retry: Callable[[int, Exception], None] | None = None,
+    service_name: str | None = None,
     **kwargs,
 ) -> Any:
     """
     Execute an async function with automatic retry on failure.
+
+    Enhanced with:
+    - Smart jitter strategies (decorrelated by default)
+    - Circuit breaker integration
+    - Retry-After header support
+    - Service health-aware delays
 
     Args:
         func: Async function to execute
@@ -84,6 +235,7 @@ async def retry_async(
         config: Retry configuration
         fallback: Value to return if all retries fail
         on_retry: Callback called on each retry with (attempt, error)
+        service_name: Optional service name for health tracking
         **kwargs: Keyword arguments for the function
 
     Returns:
@@ -93,8 +245,9 @@ async def retry_async(
         result = await retry_async(
             fetch_data,
             url,
-            config=RETRY_AGGRESSIVE,
+            config=RETRY_API,
             fallback=default_data,
+            service_name="gemini",
         )
     """
     if config is None:
@@ -103,31 +256,78 @@ async def retry_async(
     last_error = None
     logger = logging.getLogger("ErrorRecovery")
 
+    # Get backoff state for this function
+    state_key = service_name or func.__name__
+    state = _get_backoff_state(state_key)
+
+    # Get service health for adaptive delays
+    service_health = 1.0
+    if config.adaptive_multiplier and service_name:
+        status = service_monitor.get_status(service_name)
+        service_health = status.get("success_rate", 1.0)
+
+    # Check circuit breaker before starting
+    if config.respect_circuit_breaker:
+        try:
+            from .circuit_breaker import gemini_circuit
+
+            if service_name == "gemini" and not gemini_circuit.can_execute():
+                logger.warning("⚡ Circuit breaker OPEN - skipping retry for %s", service_name)
+                if fallback is not None:
+                    return fallback
+                raise RuntimeError(f"Circuit breaker open for {service_name}")
+        except ImportError:
+            pass
+
     for attempt in range(config.max_retries):
         try:
-            return await func(*args, **kwargs)
+            result = await func(*args, **kwargs)
+
+            # Success! Reset backoff state and record health
+            _reset_backoff_state(state_key)
+            if service_name:
+                service_monitor.record_success(service_name)
+
+            return result
+
         except config.recoverable_errors as e:
             last_error = e
+            state.consecutive_failures += 1
+            state.last_failure_time = time.time()
+
+            if service_name:
+                service_monitor.record_failure(service_name, str(e)[:100])
 
             if on_retry:
                 on_retry(attempt + 1, e)
 
             if attempt < config.max_retries - 1:
-                delay = await calculate_delay(attempt, config)
+                # Calculate delay with smart jitter
+                delay = await calculate_delay(attempt, config, state, service_health)
+
+                # Honor Retry-After header if present
+                if config.respect_retry_after:
+                    retry_after = extract_retry_after(e)
+                    if retry_after is not None:
+                        delay = max(delay, retry_after)
+                        logger.info("⏳ Respecting Retry-After: %.1fs", retry_after)
+
                 logger.warning(
-                    "⚠️ Attempt %d/%d failed: %s. Retrying in %.1fs...",
+                    "⚠️ Attempt %d/%d failed: %s. Retrying in %.2fs (jitter: %s)...",
                     attempt + 1,
                     config.max_retries,
                     str(e)[:100],
                     delay,
+                    config.jitter_strategy.value,
                 )
                 await asyncio.sleep(delay)
             else:
                 logger.error(
-                    "❌ All %d attempts failed for %s: %s",
+                    "❌ All %d attempts failed for %s: %s (total failures: %d)",
                     config.max_retries,
                     func.__name__,
                     str(e)[:200],
+                    state.consecutive_failures,
                 )
 
     # All retries failed
@@ -141,18 +341,31 @@ async def retry_async(
 def with_retry(
     config: RetryConfig | None = None,
     fallback: Any = None,
+    service_name: str | None = None,
+    on_retry: Callable[[int, Exception], None] | None = None,
 ):
     """
     Decorator to add automatic retry to async functions.
 
+    Enhanced with:
+    - Service name for health tracking
+    - Custom retry callback support
+    - All smart backoff features from retry_async
+
     Usage:
-        @with_retry(config=RETRY_AGGRESSIVE)
+        @with_retry(config=RETRY_API, service_name="gemini")
         async def fetch_data(url):
             return await http_get(url)
 
-        @with_retry(fallback=[])
+        @with_retry(fallback=[], on_retry=lambda a, e: print(f"Retry {a}"))
         async def get_items():
             return await db.get_items()
+
+    Args:
+        config: Retry configuration preset
+        fallback: Value to return if all retries fail
+        service_name: Service name for health monitoring
+        on_retry: Callback(attempt, error) called on each retry
     """
     if config is None:
         config = RETRY_STANDARD
@@ -165,6 +378,8 @@ def with_retry(
                 *args,
                 config=config,
                 fallback=fallback,
+                on_retry=on_retry,
+                service_name=service_name or func.__name__,
                 **kwargs,
             )
 

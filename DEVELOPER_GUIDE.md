@@ -4,9 +4,9 @@
 > **Version:** 3.3.8  
 > **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 125 Python files | 362 Tests  
+> **Total Files:** 128 Python files | 452 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅ | ai_core reorganized ✅
+> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅ | ai_core reorganized ✅ | Memory & Shutdown managers added ✅
 
 ---
 
@@ -151,7 +151,9 @@ BOT/
 │   │   ├── __init__.py
 │   │   ├── circuit_breaker.py # API failure protection
 │   │   ├── rate_limiter.py   # Token bucket rate limiting
-│   │   └── self_healer.py    # Auto-recovery from issues
+│   │   ├── self_healer.py    # Auto-recovery from issues
+│   │   ├── memory_manager.py # 🆕 Memory leak prevention
+│   │   └── shutdown_manager.py # 🆕 Graceful shutdown
 │   │
 │   ├── monitoring/           # 📈 Monitoring & Metrics
 │   │   ├── __init__.py
@@ -159,7 +161,7 @@ BOT/
 │   │   ├── logger.py         # Smart logging system
 │   │   ├── metrics.py        # Performance metrics
 │   │   ├── performance_tracker.py # Response time tracking with percentiles
-│   │   ├── structured_logger.py # Structured JSON logging
+│   │   ├── structured_logger.py # 🆕 JSON logging with context tracking
 │   │   ├── sentry_integration.py # Sentry error tracking
 │   │   ├── token_tracker.py  # API token tracking
 │   │   ├── audit_log.py      # Audit logging
@@ -191,7 +193,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (362 tests)
+├── tests/                    # 🧪 Test Suite (452 tests)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -204,14 +206,17 @@ BOT/
 │   ├── test_error_recovery.py
 │   ├── test_fast_json.py     # 🆕 Fast JSON utilities tests
 │   ├── test_guardrails.py
+│   ├── test_memory_manager.py # 🆕 TTL/WeakRef cache tests
 │   ├── test_memory_modules.py
 │   ├── test_music_integration.py
 │   ├── test_music_queue.py   # 🆕 QueueManager tests
 │   ├── test_performance_tracker.py
 │   ├── test_rate_limiter.py
 │   ├── test_self_reflection.py # 🆕 SelfReflector tests
+│   ├── test_shutdown_manager.py # 🆕 Graceful shutdown tests
 │   ├── test_spotify_handler.py # 🆕 SpotifyHandler tests
 │   ├── test_spotify_integration.py
+│   ├── test_structured_logger.py # 🆕 Structured logging tests
 │   ├── test_summarizer.py
 │   ├── test_tools.py
 │   └── test_webhooks.py
@@ -346,6 +351,11 @@ User Message
 | `CircuitBreaker` | `circuit_breaker.py` | Thread-safe API failure protection |
 | `RateLimiter` | `rate_limiter.py` | Thread-safe request throttling |
 | `PerformanceTracker` | `performance_tracker.py` | Response time tracking with auto-cleanup |
+| `TTLCache` | `memory_manager.py` | LRU cache with TTL expiration 🆕 |
+| `WeakRefCache` | `memory_manager.py` | Auto-release cache using weak refs 🆕 |
+| `MemoryMonitor` | `memory_manager.py` | Memory usage monitoring 🆕 |
+| `ShutdownManager` | `shutdown_manager.py` | Graceful shutdown coordination 🆕 |
+| `StructuredLogger` | `structured_logger.py` | JSON logging with context 🆕 |
 
 ---
 
@@ -547,6 +557,131 @@ Response time tracking with automatic memory management:
 - Hourly trend analysis
 - Auto-cleanup of old samples (prevents memory growth)
 
+### Memory Manager (`memory_manager.py`) 🆕
+
+Memory leak prevention with smart caching:
+
+```python
+from utils.reliability.memory_manager import (
+    TTLCache, WeakRefCache, MemoryMonitor,
+    memory_monitor, cached_with_ttl
+)
+
+# TTL Cache - auto-expires entries
+cache = TTLCache[str, dict](ttl=300, max_size=1000, name="api_cache")
+cache.set("key", {"data": "value"})
+result = cache.get("key")
+
+# WeakRef Cache - auto-releases when objects are GC'd
+weak_cache = WeakRefCache[str, MyClass]()
+weak_cache.set("key", MyObject())
+
+# Decorator for function caching
+@cached_with_ttl(ttl=60.0, max_size=100)
+async def fetch_user(user_id: int) -> dict:
+    return await api.get_user(user_id)
+
+# Memory monitoring
+memory_monitor.register_cache("api_cache", cache)
+memory_monitor.start()  # Background cleanup at 80% threshold
+```
+
+**Features:**
+- TTL-based automatic expiration
+- LRU eviction when max size reached
+- WeakRef caching for auto memory release
+- Memory threshold monitoring (80% warning, 90% cleanup)
+- Background cleanup tasks
+
+### Shutdown Manager (`shutdown_manager.py`) 🆕
+
+Graceful shutdown with coordinated cleanup:
+
+```python
+from utils.reliability.shutdown_manager import (
+    shutdown_manager, Priority, on_shutdown
+)
+
+# Decorator for cleanup functions
+@on_shutdown(priority=Priority.HIGH, timeout=5.0)
+async def cleanup_connections():
+    await db.close()
+
+# Manual registration
+shutdown_manager.register(
+    name="flush_cache",
+    callback=cache.flush,
+    priority=Priority.NORMAL
+)
+
+# Trigger shutdown (called automatically on SIGTERM/SIGINT)
+await shutdown_manager.shutdown(reason="maintenance")
+```
+
+**Features:**
+- Priority-based cleanup (CRITICAL → HIGH → NORMAL → LOW → BACKGROUND)
+- Per-handler timeout with force-kill fallback
+- Signal handling (SIGTERM, SIGINT, atexit)
+- Async and sync cleanup support
+- Detailed shutdown statistics
+
+### Structured Logging (`structured_logger.py`) 🆕
+
+JSON-formatted logging for ELK/Prometheus/Loki:
+
+```python
+from utils.monitoring.structured_logger import (
+    StructuredLogger, get_logger, timed
+)
+
+# Get a structured logger
+logger = get_logger("ai_core")
+
+# Log with context
+logger.info("Processing message", extra={
+    "user_id": user.id,
+    "channel_id": channel.id,
+    "message_length": len(message)
+})
+
+# Request context tracking
+async with logger.request(user_id=123, channel_id=456):
+    # All logs in this context include user/channel
+    logger.info("Request started")
+    await process()
+    logger.info("Request completed")
+
+# Performance timing decorator
+@timed("process_message")
+async def process_message(msg):
+    # Automatically logs duration
+    ...
+```
+
+**Output Format (JSON):**
+```json
+{
+  "timestamp": "2026-01-21T10:30:00.000Z",
+  "level": "INFO",
+  "logger": "ai_core",
+  "message": "Processing message",
+  "context": {
+    "user_id": 123456789,
+    "channel_id": 987654321,
+    "correlation_id": "abc-123"
+  },
+  "extra": {"message_length": 150},
+  "source": {"file": "logic.py", "line": 42, "function": "process_chat"}
+}
+```
+
+**Features:**
+- JSON-formatted output for log aggregators
+- Request context tracking (correlation IDs)
+- Performance timing with `@timed` decorator
+- Human-readable colored console output (optional)
+- Rotating file output
+
 ---
 
 ## 💾 Database
@@ -710,6 +845,18 @@ async def mycommand(self, ctx):
 | **E501 lint fixes** | Fixed 16 line-too-long errors | `api_handler.py`, `debug_commands.py`, `entity_memory.py`, `tool_definitions.py`, `tool_executor.py` |
 | **Test count** | Increased from 285 to 362 | New tests for modular components |
 
+### Phase 5 - Reliability & Monitoring Enhancements (January 21, 2026)
+
+| Change | Description | Files |
+|--------|-------------|-------|
+| **Memory Manager** | TTL cache, WeakRef cache, memory monitoring | `utils/reliability/memory_manager.py` |
+| **Shutdown Manager** | Graceful shutdown with priority cleanup | `utils/reliability/shutdown_manager.py` |
+| **Structured Logging** | JSON logging with context tracking, correlation IDs | `utils/monitoring/structured_logger.py` |
+| **Error Recovery** | Smart exponential backoff with jitter | `utils/reliability/error_recovery.py` |
+| **New test files** | 90 new tests for new modules | `test_memory_manager.py`, `test_shutdown_manager.py`, `test_structured_logger.py`, `test_error_recovery.py` |
+| **Lint fixes** | Fixed 185 whitespace issues with ruff | Various files |
+| **Test count** | Increased from 362 to 452 | +90 tests for new reliability modules |
+
 ---
 
 ## 📚 Further Reading
@@ -720,4 +867,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 21, 2026 - Version 3.3.8 | tools.py refactored into 5 modules | ai_core reorganized into subdirectories | 362 tests | CI/CD improved with Codecov & Dependabot*
+*Documentation last updated: January 21, 2026 - Version 3.3.8 | Memory Manager, Shutdown Manager, Structured Logging added | Error Recovery with smart backoff | 452 tests | CI/CD improved with Codecov & Dependabot*

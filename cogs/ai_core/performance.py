@@ -4,17 +4,17 @@ This file re-exports from core/ subdirectory.
 """
 
 from .core.performance import (
+    PERFORMANCE_SAMPLES_MAX,
     PerformanceTracker,
     RequestDeduplicator,
     performance_tracker,
     request_deduplicator,
-    PERFORMANCE_SAMPLES_MAX,
 )
 
 __all__ = [
+    "PERFORMANCE_SAMPLES_MAX",
     "PerformanceTracker",
     "RequestDeduplicator",
     "performance_tracker",
     "request_deduplicator",
-    "PERFORMANCE_SAMPLES_MAX",
 ]
