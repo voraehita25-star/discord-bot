@@ -4,8 +4,9 @@ Tests for cogs/ai_core/processing/prompt_manager.py
 Comprehensive tests for PromptManager and related functions.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 class TestPromptManagerInit:

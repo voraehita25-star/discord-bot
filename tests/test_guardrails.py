@@ -541,8 +541,8 @@ class TestValidateFunctions:
     def test_validate_response_for_channel_unrestricted(self):
         """Test validate_response_for_channel with unrestricted mode."""
         from cogs.ai_core.processing.guardrails import (
+            set_unrestricted,
             validate_response_for_channel,
-            set_unrestricted
         )
 
         channel_id = 888777666555
@@ -581,10 +581,7 @@ class TestUnrestrictedChannels:
 
     def test_set_and_check_unrestricted(self):
         """Test setting and checking unrestricted mode."""
-        from cogs.ai_core.processing.guardrails import (
-            is_unrestricted,
-            set_unrestricted
-        )
+        from cogs.ai_core.processing.guardrails import is_unrestricted, set_unrestricted
 
         channel_id = 555666777888
         assert is_unrestricted(channel_id) is False

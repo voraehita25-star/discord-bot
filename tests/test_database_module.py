@@ -1,8 +1,9 @@
 """Extended tests for database module."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestDatabaseSingleton:
@@ -11,27 +12,27 @@ class TestDatabaseSingleton:
     def test_database_singleton(self):
         """Test Database is singleton."""
         from utils.database.database import Database
-        
+
         db1 = Database()
         db2 = Database()
-        
+
         assert db1 is db2
 
     def test_database_has_db_path(self):
         """Test Database has db_path."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert db.db_path is not None
         assert "bot_database.db" in db.db_path
 
     def test_database_has_pool_semaphore(self):
         """Test Database has pool semaphore."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert db._pool_semaphore is not None
 
 
@@ -42,11 +43,11 @@ class TestDatabaseAsync:
     async def test_flush_pending_exports_no_pending(self):
         """Test flush_pending_exports with no pending exports."""
         from utils.database.database import Database
-        
+
         db = Database()
         db._export_pending = False
         db._export_tasks.clear()
-        
+
         # Should not raise
         await db.flush_pending_exports()
 
@@ -54,9 +55,9 @@ class TestDatabaseAsync:
     async def test_get_connection_context(self):
         """Test get_connection context manager."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         # Just test that context manager works
         async with db.get_connection() as conn:
             assert conn is not None
@@ -67,24 +68,27 @@ class TestDatabaseConstants:
 
     def test_db_dir_exists(self):
         """Test DB_DIR constant."""
-        from utils.database.database import DB_DIR
         from pathlib import Path
-        
+
+        from utils.database.database import DB_DIR
+
         assert isinstance(DB_DIR, Path)
 
     def test_db_file_exists(self):
         """Test DB_FILE constant."""
-        from utils.database.database import DB_FILE
         from pathlib import Path
-        
+
+        from utils.database.database import DB_FILE
+
         assert isinstance(DB_FILE, Path)
         assert "bot_database.db" in str(DB_FILE)
 
     def test_export_dir_exists(self):
         """Test EXPORT_DIR constant."""
-        from utils.database.database import EXPORT_DIR
         from pathlib import Path
-        
+
+        from utils.database.database import EXPORT_DIR
+
         assert isinstance(EXPORT_DIR, Path)
 
 
@@ -109,50 +113,50 @@ class TestDatabaseMethods:
     async def test_init_schema_can_run(self):
         """Test init_schema can run."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         # Should not raise
         await db.init_schema()
 
     def test_save_ai_message_structure(self):
         """Test save_ai_message method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_ai_message')
 
     def test_get_ai_history_structure(self):
         """Test get_ai_history method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_ai_history')
 
     def test_delete_ai_history_structure(self):
         """Test delete_ai_history method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'delete_ai_history')
 
     def test_export_to_json_structure(self):
         """Test export_to_json method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'export_to_json')
 
     def test_export_channel_to_json_structure(self):
         """Test export_channel_to_json method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'export_channel_to_json')
 
 
@@ -162,17 +166,17 @@ class TestRAGMethods:
     def test_save_rag_memory_structure(self):
         """Test save_rag_memory method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_rag_memory')
 
     def test_get_all_rag_memories_structure(self):
         """Test get_all_rag_memories method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_all_rag_memories')
 
 
@@ -182,17 +186,17 @@ class TestUserStatsMethods:
     def test_increment_user_stat_structure(self):
         """Test increment_user_stat method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'increment_user_stat')
 
     def test_get_user_stats_structure(self):
         """Test get_user_stats method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_user_stats')
 
 
@@ -202,17 +206,17 @@ class TestGuildSettingsMethods:
     def test_get_guild_settings_structure(self):
         """Test get_guild_settings method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_guild_settings')
 
     def test_save_guild_settings_structure(self):
         """Test save_guild_settings method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_guild_settings')
 
 
@@ -222,25 +226,25 @@ class TestMusicQueueMethods:
     def test_save_music_queue_structure(self):
         """Test save_music_queue method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_music_queue')
 
     def test_load_music_queue_structure(self):
         """Test load_music_queue method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'load_music_queue')
 
     def test_clear_music_queue_structure(self):
         """Test clear_music_queue method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'clear_music_queue')
 
 
@@ -250,33 +254,33 @@ class TestHealthAndMetadata:
     def test_health_check_structure(self):
         """Test health_check method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'health_check')
 
     def test_save_ai_metadata_structure(self):
         """Test save_ai_metadata method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_ai_metadata')
 
     def test_get_ai_metadata_structure(self):
         """Test get_ai_metadata method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_ai_metadata')
 
     def test_log_error_structure(self):
         """Test log_error method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'log_error')
 
 
@@ -286,25 +290,25 @@ class TestHistoryManagement:
     def test_prune_ai_history_structure(self):
         """Test prune_ai_history method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'prune_ai_history')
 
     def test_get_ai_history_count_structure(self):
         """Test get_ai_history_count method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_ai_history_count')
 
     def test_get_all_ai_channel_ids_structure(self):
         """Test get_all_ai_channel_ids method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_all_ai_channel_ids')
 
 
@@ -314,9 +318,9 @@ class TestBatchMethods:
     def test_save_ai_messages_batch_structure(self):
         """Test save_ai_messages_batch method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'save_ai_messages_batch')
 
 
@@ -326,17 +330,17 @@ class TestConnectionMethods:
     def test_get_connection_with_retry_structure(self):
         """Test get_connection_with_retry method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'get_connection_with_retry')
 
     def test_stop_watchers_structure(self):
         """Test stop_watchers method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'stop_watchers')
 
 
@@ -346,15 +350,15 @@ class TestUpdateMethods:
     def test_update_last_accessed_structure(self):
         """Test update_last_accessed method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'update_last_accessed')
 
     def test_update_message_id_structure(self):
         """Test update_message_id method exists."""
         from utils.database.database import Database
-        
+
         db = Database()
-        
+
         assert hasattr(db, 'update_message_id')

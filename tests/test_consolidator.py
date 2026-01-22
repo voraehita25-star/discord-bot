@@ -134,6 +134,7 @@ class TestMemoryConsolidatorMethods:
     def test_should_consolidate_by_time(self):
         """Test should_consolidate returns True when time threshold met."""
         import time
+
         from cogs.ai_core.memory.consolidator import MemoryConsolidator
 
         consolidator = MemoryConsolidator()
@@ -334,7 +335,7 @@ class TestInitialize:
 
     def test_initialize_without_genai(self):
         """Test initialize logs warning when genai not available."""
-        from cogs.ai_core.memory.consolidator import MemoryConsolidator, GENAI_AVAILABLE
+        from cogs.ai_core.memory.consolidator import GENAI_AVAILABLE, MemoryConsolidator
 
         consolidator = MemoryConsolidator()
 

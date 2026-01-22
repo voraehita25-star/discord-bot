@@ -2,9 +2,10 @@
 Tests for cogs.ai_core.data.constants module.
 """
 
-import pytest
 import os
 from unittest.mock import patch
+
+import pytest
 
 
 class TestSafeIntEnv:
@@ -13,7 +14,7 @@ class TestSafeIntEnv:
     def test_safe_int_env_with_digit(self):
         """Test _safe_int_env with digit value."""
         from cogs.ai_core.data.constants import _safe_int_env
-        
+
         with patch.dict(os.environ, {"TEST_INT": "123"}):
             result = _safe_int_env("TEST_INT")
             assert result == 123
@@ -21,14 +22,14 @@ class TestSafeIntEnv:
     def test_safe_int_env_with_default(self):
         """Test _safe_int_env returns default for missing key."""
         from cogs.ai_core.data.constants import _safe_int_env
-        
+
         result = _safe_int_env("NONEXISTENT_KEY_12345", default=42)
         assert result == 42
 
     def test_safe_int_env_with_non_digit(self):
         """Test _safe_int_env returns default for non-digit value."""
         from cogs.ai_core.data.constants import _safe_int_env
-        
+
         with patch.dict(os.environ, {"TEST_STR": "not_a_number"}):
             result = _safe_int_env("TEST_STR", default=10)
             assert result == 10
@@ -36,7 +37,7 @@ class TestSafeIntEnv:
     def test_safe_int_env_empty_string(self):
         """Test _safe_int_env with empty string returns default."""
         from cogs.ai_core.data.constants import _safe_int_env
-        
+
         with patch.dict(os.environ, {"TEST_EMPTY": ""}):
             result = _safe_int_env("TEST_EMPTY", default=5)
             assert result == 5

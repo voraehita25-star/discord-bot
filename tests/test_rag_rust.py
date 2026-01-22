@@ -4,12 +4,13 @@ Tests for cogs/ai_core/memory/rag_rust.py
 Comprehensive tests for RagEngineWrapper and Python fallback.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import json
-import tempfile
 import os
+import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestRagEngineWrapperInit:
@@ -190,8 +191,9 @@ class TestRagEngineWrapperPythonSearch:
     @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
     def test_python_search_time_decay(self):
         """Test search with time decay."""
-        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
         import time
+
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
         engine = RagEngineWrapper(dimension=3, similarity_threshold=0.0)
         # Old entry
@@ -321,7 +323,7 @@ class TestRagEngineWrapperSaveLoad:
         engine.add("b", "Second", [0.4, 0.5, 0.6])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "test.json")
+            path = str(Path(tmpdir) / "test.json")
             engine.save(path)
 
             # Load into new engine
@@ -342,10 +344,10 @@ class TestRagEngineWrapperSaveLoad:
         engine.add("test", "Test text", [0.1, 0.2, 0.3])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "test.json")
-            engine.save(path)
+            path = Path(tmpdir) / "test.json"
+            engine.save(str(path))
 
-            with open(path, encoding="utf-8") as f:
+            with path.open(encoding="utf-8") as f:
                 data = json.load(f)
 
             assert isinstance(data, list)
