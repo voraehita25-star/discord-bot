@@ -1,7 +1,8 @@
 """Tests for API handler module."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 
 class TestBuildApiConfig:
@@ -10,14 +11,14 @@ class TestBuildApiConfig:
     def test_build_api_config_basic(self):
         """Test build_api_config with basic chat data."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {
             "system_instruction": "You are a helpful assistant.",
             "thinking_enabled": False,
         }
-        
+
         config = build_api_config(chat_data)
-        
+
         assert "system_instruction" in config
         assert "safety_settings" in config
         assert config["system_instruction"] == "You are a helpful assistant."
@@ -25,13 +26,13 @@ class TestBuildApiConfig:
     def test_build_api_config_safety_settings(self):
         """Test build_api_config includes all safety settings."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {"system_instruction": "Test"}
-        
+
         config = build_api_config(chat_data)
-        
+
         assert len(config["safety_settings"]) == 4
-        
+
         categories = [s["category"] for s in config["safety_settings"]]
         assert "HARM_CATEGORY_HATE_SPEECH" in categories
         assert "HARM_CATEGORY_DANGEROUS_CONTENT" in categories
@@ -41,21 +42,21 @@ class TestBuildApiConfig:
     def test_build_api_config_use_search(self):
         """Test build_api_config with search enabled."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {"system_instruction": "Test"}
-        
+
         config = build_api_config(chat_data, use_search=True)
-        
+
         assert "tools" in config
 
     def test_build_api_config_with_guild_id(self):
         """Test build_api_config with guild_id."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {"system_instruction": "Test"}
-        
+
         config = build_api_config(chat_data, guild_id=12345)
-        
+
         # Should still work with guild_id
         assert "system_instruction" in config
 
@@ -67,42 +68,42 @@ class TestDetectSearchIntent:
     async def test_detect_search_intent_returns_false_on_error(self):
         """Test detect_search_intent returns False on error."""
         from cogs.ai_core.api.api_handler import detect_search_intent
-        
+
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(side_effect=ValueError("API Error"))
-        
+
         result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "test")
-        
+
         assert result is False
 
     @pytest.mark.asyncio
     async def test_detect_search_intent_search(self):
         """Test detect_search_intent returns True for SEARCH."""
         from cogs.ai_core.api.api_handler import detect_search_intent
-        
+
         mock_response = MagicMock()
         mock_response.text = "SEARCH"
-        
+
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        
+
         result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "What is today's weather?")
-        
+
         assert result is True
 
     @pytest.mark.asyncio
     async def test_detect_search_intent_no_search(self):
         """Test detect_search_intent returns False for NO_SEARCH."""
         from cogs.ai_core.api.api_handler import detect_search_intent
-        
+
         mock_response = MagicMock()
         mock_response.text = "NO_SEARCH"
-        
+
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
-        
+
         result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "Hello!")
-        
+
         assert result is False
 
 
@@ -136,7 +137,7 @@ class TestCircuitBreakerAvailability:
     def test_circuit_breaker_import_flag(self):
         """Test CIRCUIT_BREAKER_AVAILABLE flag."""
         from cogs.ai_core.api.api_handler import CIRCUIT_BREAKER_AVAILABLE
-        
+
         # Just test the flag exists
         assert isinstance(CIRCUIT_BREAKER_AVAILABLE, bool)
 
@@ -147,7 +148,7 @@ class TestPerfTrackerAvailability:
     def test_perf_tracker_import_flag(self):
         """Test PERF_TRACKER_AVAILABLE flag."""
         from cogs.ai_core.api.api_handler import PERF_TRACKER_AVAILABLE
-        
+
         # Just test the flag exists
         assert isinstance(PERF_TRACKER_AVAILABLE, bool)
 
@@ -158,7 +159,7 @@ class TestErrorRecoveryAvailability:
     def test_error_recovery_import_flag(self):
         """Test ERROR_RECOVERY_AVAILABLE flag."""
         from cogs.ai_core.api.api_handler import ERROR_RECOVERY_AVAILABLE
-        
+
         # Just test the flag exists
         assert isinstance(ERROR_RECOVERY_AVAILABLE, bool)
 
@@ -169,7 +170,7 @@ class TestGuardrailsAvailability:
     def test_guardrails_import_flag(self):
         """Test GUARDRAILS_AVAILABLE flag."""
         from cogs.ai_core.api.api_handler import GUARDRAILS_AVAILABLE
-        
+
         # Just test the flag exists
         assert isinstance(GUARDRAILS_AVAILABLE, bool)
 
@@ -212,37 +213,37 @@ class TestBuildApiConfigModes:
         """Test build_api_config with Faust mode."""
         from cogs.ai_core.api.api_handler import build_api_config
         from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
-        
+
         chat_data = {
             "system_instruction": FAUST_INSTRUCTION,
             "thinking_enabled": True,
         }
-        
+
         config = build_api_config(chat_data)
-        
+
         # Should have thinking config or tools depending on mode
         assert "system_instruction" in config
 
     def test_build_api_config_empty_system_instruction(self):
         """Test build_api_config with empty system instruction."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {
             "system_instruction": "",
             "thinking_enabled": False,
         }
-        
+
         config = build_api_config(chat_data)
-        
+
         assert config["system_instruction"] == ""
 
     def test_build_api_config_missing_thinking_enabled(self):
         """Test build_api_config with missing thinking_enabled."""
         from cogs.ai_core.api.api_handler import build_api_config
-        
+
         chat_data = {"system_instruction": "Test"}
-        
+
         config = build_api_config(chat_data)
-        
+
         # Should default to True and not error
         assert "system_instruction" in config

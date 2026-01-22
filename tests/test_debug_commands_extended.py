@@ -3,9 +3,10 @@ Extended tests for AI Debug Commands module.
 Tests command behaviors and utility methods.
 """
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import discord
+import pytest
 from discord.ext import commands
 
 
@@ -19,13 +20,13 @@ class TestAIDebugCog:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         assert cog.bot == mock_bot
         assert hasattr(cog, 'logger')
-        
+
     def test_ai_debug_has_commands(self):
         """Test AIDebug cog has expected commands."""
         try:
@@ -33,10 +34,10 @@ class TestAIDebugCog:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         # Check for expected command methods
         assert hasattr(cog, 'ai_debug')
         assert hasattr(cog, 'ai_perf')
@@ -56,19 +57,19 @@ class TestGetChatManager:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         mock_ai_cog = MagicMock()
         mock_chat_manager = MagicMock()
         mock_ai_cog.chat_manager = mock_chat_manager
         mock_bot.get_cog.return_value = mock_ai_cog
-        
+
         cog = AIDebug(mock_bot)
         result = cog._get_chat_manager()
-        
+
         assert result == mock_chat_manager
         mock_bot.get_cog.assert_called_with("AI")
-        
+
     def test_get_chat_manager_returns_none_when_no_ai_cog(self):
         """Test _get_chat_manager returns None when AI cog not found."""
         try:
@@ -76,15 +77,15 @@ class TestGetChatManager:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         mock_bot.get_cog.return_value = None
-        
+
         cog = AIDebug(mock_bot)
         result = cog._get_chat_manager()
-        
+
         assert result is None
-        
+
     def test_get_chat_manager_returns_none_when_no_chat_manager(self):
         """Test _get_chat_manager returns None when chat_manager not present."""
         try:
@@ -92,14 +93,14 @@ class TestGetChatManager:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         mock_ai_cog = MagicMock(spec=[])  # No chat_manager attribute
         mock_bot.get_cog.return_value = mock_ai_cog
-        
+
         cog = AIDebug(mock_bot)
         result = cog._get_chat_manager()
-        
+
         assert result is None
 
 
@@ -114,40 +115,40 @@ class TestAIDebugCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return None
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.channel.id = 123456
         mock_ctx.send = AsyncMock()
         # Add message reference mock to avoid TypeError in detect_intent
         mock_ctx.message.reference = None
-        
+
         return cog, mock_ctx
-        
+
     async def test_ai_debug_no_chat_manager(self, setup_debug_cog):
         """Test ai_debug command when chat_manager unavailable."""
         if setup_debug_cog is None:
             pytest.skip("debug_commands not available")
             return
-            
+
         cog, mock_ctx = setup_debug_cog
         cog._get_chat_manager = MagicMock(return_value=None)
-        
+
         await cog.ai_debug.callback(cog, mock_ctx)
-        
+
         # Should still send debug embed even without chat manager
         mock_ctx.send.assert_called_once()
-        
+
     async def test_ai_debug_with_active_session(self, setup_debug_cog):
         """Test ai_debug command with active session."""
         if setup_debug_cog is None:
             pytest.skip("debug_commands not available")
             return
-            
+
         cog, mock_ctx = setup_debug_cog
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.chats = {
             123456: {
@@ -157,10 +158,10 @@ class TestAIDebugCommand:
         }
         mock_chat_manager.get_performance_stats.return_value = {}
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         with patch('cogs.ai_core.commands.debug_commands.discord.Embed'):
             await cog.ai_debug.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_once()
 
 
@@ -174,19 +175,19 @@ class TestAIPerfCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         cog._get_chat_manager = MagicMock(return_value=None)
-        
+
         await cog.ai_perf.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_with("❌ AI system not available")
-        
+
     async def test_ai_perf_with_stats(self):
         """Test ai_perf command with performance stats."""
         try:
@@ -194,22 +195,22 @@ class TestAIPerfCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.get_performance_stats.return_value = {
             "api_call": {"avg_ms": 150.5, "min_ms": 100.0, "max_ms": 200.0, "count": 10},
             "rag_query": {"avg_ms": 25.0, "min_ms": 10.0, "max_ms": 50.0, "count": 5}
         }
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         await cog.ai_perf.callback(cog, mock_ctx)
-        
+
         call_args = mock_ctx.send.call_args[0][0]
         assert "api_call" in call_args
         assert "150.5ms" in call_args
@@ -225,25 +226,25 @@ class TestAICacheClearCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         mock_cache = MagicMock()
         mock_cache.invalidate.return_value = 5
-        
+
         with patch.dict('sys.modules', {'cogs.ai_core.cache.ai_cache': MagicMock(ai_cache=mock_cache)}):
             with patch('cogs.ai_core.commands.debug_commands.ai_cache', mock_cache, create=True):
                 # Import and re-mock within context
                 pass
-        
+
         # Test import error path
         with patch.object(cog, 'ai_cache_clear') as mock_cmd:
             mock_cmd.callback = AsyncMock()
-            
+
     async def test_ai_cache_clear_import_error(self):
         """Test ai_cache_clear handles ImportError."""
         try:
@@ -251,16 +252,15 @@ class TestAICacheClearCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-        
+        AIDebug(mock_bot)
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         # Simulate ImportError by having get_cog work but cache import fail
-        original_callback = cog.ai_cache_clear.callback
-        
+
         # Call with mocked import to raise ImportError
         with patch('builtins.__import__', side_effect=ImportError):
             # The command itself handles the import internally
@@ -277,19 +277,19 @@ class TestAITraceCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         cog._get_chat_manager = MagicMock(return_value=None)
-        
+
         await cog.ai_trace.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_with("❌ AI system not available")
-        
+
     async def test_ai_trace_no_active_session(self):
         """Test ai_trace command when no active session."""
         try:
@@ -297,22 +297,22 @@ class TestAITraceCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.channel.id = 123456
         mock_ctx.send = AsyncMock()
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.chats = {}  # No active session
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         await cog.ai_trace.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_with("❌ No active session in this channel")
-        
+
     async def test_ai_trace_with_trace_data(self):
         """Test ai_trace command with trace data."""
         try:
@@ -320,14 +320,14 @@ class TestAITraceCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.channel.id = 123456
         mock_ctx.send = AsyncMock()
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.chats = {
             123456: {
@@ -347,9 +347,9 @@ class TestAITraceCommand:
             }
         }
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         await cog.ai_trace.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_once()
 
 
@@ -363,13 +363,13 @@ class TestAIStatsCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-        
+        AIDebug(mock_bot)
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         # Test will call the command and it handles import error internally
 
 
@@ -383,10 +383,10 @@ class TestAITokensCommand:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-        
+        AIDebug(mock_bot)
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
 
@@ -401,22 +401,22 @@ class TestSetupFunction:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         assert callable(setup)
-        
+
     async def test_setup_adds_cog(self):
         """Test setup adds AIDebug cog to bot."""
         try:
-            from cogs.ai_core.commands.debug_commands import setup, AIDebug
+            from cogs.ai_core.commands.debug_commands import AIDebug, setup
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         mock_bot.add_cog = AsyncMock()
-        
+
         await setup(mock_bot)
-        
+
         mock_bot.add_cog.assert_called_once()
         call_args = mock_bot.add_cog.call_args[0]
         assert isinstance(call_args[0], AIDebug)
@@ -432,14 +432,14 @@ class TestCommandDecorators:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         # Check that commands have checks
         # The commands should have the is_owner check
         assert hasattr(cog.ai_debug, 'checks') or hasattr(cog.ai_debug, '__commands_checks__')
-        
+
     def test_command_names(self):
         """Test commands have correct names."""
         try:
@@ -447,10 +447,10 @@ class TestCommandDecorators:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         # Check command names
         assert cog.ai_debug.name == "ai_debug"
         assert cog.ai_perf.name == "ai_perf"
@@ -468,12 +468,12 @@ class TestEdgeCases:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         assert cog.logger.name == "AIDebug"
-        
+
     async def test_ai_perf_no_data(self):
         """Test ai_perf with empty stats."""
         try:
@@ -481,21 +481,21 @@ class TestEdgeCases:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.get_performance_stats.return_value = {}
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         await cog.ai_perf.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_with("No performance data yet")
-        
+
     async def test_ai_trace_no_trace_data(self):
         """Test ai_trace with session but no trace data."""
         try:
@@ -503,14 +503,14 @@ class TestEdgeCases:
         except ImportError:
             pytest.skip("debug_commands not available")
             return
-            
+
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
-        
+
         mock_ctx = MagicMock()
         mock_ctx.channel.id = 123456
         mock_ctx.send = AsyncMock()
-        
+
         mock_chat_manager = MagicMock()
         mock_chat_manager.chats = {
             123456: {
@@ -521,7 +521,7 @@ class TestEdgeCases:
             }
         }
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
-        
+
         await cog.ai_trace.callback(cog, mock_ctx)
-        
+
         mock_ctx.send.assert_called_once()

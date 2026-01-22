@@ -4,10 +4,11 @@ Tests for cogs/ai_core/memory/memory_consolidator.py
 Comprehensive tests for MemoryConsolidator and ConversationSummary classes.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime, timedelta
 import asyncio
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestConversationSummaryDataclass:

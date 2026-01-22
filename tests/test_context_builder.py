@@ -4,8 +4,9 @@ Tests for cogs/ai_core/context_builder.py and cogs/ai_core/core/context_builder.
 Comprehensive tests for AIContext and ContextBuilder classes.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestAIContextDataclass:

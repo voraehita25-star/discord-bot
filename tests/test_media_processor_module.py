@@ -1,10 +1,11 @@
 """Tests for media processor module."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-import io
-from PIL import Image
 import base64
+import io
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from PIL import Image
 
 
 class TestLoadCachedImageBytes:
@@ -13,9 +14,9 @@ class TestLoadCachedImageBytes:
     def test_load_cached_image_bytes_non_existent(self):
         """Test load_cached_image_bytes with non-existent file."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
-        
+
         result = load_cached_image_bytes("/non/existent/path/image.png")
-        
+
         assert result is None
 
     def test_load_cached_image_bytes_function_exists(self):
@@ -30,12 +31,12 @@ class TestPilToInlineData:
     def test_pil_to_inline_data_basic(self):
         """Test pil_to_inline_data with basic image."""
         from cogs.ai_core.media_processor import pil_to_inline_data
-        
+
         # Create a simple test image
         img = Image.new('RGB', (100, 100), color='red')
-        
+
         result = pil_to_inline_data(img)
-        
+
         assert "inline_data" in result
         assert "mime_type" in result["inline_data"]
         assert "data" in result["inline_data"]
@@ -44,12 +45,12 @@ class TestPilToInlineData:
     def test_pil_to_inline_data_base64_valid(self):
         """Test pil_to_inline_data returns valid base64."""
         from cogs.ai_core.media_processor import pil_to_inline_data
-        
+
         # Create a simple test image
         img = Image.new('RGB', (50, 50), color='blue')
-        
+
         result = pil_to_inline_data(img)
-        
+
         # Should be valid base64
         data = result["inline_data"]["data"]
         decoded = base64.b64decode(data)
@@ -58,12 +59,12 @@ class TestPilToInlineData:
     def test_pil_to_inline_data_rgba(self):
         """Test pil_to_inline_data with RGBA image."""
         from cogs.ai_core.media_processor import pil_to_inline_data
-        
+
         # Create RGBA image
         img = Image.new('RGBA', (100, 100), color=(255, 0, 0, 128))
-        
+
         result = pil_to_inline_data(img)
-        
+
         assert "inline_data" in result
 
 
@@ -73,22 +74,22 @@ class TestIsAnimatedGif:
     def test_is_animated_gif_static(self):
         """Test is_animated_gif with static image."""
         from cogs.ai_core.media_processor import is_animated_gif
-        
+
         # Create static GIF
         img = Image.new('P', (10, 10), color=0)
         buffer = io.BytesIO()
         img.save(buffer, format='GIF')
-        
+
         result = is_animated_gif(buffer.getvalue())
-        
+
         assert result is False
 
     def test_is_animated_gif_invalid_data(self):
         """Test is_animated_gif with invalid data."""
         from cogs.ai_core.media_processor import is_animated_gif
-        
+
         result = is_animated_gif(b"not a gif")
-        
+
         assert result is False
 
 
@@ -122,7 +123,7 @@ class TestImageioAvailability:
     def test_imageio_available_flag(self):
         """Test IMAGEIO_AVAILABLE flag exists."""
         from cogs.ai_core.media_processor import IMAGEIO_AVAILABLE
-        
+
         assert isinstance(IMAGEIO_AVAILABLE, bool)
 
 
@@ -141,24 +142,24 @@ class TestImageConversion:
     def test_convert_small_image(self):
         """Test converting small image."""
         from cogs.ai_core.media_processor import pil_to_inline_data
-        
+
         # Very small image
         img = Image.new('RGB', (1, 1), color='white')
-        
+
         result = pil_to_inline_data(img)
-        
+
         assert result is not None
         assert "inline_data" in result
 
     def test_convert_large_image(self):
         """Test converting larger image."""
         from cogs.ai_core.media_processor import pil_to_inline_data
-        
+
         # Larger image
         img = Image.new('RGB', (500, 500), color='green')
-        
+
         result = pil_to_inline_data(img)
-        
+
         assert result is not None
         assert len(result["inline_data"]["data"]) > 100
 
@@ -169,21 +170,21 @@ class TestStaticGifDetection:
     def test_static_png_as_gif(self):
         """Test PNG image is not detected as animated."""
         from cogs.ai_core.media_processor import is_animated_gif
-        
+
         # Create PNG and convert to bytes
         img = Image.new('RGB', (10, 10), color='red')
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
-        
+
         # Should return False (not animated)
         result = is_animated_gif(buffer.getvalue())
-        
+
         assert result is False
 
     def test_empty_bytes(self):
         """Test empty bytes returns False."""
         from cogs.ai_core.media_processor import is_animated_gif
-        
+
         result = is_animated_gif(b"")
-        
+
         assert result is False

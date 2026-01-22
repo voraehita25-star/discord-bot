@@ -97,14 +97,14 @@ class TestSummarizerInit:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        
+
         assert summarizer.model is not None
         # Client may or may not be initialized depending on API key
 
     def test_init_model_from_env(self):
         """Test model is configurable."""
         from cogs.ai_core.memory.summarizer import SUMMARIZATION_MODEL
-        
+
         # Model should be set
         assert SUMMARIZATION_MODEL is not None
 
@@ -263,7 +263,7 @@ class TestCompressHistory:
 
         summarizer = ConversationSummarizer()
         summarizer.client = None  # No client = summarization fails
-        
+
         history = [{"role": "user", "parts": ["msg"]}] * 50
 
         result = await summarizer.compress_history(history, keep_recent=10)

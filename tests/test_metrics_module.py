@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ==================== TestPrometheusAvailable ====================
 
 
@@ -21,7 +20,7 @@ class TestPrometheusAvailable:
     def test_prometheus_available_flag_exists(self):
         """Test PROMETHEUS_AVAILABLE flag exists."""
         from utils.monitoring.metrics import PROMETHEUS_AVAILABLE
-        
+
         assert isinstance(PROMETHEUS_AVAILABLE, bool)
 
 
@@ -34,20 +33,20 @@ class TestBotMetricsInit:
     def test_init_creates_instance(self):
         """Test BotMetrics global instance exists."""
         from utils.monitoring.metrics import metrics
-        
+
         assert metrics is not None
-    
+
     def test_init_has_enabled_flag(self):
         """Test BotMetrics has enabled flag."""
         from utils.monitoring.metrics import metrics
-        
+
         assert hasattr(metrics, 'enabled')
         assert isinstance(metrics.enabled, bool)
-    
+
     def test_init_server_not_started_by_default(self):
         """Test server has _server_started attribute."""
         from utils.monitoring.metrics import metrics
-        
+
         # Just verify attribute exists - it may or may not be started in other tests
         assert hasattr(metrics, '_server_started')
 
@@ -61,7 +60,7 @@ class TestBotMetricsStartServer:
     def test_start_server_disabled(self):
         """Test start_server when prometheus not available."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -69,11 +68,11 @@ class TestBotMetricsStartServer:
             assert result is False
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_start_server_already_started(self):
         """Test start_server when already started returns True."""
         from utils.monitoring.metrics import metrics
-        
+
         original_started = metrics._server_started
         try:
             metrics._server_started = True
@@ -92,7 +91,7 @@ class TestBotMetricsIncrementMessages:
     def test_increment_messages_disabled(self):
         """Test increment_messages when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -100,14 +99,14 @@ class TestBotMetricsIncrementMessages:
             metrics.increment_messages("command")
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_increment_messages_enabled(self):
         """Test increment_messages when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_messages("command")
         metrics.increment_messages("ai")
@@ -123,7 +122,7 @@ class TestBotMetricsIncrementCommands:
     def test_increment_commands_disabled(self):
         """Test increment_commands when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -131,24 +130,24 @@ class TestBotMetricsIncrementCommands:
             metrics.increment_commands("play", success=True)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_increment_commands_success(self):
         """Test increment_commands with success."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_commands("play", success=True)
-    
+
     def test_increment_commands_error(self):
         """Test increment_commands with error."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_commands("play", success=False)
 
@@ -162,7 +161,7 @@ class TestBotMetricsIncrementAiRequests:
     def test_increment_ai_requests_disabled(self):
         """Test increment_ai_requests when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -170,24 +169,24 @@ class TestBotMetricsIncrementAiRequests:
             metrics.increment_ai_requests("success")
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_increment_ai_requests_success(self):
         """Test increment_ai_requests with success status."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_ai_requests("success")
-    
+
     def test_increment_ai_requests_error(self):
         """Test increment_ai_requests with error status."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_ai_requests("error")
 
@@ -201,7 +200,7 @@ class TestBotMetricsIncrementSongs:
     def test_increment_songs_disabled(self):
         """Test increment_songs when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -209,24 +208,24 @@ class TestBotMetricsIncrementSongs:
             metrics.increment_songs("youtube")
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_increment_songs_youtube(self):
         """Test increment_songs with youtube source."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_songs("youtube")
-    
+
     def test_increment_songs_spotify(self):
         """Test increment_songs with spotify source."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.increment_songs("spotify")
 
@@ -240,7 +239,7 @@ class TestBotMetricsSetGuilds:
     def test_set_guilds_disabled(self):
         """Test set_guilds when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -248,14 +247,14 @@ class TestBotMetricsSetGuilds:
             metrics.set_guilds(10)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_set_guilds_enabled(self):
         """Test set_guilds when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.set_guilds(50)
 
@@ -269,7 +268,7 @@ class TestBotMetricsSetVoiceClients:
     def test_set_voice_clients_disabled(self):
         """Test set_voice_clients when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -277,14 +276,14 @@ class TestBotMetricsSetVoiceClients:
             metrics.set_voice_clients(5)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_set_voice_clients_enabled(self):
         """Test set_voice_clients when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.set_voice_clients(3)
 
@@ -298,7 +297,7 @@ class TestBotMetricsSetQueueSize:
     def test_set_queue_size_disabled(self):
         """Test set_queue_size when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -306,14 +305,14 @@ class TestBotMetricsSetQueueSize:
             metrics.set_queue_size(123456789, 10)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_set_queue_size_enabled(self):
         """Test set_queue_size when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.set_queue_size(123456789, 25)
 
@@ -327,7 +326,7 @@ class TestBotMetricsSetMemory:
     def test_set_memory_disabled(self):
         """Test set_memory when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -335,14 +334,14 @@ class TestBotMetricsSetMemory:
             metrics.set_memory(1024 * 1024 * 100)  # 100MB
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_set_memory_enabled(self):
         """Test set_memory when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.set_memory(1024 * 1024 * 256)  # 256MB
 
@@ -356,7 +355,7 @@ class TestBotMetricsObserveCommandLatency:
     def test_observe_command_latency_disabled(self):
         """Test observe_command_latency when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -364,14 +363,14 @@ class TestBotMetricsObserveCommandLatency:
             metrics.observe_command_latency("play", 0.5)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_observe_command_latency_enabled(self):
         """Test observe_command_latency when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.observe_command_latency("play", 1.5)
         metrics.observe_command_latency("skip", 0.1)
@@ -386,7 +385,7 @@ class TestBotMetricsObserveAiResponseTime:
     def test_observe_ai_response_time_disabled(self):
         """Test observe_ai_response_time when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
@@ -394,14 +393,14 @@ class TestBotMetricsObserveAiResponseTime:
             metrics.observe_ai_response_time(2.5)
         finally:
             metrics.enabled = original_enabled
-    
+
     def test_observe_ai_response_time_enabled(self):
         """Test observe_ai_response_time when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Should not raise
         metrics.observe_ai_response_time(5.0)
 
@@ -415,13 +414,13 @@ class TestGlobalMetrics:
     def test_global_metrics_exists(self):
         """Test global metrics instance exists."""
         from utils.monitoring.metrics import metrics
-        
+
         assert metrics is not None
-    
+
     def test_global_metrics_is_bot_metrics(self):
         """Test global metrics is BotMetrics instance."""
-        from utils.monitoring.metrics import metrics, BotMetrics
-        
+        from utils.monitoring.metrics import BotMetrics, metrics
+
         assert isinstance(metrics, BotMetrics)
 
 
@@ -434,25 +433,25 @@ class TestModuleImports:
     def test_import_metrics_module(self):
         """Test importing metrics module."""
         import utils.monitoring.metrics
-        
+
         assert utils.monitoring.metrics is not None
-    
+
     def test_import_bot_metrics(self):
         """Test importing BotMetrics class."""
         from utils.monitoring.metrics import BotMetrics
-        
+
         assert BotMetrics is not None
-    
+
     def test_import_metrics_instance(self):
         """Test importing global metrics instance."""
         from utils.monitoring.metrics import metrics
-        
+
         assert metrics is not None
-    
+
     def test_import_prometheus_available(self):
         """Test importing PROMETHEUS_AVAILABLE flag."""
         from utils.monitoring.metrics import PROMETHEUS_AVAILABLE
-        
+
         assert isinstance(PROMETHEUS_AVAILABLE, bool)
 
 
@@ -465,11 +464,11 @@ class TestMetricsDisabledBehavior:
     def test_all_methods_work_when_disabled(self):
         """Test all methods work without raising when disabled."""
         from utils.monitoring.metrics import metrics
-        
+
         original_enabled = metrics.enabled
         try:
             metrics.enabled = False
-            
+
             # None of these should raise
             metrics.increment_messages("command")
             metrics.increment_commands("play", success=True)
@@ -493,44 +492,44 @@ class TestMetricsCounterTypes:
 
     def test_message_types(self):
         """Test message type labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Different message types
         for msg_type in ["command", "ai", "music", "other"]:
             metrics.increment_messages(msg_type)
-    
+
     def test_command_status_labels(self):
         """Test command status labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Success and error
         metrics.increment_commands("test", success=True)
         metrics.increment_commands("test", success=False)
-    
+
     def test_ai_status_labels(self):
         """Test AI status labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Different statuses
         for status in ["success", "error", "empty"]:
             metrics.increment_ai_requests(status)
-    
+
     def test_song_source_labels(self):
         """Test song source labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
-        
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("prometheus_client not installed")
-        
+
         # Different sources
         for source in ["youtube", "spotify", "search"]:
             metrics.increment_songs(source)

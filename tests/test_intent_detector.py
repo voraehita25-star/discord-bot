@@ -414,7 +414,7 @@ class TestIntentPatterns:
         """Test patterns are tuples."""
         from cogs.ai_core.processing.intent_detector import IntentDetector
 
-        for intent, patterns in IntentDetector.INTENT_PATTERNS.items():
+        for _intent, patterns in IntentDetector.INTENT_PATTERNS.items():
             for pattern_tuple in patterns:
                 assert len(pattern_tuple) == 3
                 assert isinstance(pattern_tuple[0], str)  # regex string

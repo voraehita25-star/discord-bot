@@ -3,9 +3,10 @@ Extended tests for Long-term Memory module.
 Tests Fact dataclass and related enums.
 """
 
-import pytest
-from datetime import datetime
 from dataclasses import asdict
+from datetime import datetime
+
+import pytest
 
 
 class TestFactCategory:
@@ -18,9 +19,9 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.IDENTITY.value == "identity"
-        
+
     def test_fact_category_preference(self):
         """Test PREFERENCE category value."""
         try:
@@ -28,9 +29,9 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.PREFERENCE.value == "preference"
-        
+
     def test_fact_category_personal(self):
         """Test PERSONAL category value."""
         try:
@@ -38,9 +39,9 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.PERSONAL.value == "personal"
-        
+
     def test_fact_category_relationship(self):
         """Test RELATIONSHIP category value."""
         try:
@@ -48,9 +49,9 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.RELATIONSHIP.value == "relationship"
-        
+
     def test_fact_category_skill(self):
         """Test SKILL category value."""
         try:
@@ -58,9 +59,9 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.SKILL.value == "skill"
-        
+
     def test_fact_category_custom(self):
         """Test CUSTOM category value."""
         try:
@@ -68,7 +69,7 @@ class TestFactCategory:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert FactCategory.CUSTOM.value == "custom"
 
 
@@ -82,9 +83,9 @@ class TestImportanceLevel:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert ImportanceLevel.LOW.value == 1
-        
+
     def test_importance_level_medium(self):
         """Test MEDIUM importance level."""
         try:
@@ -92,9 +93,9 @@ class TestImportanceLevel:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert ImportanceLevel.MEDIUM.value == 2
-        
+
     def test_importance_level_high(self):
         """Test HIGH importance level."""
         try:
@@ -102,9 +103,9 @@ class TestImportanceLevel:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert ImportanceLevel.HIGH.value == 3
-        
+
     def test_importance_level_critical(self):
         """Test CRITICAL importance level."""
         try:
@@ -112,7 +113,7 @@ class TestImportanceLevel:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert ImportanceLevel.CRITICAL.value == 4
 
 
@@ -126,9 +127,9 @@ class TestFactDataclass:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact()
-        
+
         assert fact.id is None
         assert fact.user_id == 0
         assert fact.channel_id is None
@@ -139,7 +140,7 @@ class TestFactDataclass:
         assert fact.confidence == 1.0
         assert fact.is_active is True
         assert fact.is_user_defined is False
-        
+
     def test_fact_with_values(self):
         """Test Fact with specified values."""
         try:
@@ -147,7 +148,7 @@ class TestFactDataclass:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact(
             id=1,
             user_id=123456,
@@ -156,7 +157,7 @@ class TestFactDataclass:
             content="User name is John",
             importance=ImportanceLevel.HIGH.value
         )
-        
+
         assert fact.id == 1
         assert fact.user_id == 123456
         assert fact.channel_id == 789012
@@ -175,15 +176,15 @@ class TestFactToDict:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact(user_id=123, content="Test content")
-        
+
         result = fact.to_dict()
-        
+
         assert isinstance(result, dict)
         assert result["user_id"] == 123
         assert result["content"] == "Test content"
-        
+
     def test_to_dict_with_datetime(self):
         """Test to_dict converts datetime to ISO format."""
         try:
@@ -191,16 +192,16 @@ class TestFactToDict:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         now = datetime.now()
         fact = Fact(
             user_id=123,
             first_mentioned=now,
             last_confirmed=now
         )
-        
+
         result = fact.to_dict()
-        
+
         assert isinstance(result["first_mentioned"], str)
         assert isinstance(result["last_confirmed"], str)
 
@@ -215,7 +216,7 @@ class TestFactFromDict:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         data = {
             "id": 1,
             "user_id": 123,
@@ -231,9 +232,9 @@ class TestFactFromDict:
             "is_active": True,
             "is_user_defined": False
         }
-        
+
         fact = Fact.from_dict(data)
-        
+
         assert isinstance(fact, Fact)
         assert fact.id == 1
         assert fact.user_id == 123
@@ -250,7 +251,7 @@ class TestDatabaseAvailable:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert isinstance(DB_AVAILABLE, bool)
 
 
@@ -264,7 +265,7 @@ class TestModuleDocstring:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         assert long_term_memory.__doc__ is not None
 
 
@@ -278,11 +279,11 @@ class TestFactMentionCount:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact()
-        
+
         assert fact.mention_count == 1
-        
+
     def test_mention_count_custom(self):
         """Test mention_count can be set."""
         try:
@@ -290,9 +291,9 @@ class TestFactMentionCount:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact(mention_count=5)
-        
+
         assert fact.mention_count == 5
 
 
@@ -306,11 +307,11 @@ class TestFactConfidence:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact()
-        
+
         assert fact.confidence == 1.0
-        
+
     def test_confidence_custom(self):
         """Test confidence can be set."""
         try:
@@ -318,9 +319,9 @@ class TestFactConfidence:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact(confidence=0.75)
-        
+
         assert fact.confidence == 0.75
 
 
@@ -334,11 +335,11 @@ class TestFactFlags:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact()
-        
+
         assert fact.is_active is True
-        
+
     def test_is_user_defined_default_false(self):
         """Test is_user_defined defaults to False."""
         try:
@@ -346,11 +347,11 @@ class TestFactFlags:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact()
-        
+
         assert fact.is_user_defined is False
-        
+
     def test_flags_can_be_set(self):
         """Test flags can be set to custom values."""
         try:
@@ -358,8 +359,8 @@ class TestFactFlags:
         except ImportError:
             pytest.skip("long_term_memory not available")
             return
-            
+
         fact = Fact(is_active=False, is_user_defined=True)
-        
+
         assert fact.is_active is False
         assert fact.is_user_defined is True
