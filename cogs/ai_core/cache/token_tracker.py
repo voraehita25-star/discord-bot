@@ -31,7 +31,7 @@ class TokenUsage:
     user_id: int
     channel_id: int
     guild_id: int | None = None
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3-pro-preview"
     cached: bool = False
 
     @property

@@ -123,3 +123,247 @@ class TestLoadCharacterImage:
 
         result = load_character_image("some message", 999999)
         assert result is None
+
+
+class TestTextExtensions:
+    """Tests for TEXT_EXTENSIONS constant."""
+
+    def test_text_extensions_exists(self):
+        """Test TEXT_EXTENSIONS constant exists."""
+        from cogs.ai_core.content_processor import TEXT_EXTENSIONS
+
+        assert isinstance(TEXT_EXTENSIONS, tuple)
+
+    def test_text_extensions_common_types(self):
+        """Test common text extensions are included."""
+        from cogs.ai_core.content_processor import TEXT_EXTENSIONS
+
+        assert ".txt" in TEXT_EXTENSIONS
+        assert ".md" in TEXT_EXTENSIONS
+        assert ".json" in TEXT_EXTENSIONS
+        assert ".py" in TEXT_EXTENSIONS
+        assert ".js" in TEXT_EXTENSIONS
+        assert ".html" in TEXT_EXTENSIONS
+
+
+class TestTextMimes:
+    """Tests for TEXT_MIMES constant."""
+
+    def test_text_mimes_exists(self):
+        """Test TEXT_MIMES constant exists."""
+        from cogs.ai_core.content_processor import TEXT_MIMES
+
+        assert isinstance(TEXT_MIMES, tuple)
+
+    def test_text_mimes_common_types(self):
+        """Test common MIME types are included."""
+        from cogs.ai_core.content_processor import TEXT_MIMES
+
+        assert "text/plain" in TEXT_MIMES
+        assert "application/json" in TEXT_MIMES
+        assert "text/html" in TEXT_MIMES
+
+
+class TestProcessAttachments:
+    """Tests for process_attachments function."""
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_none(self):
+        """Test processing None attachments."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            None, "TestUser"
+        )
+
+        assert image_parts == []
+        assert video_parts == []
+        assert text_parts == []
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_empty_list(self):
+        """Test processing empty attachment list."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [], "TestUser"
+        )
+
+        assert image_parts == []
+        assert video_parts == []
+        assert text_parts == []
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_text_file(self):
+        """Test processing text file attachment."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        # Create mock attachment
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "text/plain"
+        mock_attachment.filename = "test.txt"
+        mock_attachment.read = AsyncMock(return_value=b"Hello World")
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert "Hello World" in text_parts[0]
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_utf8_text(self):
+        """Test processing UTF-8 encoded text file."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        # Create mock attachment with UTF-8 text
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "text/plain"
+        mock_attachment.filename = "test.txt"
+        mock_attachment.read = AsyncMock(return_value="สวัสดี".encode('utf-8'))
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert "สวัสดี" in text_parts[0]
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_large_file_chunking(self):
+        """Test processing large text file with chunking."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        # Create large content
+        large_content = "A" * 20000  # Over chunk_size
+
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "text/plain"
+        mock_attachment.filename = "large.txt"
+        mock_attachment.read = AsyncMock(return_value=large_content.encode('utf-8'))
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        # Should be chunked into multiple parts
+        assert len(text_parts) >= 2
+
+    @pytest.mark.asyncio
+    async def test_process_python_file_by_extension(self):
+        """Test processing .py file by extension."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = None  # No MIME type
+        mock_attachment.filename = "script.py"
+        mock_attachment.read = AsyncMock(return_value=b"print('hello')")
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert "print('hello')" in text_parts[0]
+
+    @pytest.mark.asyncio
+    async def test_process_json_file(self):
+        """Test processing .json file."""
+        from cogs.ai_core.content_processor import process_attachments
+
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "application/json"
+        mock_attachment.filename = "data.json"
+        mock_attachment.read = AsyncMock(return_value=b'{"key": "value"}')
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert '{"key": "value"}' in text_parts[0]
+
+
+class TestImageioAvailable:
+    """Tests for IMAGEIO_AVAILABLE flag."""
+
+    def test_imageio_available_is_bool(self):
+        """Test IMAGEIO_AVAILABLE is boolean."""
+        from cogs.ai_core.content_processor import IMAGEIO_AVAILABLE
+
+        assert isinstance(IMAGEIO_AVAILABLE, bool)
+
+
+class TestPrepareUserAvatar:
+    """Tests for prepare_user_avatar function."""
+
+    @pytest.mark.asyncio
+    async def test_prepare_user_avatar_initializes_seen_users(self):
+        """Test prepare_user_avatar initializes seen_users for channel."""
+        from cogs.ai_core.content_processor import prepare_user_avatar
+
+        # Create mock user
+        mock_user = MagicMock()
+        mock_user.display_name = "TestUser"
+        mock_user.id = 123456789
+
+        # Create mock avatar
+        img = Image.new('RGB', (256, 256), color='red')
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+
+        mock_avatar = MagicMock()
+        mock_avatar.with_format = MagicMock(return_value=mock_avatar)
+        mock_avatar.with_size = MagicMock(return_value=mock_avatar)
+        mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
+        mock_user.display_avatar = mock_avatar
+
+        chat_data = {}  # No history key
+        seen_users = {}
+
+        await prepare_user_avatar(
+            mock_user,
+            "Hello",
+            chat_data,
+            12345,
+            seen_users
+        )
+
+        # Channel should be initialized in seen_users
+        assert 12345 in seen_users
+
+    @pytest.mark.asyncio
+    async def test_prepare_user_avatar_keyword_trigger(self):
+        """Test prepare_user_avatar with appearance keyword."""
+        from cogs.ai_core.content_processor import prepare_user_avatar
+
+        # Create mock user
+        mock_user = MagicMock()
+        mock_user.display_name = "TestUser"
+        mock_user.id = 123456789
+
+        # Create mock avatar
+        img = Image.new('RGB', (256, 256), color='red')
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+
+        mock_avatar = MagicMock()
+        mock_avatar.with_format = MagicMock(return_value=mock_avatar)
+        mock_avatar.with_size = MagicMock(return_value=mock_avatar)
+        mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
+        mock_user.display_avatar = mock_avatar
+
+        chat_data = {"history": [{"text": "hi"}]}
+        seen_users = {12345: {"123456789_TestUser"}}
+
+        # Use keyword "appearance" to trigger avatar
+        result = await prepare_user_avatar(
+            mock_user,
+            "What does my face look like?",
+            chat_data,
+            12345,
+            seen_users
+        )
+
+        # Should return an image due to keyword "face"
+        assert result is not None

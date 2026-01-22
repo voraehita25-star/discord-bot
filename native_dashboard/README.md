@@ -1,4 +1,4 @@
-# Discord Bot Dashboard v2.0
+# 디스코드 봇 대시보드 v2.0 (Discord Bot Dashboard)
 
 🎮 **Enhanced Edition** - Tauri-based native desktop dashboard for managing Discord Bot.
 
@@ -9,10 +9,12 @@
 | 🔔 **Toast Notifications** | Beautiful animated notifications for all actions |
 | 📈 **Performance Charts** | Real-time memory & message count graphs |
 | 🌙 **Dark/Light Theme** | Toggle theme with localStorage persistence |
+| 🌸 **Sakura Animation** | Beautiful falling cherry blossom petals |
 | ⚡ **Performance Caching** | Smart caching reduces API calls by 50% |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-4 navigation, Ctrl+R refresh, Ctrl+T theme |
 | 🧪 **Unit Tests** | 26 tests with vitest |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications |
+| 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
 ## 📦 Features
 
@@ -69,10 +71,13 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # TypeScript source (enhanced)
-│   └── app.test.ts         # Unit tests
+│   ├── app.ts              # TypeScript source (959 lines)
+│   └── app.test.ts         # Unit tests (26 tests)
+├── scripts/
+│   ├── build-tauri.ps1     # Build + auto-rename script
+│   └── create_desktop_shortcut.py  # Create Korean-named shortcut
 ├── ui/
-│   ├── index.html          # Main UI (with charts)
+│   ├── index.html          # Main UI (with charts, sakura)
 │   ├── styles.css          # Dark/Light theme styling
 │   └── app.js              # Compiled JS
 └── icons/
@@ -100,8 +105,18 @@ cargo tauri dev
 ### Production Build
 ```bash
 cd native_dashboard
+npm run release      # Build + auto-rename to Korean name
+```
+
+Or manually:
+```bash
 npm run build
 cargo tauri build --release
+```
+
+### Create Desktop Shortcut
+```bash
+python scripts/create_desktop_shortcut.py
 ```
 
 ### Testing
@@ -111,9 +126,10 @@ npm run test:watch   # Watch mode
 npm run test:coverage # With coverage report
 ```
 
-### Run
-```bash
-.\target\release\bot-dashboard.exe
+### Output Files
+```
+target/release/디스코드 봇 대시보드.exe           # Main executable
+target/release/bundle/nsis/디스코드 봇 대시보드_1.0.0_x64-setup.exe  # Installer
 ```
 
 ## 🎨 UI

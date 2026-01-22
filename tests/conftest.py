@@ -21,14 +21,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ==================== Async Support ====================
+# Use pytest-asyncio's recommended configuration for session-scoped event loops
+
+pytest_plugins = ("pytest_asyncio",)
 
 
 @pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+def event_loop_policy():
+    """Return the event loop policy for the test session."""
+    return asyncio.DefaultEventLoopPolicy()
 
 
 # ==================== Database Fixtures ====================

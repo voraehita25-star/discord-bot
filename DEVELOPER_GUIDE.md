@@ -4,9 +4,9 @@
 > **Version:** 3.3.9  
 > **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
-> **Total Files:** 128 Python files | 452 Tests  
+> **Total Files:** 247 Python files | 126 Test files | 3,157 Tests  
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | Code audit complete ✅ | 17 bug fixes applied ✅ | Config cleanup ✅ | tools.py refactored ✅ | ai_core reorganized ✅ | Memory & Shutdown managers added ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Code audit complete ✅ | Memory & Shutdown managers ✅
 
 ---
 
@@ -29,8 +29,6 @@ Discord Bot ที่รวม AI Chat (Gemini API) และ Music Player ไ�
 BOT/
 ├── bot.py                    # 🚀 Main entry point
 ├── config.py                 # ⚙️ Centralized configuration
-├── bot_dashboard.py          # 🖥️ PyQt5 Desktop Dashboard
-├── create_shortcut.py        # Desktop shortcut creator
 ├── requirements.txt          # 📦 Dependencies
 │
 ├── cogs/                     # 🔌 Discord Cogs (Extensions)
@@ -193,7 +191,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (452 tests)
+├── tests/                    # 🧪 Test Suite (3,157 tests in 126 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -224,18 +222,27 @@ BOT/
 ├── docs/                     # 📚 Documentation
 │   └── CODE_AUDIT_GUIDE.md   # Code audit checklist
 │
-├── native_dashboard/         # 🖥️ Tauri Desktop Dashboard
+├── native_dashboard/         # 🖥️ Tauri Desktop Dashboard v2.0
 │   ├── Cargo.toml            # Rust dependencies
 │   ├── tauri.conf.json       # Tauri configuration
+│   ├── package.json          # npm dependencies (v2.0.0)
+│   ├── tsconfig.json         # TypeScript config
+│   ├── vitest.config.ts      # Test configuration
 │   ├── README.md             # Dashboard documentation
 │   ├── src/
 │   │   ├── main.rs           # Tauri commands
 │   │   ├── bot_manager.rs    # Bot process control
 │   │   └── database.rs       # SQLite queries
+│   ├── src-ts/
+│   │   ├── app.ts            # TypeScript source (959 lines)
+│   │   └── app.test.ts       # Unit tests (26 tests)
+│   ├── scripts/
+│   │   ├── build-tauri.ps1   # Build + auto-rename
+│   │   └── create_desktop_shortcut.py
 │   ├── ui/
-│   │   ├── index.html        # Dashboard UI
-│   │   ├── styles.css        # Dark theme
-│   │   └── app.js            # Frontend logic
+│   │   ├── index.html        # Dashboard UI (charts, sakura)
+│   │   ├── styles.css        # Dark/Light theme
+│   │   └── app.js            # Compiled JavaScript
 │   └── icons/
 │       └── icon.ico          # App icon
 │

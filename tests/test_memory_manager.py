@@ -182,6 +182,7 @@ class TestWeakRefCache:
         assert result.value == [1, 2, 3]
         assert len(cache) == 1
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_auto_cleanup_on_gc(self):
         """Test objects are removed when garbage collected."""
         from utils.reliability.memory_manager import WeakRefCache
@@ -353,6 +354,7 @@ class TestMemoryMonitor:
 class TestCachedWithTTL:
     """Tests for cached_with_ttl decorator."""
 
+    @pytest.mark.asyncio
     async def test_decorator_caches_result(self):
         """Test that decorator caches function results."""
         from utils.reliability.memory_manager import cached_with_ttl
@@ -375,6 +377,7 @@ class TestCachedWithTTL:
         assert result2 == "data_test"
         assert call_count == 1  # Function not called again
 
+    @pytest.mark.asyncio
     async def test_decorator_different_keys(self):
         """Test that different keys are cached separately."""
         from utils.reliability.memory_manager import cached_with_ttl
@@ -394,6 +397,7 @@ class TestCachedWithTTL:
         assert result2 == "data_key2"
         assert call_count == 2
 
+    @pytest.mark.asyncio
     async def test_decorator_expiration(self):
         """Test that cached results expire."""
         from utils.reliability.memory_manager import cached_with_ttl

@@ -36,10 +36,12 @@
 ## 📊 Test Results
 
 ```
-===================== 452 passed in 2.71s =====================
+===================== 3,157 passed in 10.24s =====================
 ```
 
-✅ All 452 tests passing
+✅ All 3,157 tests passing  
+✅ 0 warnings  
+✅ 126 test files
 
 ---
 

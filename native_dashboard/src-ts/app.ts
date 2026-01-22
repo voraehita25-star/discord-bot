@@ -1,5 +1,5 @@
 /**
- * Discord Bot Dashboard - Enhanced TypeScript Frontend
+ * 디스코드 봇 대시보드 - Enhanced TypeScript Frontend
  * Tauri v2 Desktop Application
  * 
  * Features:
@@ -11,7 +11,32 @@
  * - Optimized Performance with Caching
  */
 
-import { invoke } from '@tauri-apps/api/core';
+// Extend Window interface for Tauri and global functions
+interface TauriAPI {
+    core: {
+        invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+    };
+}
+
+interface Window {
+    __TAURI__?: TauriAPI;
+    toggleAutoScroll: () => void;
+    clearLogs: () => void;
+    clearHistory: () => Promise<void>;
+    openFolder: (folder: string) => Promise<void>;
+    loadLogs: () => Promise<void>;
+    toggleTheme: () => void;
+    showToast: (message: string, options?: ToastOptions) => void;
+}
+
+// Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
+const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+    if (window.__TAURI__?.core?.invoke) {
+        return window.__TAURI__.core.invoke<T>(cmd, args);
+    }
+    console.warn('Tauri not available, using mock');
+    return Promise.reject(new Error('Tauri not available'));
+};
 
 // ============================================================================
 // Types & Interfaces
@@ -740,7 +765,7 @@ async function loadLogs(): Promise<void> {
         // Use DocumentFragment for better performance
         const fragment = document.createDocumentFragment();
         
-        logs.forEach(line => {
+        logs.forEach((line: string) => {
             let level = 'info';
             if (line.includes('ERROR')) level = 'error';
             else if (line.includes('WARNING')) level = 'warning';
@@ -831,7 +856,7 @@ async function loadDbStats(): Promise<void> {
 
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
-            channelsList.innerHTML = channels.map(ch => `
+            channelsList.innerHTML = channels.map((ch: ChannelInfo) => `
                 <div class="data-item">
                     <span class="data-item-id">${ch.channel_id}</span>
                     <span class="data-item-value">${ch.message_count.toLocaleString()} messages</span>
@@ -841,7 +866,7 @@ async function loadDbStats(): Promise<void> {
 
         const usersList = document.getElementById('users-list');
         if (usersList) {
-            usersList.innerHTML = users.map(u => `
+            usersList.innerHTML = users.map((u: UserInfo) => `
                 <div class="data-item">
                     <span class="data-item-id">${u.user_id}</span>
                     <span class="data-item-value">${u.message_count.toLocaleString()} messages</span>
@@ -890,10 +915,15 @@ function loadSettingsUI(): void {
 // Helpers
 // ============================================================================
 
-async function openFolder(type: 'logs' | 'data'): Promise<void> {
-    const path = type === 'logs'
-        ? 'C:\\Users\\ME\\BOT\\logs'
-        : 'C:\\Users\\ME\\BOT\\data';
+async function openFolder(type: string): Promise<void> {
+    let path: string;
+    if (type === 'logs') {
+        path = 'C:\\Users\\ME\\BOT\\logs';
+    } else if (type === 'data') {
+        path = 'C:\\Users\\ME\\BOT\\data';
+    } else {
+        path = type; // Allow direct path
+    }
 
     try {
         await invoke('open_folder', { path });
@@ -918,18 +948,6 @@ function escapeHtml(text: string): string {
 // ============================================================================
 // Export for global access (Tauri needs these on window)
 // ============================================================================
-
-declare global {
-    interface Window {
-        toggleAutoScroll: typeof toggleAutoScroll;
-        clearLogs: typeof clearLogs;
-        clearHistory: typeof clearHistory;
-        openFolder: typeof openFolder;
-        loadLogs: typeof loadLogs;
-        toggleTheme: typeof toggleTheme;
-        showToast: typeof showToast;
-    }
-}
 
 window.toggleAutoScroll = toggleAutoScroll;
 window.clearLogs = clearLogs;

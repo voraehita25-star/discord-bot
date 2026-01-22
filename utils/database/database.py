@@ -49,10 +49,11 @@ class Database:
         self._export_delay = 3  # seconds
         # Track multiple export tasks to prevent task destruction warnings
         self._export_tasks: set[asyncio.Task] = set()
-        # Connection pool semaphore - increased for high-performance machines
-        self._pool_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent connections
+        # Connection pool semaphore - balanced for SQLite performance
+        # SQLite performs best with moderate concurrency (20-30 connections)
+        self._pool_semaphore = asyncio.Semaphore(30)  # Max 30 concurrent connections
         self._connection_count = 0
-        logging.info("💾 Async Database manager created: %s (pool=50)", self.db_path)
+        logging.info("💾 Async Database manager created: %s (pool=30)", self.db_path)
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""

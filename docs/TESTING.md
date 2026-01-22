@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: January 21, 2026 | Total: 362 Tests | 22 Test Files | Ruff: 0 issues ✅
+> Last Updated: January 22, 2026 | Total: 3,157 Tests | 126 Test Files | All passing ✅ | 0 warnings ✅
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -26,42 +26,27 @@ python -m pytest tests/test_database.py::TestRateLimiter::test_token_consumption
 python -m pytest tests/ --collect-only -q
 ```
 
-## Test Structure (22 Files, 362 Tests)
+## Test Structure (126 Files, 3,157 Tests)
 
 ```
 tests/
 ├── __init__.py              # Package init
 ├── conftest.py              # Shared fixtures
-├── test_ai_core.py          # AI core functionality
-├── test_ai_integration.py   # AI integration tests
-├── test_circuit_breaker.py  # Circuit breaker pattern
-├── test_consolidator.py     # Memory consolidator tests
-├── test_content_processor.py # Content processor tests
-├── test_database.py         # Database, sanitization
-├── test_emoji_voice.py      # Emoji/voice handling
-├── test_error_recovery.py   # Error recovery tests
-├── test_fast_json.py        # Fast JSON utilities
-├── test_guardrails.py       # Guardrails tests
-├── test_memory_modules.py   # Memory systems
-├── test_music_integration.py # Music player tests
-├── test_music_queue.py      # Queue manager tests
-├── test_performance_tracker.py # Performance tracker tests
-├── test_rate_limiter.py     # Rate limiting
-├── test_self_reflection.py  # Self reflector tests
-├── test_spotify_handler.py  # Spotify handler tests
-├── test_spotify_integration.py # Spotify integration
-├── test_summarizer.py       # Summarizer tests
-├── test_tools.py            # Server tools
-├── test_url_fetcher.py      # URL content fetcher
-└── test_webhooks.py         # Webhook handling
+├── test_*.py                # 126 test files covering all modules
+│   ├── AI Core              # 25+ test files
+│   ├── Music                # 10+ test files
+│   ├── Database             # 5+ test files
+│   ├── Reliability          # 15+ test files
+│   ├── Monitoring           # 10+ test files
+│   └── Utilities            # 50+ test files
 ```
 
 ## Test Categories
 
 ### AI Tests
-- **test_ai_core.py**: RAG, chat storage, session management
+- **test_ai_core*.py**: RAG, chat storage, session management
 - **test_ai_integration.py**: End-to-end AI integration
-- **test_memory_modules.py**: History, guardrails, intent, entity, cache
+- **test_memory_*.py**: History, guardrails, intent, entity, cache
 
 ## Running Tests with Markers
 

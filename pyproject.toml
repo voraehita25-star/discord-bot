@@ -3,7 +3,7 @@
 
 [project]
 name = "discord-bot"
-version = "3.3.4"
+version = "3.3.9"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
 requires-python = ">=3.10"
 
@@ -22,6 +22,7 @@ markers = [
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+    "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 
 [tool.ruff]

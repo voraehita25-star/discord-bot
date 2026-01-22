@@ -348,7 +348,7 @@ describe('Debounce Function', () => {
     });
 
     it('should debounce function calls', () => {
-        const debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+        const debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
         const fn = vi.fn();
         
         function debounce(callback: () => void, key: string, delay: number): void {

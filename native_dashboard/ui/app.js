@@ -1,5 +1,6 @@
+"use strict";
 /**
- * Discord Bot Dashboard - Enhanced TypeScript Frontend
+ * 디스코드 봇 대시보드 - Enhanced TypeScript Frontend
  * Tauri v2 Desktop Application
  *
  * Features:
@@ -10,7 +11,14 @@
  * - Enhanced Settings Panel
  * - Optimized Performance with Caching
  */
-import { invoke } from '@tauri-apps/api/core';
+// Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
+const invoke = (cmd, args) => {
+    if (window.__TAURI__?.core?.invoke) {
+        return window.__TAURI__.core.invoke(cmd, args);
+    }
+    console.warn('Tauri not available, using mock');
+    return Promise.reject(new Error('Tauri not available'));
+};
 // ============================================================================
 // Performance Cache System
 // ============================================================================
@@ -599,7 +607,7 @@ async function loadLogs() {
         lastLogCount = logs.length;
         // Use DocumentFragment for better performance
         const fragment = document.createDocumentFragment();
-        logs.forEach(line => {
+        logs.forEach((line) => {
             let level = 'info';
             if (line.includes('ERROR'))
                 level = 'error';
@@ -685,7 +693,7 @@ async function loadDbStats() {
         ]);
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
-            channelsList.innerHTML = channels.map(ch => `
+            channelsList.innerHTML = channels.map((ch) => `
                 <div class="data-item">
                     <span class="data-item-id">${ch.channel_id}</span>
                     <span class="data-item-value">${ch.message_count.toLocaleString()} messages</span>
@@ -694,7 +702,7 @@ async function loadDbStats() {
         }
         const usersList = document.getElementById('users-list');
         if (usersList) {
-            usersList.innerHTML = users.map(u => `
+            usersList.innerHTML = users.map((u) => `
                 <div class="data-item">
                     <span class="data-item-id">${u.user_id}</span>
                     <span class="data-item-value">${u.message_count.toLocaleString()} messages</span>
@@ -738,9 +746,16 @@ function loadSettingsUI() {
 // Helpers
 // ============================================================================
 async function openFolder(type) {
-    const path = type === 'logs'
-        ? 'C:\\Users\\ME\\BOT\\logs'
-        : 'C:\\Users\\ME\\BOT\\data';
+    let path;
+    if (type === 'logs') {
+        path = 'C:\\Users\\ME\\BOT\\logs';
+    }
+    else if (type === 'data') {
+        path = 'C:\\Users\\ME\\BOT\\data';
+    }
+    else {
+        path = type; // Allow direct path
+    }
     try {
         await invoke('open_folder', { path });
     }
@@ -759,6 +774,9 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+// ============================================================================
+// Export for global access (Tauri needs these on window)
+// ============================================================================
 window.toggleAutoScroll = toggleAutoScroll;
 window.clearLogs = clearLogs;
 window.clearHistory = clearHistory;

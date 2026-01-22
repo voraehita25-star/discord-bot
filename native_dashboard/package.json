@@ -1,7 +1,7 @@
 {
   "name": "native_dashboard",
   "version": "2.0.0",
-  "description": "Discord Bot Dashboard - Enhanced Edition with Charts & Themes",
+  "description": "디스코드 봇 대시보드 - Enhanced Edition with Charts & Themes",
   "main": "ui/app.js",
   "type": "module",
   "scripts": {
@@ -11,7 +11,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "dev": "npm run build && cargo tauri dev",
-    "tauri": "cargo tauri"
+    "tauri": "cargo tauri",
+    "release": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri.ps1",
+    "clean": "powershell -Command \"Remove-Item -Recurse -Force target/release/*.exe -ErrorAction SilentlyContinue\""
   },
   "keywords": [
     "tauri",

@@ -181,15 +181,32 @@ High-performance extensions for CPU/IO-intensive operations. **Fully optional** 
 
 See [rust_extensions/README.md](rust_extensions/README.md) and [go_services/README.md](go_services/README.md) for details.
 
-## 🖥️ Native Dashboard
+## 🖥️ Native Dashboard (디스코드 봇 대시보드)
 
-A Tauri-based desktop application for managing the bot:
+A Tauri-based desktop application for managing the bot with Korean UI support.
 
+### Features
+- 🔔 Toast Notifications
+- 📈 Real-time Performance Charts
+- 🌙 Dark/Light Theme Toggle
+- 🌸 Sakura Petal Animation
+- ⌨️ Keyboard Shortcuts (Ctrl+1-4, Ctrl+R, Ctrl+T)
+- 🧪 26 Unit Tests
+
+### Quick Start
 ```bash
 cd native_dashboard
-cargo tauri dev  # Development
-cargo tauri build  # Production build
+npm install          # First time
+npm run release      # Build + auto-rename to Korean
 ```
+
+### Output Files
+```
+target/release/디스코드 봇 대시보드.exe
+target/release/bundle/nsis/디스코드 봇 대시보드_1.0.0_x64-setup.exe
+```
+
+See [native_dashboard/README.md](native_dashboard/README.md) for details.
 
 ## 🎭 Customization
 
@@ -245,4 +262,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.9 | **Python:** 3.10+ | **Tests:** 452 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 22, 2026
+**Version:** 3.3.9 | **Python:** 3.10+ | **Tests:** 3,157 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 22, 2026

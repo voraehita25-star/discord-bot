@@ -138,6 +138,7 @@ class TestShutdownManager:
         manager._state.phase = ShutdownPhase.INITIATED
         assert manager.is_shutting_down is True
 
+    @pytest.mark.asyncio
     async def test_run_sync_handler(self):
         """Test running synchronous cleanup handler."""
         from utils.reliability.shutdown_manager import CleanupHandler, ShutdownManager
@@ -160,6 +161,7 @@ class TestShutdownManager:
         assert result is True
         assert "sync" in called
 
+    @pytest.mark.asyncio
     async def test_run_async_handler(self):
         """Test running asynchronous cleanup handler."""
         from utils.reliability.shutdown_manager import CleanupHandler, ShutdownManager
@@ -182,6 +184,7 @@ class TestShutdownManager:
         assert result is True
         assert "async" in called
 
+    @pytest.mark.asyncio
     async def test_handler_timeout(self):
         """Test handler timeout handling."""
         from utils.reliability.shutdown_manager import CleanupHandler, ShutdownManager
@@ -203,6 +206,7 @@ class TestShutdownManager:
         assert result is False
         assert manager._state.handlers_failed == 1
 
+    @pytest.mark.asyncio
     async def test_handler_exception(self):
         """Test handler exception handling."""
         from utils.reliability.shutdown_manager import CleanupHandler, ShutdownManager
@@ -224,6 +228,7 @@ class TestShutdownManager:
         assert result is False
         assert len(manager._state.errors) == 1
 
+    @pytest.mark.asyncio
     async def test_full_shutdown(self):
         """Test complete shutdown process."""
         from utils.reliability.shutdown_manager import Priority, ShutdownManager
@@ -252,6 +257,7 @@ class TestShutdownManager:
         # Check execution order matches priority
         assert execution_order == ["critical", "normal", "low"]
 
+    @pytest.mark.asyncio
     async def test_shutdown_idempotent(self):
         """Test shutdown can only be triggered once."""
         from utils.reliability.shutdown_manager import ShutdownManager

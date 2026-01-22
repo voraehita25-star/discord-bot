@@ -108,7 +108,7 @@ fn main() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Discord Bot Dashboard")
+                .tooltip("디스코드 봇 대시보드")
                 .on_menu_event(|app, event| {
                     match event.id.as_ref() {
                         "show" => {

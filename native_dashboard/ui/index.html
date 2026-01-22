@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Discord Bot Dashboard</title>
+    <title>디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -20,7 +20,7 @@
         <nav class="sidebar">
             <div class="logo">
                 <span class="logo-icon">🤖</span>
-                <span class="logo-text">Bot Dashboard</span>
+                <span class="logo-text">봇 대시보드</span>
             </div>
 
             <div class="nav-items">
@@ -46,7 +46,7 @@
                 </button>
             </div>
 
-            <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">
+            <button class="theme-toggle" id="theme-toggle">
                 <span id="theme-icon">🌙</span>
                 <span>Toggle Theme</span>
             </button>
@@ -127,8 +127,6 @@
                     </div>
                 </div>
             </section>
-                </div>
-            </section>
 
             <!-- Logs Page -->
             <section id="page-logs" class="page">
@@ -200,7 +198,7 @@
                     <div class="setting-row">
                         <label for="theme-select">Theme</label>
                         <div class="setting-control">
-                            <button class="btn" onclick="toggleTheme()">
+                            <button class="btn" id="theme-toggle-settings">
                                 <span id="theme-icon-settings">🌙</span> Toggle Theme (Ctrl+T)
                             </button>
                         </div>
@@ -253,7 +251,7 @@
 
                 <div class="settings-card">
                     <h2>ℹ️ About</h2>
-                    <p><strong>Discord Bot Dashboard</strong></p>
+                    <p><strong>디스코드 봇 대시보드</strong></p>
                     <p>Version 2.0.0 - Enhanced Edition</p>
                     <p>Built with Tauri + Rust + TypeScript</p>
                     <div class="features-list">
@@ -279,7 +277,7 @@
         </main>
     </div>
 
-    <script type="module" src="app.js"></script>
+    <script src="app.js"></script>
 </body>
 
 </html>
