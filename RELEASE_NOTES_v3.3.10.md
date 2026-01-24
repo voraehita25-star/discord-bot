@@ -1,7 +1,7 @@
-# 📋 Release Notes - v3.4.0
+# 📋 Release Notes - v3.3.10
 
 **Release Date:** January 25, 2026  
-**Type:** Minor Release (Security & Reliability Improvements)
+**Type:** Patch Release (Security & Reliability Improvements)
 
 ---
 
@@ -125,4 +125,4 @@ None - All changes are backward compatible.
 
 ---
 
-**Full Changelog:** v3.3.9 → v3.4.0
+**Full Changelog:** v3.3.9 → v3.3.10
