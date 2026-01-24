@@ -33,13 +33,13 @@ class TestCacheConstants:
         """Test CACHE_TTL has expected value."""
         from cogs.ai_core.storage import CACHE_TTL
         
-        assert CACHE_TTL == 300  # 5 minutes
+        assert CACHE_TTL == 900  # 15 minutes (optimized for high-RAM setup)
 
     def test_max_cache_size_value(self):
         """Test MAX_CACHE_SIZE has expected value."""
         from cogs.ai_core.storage import MAX_CACHE_SIZE
         
-        assert MAX_CACHE_SIZE == 1000
+        assert MAX_CACHE_SIZE == 2000  # Optimized for high-RAM setup
 
 
 class TestCacheCleanup:

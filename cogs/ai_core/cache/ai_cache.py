@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -90,6 +91,7 @@ class AICache:
         self.max_size = max_size
         self.enable_semantic = enable_semantic and NUMPY_AVAILABLE
         self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._cache_lock = threading.Lock()  # Thread-safe lock for cache operations
         self.logger = logging.getLogger("AICache")
 
         # Stats
@@ -149,7 +151,7 @@ class AICache:
             if norm1 == 0 or norm2 == 0:
                 return 0.0
             return float(dot_product / (norm1 * norm2))
-        except Exception:
+        except (ValueError, TypeError, np.linalg.LinAlgError):
             return 0.0
 
     def _is_expired(self, entry: CacheEntry) -> bool:
@@ -182,7 +184,8 @@ class AICache:
         best_match = None
         best_similarity = 0.0
 
-        for key, entry in self.cache.items():
+        # Create snapshot of cache items to avoid RuntimeError during iteration
+        for key, entry in list(self.cache.items()):
             # Skip expired entries
             if self._is_expired(entry):
                 continue
@@ -246,7 +249,8 @@ class AICache:
         best_match = None
         best_similarity = 0.0
 
-        for key, entry in self.cache.items():
+        # Create snapshot of cache items to avoid RuntimeError during iteration
+        for key, entry in list(self.cache.items()):
             # Skip expired entries
             if self._is_expired(entry):
                 continue

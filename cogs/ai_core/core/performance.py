@@ -15,6 +15,9 @@ from ..data.constants import PERFORMANCE_SAMPLES_MAX
 class PerformanceTracker:
     """Tracks performance metrics for AI processing steps."""
 
+    # Maximum number of tracked step types to prevent unbounded growth
+    MAX_TRACKED_STEPS = 50
+
     def __init__(self) -> None:
         """Initialize the performance tracker."""
         self._metrics: dict[str, list[float]] = {
@@ -35,6 +38,14 @@ class PerformanceTracker:
             duration: Duration in seconds
         """
         if step not in self._metrics:
+            # Prevent unbounded growth of step types
+            if len(self._metrics) >= self.MAX_TRACKED_STEPS:
+                logging.warning(
+                    "⚠️ PerformanceTracker: Max steps (%d) reached, ignoring new step: %s",
+                    self.MAX_TRACKED_STEPS,
+                    step,
+                )
+                return
             self._metrics[step] = []
 
         metrics_list = self._metrics[step]

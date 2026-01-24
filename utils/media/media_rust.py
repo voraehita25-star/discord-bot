@@ -86,28 +86,31 @@ class MediaProcessorWrapper:
             raise RuntimeError("Neither Rust extension nor PIL is available")
 
         img = Image.open(io.BytesIO(data))
-        orig_w, orig_h = img.size
+        try:
+            orig_w, orig_h = img.size
 
-        # Calculate new dimensions
-        ratio = min(max_w / orig_w, max_h / orig_h)
-        if ratio >= 1.0:
-            return data, orig_w, orig_h
+            # Calculate new dimensions
+            ratio = min(max_w / orig_w, max_h / orig_h)
+            if ratio >= 1.0:
+                return data, orig_w, orig_h
 
-        new_w = int(orig_w * ratio)
-        new_h = int(orig_h * ratio)
+            new_w = int(orig_w * ratio)
+            new_h = int(orig_h * ratio)
 
-        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # Save to bytes
-        output = io.BytesIO()
-        format_str = "JPEG" if img.mode != "RGBA" else "PNG"
-        save_kwargs = {"quality": self.jpeg_quality} if format_str == "JPEG" else {}
+            # Save to bytes
+            output = io.BytesIO()
+            format_str = "JPEG" if img.mode != "RGBA" else "PNG"
+            save_kwargs = {"quality": self.jpeg_quality} if format_str == "JPEG" else {}
 
-        if img.mode == "RGBA" and format_str == "JPEG":
-            img = img.convert("RGB")
+            if img.mode == "RGBA" and format_str == "JPEG":
+                img = img.convert("RGB")
 
-        img.save(output, format=format_str, **save_kwargs)
-        return output.getvalue(), new_w, new_h
+            img.save(output, format=format_str, **save_kwargs)
+            return output.getvalue(), new_w, new_h
+        finally:
+            img.close()
 
     def thumbnail(self, data: bytes, size: int = 128) -> tuple[bytes, int, int]:
         """Create a thumbnail."""
@@ -132,7 +135,9 @@ class MediaProcessorWrapper:
                 return True
             except EOFError:
                 return False
-        except Exception as e:
+            finally:
+                img.close()
+        except (OSError, ValueError) as e:
             logging.debug("PIL animated GIF check failed: %s", e)
             return False
 
@@ -144,7 +149,10 @@ class MediaProcessorWrapper:
             if not PIL_AVAILABLE:
                 raise RuntimeError("Neither Rust extension nor PIL is available")
             img = Image.open(io.BytesIO(data))
-            return img.size
+            try:
+                return img.size
+            finally:
+                img.close()
 
     def to_base64(self, data: bytes) -> str:
         """Encode bytes to base64 string."""

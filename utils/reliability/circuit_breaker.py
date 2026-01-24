@@ -70,7 +70,11 @@ class CircuitBreaker:
             return self._state
 
     def _transition_to_unlocked(self, new_state: CircuitState) -> None:
-        """Internal transition without lock (caller must hold lock)."""
+        """Internal transition without lock (caller must hold lock).
+        
+        Note: All state modifications happen within the lock to prevent
+        race conditions during state transitions.
+        """
         old_state = self._state
         self._state = new_state
 
@@ -79,6 +83,7 @@ class CircuitBreaker:
         elif new_state == CircuitState.CLOSED:
             self._failure_count = 0
             self._success_count = 0
+            self._last_failure_time = None  # Also reset last failure time
 
         if old_state != new_state:
             logging.info(

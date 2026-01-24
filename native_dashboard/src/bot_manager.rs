@@ -64,9 +64,52 @@ impl BotManager {
         }
     }
 
-    #[allow(dead_code)]
-    fn log_file(&self) -> PathBuf {
+    pub fn log_file(&self) -> PathBuf {
         self.base_path.join("logs").join("bot.log")
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.base_path.join("logs")
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.base_path.join("data")
+    }
+
+    pub fn base_path(&self) -> &PathBuf {
+        &self.base_path
+    }
+
+    pub fn read_logs(&self, count: usize) -> Vec<String> {
+        let log_path = self.log_file();
+        
+        if !log_path.exists() {
+            return vec![];
+        }
+
+        let file = match fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(_) => return vec![],
+        };
+
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        
+        lines.into_iter().rev().take(count).rev().collect()
+    }
+
+    pub fn clear_logs(&self) -> Result<String, String> {
+        let log_path = self.log_file();
+        
+        if !log_path.exists() {
+            return Ok("No logs to clear".to_string());
+        }
+
+        // Truncate the file instead of deleting (keeps file but empties content)
+        fs::write(&log_path, "")
+            .map_err(|e| format!("Failed to clear logs: {}", e))?;
+        
+        Ok("Logs cleared".to_string())
     }
 
     pub fn get_pid(&self) -> Option<u32> {
@@ -157,21 +200,47 @@ impl BotManager {
             return Err("Bot is already running".to_string());
         }
 
+        // Remove old PID file first
+        let _ = fs::remove_file(self.pid_file());
+
         let bot_script = self.base_path.join("bot.py");
         
-        Command::new("python")
+        let child = Command::new("python")
             .arg(&bot_script)
             .current_dir(&self.base_path)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to start bot: {}", e))?;
 
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Get the spawned process ID
+        let spawned_pid = child.id();
 
+        // Wait for bot to fully start (up to 10 seconds)
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            
+            // Check if PID file exists and bot is running
+            if self.pid_file().exists() && self.is_running() {
+                return Ok("Bot started successfully".to_string());
+            }
+            
+            // Check if spawned process died
+            let mut sys = System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if sys.process(sysinfo::Pid::from_u32(spawned_pid)).is_none() {
+                // Process died - but check if bot.pid was written (bot may have restarted itself)
+                if self.is_running() {
+                    return Ok("Bot started successfully".to_string());
+                }
+                return Err("Bot process exited - check logs".to_string());
+            }
+        }
+
+        // After 10 seconds, check final state
         if self.is_running() {
             Ok("Bot started successfully".to_string())
         } else {
-            Err("Bot failed to start".to_string())
+            Ok("Bot starting... (taking longer than usual)".to_string())
         }
     }
 
@@ -243,20 +312,4 @@ impl BotManager {
     }
 }
 
-pub fn read_recent_logs(count: usize) -> Vec<String> {
-    let log_path = PathBuf::from(r"C:\Users\ME\BOT\logs\bot.log");
-    
-    if !log_path.exists() {
-        return vec![];
-    }
-
-    let file = match fs::File::open(&log_path) {
-        Ok(f) => f,
-        Err(_) => return vec![],
-    };
-
-    let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
-    
-    lines.into_iter().rev().take(count).rev().collect()
-}
+// Legacy function removed - use BotManager::read_logs() instead

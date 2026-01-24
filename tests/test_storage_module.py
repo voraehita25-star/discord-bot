@@ -44,13 +44,13 @@ class TestConstants:
         """Test CACHE_TTL constant exists."""
         from cogs.ai_core.storage import CACHE_TTL
         
-        assert CACHE_TTL == 300  # 5 minutes
+        assert CACHE_TTL == 900  # 15 minutes (optimized for high-RAM setup)
     
     def test_max_cache_size_exists(self):
         """Test MAX_CACHE_SIZE constant exists."""
         from cogs.ai_core.storage import MAX_CACHE_SIZE
         
-        assert MAX_CACHE_SIZE == 1000
+        assert MAX_CACHE_SIZE == 2000  # Optimized for high-RAM setup
     
     def test_data_dir_exists(self):
         """Test DATA_DIR path exists."""

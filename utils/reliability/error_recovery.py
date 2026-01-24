@@ -96,12 +96,34 @@ class BackoffState:
     last_failure_time: float = 0.0
 
 
-# Global backoff state per service/function
+# Global backoff state per service/function with TTL cleanup
 _backoff_states: dict[str, BackoffState] = {}
+_BACKOFF_STATE_TTL = 3600  # 1 hour TTL for backoff states
+_MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
+
+
+def _cleanup_old_backoff_states() -> None:
+    """Remove old backoff states to prevent memory leak."""
+    if len(_backoff_states) <= _MAX_BACKOFF_STATES:
+        return
+
+    current_time = time.time()
+    # Find and remove states older than TTL
+    keys_to_remove = [
+        key for key, state in _backoff_states.items()
+        if current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+        and state.consecutive_failures == 0
+    ]
+    for key in keys_to_remove:
+        _backoff_states.pop(key, None)
 
 
 def _get_backoff_state(key: str) -> BackoffState:
     """Get or create backoff state for a key."""
+    # Periodically cleanup old states
+    if len(_backoff_states) > _MAX_BACKOFF_STATES:
+        _cleanup_old_backoff_states()
+
     if key not in _backoff_states:
         _backoff_states[key] = BackoffState()
     return _backoff_states[key]
@@ -110,7 +132,10 @@ def _get_backoff_state(key: str) -> BackoffState:
 def _reset_backoff_state(key: str) -> None:
     """Reset backoff state after success."""
     if key in _backoff_states:
-        _backoff_states[key] = BackoffState()
+        # Reset state instead of deleting to avoid re-creation overhead
+        state = _backoff_states[key]
+        state.previous_delay = 0.0
+        state.consecutive_failures = 0
 
 
 def calculate_delay_sync(

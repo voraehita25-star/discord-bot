@@ -380,13 +380,13 @@ class ContextBuilder:
             return ""
 
         try:
-            # Import URL fetcher
-            from ..ai_core.tools import sanitization
+            # Import URL fetcher from utils
+            from utils.web.url_fetcher import fetch_url_content as fetch_url
 
             contents = []
             for url in urls[:3]:  # Limit to 3 URLs
                 try:
-                    content = await sanitization.fetch_url_content(url)
+                    content = await fetch_url(url)
                     if content:
                         # Truncate if too long
                         if len(content) > max_content_length:

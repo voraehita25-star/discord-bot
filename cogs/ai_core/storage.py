@@ -65,10 +65,14 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==================== In-Memory Cache ====================
 # TTL cache for history to reduce database reads
+# Optimized for single-user high-RAM setup (32GB+)
+import threading
+
 _history_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[int, tuple[float, dict[str, Any]]] = {}
-CACHE_TTL = 300  # 5 minutes
-MAX_CACHE_SIZE = 1000  # Maximum number of channels to cache
+_cache_lock = threading.Lock()  # Thread-safe lock for cache operations
+CACHE_TTL = 900  # 15 minutes (was 5 min) - keep data in RAM longer
+MAX_CACHE_SIZE = 2000  # Maximum channels to cache (was 1000)
 
 
 def _cleanup_expired_cache() -> int:
@@ -78,13 +82,14 @@ def _cleanup_expired_cache() -> int:
         Number of entries removed.
     """
     now = time.time()
-    expired_history = [k for k, (t, _) in _history_cache.items() if now - t >= CACHE_TTL]
-    expired_metadata = [k for k, (t, _) in _metadata_cache.items() if now - t >= CACHE_TTL]
+    with _cache_lock:
+        expired_history = [k for k, (t, _) in _history_cache.items() if now - t >= CACHE_TTL]
+        expired_metadata = [k for k, (t, _) in _metadata_cache.items() if now - t >= CACHE_TTL]
 
-    for k in expired_history:
-        _history_cache.pop(k, None)
-    for k in expired_metadata:
-        _metadata_cache.pop(k, None)
+        for k in expired_history:
+            _history_cache.pop(k, None)
+        for k in expired_metadata:
+            _metadata_cache.pop(k, None)
 
     return len(expired_history) + len(expired_metadata)
 
@@ -97,22 +102,23 @@ def _enforce_cache_size_limit() -> int:
     """
     removed = 0
 
-    # Check history cache
-    if len(_history_cache) > MAX_CACHE_SIZE:
-        # Sort by timestamp (oldest first) and remove excess
-        sorted_items = sorted(_history_cache.items(), key=lambda x: x[1][0])
-        excess = len(_history_cache) - MAX_CACHE_SIZE
-        for k, _ in sorted_items[:excess]:
-            _history_cache.pop(k, None)
-            removed += 1
+    with _cache_lock:
+        # Check history cache
+        if len(_history_cache) > MAX_CACHE_SIZE:
+            # Sort by timestamp (oldest first) and remove excess
+            sorted_items = sorted(_history_cache.items(), key=lambda x: x[1][0])
+            excess = len(_history_cache) - MAX_CACHE_SIZE
+            for k, _ in sorted_items[:excess]:
+                _history_cache.pop(k, None)
+                removed += 1
 
-    # Check metadata cache
-    if len(_metadata_cache) > MAX_CACHE_SIZE:
-        sorted_items = sorted(_metadata_cache.items(), key=lambda x: x[1][0])
-        excess = len(_metadata_cache) - MAX_CACHE_SIZE
-        for k, _ in sorted_items[:excess]:
-            _metadata_cache.pop(k, None)
-            removed += 1
+        # Check metadata cache
+        if len(_metadata_cache) > MAX_CACHE_SIZE:
+            sorted_items = sorted(_metadata_cache.items(), key=lambda x: x[1][0])
+            excess = len(_metadata_cache) - MAX_CACHE_SIZE
+            for k, _ in sorted_items[:excess]:
+                _metadata_cache.pop(k, None)
+                removed += 1
 
     if removed > 0:
         logging.debug("🧹 Cache size limit enforced: removed %d entries", removed)
@@ -122,14 +128,16 @@ def _enforce_cache_size_limit() -> int:
 
 def invalidate_cache(channel_id: int) -> None:
     """Invalidate cache for a specific channel."""
-    _history_cache.pop(channel_id, None)
-    _metadata_cache.pop(channel_id, None)
+    with _cache_lock:
+        _history_cache.pop(channel_id, None)
+        _metadata_cache.pop(channel_id, None)
 
 
 def invalidate_all_cache() -> None:
     """Invalidate all caches."""
-    _history_cache.clear()
-    _metadata_cache.clear()
+    with _cache_lock:
+        _history_cache.clear()
+        _metadata_cache.clear()
 
 
 def cleanup_cache() -> int:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -176,8 +177,8 @@ TEXT_MIMES = (
 async def process_attachments(
     attachments: list[discord.Attachment] | None,
     user_name: str,
-    is_animated_gif_func: callable | None = None,
-    convert_gif_to_video_func: callable | None = None,
+    is_animated_gif_func: Callable[[bytes], bool] | None = None,
+    convert_gif_to_video_func: Callable[[bytes], bytes | None] | None = None,
 ) -> tuple[list[Image.Image], list[dict], list[str]]:
     """Process image and text attachments.
 

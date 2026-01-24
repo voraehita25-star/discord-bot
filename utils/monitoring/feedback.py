@@ -100,11 +100,14 @@ class FeedbackCollector:
         print(f"Satisfaction: {stats.satisfaction_rate:.1%}")
     """
 
+    # Maximum feedback entries to keep in memory
+    MAX_FEEDBACK_ENTRIES = 10000
+
     def __init__(self, max_tracked_messages: int = 1000):
         self._tracked_messages: dict[int, dict] = {}  # message_id -> metadata
         self._feedback: list[FeedbackEntry] = []
         self._max_tracked = max_tracked_messages
-        self._callbacks: list[Callable] = []
+        self._callbacks: list[Callable[[FeedbackEntry], None]] = []
         self.logger = logging.getLogger("FeedbackCollector")
 
     def track_message(
@@ -149,6 +152,11 @@ class FeedbackCollector:
         )
 
         self._feedback.append(entry)
+
+        # Cleanup old entries to prevent memory growth
+        if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
+            self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
+
         self.logger.info(
             "Recorded %s feedback from user %d on message %d",
             feedback_type.value,

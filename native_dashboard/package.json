@@ -13,6 +13,7 @@
     "dev": "npm run build && cargo tauri dev",
     "tauri": "cargo tauri",
     "release": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri.ps1",
+    "build:release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1",
     "clean": "powershell -Command \"Remove-Item -Recurse -Force target/release/*.exe -ErrorAction SilentlyContinue\""
   },
   "keywords": [

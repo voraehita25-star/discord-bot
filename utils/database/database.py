@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -29,12 +30,16 @@ class Database:
     """Async SQLite Database Manager using aiosqlite."""
 
     _instance: Database | None = None
+    _instance_lock = threading.Lock()  # Thread-safe singleton creation
 
     def __new__(cls) -> Database:
-        """Singleton pattern - only one database instance."""
+        """Singleton pattern - only one database instance (thread-safe)."""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                # Double-check locking pattern
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self) -> None:
@@ -49,11 +54,12 @@ class Database:
         self._export_delay = 3  # seconds
         # Track multiple export tasks to prevent task destruction warnings
         self._export_tasks: set[asyncio.Task] = set()
-        # Connection pool semaphore - balanced for SQLite performance
-        # SQLite performs best with moderate concurrency (20-30 connections)
-        self._pool_semaphore = asyncio.Semaphore(30)  # Max 30 concurrent connections
+        # Connection pool semaphore - optimized for single-user high-RAM setup
+        # Higher concurrency for faster parallel operations
+        self._pool_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent connections (was 30)
         self._connection_count = 0
-        logging.info("💾 Async Database manager created: %s (pool=30)", self.db_path)
+        self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
+        logging.info("💾 Async Database manager created: %s (pool=50)", self.db_path)
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""
@@ -91,6 +97,52 @@ class Database:
         self._export_tasks.add(task)
         # Auto-remove task when done
         task.add_done_callback(self._export_tasks.discard)
+
+    def _schedule_dashboard_export(self, conversation_id: str) -> None:
+        """Schedule a debounced export for a dashboard conversation (non-blocking)."""
+        if conversation_id in self._dashboard_export_pending:
+            return
+
+        self._dashboard_export_pending.add(conversation_id)
+
+        async def do_export():
+            await asyncio.sleep(self._export_delay)
+            self._dashboard_export_pending.discard(conversation_id)
+
+            try:
+                await self.export_dashboard_conversation_to_json(conversation_id)
+            except Exception as e:
+                logging.warning("Dashboard export failed for %s: %s", conversation_id, e)
+
+        task = asyncio.create_task(do_export())
+        self._export_tasks.add(task)
+        task.add_done_callback(self._export_tasks.discard)
+
+    async def export_dashboard_conversation_to_json(self, conversation_id: str) -> None:
+        """Export a single dashboard conversation to JSON file."""
+        try:
+            dashboard_export_dir = EXPORT_DIR / "dashboard_chats"
+            dashboard_export_dir.mkdir(exist_ok=True)
+
+            conversation = await self.get_dashboard_conversation(conversation_id)
+            if not conversation:
+                return
+
+            messages = await self.get_dashboard_messages(conversation_id)
+
+            export_data = {
+                "conversation": conversation,
+                "messages": messages,
+            }
+
+            output_file = dashboard_export_dir / f"{conversation_id}.json"
+            output_file.write_text(
+                json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            logging.debug("📤 Exported dashboard conversation: %s", conversation_id)
+        except Exception as e:
+            logging.error("Failed to export dashboard conversation %s: %s", conversation_id, e)
 
     async def flush_pending_exports(self) -> None:
         """Flush any pending exports immediately (call during shutdown).
@@ -298,6 +350,87 @@ class Database:
                 ON token_usage(guild_id, created_at DESC)
             """)
 
+            # ==================== Dashboard Chat Tables ====================
+            
+            # Dashboard Conversations Table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_conversations (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    role_preset TEXT NOT NULL DEFAULT 'general',
+                    system_instruction TEXT,
+                    thinking_enabled BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_starred BOOLEAN DEFAULT 0
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_conv_updated
+                ON dashboard_conversations(updated_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_conv_starred
+                ON dashboard_conversations(is_starred, updated_at DESC)
+            """)
+
+            # Dashboard Messages Table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    thinking TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (conversation_id) REFERENCES dashboard_conversations(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Add thinking column if not exists (migration)
+            try:
+                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN thinking TEXT")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_msg_conv
+                ON dashboard_messages(conversation_id, created_at ASC)
+            """)
+
+            # Dashboard User Profile Table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_user_profile (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    display_name TEXT DEFAULT 'User',
+                    bio TEXT,
+                    preferences TEXT,
+                    is_creator INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Migration: add is_creator column if not exists
+            try:
+                await conn.execute("ALTER TABLE dashboard_user_profile ADD COLUMN is_creator INTEGER DEFAULT 0")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
+
+            # Dashboard Long-term Memory Table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    category TEXT DEFAULT 'general',
+                    importance INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_memories_category
+                ON dashboard_memories(category, importance DESC)
+            """)
+
             await conn.commit()
             self._schema_initialized = True
             logging.info("💾 Database schema initialized (async)")
@@ -311,20 +444,20 @@ class Database:
             conn = await aiosqlite.connect(self.db_path, timeout=30.0)
             conn.row_factory = aiosqlite.Row
 
-            # Performance optimizations for high-RAM machines
+            # Performance optimizations for high-RAM machines (32GB+)
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
-            await conn.execute("PRAGMA cache_size=100000")  # ~400MB cache
+            await conn.execute("PRAGMA cache_size=250000")  # ~1GB cache (was 400MB)
             await conn.execute("PRAGMA temp_store=MEMORY")
-            await conn.execute("PRAGMA mmap_size=1073741824")  # 1GB memory-mapped I/O
+            await conn.execute("PRAGMA mmap_size=2147483648")  # 2GB memory-mapped I/O (was 1GB)
             await conn.execute("PRAGMA foreign_keys=ON")
             await conn.execute("PRAGMA page_size=8192")  # Larger pages
-            await conn.execute("PRAGMA wal_autocheckpoint=1000")  # Checkpoint every 1000 pages
+            await conn.execute("PRAGMA wal_autocheckpoint=2000")  # Checkpoint every 2000 pages (less frequent)
 
             try:
                 yield conn
                 await conn.commit()
-            except Exception:
+            except aiosqlite.Error:
                 await conn.rollback()
                 raise
             finally:
@@ -382,6 +515,7 @@ class Database:
             )
 
         # Recreate the semaphore (resets available slots)
+        # Use same value as __init__ (50) to prevent mismatch
         self._pool_semaphore = asyncio.Semaphore(50)
 
         # Re-ensure schema on next connection
@@ -433,7 +567,7 @@ class Database:
                         yield conn
                         await conn.commit()
                         return  # Success, exit
-                    except Exception:
+                    except aiosqlite.Error:
                         await conn.rollback()
                         raise
                     finally:
@@ -847,6 +981,305 @@ class Database:
         except Exception as e:
             logging.error("Failed to clear music queue: %s", e)
             return False
+
+    # ==================== Dashboard Conversations ====================
+
+    async def create_dashboard_conversation(
+        self,
+        conversation_id: str,
+        role_preset: str = "general",
+        thinking_enabled: bool = False,
+        title: str | None = None,
+        system_instruction: str | None = None,
+    ) -> str:
+        """Create a new dashboard conversation."""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """INSERT INTO dashboard_conversations 
+                   (id, title, role_preset, system_instruction, thinking_enabled)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (conversation_id, title, role_preset, system_instruction, thinking_enabled),
+            )
+        return conversation_id
+
+    async def get_dashboard_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Get all dashboard conversations ordered by most recent."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT c.*, 
+                          (SELECT COUNT(*) FROM dashboard_messages WHERE conversation_id = c.id) as message_count
+                   FROM dashboard_conversations c
+                   ORDER BY c.is_starred DESC, c.updated_at DESC
+                   LIMIT ?""",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                d['is_starred'] = bool(d.get('is_starred'))
+                results.append(d)
+            return results
+
+    async def get_dashboard_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        """Get a specific dashboard conversation."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM dashboard_conversations WHERE id = ?",
+                (conversation_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                d = dict(row)
+                d['is_starred'] = bool(d.get('is_starred'))
+                return d
+            return None
+
+    async def update_dashboard_conversation(
+        self, conversation_id: str, **updates
+    ) -> bool:
+        """Update a dashboard conversation."""
+        allowed_columns = {"title", "role_preset", "system_instruction", "thinking_enabled", "is_starred"}
+        safe_updates = {k: v for k, v in updates.items() if k in allowed_columns}
+        
+        if not safe_updates:
+            return False
+
+        async with self.get_connection() as conn:
+            set_clause = ", ".join([f"{k} = ?" for k in safe_updates])
+            values = list(safe_updates.values()) + [conversation_id]
+            
+            await conn.execute(
+                f"UPDATE dashboard_conversations SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                values,
+            )
+            return True
+
+    async def update_dashboard_conversation_star(
+        self, conversation_id: str, starred: bool
+    ) -> bool:
+        """Update the starred status of a conversation."""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE dashboard_conversations SET is_starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (1 if starred else 0, conversation_id),
+            )
+            return True
+
+    async def rename_dashboard_conversation(
+        self, conversation_id: str, title: str
+    ) -> bool:
+        """Rename a dashboard conversation."""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE dashboard_conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (title, conversation_id),
+            )
+            return True
+
+    async def delete_dashboard_conversation(self, conversation_id: str) -> bool:
+        """Delete a dashboard conversation and all its messages."""
+        async with self.get_connection() as conn:
+            # Messages will be deleted automatically due to ON DELETE CASCADE
+            await conn.execute(
+                "DELETE FROM dashboard_conversations WHERE id = ?",
+                (conversation_id,),
+            )
+            
+            # Delete the exported JSON file if it exists
+            try:
+                export_dir = Path("data/db_export/dashboard_chats")
+                json_file = export_dir / f"{conversation_id}.json"
+                if json_file.exists():
+                    json_file.unlink()
+                    logging.info(f"🗑️ Deleted exported JSON: {json_file.name}")
+            except Exception as e:
+                logging.warning(f"Failed to delete exported JSON for {conversation_id}: {e}")
+            
+            return True
+
+    async def save_dashboard_message(
+        self, conversation_id: str, role: str, content: str, thinking: str | None = None, mode: str | None = None
+    ) -> int:
+        """Save a message to a dashboard conversation."""
+        from datetime import datetime
+        local_now = datetime.now().isoformat()
+        
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (conversation_id, role, content, thinking, mode, local_now),
+            )
+            # Update conversation's updated_at
+            await conn.execute(
+                "UPDATE dashboard_conversations SET updated_at = ? WHERE id = ?",
+                (local_now, conversation_id),
+            )
+            
+            msg_id = cursor.lastrowid
+        
+        # Auto-export this conversation to JSON (realtime)
+        self._schedule_dashboard_export(conversation_id)
+        
+        return msg_id
+
+    async def get_dashboard_messages(
+        self, conversation_id: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get messages for a dashboard conversation."""
+        async with self.get_connection() as conn:
+            if limit:
+                cursor = await conn.execute(
+                    """SELECT id, role, content, thinking, mode, created_at
+                       FROM dashboard_messages 
+                       WHERE conversation_id = ?
+                       ORDER BY created_at ASC
+                       LIMIT ?""",
+                    (conversation_id, limit),
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT id, role, content, thinking, mode, created_at
+                       FROM dashboard_messages 
+                       WHERE conversation_id = ?
+                       ORDER BY created_at ASC""",
+                    (conversation_id,),
+                )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def export_dashboard_conversation(
+        self, conversation_id: str, export_format: str = "json"
+    ) -> str:
+        """Export a dashboard conversation to JSON or Markdown."""
+        conversation = await self.get_dashboard_conversation(conversation_id)
+        messages = await self.get_dashboard_messages(conversation_id)
+        
+        if not conversation:
+            return ""
+
+        if export_format == "markdown":
+            lines = [
+                f"# {conversation.get('title', 'Untitled Conversation')}",
+                f"",
+                f"**Role:** {conversation.get('role_preset', 'general')}",
+                f"**Created:** {conversation.get('created_at', '')}",
+                f"**Thinking Mode:** {'Enabled' if conversation.get('thinking_enabled') else 'Disabled'}",
+                f"",
+                "---",
+                "",
+            ]
+            for msg in messages:
+                role_label = "👤 User" if msg["role"] == "user" else "🤖 Assistant"
+                lines.append(f"### {role_label}")
+                lines.append(f"*{msg.get('created_at', '')}*")
+                lines.append("")
+                lines.append(msg["content"])
+                lines.append("")
+            return "\n".join(lines)
+        else:
+            # JSON format
+            return json.dumps({
+                "conversation": conversation,
+                "messages": messages,
+            }, ensure_ascii=False, indent=2, default=str)
+
+    async def export_all_dashboard_conversations(self) -> None:
+        """Export all dashboard conversations to JSON files."""
+        try:
+            dashboard_export_dir = EXPORT_DIR / "dashboard_chats"
+            dashboard_export_dir.mkdir(exist_ok=True)
+
+            conversations = await self.get_dashboard_conversations(limit=1000)
+            
+            for conv in conversations:
+                conv_id = conv["id"]
+                messages = await self.get_dashboard_messages(conv_id)
+                
+                export_data = {
+                    "conversation": conv,
+                    "messages": messages,
+                }
+                
+                output_file = dashboard_export_dir / f"{conv_id}.json"
+                output_file.write_text(
+                    json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+
+            logging.info(f"📤 Exported {len(conversations)} dashboard conversations")
+        except Exception as e:
+            logging.error(f"Failed to export dashboard conversations: {e}")
+
+    # ==================== Dashboard Memory Operations ====================
+
+    async def save_dashboard_memory(self, content: str, category: str = "general", importance: int = 1) -> int:
+        """Save a memory to dashboard long-term storage."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO dashboard_memories (content, category, importance) VALUES (?, ?, ?)",
+                (content, category, importance),
+            )
+            return cursor.lastrowid
+
+    async def get_dashboard_memories(self, category: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Get dashboard memories, optionally filtered by category."""
+        async with self.get_connection() as conn:
+            if category:
+                cursor = await conn.execute(
+                    """SELECT id, content, category, importance, created_at
+                       FROM dashboard_memories 
+                       WHERE category = ?
+                       ORDER BY importance DESC, created_at DESC
+                       LIMIT ?""",
+                    (category, limit),
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT id, content, category, importance, created_at
+                       FROM dashboard_memories 
+                       ORDER BY importance DESC, created_at DESC
+                       LIMIT ?""",
+                    (limit,),
+                )
+            rows = await cursor.fetchall()
+            return [
+                {"id": r[0], "content": r[1], "category": r[2], "importance": r[3], "created_at": r[4]}
+                for r in rows
+            ]
+
+    async def delete_dashboard_memory(self, memory_id: int) -> bool:
+        """Delete a specific memory."""
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
+            return True
+
+    async def get_dashboard_user_profile(self) -> dict[str, Any] | None:
+        """Get dashboard user profile."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT display_name, bio, preferences, is_creator FROM dashboard_user_profile WHERE id = 1"
+            )
+            row = await cursor.fetchone()
+            if row:
+                return {"display_name": row[0], "bio": row[1], "preferences": row[2], "is_creator": bool(row[3])}
+            return None
+
+    async def save_dashboard_user_profile(self, display_name: str, bio: str | None = None, preferences: str | None = None, is_creator: bool = False) -> None:
+        """Save or update dashboard user profile."""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """INSERT INTO dashboard_user_profile (id, display_name, bio, preferences, is_creator)
+                   VALUES (1, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                   display_name = excluded.display_name,
+                   bio = excluded.bio,
+                   preferences = excluded.preferences,
+                   is_creator = excluded.is_creator,
+                   updated_at = CURRENT_TIMESTAMP""",
+                (display_name, bio, preferences, 1 if is_creator else 0),
+            )
 
     # ==================== Export ====================
 

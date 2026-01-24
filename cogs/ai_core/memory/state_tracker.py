@@ -10,6 +10,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ..data.constants import STATE_CLEANUP_MAX_AGE_HOURS, STATE_CLEANUP_MAX_CHANNELS
+
 
 @dataclass
 class CharacterState:
@@ -58,7 +60,12 @@ class CharacterStateTracker:
     - Real-time state tracking per character per channel
     - Auto-extract state from AI responses
     - State persistence between sessions
+    - Memory bounds to prevent unbounded growth
     """
+
+    # Max limits to prevent memory growth
+    MAX_CHANNELS = STATE_CLEANUP_MAX_CHANNELS
+    MAX_CHARACTERS_PER_CHANNEL = 50
 
     def __init__(self):
         # States stored per channel: {channel_id: {character_name: CharacterState}}
@@ -73,6 +80,18 @@ class CharacterStateTracker:
     def set_state(self, character_name: str, channel_id: int, **kwargs) -> CharacterState:
         """Update character state with provided fields."""
         if channel_id not in self._states:
+            # Enforce max channels limit
+            if len(self._states) >= self.MAX_CHANNELS:
+                # Remove oldest channel by oldest character update
+                oldest_channel = min(
+                    self._states.keys(),
+                    key=lambda cid: min(
+                        (s.updated_at for s in self._states[cid].values()),
+                        default=0,
+                    ),
+                )
+                self._states.pop(oldest_channel, None)
+                self._last_scene.pop(oldest_channel, None)
             self._states[channel_id] = {}
 
         existing = self._states[channel_id].get(character_name)
@@ -85,6 +104,15 @@ class CharacterStateTracker:
             existing.updated_at = time.time()
             return existing
         else:
+            # Enforce max characters per channel
+            if len(self._states[channel_id]) >= self.MAX_CHARACTERS_PER_CHANNEL:
+                # Remove oldest character
+                oldest_char = min(
+                    self._states[channel_id].keys(),
+                    key=lambda name: self._states[channel_id][name].updated_at,
+                )
+                self._states[channel_id].pop(oldest_char, None)
+
             # Create new state
             state = CharacterState(name=character_name, **kwargs)
             self._states[channel_id][character_name] = state
@@ -202,6 +230,46 @@ class CharacterStateTracker:
             del self._states[channel_id]
         if channel_id in self._last_scene:
             del self._last_scene[channel_id]
+
+    def cleanup_old_states(
+        self,
+        max_age_hours: int = STATE_CLEANUP_MAX_AGE_HOURS,
+        max_channels: int = STATE_CLEANUP_MAX_CHANNELS,
+    ) -> int:
+        """
+        Remove states older than max_age_hours and enforce max channel limit.
+        Returns number of channels removed.
+
+        Should be called periodically to prevent memory leaks.
+        """
+        removed = 0
+        cutoff = time.time() - (max_age_hours * 3600)
+
+        # Remove old states
+        for channel_id in list(self._states.keys()):
+            states = self._states[channel_id]
+            # Check if all states are old
+            if all(s.updated_at < cutoff for s in states.values()):
+                del self._states[channel_id]
+                self._last_scene.pop(channel_id, None)
+                removed += 1
+
+        # Enforce max channel limit if still over
+        if len(self._states) > max_channels:
+            # Sort by oldest updated_at and remove excess
+            sorted_channels = sorted(
+                self._states.keys(),
+                key=lambda cid: max(
+                    (s.updated_at for s in self._states[cid].values()), default=0
+                ),
+            )
+            excess = len(self._states) - max_channels
+            for channel_id in sorted_channels[:excess]:
+                del self._states[channel_id]
+                self._last_scene.pop(channel_id, None)
+                removed += 1
+
+        return removed
 
     def to_dict(self, channel_id: int) -> dict[str, Any]:
         """Export channel states to dictionary for persistence."""

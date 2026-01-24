@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord.ext import commands
 
+from cogs.ai_core.data.constants import CREATOR_ID
 from utils.media.ytdl_source import YTDLSource, get_ffmpeg_options
 
 from .utils import Colors, Emojis, create_progress_bar, format_duration
@@ -127,6 +128,19 @@ class Music(commands.Cog):
         from cogs.spotify_handler import SpotifyHandler
         self.spotify: SpotifyHandler = SpotifyHandler(bot)
         self.auto_disconnect_delay: int = 180  # 3 minutes
+
+    def _safe_run_coroutine(self, coro) -> None:
+        """Safely run a coroutine in the bot's event loop.
+        
+        This handles the case where the event loop may be closed during shutdown.
+        """
+        try:
+            loop = self.bot.loop
+            if loop and loop.is_running() and not loop.is_closed():
+                asyncio.run_coroutine_threadsafe(coro, loop)
+        except (RuntimeError, AttributeError):
+            # Event loop closed or bot shutting down - silently ignore
+            pass
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
@@ -271,7 +285,8 @@ class Music(commands.Cog):
             return
 
         # Check all guilds where bot is connected
-        for vc in self.bot.voice_clients:
+        # Create a copy to prevent RuntimeError if list changes during iteration
+        for vc in list(self.bot.voice_clients):
             # Check if voice client has guild and channel
             if not vc.guild or not vc.channel:
                 continue
@@ -476,28 +491,29 @@ class Music(commands.Cog):
                         # Update start time
                         self.current_track[ctx.guild.id]["start_time"] = time.time()
 
+                        # Capture voice_client reference at callback definition time
+                        voice_client_loop = ctx.voice_client
+
                         def after_playing_loop(error):
                             if self.fixing.get(ctx.guild.id):
                                 return  # Skip if fixing
 
                             # Guard: Check if voice_client is still valid
-                            if not ctx.voice_client or not ctx.voice_client.is_connected():
+                            if not voice_client_loop or not voice_client_loop.is_connected():
                                 return
 
                             if not self.loops.get(ctx.guild.id):
                                 # Loop disabled during play -> Delete file
-                                asyncio.run_coroutine_threadsafe(
-                                    self.safe_delete(filename), self.bot.loop
-                                )
+                                self._safe_run_coroutine(self.safe_delete(filename))
 
                             if error:
                                 logging.error("Loop error: %s", error)
 
                             # Guard: Don't schedule if already playing or paused
-                            if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+                            if voice_client_loop.is_playing() or voice_client_loop.is_paused():
                                 return
 
-                            asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
+                            self._safe_run_coroutine(self.play_next(ctx))
 
                         ctx.voice_client.play(player, after=after_playing_loop)
 
@@ -539,34 +555,34 @@ class Music(commands.Cog):
                             "start_time": time.time(),
                         }
 
+                        # Capture voice_client reference at callback definition time
+                        # to avoid issues with ctx.voice_client becoming None
+                        voice_client = ctx.voice_client
+
                         def after_playing(error):
                             if self.fixing.get(ctx.guild.id):
                                 return  # Skip if fixing
 
                             # Guard: Check if voice_client is still valid
-                            if not ctx.voice_client or not ctx.voice_client.is_connected():
+                            if not voice_client or not voice_client.is_connected():
                                 # Cleanup file even if disconnected
                                 if player.filename and not self.loops.get(ctx.guild.id):
-                                    asyncio.run_coroutine_threadsafe(
-                                        self.safe_delete(player.filename), self.bot.loop
-                                    )
+                                    self._safe_run_coroutine(self.safe_delete(player.filename))
                                 return
 
                             # Cleanup: Delete file ONLY if loop is OFF
                             if not self.loops.get(ctx.guild.id):
                                 if player.filename:
-                                    asyncio.run_coroutine_threadsafe(
-                                        self.safe_delete(player.filename), self.bot.loop
-                                    )
+                                    self._safe_run_coroutine(self.safe_delete(player.filename))
 
                             if error:
                                 logging.error("Player error: %s", error)
 
                             # Guard: Don't schedule if already playing or paused
-                            if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+                            if voice_client.is_playing() or voice_client.is_paused():
                                 return
 
-                            asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
+                            self._safe_run_coroutine(self.play_next(ctx))
 
                         try:
                             ctx.voice_client.play(player, after=after_playing)
@@ -574,9 +590,7 @@ class Music(commands.Cog):
                             logging.error("Failed to start playback: %s", e)
                             # Cleanup file on error
                             if player.filename and not self.loops.get(ctx.guild.id):
-                                asyncio.run_coroutine_threadsafe(
-                                    self.safe_delete(player.filename), self.bot.loop
-                                )
+                                self._safe_run_coroutine(self.safe_delete(player.filename))
                             # Try next track
                             await self.play_next(ctx)
                             return
@@ -781,8 +795,8 @@ class Music(commands.Cog):
 
         try:
             # 3. Reconnect
-            if ctx.message.author.voice:
-                channel = ctx.message.author.voice.channel
+            if ctx.author.voice:
+                channel = ctx.author.voice.channel
                 await channel.connect()
             else:
                 embed = discord.Embed(
@@ -810,17 +824,27 @@ class Music(commands.Cog):
             # Update start time to now - elapsed
             self.current_track[guild_id]["start_time"] = time.time() - elapsed
 
+            # Capture voice_client reference at callback definition time
+            voice_client_fix = ctx.voice_client
+
             def after_playing_fix(error):
                 if self.fixing.get(guild_id):
                     return
 
+                # Guard: Check if voice_client is still valid
+                if not voice_client_fix or not voice_client_fix.is_connected():
+                    # Cleanup file even if disconnected
+                    if not self.loops.get(guild_id) and filename:
+                        self._safe_run_coroutine(self.safe_delete(filename))
+                    return
+
                 # Cleanup logic - use safe_delete
                 if not self.loops.get(guild_id) and filename:
-                    asyncio.run_coroutine_threadsafe(self.safe_delete(filename), self.bot.loop)
+                    self._safe_run_coroutine(self.safe_delete(filename))
 
                 if error:
                     logging.error("Fix player error: %s", error)
-                asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
+                self._safe_run_coroutine(self.play_next(ctx))
 
             ctx.voice_client.play(player, after=after_playing_fix)
 
@@ -849,13 +873,13 @@ class Music(commands.Cog):
     @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def join(self, ctx):
         """เข้าร่วมช่องเสียง."""
-        if not ctx.message.author.voice:
+        if not ctx.author.voice:
             embed = discord.Embed(
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
             )
             return await ctx.send(embed=embed)
 
-        channel = ctx.message.author.voice.channel
+        channel = ctx.author.voice.channel
 
         # Check channel-specific permissions
         permissions = channel.permissions_for(ctx.guild.me)
@@ -906,14 +930,14 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if not ctx.message.author.voice:
+        if not ctx.author.voice:
             embed = discord.Embed(
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
             )
             return await ctx.send(embed=embed)
 
         # Check channel-specific permissions before connecting
-        channel = ctx.message.author.voice.channel
+        channel = ctx.author.voice.channel
         permissions = channel.permissions_for(ctx.guild.me)
         if not permissions.connect or not permissions.speak:
             embed = discord.Embed(
@@ -927,7 +951,7 @@ class Music(commands.Cog):
         # Connect if not connected
         if ctx.voice_client is None:
             try:
-                await ctx.message.author.voice.channel.connect()
+                await ctx.author.voice.channel.connect()
             except discord.DiscordException as e:
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
@@ -935,10 +959,10 @@ class Music(commands.Cog):
                 return await ctx.send(embed=embed)
         elif (
             ctx.voice_client.channel
-            and ctx.voice_client.channel != ctx.message.author.voice.channel
+            and ctx.voice_client.channel != ctx.author.voice.channel
         ):
             # Move to user's channel if in different channel
-            await ctx.voice_client.move_to(ctx.message.author.voice.channel)
+            await ctx.voice_client.move_to(ctx.author.voice.channel)
 
         queue = self.get_queue(ctx)
 
@@ -1378,10 +1402,10 @@ class Music(commands.Cog):
             # Reset fixing flag in callback to prevent race condition
             self.fixing[guild_id] = False
             if not self.loops.get(guild_id) and filename:
-                asyncio.run_coroutine_threadsafe(self.safe_delete(filename), self.bot.loop)
+                self._safe_run_coroutine(self.safe_delete(filename))
             if error:
                 logging.error("Seek player error: %s", error)
-            asyncio.run_coroutine_threadsafe(self.play_next(ctx), self.bot.loop)
+            self._safe_run_coroutine(self.play_next(ctx))
 
         ctx.voice_client.play(player, after=after_seek)
 
@@ -1466,8 +1490,8 @@ class Music(commands.Cog):
         embed.set_footer(text="Use !help for all commands")
         await ctx.send(embed=embed)
 
-    # Owner ID for special commands visibility
-    OWNER_ID = 781560793719636019
+    # Owner ID for special commands visibility - use config value
+    OWNER_ID = CREATOR_ID
 
     @commands.command(name="help", aliases=["h"])
     async def help(self, ctx):

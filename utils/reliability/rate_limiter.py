@@ -105,6 +105,9 @@ class RateLimiter:
         "OPEN": 0.1,  # Circuit open - minimal traffic
     }
 
+    # Max buckets to prevent unbounded memory growth
+    MAX_BUCKETS = 10000
+
     def __init__(self) -> None:
         self._buckets: dict[str, RateLimitBucket] = {}
         self._configs: dict[str, RateLimitConfig] = {}
@@ -230,7 +233,16 @@ class RateLimiter:
 
         Note: This is called within an async lock context, so race conditions
         are already handled. Using setdefault for additional safety.
+        Enforces MAX_BUCKETS limit to prevent unbounded memory growth.
         """
+        # Check if bucket limit reached and evict oldest if necessary
+        if key not in self._buckets and len(self._buckets) >= self.MAX_BUCKETS:
+            # Evict oldest bucket (by last_update time)
+            oldest_key = min(self._buckets, key=lambda k: self._buckets[k].last_update)
+            self._buckets.pop(oldest_key, None)
+            self._locks.pop(oldest_key, None)
+            logging.debug("🧹 Evicted oldest rate limit bucket: %s", oldest_key)
+
         # Use setdefault for atomic get-or-create operation
         return self._buckets.setdefault(
             key,
@@ -448,8 +460,8 @@ class RateLimiter:
     async def cleanup_old_buckets(self, max_age: float = 3600.0) -> int:
         """Remove buckets that haven't been used in max_age seconds.
 
-        Thread-safe: Collects keys to remove first, then removes them
-        while avoiding iteration during modification.
+        Thread-safe: Acquires lock before removing each bucket to ensure
+        no concurrent operations are in progress.
         """
         now = time.time()
         removed = 0
@@ -462,15 +474,21 @@ class RateLimiter:
 
         # Remove buckets and their associated locks atomically per key
         for key in keys_to_remove:
-            # Get and remove the lock first to prevent new operations
-            lock = self._locks.pop(key, None)
+            # Get the lock (don't pop yet - other coroutines may need it)
+            lock = self._locks.get(key)
             if lock:
-                # Ensure no one is holding the lock before removing bucket
+                # Acquire lock to ensure no concurrent operations
                 async with lock:
-                    self._buckets.pop(key, None)
+                    # Re-check condition under lock in case bucket was used recently
+                    bucket = self._buckets.get(key)
+                    if bucket and now - bucket.last_update > max_age:
+                        self._buckets.pop(key, None)
+                        self._locks.pop(key, None)  # Safe to remove lock after bucket
+                        removed += 1
             else:
+                # No lock means no concurrent operations - safe to remove
                 self._buckets.pop(key, None)
-            removed += 1
+                removed += 1
 
         if removed > 0:
             logging.info("🧹 Cleaned up %d old rate limit buckets", removed)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,6 +113,7 @@ class FAISSIndex:
         self.index: faiss.IndexFlatIP | None = None  # Inner product (cosine after norm)
         self.id_map: list[int] = []  # Maps index position to memory ID
         self._initialized = False
+        self._lock = threading.Lock()  # Thread-safe lock for index modifications
 
     def build(self, vectors: np.ndarray, ids: list[int]) -> None:
         """Build index from vectors and their IDs."""
@@ -123,11 +125,12 @@ class FAISSIndex:
         norms[norms == 0] = 1  # Avoid division by zero
         normalized = vectors / norms
 
-        # Create index (IndexFlatIP = flat inner product)
-        self.index = faiss.IndexFlatIP(self.dimension)
-        self.index.add(normalized.astype(np.float32))
-        self.id_map = ids
-        self._initialized = True
+        with self._lock:
+            # Create index (IndexFlatIP = flat inner product)
+            self.index = faiss.IndexFlatIP(self.dimension)
+            self.index.add(normalized.astype(np.float32))
+            self.id_map = ids
+            self._initialized = True
         logging.debug("🔍 Built FAISS index with %d vectors", len(ids))
 
     def search(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
@@ -141,15 +144,16 @@ class FAISSIndex:
             return []
         query_normalized = (query_vector / norm).reshape(1, -1).astype(np.float32)
 
-        # Search
-        k = min(k, self.index.ntotal)
-        similarities, indices = self.index.search(query_normalized, k)
+        with self._lock:
+            # Search
+            k = min(k, self.index.ntotal)
+            similarities, indices = self.index.search(query_normalized, k)
 
-        # Map indices back to memory IDs
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx >= 0 and idx < len(self.id_map):
-                results.append((self.id_map[idx], float(similarities[0][i])))
+            # Map indices back to memory IDs
+            results = []
+            for i, idx in enumerate(indices[0]):
+                if idx >= 0 and idx < len(self.id_map):
+                    results.append((self.id_map[idx], float(similarities[0][i])))
 
         return results
 
@@ -160,22 +164,23 @@ class FAISSIndex:
 
     def add_single(self, vector: np.ndarray, memory_id: int) -> None:
         """Add a single vector to the index."""
-        if not self._initialized:
-            # First vector - initialize index
-            norm = np.linalg.norm(vector)
-            if norm > 0:
-                normalized = (vector / norm).reshape(1, -1).astype(np.float32)
-                self.index = faiss.IndexFlatIP(self.dimension)
-                self.index.add(normalized)
-                self.id_map = [memory_id]
-                self._initialized = True
-        else:
-            # Add to existing index
-            norm = np.linalg.norm(vector)
-            if norm > 0:
-                normalized = (vector / norm).reshape(1, -1).astype(np.float32)
-                self.index.add(normalized)
-                self.id_map.append(memory_id)
+        with self._lock:
+            if not self._initialized:
+                # First vector - initialize index
+                norm = np.linalg.norm(vector)
+                if norm > 0:
+                    normalized = (vector / norm).reshape(1, -1).astype(np.float32)
+                    self.index = faiss.IndexFlatIP(self.dimension)
+                    self.index.add(normalized)
+                    self.id_map = [memory_id]
+                    self._initialized = True
+            else:
+                # Add to existing index
+                norm = np.linalg.norm(vector)
+                if norm > 0:
+                    normalized = (vector / norm).reshape(1, -1).astype(np.float32)
+                    self.index.add(normalized)
+                    self.id_map.append(memory_id)
 
     def save_to_disk(self) -> bool:
         """Save FAISS index to disk for persistence.
@@ -248,6 +253,9 @@ class MemorySystem:
     - Debounced FAISS index persistence
     """
 
+    # Maximum cache size to prevent unbounded memory growth
+    MAX_CACHE_SIZE = 10000
+
     def __init__(self):
         self.client = None
         self._faiss_index: FAISSIndex | None = None
@@ -264,6 +272,21 @@ class MemorySystem:
                 self.client = genai.Client(api_key=GEMINI_API_KEY)
             except Exception as e:
                 logging.error("Failed to init Gemini Client for RAG: %s", e)
+
+    def _evict_cache_if_needed(self) -> None:
+        """Evict oldest entries from cache if over MAX_CACHE_SIZE."""
+        if len(self._memories_cache) <= self.MAX_CACHE_SIZE:
+            return
+
+        # Sort by created_at (oldest first) and evict 10% of max size
+        evict_count = self.MAX_CACHE_SIZE // 10
+        sorted_ids = sorted(
+            self._memories_cache.keys(),
+            key=lambda mid: self._memories_cache[mid].get("created_at", 0),
+        )
+        for mem_id in sorted_ids[:evict_count]:
+            self._memories_cache.pop(mem_id, None)
+        logging.debug("🗑️ Evicted %d old entries from RAG cache", evict_count)
 
     def get_stats(self) -> dict:
         """Get RAG system statistics."""
@@ -344,6 +367,7 @@ class MemorySystem:
                     mem_id = mem.get("id")
                     if mem_id:
                         self._memories_cache[mem_id] = mem
+                self._evict_cache_if_needed()
                 return
 
         # Build from database (slow path)
@@ -372,6 +396,7 @@ class MemorySystem:
             self._index_built = True
             # Save to disk for next restart
             self._faiss_index.save_to_disk()
+            self._evict_cache_if_needed()
             logging.info("🚀 FAISS index built with %d memories", len(vectors))
 
     def _schedule_index_save(self, delay: float = 30.0) -> None:
@@ -394,9 +419,16 @@ class MemorySystem:
 
         async def save_loop():
             while True:
-                await asyncio.sleep(interval)
-                if self._faiss_index and self._index_built:
-                    self._faiss_index.save_to_disk()
+                try:
+                    await asyncio.sleep(interval)
+                    if self._faiss_index and self._index_built:
+                        self._faiss_index.save_to_disk()
+                except asyncio.CancelledError:
+                    # Task was cancelled, exit gracefully
+                    break
+                except Exception as e:
+                    logging.error("❌ Error in periodic FAISS save: %s", e)
+                    # Continue running to try again next interval
 
         if self._periodic_save_task is None or self._periodic_save_task.done():
             self._periodic_save_task = asyncio.create_task(save_loop())
@@ -451,7 +483,8 @@ class MemorySystem:
             # Exponential decay with half-life
             decay = 0.5 ** (age_days / TIME_DECAY_HALF_LIFE_DAYS)
             return max(0.1, decay)  # Minimum 10% weight
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as e:
+            logging.debug("Time decay calculation failed: %s", e)
             return 1.0  # Default to full weight on error
 
     def expand_query(self, query: str) -> str:
@@ -586,6 +619,7 @@ class MemorySystem:
         # Update cache
         for mem in all_memories:
             self._memories_cache[mem.get("id", 0)] = mem
+        self._evict_cache_if_needed()
 
         # Semantic search
         semantic_results = []
@@ -640,8 +674,8 @@ class MemorySystem:
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now()
                     age_days = (now - created).days
-                except Exception:
-                    pass
+                except (ValueError, TypeError, AttributeError):
+                    pass  # Invalid or missing datetime format
 
             results.append(
                 MemoryResult(
@@ -689,7 +723,8 @@ class MemorySystem:
 
                 if similarity > LINEAR_SEARCH_MIN_SIMILARITY:
                     scored.append((mem.get("id", 0), similarity))
-            except Exception:
+            except (ValueError, TypeError, KeyError) as e:
+                logging.debug("Skipping invalid memory in linear search: %s", e)
                 continue
 
         scored.sort(key=lambda x: x[1], reverse=True)

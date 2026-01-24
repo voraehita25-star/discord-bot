@@ -34,6 +34,11 @@ class PendingMessage:
 class MessageQueue:
     """Manages message queues for channels."""
 
+    # Max channels to track to prevent unbounded memory growth
+    MAX_CHANNELS = 5000
+    # Max pending messages per channel
+    MAX_PENDING_PER_CHANNEL = 50
+
     def __init__(self) -> None:
         """Initialize the message queue manager."""
         self.pending_messages: dict[int, list[PendingMessage]] = {}
@@ -87,8 +92,35 @@ class MessageQueue:
             generate_response: Whether to generate a response
             user_message_id: User message ID
         """
+        # Enforce max channels limit
         if channel_id not in self.pending_messages:
+            if len(self.pending_messages) >= self.MAX_CHANNELS:
+                # Evict oldest channel (by oldest message timestamp)
+                oldest_channel = min(
+                    self.pending_messages,
+                    key=lambda cid: (
+                        self.pending_messages[cid][0].timestamp
+                        if self.pending_messages[cid]
+                        else float("inf")
+                    ),
+                )
+                self.pending_messages.pop(oldest_channel, None)
+                self.cancel_flags.pop(oldest_channel, None)
+                logging.warning(
+                    "🧹 Message queue limit reached, evicted channel %s", oldest_channel
+                )
             self.pending_messages[channel_id] = []
+
+        # Enforce max pending messages per channel
+        if len(self.pending_messages[channel_id]) >= self.MAX_PENDING_PER_CHANNEL:
+            # Remove oldest messages to make room
+            self.pending_messages[channel_id] = self.pending_messages[channel_id][
+                -(self.MAX_PENDING_PER_CHANNEL - 1) :
+            ]
+            logging.warning(
+                "🧹 Pending messages limit reached for channel %s, trimmed queue",
+                channel_id,
+            )
 
         pending_msg = PendingMessage(
             channel=channel,
@@ -209,6 +241,9 @@ class MessageQueue:
         Returns:
             True if lock was acquired
         """
+        # Periodic cleanup of stale locks (every time we try to acquire)
+        self.cleanup_stale_locks()
+
         lock = self.get_lock(channel_id)
         try:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)

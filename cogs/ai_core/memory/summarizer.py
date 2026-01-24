@@ -12,14 +12,11 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from ..data.constants import GEMINI_API_KEY
+from ..data.constants import GEMINI_API_KEY, MIN_CONVERSATION_LENGTH
 
 # Summarization Model (configurable via environment variable)
-# Default to gemini-3-flash-preview for cost-effective summarization
-SUMMARIZATION_MODEL = os.getenv("GEMINI_SUMMARIZATION_MODEL", "gemini-3-flash-preview")
-
-# Conversation length thresholds
-MIN_CONVERSATION_LENGTH = 200  # Minimum characters to summarize
+# Default to gemini-3-pro-preview for high-quality summarization
+SUMMARIZATION_MODEL = os.getenv("GEMINI_SUMMARIZATION_MODEL", "gemini-3-pro-preview")
 
 
 # Summarization prompt template
@@ -86,8 +83,11 @@ class ConversationSummarizer:
 
             return summary
 
+        except (ValueError, TypeError) as e:
+            logging.warning("Summarization parsing error: %s", e)
+            return None
         except Exception as e:
-            logging.error("Summarization failed: %s", e)
+            logging.error("Summarization failed unexpectedly: %s", e)
             return None
 
     def _history_to_text(self, history: list[dict[str, Any]]) -> str:

@@ -41,11 +41,19 @@ class HealthAPIClient:
 
     async def connect(self):
         """Initialize the client session."""
-        if self._session is None:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            )
-        await self._check_service()
+        if self._session is not None:
+            return  # Already connected
+
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=5)
+        )
+        try:
+            await self._check_service()
+        except Exception:
+            # Clean up session if service check fails
+            await self._session.close()
+            self._session = None
+            raise
 
     async def close(self):
         """Close the client session."""
@@ -66,7 +74,7 @@ class HealthAPIClient:
                 if self._service_available:
                     logger.info("✅ Go Health API service available")
                 return self._service_available
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             self._service_available = False
             logger.warning("⚠️ Go Health API not available, metrics disabled")
             return False
@@ -79,7 +87,7 @@ class HealthAPIClient:
         try:
             async with self._session.get(f"{self.base_url}/health") as resp:
                 return await resp.json()
-        except Exception as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return {"status": "error", "error": str(e)}
 
     async def is_ready(self) -> bool:

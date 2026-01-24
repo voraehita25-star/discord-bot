@@ -32,9 +32,11 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
 
 # ==================== AI Processing Limits ====================
 # History limits (number of messages to keep per channel type)
-HISTORY_LIMIT_DEFAULT = 1500  # Default for regular channels
-HISTORY_LIMIT_MAIN = 8000  # Main server (higher traffic)
-HISTORY_LIMIT_RP = 30000  # Roleplay server (critical for continuity)
+# NOTE: These are token-based limits for API context, not message counts
+# For actual message storage limits, see config.py BotSettings class
+HISTORY_LIMIT_DEFAULT = 1500  # Token limit for regular channels
+HISTORY_LIMIT_MAIN = 8000  # Token limit for main server (higher traffic)
+HISTORY_LIMIT_RP = 30000  # Token limit for roleplay server (critical for continuity)
 
 # Processing timeouts (in seconds)
 LOCK_TIMEOUT = 120.0  # Max wait time for lock acquisition
@@ -51,6 +53,22 @@ TEXT_TRUNCATE_TAIL = 3000  # Keep last N chars when truncating
 
 # Performance tracking
 PERFORMANCE_SAMPLES_MAX = 100  # Max samples to keep per metric
+
+# ==================== Memory Consolidation Settings ====================
+# How often to consolidate (extract facts from conversation)
+CONSOLIDATE_EVERY_N_MESSAGES = 30  # Consolidate after N messages
+CONSOLIDATE_INTERVAL_SECONDS = 3600  # Or after N seconds (1 hour)
+MIN_CONVERSATION_LENGTH = 200  # Minimum chars to extract facts from
+MAX_RECENT_MESSAGES_FOR_EXTRACTION = 50  # Messages to consider for extraction
+
+# ==================== Memory Cleanup Settings ====================
+# State tracker cleanup (character states in roleplay)
+STATE_CLEANUP_MAX_AGE_HOURS = 24  # Remove states older than N hours
+STATE_CLEANUP_MAX_CHANNELS = 500  # Max channels to track states for
+
+# Consolidator cleanup (tracking data for fact extraction)
+CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS = 86400  # 24 hours
+CONSOLIDATOR_CLEANUP_MAX_CHANNELS = 500  # Max channels to track
 
 # Game-specific keywords that should force Google Search for accurate data
 GAME_SEARCH_KEYWORDS = [

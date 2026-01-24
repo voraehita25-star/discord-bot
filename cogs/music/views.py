@@ -82,12 +82,20 @@ class MusicControlView(discord.ui.View):
 
         if self.cog.loops[self.guild_id]:
             button.style = discord.ButtonStyle.success
-            await interaction.response.send_message("🔁 เปิดโหมดวนซ้ำ", ephemeral=True)
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("🔁 เปิดโหมดวนซ้ำ", ephemeral=True)
         else:
             button.style = discord.ButtonStyle.secondary
-            await interaction.response.send_message("➡️ ปิดโหมดวนซ้ำ", ephemeral=True)
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("➡️ ปิดโหมดวนซ้ำ", ephemeral=True)
 
     async def on_timeout(self):
         """Disable buttons on timeout."""
         for child in self.children:
             child.disabled = True
+        # Try to edit the message to show disabled buttons
+        if hasattr(self, 'message') and self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass  # Message may have been deleted or inaccessible

@@ -28,21 +28,24 @@ def _load_unrestricted_channels() -> set[int]:
             channels = set(data.get("channels", []))
             logging.info("🔓 Loaded %d unrestricted channels from storage", len(channels))
             return channels
-    except Exception as e:
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         logging.warning("Failed to load unrestricted channels: %s", e)
     return set()
 
 
 def _save_unrestricted_channels() -> bool:
-    """Save unrestricted channels to persistent storage."""
+    """Save unrestricted channels to persistent storage using atomic write."""
     try:
         _UNRESTRICTED_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _UNRESTRICTED_FILE.write_text(
+        # Atomic write: write to temp file then rename
+        temp_file = _UNRESTRICTED_FILE.with_suffix(".tmp")
+        temp_file.write_text(
             json.dumps({"channels": list(unrestricted_channels)}, indent=2),
             encoding="utf-8",
         )
+        temp_file.replace(_UNRESTRICTED_FILE)  # Atomic on most filesystems
         return True
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         logging.error("Failed to save unrestricted channels: %s", e)
         return False
 

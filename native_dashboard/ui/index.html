@@ -6,6 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- KaTeX for LaTeX math rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 
 <body>
@@ -29,20 +33,30 @@
                     <span>Status</span>
                     <kbd class="shortcut">Ctrl+1</kbd>
                 </button>
+                <button class="nav-item" data-page="chat">
+                    <span class="nav-icon">💬</span>
+                    <span>AI Chat</span>
+                    <kbd class="shortcut">Ctrl+2</kbd>
+                </button>
+                <button class="nav-item" data-page="memories">
+                    <span class="nav-icon">🧠</span>
+                    <span>Memories</span>
+                    <kbd class="shortcut">Ctrl+3</kbd>
+                </button>
                 <button class="nav-item" data-page="logs">
                     <span class="nav-icon">📜</span>
                     <span>Logs</span>
-                    <kbd class="shortcut">Ctrl+2</kbd>
+                    <kbd class="shortcut">Ctrl+4</kbd>
                 </button>
                 <button class="nav-item" data-page="database">
                     <span class="nav-icon">💾</span>
                     <span>Database</span>
-                    <kbd class="shortcut">Ctrl+3</kbd>
+                    <kbd class="shortcut">Ctrl+5</kbd>
                 </button>
                 <button class="nav-item" data-page="settings">
                     <span class="nav-icon">⚙️</span>
                     <span>Settings</span>
-                    <kbd class="shortcut">Ctrl+4</kbd>
+                    <kbd class="shortcut">Ctrl+6</kbd>
                 </button>
             </div>
 
@@ -128,6 +142,257 @@
                 </div>
             </section>
 
+            <!-- AI Chat Page -->
+            <section id="page-chat" class="page">
+                <!-- Overlay when bot is not running -->
+                <div class="chat-not-running-overlay" id="chat-not-running-overlay">
+                    <div class="overlay-content">
+                        <span class="overlay-icon">🤖</span>
+                        <h2>Bot Not Running</h2>
+                        <p>Start the Discord bot to use AI Chat</p>
+                        <button class="btn btn-primary btn-large" onclick="showPage('status'); startBot();">
+                            ▶️ Start Bot
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="chat-layout">
+                    <!-- Conversations Sidebar -->
+                    <aside class="chat-sidebar">
+                        <div class="chat-sidebar-header">
+                            <h2>💬 Conversations</h2>
+                            <button class="btn btn-primary btn-new-chat" id="btn-new-chat">
+                                <span>+ New</span>
+                            </button>
+                        </div>
+                        <div class="conversation-list" id="conversation-list">
+                            <!-- Conversations will be loaded here -->
+                        </div>
+                        <div class="chat-sidebar-footer">
+                            <button class="btn" id="btn-export-all" title="Export All Conversations">
+                                📥 Export All
+                            </button>
+                        </div>
+                    </aside>
+
+                    <!-- Chat Main Area -->
+                    <div class="chat-main">
+                        <!-- No conversation selected -->
+                        <div class="chat-empty" id="chat-empty">
+                            <div class="chat-empty-content">
+                                <h2><img class="ai-avatar-icon" id="chat-empty-avatar" src="" alt="AI"> AI Chat</h2>
+                                <p>Start a new conversation or select an existing one</p>
+                                <button class="btn btn-primary btn-large" id="btn-new-chat-main">
+                                    + New Conversation
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Active conversation -->
+                        <div class="chat-container" id="chat-container" style="display: none;">
+                            <!-- Chat Header -->
+                            <div class="chat-header">
+                                <div class="chat-header-info">
+                                    <img class="chat-role-avatar" id="chat-role-avatar" src="" alt="AI">
+                                    <div class="chat-header-text">
+                                        <h3 id="chat-title">New Conversation</h3>
+                                        <span class="chat-role-name" id="chat-role-name">General Assistant</span>
+                                    </div>
+                                </div>
+                                <div class="chat-header-actions">
+                                    <label class="thinking-toggle" title="Enable Thinking Mode">
+                                        <input type="checkbox" id="thinking-toggle">
+                                        <span class="thinking-label">⚡ Thinking</span>
+                                    </label>
+                                    <button class="btn btn-icon" id="btn-rename-chat" title="Rename Conversation">
+                                        ✏️
+                                    </button>
+                                    <button class="btn btn-icon" id="btn-star-chat" title="Star Conversation">
+                                        ☆
+                                    </button>
+                                    <button class="btn btn-icon" id="btn-export-chat" title="Export Conversation">
+                                        📥
+                                    </button>
+                                    <button class="btn btn-icon btn-danger" id="btn-delete-chat" title="Delete Conversation">
+                                        🗑️
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Messages Area -->
+                            <div class="chat-messages" id="chat-messages">
+                                <!-- Messages will be rendered here -->
+                            </div>
+
+                            <!-- Input Area -->
+                            <div class="chat-input-area">
+                                <div class="chat-input-options">
+                                    <label class="checkbox-label" title="Enable Google Search">
+                                        <input type="checkbox" id="chat-use-search" checked>
+                                        <span class="checkbox-icon">🔍</span>
+                                        <span class="checkbox-text">Search</span>
+                                    </label>
+                                    <label class="checkbox-label unrestricted-toggle" title="Unrestricted Mode - Bypass AI restrictions">
+                                        <input type="checkbox" id="chat-unrestricted">
+                                        <span class="checkbox-icon">🔓</span>
+                                        <span class="checkbox-text">Unrestricted</span>
+                                    </label>
+                                    <button class="btn btn-icon btn-attach" id="btn-attach" title="Attach Image">
+                                        📎
+                                    </button>
+                                    <input type="file" id="image-input" accept="image/*" multiple hidden>
+                                    <div class="attached-images" id="attached-images">
+                                        <!-- Preview of attached images -->
+                                    </div>
+                                </div>
+                                <div class="chat-input-container">
+                                    <textarea 
+                                        id="chat-input" 
+                                        placeholder="Type your message... (Enter to send)"
+                                        rows="1"
+                                    ></textarea>
+                                    <button class="btn btn-send" id="btn-send" title="Send Message (Enter)">
+                                        <span class="send-icon">➤</span>
+                                    </button>
+                                </div>
+                                <div class="chat-input-hint">
+                                    Press <kbd>Enter</kbd> to send • <kbd>Shift+Enter</kbd> for new line
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- New Conversation Modal -->
+                <div class="modal" id="new-chat-modal">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2>🎭 New Conversation</h2>
+                            <button class="modal-close" id="modal-close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p>Select an AI role:</p>
+                            <div class="role-cards">
+                                <div class="role-card selected" data-role="general">
+                                    <div class="role-card-emoji">🤖</div>
+                                    <div class="role-card-name">General Assistant</div>
+                                    <div class="role-card-desc">Helpful AI for general tasks</div>
+                                </div>
+                                <div class="role-card" data-role="faust">
+                                    <div class="role-card-emoji">👻</div>
+                                    <div class="role-card-name">Faust</div>
+                                    <div class="role-card-desc">Sinner #2 from Limbus Company</div>
+                                </div>
+                            </div>
+                            <div class="modal-options">
+                                <label class="option-row">
+                                    <input type="checkbox" id="modal-thinking">
+                                    <span>⚡ Enable Thinking Mode</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn" id="modal-cancel">Cancel</button>
+                            <button class="btn btn-primary" id="modal-create">Start Chat</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Delete Confirmation Modal -->
+                <div class="modal" id="delete-confirm-modal">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-content modal-small">
+                        <div class="modal-header">
+                            <h2>🗑️ Delete Conversation?</h2>
+                        </div>
+                        <div class="modal-body">
+                            <p>This action cannot be undone. All messages will be permanently deleted.</p>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn" id="delete-cancel">Cancel</button>
+                            <button class="btn btn-danger" id="delete-confirm">Delete</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rename Conversation Modal -->
+                <div class="modal" id="rename-modal">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-content modal-small">
+                        <div class="modal-header">
+                            <h2>✏️ Rename Conversation</h2>
+                        </div>
+                        <div class="modal-body">
+                            <div class="form-group">
+                                <label for="rename-input">Conversation Name</label>
+                                <input type="text" id="rename-input" class="form-input" placeholder="Enter new name..." maxlength="100">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn" id="rename-cancel">Cancel</button>
+                            <button class="btn btn-primary" id="rename-confirm">Rename</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Memories Page -->
+            <section id="page-memories" class="page">
+                <div class="page-header">
+                    <h1>🧠 Long-term Memories</h1>
+                    <button class="btn btn-primary" id="btn-add-memory">+ Add Memory</button>
+                </div>
+                <p class="page-description">These memories are automatically included in AI conversations to provide context about you.</p>
+                
+                <div class="memory-categories">
+                    <button class="memory-category-btn active" data-category="all">All</button>
+                    <button class="memory-category-btn" data-category="personal">Personal</button>
+                    <button class="memory-category-btn" data-category="preferences">Preferences</button>
+                    <button class="memory-category-btn" data-category="facts">Facts</button>
+                    <button class="memory-category-btn" data-category="general">General</button>
+                </div>
+
+                <div class="memories-list" id="memories-list">
+                    <!-- Memories will be rendered here -->
+                    <div class="empty-memories">
+                        <span class="empty-icon">🧠</span>
+                        <p>No memories yet</p>
+                        <p class="hint">Add memories to help AI remember important information about you</p>
+                    </div>
+                </div>
+
+                <!-- Add Memory Modal -->
+                <div class="modal" id="add-memory-modal">
+                    <div class="modal-overlay"></div>
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2>🧠 Add Memory</h2>
+                            <button class="modal-close" id="memory-modal-close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="form-group">
+                                <label for="memory-content">Memory Content</label>
+                                <textarea id="memory-content" rows="4" placeholder="e.g., My favorite programming language is Python"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="memory-category">Category</label>
+                                <select id="memory-category">
+                                    <option value="personal">Personal</option>
+                                    <option value="preferences">Preferences</option>
+                                    <option value="facts">Facts</option>
+                                    <option value="general" selected>General</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-secondary" id="memory-modal-cancel">Cancel</button>
+                            <button class="btn btn-primary" id="memory-modal-save">Save Memory</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Logs Page -->
             <section id="page-logs" class="page">
                 <div class="page-header">
@@ -194,6 +459,68 @@
                 <h1>⚙️ Settings</h1>
 
                 <div class="settings-card">
+                    <h2>🤖 AI Appearance</h2>
+                    <p class="settings-hint">Customize how the AI looks in chat.</p>
+                    <div class="setting-row">
+                        <label>AI Avatar</label>
+                        <div class="setting-control avatar-control">
+                            <div class="avatar-preview ai-avatar-preview" id="ai-avatar-preview">
+                                <img id="ai-avatar-image" src="" alt="AI Avatar">
+                                <span class="avatar-placeholder">🤖</span>
+                            </div>
+                            <button class="btn btn-secondary" id="btn-change-ai-avatar">📷 Change</button>
+                            <button class="btn btn-danger btn-small" id="btn-remove-ai-avatar" style="display:none;">✕</button>
+                            <input type="file" id="ai-avatar-input" accept="image/*" hidden>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <h2>👤 Profile</h2>
+                    <p class="settings-hint">This information helps AI understand and remember you better.</p>
+                    <div class="setting-row">
+                        <label>Profile Picture</label>
+                        <div class="setting-control avatar-control">
+                            <div class="avatar-preview" id="avatar-preview">
+                                <img id="avatar-image" src="" alt="Avatar">
+                                <span class="avatar-placeholder">👤</span>
+                            </div>
+                            <button class="btn btn-secondary" id="btn-change-avatar">📷 Change</button>
+                            <button class="btn btn-danger btn-small" id="btn-remove-avatar" style="display:none;">✕</button>
+                            <input type="file" id="avatar-input" accept="image/*" hidden>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="user-name-input">Display Name</label>
+                        <div class="setting-control">
+                            <input type="text" id="user-name-input" class="setting-input" placeholder="Enter your name..." maxlength="32">
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="user-bio-input">About You</label>
+                        <div class="setting-control">
+                            <textarea id="user-bio-input" class="setting-textarea" placeholder="Tell AI about yourself (hobbies, work, interests...)" rows="3" maxlength="500"></textarea>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="user-preferences-input">Preferences</label>
+                        <div class="setting-control">
+                            <textarea id="user-preferences-input" class="setting-textarea" placeholder="How you want AI to respond (language style, topics to avoid, etc.)" rows="2" maxlength="300"></textarea>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="creator-toggle">I am the Creator/Owner</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="creator-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <button class="btn btn-primary" id="btn-save-profile">💾 Save Profile to AI</button>
+                    </div>
+                </div>
+
+                <div class="settings-card">
                     <h2>🎨 Appearance</h2>
                     <div class="setting-row">
                         <label for="theme-select">Theme</label>
@@ -232,19 +559,28 @@
                             <kbd>Ctrl + 1</kbd> <span>Go to Status</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 2</kbd> <span>Go to Logs</span>
+                            <kbd>Ctrl + 2</kbd> <span>Go to AI Chat</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 3</kbd> <span>Go to Database</span>
+                            <kbd>Ctrl + 3</kbd> <span>Go to Memories</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 4</kbd> <span>Go to Settings</span>
+                            <kbd>Ctrl + 4</kbd> <span>Go to Logs</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 5</kbd> <span>Go to Database</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + 6</kbd> <span>Go to Settings</span>
                         </div>
                         <div class="shortcut-item">
                             <kbd>Ctrl + R</kbd> <span>Refresh All Data</span>
                         </div>
                         <div class="shortcut-item">
                             <kbd>Ctrl + T</kbd> <span>Toggle Theme</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + Enter</kbd> <span>Send Message (in Chat)</span>
                         </div>
                     </div>
                 </div>
@@ -275,6 +611,31 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Avatar Cropper Modal -->
+    <div id="avatar-crop-modal" class="modal" style="display:none;">
+        <div class="modal-content avatar-crop-content">
+            <div class="modal-header">
+                <h2>✂️ Crop Avatar</h2>
+                <button class="modal-close" id="avatar-crop-close">&times;</button>
+            </div>
+            <div class="crop-container">
+                <div class="crop-area" id="crop-area">
+                    <img id="crop-image" src="" alt="Crop preview">
+                    <div class="crop-circle" id="crop-circle"></div>
+                </div>
+                <div class="crop-controls">
+                    <label>Zoom</label>
+                    <input type="range" id="crop-zoom" min="100" max="300" value="100">
+                    <div class="crop-position-hint">Drag image to position</div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="btn-crop-cancel">Cancel</button>
+                <button class="btn btn-primary" id="btn-crop-save">✅ Save Avatar</button>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>

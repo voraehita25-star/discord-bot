@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import threading
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -33,6 +34,7 @@ class BotHealthData:
         self.start_time: datetime = datetime.now()
         self.bot: Bot | None = None
         self.last_heartbeat: datetime = datetime.now()
+        self._counter_lock = threading.Lock()  # Thread-safe lock for counters
         self.message_count: int = 0
         self.command_count: int = 0
         self.error_count: int = 0
@@ -55,16 +57,19 @@ class BotHealthData:
             self.cogs_loaded = list(bot.cogs.keys())
 
     def increment_message(self) -> None:
-        """Increment message counter."""
-        self.message_count += 1
+        """Increment message counter (thread-safe)."""
+        with self._counter_lock:
+            self.message_count += 1
 
     def increment_command(self) -> None:
-        """Increment command counter."""
-        self.command_count += 1
+        """Increment command counter (thread-safe)."""
+        with self._counter_lock:
+            self.command_count += 1
 
     def increment_error(self) -> None:
-        """Increment error counter."""
-        self.error_count += 1
+        """Increment error counter (thread-safe)."""
+        with self._counter_lock:
+            self.error_count += 1
 
     def get_uptime(self) -> timedelta:
         """Get bot uptime."""

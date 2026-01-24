@@ -10,7 +10,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from ..data.roleplay_data import SERVER_CHARACTERS
+from ..data.roleplay_data import SERVER_CHARACTER_NAMES
 from ..storage import get_all_channels_summary, get_channel_history_preview
 
 if TYPE_CHECKING:
@@ -221,8 +221,8 @@ class ResponseMixin:
         response_text = PATTERN_SPACED.sub(r"\1", response_text)
 
         # Convert standalone character names to {{Name}} tags
-        if guild_id and guild_id in SERVER_CHARACTERS:
-            char_names = list(SERVER_CHARACTERS[guild_id].keys())
+        if guild_id and guild_id in SERVER_CHARACTER_NAMES:
+            char_names = list(SERVER_CHARACTER_NAMES[guild_id].keys())
             char_names.sort(key=len, reverse=True)
             for char_name in char_names:
                 pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"

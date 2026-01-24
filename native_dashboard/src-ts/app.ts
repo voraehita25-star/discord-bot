@@ -27,6 +27,9 @@ interface Window {
     loadLogs: () => Promise<void>;
     toggleTheme: () => void;
     showToast: (message: string, options?: ToastOptions) => void;
+    chatManager: ChatManager | null;
+    showPage: (page: string) => void;
+    startBot: () => Promise<void>;
 }
 
 // Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
@@ -37,6 +40,103 @@ const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
     console.warn('Tauri not available, using mock');
     return Promise.reject(new Error('Tauri not available'));
 };
+
+// ============================================================================
+// Error Logger - Logs frontend errors to file for debugging
+// ============================================================================
+
+class ErrorLogger {
+    private static instance: ErrorLogger;
+    private errorQueue: Array<{type: string; message: string; stack?: string}> = [];
+    private isProcessing = false;
+
+    static getInstance(): ErrorLogger {
+        if (!ErrorLogger.instance) {
+            ErrorLogger.instance = new ErrorLogger();
+        }
+        return ErrorLogger.instance;
+    }
+
+    constructor() {
+        this.setupGlobalErrorHandlers();
+    }
+
+    private setupGlobalErrorHandlers(): void {
+        // Catch unhandled errors
+        window.onerror = (message, source, lineno, colno, error) => {
+            this.log('UNCAUGHT_ERROR', String(message), error?.stack || `at ${source}:${lineno}:${colno}`);
+            return false;
+        };
+
+        // Catch unhandled promise rejections
+        window.onunhandledrejection = (event) => {
+            const reason = event.reason;
+            const message = reason?.message || String(reason);
+            const stack = reason?.stack || 'No stack trace';
+            this.log('UNHANDLED_REJECTION', message, stack);
+        };
+
+        // Override console.error to also log to file
+        const originalConsoleError = console.error;
+        console.error = (...args) => {
+            originalConsoleError.apply(console, args);
+            const message = args.map(arg => {
+                if (arg instanceof Error) return arg.message;
+                if (typeof arg === 'object') return JSON.stringify(arg);
+                return String(arg);
+            }).join(' ');
+            const stack = args.find(arg => arg instanceof Error)?.stack;
+            this.log('CONSOLE_ERROR', message, stack);
+        };
+    }
+
+    async log(errorType: string, message: string, stack?: string): Promise<void> {
+        this.errorQueue.push({ type: errorType, message, stack });
+        this.processQueue();
+    }
+
+    private async processQueue(): Promise<void> {
+        if (this.isProcessing || this.errorQueue.length === 0) return;
+        
+        this.isProcessing = true;
+        
+        while (this.errorQueue.length > 0) {
+            const error = this.errorQueue.shift();
+            if (error) {
+                try {
+                    await invoke('log_frontend_error', {
+                        errorType: error.type,
+                        message: error.message,
+                        stack: error.stack || null
+                    });
+                } catch (e) {
+                    // Silently fail if logging fails
+                }
+            }
+        }
+        
+        this.isProcessing = false;
+    }
+
+    async getErrors(count: number = 20): Promise<string[]> {
+        try {
+            return await invoke<string[]>('get_dashboard_errors', { count });
+        } catch {
+            return ['Failed to fetch errors'];
+        }
+    }
+
+    async clearErrors(): Promise<void> {
+        try {
+            await invoke('clear_dashboard_errors');
+        } catch (e) {
+            console.warn('Failed to clear error log:', e);
+        }
+    }
+}
+
+// Initialize error logger early
+const errorLogger = ErrorLogger.getInstance();
 
 // ============================================================================
 // Types & Interfaces
@@ -88,6 +188,10 @@ interface Settings {
     autoScroll: boolean;
     notifications: boolean;
     chartHistory: number;
+    userName: string;
+    userAvatar: string;  // Base64 image
+    aiAvatar: string;    // AI avatar Base64 image
+    isCreator: boolean;
 }
 
 // ============================================================================
@@ -129,6 +233,1252 @@ class DataCache {
 const dataCache = new DataCache();
 
 // ============================================================================
+// AI Chat Manager - WebSocket Client
+// ============================================================================
+
+interface ChatConversation {
+    id: string;
+    title: string | null;
+    role_preset: string;
+    role_name?: string;
+    role_emoji?: string;
+    role_color?: string;
+    thinking_enabled: boolean;
+    is_starred: boolean;
+    message_count?: number;
+    created_at: string;
+    updated_at?: string;
+}
+
+interface ChatMessage {
+    id?: number;
+    role: 'user' | 'assistant';
+    content: string;
+    created_at: string;
+    images?: string[];  // Base64 encoded images
+    thinking?: string;  // AI thought process
+    mode?: string;      // Mode used (Thinking, Unrestricted, etc.)
+}
+
+interface RolePreset {
+    name: string;
+    emoji: string;
+    color: string;
+}
+
+interface Memory {
+    id: string;
+    content: string;
+    category: string;
+    created_at: string;
+}
+
+// ============================================================================
+// Memory Manager
+// ============================================================================
+
+class MemoryManager {
+    memories: Memory[] = [];
+    currentCategory: string = 'all';
+
+    loadMemories(): void {
+        chatManager?.send({ type: 'get_memories', category: this.currentCategory === 'all' ? null : this.currentCategory });
+    }
+
+    saveMemory(content: string, category: string): void {
+        chatManager?.send({ type: 'save_memory', content, category });
+    }
+
+    deleteMemory(id: string): void {
+        chatManager?.send({ type: 'delete_memory', id });
+    }
+
+    renderMemories(memories: Memory[]): void {
+        this.memories = memories;
+        const container = document.getElementById('memories-list');
+        if (!container) return;
+
+        // Filter by category if needed
+        const filteredMemories = this.currentCategory === 'all' 
+            ? memories 
+            : memories.filter(m => m.category === this.currentCategory);
+
+        if (filteredMemories.length === 0) {
+            container.innerHTML = `
+                <div class="empty-memories">
+                    <span class="empty-icon">🧠</span>
+                    <p>No memories yet</p>
+                    <p class="hint">Add memories to help AI remember important information about you</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = filteredMemories.map(memory => `
+            <div class="memory-card" data-id="${memory.id}">
+                <div class="memory-card-header">
+                    <span class="memory-category-badge">${memory.category}</span>
+                </div>
+                <div class="memory-card-content">${this.escapeHtml(memory.content)}</div>
+                <div class="memory-card-footer">
+                    <span class="memory-timestamp">${this.formatTime(memory.created_at)}</span>
+                    <button class="memory-delete-btn" data-id="${memory.id}">Delete</button>
+                </div>
+            </div>
+        `).join('');
+
+        // Add delete handlers
+        container.querySelectorAll('.memory-delete-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = (e.target as HTMLElement).dataset.id;
+                if (id && confirm('Delete this memory?')) {
+                    this.deleteMemory(id);
+                }
+            });
+        });
+    }
+
+    escapeHtml(text: string): string {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    formatTime(isoString: string): string {
+        try {
+            return new Date(isoString).toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch {
+            return isoString;
+        }
+    }
+
+    showModal(): void {
+        const modal = document.getElementById('add-memory-modal');
+        if (modal) {
+            modal.classList.add('active');
+            (document.getElementById('memory-content') as HTMLTextAreaElement).value = '';
+        }
+    }
+
+    closeModal(): void {
+        const modal = document.getElementById('add-memory-modal');
+        if (modal) modal.classList.remove('active');
+    }
+
+    setupEventListeners(): void {
+        // Category filter buttons
+        document.querySelectorAll('.memory-category-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const category = (e.target as HTMLElement).dataset.category || 'all';
+                this.currentCategory = category;
+                
+                // Update active state
+                document.querySelectorAll('.memory-category-btn').forEach(b => b.classList.remove('active'));
+                (e.target as HTMLElement).classList.add('active');
+                
+                // Re-render with filter
+                this.renderMemories(this.memories);
+            });
+        });
+
+        // Add memory button
+        document.getElementById('btn-add-memory')?.addEventListener('click', () => this.showModal());
+
+        // Modal close buttons
+        document.getElementById('memory-modal-close')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('memory-modal-cancel')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('add-memory-modal')?.querySelector('.modal-overlay')
+            ?.addEventListener('click', () => this.closeModal());
+
+        // Save button
+        document.getElementById('memory-modal-save')?.addEventListener('click', () => {
+            const content = (document.getElementById('memory-content') as HTMLTextAreaElement)?.value?.trim();
+            const category = (document.getElementById('memory-category') as HTMLSelectElement)?.value || 'general';
+            
+            if (content) {
+                this.saveMemory(content, category);
+            } else {
+                showToast('Please enter memory content', { type: 'warning' });
+            }
+        });
+    }
+}
+
+const memoryManager = new MemoryManager();
+
+class ChatManager {
+    ws: WebSocket | null = null;
+    connected: boolean = false;
+    currentConversation: ChatConversation | null = null;
+    conversations: ChatConversation[] = [];
+    messages: ChatMessage[] = [];
+    selectedRole: string = 'general';
+    thinkingEnabled: boolean = false;
+    isStreaming: boolean = false;
+    reconnectAttempts: number = 0;
+    maxReconnectAttempts: number = 5;
+    presets: Record<string, RolePreset> = {};
+    pendingDeleteId: string | null = null;
+    pendingRenameId: string | null = null;
+    attachedImages: string[] = [];  // Base64 encoded images
+    currentMode: string = '';  // Store current mode for the streaming message
+    private pingInterval: number | null = null;  // Track ping interval for cleanup
+    private reconnectTimeout: number | null = null;  // Track reconnect timeout
+
+    connect(): void {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            return;
+        }
+
+        try {
+            this.ws = new WebSocket('ws://127.0.0.1:8765/ws');
+
+            this.ws.onopen = () => {
+                console.log('🔌 WebSocket connected');
+                this.connected = true;
+                this.reconnectAttempts = 0;
+                this.updateConnectionStatus(true);
+            };
+
+            this.ws.onclose = () => {
+                console.log('🔌 WebSocket disconnected');
+                this.connected = false;
+                this.updateConnectionStatus(false);
+                this.scheduleReconnect();
+            };
+
+            this.ws.onerror = (error) => {
+                // Only log first error, not repeated connection failures
+                if (this.reconnectAttempts === 0) {
+                    console.warn('🔌 WebSocket connection failed (bot may not be running)');
+                }
+                this.updateConnectionStatus(false);
+            };
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleMessage(data);
+                } catch (e) {
+                    console.error('Failed to parse WebSocket message:', e);
+                    errorLogger.log('WEBSOCKET_PARSE_ERROR', 'Failed to parse message', String(e));
+                }
+            };
+        } catch (e) {
+            console.error('Failed to create WebSocket:', e);
+            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
+            this.scheduleReconnect();
+        }
+    }
+
+    scheduleReconnect(): void {
+        // Clear existing reconnect timeout to prevent race condition
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+        
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.log('Max reconnect attempts reached');
+            return;
+        }
+
+        this.reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        this.reconnectTimeout = window.setTimeout(() => {
+            this.reconnectTimeout = null;
+            this.connect();
+        }, delay);
+    }
+
+    disconnect(): void {
+        // Clear ping interval
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        // Clear reconnect timeout
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+        this.connected = false;
+    }
+
+    send(data: unknown): void {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
+        } else {
+            showToast('Not connected to AI server', { type: 'error' });
+        }
+    }
+
+    handleMessage(data: Record<string, unknown>): void {
+        switch (data.type) {
+            case 'connected':
+                this.presets = (data.presets as Record<string, RolePreset>) || {};
+                this.listConversations();
+                break;
+
+            case 'conversations_list':
+                this.conversations = (data.conversations as ChatConversation[]) || [];
+                this.renderConversationList();
+                break;
+
+            case 'conversation_created':
+                this.currentConversation = data as unknown as ChatConversation;
+                this.messages = [];
+                this.showChatContainer();
+                this.updateChatHeader();
+                this.renderMessages();
+                this.listConversations();
+                this.closeModal();
+                break;
+
+            case 'conversation_loaded':
+                this.currentConversation = data.conversation as ChatConversation;
+                this.messages = (data.messages as ChatMessage[]) || [];
+                this.showChatContainer();
+                this.updateChatHeader();
+                this.renderMessages();
+                break;
+
+            case 'stream_start':
+                this.isStreaming = true;
+                this.currentMode = data.mode as string || '';  // Store mode for later
+                this.appendStreamingMessage(data.mode as string || '');
+                this.setInputEnabled(false);
+                break;
+
+            case 'thinking_start':
+                this.showThinkingIndicator();
+                break;
+
+            case 'thinking_chunk':
+                this.appendThinkingChunk(data.content as string);
+                break;
+
+            case 'thinking_end':
+                this.finalizeThinking(data.full_thinking as string);
+                break;
+
+            case 'chunk':
+                this.appendChunk(data.content as string);
+                break;
+
+            case 'stream_end':
+                this.isStreaming = false;
+                this.finalizeStreamingMessage(data.full_response as string);
+                this.setInputEnabled(true);
+                break;
+
+            case 'title_updated':
+                {
+                    const updatedConv = this.conversations.find(c => c.id === data.conversation_id);
+                    if (updatedConv) updatedConv.title = data.title as string;
+                    if (this.currentConversation && this.currentConversation.id === data.conversation_id) {
+                        this.currentConversation.title = data.title as string;
+                        this.updateChatHeader();
+                    }
+                    this.renderConversationList();
+                }
+                break;
+
+            case 'conversation_deleted':
+                this.conversations = this.conversations.filter(c => c.id !== data.id);
+                this.renderConversationList();
+                if (this.currentConversation?.id === data.id) {
+                    this.currentConversation = null;
+                    this.hideChatContainer();
+                }
+                showToast('Conversation deleted', { type: 'success' });
+                break;
+
+            case 'conversation_starred':
+                console.log('Received conversation_starred:', data);
+                const conv = this.conversations.find(c => c.id === data.id);
+                console.log('Found conversation:', conv);
+                if (conv) conv.is_starred = data.starred as boolean;
+                // Also update currentConversation if it's the same one
+                if (this.currentConversation && this.currentConversation.id === data.id) {
+                    this.currentConversation.is_starred = data.starred as boolean;
+                }
+                this.renderConversationList();
+                this.updateStarButton();
+                break;
+
+            case 'conversation_exported':
+                this.downloadExport(data as { id: string; format: string; data: string });
+                break;
+
+            case 'conversation_renamed':
+                {
+                    const renamedConv = this.conversations.find(c => c.id === data.id);
+                    if (renamedConv) renamedConv.title = data.title as string;
+                    if (this.currentConversation && this.currentConversation.id === data.id) {
+                        this.currentConversation.title = data.title as string;
+                        this.updateChatHeader();
+                    }
+                    this.renderConversationList();
+                    showToast('Conversation renamed', { type: 'success' });
+                }
+                break;
+
+            case 'error':
+                console.error('Server error:', data.message);
+                errorLogger.log('AI_SERVER_ERROR', data.message as string, JSON.stringify(data));
+                showToast(data.message as string, { type: 'error' });
+                this.isStreaming = false;
+                this.setInputEnabled(true);
+                break;
+
+            case 'pong':
+                break;
+                
+            // Memory handlers
+            case 'memories':
+                memoryManager.renderMemories(data.memories as Memory[]);
+                break;
+                
+            case 'memory_saved':
+                showToast('Memory saved!', { type: 'success' });
+                memoryManager.loadMemories();
+                memoryManager.closeModal();
+                break;
+                
+            case 'memory_deleted':
+                showToast('Memory deleted', { type: 'success' });
+                memoryManager.loadMemories();
+                break;
+                
+            case 'profile':
+                // Profile loaded - populate settings form
+                {
+                    const profile = data.profile as { display_name?: string; bio?: string; preferences?: string; is_creator?: boolean } || {};
+                    const nameInput = document.getElementById('user-name-input') as HTMLInputElement;
+                    const bioInput = document.getElementById('user-bio-input') as HTMLTextAreaElement;
+                    const prefsInput = document.getElementById('user-preferences-input') as HTMLTextAreaElement;
+                    const creatorToggle = document.getElementById('creator-toggle') as HTMLInputElement;
+                    
+                    if (nameInput && profile.display_name) nameInput.value = profile.display_name;
+                    if (bioInput && profile.bio) bioInput.value = profile.bio;
+                    if (prefsInput && profile.preferences) prefsInput.value = profile.preferences;
+                    if (creatorToggle) {
+                        creatorToggle.checked = profile.is_creator || false;
+                        settings.isCreator = profile.is_creator || false;
+                        saveSettings();
+                    }
+                }
+                break;
+                
+            case 'profile_saved':
+                showToast('Profile saved! AI will remember you.', { type: 'success' });
+                break;
+        }
+    }
+
+    updateConnectionStatus(connected: boolean): void {
+        const statusEl = document.getElementById('chat-connection-status');
+        if (statusEl) {
+            statusEl.className = connected ? 'connected' : 'disconnected';
+            statusEl.textContent = connected ? '🟢 Connected' : '🔴 Connecting...';
+        }
+        // Note: Overlay is now controlled by bot status in updateStatusBadge()
+    }
+
+    listConversations(): void {
+        this.send({ type: 'list_conversations' });
+    }
+
+    createConversation(): void {
+        this.send({
+            type: 'new_conversation',
+            role_preset: this.selectedRole,
+            thinking_enabled: this.thinkingEnabled
+        });
+    }
+
+    loadConversation(id: string): void {
+        this.send({ type: 'load_conversation', id });
+    }
+
+    deleteConversation(id: string): void {
+        // Prevent double-click issues
+        if (this.isStreaming) return;
+        
+        // Show custom delete confirmation modal
+        this.pendingDeleteId = id;
+        const modal = document.getElementById('delete-confirm-modal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+    }
+
+    confirmDelete(): void {
+        if (this.pendingDeleteId) {
+            this.send({ type: 'delete_conversation', id: this.pendingDeleteId });
+            this.pendingDeleteId = null;
+        }
+        this.closeDeleteModal();
+    }
+
+    closeDeleteModal(): void {
+        const modal = document.getElementById('delete-confirm-modal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        this.pendingDeleteId = null;
+    }
+
+    renameConversation(id: string): void {
+        if (this.isStreaming) return;
+        
+        const conv = this.conversations.find(c => c.id === id);
+        this.pendingRenameId = id;
+        
+        const modal = document.getElementById('rename-modal');
+        const input = document.getElementById('rename-input') as HTMLInputElement;
+        if (modal && input) {
+            input.value = conv?.title || '';
+            modal.classList.add('active');
+            input.focus();
+            input.select();
+        }
+    }
+
+    confirmRename(): void {
+        const input = document.getElementById('rename-input') as HTMLInputElement;
+        const newTitle = input?.value?.trim();
+        
+        if (this.pendingRenameId && newTitle) {
+            this.send({ type: 'rename_conversation', id: this.pendingRenameId, title: newTitle });
+            this.pendingRenameId = null;
+        }
+        this.closeRenameModal();
+    }
+
+    closeRenameModal(): void {
+        const modal = document.getElementById('rename-modal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        this.pendingRenameId = null;
+    }
+
+    starConversation(id: string, starred: boolean): void {
+        console.log('Sending star request:', { type: 'star_conversation', id, starred });
+        this.send({ type: 'star_conversation', id, starred });
+    }
+
+    exportConversation(id: string, format: string = 'json'): void {
+        this.send({ type: 'export_conversation', id, format });
+    }
+
+    sendMessage(): void {
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        const content = input?.value?.trim();
+
+        if (!content || this.isStreaming) return;
+        if (!this.currentConversation) {
+            showToast('Please start a conversation first', { type: 'warning' });
+            return;
+        }
+
+        // Get history BEFORE adding new message (backend will add it)
+        const historyToSend = this.messages.slice(-20);
+
+        // Add to local messages for display (include images)
+        this.messages.push({ 
+            role: 'user', 
+            content, 
+            created_at: new Date().toISOString(),
+            images: this.attachedImages.length > 0 ? [...this.attachedImages] : undefined
+        });
+        this.renderMessages();
+
+        if (input) {
+            input.value = '';
+            this.autoResizeInput();
+            input.focus();  // Keep cursor in input
+        }
+
+        const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
+        const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
+        const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
+        const userName = settings.userName || 'User';
+        
+        this.send({
+            type: 'message',
+            conversation_id: this.currentConversation.id,
+            content,
+            role_preset: this.currentConversation.role_preset,
+            thinking_enabled: thinkingToggle?.checked || false,
+            history: historyToSend,
+            // New features
+            use_search: searchToggle?.checked ?? true,
+            unrestricted_mode: unrestrictedToggle?.checked || false,
+            images: this.attachedImages,
+            user_name: userName
+        });
+        
+        // Clear attached images after sending
+        this.attachedImages = [];
+        this.renderAttachedImages();
+    }
+
+    appendStreamingMessage(mode: string = ''): void {
+        const container = document.getElementById('chat-messages');
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-message assistant streaming';
+        msgDiv.id = 'streaming-message';
+
+        const aiName = this.currentConversation?.role_name || 'AI';
+        const timeStr = this.formatTime(new Date().toISOString());
+        const modeHtml = mode ? `<span class="message-mode">${escapeHtml(mode)}</span>` : '';
+        const avatarHtml = settings.aiAvatar 
+            ? `<img src="${settings.aiAvatar}" alt="ai" class="user-avatar-img">`
+            : (this.currentConversation?.role_emoji || '🤖');
+        
+        msgDiv.innerHTML = `
+            <div class="message-avatar">${avatarHtml}</div>
+            <div class="message-wrapper">
+                <div class="message-header">
+                    <span class="message-name">${escapeHtml(aiName)}</span>
+                    <span class="message-time">${timeStr}</span>
+                    ${modeHtml}
+                </div>
+                <div class="thinking-container" style="display: none;">
+                    <div class="thinking-header">💭 Thinking...</div>
+                    <div class="thinking-content"></div>
+                </div>
+                <div class="message-content">
+                    <span class="streaming-text"></span>
+                    <span class="typing-cursor">▋</span>
+                </div>
+            </div>
+        `;
+
+        container?.appendChild(msgDiv);
+        this.scrollToBottom();
+    }
+
+    showThinkingIndicator(): void {
+        const thinkingContainer = document.querySelector('#streaming-message .thinking-container') as HTMLElement;
+        if (thinkingContainer) {
+            thinkingContainer.style.display = 'block';
+        }
+    }
+
+    appendThinkingChunk(text: string): void {
+        const thinkingContent = document.querySelector('#streaming-message .thinking-content');
+        if (thinkingContent) {
+            thinkingContent.textContent += text;
+            this.scrollToBottom();
+        }
+    }
+
+    currentThinking: string = '';  // Store current thinking for the streaming message
+
+    finalizeThinking(fullThinking: string): void {
+        // Store for later use in finalizeStreamingMessage
+        this.currentThinking = fullThinking;
+        
+        const thinkingContainer = document.querySelector('#streaming-message .thinking-container') as HTMLElement;
+        const thinkingHeader = document.querySelector('#streaming-message .thinking-header') as HTMLElement;
+        const thinkingContent = document.querySelector('#streaming-message .thinking-content') as HTMLElement;
+        
+        if (thinkingHeader) {
+            thinkingHeader.textContent = '💭 Thought Process';
+            thinkingHeader.classList.add('collapsible', 'collapsed');  // Start collapsed
+            thinkingHeader.onclick = () => {
+                thinkingContent?.classList.toggle('collapsed');
+                thinkingHeader.classList.toggle('collapsed');
+            };
+        }
+        if (thinkingContent) {
+            // Render Markdown formatting (bold, italic, code, etc.)
+            thinkingContent.innerHTML = this.formatMessage(fullThinking);
+            thinkingContent.classList.add('collapsed');  // Start collapsed
+        }
+    }
+
+    appendChunk(text: string): void {
+        const streamingText = document.querySelector('#streaming-message .streaming-text');
+        if (streamingText) {
+            streamingText.textContent += text;
+            this.scrollToBottom();
+        }
+    }
+
+    finalizeStreamingMessage(fullResponse: string): void {
+        const streamingMsg = document.getElementById('streaming-message');
+        if (streamingMsg) {
+            streamingMsg.classList.remove('streaming');
+            streamingMsg.removeAttribute('id');
+
+            const content = streamingMsg.querySelector('.message-content');
+            if (content) {
+                content.innerHTML = this.formatMessage(fullResponse);
+            }
+
+            // Add copy button at the bottom
+            const wrapper = streamingMsg.querySelector('.message-wrapper');
+            if (wrapper && !wrapper.querySelector('.message-actions')) {
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'message-actions';
+                actionsDiv.innerHTML = `<button class="copy-message-btn" data-content="${escapeHtml(fullResponse).replace(/"/g, '&quot;')}" title="Copy message">📋 Copy</button>`;
+                wrapper.appendChild(actionsDiv);
+                
+                // Add click event
+                actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
+                    const btn = e.target as HTMLElement;
+                    const contentAttr = btn.getAttribute('data-content') || '';
+                    const textarea = document.createElement('textarea');
+                    textarea.innerHTML = contentAttr;
+                    const decodedContent = textarea.value;
+                    
+                    try {
+                        await navigator.clipboard.writeText(decodedContent);
+                        btn.textContent = '✅ Copied';
+                        setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500);
+                    } catch (err) {
+                        console.error('Failed to copy:', err);
+                    }
+                });
+            }
+        }
+
+        // Store message with thinking and mode if available
+        const newMessage: ChatMessage = {
+            role: 'assistant',
+            content: fullResponse,
+            created_at: new Date().toISOString()
+        };
+        if (this.currentThinking) {
+            newMessage.thinking = this.currentThinking;
+            this.currentThinking = '';  // Reset for next message
+        }
+        if (this.currentMode) {
+            newMessage.mode = this.currentMode;
+            this.currentMode = '';  // Reset for next message
+        }
+        this.messages.push(newMessage);
+
+        this.scrollToBottom();
+    }
+
+    renderConversationList(): void {
+        const container = document.getElementById('conversation-list');
+        if (!container) return;
+
+        if (this.conversations.length === 0) {
+            container.innerHTML = `
+                <div class="no-conversations">
+                    <p>No conversations yet</p>
+                    <p>Start a new chat!</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = this.conversations.map(conv => {
+            const preset = this.presets[conv.role_preset] || {};
+            const isActive = this.currentConversation?.id === conv.id;
+            const starClass = conv.is_starred ? 'starred' : '';
+            const avatarHtml = settings.aiAvatar 
+                ? `<img class="conv-avatar" src="${settings.aiAvatar}" alt="AI">`
+                : `<span class="conv-emoji">${preset.emoji || '💬'}</span>`;
+
+            return `
+                <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}" 
+                     data-id="${escapeHtml(conv.id)}">
+                    ${avatarHtml}
+                    <div class="conv-info">
+                        <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
+                        <span class="conv-meta">${conv.message_count || 0} messages</span>
+                    </div>
+                    ${conv.is_starred ? '<span class="conv-star">⭐</span>' : ''}
+                </div>
+            `;
+        }).join('');
+        
+        // Use event delegation instead of inline onclick (fixes XSS risk)
+        container.querySelectorAll('.conversation-item[data-id]').forEach(item => {
+            item.addEventListener('click', () => {
+                const id = (item as HTMLElement).dataset.id;
+                if (id) this.loadConversation(id);
+            });
+        });
+    }
+
+    renderMessages(): void {
+        const container = document.getElementById('chat-messages');
+        if (!container) return;
+
+        if (this.messages.length === 0) {
+            const emoji = this.currentConversation?.role_emoji || '🤖';
+            const name = this.currentConversation?.role_name || 'AI';
+            const welcomeAvatarHtml = settings.aiAvatar 
+                ? `<img src="${settings.aiAvatar}" alt="AI" class="welcome-avatar">`
+                : `<div class="welcome-emoji">${emoji}</div>`;
+            container.innerHTML = `
+                <div class="chat-welcome">
+                    ${welcomeAvatarHtml}
+                    <h3>Chat with ${name}</h3>
+                    <p>Type a message to start the conversation</p>
+                </div>
+            `;
+            return;
+        }
+
+        const aiEmoji = this.currentConversation?.role_emoji || '🤖';
+        const aiName = this.currentConversation?.role_name || 'AI';
+        const userName = settings.userName || 'You';
+        const userAvatar = settings.userAvatar;
+        const aiAvatar = settings.aiAvatar;
+        
+        container.innerHTML = this.messages.map(msg => {
+            const isUser = msg.role === 'user';
+            const displayName = isUser ? userName : aiName;
+            const timeStr = this.formatTime(msg.created_at);
+            
+            // Both user and AI can have custom avatar images
+            let avatarHtml: string;
+            if (isUser) {
+                avatarHtml = userAvatar 
+                    ? `<img src="${userAvatar}" alt="avatar" class="user-avatar-img">`
+                    : '👤';
+            } else {
+                avatarHtml = aiAvatar
+                    ? `<img src="${aiAvatar}" alt="ai" class="user-avatar-img">`
+                    : aiEmoji;
+            }
+
+            // Render attached images for user messages (use data attribute to avoid XSS)
+            let imagesHtml = '';
+            if (msg.images && msg.images.length > 0) {
+                imagesHtml = `<div class="message-images">${msg.images.map((img, idx) => 
+                    `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`
+                ).join('')}</div>`;
+            }
+
+            // Render thinking container for AI messages (collapsed by default)
+            let thinkingHtml = '';
+            if (!isUser && msg.thinking) {
+                thinkingHtml = `
+                    <div class="thinking-container">
+                        <div class="thinking-header collapsible collapsed" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
+                            💭 Thought Process
+                        </div>
+                        <div class="thinking-content collapsed">${this.formatMessage(msg.thinking)}</div>
+                    </div>
+                `;
+            }
+
+            // Mode badge for AI messages
+            const modeHtml = (!isUser && msg.mode) 
+                ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>` 
+                : '';
+
+            // Copy button for AI messages (at bottom)
+            const copyBtnHtml = !isUser 
+                ? `<div class="message-actions"><button class="copy-message-btn" data-content="${escapeHtml(msg.content).replace(/"/g, '&quot;')}" title="Copy message">📋 Copy</button></div>`
+                : '';
+
+            return `
+                <div class="chat-message ${msg.role}">
+                    <div class="message-avatar">${avatarHtml}</div>
+                    <div class="message-wrapper">
+                        <div class="message-header">
+                            <span class="message-name">${escapeHtml(displayName)}</span>
+                            <span class="message-time">${timeStr}</span>
+                            ${modeHtml}
+                        </div>
+                        ${thinkingHtml}
+                        ${imagesHtml}
+                        <div class="message-content">${this.formatMessage(msg.content)}</div>
+                        ${copyBtnHtml}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        this.scrollToBottom();
+        
+        // Setup event delegation for image clicks (avoid inline onclick XSS risk)
+        container.querySelectorAll('.message-image[data-img-idx]').forEach(img => {
+            img.addEventListener('click', () => {
+                const src = (img as HTMLImageElement).src;
+                if (src) {
+                    // Open image in new window for full view
+                    const newWindow = window.open('', '_blank');
+                    if (newWindow) {
+                        newWindow.document.write(`<html><head><title>Image Preview</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}img{max-width:100%;max-height:100vh;object-fit:contain;}</style></head><body><img src="${src}" alt="preview"></body></html>`);
+                    }
+                }
+            });
+        });
+
+        // Setup copy button clicks
+        container.querySelectorAll('.copy-message-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const content = (btn as HTMLElement).getAttribute('data-content') || '';
+                // Decode HTML entities back to original text
+                const textarea = document.createElement('textarea');
+                textarea.innerHTML = content;
+                const decodedContent = textarea.value;
+                
+                try {
+                    await navigator.clipboard.writeText(decodedContent);
+                    const originalText = btn.textContent;
+                    btn.textContent = '✅';
+                    setTimeout(() => { btn.textContent = originalText; }, 1500);
+                } catch (err) {
+                    console.error('Failed to copy:', err);
+                    showToast('Failed to copy message', { type: 'error' });
+                }
+            });
+        });
+    }
+
+    formatMessage(content: string): string {
+        let html = escapeHtml(content);
+        
+        // Render block LaTeX equations ($$...$$)
+        html = html.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
+            try {
+                if (typeof window !== 'undefined' && (window as unknown as { katex?: { renderToString: (tex: string, options: object) => string } }).katex) {
+                    return `<div class="math-block">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })}</div>`;
+                }
+                return `<div class="math-block">$$${tex}$$</div>`;
+            } catch {
+                return `<div class="math-block">$$${tex}$$</div>`;
+            }
+        });
+        
+        // Render inline LaTeX equations ($...$) - but not $$
+        html = html.replace(/(?<!\$)\$(?!\$)([^$]+)\$(?!\$)/g, (_match, tex) => {
+            try {
+                if (typeof window !== 'undefined' && (window as unknown as { katex?: { renderToString: (tex: string, options: object) => string } }).katex) {
+                    return `<span class="math-inline">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })}</span>`;
+                }
+                return `<span class="math-inline">$${tex}$</span>`;
+            } catch {
+                return `<span class="math-inline">$${tex}$</span>`;
+            }
+        });
+        
+        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        // Blockquotes (> at start of line)
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+        // Merge consecutive blockquotes
+        html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
+        html = html.replace(/\n/g, '<br>');
+        return html;
+    }
+
+    updateChatHeader(): void {
+        if (!this.currentConversation) return;
+
+        const titleEl = document.getElementById('chat-title');
+        const avatarEl = document.getElementById('chat-role-avatar') as HTMLImageElement | null;
+        const nameEl = document.getElementById('chat-role-name');
+        const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
+
+        if (titleEl) titleEl.textContent = this.currentConversation.title || 'New Conversation';
+        if (avatarEl) avatarEl.src = settings.aiAvatar || '';
+        if (nameEl) nameEl.textContent = this.currentConversation.role_name || 'AI';
+        if (thinkingToggle) thinkingToggle.checked = this.currentConversation.thinking_enabled || false;
+
+        this.updateStarButton();
+    }
+
+    updateStarButton(): void {
+        const btn = document.getElementById('btn-star-chat');
+        if (btn && this.currentConversation) {
+            btn.textContent = this.currentConversation.is_starred ? '⭐' : '☆';
+        }
+    }
+
+    showChatContainer(): void {
+        document.getElementById('chat-empty')?.style.setProperty('display', 'none');
+        document.getElementById('chat-container')?.style.setProperty('display', 'flex');
+    }
+
+    hideChatContainer(): void {
+        document.getElementById('chat-empty')?.style.setProperty('display', 'flex');
+        document.getElementById('chat-container')?.style.setProperty('display', 'none');
+    }
+
+    setInputEnabled(enabled: boolean): void {
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        const btn = document.getElementById('btn-send') as HTMLButtonElement | null;
+
+        if (input) input.disabled = !enabled;
+        if (btn) btn.disabled = !enabled;
+    }
+
+    scrollToBottom(): void {
+        const container = document.getElementById('chat-messages');
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
+    formatTime(dateStr: string): string {
+        try {
+            // If no timezone info, treat as local time (not UTC)
+            let date: Date;
+            if (dateStr.endsWith('Z') || dateStr.includes('+') || dateStr.includes('-', 10)) {
+                // Has timezone info, parse normally
+                date = new Date(dateStr);
+            } else {
+                // No timezone, treat as local time by appending local offset
+                // Parse as local by not having Z suffix
+                date = new Date(dateStr);
+                // JavaScript treats strings without Z as local, which is what we want
+            }
+            
+            const now = new Date();
+            const isToday = date.toDateString() === now.toDateString();
+            
+            const timeStr = date.toLocaleTimeString('th-TH', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                hour12: false
+            });
+            
+            if (isToday) {
+                return timeStr;
+            } else {
+                const dateFormatted = date.toLocaleDateString('th-TH', { 
+                    day: 'numeric', 
+                    month: 'short' 
+                });
+                return `${dateFormatted} ${timeStr}`;
+            }
+        } catch {
+            return '';
+        }
+    }
+
+    autoResizeInput(): void {
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        if (input) {
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+        }
+    }
+
+    // Image attachment methods
+    attachImage(file: File): void {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const base64 = e.target?.result as string;
+            if (base64) {
+                // Store full base64 data URL
+                this.attachedImages.push(base64);
+                this.renderAttachedImages();
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+
+    removeImage(index: number): void {
+        this.attachedImages.splice(index, 1);
+        this.renderAttachedImages();
+    }
+
+    renderAttachedImages(): void {
+        const container = document.getElementById('attached-images');
+        if (!container) return;
+
+        if (this.attachedImages.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        container.innerHTML = this.attachedImages.map((img, idx) => `
+            <div class="attached-image-preview">
+                <img src="${escapeHtml(img)}" alt="Attached ${idx + 1}">
+                <button class="remove-image" data-idx="${idx}">&times;</button>
+            </div>
+        `).join('');
+
+        // Add click handlers for remove buttons
+        container.querySelectorAll('.remove-image').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt((e.target as HTMLElement).dataset.idx || '0');
+                this.removeImage(idx);
+            });
+        });
+    }
+
+    setupImageUpload(): void {
+        const attachBtn = document.getElementById('btn-attach');
+        const fileInput = document.getElementById('image-input') as HTMLInputElement | null;
+
+        attachBtn?.addEventListener('click', () => {
+            fileInput?.click();
+        });
+
+        fileInput?.addEventListener('change', () => {
+            const files = fileInput.files;
+            if (files) {
+                Array.from(files).forEach(file => {
+                    if (file.type.startsWith('image/')) {
+                        this.attachImage(file);
+                    }
+                });
+            }
+            // Reset input so same file can be selected again
+            fileInput.value = '';
+        });
+    }
+
+    showNewChatModal(): void {
+        const modal = document.getElementById('new-chat-modal');
+        if (modal) {
+            modal.classList.add('active');
+            this.selectedRole = 'general';
+            this.thinkingEnabled = false;
+            this.updateRoleSelection();
+        }
+    }
+
+    closeModal(): void {
+        const modal = document.getElementById('new-chat-modal');
+        if (modal) modal.classList.remove('active');
+    }
+
+    selectRole(role: string): void {
+        this.selectedRole = role;
+        this.updateRoleSelection();
+    }
+
+    updateRoleSelection(): void {
+        document.querySelectorAll('.role-card').forEach(card => {
+            card.classList.toggle('selected', (card as HTMLElement).dataset.role === this.selectedRole);
+        });
+    }
+
+    downloadExport(data: { id: string; format: string; data: string }): void {
+        const filename = `chat_${data.id.slice(0, 8)}_${Date.now()}.${data.format}`;
+        const content = data.data;
+        const blob = new Blob([content], { type: data.format === 'json' ? 'application/json' : 'text/markdown' });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        showToast('Conversation exported!', { type: 'success' });
+    }
+
+    init(): void {
+        this.connect();
+
+        document.getElementById('btn-new-chat')?.addEventListener('click', () => this.showNewChatModal());
+        document.getElementById('btn-new-chat-main')?.addEventListener('click', () => this.showNewChatModal());
+        document.getElementById('modal-close')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('modal-cancel')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('modal-create')?.addEventListener('click', () => this.createConversation());
+
+        document.getElementById('new-chat-modal')?.querySelector('.modal-overlay')
+            ?.addEventListener('click', () => this.closeModal());
+
+        document.querySelectorAll('.role-card').forEach(card => {
+            card.addEventListener('click', () => this.selectRole((card as HTMLElement).dataset.role || 'general'));
+        });
+
+        document.getElementById('modal-thinking')?.addEventListener('change', (e) => {
+            this.thinkingEnabled = (e.target as HTMLInputElement).checked;
+        });
+
+        document.getElementById('btn-send')?.addEventListener('click', () => this.sendMessage());
+        
+        // Setup image upload
+        this.setupImageUpload();
+        
+        document.getElementById('btn-star-chat')?.addEventListener('click', () => {
+            if (this.currentConversation) {
+                this.starConversation(this.currentConversation.id, !this.currentConversation.is_starred);
+            }
+        });
+        document.getElementById('btn-export-chat')?.addEventListener('click', () => {
+            if (this.currentConversation) {
+                this.exportConversation(this.currentConversation.id, 'json');
+            }
+        });
+        document.getElementById('btn-delete-chat')?.addEventListener('click', () => {
+            if (this.currentConversation) {
+                this.deleteConversation(this.currentConversation.id);
+            }
+        });
+
+        // Delete confirmation modal handlers
+        document.getElementById('delete-confirm')?.addEventListener('click', () => this.confirmDelete());
+        document.getElementById('delete-cancel')?.addEventListener('click', () => this.closeDeleteModal());
+        document.getElementById('delete-confirm-modal')?.querySelector('.modal-overlay')
+            ?.addEventListener('click', () => this.closeDeleteModal());
+
+        // Rename modal handlers
+        document.getElementById('btn-rename-chat')?.addEventListener('click', () => {
+            if (this.currentConversation) {
+                this.renameConversation(this.currentConversation.id);
+            }
+        });
+        document.getElementById('rename-confirm')?.addEventListener('click', () => this.confirmRename());
+        document.getElementById('rename-cancel')?.addEventListener('click', () => this.closeRenameModal());
+        document.getElementById('rename-modal')?.querySelector('.modal-overlay')
+            ?.addEventListener('click', () => this.closeRenameModal());
+        document.getElementById('rename-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.confirmRename();
+            } else if (e.key === 'Escape') {
+                this.closeRenameModal();
+            }
+        });
+
+        const input = document.getElementById('chat-input');
+        input?.addEventListener('input', () => this.autoResizeInput());
+        input?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                // Enter = send, Shift+Enter = new line
+                e.preventDefault();
+                this.sendMessage();
+            }
+        });
+
+        // Store ping interval for cleanup
+        this.pingInterval = window.setInterval(() => {
+            if (this.connected) {
+                this.send({ type: 'ping' });
+            }
+        }, 30000);
+    }
+}
+
+let chatManager: ChatManager | null = null;
+
+// ============================================================================
 // State Management
 // ============================================================================
 
@@ -149,7 +1499,11 @@ let settings: Settings = {
     refreshInterval: 2000,
     autoScroll: true,
     notifications: true,
-    chartHistory: 60
+    chartHistory: 60,
+    userName: 'You',
+    userAvatar: '',
+    aiAvatar: 'data:image/jpeg;base64,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',
+    isCreator: false
 };
 
 // Debounce timers
@@ -169,7 +1523,20 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAllData();
     initSakuraAnimation();
     initKeyboardShortcuts();
+    initChatManager();
+    initMemoryManager();
+    // Update AI avatars after all init
+    updateAiAvatars();
 });
+
+function initChatManager(): void {
+    chatManager = new ChatManager();
+    chatManager.init();
+}
+
+function initMemoryManager(): void {
+    memoryManager.setupEventListeners();
+}
 
 // ============================================================================
 // Keyboard Shortcuts
@@ -177,9 +1544,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-        // Ctrl+1-4 for page navigation
-        if (e.ctrlKey && e.key >= '1' && e.key <= '4') {
-            const pages = ['status', 'logs', 'database', 'settings'];
+        // Ctrl+1-6 for page navigation
+        if (e.ctrlKey && e.key >= '1' && e.key <= '6') {
+            const pages = ['status', 'chat', 'memories', 'logs', 'database', 'settings'];
             const index = parseInt(e.key) - 1;
             if (pages[index]) {
                 e.preventDefault();
@@ -198,6 +1565,12 @@ function initKeyboardShortcuts(): void {
         if (e.ctrlKey && e.key === 't') {
             e.preventDefault();
             toggleTheme();
+        }
+        
+        // Ctrl+Enter to send message (in chat)
+        if (e.ctrlKey && e.key === 'Enter' && currentPage === 'chat') {
+            e.preventDefault();
+            chatManager?.sendMessage();
         }
     });
 }
@@ -288,10 +1661,35 @@ function loadSettings(): void {
     try {
         const saved = localStorage.getItem('dashboard-settings');
         if (saved) {
+            const defaultAiAvatar = settings.aiAvatar; // Keep default Faust avatar
             settings = { ...settings, ...JSON.parse(saved) };
+            // Migration: Only set default Faust avatar if saved aiAvatar is empty/undefined
+            // Don't override custom avatars that users have set
+            if (!settings.aiAvatar) {
+                settings.aiAvatar = defaultAiAvatar;
+                saveSettings(); // Save the migration
+            }
         }
     } catch (e) {
         console.warn('Failed to load settings:', e);
+    }
+    // Update AI avatars in UI
+    updateAiAvatars();
+}
+
+function updateAiAvatars(): void {
+    console.log('updateAiAvatars called, aiAvatar length:', settings.aiAvatar?.length);
+    // Update empty state avatar
+    const emptyAvatar = document.getElementById('chat-empty-avatar') as HTMLImageElement | null;
+    console.log('emptyAvatar element:', emptyAvatar);
+    if (emptyAvatar && settings.aiAvatar) {
+        emptyAvatar.src = settings.aiAvatar;
+        console.log('Set emptyAvatar.src');
+    }
+    // Update chat header avatar
+    const headerAvatar = document.getElementById('chat-role-avatar') as HTMLImageElement | null;
+    if (headerAvatar && settings.aiAvatar) {
+        headerAvatar.src = settings.aiAvatar;
     }
 }
 
@@ -552,6 +1950,51 @@ function initNavigation(): void {
     document.getElementById('notifications-toggle')?.addEventListener('change', (e) => {
         updateSetting('notifications', (e.target as HTMLInputElement).checked);
     });
+
+    // User name input handler
+    document.getElementById('user-name-input')?.addEventListener('input', (e) => {
+        const value = (e.target as HTMLInputElement).value.trim();
+        updateSetting('userName', value || 'You');
+    });
+    
+    // Save profile to AI button
+    document.getElementById('btn-save-profile')?.addEventListener('click', () => {
+        saveProfileToAI();
+    });
+    
+    // Avatar upload handlers
+    document.getElementById('btn-change-avatar')?.addEventListener('click', () => {
+        document.getElementById('avatar-input')?.click();
+    });
+    
+    document.getElementById('avatar-input')?.addEventListener('change', (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (file) handleAvatarUpload(file, 'user');
+    });
+    
+    document.getElementById('btn-remove-avatar')?.addEventListener('click', () => {
+        removeAvatar('user');
+    });
+    
+    // AI Avatar upload handlers
+    document.getElementById('btn-change-ai-avatar')?.addEventListener('click', () => {
+        document.getElementById('ai-avatar-input')?.click();
+    });
+    
+    document.getElementById('ai-avatar-input')?.addEventListener('change', (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (file) handleAvatarUpload(file, 'ai');
+    });
+    
+    document.getElementById('btn-remove-ai-avatar')?.addEventListener('click', () => {
+        removeAvatar('ai');
+    });
+    
+    // Creator toggle handler
+    document.getElementById('creator-toggle')?.addEventListener('change', (e) => {
+        settings.isCreator = (e.target as HTMLInputElement).checked;
+        saveSettings();
+    });
 }
 
 function switchPage(page: string): void {
@@ -575,6 +2018,15 @@ function switchPage(page: string): void {
 
     if (page === 'database') loadDbStats();
     if (page === 'settings') loadSettingsUI();
+    if (page === 'memories' && chatManager && chatManager.connected) {
+        memoryManager.loadMemories();
+    }
+    if (page === 'chat' && chatManager) {
+        // Reconnect if disconnected
+        if (!chatManager.connected) {
+            chatManager.connect();
+        }
+    }
 }
 
 // ============================================================================
@@ -655,6 +2107,12 @@ function updateStatusBadge(status: BotStatus): void {
     if (badge && statusText) {
         badge.classList.toggle('online', status.is_running);
         statusText.textContent = status.is_running ? 'Online' : 'Offline';
+    }
+    
+    // Update AI Chat overlay based on bot running status
+    const chatOverlay = document.getElementById('chat-not-running-overlay');
+    if (chatOverlay) {
+        chatOverlay.classList.toggle('visible', !status.is_running);
     }
 }
 
@@ -823,7 +2281,13 @@ function clearLogs(): void {
     const container = document.getElementById('log-content');
     if (container) container.innerHTML = '';
     lastLogCount = 0;
-    showToast('Logs cleared', { type: 'info', duration: 1500 });
+    
+    // Also clear the actual log file
+    invoke('clear_logs').then(result => {
+        showToast(String(result), { type: 'success', duration: 1500 });
+    }).catch(err => {
+        showToast('Failed to clear logs: ' + err, { type: 'error' });
+    });
 }
 
 // ============================================================================
@@ -909,6 +2373,407 @@ function loadSettingsUI(): void {
     if (notificationsToggle) {
         notificationsToggle.checked = settings.notifications;
     }
+
+    const userNameInput = document.getElementById('user-name-input') as HTMLInputElement | null;
+    if (userNameInput) {
+        userNameInput.value = settings.userName === 'You' ? '' : settings.userName;
+    }
+    
+    // Load AI avatar preview
+    const aiAvatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement | null;
+    const aiAvatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement | null;
+    const aiRemoveBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement | null;
+    
+    if (settings.aiAvatar) {
+        if (aiAvatarImage) {
+            aiAvatarImage.src = settings.aiAvatar;
+            aiAvatarImage.classList.add('visible');
+        }
+        if (aiAvatarPlaceholder) aiAvatarPlaceholder.style.display = 'none';
+        if (aiRemoveBtn) aiRemoveBtn.style.display = 'inline-block';
+    } else {
+        if (aiAvatarImage) {
+            aiAvatarImage.src = '';
+            aiAvatarImage.classList.remove('visible');
+        }
+        if (aiAvatarPlaceholder) aiAvatarPlaceholder.style.display = 'flex';
+        if (aiRemoveBtn) aiRemoveBtn.style.display = 'none';
+    }
+    
+    // Load user avatar preview
+    const avatarImage = document.getElementById('avatar-image') as HTMLImageElement | null;
+    const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement | null;
+    const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement | null;
+    
+    if (settings.userAvatar) {
+        if (avatarImage) {
+            avatarImage.src = settings.userAvatar;
+            avatarImage.classList.add('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'none';
+        if (removeBtn) removeBtn.style.display = 'inline-block';
+    } else {
+        if (avatarImage) {
+            avatarImage.src = '';
+            avatarImage.classList.remove('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
+        if (removeBtn) removeBtn.style.display = 'none';
+    }
+    
+    // Load creator checkbox
+    const creatorCheckbox = document.getElementById('creator-toggle') as HTMLInputElement | null;
+    if (creatorCheckbox) {
+        creatorCheckbox.checked = settings.isCreator;
+    }
+    
+    // Load profile from server
+    if (chatManager?.connected) {
+        chatManager.send({ type: 'get_profile' });
+    }
+}
+
+// Track which avatar we're editing
+let currentAvatarTarget: 'user' | 'ai' = 'user';
+
+function handleAvatarUpload(file: File, target: 'user' | 'ai' = 'user'): void {
+    if (!file.type.startsWith('image/')) {
+        showToast('Please select an image file', { type: 'error' });
+        return;
+    }
+    
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit for cropping
+        showToast('Image must be less than 5MB', { type: 'error' });
+        return;
+    }
+    
+    currentAvatarTarget = target;
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        openAvatarCropModal(dataUrl);
+    };
+    reader.readAsDataURL(file);
+}
+
+// Avatar Cropper State
+let cropState = {
+    imageUrl: '',
+    zoom: 100,
+    offsetX: 0,
+    offsetY: 0,
+    isDragging: false,
+    startX: 0,
+    startY: 0,
+    imgWidth: 0,
+    imgHeight: 0
+};
+
+// Store bound functions for proper cleanup
+let boundOnDrag: ((e: MouseEvent) => void) | null = null;
+let boundOnDragTouch: ((e: TouchEvent) => void) | null = null;
+let boundEndDrag: (() => void) | null = null;
+
+function openAvatarCropModal(imageUrl: string): void {
+    cropState = {
+        imageUrl,
+        zoom: 100,
+        offsetX: 0,
+        offsetY: 0,
+        isDragging: false,
+        startX: 0,
+        startY: 0,
+        imgWidth: 0,
+        imgHeight: 0
+    };
+    
+    const modal = document.getElementById('avatar-crop-modal');
+    const cropImage = document.getElementById('crop-image') as HTMLImageElement;
+    const zoomSlider = document.getElementById('crop-zoom') as HTMLInputElement;
+    
+    if (!modal || !cropImage || !zoomSlider) return;
+    
+    // Load image to get dimensions
+    cropImage.onload = () => {
+        const cropArea = document.getElementById('crop-area');
+        if (!cropArea) return;
+        
+        const areaSize = 280;
+        const scale = Math.max(areaSize / cropImage.naturalWidth, areaSize / cropImage.naturalHeight);
+        cropState.imgWidth = cropImage.naturalWidth * scale;
+        cropState.imgHeight = cropImage.naturalHeight * scale;
+        
+        // Center the image
+        cropState.offsetX = (areaSize - cropState.imgWidth) / 2;
+        cropState.offsetY = (areaSize - cropState.imgHeight) / 2;
+        
+        updateCropPreview();
+    };
+    
+    cropImage.src = imageUrl;
+    zoomSlider.value = '100';
+    modal.style.display = 'flex';
+    
+    // Setup event listeners
+    setupCropEventListeners();
+}
+
+function setupCropEventListeners(): void {
+    const cropArea = document.getElementById('crop-area');
+    const zoomSlider = document.getElementById('crop-zoom') as HTMLInputElement;
+    const saveBtn = document.getElementById('btn-crop-save');
+    const cancelBtn = document.getElementById('btn-crop-cancel');
+    const closeBtn = document.getElementById('avatar-crop-close');
+    const modal = document.getElementById('avatar-crop-modal');
+    
+    if (!cropArea || !zoomSlider || !saveBtn || !cancelBtn || !closeBtn || !modal) return;
+    
+    // Remove old listeners by cloning
+    const newCropArea = cropArea.cloneNode(true) as HTMLElement;
+    cropArea.parentNode?.replaceChild(newCropArea, cropArea);
+    
+    // Create bound functions for proper cleanup
+    boundOnDrag = onDrag;
+    boundOnDragTouch = onDragTouch;
+    boundEndDrag = endDrag;
+    
+    // Mouse/touch drag
+    newCropArea.addEventListener('mousedown', startDrag);
+    newCropArea.addEventListener('touchstart', startDragTouch, { passive: false });
+    document.addEventListener('mousemove', boundOnDrag);
+    document.addEventListener('touchmove', boundOnDragTouch, { passive: false });
+    document.addEventListener('mouseup', boundEndDrag);
+    document.addEventListener('touchend', boundEndDrag);
+    
+    // Zoom
+    zoomSlider.oninput = () => {
+        cropState.zoom = parseInt(zoomSlider.value);
+        updateCropPreview();
+    };
+    
+    // Save
+    saveBtn.onclick = () => {
+        saveCroppedAvatar();
+        closeCropModal();
+    };
+    
+    // Cancel/Close
+    cancelBtn.onclick = closeCropModal;
+    closeBtn.onclick = closeCropModal;
+    modal.onclick = (e) => {
+        if (e.target === modal) closeCropModal();
+    };
+}
+
+function startDrag(e: MouseEvent): void {
+    cropState.isDragging = true;
+    cropState.startX = e.clientX - cropState.offsetX;
+    cropState.startY = e.clientY - cropState.offsetY;
+}
+
+function startDragTouch(e: TouchEvent): void {
+    e.preventDefault();
+    cropState.isDragging = true;
+    const touch = e.touches[0];
+    cropState.startX = touch.clientX - cropState.offsetX;
+    cropState.startY = touch.clientY - cropState.offsetY;
+}
+
+function onDrag(e: MouseEvent): void {
+    if (!cropState.isDragging) return;
+    cropState.offsetX = e.clientX - cropState.startX;
+    cropState.offsetY = e.clientY - cropState.startY;
+    updateCropPreview();
+}
+
+function onDragTouch(e: TouchEvent): void {
+    if (!cropState.isDragging) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    cropState.offsetX = touch.clientX - cropState.startX;
+    cropState.offsetY = touch.clientY - cropState.startY;
+    updateCropPreview();
+}
+
+function endDrag(): void {
+    cropState.isDragging = false;
+}
+
+function updateCropPreview(): void {
+    const cropImage = document.getElementById('crop-image') as HTMLImageElement;
+    if (!cropImage) return;
+    
+    const scale = cropState.zoom / 100;
+    const width = cropState.imgWidth * scale;
+    const height = cropState.imgHeight * scale;
+    
+    cropImage.style.width = `${width}px`;
+    cropImage.style.height = `${height}px`;
+    cropImage.style.left = `${cropState.offsetX}px`;
+    cropImage.style.top = `${cropState.offsetY}px`;
+}
+
+function saveCroppedAvatar(): void {
+    const cropImage = document.getElementById('crop-image') as HTMLImageElement;
+    if (!cropImage) return;
+    
+    // Create canvas to crop the circular area
+    const canvas = document.createElement('canvas');
+    const size = 200; // Output size
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Calculate crop area (center of crop-area is 140,140 and circle is 200x200)
+    const areaCenter = 140;
+    const circleRadius = 100;
+    
+    const scale = cropState.zoom / 100;
+    const imgWidth = cropState.imgWidth * scale;
+    const imgHeight = cropState.imgHeight * scale;
+    
+    // Calculate source position relative to image
+    const srcX = (areaCenter - circleRadius - cropState.offsetX) / scale * (cropImage.naturalWidth / cropState.imgWidth);
+    const srcY = (areaCenter - circleRadius - cropState.offsetY) / scale * (cropImage.naturalHeight / cropState.imgHeight);
+    const srcSize = (circleRadius * 2) / scale * (cropImage.naturalWidth / cropState.imgWidth);
+    
+    // Draw circular clip
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    
+    // Draw image
+    ctx.drawImage(cropImage, srcX, srcY, srcSize, srcSize, 0, 0, size, size);
+    
+    // Get data URL
+    const croppedDataUrl = canvas.toDataURL('image/png');
+    
+    // Save to appropriate setting based on target
+    if (currentAvatarTarget === 'ai') {
+        settings.aiAvatar = croppedDataUrl;
+        saveSettings();
+        
+        // Update AI avatar preview
+        const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
+        const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
+        const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
+        
+        if (avatarImage) {
+            avatarImage.src = croppedDataUrl;
+            avatarImage.classList.add('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'none';
+        if (removeBtn) removeBtn.style.display = 'inline-block';
+        
+        showToast('AI Avatar updated! 🤖', { type: 'success' });
+    } else {
+        settings.userAvatar = croppedDataUrl;
+        saveSettings();
+        
+        // Update user avatar preview
+        const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
+        const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
+        const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
+        
+        if (avatarImage) {
+            avatarImage.src = croppedDataUrl;
+            avatarImage.classList.add('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'none';
+        if (removeBtn) removeBtn.style.display = 'inline-block';
+        
+        showToast('Avatar updated! 🎉', { type: 'success' });
+    }
+    
+    // Refresh chat to show new avatar
+    if (chatManager) {
+        chatManager.renderMessages();
+    }
+}
+
+function closeCropModal(): void {
+    const modal = document.getElementById('avatar-crop-modal');
+    if (modal) modal.style.display = 'none';
+    
+    // Clean up listeners using stored bound functions
+    if (boundOnDrag) {
+        document.removeEventListener('mousemove', boundOnDrag);
+        boundOnDrag = null;
+    }
+    if (boundEndDrag) {
+        document.removeEventListener('mouseup', boundEndDrag);
+        document.removeEventListener('touchend', boundEndDrag);
+        boundEndDrag = null;
+    }
+    if (boundOnDragTouch) {
+        document.removeEventListener('touchmove', boundOnDragTouch);
+        boundOnDragTouch = null;
+    }
+}
+
+function removeAvatar(target: 'user' | 'ai' = 'user'): void {
+    if (target === 'ai') {
+        settings.aiAvatar = '';
+        saveSettings();
+        
+        const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
+        const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
+        const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
+        
+        if (avatarImage) {
+            avatarImage.src = '';
+            avatarImage.classList.remove('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
+        if (removeBtn) removeBtn.style.display = 'none';
+        
+        showToast('AI Avatar removed', { type: 'info' });
+    } else {
+        settings.userAvatar = '';
+        saveSettings();
+        
+        const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
+        const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
+        const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
+        
+        if (avatarImage) {
+            avatarImage.src = '';
+            avatarImage.classList.remove('visible');
+        }
+        if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
+        if (removeBtn) removeBtn.style.display = 'none';
+        
+        showToast('Avatar removed', { type: 'info' });
+    }
+    
+    // Refresh chat
+    if (chatManager) {
+        chatManager.renderMessages();
+    }
+}
+
+function saveProfileToAI(): void {
+    const displayName = (document.getElementById('user-name-input') as HTMLInputElement)?.value?.trim() || 'User';
+    const bio = (document.getElementById('user-bio-input') as HTMLTextAreaElement)?.value?.trim() || '';
+    const preferences = (document.getElementById('user-preferences-input') as HTMLTextAreaElement)?.value?.trim() || '';
+    const isCreator = (document.getElementById('creator-toggle') as HTMLInputElement)?.checked || false;
+    
+    if (chatManager?.connected) {
+        chatManager.send({ 
+            type: 'save_profile', 
+            profile: { display_name: displayName, bio, preferences, is_creator: isCreator }
+        });
+        
+        // Also update local settings
+        settings.userName = displayName;
+        settings.isCreator = isCreator;
+        saveSettings();
+    } else {
+        showToast('Not connected to AI server', { type: 'error' });
+    }
 }
 
 // ============================================================================
@@ -917,15 +2782,16 @@ function loadSettingsUI(): void {
 
 async function openFolder(type: string): Promise<void> {
     let path: string;
-    if (type === 'logs') {
-        path = 'C:\\Users\\ME\\BOT\\logs';
-    } else if (type === 'data') {
-        path = 'C:\\Users\\ME\\BOT\\data';
-    } else {
-        path = type; // Allow direct path
-    }
-
+    
     try {
+        if (type === 'logs') {
+            path = await invoke<string>('get_logs_path');
+        } else if (type === 'data') {
+            path = await invoke<string>('get_data_path');
+        } else {
+            path = type; // Allow direct path
+        }
+
         await invoke('open_folder', { path });
     } catch (error) {
         showToast(`Failed to open folder: ${error}`, { type: 'error' });
@@ -956,3 +2822,6 @@ window.openFolder = openFolder;
 window.loadLogs = loadLogs;
 window.toggleTheme = toggleTheme;
 window.showToast = showToast;
+window.chatManager = null; // Will be set after init
+window.showPage = switchPage; // Alias for HTML onclick handlers
+window.startBot = startBot;

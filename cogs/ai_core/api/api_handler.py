@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -106,8 +107,8 @@ def build_api_config(
         logging.info("🔍 Google Search: ENABLED (search requested)")
     elif (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         # Use Thinking mode for deep reasoning
-        config_params["thinking_config"] = types.ThinkingConfig(thinking_level="high")
-        logging.info("🧠 Thinking Mode: ENABLED (high)")
+        config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=16000)
+        logging.info("🧠 Thinking Mode: ENABLED (budget: 16000)")
     else:
         # Default: Google Search for non-RP modes
         config_params["tools"] = [types.Tool(google_search=types.GoogleSearch())]
@@ -287,8 +288,8 @@ async def call_gemini_api_streaming(
                                 chunk_text += part.text
                             if hasattr(part, "function_call") and part.function_call:
                                 function_calls.append(part.function_call)
-            except Exception:
-                pass
+            except (AttributeError, IndexError, TypeError) as e:
+                logging.debug("Failed to parse streaming chunk: %s", e)
 
             if chunk_text:
                 model_text += chunk_text
@@ -387,6 +388,11 @@ async def call_gemini_api(
     function_calls = []
     refusal_count = 0
     _api_start_time = time.time()
+
+    # Deep copy contents and config to avoid mutating caller's data during retry/fallback
+    # This is critical because fallback strategies modify these dicts (truncation, framing)
+    contents = copy.deepcopy(contents)
+    config_params = copy.deepcopy(config_params)
 
     for attempt in range(max_retries):
         # Check for cancellation

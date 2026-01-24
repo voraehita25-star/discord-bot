@@ -86,6 +86,7 @@ def is_animated_gif(image_data: bytes) -> bool:
     Returns:
         True if GIF has multiple frames, False otherwise.
     """
+    img = None
     try:
         img = Image.open(io.BytesIO(image_data))
         try:
@@ -93,9 +94,12 @@ def is_animated_gif(image_data: bytes) -> bool:
             return True
         except EOFError:
             return False  # Only one frame = static GIF
-    except Exception as e:
+    except (OSError, ValueError, Image.DecompressionBombError) as e:
         logging.debug("Failed to check if GIF is animated: %s", e)
         return False
+    finally:
+        if img is not None:
+            img.close()
 
 
 def convert_gif_to_video(gif_data: bytes) -> bytes | None:
@@ -118,8 +122,13 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
             return None  # Not animated
 
         # Get frame duration from PIL (imageio doesn't expose this well)
-        pil_img = Image.open(io.BytesIO(gif_data))
-        duration = pil_img.info.get("duration", 100)  # Default 100ms per frame
+        pil_img = None
+        try:
+            pil_img = Image.open(io.BytesIO(gif_data))
+            duration = pil_img.info.get("duration", 100)  # Default 100ms per frame
+        finally:
+            if pil_img is not None:
+                pil_img.close()
         fps = min(30, max(5, 1000 / duration))  # Clamp FPS between 5-30
 
         # Write to MP4 video bytes
@@ -137,7 +146,7 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         logging.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
         return video_buffer.read()
 
-    except Exception as e:
+    except (OSError, ValueError, Image.DecompressionBombError, RuntimeError) as e:
         logging.warning("Failed to convert GIF to video: %s", e)
         return None
 

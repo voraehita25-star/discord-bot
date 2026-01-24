@@ -21,7 +21,15 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
-from ..data.constants import GEMINI_MODEL
+from ..data.constants import (
+    CONSOLIDATE_EVERY_N_MESSAGES,
+    CONSOLIDATE_INTERVAL_SECONDS,
+    CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS,
+    CONSOLIDATOR_CLEANUP_MAX_CHANNELS,
+    GEMINI_MODEL,
+    MAX_RECENT_MESSAGES_FOR_EXTRACTION,
+    MIN_CONVERSATION_LENGTH,
+)
 from .entity_memory import EntityFacts, entity_memory
 
 # Fact extraction prompt
@@ -65,12 +73,12 @@ class MemoryConsolidator:
         self._message_counts: dict[int, int] = {}  # channel_id: message_count
         self._last_consolidation: dict[int, float] = {}  # channel_id: timestamp
 
-        # Settings
-        self.consolidate_every_n_messages = 30
-        self.consolidate_interval_seconds = 3600  # 1 hour
+        # Settings (from constants for consistency)
+        self.consolidate_every_n_messages = CONSOLIDATE_EVERY_N_MESSAGES
+        self.consolidate_interval_seconds = CONSOLIDATE_INTERVAL_SECONDS
         self.model = GEMINI_MODEL  # Use same model as main AI
-        self.min_conversation_length = 200  # Minimum chars to extract from
-        self.max_recent_messages = 50  # Messages to consider for extraction
+        self.min_conversation_length = MIN_CONVERSATION_LENGTH
+        self.max_recent_messages = MAX_RECENT_MESSAGES_FOR_EXTRACTION
 
     def initialize(self, api_key: str) -> bool:
         """Initialize the Gemini client."""
@@ -89,6 +97,43 @@ class MemoryConsolidator:
     def record_message(self, channel_id: int) -> None:
         """Record that a message was processed for this channel."""
         self._message_counts[channel_id] = self._message_counts.get(channel_id, 0) + 1
+
+    def cleanup_old_channels(
+        self,
+        max_age_seconds: int = CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS,
+        max_channels: int = CONSOLIDATOR_CLEANUP_MAX_CHANNELS,
+    ) -> int:
+        """
+        Remove tracking data for channels inactive longer than max_age_seconds.
+        Also enforces max channel limit to prevent memory growth.
+        Returns number of channels cleaned up.
+
+        Should be called periodically to prevent memory leaks.
+        """
+        removed = 0
+        now = time.time()
+
+        # Remove old channels
+        for channel_id in list(self._last_consolidation.keys()):
+            if now - self._last_consolidation[channel_id] > max_age_seconds:
+                self._message_counts.pop(channel_id, None)
+                self._last_consolidation.pop(channel_id, None)
+                removed += 1
+
+        # Enforce max channel limit if still over
+        if len(self._last_consolidation) > max_channels:
+            # Sort by oldest timestamp and remove excess
+            sorted_channels = sorted(
+                self._last_consolidation.keys(),
+                key=lambda cid: self._last_consolidation[cid],
+            )
+            excess = len(self._last_consolidation) - max_channels
+            for channel_id in sorted_channels[:excess]:
+                self._message_counts.pop(channel_id, None)
+                self._last_consolidation.pop(channel_id, None)
+                removed += 1
+
+        return removed
 
     def should_consolidate(self, channel_id: int) -> bool:
         """Check if consolidation should run for this channel."""
@@ -162,8 +207,12 @@ class MemoryConsolidator:
 
             return updated
 
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logging.warning("Memory consolidation parsing failed: %s", e)
+            return 0
         except Exception as e:
-            logging.error("Memory consolidation failed: %s", e)
+            # Log with traceback for unexpected errors
+            logging.error("Memory consolidation failed unexpectedly: %s", e, exc_info=True)
             return 0
 
     def _history_to_text(self, history: list[dict[str, Any]]) -> str:
@@ -197,14 +246,15 @@ class MemoryConsolidator:
 
             return json.loads(text)
 
-        except Exception:
+        except (json.JSONDecodeError, ValueError) as e:
+            logging.debug("JSON parse failed, trying fallback: %s", e)
             # Try to find JSON in response
             try:
                 match = re.search(r"\{[\s\S]*\}", response_text)
                 if match:
                     return json.loads(match.group())
-            except Exception:
-                pass
+            except (json.JSONDecodeError, ValueError) as fallback_error:
+                logging.debug("JSON fallback parse also failed: %s", fallback_error)
 
         return None
 

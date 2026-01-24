@@ -11,6 +11,14 @@ import logging
 from pathlib import Path
 from typing import Any
 
+# Import database at module level for efficiency
+try:
+    from utils.database import db
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    db = None
+
 
 class QueueManager:
     """Manages music queue persistence and operations."""
@@ -107,9 +115,7 @@ class QueueManager:
         """Save queue to database for persistence."""
         queue = self.queues.get(guild_id, [])
 
-        try:
-            from utils.database import db
-        except ImportError:
+        if not DB_AVAILABLE or db is None:
             self._save_queue_json(guild_id)
             return
 
@@ -121,7 +127,7 @@ class QueueManager:
         logging.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue))
 
     def _save_queue_json(self, guild_id: int) -> None:
-        """Legacy JSON save as fallback."""
+        """Legacy JSON save as fallback with atomic write pattern."""
         queue = self.queues.get(guild_id, [])
         filepath = Path(f"data/queue_{guild_id}.json")
 
@@ -139,22 +145,24 @@ class QueueManager:
         }
 
         try:
-            filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Atomic write pattern: write to temp file, then rename
+            temp_path = filepath.with_suffix(".tmp")
+            temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.replace(filepath)  # Atomic on most filesystems
         except OSError as e:
             logging.error("Failed to save queue for guild %s: %s", guild_id, e)
+            # Clean up temp file on failure
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
 
     async def load_queue(self, guild_id: int) -> bool:
         """Load queue from database. Returns True if loaded."""
-        try:
-            from utils.database import db
-
+        if DB_AVAILABLE and db is not None:
             queue = await db.load_music_queue(guild_id)
             if queue:
                 self.queues[guild_id] = queue
                 logging.info("📂 Loaded queue (%d tracks) from database", len(queue))
                 return True
-        except ImportError:
-            pass
 
         # Fallback to JSON
         filepath = Path(f"data/queue_{guild_id}.json")

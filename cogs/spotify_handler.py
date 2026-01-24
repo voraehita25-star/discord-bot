@@ -6,6 +6,7 @@ Handles Spotify link processing and track extraction with retry logic.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from collections.abc import Callable
@@ -78,9 +79,18 @@ class SpotifyHandler:
                 "Spotify API circuit breaker is open - service temporarily unavailable"
             )
 
+        # Capture args/kwargs at call time to prevent closure issues
+        # If we use lambda: func(*args, **kwargs) directly, args/kwargs
+        # could be modified before the executor runs
+        captured_args = args
+        captured_kwargs = kwargs
+
         for attempt in range(self.MAX_RETRIES):
             try:
-                result = await self.bot.loop.run_in_executor(None, lambda: func(*args, **kwargs))
+                # Use functools.partial to avoid closure capturing mutable variables
+                result = await self.bot.loop.run_in_executor(
+                    None, functools.partial(func, *captured_args, **captured_kwargs)
+                )
                 # Record success for circuit breaker
                 if CIRCUIT_BREAKER_AVAILABLE:
                     spotify_circuit.record_success()

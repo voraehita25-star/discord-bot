@@ -1,6 +1,6 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** January 22, 2026  
+> **Last Updated:** January 25, 2026  
 > **Version:** 3.3.9  
 > **Python Version:** 3.10+  
 > **Framework:** discord.py 2.x  
@@ -793,10 +793,12 @@ async def mycommand(self, ctx):
 7. **History Cache:** Uses `copy.deepcopy()` to prevent mutation of cached nested objects
 8. **Cache Size Limit:** Max 1000 channels cached, oldest entries evicted when exceeded
 9. **Permission Checks:** Music commands require `connect` and `speak` permissions in target channel
+10. **Memory Bounds:** Rate limiter (10k buckets), message queue (5k channels), state tracker have eviction limits
+11. **Specific Exceptions:** All `except Exception` blocks replaced with specific exception types for better debugging
 
 ---
 
-## 🛠️ Recent Bug Fixes (January 21, 2026)
+## 🛠️ Recent Bug Fixes
 
 ### Phase 1 - Code Audit (January 20, 2026)
 
@@ -864,6 +866,29 @@ async def mycommand(self, ctx):
 | **Lint fixes** | Fixed 185 whitespace issues with ruff | Various files |
 | **Test count** | Increased from 362 to 452 | +90 tests for new reliability modules |
 
+### Phase 6 - Deep Code Audit (January 25, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| Broad `except Exception` in ALTER TABLE | Changed to `except aiosqlite.OperationalError` | `database.py` |
+| Broad `except Exception` in datetime parsing | Changed to `except (ValueError, TypeError, AttributeError)` | `rag.py` |
+| Broad `except Exception` in Discord views | Changed to `except (discord.NotFound, discord.HTTPException)` | `views.py` |
+| Unbounded dict growth in rate limiter | Added `MAX_BUCKETS = 10000` with LRU eviction | `rate_limiter.py` |
+| Unbounded dict growth in message queue | Added `MAX_CHANNELS = 5000`, `MAX_PENDING = 50` | `message_queue.py` |
+| Unsafe `asyncio.run_coroutine_threadsafe` | Added `_safe_run_coroutine()` helper with error handling | `cog.py` |
+| Blanket deprecation warning ignore | Changed to selective (`discord.*`, `aiohttp.*`, `google.*`) | `pyproject.toml` |
+| Broad `except Exception` in guardrails | Changed to `except (json.JSONDecodeError, OSError, ValueError)` | `guardrails.py` |
+| Broad `except Exception` in consolidator | Split into parsing errors vs unexpected errors | `consolidator.py` |
+| Unbounded state tracker | Added `MAX_CHANNELS`, `MAX_CHARACTERS` limits | `state_tracker.py` |
+| Broad `except Exception` in summarizer | Split into specific exception types | `summarizer.py` |
+| Broad `except Exception` in health client | Changed to `except (aiohttp.ClientError, asyncio.TimeoutError)` | `health_client.py` |
+| PIL Image resource leaks | Added `try/finally` blocks for proper cleanup | `media_rust.py` |
+| 7 broad exceptions in logic.py | Changed to specific types (aiohttp, asyncio, KeyError, etc.) | `logic.py` |
+| Broad exception in response sender | Changed to `except (discord.HTTPException, Forbidden, NotFound)` | `response_sender.py` |
+| PIL resource leaks in media processor | Added `try/finally` and specific exception types | `media_processor.py` |
+| Missing `import aiohttp` | Added aiohttp import for exception handling | `logic.py` |
+| Missing `import discord` | Added discord import for exception handling | `response_sender.py` |
+
 ---
 
 ## 📚 Further Reading
@@ -874,4 +899,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 21, 2026 - Version 3.3.8 | Memory Manager, Shutdown Manager, Structured Logging added | Error Recovery with smart backoff | 452 tests | CI/CD improved with Codecov & Dependabot*
+*Documentation last updated: January 25, 2026 - Version 3.3.9 | Memory Manager, Shutdown Manager, Structured Logging added | Error Recovery with smart backoff | Code Audit Phase 6 complete | 452 tests | CI/CD improved with Codecov & Dependabot*

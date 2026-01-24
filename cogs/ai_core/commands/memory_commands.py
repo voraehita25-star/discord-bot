@@ -11,7 +11,8 @@ import discord
 from discord.ext import commands
 from discord.ext.commands import Context
 
-from utils.media.colors import Colors
+# Use Discord embed colors, not ANSI terminal colors
+from cogs.music.utils import Colors
 
 
 class MemoryCommands(commands.Cog):

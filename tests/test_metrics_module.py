@@ -75,12 +75,16 @@ class TestBotMetricsStartServer:
         from utils.monitoring.metrics import metrics
         
         original_started = metrics._server_started
+        original_enabled = metrics.enabled
         try:
+            # Must also set enabled = True for the early return check to work
+            metrics.enabled = True
             metrics._server_started = True
             result = metrics.start_server(18001)
             assert result is True
         finally:
             metrics._server_started = original_started
+            metrics.enabled = original_enabled
 
 
 # ==================== TestBotMetricsIncrementMessages ====================

@@ -283,10 +283,12 @@ class TestConstants:
         assert isinstance(SUMMARIZATION_MODEL, str)
 
     def test_min_conversation_length_defined(self):
-        """Test MIN_CONVERSATION_LENGTH is defined."""
+        """Test MIN_CONVERSATION_LENGTH is defined and matches constants."""
+        from cogs.ai_core.data.constants import MIN_CONVERSATION_LENGTH as CONST_MIN_LEN
         from cogs.ai_core.memory.summarizer import MIN_CONVERSATION_LENGTH
 
         assert MIN_CONVERSATION_LENGTH == 200
+        assert MIN_CONVERSATION_LENGTH == CONST_MIN_LEN  # Should match constants
 
     def test_summarize_prompt_defined(self):
         """Test SUMMARIZE_PROMPT is defined."""

@@ -69,6 +69,8 @@ class BotSettings:
     max_queue_size: int = 500
 
     # AI Settings - optimized for Gemini 2M context window
+    # NOTE: These are message storage limits, not token limits
+    # For token-based context limits, see cogs/ai_core/data/constants.py
     ai_history_limit_default: int = 100000  # 100k messages for regular channels
     ai_history_limit_main: int = 500000  # 500k for main server
     ai_history_limit_rp: int = 1000000  # 1M for roleplay (critical for continuity)

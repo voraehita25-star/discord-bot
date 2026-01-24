@@ -161,6 +161,7 @@ class AI(commands.Cog):
     async def _cleanup_pending_requests_loop(self) -> None:
         """Periodic cleanup of pending requests and caches to prevent memory leaks."""
         cleanup_counter = 0
+        memory_cleanup_counter = 0
         while True:
             await asyncio.sleep(60)  # Every 60 seconds
             self.chat_manager.cleanup_pending_requests()
@@ -172,6 +173,25 @@ class AI(commands.Cog):
                 removed = cleanup_storage_cache()
                 if removed > 0:
                     logging.debug("🧹 Storage cache cleanup: removed %d entries", removed)
+
+            # Run memory system cleanup every 30 minutes (every 30 iterations)
+            memory_cleanup_counter += 1
+            if memory_cleanup_counter >= 30:
+                memory_cleanup_counter = 0
+                try:
+                    # Cleanup state tracker (uses defaults from constants)
+                    from .memory.state_tracker import state_tracker
+                    state_removed = state_tracker.cleanup_old_states()
+                    if state_removed > 0:
+                        logging.debug("🧹 State tracker cleanup: removed %d channels", state_removed)
+
+                    # Cleanup consolidator tracking data (uses defaults from constants)
+                    from .memory.consolidator import memory_consolidator
+                    consol_removed = memory_consolidator.cleanup_old_channels()
+                    if consol_removed > 0:
+                        logging.debug("🧹 Consolidator cleanup: removed %d channels", consol_removed)
+                except Exception as e:
+                    logging.debug("Memory cleanup error (non-critical): %s", e)
 
     @commands.hybrid_command(name="chat", aliases=["ask"])
     @commands.cooldown(1, 3, commands.BucketType.user)  # 1 use per 3 seconds per user
@@ -744,8 +764,6 @@ class AI(commands.Cog):
             await ctx.send("❌ ไม่พบประวัติแชทในช่องนี้")
             return
 
-        chat_data["history"]
-
         # Find the message to resend - query directly from database
         target_message = None
         if local_id:
@@ -1166,7 +1184,7 @@ class AI(commands.Cog):
             # Save to storage
             from cogs.ai_core.storage import save_history
 
-            await save_history(channel_id, trimmed)
+            await save_history(self.bot, channel_id, chat_data)
 
             new_tokens = history_manager.estimate_tokens(trimmed)
 

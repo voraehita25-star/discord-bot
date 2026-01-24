@@ -125,10 +125,10 @@ class SessionMixin:
                 current_time = time.time()
                 timeout = 3600  # 1 Hour Timeout
 
-                # Identify inactive channels
+                # Identify inactive channels (use list() snapshot to avoid RuntimeError)
                 inactive_channels = [
                     channel_id
-                    for channel_id, last_time in self.last_accessed.items()
+                    for channel_id, last_time in list(self.last_accessed.items())
                     if current_time - last_time > timeout
                 ]
 

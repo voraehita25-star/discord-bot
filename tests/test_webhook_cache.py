@@ -45,10 +45,10 @@ class TestGetCachedWebhook:
         """Test getting expired cached webhook returns None."""
         from cogs.ai_core.response import webhook_cache
 
-        # Setup expired cache
+        # Setup expired cache (use TTL + buffer to ensure expiration)
         mock_webhook = MagicMock()
         webhook_cache._webhook_cache[12345] = {"TestBot": mock_webhook}
-        webhook_cache._webhook_cache_time[12345] = time.time() - 1000  # Expired
+        webhook_cache._webhook_cache_time[12345] = time.time() - 2000  # Expired (TTL is 1800)
 
         result = webhook_cache.get_cached_webhook(12345, "TestBot")
 
@@ -266,4 +266,4 @@ class TestModuleExports:
         """Test WEBHOOK_CACHE_TTL constant."""
         from cogs.ai_core.response.webhook_cache import WEBHOOK_CACHE_TTL
 
-        assert WEBHOOK_CACHE_TTL == 600
+        assert WEBHOOK_CACHE_TTL == 1800  # 30 minutes for high-RAM setup

@@ -301,8 +301,9 @@ async def send_as_webhook(bot, channel, name, message):
                 break
 
         # 2. If not found, create new one (if limit allows)
+        DISCORD_WEBHOOK_LIMIT = 15  # Discord's max webhooks per channel
         if not webhook:
-            if len(webhooks) < 15:  # Discord's webhook limit is 15 per channel
+            if len(webhooks) < DISCORD_WEBHOOK_LIMIT:
                 try:
                     webhook = await channel.create_webhook(name=webhook_name, avatar=avatar_bytes)
                     logging.info("🆕 Created new webhook for %s", name)

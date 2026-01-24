@@ -298,15 +298,17 @@ class TokenTracker:
 
     def get_global_stats(self) -> dict[str, Any]:
         """Get global usage statistics."""
-        total_records = sum(len(records) for records in self._usage_cache.values())
-        total_tokens = (
-            sum(sum(r.total_tokens for r in records) for records in self._usage_cache.values()) // 3
-        )  # Divide by 3 since each record is stored 3 times (user/channel/guild)
+        # Calculate from user records only to avoid double/triple counting
+        user_records = {k: v for k, v in self._usage_cache.items() if k.startswith("user:")}
+        total_tokens = sum(
+            sum(r.total_tokens for r in records) for records in user_records.values()
+        )
+        total_requests = sum(len(records) for records in user_records.values())
 
         return {
-            "total_records": total_records // 3,
+            "total_records": total_requests,
             "total_tokens": total_tokens,
-            "unique_users": len([k for k in self._usage_cache if k.startswith("user:")]),
+            "unique_users": len(user_records),
             "unique_channels": len([k for k in self._usage_cache if k.startswith("channel:")]),
             "unique_guilds": len([k for k in self._usage_cache if k.startswith("guild:")]),
         }

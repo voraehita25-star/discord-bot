@@ -33,6 +33,9 @@ import psutil
 from discord.ext import commands
 from dotenv import load_dotenv
 
+# Load .env EARLY - before any modules that might use env vars
+load_dotenv()
+
 from utils.monitoring.logger import cleanup_cache, setup_smart_logging
 
 # Import Health API
@@ -49,6 +52,20 @@ try:
 except ImportError:
     HEALTH_API_AVAILABLE = False
     logging.warning("Health API not available")
+
+# Import Dashboard WebSocket Server
+try:
+    from cogs.ai_core.api.ws_dashboard import (
+        start_dashboard_ws_server,
+        stop_dashboard_ws_server,
+    )
+
+    DASHBOARD_WS_AVAILABLE = True
+except ImportError:
+    DASHBOARD_WS_AVAILABLE = False
+    start_dashboard_ws_server = None
+    stop_dashboard_ws_server = None
+    logging.warning("Dashboard WebSocket server not available")
 
 # Import Metrics for monitoring
 try:
@@ -92,6 +109,10 @@ except ImportError:
 
 # PID file path
 PID_FILE = Path("bot.pid")
+
+# Write PID immediately on startup (before any checks)
+# This allows dashboard to detect bot is starting
+PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
 def smart_startup_check() -> bool:
@@ -186,10 +207,6 @@ if not shutil.which("ffmpeg"):
     os.environ["FFMPEG_MISSING"] = "1"
 
 cleanup_cache()
-load_dotenv()
-
-# Save PID for safer restarts (only after duplicate check passes)
-PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
 def remove_pid() -> None:
@@ -255,6 +272,17 @@ class MusicBot(commands.AutoShardedBot):
             logging.info("✅ Loaded Extension: cogs.ai_core.ai_cog")
         except commands.ExtensionError as e:
             logging.error("❌ Failed to load cogs.ai_core.ai_cog: %s", e)
+
+        # Start Dashboard WebSocket Server for AI Chat (start early in setup)
+        if DASHBOARD_WS_AVAILABLE and start_dashboard_ws_server:
+            try:
+                success = await start_dashboard_ws_server()
+                if success:
+                    logging.info("💬 Dashboard AI Chat WebSocket server started on ws://127.0.0.1:8765")
+                else:
+                    logging.warning("⚠️ Failed to start Dashboard WebSocket server")
+            except Exception as e:
+                logging.error("❌ Dashboard WebSocket server error: %s", e)
 
     async def on_ready(self) -> None:
         """Called when bot is ready and connected to Discord"""
@@ -472,6 +500,14 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
         logging.info("🛑 Received signal %s, shutting down gracefully...", sig.name)
     else:
         logging.info("🛑 Shutting down gracefully...")
+
+    # Stop Dashboard WebSocket Server
+    if DASHBOARD_WS_AVAILABLE and stop_dashboard_ws_server:
+        try:
+            await stop_dashboard_ws_server()
+            logging.info("💬 Dashboard WebSocket server stopped")
+        except Exception as e:
+            logging.error("Error stopping Dashboard WebSocket server: %s", e)
 
     # Flush pending database exports before closing
     try:

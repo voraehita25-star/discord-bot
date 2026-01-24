@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from google import genai
 from PIL import Image
 
@@ -37,7 +38,7 @@ from .data.constants import (
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
 )
-from .data.roleplay_data import SERVER_CHARACTERS
+from .data.roleplay_data import SERVER_CHARACTER_NAMES
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
 # Import media processing module
@@ -329,7 +330,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         try:
             # Initialize new Google GenAI Client
             self.client = genai.Client(api_key=GEMINI_API_KEY)
-            # Use gemini-3-flash-preview for cost-effective AI with thinking
+            # Use gemini-3-pro-preview for premium AI with thinking
             self.target_model = GEMINI_MODEL
             logging.info("Gemini AI Initialized (Model: %s)", self.target_model)
         except (ValueError, OSError) as e:
@@ -471,8 +472,8 @@ class ChatManager(SessionMixin, ResponseMixin):
         response_text = PATTERN_SPACED.sub(r"\1", response_text)
 
         # Convert standalone character names to {{Name}} tags
-        if guild_id and guild_id in SERVER_CHARACTERS:
-            char_names = list(SERVER_CHARACTERS[guild_id].keys())
+        if guild_id and guild_id in SERVER_CHARACTER_NAMES:
+            char_names = list(SERVER_CHARACTER_NAMES[guild_id].keys())
             char_names.sort(key=len, reverse=True)
             for char_name in char_names:
                 pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"
@@ -653,7 +654,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             for emoji_name, emoji_img in emoji_images:
                                 content_parts.append(f"[Custom Emoji: {emoji_name}]")
                                 content_parts.append(emoji_img)
-                        except Exception as e:
+                        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
                             logging.debug("Failed to fetch emoji images: %s", e)
 
                     # Convert Discord custom emojis to readable format in text
@@ -674,7 +675,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 url_context = format_url_content_for_context(fetched)
                                 if url_context:
                                     logging.info("🔗 Fetched content from %d URL(s)", len(fetched))
-                        except Exception as e:
+                        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as e:
                             logging.debug("URL fetching failed: %s", e)
 
                     # --- RAG: Retrieve Relevant Memories ---
@@ -712,7 +713,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             entity_context = await entity_memory.get_entities_for_prompt(
                                 entity_names, channel_id=channel_id, guild_id=guild_id
                             )
-                    except Exception as e:
+                    except (KeyError, ValueError, TypeError, AttributeError) as e:
                         logging.debug("Entity memory lookup failed: %s", e)
 
                     # --- State Tracker: Get current character states (RP only) ---
@@ -720,7 +721,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     if guild_id == GUILD_ID_RP:
                         try:
                             state_context = state_tracker.get_states_for_prompt(channel_id)
-                        except Exception as e:
+                        except (KeyError, ValueError, TypeError) as e:
                             logging.debug("State tracker failed: %s", e)
 
                     # Combine all memory contexts
@@ -845,7 +846,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     len(chat_data.get("history", [])),
                                     len(compressed),
                                 )
-                        except Exception as e:
+                        except (ValueError, TypeError, KeyError, asyncio.TimeoutError) as e:
                             logging.warning("Auto-summarize failed: %s", e)
 
                     # Use only recent history if too long (constant in data/constants.py)
@@ -1039,7 +1040,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             )
                             if updated_chars:
                                 logging.debug("🎭 Updated states for: %s", ", ".join(updated_chars))
-                        except Exception as e:
+                        except (KeyError, ValueError, TypeError, re.error) as e:
                             logging.debug("State tracker update failed: %s", e)
 
                     # Record message for memory consolidation
@@ -1048,12 +1049,24 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Check if consolidation should run (auto-extract facts every N messages)
                     if memory_consolidator.should_consolidate(context_channel.id):
                         try:
-                            asyncio.create_task(
+                            # Create task with proper error handling to avoid orphaned tasks
+                            task = asyncio.create_task(
                                 memory_consolidator.consolidate(
                                     context_channel.id, chat_data.get("history", []), guild_id
-                                )
+                                ),
+                                name=f"consolidate_{context_channel.id}",
                             )
-                        except Exception as e:
+                            # Add callback to log any unhandled exceptions
+                            def _handle_consolidation_error(t: asyncio.Task) -> None:
+                                if t.cancelled():
+                                    return
+                                exc = t.exception()
+                                if exc:
+                                    logging.warning(
+                                        "Memory consolidation task failed: %s", exc
+                                    )
+                            task.add_done_callback(_handle_consolidation_error)
+                        except (RuntimeError, asyncio.InvalidStateError) as e:
                             logging.debug("Memory consolidation trigger failed: %s", e)
 
                     # 10. Process response text

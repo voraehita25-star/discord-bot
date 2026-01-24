@@ -20,8 +20,16 @@ markers = [
     "requires_api: marks tests that require API keys",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::PendingDeprecationWarning",
+    # Ignore known deprecations from dependencies (not actionable)
+    "ignore::DeprecationWarning:discord.*",
+    "ignore::DeprecationWarning:aiohttp.*",
+    "ignore::DeprecationWarning:google.*",
+    # Ignore pending deprecation from dependencies
+    "ignore::PendingDeprecationWarning:discord.*",
+    "ignore::PendingDeprecationWarning:aiohttp.*",
+    # Keep our own deprecation warnings visible
+    "default::DeprecationWarning:cogs.*",
+    "default::DeprecationWarning:utils.*",
     "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 

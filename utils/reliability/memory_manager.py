@@ -17,6 +17,7 @@ import functools
 import gc
 import logging
 import sys
+import threading
 import time
 import weakref
 from collections import OrderedDict
@@ -96,7 +97,10 @@ class TTLCache(Generic[K, V]):
         self.on_evict = on_evict
 
         self._cache: OrderedDict[K, CacheEntry[V]] = OrderedDict()
-        self._lock = asyncio.Lock()
+        # Thread-safe lock for compound operations (check-then-act patterns)
+        # While Python's GIL protects individual dict operations, compound
+        # operations like get-check-update need explicit synchronization
+        self._lock = threading.Lock()
 
         # Statistics
         self._hits = 0
@@ -116,92 +120,98 @@ class TTLCache(Generic[K, V]):
 
     def get(self, key: K) -> V | None:
         """Get value from cache, returns None if not found or expired."""
-        entry = self._cache.get(key)
+        with self._lock:
+            entry = self._cache.get(key)
 
-        if entry is None:
-            self._misses += 1
-            return None
+            if entry is None:
+                self._misses += 1
+                return None
 
-        if self._is_expired(entry):
-            self._cache.pop(key, None)
-            self._expired += 1
-            self._misses += 1
-            return None
+            if self._is_expired(entry):
+                self._cache.pop(key, None)
+                self._expired += 1
+                self._misses += 1
+                return None
 
-        # Update access time and move to end (most recently used)
-        entry.last_accessed = time.time()
-        entry.hits += 1
-        self._cache.move_to_end(key)
-        self._hits += 1
+            # Update access time and move to end (most recently used)
+            entry.last_accessed = time.time()
+            entry.hits += 1
+            self._cache.move_to_end(key)
+            self._hits += 1
 
-        return entry.value
+            return entry.value
 
     def set(self, key: K, value: V) -> None:
         """Set value in cache, evicting LRU if necessary."""
         now = time.time()
 
-        # Remove if exists to update position
-        if key in self._cache:
-            self._cache.pop(key)
+        with self._lock:
+            # Remove if exists to update position
+            if key in self._cache:
+                self._cache.pop(key)
 
-        # Evict LRU if at max size
-        while len(self._cache) >= self.max_size:
-            evicted_key, evicted_entry = self._cache.popitem(last=False)
-            self._evictions += 1
-            if self.on_evict:
-                try:
-                    self.on_evict(evicted_key, evicted_entry.value)
-                except Exception as e:
-                    self.logger.warning("on_evict callback failed: %s", e)
+            # Evict LRU if at max size
+            while len(self._cache) >= self.max_size:
+                evicted_key, evicted_entry = self._cache.popitem(last=False)
+                self._evictions += 1
+                if self.on_evict:
+                    try:
+                        self.on_evict(evicted_key, evicted_entry.value)
+                    except Exception as e:
+                        self.logger.warning("on_evict callback failed: %s", e)
 
-        self._cache[key] = CacheEntry(
-            value=value,
-            created_at=now,
-            last_accessed=now,
-            size_bytes=self._estimate_size(value),
-        )
+            self._cache[key] = CacheEntry(
+                value=value,
+                created_at=now,
+                last_accessed=now,
+                size_bytes=self._estimate_size(value),
+            )
 
     def delete(self, key: K) -> bool:
         """Delete entry from cache. Returns True if deleted."""
-        entry = self._cache.pop(key, None)
-        return entry is not None
+        with self._lock:
+            entry = self._cache.pop(key, None)
+            return entry is not None
 
     def clear(self) -> int:
         """Clear all entries. Returns count cleared."""
-        count = len(self._cache)
-        self._cache.clear()
-        return count
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            return count
 
     def cleanup_expired(self) -> int:
         """Remove expired entries. Returns count removed."""
-        now = time.time()
-        expired_keys = [
-            key for key, entry in self._cache.items()
-            if now - entry.created_at > self.ttl
-        ]
+        with self._lock:
+            now = time.time()
+            expired_keys = [
+                key for key, entry in self._cache.items()
+                if now - entry.created_at > self.ttl
+            ]
 
-        for key in expired_keys:
-            self._cache.pop(key, None)
-            self._expired += 1
+            for key in expired_keys:
+                self._cache.pop(key, None)
+                self._expired += 1
 
-        if expired_keys:
-            self.logger.debug("Cleaned up %d expired entries", len(expired_keys))
+            if expired_keys:
+                self.logger.debug("Cleaned up %d expired entries", len(expired_keys))
 
-        return len(expired_keys)
+            return len(expired_keys)
 
     def get_stats(self) -> CacheStats:
         """Get cache statistics."""
-        memory_bytes = sum(e.size_bytes for e in self._cache.values())
+        with self._lock:
+            memory_bytes = sum(e.size_bytes for e in self._cache.values())
 
-        return CacheStats(
-            name=self.name,
-            entries=len(self._cache),
-            hits=self._hits,
-            misses=self._misses,
-            evictions=self._evictions,
-            expired=self._expired,
-            memory_bytes=memory_bytes,
-        )
+            return CacheStats(
+                name=self.name,
+                entries=len(self._cache),
+                hits=self._hits,
+                misses=self._misses,
+                evictions=self._evictions,
+                expired=self._expired,
+                memory_bytes=memory_bytes,
+            )
 
     def reset_stats(self) -> None:
         """Reset hit/miss statistics."""

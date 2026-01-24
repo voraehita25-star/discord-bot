@@ -56,7 +56,7 @@ class TestDatabaseInit:
         from utils.database.database import Database
         
         db = Database()
-        assert db._pool_semaphore._value == 30  # Max 30 concurrent connections
+        assert db._pool_semaphore._value == 50  # Max 50 concurrent connections (optimized for high-RAM setup)
 
     def test_db_path_is_string(self):
         """Test that db_path is a string."""

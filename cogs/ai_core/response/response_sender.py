@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import discord
+
 if TYPE_CHECKING:
     pass
 
@@ -115,7 +117,12 @@ class ResponseSender:
                 allowed_mentions,
             )
 
-        except Exception as e:
+        except (
+            discord.HTTPException,
+            discord.Forbidden,
+            discord.NotFound,
+            asyncio.TimeoutError,
+        ) as e:
             logging.error("Send response error: %s", e)
             return SendResult(success=False, error=str(e))
 
