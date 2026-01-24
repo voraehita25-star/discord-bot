@@ -8,10 +8,10 @@
 ## 🔒 Security & Reliability - Deep Code Audit
 
 ### Exception Handling Improvements
-ปรับปรุง exception handling ทั้งโปรเจคจาก broad `except Exception` เป็น specific exceptions เพื่อ:
-- ป้องกันการซ่อน bugs ที่ไม่คาดคิด
-- ทำให้ debugging ง่ายขึ้น
-- เพิ่มความปลอดภัยของโค้ด
+Improved exception handling across the entire project from broad `except Exception` to specific exceptions:
+- Prevent hiding unexpected bugs
+- Make debugging easier
+- Improve code safety
 
 | File | Change |
 |------|--------|
@@ -27,7 +27,7 @@
 | `media_processor.py` | `except Exception` → `except (OSError, ValueError, Image.DecompressionBombError)` |
 
 ### Memory Bounds & Eviction
-เพิ่ม limits เพื่อป้องกัน unbounded memory growth:
+Added limits to prevent unbounded memory growth:
 
 | Component | Limit | Eviction Strategy |
 |-----------|-------|-------------------|
@@ -36,26 +36,26 @@
 | `StateTracker` | 2,000 channels, 100 chars/channel | Oldest eviction |
 
 ### Resource Leak Fixes
-- **PIL Images:** เพิ่ม `try/finally` blocks เพื่อ cleanup Images อย่างถูกต้อง
+- **PIL Images:** Added `try/finally` blocks for proper Image cleanup
   - `media_processor.py` - `is_animated_gif()`, `convert_gif_to_video()`
   - `media_rust.py` - Image processing functions
 
 ### Safe Shutdown
-- `cog.py` (Music): เพิ่ม `_safe_run_coroutine()` helper สำหรับ `asyncio.run_coroutine_threadsafe`
-- ป้องกัน unhandled exceptions ระหว่าง shutdown
+- `cog.py` (Music): Added `_safe_run_coroutine()` helper for `asyncio.run_coroutine_threadsafe`
+- Prevents unhandled exceptions during shutdown
 
 ### Configuration
-- `pyproject.toml`: เปลี่ยนจาก blanket deprecation ignore เป็น selective (`discord.*`, `aiohttp.*`, `google.*`)
+- `pyproject.toml`: Changed from blanket deprecation ignore to selective (`discord.*`, `aiohttp.*`, `google.*`)
 
 ---
 
 ## 📝 Documentation Updates
 
 - `DEVELOPER_GUIDE.md`: 
-  - เพิ่ม Phase 6 - Deep Code Audit (18 items)
-  - เพิ่ม Known Gotchas ข้อ 10-11
-  - อัพเดตวันที่และ version
-- `docs/CODE_AUDIT_GUIDE.md`: อัพเดตวันที่
+  - Added Phase 6 - Deep Code Audit (18 items)
+  - Added Known Gotchas #10-11
+  - Updated date and version
+- `docs/CODE_AUDIT_GUIDE.md`: Updated date
 
 ---
 
