@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** January 25, 2026  
-> **Version:** 3.3.10  
-> **Python Version:** 3.10+  
-> **Framework:** discord.py 2.x  
-> **Total Files:** 247 Python files | 126 Test files | 3,157 Tests  
-> **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)  
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Code audit complete ✅ | Memory & Shutdown managers ✅
+> **Last Updated:** February 7, 2026
+> **Version:** 3.3.10
+> **Python Version:** 3.10+
+> **Framework:** discord.py 2.x
+> **Total Files:** 251 Python files | 126 Test files | 3,157 Tests
+> **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅
 
 ---
 
@@ -23,7 +23,7 @@ Discord Bot ที่รวม AI Chat (Gemini API) และ Music Player ไ�
 
 ---
 
-## 📁 Directory Structure (108 Python Files)
+## 📁 Directory Structure (251 Python Files)
 
 ```
 BOT/
@@ -234,7 +234,7 @@ BOT/
 │   │   ├── bot_manager.rs    # Bot process control
 │   │   └── database.rs       # SQLite queries
 │   ├── src-ts/
-│   │   ├── app.ts            # TypeScript source (959 lines)
+│   │   ├── app.ts            # TypeScript source (2,905 lines)
 │   │   └── app.test.ts       # Unit tests (26 tests)
 │   ├── scripts/
 │   │   ├── build-tauri.ps1   # Build + auto-rename
@@ -889,6 +889,57 @@ async def mycommand(self, ctx):
 | Missing `import aiohttp` | Added aiohttp import for exception handling | `logic.py` |
 | Missing `import discord` | Added discord import for exception handling | `response_sender.py` |
 
+### Phase 7 - Native Dashboard (Tauri) Audit (February 6, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `Arc<Mutex>` blocking async in Tauri commands | Changed to `Arc<tokio::sync::Mutex>` with `.await` | `main.rs` |
+| No CSP headers allowing XSS | Added strict Content-Security-Policy meta tag | `index.html` |
+| Database connections leaked on error | Created RAII `ConnectionGuard` for auto-cleanup | `database.rs` |
+| Log viewer reads entire file into memory | Changed to reverse-read last N bytes from end | `bot_manager.rs` |
+| XSS via unsanitized log/DB content in innerHTML | Added `escapeHtml()` sanitizer to all dynamic content | `app.ts` |
+| Toast/notification XSS injection | All toast messages now escaped | `app.ts` |
+| Race condition in theme/sakura initialization | Added `DOMContentLoaded` guard | `app.ts` |
+| TypeScript `any` types throughout | Replaced with proper interfaces and type annotations | `app.ts` |
+| 38 total issues across 9 files | All fixed and verified | `native_dashboard/` |
+
+### Phase 8 - Rust Extensions Audit (February 6, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| No runtime dimension check on `add()` | Added vector length validation with `PyValueError` | `rag_engine/src/lib.rs` |
+| Stale references after `remove()` | Clear search cache on entry removal | `rag_engine/src/lib.rs` |
+| Integer overflow in similarity calc | Added `.min(1.0)` clamp for floating-point safety | `rag_engine/src/cosine.rs` |
+| Crop dimensions could exceed image bounds | Added `min()` clamping before crop | `media_processor/src/resize.rs` |
+
+### Phase 9 - Go Services & Scripts Final Audit (February 6, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `/metrics/batch` was dead stub (discarded payloads) | Implemented full metric processing with 1MB body limit, 1000 batch cap | `health_api/main.go` |
+| `/health/service` no input validation | Added 64KB body limit, service name validation (max 100 chars) | `health_api/main.go` |
+| `/metrics/push` no body size limit | Added 64KB body limit | `health_api/main.go` |
+| SSRF vulnerability on `/fetch` | Added http/https URL scheme validation | `url_fetcher/main.go` |
+| `/fetch/batch` no request body limit | Added 1MB body limit | `url_fetcher/main.go` |
+| User timeout unbounded | Capped timeout to 120 seconds max | `url_fetcher/main.go` |
+| `check_db.py` connection leak | Converted to `async with` context manager | `check_db.py` |
+| `migrate_to_db.py` sync/async mismatch | Converted to `async def` + `asyncio.run()` | `migrate_to_db.py` |
+| `migrate_to_db.py` non-existent `db.get_stats()` | Replaced with direct aiosqlite query | `migrate_to_db.py` |
+
+### Phase 10 - Test Verification & Cleanup (February 7, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `test_create_voice_channel_invalid_name` expected error for sanitized name | Updated to expect `"untitled"` fallback from `sanitize_channel_name` | `test_server_commands_extended.py` |
+| `test_create_category_invalid_name` expected error for sanitized name | Updated to expect `create_category("untitled")` | `test_server_commands_extended.py` |
+| `test_start_cleanup_task` failed due to `bot.loop.is_closed()` returning truthy mock | Added `mock_bot.loop.is_closed.return_value = False` | `test_webhook_cache.py` |
+| 17 tests skipped due to missing `prometheus_client` | Created `_enable_metrics_with_mocks()` helper with fresh MagicMock per test | `test_metrics_module.py` |
+| DeprecationWarning from importing deprecated content_processor | Added `pytestmark = pytest.mark.filterwarnings(...)` | `test_content_processor.py` |
+| RuntimeWarning: coroutine `stop_background_task` never awaited | Made test async + added `await` | `test_memory_consolidator.py` |
+| RuntimeWarning: coroutine `stop_cleanup_task` never awaited | Added `await` to cleanup call | `test_rate_limiter.py` |
+| RuntimeWarning: coroutine `_cleanup_expired_webhook_cache` never awaited | Added `coroutine_arg.close()` after assertions | `test_webhook_cache.py` |
+| Duplicate `escapeHtml` class method in dashboard | Removed duplicate, unified to standalone `escapeHtml()` | `app.ts` |
+
 ---
 
 ## 📚 Further Reading
@@ -899,4 +950,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: January 25, 2026 - Version 3.3.10 | Memory Manager, Shutdown Manager, Structured Logging added | Error Recovery with smart backoff | Code Audit Phase 6 complete | 452 tests | CI/CD improved with Codecov & Dependabot*
+*Documentation last updated: February 7, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,157 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*

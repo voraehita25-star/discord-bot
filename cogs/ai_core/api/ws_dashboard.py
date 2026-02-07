@@ -73,12 +73,15 @@ For complex topics, provide detailed but well-organized responses.""",
 # Configuration
 # ============================================================================
 
-WS_HOST = "127.0.0.1"
-WS_PORT = 8765
-
-# Gemini configuration - load dotenv first
+# Import os early for environment variables
 import os
 from pathlib import Path
+
+# WebSocket configuration - can be overridden via environment variables
+WS_HOST = os.getenv("WS_DASHBOARD_HOST", "127.0.0.1")
+WS_PORT = int(os.getenv("WS_DASHBOARD_PORT", "8765"))
+
+# Gemini configuration - load dotenv first
 
 # Ensure .env is loaded
 try:
@@ -160,7 +163,11 @@ class DashboardWebSocketServer:
             return False
 
     async def _ensure_port_available(self) -> None:
-        """Ensure port is available, killing old process if needed."""
+        """Ensure port is available, killing old process if needed.
+        
+        SAFETY: Only kills processes that are confirmed to be our own bot instances
+        by checking for specific identifiers in the command line.
+        """
         import socket
         import subprocess
         import sys
@@ -174,45 +181,32 @@ class DashboardWebSocketServer:
         if result == 0:  # Port is in use
             logging.warning(f"⚠️ Port {WS_PORT} is in use, attempting to free it...")
             
-            # Find and kill the process using this port
-            try:
-                if sys.platform == "win32":
-                    # Windows: Use netstat to find PID
-                    output = subprocess.check_output(
-                        f'netstat -ano | findstr ":{WS_PORT}"',
-                        shell=True, text=True, stderr=subprocess.DEVNULL
-                    )
-                    for line in output.strip().split('\n'):
-                        if 'LISTENING' in line or 'ESTABLISHED' in line:
-                            parts = line.split()
-                            if len(parts) >= 5:
-                                pid = int(parts[-1])
-                                # Don't kill ourselves
-                                if pid != os.getpid():
-                                    logging.info(f"🔪 Killing process {pid} using port {WS_PORT}")
-                                    subprocess.run(f'taskkill /F /PID {pid}', 
-                                                   shell=True, capture_output=True)
-                else:
-                    # Unix: Use lsof
-                    output = subprocess.check_output(
-                        f'lsof -ti:{WS_PORT}',
-                        shell=True, text=True, stderr=subprocess.DEVNULL
-                    )
-                    for pid_str in output.strip().split('\n'):
-                        if pid_str:
-                            pid = int(pid_str)
-                            if pid != os.getpid():
-                                logging.info(f"🔪 Killing process {pid} using port {WS_PORT}")
-                                os.kill(pid, 9)
-                
-                # Wait a moment for port to be released
+            # SAFETY: We will NOT auto-kill processes anymore.
+            # Instead, we wait for the port to become available or fail gracefully.
+            # This prevents accidentally killing unrelated processes.
+            
+            max_wait = 5  # Maximum seconds to wait for port
+            waited = 0
+            
+            while waited < max_wait:
                 await asyncio.sleep(0.5)
-                logging.info(f"✅ Port {WS_PORT} freed successfully")
+                waited += 0.5
                 
-            except subprocess.CalledProcessError:
-                pass  # No process found, port might be in TIME_WAIT
-            except Exception as e:
-                logging.warning(f"⚠️ Could not free port: {e}")
+                # Re-check if port is free
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((WS_HOST, WS_PORT))
+                sock.close()
+                
+                if result != 0:  # Port is now free
+                    logging.info(f"✅ Port {WS_PORT} is now available")
+                    return
+            
+            # If still not free, log warning but continue (will fail gracefully on bind)
+            logging.warning(
+                f"⚠️ Port {WS_PORT} still in use after {max_wait}s wait. "
+                f"If this is an old bot instance, please stop it manually."
+            )
 
     async def stop(self) -> None:
         """Stop the WebSocket server."""
@@ -245,6 +239,32 @@ class DashboardWebSocketServer:
 
     async def websocket_handler(self, request: web.Request) -> WebSocketResponse:
         """Handle WebSocket connections."""
+        # Security: Validate origin for localhost-only connections
+        origin = request.headers.get("Origin", "")
+        host = request.headers.get("Host", "")
+        
+        # Allow connections from localhost only (127.0.0.1 or localhost)
+        allowed_origins = [
+            "http://127.0.0.1",
+            "http://localhost",
+            "https://127.0.0.1",
+            "https://localhost",
+            "file://",  # For local HTML files
+        ]
+        
+        # Check if origin is allowed (match prefix, or no origin for direct WS tools)
+        origin_allowed = origin == "" or any(
+            origin.startswith(allowed)
+            for allowed in allowed_origins
+        )
+        
+        # Also check host header
+        host_allowed = host.startswith("127.0.0.1") or host.startswith("localhost")
+        
+        if not origin_allowed and not host_allowed:
+            logging.warning(f"⚠️ Rejected WebSocket connection from origin: {origin}, host: {host}")
+            return web.Response(status=403, text="Forbidden: Connection only allowed from localhost")
+        
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
@@ -538,10 +558,13 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             chunks_count = 0
             is_thinking = False
             
-            stream = await self.gemini_client.aio.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=config,
+            stream = await asyncio.wait_for(
+                self.gemini_client.aio.models.generate_content_stream(
+                    model=GEMINI_MODEL,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=60.0,
             )
 
             if stream is None:
@@ -667,7 +690,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             logging.error(f"❌ Streaming error: {e}")
             await ws.send_json({
                 "type": "error",
-                "message": f"AI error: {str(e)}",
+                "message": "An internal error occurred while processing your request.",
                 "conversation_id": conversation_id,
             })
 
@@ -739,8 +762,8 @@ Title:"""
                 "conversations": conversations,
             })
         except Exception as e:
-            logging.error(f"Failed to list conversations: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_load_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Load a specific conversation with messages."""
@@ -779,8 +802,8 @@ Title:"""
                 "messages": messages,
             })
         except Exception as e:
-            logging.error(f"Failed to load conversation: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_delete_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Delete a conversation."""
@@ -798,8 +821,8 @@ Title:"""
                 "id": conversation_id,
             })
         except Exception as e:
-            logging.error(f"Failed to delete conversation: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_star_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Toggle star status of a conversation."""
@@ -823,8 +846,8 @@ Title:"""
             })
             logging.info(f"Sent conversation_starred response")
         except Exception as e:
-            logging.error(f"Failed to star conversation: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_rename_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Rename a conversation."""
@@ -844,8 +867,8 @@ Title:"""
                 "title": new_title,
             })
         except Exception as e:
-            logging.error(f"Failed to rename conversation: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_export_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Export a conversation to JSON."""
@@ -866,8 +889,8 @@ Title:"""
                 "data": export_data,
             })
         except Exception as e:
-            logging.error(f"Failed to export conversation: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     # ========================================================================
     # Memory handlers
@@ -892,8 +915,8 @@ Title:"""
                 "category": category,
             })
         except Exception as e:
-            logging.error(f"Failed to save memory: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_get_memories(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Get all memories."""
@@ -911,8 +934,8 @@ Title:"""
                 "memories": memories,
             })
         except Exception as e:
-            logging.error(f"Failed to get memories: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_delete_memory(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Delete a memory."""
@@ -930,8 +953,8 @@ Title:"""
                 "id": memory_id,
             })
         except Exception as e:
-            logging.error(f"Failed to delete memory: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     # ========================================================================
     # Profile handlers
@@ -951,8 +974,8 @@ Title:"""
                 "profile": profile or {},
             })
         except Exception as e:
-            logging.error(f"Failed to get profile: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
     async def handle_save_profile(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Save user profile."""
@@ -968,15 +991,15 @@ Title:"""
                 display_name=profile_data.get("display_name", "User"),
                 bio=profile_data.get("bio"),
                 preferences=profile_data.get("preferences"),
-                is_creator=profile_data.get("is_creator", False)
+                # Note: is_creator is NOT accepted from client input for security
             )
             await ws.send_json({
                 "type": "profile_saved",
                 "profile": profile_data,
             })
         except Exception as e:
-            logging.error(f"Failed to save profile: {e}")
-            await ws.send_json({"type": "error", "message": str(e)})
+            logging.error("WebSocket handler error: %s", e)
+            await ws.send_json({"type": "error", "message": "An internal error occurred"})
 
 
 # ============================================================================

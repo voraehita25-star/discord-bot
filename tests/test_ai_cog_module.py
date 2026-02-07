@@ -68,7 +68,7 @@ class TestAICogLoadUnload:
             with patch('cogs.ai_core.ai_cog.rate_limiter'):
                 with patch('cogs.ai_core.ai_cog.stop_webhook_cache_cleanup'):
                     mock_rag = MagicMock()
-                    mock_rag.stop_periodic_save = MagicMock()
+                    mock_rag.stop_periodic_save = AsyncMock()
                     mock_rag.force_save_index = AsyncMock()
                     
                     with patch('cogs.ai_core.ai_cog.rag_system', mock_rag):

@@ -71,7 +71,7 @@ class CircuitBreaker:
 
     def _transition_to_unlocked(self, new_state: CircuitState) -> None:
         """Internal transition without lock (caller must hold lock).
-        
+
         Note: All state modifications happen within the lock to prevent
         race conditions during state transitions.
         """
@@ -150,25 +150,29 @@ class CircuitBreaker:
                     )
 
     def get_status(self) -> dict[str, Any]:
-        """Get current circuit breaker status."""
-        return {
-            "name": self.name,
-            "state": self.state.value,
-            "failure_count": self._failure_count,
-            "success_count": self._success_count,
-            "last_failure": self._last_failure_time,
-            "config": {
-                "failure_threshold": self.failure_threshold,
-                "reset_timeout": self.reset_timeout,
-            },
-        }
+        """Get current circuit breaker status (thread-safe)."""
+        with self._lock:
+            return {
+                "name": self.name,
+                "state": self._state.value,
+                "failure_count": self._failure_count,
+                "success_count": self._success_count,
+                "last_failure": self._last_failure_time,
+                "config": {
+                    "failure_threshold": self.failure_threshold,
+                    "reset_timeout": self.reset_timeout,
+                },
+            }
 
     def reset(self) -> None:
-        """Manually reset the circuit breaker."""
-        self._transition_to(CircuitState.CLOSED)
-        self._failure_count = 0
-        self._success_count = 0
-        self._last_failure_time = None
+        """Manually reset the circuit breaker (thread-safe)."""
+        with self._lock:
+            self._transition_to_unlocked(CircuitState.CLOSED)
+            # Note: _transition_to_unlocked already resets these when transitioning to CLOSED
+            # but we explicitly set them here for clarity on manual reset
+            self._failure_count = 0
+            self._success_count = 0
+            self._last_failure_time = None
         logging.info("⚡ Circuit Breaker [%s]: Manually reset", self.name)
 
 

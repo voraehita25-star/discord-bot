@@ -29,14 +29,16 @@ try:
     def json_dumps(
         obj: Any,
         *,
-        ensure_ascii: bool = True,  # Ignored by orjson (always UTF-8)
+        ensure_ascii: bool = True,  # NOTE: Ignored by orjson (always outputs UTF-8)
         indent: int | None = None,
         **kwargs,
     ) -> str:
         """
         Serialize Python object to JSON string (orjson-accelerated).
 
-        Note: orjson doesn't support indent parameter directly.
+        Note: orjson always outputs UTF-8 and does not support ensure_ascii.
+        If ensure_ascii=True is critical, use stdlib json directly.
+        orjson doesn't support indent parameter directly.
         For pretty printing, use json_dumps_pretty().
         """
         # orjson options

@@ -113,12 +113,23 @@ class MemoryConsolidator:
         removed = 0
         now = time.time()
 
-        # Remove old channels
+        # Remove old channels that have been consolidated
         for channel_id in list(self._last_consolidation.keys()):
             if now - self._last_consolidation[channel_id] > max_age_seconds:
                 self._message_counts.pop(channel_id, None)
                 self._last_consolidation.pop(channel_id, None)
                 removed += 1
+
+        # Also cleanup orphaned entries in _message_counts that never consolidated
+        # (channels that have messages but never reached consolidation threshold)
+        orphaned_max_age = max_age_seconds * 2  # Give more time before cleaning orphans
+        for channel_id in list(self._message_counts.keys()):
+            if channel_id not in self._last_consolidation:
+                # This channel has message counts but never consolidated
+                # Remove it if we're over max channels or it's been too long
+                if len(self._message_counts) > max_channels:
+                    self._message_counts.pop(channel_id, None)
+                    removed += 1
 
         # Enforce max channel limit if still over
         if len(self._last_consolidation) > max_channels:
@@ -140,10 +151,19 @@ class MemoryConsolidator:
         msg_count = self._message_counts.get(channel_id, 0)
         last_time = self._last_consolidation.get(channel_id, 0)
 
-        # Consolidate every N messages or every hour
+        # Don't consolidate if no messages recorded
+        if msg_count == 0:
+            return False
+
+        # Consolidate every N messages or every hour (but only if has some messages)
         if msg_count >= self.consolidate_every_n_messages:
             return True
-        return time.time() - last_time > self.consolidate_interval_seconds
+        
+        # For time-based consolidation, require at least some messages
+        if last_time > 0 and time.time() - last_time > self.consolidate_interval_seconds:
+            return msg_count >= 5  # Require at least 5 messages for time-based trigger
+        
+        return False
 
     async def consolidate(
         self, channel_id: int, history: list[dict[str, Any]], guild_id: int | None = None
@@ -167,18 +187,25 @@ class MemoryConsolidator:
             if len(conversation_text) < self.min_conversation_length:
                 return 0  # Too short
 
-            # Extract facts using AI
-            prompt = FACT_EXTRACTION_PROMPT.format(conversation=conversation_text)
+            # Extract facts using AI with timeout to prevent hanging
+            prompt = FACT_EXTRACTION_PROMPT.replace("{conversation}", conversation_text)
 
-            response = await self._client.aio.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=1000,
-                    temperature=0.1,  # Low temp for consistent extraction
-                    response_mime_type="application/json",
-                ),
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            max_output_tokens=1000,
+                            temperature=0.1,  # Low temp for consistent extraction
+                            response_mime_type="application/json",
+                        ),
+                    ),
+                    timeout=60.0,  # 60 second timeout
+                )
+            except asyncio.TimeoutError:
+                logging.warning("Consolidation API call timed out")
+                return 0
 
             if not response.text:
                 return 0
@@ -233,7 +260,10 @@ class MemoryConsolidator:
         return "\n".join(lines[-100:])  # Last 100 lines max
 
     def _parse_extraction(self, response_text: str) -> dict | None:
-        """Parse JSON extraction response."""
+        """Parse JSON extraction response with multiple fallback strategies."""
+        if not response_text:
+            return None
+            
         try:
             # Clean up response
             text = response_text.strip()
@@ -243,18 +273,44 @@ class MemoryConsolidator:
                 text = text[3:]
             if text.endswith("```"):
                 text = text[:-3]
+            text = text.strip()
 
-            return json.loads(text)
+            result = json.loads(text)
+            
+            # Validate structure
+            if isinstance(result, dict) and "entities" in result:
+                return result
+            # Handle case where AI returns list directly
+            if isinstance(result, list):
+                return {"entities": result}
+            return result
 
         except (json.JSONDecodeError, ValueError) as e:
             logging.debug("JSON parse failed, trying fallback: %s", e)
-            # Try to find JSON in response
-            try:
-                match = re.search(r"\{[\s\S]*\}", response_text)
-                if match:
-                    return json.loads(match.group())
-            except (json.JSONDecodeError, ValueError) as fallback_error:
-                logging.debug("JSON fallback parse also failed: %s", fallback_error)
+            
+        # Fallback 1: Try to find JSON object in response
+        try:
+            match = re.search(r"\{[\s\S]*?\}", response_text)
+            if match:
+                result = json.loads(match.group())
+                if isinstance(result, dict):
+                    if "entities" in result:
+                        return result
+                    # Try wrapping if it looks like a single entity
+                    if "name" in result:
+                        return {"entities": [result]}
+        except (json.JSONDecodeError, ValueError) as fallback_error:
+            logging.debug("JSON object fallback failed: %s", fallback_error)
+            
+        # Fallback 2: Try to find JSON array in response
+        try:
+            match = re.search(r"\[[\s\S]*?\]", response_text)
+            if match:
+                result = json.loads(match.group())
+                if isinstance(result, list):
+                    return {"entities": result}
+        except (json.JSONDecodeError, ValueError) as array_error:
+            logging.debug("JSON array fallback failed: %s", array_error)
 
         return None
 

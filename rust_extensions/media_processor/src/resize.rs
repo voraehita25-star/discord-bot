@@ -59,10 +59,17 @@ pub fn resize_image(
             
             let scaled = img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
             
-            let x = (scaled_w.saturating_sub(new_w)) / 2;
-            let y = (scaled_h.saturating_sub(new_h)) / 2;
+            // Get actual dimensions after resize for bounds check
+            let (actual_w, actual_h) = scaled.dimensions();
             
-            scaled.crop_imm(x, y, new_w, new_h)
+            let x = (actual_w.saturating_sub(new_w)) / 2;
+            let y = (actual_h.saturating_sub(new_h)) / 2;
+            
+            // Clamp crop dimensions to prevent panic on edge cases
+            let crop_w = new_w.min(actual_w.saturating_sub(x));
+            let crop_h = new_h.min(actual_h.saturating_sub(y));
+            
+            scaled.crop_imm(x, y, crop_w, crop_h)
         }
         ResizeMode::Stretch => {
             img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)

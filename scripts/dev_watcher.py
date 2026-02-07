@@ -178,32 +178,16 @@ try:
 except ImportError:
     WATCHDOG_AVAILABLE = False
 
-# Import shared Colors module
+# Import shared Colors module (with fallback)
 try:
-    from utils.media.colors import Colors, enable_windows_ansi
-
-    enable_windows_ansi()
+    from shared.colors_fallback import Colors
 except ImportError:
-
-    class Colors:
-        """Fallback ANSI Color Codes"""
-
-        RESET = "\033[0m"
-        BOLD = "\033[1m"
-        DIM = "\033[2m"
-        RED = "\033[31m"
-        GREEN = "\033[32m"
-        YELLOW = "\033[33m"
-        BLUE = "\033[34m"
-        MAGENTA = "\033[35m"
-        CYAN = "\033[36m"
-        WHITE = "\033[37m"
-        BRIGHT_RED = "\033[91m"
-        BRIGHT_GREEN = "\033[92m"
-        BRIGHT_YELLOW = "\033[93m"
-        BRIGHT_BLUE = "\033[94m"
-        BRIGHT_MAGENTA = "\033[95m"
-        BRIGHT_CYAN = "\033[96m"
+    # Direct import if shared module not available
+    try:
+        from utils.media.colors import Colors, enable_windows_ansi
+        enable_windows_ansi()
+    except ImportError:
+        from shared.colors_fallback import Colors
 
 
 # =============================================================================
@@ -367,8 +351,9 @@ def play_sound() -> None:
             import winsound
 
             winsound.MessageBeep(winsound.MB_OK)
-        except Exception:
-            pass
+        except Exception as sound_err:
+            # Sound is non-critical, log at debug level
+            logging.debug("Sound notification failed (non-critical): %s", sound_err)
 
 
 # =============================================================================
@@ -435,7 +420,8 @@ if WATCHDOG_AVAILABLE:
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=2)
-                except Exception:
+                except Exception as stop_err:
+                    self.logger.debug("Error stopping process (will force kill): %s", stop_err)
                     with contextlib.suppress(Exception):
                         self.process.kill()
 
@@ -661,7 +647,8 @@ class DevWatcherService:
             else:
                 print(f"{Colors.GREEN}  Continuing...{Colors.RESET}")
                 print(f"{Colors.DIM}  (Watching for changes...){Colors.RESET}\n")
-        except Exception:
+        except (EOFError, KeyboardInterrupt, OSError):
+            # Input interrupted or unavailable - continue running
             print(f"{Colors.GREEN}  Continuing...{Colors.RESET}\n")
 
 
@@ -781,8 +768,8 @@ def main():
             event_handler.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             event_handler.process.kill()
-        except Exception:
-            pass
+        except Exception as final_stop_err:
+            logger.debug("Error during final shutdown (ignored): %s", final_stop_err)
 
     observer.join()
 

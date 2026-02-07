@@ -10,12 +10,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import discord
-
-if TYPE_CHECKING:
-    pass
 
 # Import constants
 try:
@@ -31,6 +28,8 @@ except ImportError:
 CHARACTER_TAG_PATTERN = re.compile(r"^\[([^\]]+)\]:\s*")
 URL_PATTERN = re.compile(r"https?://\S+")
 MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
+# Patterns for dangerous mentions that should be sanitized in webhook messages
+DANGEROUS_MENTION_PATTERN = re.compile(r"@(everyone|here)", re.IGNORECASE)
 
 
 @dataclass
@@ -126,6 +125,23 @@ class ResponseSender:
             logging.error("Send response error: %s", e)
             return SendResult(success=False, error=str(e))
 
+    def _sanitize_webhook_content(self, content: str) -> str:
+        """Sanitize content for webhook sending to prevent @everyone/@here mentions.
+
+        Webhooks can bypass allowed_mentions for these special mentions, so we need
+        to escape them manually.
+
+        Args:
+            content: Content to sanitize
+
+        Returns:
+            Sanitized content with dangerous mentions escaped
+        """
+        # Replace @everyone and @here with escaped versions
+        # Use zero-width space to break the mention
+        sanitized = DANGEROUS_MENTION_PATTERN.sub(r"@\u200b\1", content)
+        return sanitized
+
     def extract_character_tag(self, content: str) -> tuple[str | None, str]:
         """Extract character tag from content.
 
@@ -138,13 +154,11 @@ class ResponseSender:
         match = CHARACTER_TAG_PATTERN.match(content)
         if match:
             character_name = match.group(1)
-            content = content[match.end():]
+            content = content[match.end() :]
             return character_name, content
         return None, content
 
-    def split_content(
-        self, content: str, max_length: int = MAX_DISCORD_LENGTH
-    ) -> list[str]:
+    def split_content(self, content: str, max_length: int = MAX_DISCORD_LENGTH) -> list[str]:
         """Split content into chunks that fit Discord's limit.
 
         Args:
@@ -225,7 +239,7 @@ class ResponseSender:
                 perms = channel.permissions_for(guild.me)
                 return getattr(perms, "manage_webhooks", False)
 
-        return True
+        return False
 
     async def _send_via_webhook(
         self,
@@ -262,9 +276,17 @@ class ResponseSender:
             last_message_id = None
             for i, chunk in enumerate(chunks):
                 try:
+                    # Add small delay between chunks to prevent rate limiting
+                    if i > 0:
+                        await asyncio.sleep(0.3)
+
+                    # Sanitize dangerous mentions in webhook messages
+                    # (webhooks bypass allowed_mentions for @everyone/@here)
+                    sanitized_chunk = self._sanitize_webhook_content(chunk)
+
                     msg = await asyncio.wait_for(
                         webhook.send(
-                            chunk,
+                            sanitized_chunk,
                             username=avatar_name or "AI",
                             avatar_url=avatar_url,
                             wait=True,
@@ -341,6 +363,10 @@ class ResponseSender:
             for i, chunk in enumerate(chunks):
                 # Only reply to first chunk
                 ref = reference if i == 0 else None
+
+                # Add delay between chunks to avoid Discord rate limits
+                if i > 0:
+                    await asyncio.sleep(0.3)
 
                 msg = await channel.send(
                     chunk,
@@ -441,9 +467,7 @@ class ResponseSender:
         content = content.replace("\x00", "")
 
         # Strip excessive whitespace
-        content = "\n".join(
-            line.rstrip() for line in content.split("\n")
-        )
+        content = "\n".join(line.rstrip() for line in content.split("\n"))
 
         # Remove excessive newlines (more than 2 in a row)
         while "\n\n\n" in content:

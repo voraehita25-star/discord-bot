@@ -505,6 +505,7 @@ class TestSaveHistoryDb:
             mock_db.save_ai_messages_batch = AsyncMock()
             mock_db.get_ai_history_count = AsyncMock(return_value=2)
             mock_db.save_ai_metadata = AsyncMock()
+            mock_db.get_ai_history = AsyncMock(return_value=[])  # Add mock for get_ai_history
             
             await _save_history_db(
                 channel_id=12345,

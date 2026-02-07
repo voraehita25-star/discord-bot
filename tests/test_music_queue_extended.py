@@ -41,7 +41,7 @@ class TestGetQueue:
         manager = QueueManager()
         queue = manager.get_queue(123456)
         
-        assert queue == []
+        assert len(queue) == 0
         assert 123456 in manager.queues
 
     def test_get_queue_returns_existing(self):

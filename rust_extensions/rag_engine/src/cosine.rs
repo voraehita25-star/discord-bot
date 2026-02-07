@@ -3,7 +3,10 @@
 /// Compute cosine similarity between two vectors using SIMD when available
 #[inline]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "Vector lengths must match");
+    // Validate vector lengths match - return 0.0 for invalid input
+    if a.len() != b.len() {
+        return 0.0;
+    }
     
     if a.is_empty() {
         return 0.0;

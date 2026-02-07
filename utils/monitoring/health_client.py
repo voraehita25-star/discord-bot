@@ -38,22 +38,28 @@ class HealthAPIClient:
         self._service_available: bool | None = None
         self._metrics_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self):
         """Initialize the client session."""
-        if self._session is not None:
-            return  # Already connected
+        async with self._connect_lock:
+            if self._session is not None:
+                return  # Already connected
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=5)
-        )
-        try:
-            await self._check_service()
-        except Exception:
-            # Clean up session if service check fails
-            await self._session.close()
-            self._session = None
-            raise
+            session = None
+            try:
+                session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=5)
+                )
+                self._session = session
+                await self._check_service()
+            except Exception as e:
+                # Clean up session if service check fails
+                logging.debug("Health client connection failed: %s", e)
+                if session:
+                    await session.close()
+                self._session = None
+                raise
 
     async def close(self):
         """Close the client session."""
@@ -64,24 +70,34 @@ class HealthAPIClient:
             self._session = None
 
     async def _check_service(self) -> bool:
-        """Check if Go service is available."""
-        if self._service_available is not None:
+        """Check if Go service is available (re-checks every 5 minutes)."""
+        import time as _time
+        now = _time.monotonic()
+        if self._service_available is not None and (now - getattr(self, '_last_service_check', 0)) < 300:
             return self._service_available
+
+        if self._session is None:
+            self._service_available = False
+            self._last_service_check = now
+            logger.warning("⚠️ Go Health API session not initialized")
+            return False
 
         try:
             async with self._session.get(f"{self.base_url}/health/live") as resp:
                 self._service_available = resp.status == 200
+                self._last_service_check = now
                 if self._service_available:
                     logger.info("✅ Go Health API service available")
                 return self._service_available
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             self._service_available = False
+            self._last_service_check = now
             logger.warning("⚠️ Go Health API not available, metrics disabled")
             return False
 
     async def get_health(self) -> dict[str, Any]:
         """Get health status."""
-        if not self._service_available:
+        if not self._service_available or self._session is None:
             return {"status": "unknown", "error": "service unavailable"}
 
         try:
@@ -92,7 +108,7 @@ class HealthAPIClient:
 
     async def is_ready(self) -> bool:
         """Check if service is ready."""
-        if not self._service_available:
+        if not self._service_available or self._session is None:
             return True  # Assume ready if no health service
 
         try:
@@ -108,10 +124,11 @@ class HealthAPIClient:
             return
 
         try:
-            await self._session.post(
+            async with self._session.post(
                 f"{self.base_url}/health/service",
                 json={"name": name, "healthy": healthy}
-            )
+            ) as resp:
+                pass  # Response is auto-closed by async with
         except Exception as e:
             logger.debug("Failed to set service status for %s: %s", name, e)
 
@@ -153,17 +170,18 @@ class HealthAPIClient:
 
     async def _flush_buffer_locked(self):
         """Flush buffer (must hold lock)."""
-        if not self._metrics_buffer or not self._service_available:
+        if not self._metrics_buffer or not self._service_available or self._session is None:
             return
 
         metrics = self._metrics_buffer[:]
         self._metrics_buffer.clear()
 
         try:
-            await self._session.post(
+            async with self._session.post(
                 f"{self.base_url}/metrics/batch",
                 json=metrics
-            )
+            ) as resp:
+                pass  # Response is auto-closed by async with
         except Exception as e:
             # Re-add to buffer on failure (limited)
             logger.debug("Failed to flush metrics batch: %s", e)
@@ -187,6 +205,18 @@ async def get_health_client() -> HealthAPIClient:
         _client = HealthAPIClient()
         await _client.connect()
     return _client
+
+
+async def close_health_client() -> None:
+    """Close and cleanup the global health client.
+    
+    Should be called during bot shutdown to properly close connections
+    and flush any pending metrics.
+    """
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
 
 
 async def push_request_metric(endpoint: str, status: str = "success", duration: float | None = None):

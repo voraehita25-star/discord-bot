@@ -6,6 +6,7 @@ Provides real-time context about what characters are doing, where they are, etc.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -26,6 +27,7 @@ class CharacterState:
     last_action: str | None = None
     last_dialogue: str | None = None
     updated_at: float = field(default_factory=time.time)
+    last_accessed: float = field(default_factory=time.time)  # LRU tracking
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -73,25 +75,39 @@ class CharacterStateTracker:
         self._last_scene: dict[int, str] = {}  # Last scene description per channel
 
     def get_state(self, character_name: str, channel_id: int) -> CharacterState | None:
-        """Get current state of a character."""
+        """Get current state of a character (updates last_accessed for LRU)."""
         channel_states = self._states.get(channel_id, {})
-        return channel_states.get(character_name)
+        state = channel_states.get(character_name)
+        if state:
+            state.last_accessed = time.time()  # Update access time for LRU
+        return state
 
     def set_state(self, character_name: str, channel_id: int, **kwargs) -> CharacterState:
         """Update character state with provided fields."""
         if channel_id not in self._states:
             # Enforce max channels limit
             if len(self._states) >= self.MAX_CHANNELS:
-                # Remove oldest channel by oldest character update
-                oldest_channel = min(
-                    self._states.keys(),
-                    key=lambda cid: min(
-                        (s.updated_at for s in self._states[cid].values()),
-                        default=0,
-                    ),
-                )
-                self._states.pop(oldest_channel, None)
-                self._last_scene.pop(oldest_channel, None)
+                # Remove oldest channel by oldest access time (LRU)
+                # Filter out channels with empty states to avoid min() on empty sequence
+                channels_with_states = [
+                    cid for cid in self._states.keys() if self._states[cid]
+                ]
+                if channels_with_states:
+                    oldest_channel = min(
+                        channels_with_states,
+                        key=lambda cid: min(
+                            (s.last_accessed for s in self._states[cid].values()),
+                            default=0,
+                        ),
+                    )
+                    self._states.pop(oldest_channel, None)
+                    self._last_scene.pop(oldest_channel, None)
+                else:
+                    # All channels are empty, clear one arbitrarily
+                    if self._states:
+                        oldest_channel = next(iter(self._states))
+                        self._states.pop(oldest_channel, None)
+                        self._last_scene.pop(oldest_channel, None)
             self._states[channel_id] = {}
 
         existing = self._states[channel_id].get(character_name)
@@ -102,14 +118,15 @@ class CharacterStateTracker:
                 if hasattr(existing, key) and value is not None:
                     setattr(existing, key, value)
             existing.updated_at = time.time()
+            existing.last_accessed = time.time()  # Also update access time
             return existing
         else:
             # Enforce max characters per channel
             if len(self._states[channel_id]) >= self.MAX_CHARACTERS_PER_CHANNEL:
-                # Remove oldest character
+                # Remove least recently accessed character (LRU)
                 oldest_char = min(
                     self._states[channel_id].keys(),
-                    key=lambda name: self._states[channel_id][name].updated_at,
+                    key=lambda name: self._states[channel_id][name].last_accessed,
                 )
                 self._states[channel_id].pop(oldest_char, None)
 
@@ -131,8 +148,6 @@ class CharacterStateTracker:
         updated = []
 
         # Pattern: {{CharacterName}} followed by content
-        import re
-
         character_blocks = re.findall(r"\{\{([^}]+)\}\}(.*?)(?=\{\{|$)", response_text, re.DOTALL)
 
         for char_name, content in character_blocks:
@@ -256,11 +271,11 @@ class CharacterStateTracker:
 
         # Enforce max channel limit if still over
         if len(self._states) > max_channels:
-            # Sort by oldest updated_at and remove excess
+            # Sort by least recently accessed (LRU) and remove excess
             sorted_channels = sorted(
                 self._states.keys(),
                 key=lambda cid: max(
-                    (s.updated_at for s in self._states[cid].values()), default=0
+                    (s.last_accessed for s in self._states[cid].values()), default=0
                 ),
             )
             excess = len(self._states) - max_channels

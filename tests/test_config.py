@@ -70,9 +70,9 @@ class TestBotSettings:
             assert settings.auto_disconnect_delay == 180
             assert settings.default_volume == 0.5
             assert settings.max_queue_size == 500
-            assert settings.ai_history_limit_default == 100000
-            assert settings.ai_history_limit_main == 500000
-            assert settings.ai_history_limit_rp == 1000000
+            assert settings.ai_history_limit_default == 5000
+            assert settings.ai_history_limit_main == 10000
+            assert settings.ai_history_limit_rp == 20000
             assert settings.ai_session_timeout == 3600
 
     def test_env_values_loaded(self):

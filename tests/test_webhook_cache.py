@@ -3,7 +3,7 @@ Tests for cogs/ai_core/response/webhook_cache.py
 
 Comprehensive tests for webhook caching functionality.
 """
-
+import asyncio
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 import time
@@ -199,6 +199,7 @@ class TestStartStopCleanupTask:
         from cogs.ai_core.response import webhook_cache
 
         mock_bot = MagicMock()
+        mock_bot.loop.is_closed.return_value = False
         mock_task = MagicMock()
         mock_bot.loop.create_task.return_value = mock_task
 
@@ -207,6 +208,10 @@ class TestStartStopCleanupTask:
 
         mock_bot.loop.create_task.assert_called_once()
         assert webhook_cache._webhook_cache_cleanup_task is mock_task
+
+        # Close the unawaited coroutine to prevent RuntimeWarning during GC
+        coroutine_arg = mock_bot.loop.create_task.call_args[0][0]
+        coroutine_arg.close()
 
     def test_start_cleanup_task_already_running(self):
         """Test start doesn't create new task if already running."""
@@ -221,30 +226,34 @@ class TestStartStopCleanupTask:
 
         mock_bot.loop.create_task.assert_not_called()
 
-    def test_stop_cleanup_task(self):
+    @pytest.mark.asyncio
+    async def test_stop_cleanup_task(self):
         """Test stopping cleanup task."""
         from cogs.ai_core.response import webhook_cache
 
-        # Setup
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        webhook_cache._webhook_cache_cleanup_task = mock_task
+        # Create a real async task that we can cancel
+        async def dummy_task():
+            await asyncio.sleep(100)
+        
+        real_task = asyncio.create_task(dummy_task())
+        webhook_cache._webhook_cache_cleanup_task = real_task
         webhook_cache._webhook_cache[12345] = {"Bot": MagicMock()}
 
-        webhook_cache.stop_webhook_cache_cleanup()
+        await webhook_cache.stop_webhook_cache_cleanup()
 
-        mock_task.cancel.assert_called_once()
+        assert real_task.cancelled() or real_task.done()
         assert webhook_cache._webhook_cache_cleanup_task is None
         assert len(webhook_cache._webhook_cache) == 0
 
-    def test_stop_cleanup_task_not_running(self):
+    @pytest.mark.asyncio
+    async def test_stop_cleanup_task_not_running(self):
         """Test stopping when no task running."""
         from cogs.ai_core.response import webhook_cache
 
         webhook_cache._webhook_cache_cleanup_task = None
 
         # Should not raise
-        webhook_cache.stop_webhook_cache_cleanup()
+        await webhook_cache.stop_webhook_cache_cleanup()
 
 
 class TestModuleExports:

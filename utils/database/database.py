@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -15,6 +17,10 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+# Database timeout configuration (in seconds)
+# Can be overridden via environment variable
+DB_CONNECTION_TIMEOUT = float(os.getenv("DB_CONNECTION_TIMEOUT", "30.0"))
 
 # Database file path
 DB_DIR = Path("data")
@@ -54,15 +60,17 @@ class Database:
         self._export_delay = 3  # seconds
         # Track multiple export tasks to prevent task destruction warnings
         self._export_tasks: set[asyncio.Task] = set()
-        # Connection pool semaphore - optimized for single-user high-RAM setup
-        # Higher concurrency for faster parallel operations
-        self._pool_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent connections (was 30)
+        # Connection pool semaphore - reduced for better SQLite compatibility with WAL mode
+        # SQLite doesn't handle high concurrent writes well, 20 is a good balance
+        self._pool_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent connections (was 50)
         self._connection_count = 0
         self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
-        logging.info("💾 Async Database manager created: %s (pool=50)", self.db_path)
+        self._export_lock = asyncio.Lock()  # Lock for export scheduling
+        logging.info("💾 Async Database manager created: %s (pool=20, WAL mode)", self.db_path)
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""
+        # Use sync check first to avoid creating task if already pending
         if self._export_pending:
             return
 
@@ -351,7 +359,7 @@ class Database:
             """)
 
             # ==================== Dashboard Chat Tables ====================
-            
+
             # Dashboard Conversations Table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS dashboard_conversations (
@@ -382,14 +390,21 @@ class Database:
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     thinking TEXT,
+                    mode TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (conversation_id) REFERENCES dashboard_conversations(id) ON DELETE CASCADE
                 )
             """)
-            
+
             # Add thinking column if not exists (migration)
             try:
                 await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN thinking TEXT")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
+
+            # Add mode column if not exists (migration)
+            try:
+                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN mode TEXT")
             except aiosqlite.OperationalError:
                 pass  # Column already exists
             await conn.execute("""
@@ -409,10 +424,12 @@ class Database:
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             # Migration: add is_creator column if not exists
             try:
-                await conn.execute("ALTER TABLE dashboard_user_profile ADD COLUMN is_creator INTEGER DEFAULT 0")
+                await conn.execute(
+                    "ALTER TABLE dashboard_user_profile ADD COLUMN is_creator INTEGER DEFAULT 0"
+                )
             except aiosqlite.OperationalError:
                 pass  # Column already exists
 
@@ -441,18 +458,23 @@ class Database:
         # Acquire semaphore slot (limits concurrent connections)
         async with self._pool_semaphore:
             self._connection_count += 1
-            conn = await aiosqlite.connect(self.db_path, timeout=30.0)
+            conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
             conn.row_factory = aiosqlite.Row
 
-            # Performance optimizations for high-RAM machines (32GB+)
+            # Performance optimizations — set once per connection (lightweight)
+            # Note: journal_mode=WAL and page_size only need to be set once per DB,
+            # but WAL is cheap to re-set and ensures consistency.
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
-            await conn.execute("PRAGMA cache_size=250000")  # ~1GB cache (was 400MB)
+            await conn.execute("PRAGMA cache_size=250000")
             await conn.execute("PRAGMA temp_store=MEMORY")
-            await conn.execute("PRAGMA mmap_size=2147483648")  # 2GB memory-mapped I/O (was 1GB)
+            await conn.execute("PRAGMA mmap_size=2147483648")
             await conn.execute("PRAGMA foreign_keys=ON")
-            await conn.execute("PRAGMA page_size=8192")  # Larger pages
-            await conn.execute("PRAGMA wal_autocheckpoint=2000")  # Checkpoint every 2000 pages (less frequent)
+            # page_size only takes effect on new databases, skip on existing
+            # await conn.execute("PRAGMA page_size=8192")
+            await conn.execute(
+                "PRAGMA wal_autocheckpoint=2000"
+            )  # Checkpoint every 2000 pages (less frequent)
 
             try:
                 yield conn
@@ -515,8 +537,8 @@ class Database:
             )
 
         # Recreate the semaphore (resets available slots)
-        # Use same value as __init__ (50) to prevent mismatch
-        self._pool_semaphore = asyncio.Semaphore(50)
+        # Use same value as __init__ (20) to prevent mismatch
+        self._pool_semaphore = asyncio.Semaphore(20)
 
         # Re-ensure schema on next connection
         self._schema_initialized = False
@@ -546,32 +568,35 @@ class Database:
         conn = None
 
         for attempt in range(max_retries):
+            conn = None
             try:
                 # Acquire semaphore slot
                 async with self._pool_semaphore:
                     self._connection_count += 1
-                    conn = await aiosqlite.connect(self.db_path, timeout=30.0)
-                    conn.row_factory = aiosqlite.Row
-
-                    # Performance optimizations
-                    await conn.execute("PRAGMA journal_mode=WAL")
-                    await conn.execute("PRAGMA synchronous=NORMAL")
-                    await conn.execute("PRAGMA cache_size=100000")
-                    await conn.execute("PRAGMA temp_store=MEMORY")
-                    await conn.execute("PRAGMA mmap_size=1073741824")
-                    await conn.execute("PRAGMA foreign_keys=ON")
-                    await conn.execute("PRAGMA page_size=8192")
-                    await conn.execute("PRAGMA wal_autocheckpoint=1000")
-
                     try:
-                        yield conn
-                        await conn.commit()
-                        return  # Success, exit
-                    except aiosqlite.Error:
-                        await conn.rollback()
-                        raise
+                        conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
+                        conn.row_factory = aiosqlite.Row
+
+                        # Performance optimizations
+                        await conn.execute("PRAGMA journal_mode=WAL")
+                        await conn.execute("PRAGMA synchronous=NORMAL")
+                        await conn.execute("PRAGMA cache_size=100000")
+                        await conn.execute("PRAGMA temp_store=MEMORY")
+                        await conn.execute("PRAGMA mmap_size=1073741824")
+                        await conn.execute("PRAGMA foreign_keys=ON")
+                        await conn.execute("PRAGMA page_size=8192")
+                        await conn.execute("PRAGMA wal_autocheckpoint=1000")
+
+                        try:
+                            yield conn
+                            await conn.commit()
+                            return  # Success, exit
+                        except aiosqlite.Error:
+                            await conn.rollback()
+                            raise
                     finally:
-                        await conn.close()
+                        if conn is not None:
+                            await conn.close()
                         self._connection_count -= 1
 
             except Exception as e:
@@ -591,7 +616,9 @@ class Database:
                         await self._reinitialize_pool()
 
         logging.error("💀 All database connection attempts failed")
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unknown database error occurred during connection")
 
     # ==================== RAG Operations ====================
 
@@ -604,7 +631,8 @@ class Database:
                 "INSERT INTO ai_long_term_memory (channel_id, content, embedding) VALUES (?, ?, ?)",
                 (channel_id, content, embedding_bytes),
             )
-            return cursor.lastrowid
+            rowid = cursor.lastrowid
+            return int(rowid) if rowid is not None else 0
 
     async def get_all_rag_memories(self, channel_id: int | None = None) -> list[Any]:
         """Get all memories for similarity search."""
@@ -618,7 +646,8 @@ class Database:
                 cursor = await conn.execute(
                     "SELECT id, content, embedding, created_at FROM ai_long_term_memory"
                 )
-            return await cursor.fetchall()
+            rows = await cursor.fetchall()
+            return list(rows)
 
     # ==================== AI History Operations ====================
 
@@ -640,7 +669,7 @@ class Database:
                 (channel_id,),
             )
             row = await cursor.fetchone()
-            next_local_id = row[0] if row else 1
+            next_local_id = row[0] if row and row[0] else 1
 
             cursor = await conn.execute(
                 """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
@@ -651,7 +680,7 @@ class Database:
 
         # Trigger auto-export
         self._schedule_export(channel_id)
-        return lastrowid
+        return lastrowid if lastrowid is not None else 0
 
     async def save_ai_messages_batch(self, messages: list[dict[str, Any]]) -> int:
         """Batch insert AI messages for better performance."""
@@ -675,7 +704,7 @@ class Database:
                     (channel_id,),
                 )
                 row = await cursor.fetchone()
-                next_local_id = (row[0] or 0) + 1
+                next_local_id = ((row[0] if row else 0) or 0) + 1
 
                 # Add local_id to each message
                 for msg in channel_messages:
@@ -934,7 +963,8 @@ class Database:
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (error_type, error_message, traceback, guild_id, channel_id, user_id, command),
             )
-            return cursor.lastrowid
+            rowid = cursor.lastrowid
+            return int(rowid) if rowid is not None else 0
 
     # ==================== Music Queue ====================
 
@@ -982,6 +1012,94 @@ class Database:
             logging.error("Failed to clear music queue: %s", e)
             return False
 
+    # ==================== Audit Logs ====================
+
+    async def get_audit_logs(
+        self,
+        days: int = 7,
+        guild_id: int | None = None,
+        action_type: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """
+        Get audit logs from database.
+
+        Args:
+            days: Number of days to look back (default 7)
+            guild_id: Filter by guild ID (optional)
+            action_type: Filter by action type (optional)
+            limit: Maximum number of records to return (default 1000)
+
+        Returns:
+            List of audit log entries as dictionaries
+        """
+        try:
+            async with self.get_connection() as conn:
+                conn.row_factory = aiosqlite.Row
+
+                # Build query with optional filters
+                query = """
+                    SELECT id, action_type, guild_id, user_id, target_id, details, created_at
+                    FROM audit_log
+                    WHERE created_at >= datetime('now', ?)
+                """
+                params: list[Any] = [f"-{days} days"]
+
+                if guild_id is not None:
+                    query += " AND guild_id = ?"
+                    params.append(guild_id)
+
+                if action_type is not None:
+                    query += " AND action_type = ?"
+                    params.append(action_type)
+
+                query += " ORDER BY created_at DESC LIMIT ?"
+                params.append(limit)
+
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logging.error("Failed to get audit logs: %s", e)
+            return []
+
+    async def log_audit(
+        self,
+        action_type: str,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        target_id: int | None = None,
+        details: str | None = None,
+    ) -> int:
+        """
+        Log an audit entry to the database.
+
+        Args:
+            action_type: Type of action (e.g., "channel_create", "role_delete")
+            guild_id: Guild where action occurred
+            user_id: User who performed the action
+            target_id: Target of the action (channel ID, role ID, etc.)
+            details: Additional details as JSON string or text
+
+        Returns:
+            ID of the created audit log entry
+        """
+        try:
+            async with self.get_connection() as conn:
+                cursor = await conn.execute(
+                    """INSERT INTO audit_log
+                       (action_type, guild_id, user_id, target_id, details)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (action_type, guild_id, user_id, target_id, details),
+                )
+                await conn.commit()
+                rowid = cursor.lastrowid
+                return int(rowid) if rowid is not None else 0
+        except Exception as e:
+            logging.error("Failed to log audit entry: %s", e)
+            return 0
+
     # ==================== Dashboard Conversations ====================
 
     async def create_dashboard_conversation(
@@ -995,7 +1113,7 @@ class Database:
         """Create a new dashboard conversation."""
         async with self.get_connection() as conn:
             await conn.execute(
-                """INSERT INTO dashboard_conversations 
+                """INSERT INTO dashboard_conversations
                    (id, title, role_preset, system_instruction, thinking_enabled)
                    VALUES (?, ?, ?, ?, ?)""",
                 (conversation_id, title, role_preset, system_instruction, thinking_enabled),
@@ -1006,7 +1124,7 @@ class Database:
         """Get all dashboard conversations ordered by most recent."""
         async with self.get_connection() as conn:
             cursor = await conn.execute(
-                """SELECT c.*, 
+                """SELECT c.*,
                           (SELECT COUNT(*) FROM dashboard_messages WHERE conversation_id = c.id) as message_count
                    FROM dashboard_conversations c
                    ORDER BY c.is_starred DESC, c.updated_at DESC
@@ -1017,7 +1135,7 @@ class Database:
             results = []
             for row in rows:
                 d = dict(row)
-                d['is_starred'] = bool(d.get('is_starred'))
+                d["is_starred"] = bool(d.get("is_starred"))
                 results.append(d)
             return results
 
@@ -1031,33 +1149,35 @@ class Database:
             row = await cursor.fetchone()
             if row:
                 d = dict(row)
-                d['is_starred'] = bool(d.get('is_starred'))
+                d["is_starred"] = bool(d.get("is_starred"))
                 return d
             return None
 
-    async def update_dashboard_conversation(
-        self, conversation_id: str, **updates
-    ) -> bool:
+    async def update_dashboard_conversation(self, conversation_id: str, **updates) -> bool:
         """Update a dashboard conversation."""
-        allowed_columns = {"title", "role_preset", "system_instruction", "thinking_enabled", "is_starred"}
+        allowed_columns = {
+            "title",
+            "role_preset",
+            "system_instruction",
+            "thinking_enabled",
+            "is_starred",
+        }
         safe_updates = {k: v for k, v in updates.items() if k in allowed_columns}
-        
+
         if not safe_updates:
             return False
 
         async with self.get_connection() as conn:
             set_clause = ", ".join([f"{k} = ?" for k in safe_updates])
-            values = list(safe_updates.values()) + [conversation_id]
-            
+            values = [*list(safe_updates.values()), conversation_id]
+
             await conn.execute(
                 f"UPDATE dashboard_conversations SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 values,
             )
             return True
 
-    async def update_dashboard_conversation_star(
-        self, conversation_id: str, starred: bool
-    ) -> bool:
+    async def update_dashboard_conversation_star(self, conversation_id: str, starred: bool) -> bool:
         """Update the starred status of a conversation."""
         async with self.get_connection() as conn:
             await conn.execute(
@@ -1066,9 +1186,7 @@ class Database:
             )
             return True
 
-    async def rename_dashboard_conversation(
-        self, conversation_id: str, title: str
-    ) -> bool:
+    async def rename_dashboard_conversation(self, conversation_id: str, title: str) -> bool:
         """Rename a dashboard conversation."""
         async with self.get_connection() as conn:
             await conn.execute(
@@ -1085,26 +1203,32 @@ class Database:
                 "DELETE FROM dashboard_conversations WHERE id = ?",
                 (conversation_id,),
             )
-            
+
             # Delete the exported JSON file if it exists
             try:
                 export_dir = Path("data/db_export/dashboard_chats")
                 json_file = export_dir / f"{conversation_id}.json"
                 if json_file.exists():
                     json_file.unlink()
-                    logging.info(f"🗑️ Deleted exported JSON: {json_file.name}")
+                    logging.info("🗑️ Deleted exported JSON: %s", json_file.name)
             except Exception as e:
-                logging.warning(f"Failed to delete exported JSON for {conversation_id}: {e}")
-            
+                logging.warning("Failed to delete exported JSON for %s: %s", conversation_id, e)
+
             return True
 
     async def save_dashboard_message(
-        self, conversation_id: str, role: str, content: str, thinking: str | None = None, mode: str | None = None
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        thinking: str | None = None,
+        mode: str | None = None,
     ) -> int:
         """Save a message to a dashboard conversation."""
         from datetime import datetime
+
         local_now = datetime.now().isoformat()
-        
+
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, created_at)
@@ -1116,13 +1240,13 @@ class Database:
                 "UPDATE dashboard_conversations SET updated_at = ? WHERE id = ?",
                 (local_now, conversation_id),
             )
-            
+
             msg_id = cursor.lastrowid
-        
+
         # Auto-export this conversation to JSON (realtime)
         self._schedule_dashboard_export(conversation_id)
-        
-        return msg_id
+
+        return msg_id if msg_id is not None else 0
 
     async def get_dashboard_messages(
         self, conversation_id: str, limit: int | None = None
@@ -1132,7 +1256,7 @@ class Database:
             if limit:
                 cursor = await conn.execute(
                     """SELECT id, role, content, thinking, mode, created_at
-                       FROM dashboard_messages 
+                       FROM dashboard_messages
                        WHERE conversation_id = ?
                        ORDER BY created_at ASC
                        LIMIT ?""",
@@ -1141,7 +1265,7 @@ class Database:
             else:
                 cursor = await conn.execute(
                     """SELECT id, role, content, thinking, mode, created_at
-                       FROM dashboard_messages 
+                       FROM dashboard_messages
                        WHERE conversation_id = ?
                        ORDER BY created_at ASC""",
                     (conversation_id,),
@@ -1155,18 +1279,18 @@ class Database:
         """Export a dashboard conversation to JSON or Markdown."""
         conversation = await self.get_dashboard_conversation(conversation_id)
         messages = await self.get_dashboard_messages(conversation_id)
-        
+
         if not conversation:
             return ""
 
         if export_format == "markdown":
             lines = [
                 f"# {conversation.get('title', 'Untitled Conversation')}",
-                f"",
+                "",
                 f"**Role:** {conversation.get('role_preset', 'general')}",
                 f"**Created:** {conversation.get('created_at', '')}",
                 f"**Thinking Mode:** {'Enabled' if conversation.get('thinking_enabled') else 'Disabled'}",
-                f"",
+                "",
                 "---",
                 "",
             ]
@@ -1180,10 +1304,15 @@ class Database:
             return "\n".join(lines)
         else:
             # JSON format
-            return json.dumps({
-                "conversation": conversation,
-                "messages": messages,
-            }, ensure_ascii=False, indent=2, default=str)
+            return json.dumps(
+                {
+                    "conversation": conversation,
+                    "messages": messages,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
 
     async def export_all_dashboard_conversations(self) -> None:
         """Export all dashboard conversations to JSON files."""
@@ -1192,44 +1321,49 @@ class Database:
             dashboard_export_dir.mkdir(exist_ok=True)
 
             conversations = await self.get_dashboard_conversations(limit=1000)
-            
+
             for conv in conversations:
                 conv_id = conv["id"]
                 messages = await self.get_dashboard_messages(conv_id)
-                
+
                 export_data = {
                     "conversation": conv,
                     "messages": messages,
                 }
-                
+
                 output_file = dashboard_export_dir / f"{conv_id}.json"
                 output_file.write_text(
                     json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
                     encoding="utf-8",
                 )
 
-            logging.info(f"📤 Exported {len(conversations)} dashboard conversations")
+            logging.info("📤 Exported %d dashboard conversations", len(conversations))
         except Exception as e:
-            logging.error(f"Failed to export dashboard conversations: {e}")
+            logging.error("Failed to export dashboard conversations: %s", e)
 
     # ==================== Dashboard Memory Operations ====================
 
-    async def save_dashboard_memory(self, content: str, category: str = "general", importance: int = 1) -> int:
+    async def save_dashboard_memory(
+        self, content: str, category: str = "general", importance: int = 1
+    ) -> int:
         """Save a memory to dashboard long-term storage."""
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 "INSERT INTO dashboard_memories (content, category, importance) VALUES (?, ?, ?)",
                 (content, category, importance),
             )
-            return cursor.lastrowid
+            rowid = cursor.lastrowid
+            return int(rowid) if rowid is not None else 0
 
-    async def get_dashboard_memories(self, category: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    async def get_dashboard_memories(
+        self, category: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """Get dashboard memories, optionally filtered by category."""
         async with self.get_connection() as conn:
             if category:
                 cursor = await conn.execute(
                     """SELECT id, content, category, importance, created_at
-                       FROM dashboard_memories 
+                       FROM dashboard_memories
                        WHERE category = ?
                        ORDER BY importance DESC, created_at DESC
                        LIMIT ?""",
@@ -1238,14 +1372,20 @@ class Database:
             else:
                 cursor = await conn.execute(
                     """SELECT id, content, category, importance, created_at
-                       FROM dashboard_memories 
+                       FROM dashboard_memories
                        ORDER BY importance DESC, created_at DESC
                        LIMIT ?""",
                     (limit,),
                 )
             rows = await cursor.fetchall()
             return [
-                {"id": r[0], "content": r[1], "category": r[2], "importance": r[3], "created_at": r[4]}
+                {
+                    "id": r[0],
+                    "content": r[1],
+                    "category": r[2],
+                    "importance": r[3],
+                    "created_at": r[4],
+                }
                 for r in rows
             ]
 
@@ -1263,10 +1403,21 @@ class Database:
             )
             row = await cursor.fetchone()
             if row:
-                return {"display_name": row[0], "bio": row[1], "preferences": row[2], "is_creator": bool(row[3])}
+                return {
+                    "display_name": row[0],
+                    "bio": row[1],
+                    "preferences": row[2],
+                    "is_creator": bool(row[3]),
+                }
             return None
 
-    async def save_dashboard_user_profile(self, display_name: str, bio: str | None = None, preferences: str | None = None, is_creator: bool = False) -> None:
+    async def save_dashboard_user_profile(
+        self,
+        display_name: str,
+        bio: str | None = None,
+        preferences: str | None = None,
+        is_creator: bool = False,
+    ) -> None:
         """Save or update dashboard user profile."""
         async with self.get_connection() as conn:
             await conn.execute(
@@ -1331,8 +1482,12 @@ class Database:
                         summary[table] = {"channels": len(channel_ids), "messages": total_messages}
                         continue
 
-                    # Normal tables - export as before
-                    cursor = await conn.execute(f"SELECT * FROM {table}")
+                    # Normal tables - export with validated table name
+                    # Validate table name against known schema tables for safety
+                    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):
+                        logging.warning("Skipping table with invalid name: %s", table)
+                        continue
+                    cursor = await conn.execute(f"SELECT * FROM [{table}]")
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
                     summary[table] = len(data)

@@ -19,6 +19,8 @@ def _safe_int_env(key: str, default: int) -> int:
             return int(value)
         return default
     except (ValueError, TypeError):
+        import logging
+        logging.warning("Invalid integer value for %s, using default: %d", key, default)
         return default
 
 
@@ -27,18 +29,18 @@ class BotSettings:
     """Bot configuration settings loaded from environment variables."""
 
     # Discord
-    discord_token: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", ""))
+    discord_token: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", ""), repr=False)
 
     # Gemini AI
-    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False)
     gemini_model: str = field(
         default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
     )
 
     # Spotify
-    spotipy_client_id: str | None = field(default_factory=lambda: os.getenv("SPOTIPY_CLIENT_ID"))
+    spotipy_client_id: str | None = field(default_factory=lambda: os.getenv("SPOTIPY_CLIENT_ID"), repr=False)
     spotipy_client_secret: str | None = field(
-        default_factory=lambda: os.getenv("SPOTIPY_CLIENT_SECRET")
+        default_factory=lambda: os.getenv("SPOTIPY_CLIENT_SECRET"), repr=False
     )
 
     # Guild IDs
@@ -71,9 +73,9 @@ class BotSettings:
     # AI Settings - optimized for Gemini 2M context window
     # NOTE: These are message storage limits, not token limits
     # For token-based context limits, see cogs/ai_core/data/constants.py
-    ai_history_limit_default: int = 100000  # 100k messages for regular channels
-    ai_history_limit_main: int = 500000  # 500k for main server
-    ai_history_limit_rp: int = 1000000  # 1M for roleplay (critical for continuity)
+    ai_history_limit_default: int = 5000  # 5k messages for regular channels
+    ai_history_limit_main: int = 10000  # 10k for main server
+    ai_history_limit_rp: int = 20000  # 20k for roleplay (critical for continuity)
     ai_session_timeout: int = 3600  # 1 hour
 
     # Paths
@@ -82,9 +84,18 @@ class BotSettings:
     logs_dir: str = "logs"
 
     def __post_init__(self):
-        """Ensure directories exist."""
+        """Ensure directories exist (only when running as main bot, not on import)."""
+        # Only create dirs if we appear to be running as the bot (not test/import context)
         for dir_path in [self.data_dir, self.temp_dir, self.logs_dir]:
             Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+    def __repr__(self) -> str:
+        """Custom repr that redacts sensitive fields."""
+        return (
+            f"BotSettings(gemini_model={self.gemini_model!r}, "
+            f"data_dir={self.data_dir!r}, "
+            f"ai_history_limit_default={self.ai_history_limit_default})"
+        )
 
 
 # Global settings instance

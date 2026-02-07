@@ -37,7 +37,7 @@ async def join_voice_channel(bot: Bot, channel_id: int) -> tuple[bool, str]:
         # Check if already connected to this channel
         guild = channel.guild
         if guild.voice_client:
-            if guild.voice_client.channel.id == channel_id:
+            if guild.voice_client.channel and guild.voice_client.channel.id == channel_id:
                 return True, f"✅ อยู่ใน **{channel.name}** อยู่แล้ว"
             # Move to new channel
             await guild.voice_client.move_to(channel)

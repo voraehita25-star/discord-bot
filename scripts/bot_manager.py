@@ -29,32 +29,16 @@ try:
 except ImportError:
     SELF_HEALER_AVAILABLE = False
 
-# Import shared Colors module
+# Import shared Colors module (with fallback)
 try:
-    from utils.media.colors import Colors, enable_windows_ansi
-
-    enable_windows_ansi()
+    from shared.colors_fallback import Colors
 except ImportError:
-
-    class Colors:
-        """Fallback ANSI Color Codes"""
-
-        RESET = "\033[0m"
-        BOLD = "\033[1m"
-        DIM = "\033[2m"
-        RED = "\033[31m"
-        GREEN = "\033[32m"
-        YELLOW = "\033[33m"
-        BLUE = "\033[34m"
-        MAGENTA = "\033[35m"
-        CYAN = "\033[36m"
-        WHITE = "\033[37m"
-        BRIGHT_RED = "\033[91m"
-        BRIGHT_GREEN = "\033[92m"
-        BRIGHT_YELLOW = "\033[93m"
-        BRIGHT_BLUE = "\033[94m"
-        BRIGHT_MAGENTA = "\033[95m"
-        BRIGHT_CYAN = "\033[96m"
+    # Direct import if shared module not available
+    try:
+        from utils.media.colors import Colors, enable_windows_ansi
+        enable_windows_ansi()
+    except ImportError:
+        from shared.colors_fallback import Colors
 
 
 # Constants
@@ -496,21 +480,53 @@ def print_status():
     print(box_bottom())
 
 
-def stop_process_list(pids, name="process"):
-    """Validates and kills list of pids"""
+def stop_process_list(pids, name="process", graceful_timeout=5):
+    """Validates and kills list of pids with graceful shutdown.
+    
+    Args:
+        pids: List of process IDs to stop
+        name: Name for logging
+        graceful_timeout: Seconds to wait for graceful shutdown before force kill
+    """
     count = 0
     for pid in pids:
         try:
             proc = psutil.Process(pid)
+            
+            # Try SIGINT first (graceful) - allows cleanup handlers to run
+            # On Windows, SIGINT doesn't work well, so we use terminate
+            if sys.platform != "win32":
+                import signal
+                try:
+                    proc.send_signal(signal.SIGINT)
+                    print(f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}")
+                    try:
+                        proc.wait(timeout=graceful_timeout)
+                        print(f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}")
+                        count += 1
+                        continue
+                    except psutil.TimeoutExpired:
+                        pass  # Fall through to terminate
+                except (OSError, psutil.NoSuchProcess):
+                    pass  # Process may have already exited
+            
+            # Graceful shutdown with SIGTERM
             proc.terminate()
+            print(f"{Colors.YELLOW}  Terminating {name} (PID: {pid})...{Colors.RESET}")
             try:
-                proc.wait(timeout=3)
+                proc.wait(timeout=graceful_timeout)
+                print(f"{Colors.GREEN}  Stopped {name} (PID: {pid}){Colors.RESET}")
             except psutil.TimeoutExpired:
+                # Force kill if still running
                 proc.kill()
-            print(f"{Colors.GREEN}  Stopped {name} (PID: {pid}){Colors.RESET}")
+                try:
+                    proc.wait(timeout=5)  # Wait after force kill to ensure cleanup
+                except psutil.TimeoutExpired:
+                    pass  # Process may be zombie, continue anyway
+                print(f"{Colors.RED}  Force killed {name} (PID: {pid}){Colors.RESET}")
             count += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+            pass  # Process already terminated or no permission
         except OSError as e:
             print(f"{Colors.RED}  Error stopping PID {pid}: {e}{Colors.RESET}")
     return count

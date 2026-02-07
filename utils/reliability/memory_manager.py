@@ -215,19 +215,21 @@ class TTLCache(Generic[K, V]):
 
     def reset_stats(self) -> None:
         """Reset hit/miss statistics."""
-        self._hits = 0
-        self._misses = 0
-        self._evictions = 0
-        self._expired = 0
+        with self._lock:
+            self._hits = 0
+            self._misses = 0
+            self._evictions = 0
+            self._expired = 0
 
     def __len__(self) -> int:
         return len(self._cache)
 
     def __contains__(self, key: K) -> bool:
-        entry = self._cache.get(key)
-        if entry is None:
-            return False
-        return not self._is_expired(entry)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return False
+            return not self._is_expired(entry)
 
 
 class WeakRefCache(Generic[K, V]):
@@ -247,6 +249,7 @@ class WeakRefCache(Generic[K, V]):
     def __init__(self, name: str = "weak_cache"):
         self.name = name
         self._cache: dict[K, weakref.ref[V]] = {}
+        self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
         self._collected = 0
@@ -255,28 +258,30 @@ class WeakRefCache(Generic[K, V]):
     def _make_callback(self, key: K) -> Callable[[weakref.ref[V]], None]:
         """Create callback for when weak ref is collected."""
         def on_collected(ref: weakref.ref[V]) -> None:
-            self._cache.pop(key, None)
-            self._collected += 1
+            with self._lock:
+                self._cache.pop(key, None)
+                self._collected += 1
             self.logger.debug("Object collected for key: %s", key)
         return on_collected
 
     def get(self, key: K) -> V | None:
         """Get value from cache."""
-        ref = self._cache.get(key)
+        with self._lock:
+            ref = self._cache.get(key)
 
-        if ref is None:
-            self._misses += 1
-            return None
+            if ref is None:
+                self._misses += 1
+                return None
 
-        value = ref()
-        if value is None:
-            # Object was garbage collected
-            self._cache.pop(key, None)
-            self._misses += 1
-            return None
+            value = ref()
+            if value is None:
+                # Object was garbage collected
+                self._cache.pop(key, None)
+                self._misses += 1
+                return None
 
-        self._hits += 1
-        return value
+            self._hits += 1
+            return value
 
     def set(self, key: K, value: V) -> bool:
         """
@@ -286,7 +291,8 @@ class WeakRefCache(Generic[K, V]):
         """
         try:
             ref = weakref.ref(value, self._make_callback(key))
-            self._cache[key] = ref
+            with self._lock:
+                self._cache[key] = ref
             return True
         except TypeError:
             # Object cannot be weakly referenced
@@ -295,42 +301,47 @@ class WeakRefCache(Generic[K, V]):
 
     def delete(self, key: K) -> bool:
         """Delete entry from cache."""
-        ref = self._cache.pop(key, None)
-        return ref is not None
+        with self._lock:
+            ref = self._cache.pop(key, None)
+            return ref is not None
 
     def clear(self) -> int:
         """Clear all entries."""
-        count = len(self._cache)
-        self._cache.clear()
-        return count
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            return count
 
     def cleanup(self) -> int:
         """Remove dead references. Returns count removed."""
-        dead_keys = [
-            key for key, ref in self._cache.items()
-            if ref() is None
-        ]
+        with self._lock:
+            dead_keys = [
+                key for key, ref in self._cache.items()
+                if ref() is None
+            ]
 
-        for key in dead_keys:
-            self._cache.pop(key, None)
+            for key in dead_keys:
+                self._cache.pop(key, None)
 
-        return len(dead_keys)
+            return len(dead_keys)
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
-        alive = sum(1 for ref in self._cache.values() if ref() is not None)
+        with self._lock:
+            alive = sum(1 for ref in self._cache.values() if ref() is not None)
 
-        return {
-            "name": self.name,
-            "total_refs": len(self._cache),
-            "alive_refs": alive,
-            "hits": self._hits,
-            "misses": self._misses,
-            "collected": self._collected,
-        }
+            return {
+                "name": self.name,
+                "total_refs": len(self._cache),
+                "alive_refs": alive,
+                "hits": self._hits,
+                "misses": self._misses,
+                "collected": self._collected,
+            }
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
 
 class MemoryMonitor:
@@ -404,8 +415,23 @@ class MemoryMonitor:
                 results[name] = -1
 
         if aggressive:
-            # Force garbage collection
-            gc.collect()
+            # Force garbage collection in a non-blocking way
+            # gc.collect() can take 100-500ms, so we don't run it inline
+            # Instead, we schedule it as a background task
+            import gc
+            gc.collect(generation=0)  # Fast collection of youngest generation only
+
+        return results
+
+    async def _run_cleanups_async(self, aggressive: bool = False) -> dict[str, int]:
+        """Async version of cleanup that handles gc.collect properly."""
+        results = self._run_cleanups(aggressive=False)  # Run sync cleanups
+        
+        if aggressive:
+            # Run full gc.collect in executor to avoid blocking event loop
+            import gc
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, gc.collect)
 
         return results
 
@@ -422,7 +448,8 @@ class MemoryMonitor:
                         "🚨 CRITICAL memory usage: %.1f MB (threshold: %.1f MB)",
                         memory_mb, self.critical_mb
                     )
-                    results = self._run_cleanups(aggressive=True)
+                    # Use async cleanup for aggressive mode to avoid blocking
+                    results = await self._run_cleanups_async(aggressive=True)
                     total_cleaned = sum(v for v in results.values() if v > 0)
                     new_memory = self.get_memory_mb()
                     self.logger.info(

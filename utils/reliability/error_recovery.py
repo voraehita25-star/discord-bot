@@ -15,6 +15,7 @@ import asyncio
 import functools
 import logging
 import random
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -98,44 +99,90 @@ class BackoffState:
 
 # Global backoff state per service/function with TTL cleanup
 _backoff_states: dict[str, BackoffState] = {}
+_backoff_states_lock = threading.Lock()  # Thread-safe lock for sync access
+_backoff_states_async_lock = asyncio.Lock()  # Async lock for async access
 _BACKOFF_STATE_TTL = 3600  # 1 hour TTL for backoff states
 _MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
 
 
 def _cleanup_old_backoff_states() -> None:
-    """Remove old backoff states to prevent memory leak."""
-    if len(_backoff_states) <= _MAX_BACKOFF_STATES:
-        return
-
+    """Remove old backoff states to prevent memory leak.
+    
+    Cleanup is triggered either when:
+    1. State count exceeds MAX_BACKOFF_STATES
+    2. Called periodically from _get_backoff_state
+    """
     current_time = time.time()
-    # Find and remove states older than TTL
+    
+    # Always perform TTL-based cleanup
+    # Clean up states that are:
+    # 1. Older than TTL with no failures (successful recovery)
+    # 2. Older than 2x TTL regardless of failure count (very old)
+    # 3. Have very high failure counts but are old (likely abandoned services)
     keys_to_remove = [
         key for key, state in _backoff_states.items()
-        if current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-        and state.consecutive_failures == 0
+        if (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures == 0)
+        or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL * 2)
+        or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures > 100)  # Likely abandoned
     ]
     for key in keys_to_remove:
         _backoff_states.pop(key, None)
 
 
-def _get_backoff_state(key: str) -> BackoffState:
-    """Get or create backoff state for a key."""
-    # Periodically cleanup old states
-    if len(_backoff_states) > _MAX_BACKOFF_STATES:
-        _cleanup_old_backoff_states()
+# Counter for periodic cleanup trigger
+_backoff_call_counter = 0
 
-    if key not in _backoff_states:
-        _backoff_states[key] = BackoffState()
-    return _backoff_states[key]
+
+def _get_backoff_state(key: str) -> BackoffState:
+    """Get or create backoff state for a key (thread-safe with sync lock)."""
+    global _backoff_call_counter
+    
+    with _backoff_states_lock:
+        _backoff_call_counter += 1
+        
+        # Periodically cleanup old states (every 100 calls or when over limit)
+        # Use counter instead of modulo on dict size for reliable triggering
+        if len(_backoff_states) >= _MAX_BACKOFF_STATES or _backoff_call_counter >= 100:
+            _cleanup_old_backoff_states()
+            _backoff_call_counter = 0
+
+        if key not in _backoff_states:
+            _backoff_states[key] = BackoffState()
+        return _backoff_states[key]
+
+
+async def _get_backoff_state_async(key: str) -> BackoffState:
+    """Get or create backoff state for a key (async thread-safe)."""
+    async with _backoff_states_async_lock:
+        # Use the sync function which has its own thread lock
+        return _get_backoff_state(key)
 
 
 def _reset_backoff_state(key: str) -> None:
-    """Reset backoff state after success."""
-    if key in _backoff_states:
-        # Reset state instead of deleting to avoid re-creation overhead
-        state = _backoff_states[key]
-        state.previous_delay = 0.0
-        state.consecutive_failures = 0
+    """Reset backoff state after success.
+    
+    Note: This is called from async context via retry_async success path.
+    Thread-safe via _backoff_states_lock.
+    """
+    with _backoff_states_lock:
+        if key in _backoff_states:
+            # Reset state instead of deleting to avoid re-creation overhead
+            state = _backoff_states[key]
+            state.previous_delay = 0.0
+            state.consecutive_failures = 0
+
+
+async def _reset_backoff_state_async(key: str) -> None:
+    """Reset backoff state after success (async thread-safe)."""
+    async with _backoff_states_async_lock:
+        # Directly reset without calling _reset_backoff_state to avoid double-locking
+        with _backoff_states_lock:
+            if key in _backoff_states:
+                state = _backoff_states[key]
+                state.previous_delay = 0.0
+                state.consecutive_failures = 0
 
 
 def calculate_delay_sync(

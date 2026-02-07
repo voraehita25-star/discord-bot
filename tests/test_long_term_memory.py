@@ -164,23 +164,23 @@ class TestFactDataclass:
     def test_fact_decay_confidence(self):
         """Test Fact decay_confidence method."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         fact = Fact(user_id=12345, confidence=1.0)
-        
-        # Decay after 30 days
-        fact.decay_confidence(30)
-        assert fact.confidence < 1.0
-        assert fact.confidence > 0.8
+
+        # Decay after 30 days (returns decayed value without mutating)
+        decayed = fact.decay_confidence(30)
+        assert decayed < 1.0
+        assert decayed > 0.8
 
     def test_fact_decay_confidence_minimum(self):
         """Test Fact decay_confidence has minimum value."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         fact = Fact(user_id=12345, confidence=1.0)
-        
+
         # Decay after 1000 days
-        fact.decay_confidence(1000)
-        assert fact.confidence >= 0.1
+        decayed = fact.decay_confidence(1000)
+        assert decayed >= 0.1
 
 
 class TestFactExtractor:

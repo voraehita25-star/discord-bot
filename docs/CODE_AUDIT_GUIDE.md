@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** January 25, 2026 | **Tests:** 3,157 passed ✅ | **Warnings:** 0 ✅ | **Files:** 247 Python | **Test Files:** 126
+> **Last Updated:** February 7, 2026 | **Tests:** 3,157 passed ✅ | **Warnings:** 0 ✅ | **Skipped:** 0 ✅ | **Files:** 251 Python | **Test Files:** 126
 
 ## 🛠️ วิธีการตรวจสอบ
 
@@ -39,7 +39,7 @@ python -m pytest tests/ -v
 
 ---
 
-## 📁 รายการไฟล์ทั้งหมด (105 ไฟล์)
+## 📁 รายการไฟล์ทั้งหมด (251 ไฟล์)
 
 ### Core Files (3 ไฟล์)
 | ไฟล์ | คำอธิบาย |
@@ -216,28 +216,32 @@ python -m pytest tests/ -v
 
 ---
 
-### utils/monitoring/ (9 ไฟล์)
+### utils/monitoring/ (10 ไฟล์)
 | ไฟล์ | คำอธิบาย |
 |------|---------|
 | `__init__.py` | Package init |
 | `health_api.py` | HTTP health check API |
 | `logger.py` | Smart logging system |
 | `metrics.py` | Performance metrics |
+| `performance_tracker.py` | Response time tracking with percentiles |
 | `sentry_integration.py` | Sentry error tracking |
-| `structured_logger.py` | Structured logging |
+| `structured_logger.py` | JSON logging with context tracking |
 | `token_tracker.py` | API token tracking |
 | `audit_log.py` | Audit logging |
 | `feedback.py` | User feedback collection |
 
 ---
 
-### utils/reliability/ (4 ไฟล์)
+### utils/reliability/ (6 ไฟล์)
 | ไฟล์ | คำอธิบาย |
 |------|---------|
 | `__init__.py` | Package init |
 | `rate_limiter.py` | Rate limiting with token bucket |
 | `circuit_breaker.py` | Circuit breaker pattern |
 | `self_healer.py` | Auto-healing system |
+| `memory_manager.py` | TTL/WeakRef cache, memory monitoring |
+| `shutdown_manager.py` | Graceful shutdown coordination |
+| `error_recovery.py` | Smart exponential backoff with jitter |
 
 ---
 
@@ -268,6 +272,10 @@ python scripts/maintenance/check_db.py
 
 | วันที่ | ผู้ตรวจ | บัคที่พบ | สถานะ |
 |--------|---------|---------|-------|
+| 2026-01-16 | ME | `ai_cog.py` import path error | ✅ Fixed |
+| 2026-01-17 | ME | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
+| 2026-01-17 | ME | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
+| 2026-01-17 | ME | 19 tests out of sync with implementation | ✅ Fixed |
 | 2026-01-19 | ME | `music/cog.py` circular import with spotify_handler | ✅ Fixed |
 | 2026-01-19 | ME | `constants.py` missing `GAME_SEARCH_KEYWORDS` | ✅ Fixed |
 | 2026-01-19 | ME | `faust_data.py` missing `ESCALATION_FRAMINGS` | ✅ Fixed |
@@ -277,10 +285,6 @@ python scripts/maintenance/check_db.py
 | 2026-01-19 | ME | `ai_core/__init__.py` missing AI cog export | ✅ Fixed |
 | 2026-01-19 | ME | `migrate_to_db.py` wrong PROJECT_ROOT path | ✅ Fixed |
 | 2026-01-19 | ME | `database.py` export_to_json now splits by channel | ✅ Enhanced |
-| 2026-01-17 | ME | `rate_limiter.py` format_rate_limit_stats crash | ✅ Fixed |
-| 2026-01-17 | ME | `tools.py` sanitize_message_content security bugs | ✅ Fixed |
-| 2026-01-17 | ME | 19 tests out of sync with implementation | ✅ Fixed |
-| 2026-01-16 | ME | `ai_cog.py` import path error | ✅ Fixed |
 | 2026-01-20 | ME | `logic.py` duplicate IMAGEIO_AVAILABLE import | ✅ Fixed |
 | 2026-01-20 | ME | `logic.py` dead code knowledge_context | ✅ Fixed |
 | 2026-01-20 | ME | `logic.py` PIL Images NameError in finally | ✅ Fixed |
@@ -289,6 +293,14 @@ python scripts/maintenance/check_db.py
 | 2026-01-20 | ME | `tools.py` missing guild.me None check | ✅ Fixed |
 | 2026-01-20 | ME | `storage.py` shallow copy in cache return | ✅ Fixed |
 | 2026-01-20 | ME | `logic.py` magic number max_history | ✅ Fixed |
+| 2026-01-25 | ME | 18 issues in Phase 6 deep code audit (exceptions, memory bounds, resource leaks) | ✅ Fixed |
+| 2026-02-06 | ME | 38 issues in native_dashboard (Tauri) - XSS, CSP, async mutex, connection leaks | ✅ Fixed |
+| 2026-02-06 | ME | 4 issues in rust_extensions - dimension check, stale refs, overflow, crop bounds | ✅ Fixed |
+| 2026-02-06 | ME | 3 issues in `health_api/main.go` - dead stub, input validation, body limits | ✅ Fixed |
+| 2026-02-06 | ME | 3 issues in `url_fetcher/main.go` - SSRF, body limit, timeout cap | ✅ Fixed |
+| 2026-02-06 | ME | `check_db.py` connection leak - converted to `async with` | ✅ Fixed |
+| 2026-02-06 | ME | `migrate_to_db.py` sync/async mismatch + non-existent method | ✅ Fixed |
+| 2026-02-07 | ME | Phase 10: 9 test issues (skipped, warnings, incorrect assertions, duplicate code) | ✅ Fixed |
 
 ---
 

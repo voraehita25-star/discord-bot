@@ -90,24 +90,24 @@ class TestMessageQueueLock:
     """Tests for MessageQueue lock management."""
 
     def test_get_lock_creates_lock(self):
-        """Test get_lock creates a lock if not exists."""
+        """Test get_lock_sync creates a lock if not exists."""
         from cogs.ai_core.core.message_queue import MessageQueue
         
         queue = MessageQueue()
         
-        lock = queue.get_lock(12345)
+        lock = queue.get_lock_sync(12345)
         
         assert isinstance(lock, asyncio.Lock)
         assert 12345 in queue.processing_locks
 
     def test_get_lock_returns_same_lock(self):
-        """Test get_lock returns same lock for same channel."""
+        """Test get_lock_sync returns same lock for same channel."""
         from cogs.ai_core.core.message_queue import MessageQueue
         
         queue = MessageQueue()
         
-        lock1 = queue.get_lock(12345)
-        lock2 = queue.get_lock(12345)
+        lock1 = queue.get_lock_sync(12345)
+        lock2 = queue.get_lock_sync(12345)
         
         assert lock1 is lock2
 

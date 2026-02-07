@@ -6,6 +6,7 @@ Provides HTTP endpoints for health checks and monitoring.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -24,7 +25,11 @@ if TYPE_CHECKING:
 
 # Configuration
 HEALTH_API_PORT = int(os.getenv("HEALTH_API_PORT", "8080"))
-HEALTH_API_HOST = os.getenv("HEALTH_API_HOST", "0.0.0.0")
+HEALTH_API_HOST = os.getenv("HEALTH_API_HOST", "127.0.0.1")
+
+# Health check thresholds (configurable via env vars)
+HEARTBEAT_MAX_AGE_SECONDS = int(os.getenv("HEALTH_HEARTBEAT_MAX_AGE", "60"))
+MAX_LATENCY_MS = int(os.getenv("HEALTH_MAX_LATENCY_MS", "5000"))
 
 
 class BotHealthData:
@@ -35,6 +40,7 @@ class BotHealthData:
         self.bot: Bot | None = None
         self.last_heartbeat: datetime = datetime.now()
         self._counter_lock = threading.Lock()  # Thread-safe lock for counters
+        self._data_lock = threading.Lock()  # Thread-safe lock for bot data updates
         self.message_count: int = 0
         self.command_count: int = 0
         self.error_count: int = 0
@@ -45,16 +51,17 @@ class BotHealthData:
         self.cogs_loaded: list[str] = []
 
     def update_from_bot(self, bot: Bot) -> None:
-        """Update health data from bot instance."""
-        self.bot = bot
-        self.last_heartbeat = datetime.now()
-        self.is_ready = bot.is_ready()
+        """Update health data from bot instance (thread-safe)."""
+        with self._data_lock:
+            self.bot = bot
+            self.last_heartbeat = datetime.now()
+            self.is_ready = bot.is_ready()
 
-        if bot.is_ready():
-            self.latency_ms = bot.latency * 1000
-            self.guild_count = len(bot.guilds)
-            self.user_count = sum(g.member_count or 0 for g in bot.guilds)
-            self.cogs_loaded = list(bot.cogs.keys())
+            if bot.is_ready():
+                self.latency_ms = bot.latency * 1000
+                self.guild_count = len(bot.guilds)
+                self.user_count = sum(g.member_count or 0 for g in bot.guilds)
+                self.cogs_loaded = list(bot.cogs.keys())
 
     def increment_message(self) -> None:
         """Increment message counter (thread-safe)."""
@@ -92,26 +99,39 @@ class BotHealthData:
             return f"{seconds}s"
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert health data to dictionary."""
+        """Convert health data to dictionary (thread-safe)."""
         process = psutil.Process()
 
+        with self._data_lock:
+            is_ready = self.is_ready
+            latency_ms = self.latency_ms
+            guild_count = self.guild_count
+            user_count = self.user_count
+            cogs_loaded = self.cogs_loaded.copy()
+            last_heartbeat = self.last_heartbeat
+
+        with self._counter_lock:
+            message_count = self.message_count
+            command_count = self.command_count
+            error_count = self.error_count
+
         return {
-            "status": "healthy" if self.is_ready else "starting",
+            "status": "healthy" if is_ready else "starting",
             "timestamp": datetime.now().isoformat(),
             "uptime": self.get_uptime_str(),
             "uptime_seconds": int(self.get_uptime().total_seconds()),
             "bot": {
-                "ready": self.is_ready,
-                "latency_ms": round(self.latency_ms, 2),
-                "guilds": self.guild_count,
-                "users": self.user_count,
-                "cogs_loaded": len(self.cogs_loaded),
-                "cogs": self.cogs_loaded,
+                "ready": is_ready,
+                "latency_ms": round(latency_ms, 2),
+                "guilds": guild_count,
+                "users": user_count,
+                "cogs_loaded": len(cogs_loaded),
+                "cogs": cogs_loaded,
             },
             "stats": {
-                "messages_processed": self.message_count,
-                "commands_executed": self.command_count,
-                "errors": self.error_count,
+                "messages_processed": message_count,
+                "commands_executed": command_count,
+                "errors": error_count,
             },
             "system": {
                 "platform": platform.system(),
@@ -121,26 +141,31 @@ class BotHealthData:
                 "threads": process.num_threads(),
             },
             "heartbeat": {
-                "last": self.last_heartbeat.isoformat(),
-                "age_seconds": int((datetime.now() - self.last_heartbeat).total_seconds()),
+                "last": last_heartbeat.isoformat(),
+                "age_seconds": int((datetime.now() - last_heartbeat).total_seconds()),
             },
         }
 
     def is_healthy(self) -> bool:
-        """Check if bot is healthy."""
+        """Check if bot is healthy (thread-safe)."""
         # Bot is healthy if:
         # 1. It's ready
-        # 2. Heartbeat is recent (within last 60 seconds)
-        # 3. Latency is reasonable (under 5 seconds)
+        # 2. Heartbeat is recent (within configured threshold)
+        # 3. Latency is reasonable (under configured threshold)
 
-        if not self.is_ready:
+        with self._data_lock:
+            is_ready = self.is_ready
+            last_heartbeat = self.last_heartbeat
+            latency_ms = self.latency_ms
+
+        if not is_ready:
             return False
 
-        heartbeat_age = (datetime.now() - self.last_heartbeat).total_seconds()
-        if heartbeat_age > 60:
+        heartbeat_age = (datetime.now() - last_heartbeat).total_seconds()
+        if heartbeat_age > HEARTBEAT_MAX_AGE_SECONDS:
             return False
 
-        return not self.latency_ms > 5000
+        return not latency_ms > MAX_LATENCY_MS
 
     def get_ai_performance_stats(self) -> dict:
         """Get AI performance statistics from chat manager."""
@@ -365,7 +390,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 <div class="card" style="border-left:4px solid #e74c3c;"><div class="card-header"><span class="icon">📊</span><span class="name">Stats</span></div>
 <div class="stats"><div class="stat"><span class="value">{stats.get("messages_processed", 0)}</span><span class="label">Messages</span></div>
 <div class="stat"><span class="value">{stats.get("errors", 0)}</span><span class="label">Errors</span></div></div></div>
-</div><p class="footer">🌸 Cogs: {", ".join(bot.get("cogs", []))} | <a href="/health/json">View JSON</a></p>
+</div><p class="footer">🌸 Cogs: {html.escape(", ".join(bot.get("cogs", [])))} | <a href="/health/json">View JSON</a></p>
 </div>{self._get_sakura_js()}</body></html>"""
 
     def _generate_stats_html(self, data: dict) -> str:
@@ -396,7 +421,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
     def _generate_ai_stats_html(self, stats: dict) -> str:
         """Generate anime-themed HTML dashboard for AI stats."""
         if "error" in stats:
-            error_msg = stats["error"]
+            error_msg = html.escape(str(stats["error"]))  # Escape for XSS protection
             return f"""<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>🌸 AI Stats - Error</title><style>{self._get_anime_theme_css()}
 .error-box {{ text-align: center; padding: 60px 40px; }} .error-icon {{ font-size: 4em; margin-bottom: 20px; }}
@@ -429,8 +454,9 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
         for key, data in stats.items():
             color = colors.get(key, "#ff69b4")
+            escaped_name = html.escape(names.get(key, key))
             cards_html += f"""
-<div class="card" style="border-left:4px solid {color};"><div class="card-header"><span class="icon">{icons.get(key, "📈")}</span><span class="name">{names.get(key, key)}</span></div>
+<div class="card" style="border-left:4px solid {color};"><div class="card-header"><span class="icon">{icons.get(key, "📈")}</span><span class="name">{escaped_name}</span></div>
 <div class="stats four-cols"><div class="stat"><span class="value">{data.get("count", 0)}</span><span class="label">Calls</span></div>
 <div class="stat"><span class="value highlight">{data.get("avg_ms", 0):.1f}</span><span class="label">Avg ms</span></div>
 <div class="stat"><span class="value">{data.get("min_ms", 0):.1f}</span><span class="label">Min ms</span></div>
@@ -740,10 +766,12 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
     while True:
         try:
             health_data.update_from_bot(bot)
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logging.error("Error updating health data: %s", e)
-
-        await asyncio.sleep(interval)
+            await asyncio.sleep(interval)
 
 
 def setup_health_hooks(bot: Bot) -> None:

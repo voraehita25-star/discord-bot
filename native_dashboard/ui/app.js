@@ -32,6 +32,7 @@ class ErrorLogger {
     constructor() {
         this.errorQueue = [];
         this.isProcessing = false;
+        this.maxQueueSize = 100; // Prevent unbounded growth
         this.setupGlobalErrorHandlers();
     }
     setupGlobalErrorHandlers() {
@@ -63,6 +64,10 @@ class ErrorLogger {
         };
     }
     async log(errorType, message, stack) {
+        // Drop oldest errors if queue is full to prevent memory leak
+        if (this.errorQueue.length >= this.maxQueueSize) {
+            this.errorQueue.shift(); // Remove oldest
+        }
         this.errorQueue.push({ type: errorType, message, stack });
         this.processQueue();
     }
@@ -175,14 +180,14 @@ class MemoryManager {
             return;
         }
         container.innerHTML = filteredMemories.map(memory => `
-            <div class="memory-card" data-id="${memory.id}">
+            <div class="memory-card" data-id="${this.escapeHtml(String(memory.id))}">
                 <div class="memory-card-header">
-                    <span class="memory-category-badge">${memory.category}</span>
+                    <span class="memory-category-badge">${this.escapeHtml(memory.category || 'general')}</span>
                 </div>
                 <div class="memory-card-content">${this.escapeHtml(memory.content)}</div>
                 <div class="memory-card-footer">
                     <span class="memory-timestamp">${this.formatTime(memory.created_at)}</span>
-                    <button class="memory-delete-btn" data-id="${memory.id}">Delete</button>
+                    <button class="memory-delete-btn" data-id="${this.escapeHtml(String(memory.id))}">Delete</button>
                 </div>
             </div>
         `).join('');
@@ -289,13 +294,11 @@ class ChatManager {
         try {
             this.ws = new WebSocket('ws://127.0.0.1:8765/ws');
             this.ws.onopen = () => {
-                console.log('🔌 WebSocket connected');
                 this.connected = true;
                 this.reconnectAttempts = 0;
                 this.updateConnectionStatus(true);
             };
             this.ws.onclose = () => {
-                console.log('🔌 WebSocket disconnected');
                 this.connected = false;
                 this.updateConnectionStatus(false);
                 this.scheduleReconnect();
@@ -331,12 +334,12 @@ class ChatManager {
             this.reconnectTimeout = null;
         }
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.log('Max reconnect attempts reached');
+            console.warn('Max reconnect attempts reached');
             return;
         }
         this.reconnectAttempts++;
         const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        console.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
         this.reconnectTimeout = window.setTimeout(() => {
             this.reconnectTimeout = null;
             this.connect();
@@ -438,9 +441,7 @@ class ChatManager {
                 showToast('Conversation deleted', { type: 'success' });
                 break;
             case 'conversation_starred':
-                console.log('Received conversation_starred:', data);
                 const conv = this.conversations.find(c => c.id === data.id);
-                console.log('Found conversation:', conv);
                 if (conv)
                     conv.is_starred = data.starred;
                 // Also update currentConversation if it's the same one
@@ -591,7 +592,6 @@ class ChatManager {
         this.pendingRenameId = null;
     }
     starConversation(id, starred) {
-        console.log('Sending star request:', { type: 'star_conversation', id, starred });
         this.send({ type: 'star_conversation', id, starred });
     }
     exportConversation(id, format = 'json') {
@@ -819,7 +819,7 @@ class ChatManager {
             container.innerHTML = `
                 <div class="chat-welcome">
                     ${welcomeAvatarHtml}
-                    <h3>Chat with ${name}</h3>
+                    <h3>Chat with ${this.escapeHtml(name)}</h3>
                     <p>Type a message to start the conversation</p>
                 </div>
             `;
@@ -856,7 +856,7 @@ class ChatManager {
             if (!isUser && msg.thinking) {
                 thinkingHtml = `
                     <div class="thinking-container">
-                        <div class="thinking-header collapsible collapsed" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('collapsed');">
+                        <div class="thinking-header collapsible collapsed">
                             💭 Thought Process
                         </div>
                         <div class="thinking-content collapsed">${this.formatMessage(msg.thinking)}</div>
@@ -894,12 +894,29 @@ class ChatManager {
             img.addEventListener('click', () => {
                 const src = img.src;
                 if (src) {
-                    // Open image in new window for full view
+                    // Open image in new window safely (no document.write XSS)
                     const newWindow = window.open('', '_blank');
                     if (newWindow) {
-                        newWindow.document.write(`<html><head><title>Image Preview</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}img{max-width:100%;max-height:100vh;object-fit:contain;}</style></head><body><img src="${src}" alt="preview"></body></html>`);
+                        const doc = newWindow.document;
+                        doc.title = 'Image Preview';
+                        const style = doc.createElement('style');
+                        style.textContent = 'body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}img{max-width:100%;max-height:100vh;object-fit:contain;}';
+                        doc.head.appendChild(style);
+                        const imgEl = doc.createElement('img');
+                        imgEl.src = src;
+                        imgEl.alt = 'preview';
+                        doc.body.appendChild(imgEl);
                     }
                 }
+            });
+        });
+        // Setup thinking header toggle clicks (replaces inline onclick blocked by CSP)
+        container.querySelectorAll('.thinking-header.collapsible').forEach(header => {
+            header.addEventListener('click', () => {
+                header.classList.toggle('collapsed');
+                const content = header.nextElementSibling;
+                if (content)
+                    content.classList.toggle('collapsed');
             });
         });
         // Setup copy button clicks
@@ -1007,18 +1024,9 @@ class ChatManager {
     }
     formatTime(dateStr) {
         try {
-            // If no timezone info, treat as local time (not UTC)
-            let date;
-            if (dateStr.endsWith('Z') || dateStr.includes('+') || dateStr.includes('-', 10)) {
-                // Has timezone info, parse normally
-                date = new Date(dateStr);
-            }
-            else {
-                // No timezone, treat as local time by appending local offset
-                // Parse as local by not having Z suffix
-                date = new Date(dateStr);
-                // JavaScript treats strings without Z as local, which is what we want
-            }
+            // JavaScript's Date constructor treats strings without Z suffix as local time,
+            // which is the desired behavior for our stored timestamps
+            const date = new Date(dateStr);
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
             const timeStr = date.toLocaleTimeString('th-TH', {
@@ -1263,6 +1271,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function initChatManager() {
     chatManager = new ChatManager();
     chatManager.init();
+    window.chatManager = chatManager;
 }
 function initMemoryManager() {
     memoryManager.setupEventListeners();
@@ -1326,8 +1335,10 @@ function showToast(message, options = { type: 'info' }) {
     toast.innerHTML = `
         <span class="toast-icon">${icons[options.type]}</span>
         <span class="toast-message">${escapeHtml(message)}</span>
-        <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+        <button class="toast-close">×</button>
     `;
+    // Use addEventListener instead of inline onclick (CSP blocks inline scripts)
+    toast.querySelector('.toast-close')?.addEventListener('click', () => toast.remove());
     container.appendChild(toast);
     // Animate in
     requestAnimationFrame(() => {
@@ -1346,9 +1357,9 @@ function showToast(message, options = { type: 'info' }) {
 // ============================================================================
 function initTheme() {
     applyTheme(settings.theme);
-    // Add theme toggle button listener
-    const themeToggle = document.getElementById('theme-toggle');
-    themeToggle?.addEventListener('click', toggleTheme);
+    // Add theme toggle button listeners (sidebar + settings page)
+    document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
+    document.getElementById('theme-toggle-settings')?.addEventListener('click', toggleTheme);
 }
 function toggleTheme() {
     settings.theme = settings.theme === 'dark' ? 'light' : 'dark';
@@ -1361,6 +1372,11 @@ function applyTheme(theme) {
     const themeIcon = document.getElementById('theme-icon');
     if (themeIcon) {
         themeIcon.textContent = theme === 'dark' ? '🌙' : '☀️';
+    }
+    // Also update the settings page theme icon
+    const themeIconSettings = document.getElementById('theme-icon-settings');
+    if (themeIconSettings) {
+        themeIconSettings.textContent = theme === 'dark' ? '🌙' : '☀️';
     }
 }
 // ============================================================================
@@ -1387,13 +1403,10 @@ function loadSettings() {
     updateAiAvatars();
 }
 function updateAiAvatars() {
-    console.log('updateAiAvatars called, aiAvatar length:', settings.aiAvatar?.length);
     // Update empty state avatar
     const emptyAvatar = document.getElementById('chat-empty-avatar');
-    console.log('emptyAvatar element:', emptyAvatar);
     if (emptyAvatar && settings.aiAvatar) {
         emptyAvatar.src = settings.aiAvatar;
-        console.log('Set emptyAvatar.src');
     }
     // Update chat header avatar
     const headerAvatar = document.getElementById('chat-role-avatar');
@@ -1613,6 +1626,14 @@ function initNavigation() {
     document.getElementById('btn-dev')?.addEventListener('click', startDevBot);
     document.getElementById('btn-stop')?.addEventListener('click', stopBot);
     document.getElementById('btn-restart')?.addEventListener('click', restartBot);
+    // Quick action buttons (replaced inline onclick for CSP compliance)
+    document.getElementById('btn-open-logs')?.addEventListener('click', () => openFolder('logs'));
+    document.getElementById('btn-open-data')?.addEventListener('click', () => openFolder('data'));
+    document.getElementById('btn-overlay-start')?.addEventListener('click', () => { switchPage('status'); startBot(); });
+    document.getElementById('btn-auto-scroll')?.addEventListener('click', toggleAutoScroll);
+    document.getElementById('btn-clear-logs')?.addEventListener('click', clearLogs);
+    document.getElementById('btn-refresh-logs')?.addEventListener('click', loadLogs);
+    document.getElementById('btn-clear-history')?.addEventListener('click', clearHistory);
     // Settings handlers
     document.getElementById('refresh-interval')?.addEventListener('change', (e) => {
         const value = parseInt(e.target.value);
@@ -1774,6 +1795,9 @@ function updateStatusText(status) {
     }
 }
 function updateButtons(status) {
+    // Don't override button states while a bot command is in progress
+    if (botCommandInProgress)
+        return;
     const btnStart = document.getElementById('btn-start');
     const btnDev = document.getElementById('btn-dev');
     const btnStop = document.getElementById('btn-stop');
@@ -1805,9 +1829,30 @@ function updateStats(status, dbStats) {
 // ============================================================================
 // Bot Control
 // ============================================================================
+let botCommandInProgress = false;
+function setBotControlBusy(busy) {
+    botCommandInProgress = busy;
+    const btnStart = document.getElementById('btn-start');
+    const btnDev = document.getElementById('btn-dev');
+    const btnStop = document.getElementById('btn-stop');
+    const btnRestart = document.getElementById('btn-restart');
+    if (busy) {
+        if (btnStart)
+            btnStart.disabled = true;
+        if (btnDev)
+            btnDev.disabled = true;
+        if (btnStop)
+            btnStop.disabled = true;
+        if (btnRestart)
+            btnRestart.disabled = true;
+    }
+}
 async function startBot() {
+    if (botCommandInProgress)
+        return;
     try {
-        showToast('Starting bot...', { type: 'info', duration: 2000 });
+        setBotControlBusy(true);
+        showToast('Starting bot...', { type: 'info', duration: 10000 });
         const result = await invoke('start_bot');
         showToast(result, { type: 'success' });
         dataCache.invalidate('status');
@@ -1816,10 +1861,16 @@ async function startBot() {
     catch (error) {
         showToast(String(error), { type: 'error' });
     }
+    finally {
+        setBotControlBusy(false);
+    }
 }
 async function stopBot() {
+    if (botCommandInProgress)
+        return;
     try {
-        showToast('Stopping bot...', { type: 'info', duration: 2000 });
+        setBotControlBusy(true);
+        showToast('Stopping bot...', { type: 'info', duration: 5000 });
         const result = await invoke('stop_bot');
         showToast(result, { type: 'success' });
         dataCache.invalidate('status');
@@ -1828,10 +1879,16 @@ async function stopBot() {
     catch (error) {
         showToast(String(error), { type: 'error' });
     }
+    finally {
+        setBotControlBusy(false);
+    }
 }
 async function restartBot() {
+    if (botCommandInProgress)
+        return;
     try {
-        showToast('Restarting bot...', { type: 'info', duration: 2000 });
+        setBotControlBusy(true);
+        showToast('Restarting bot...', { type: 'info', duration: 12000 });
         const result = await invoke('restart_bot');
         showToast(result, { type: 'success' });
         dataCache.invalidate('status');
@@ -1840,10 +1897,16 @@ async function restartBot() {
     catch (error) {
         showToast(String(error), { type: 'error' });
     }
+    finally {
+        setBotControlBusy(false);
+    }
 }
 async function startDevBot() {
+    if (botCommandInProgress)
+        return;
     try {
-        showToast('Starting dev mode...', { type: 'info', duration: 2000 });
+        setBotControlBusy(true);
+        showToast('Starting dev mode...', { type: 'info', duration: 8000 });
         const result = await invoke('start_dev_bot');
         showToast(result, { type: 'success' });
         dataCache.invalidate('status');
@@ -1851,6 +1914,9 @@ async function startDevBot() {
     }
     catch (error) {
         showToast(String(error), { type: 'error' });
+    }
+    finally {
+        setBotControlBusy(false);
     }
 }
 // ============================================================================
@@ -1959,21 +2025,47 @@ async function loadDbStats() {
         ]);
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
-            channelsList.innerHTML = channels.map((ch) => `
-                <div class="data-item">
-                    <span class="data-item-id">${ch.channel_id}</span>
-                    <span class="data-item-value">${ch.message_count.toLocaleString()} messages</span>
-                </div>
-            `).join('') || '<p class="no-data">No channels found.</p>';
+            if (channels.length === 0) {
+                channelsList.innerHTML = '<p class="no-data">No channels found.</p>';
+            }
+            else {
+                channelsList.innerHTML = '';
+                channels.forEach((ch) => {
+                    const item = document.createElement('div');
+                    item.className = 'data-item';
+                    const idSpan = document.createElement('span');
+                    idSpan.className = 'data-item-id';
+                    idSpan.textContent = String(ch.channel_id);
+                    const valSpan = document.createElement('span');
+                    valSpan.className = 'data-item-value';
+                    valSpan.textContent = `${ch.message_count.toLocaleString()} messages`;
+                    item.appendChild(idSpan);
+                    item.appendChild(valSpan);
+                    channelsList.appendChild(item);
+                });
+            }
         }
         const usersList = document.getElementById('users-list');
         if (usersList) {
-            usersList.innerHTML = users.map((u) => `
-                <div class="data-item">
-                    <span class="data-item-id">${u.user_id}</span>
-                    <span class="data-item-value">${u.message_count.toLocaleString()} messages</span>
-                </div>
-            `).join('') || '<p class="no-data">No users found.</p>';
+            if (users.length === 0) {
+                usersList.innerHTML = '<p class="no-data">No users found.</p>';
+            }
+            else {
+                usersList.innerHTML = '';
+                users.forEach((u) => {
+                    const item = document.createElement('div');
+                    item.className = 'data-item';
+                    const idSpan = document.createElement('span');
+                    idSpan.className = 'data-item-id';
+                    idSpan.textContent = String(u.user_id);
+                    const valSpan = document.createElement('span');
+                    valSpan.className = 'data-item-value';
+                    valSpan.textContent = `${u.message_count.toLocaleString()} messages`;
+                    item.appendChild(idSpan);
+                    item.appendChild(valSpan);
+                    usersList.appendChild(item);
+                });
+            }
         }
     }
     catch (error) {
@@ -2414,7 +2506,7 @@ window.openFolder = openFolder;
 window.loadLogs = loadLogs;
 window.toggleTheme = toggleTheme;
 window.showToast = showToast;
-window.chatManager = null; // Will be set after init
+window.chatManager = null; // Updated in initChatManager()
 window.showPage = switchPage; // Alias for HTML onclick handlers
 window.startBot = startBot;
 //# sourceMappingURL=app.js.map

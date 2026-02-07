@@ -3,7 +3,7 @@
 
 [project]
 name = "discord-bot"
-version = "3.3.9"
+version = "3.3.10"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
 requires-python = ">=3.10"
 
@@ -24,13 +24,14 @@ filterwarnings = [
     "ignore::DeprecationWarning:discord.*",
     "ignore::DeprecationWarning:aiohttp.*",
     "ignore::DeprecationWarning:google.*",
+    # Ignore SWIG/native extension deprecation warnings (from faiss, hnswlib, etc.)
+    "ignore:builtin type Swig.*:DeprecationWarning",
     # Ignore pending deprecation from dependencies
     "ignore::PendingDeprecationWarning:discord.*",
     "ignore::PendingDeprecationWarning:aiohttp.*",
     # Keep our own deprecation warnings visible
     "default::DeprecationWarning:cogs.*",
     "default::DeprecationWarning:utils.*",
-    "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 
 [tool.ruff]

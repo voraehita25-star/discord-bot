@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from pathlib import Path
 # Now with PERSISTENT STORAGE - survives bot restarts!
 
 _UNRESTRICTED_FILE = Path(__file__).parent.parent / "data" / "unrestricted_channels.json"
+_unrestricted_lock = threading.Lock()  # Thread-safe access to unrestricted_channels
 unrestricted_channels: set[int] = set()
 
 
@@ -33,20 +35,36 @@ def _load_unrestricted_channels() -> set[int]:
     return set()
 
 
-def _save_unrestricted_channels() -> bool:
-    """Save unrestricted channels to persistent storage using atomic write."""
+def _save_unrestricted_channels(channels_snapshot: list[int] | None = None) -> bool:
+    """Save unrestricted channels to persistent storage using atomic write.
+
+    Args:
+        channels_snapshot: Pre-captured list of channel IDs to save. If None,
+            acquires the lock to read the current set (for backward compatibility).
+    """
+    temp_file = _UNRESTRICTED_FILE.with_suffix(".tmp")  # Define early for cleanup
     try:
         _UNRESTRICTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Use provided snapshot or acquire lock to create one
+        if channels_snapshot is None:
+            with _unrestricted_lock:
+                channels_snapshot = list(unrestricted_channels)
+        data_to_save = {"channels": channels_snapshot}
         # Atomic write: write to temp file then rename
-        temp_file = _UNRESTRICTED_FILE.with_suffix(".tmp")
         temp_file.write_text(
-            json.dumps({"channels": list(unrestricted_channels)}, indent=2),
+            json.dumps(data_to_save, indent=2),
             encoding="utf-8",
         )
         temp_file.replace(_UNRESTRICTED_FILE)  # Atomic on most filesystems
         return True
     except (OSError, TypeError, ValueError) as e:
         logging.error("Failed to save unrestricted channels: %s", e)
+        # Cleanup temp file on failure
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+        except OSError:
+            pass
         return False
 
 
@@ -55,19 +73,23 @@ unrestricted_channels = _load_unrestricted_channels()
 
 
 def is_unrestricted(channel_id: int) -> bool:
-    """Check if a channel is in unrestricted mode."""
-    return channel_id in unrestricted_channels
+    """Check if a channel is in unrestricted mode (thread-safe)."""
+    with _unrestricted_lock:
+        return channel_id in unrestricted_channels
 
 
 def set_unrestricted(channel_id: int, enabled: bool) -> bool:
-    """Enable or disable unrestricted mode for a channel. Persists to disk."""
-    if enabled:
-        unrestricted_channels.add(channel_id)
-    else:
-        unrestricted_channels.discard(channel_id)
+    """Enable or disable unrestricted mode for a channel. Persists to disk (thread-safe)."""
+    with _unrestricted_lock:
+        if enabled:
+            unrestricted_channels.add(channel_id)
+        else:
+            unrestricted_channels.discard(channel_id)
+        # Snapshot data while holding the lock
+        channels_snapshot = list(unrestricted_channels)
 
-    # Save to disk for persistence
-    _save_unrestricted_channels()
+    # Save to disk OUTSIDE the lock to avoid file I/O under threading.Lock
+    _save_unrestricted_channels(channels_snapshot)
 
     logging.info(
         "🔓 Unrestricted mode %s for channel %s (persisted)",
@@ -496,45 +518,78 @@ def validate_response_for_channel(response: str, channel_id: int) -> tuple[bool,
     Returns:
         Tuple of (is_valid, sanitized_content, warnings)
     """
-    # Bypass ALL checks if channel is unrestricted
+    # Always apply sensitive pattern redaction even in unrestricted mode
     if is_unrestricted(channel_id):
-        return True, response, ["unrestricted_mode"]
+        result = guardrails.validate(response)
+        # Only apply SENSITIVE_PATTERNS, bypass other content checks
+        return True, result.sanitized_content, ["unrestricted_mode"]
 
     # Normal validation
     result = guardrails.validate(response)
     return result.is_valid, result.sanitized_content, result.warnings
 
 
-# ==================== REFUSAL DETECTION (DISABLED) ====================
-# Previously detected when AI refuses to generate content
-# REMOVED: Too many false positives when Faust discusses security topics
-# The patterns would match explanatory text about "ethics", "malicious", etc.
+# ==================== REFUSAL DETECTION (INTENTIONALLY DISABLED) ====================
+# Previously detected when AI refuses to generate content.
+# DISABLED: Too many false positives when AI discusses security/ethics topics.
+# The patterns would incorrectly flag legitimate explanatory text.
+# These stub functions exist for backward compatibility with callers.
 
 
 def detect_refusal(response: str) -> tuple[bool, str | None]:
     """
-    Stub function - refusal detection disabled.
-    Always returns False (no refusal detected).
+    Check if AI response indicates a refusal to respond.
+
+    NOTE: This function is intentionally disabled and always returns False.
+    Refusal detection was removed due to high false positive rates.
+
+    Args:
+        response: The AI response text to check.
+
+    Returns:
+        Tuple of (is_refusal, refusal_type). Always (False, None).
     """
     return False, None
 
 
-def detect_refusal_advanced(response: str):
-    """Stub function - refusal detection disabled."""
+@dataclass
+class RefusalResult:
+    """Result of advanced refusal detection."""
 
-    @dataclass
-    class RefusalResult:
-        is_refusal: bool = False
-        confidence: float = 0.0
-        pattern_name: str | None = None
-        severity: str = "none"
+    is_refusal: bool = False
+    confidence: float = 0.0
+    pattern_name: str | None = None
+    severity: str = "none"
 
+
+def detect_refusal_advanced(response: str) -> RefusalResult:
+    """Advanced refusal detection with confidence scoring.
+
+    This function provides a more detailed analysis of potential refusals
+    with confidence scores and severity levels.
+
+    NOTE: This function is intentionally disabled and always returns
+    a non-refusal result. Enable by implementing pattern matching.
+
+    Args:
+        response: The AI-generated response text to analyze.
+
+    Returns:
+        RefusalResult with is_refusal=False, confidence=0.0, etc.
+    """
     return RefusalResult()
 
 
 def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
-    """
-    Detect if response appears to be a silent block from the API.
+    """Detect if response appears to be a silent block from the API.
+
     Only checks for truly empty responses, not short ones.
+
+    Args:
+        response: The response text to check.
+        expected_min_length: Minimum expected length (unused, kept for API compat).
+
+    Returns:
+        True if response is empty or whitespace-only.
     """
     return bool(not response or not response.strip())

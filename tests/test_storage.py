@@ -291,6 +291,7 @@ class TestSaveHistoryDB:
 
         with patch("cogs.ai_core.storage.db") as mock_db:
             mock_db.save_ai_messages_batch = AsyncMock()
+            mock_db.get_ai_history = AsyncMock(return_value=[])
             mock_db.get_ai_history_count = AsyncMock(return_value=5)
             mock_db.save_ai_metadata = AsyncMock()
 

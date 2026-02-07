@@ -13,6 +13,9 @@ Concurrent URL fetching service with content extraction.
 - Automatic charset detection
 - HTML content extraction (title, description, main text)
 - Batch fetching (up to 20 URLs)
+- URL scheme validation (http/https only — SSRF prevention)
+- Request body size limit (1MB per batch request)
+- User-provided timeout capped at 120 seconds
 
 **Endpoints:**
 - `GET /health` - Health check
@@ -27,6 +30,9 @@ Prometheus-compatible metrics and health monitoring.
 - Service health tracking
 - Kubernetes-compatible probes (liveness, readiness)
 - Metrics push from Python
+- Request body size limits (64KB single, 1MB batch)
+- Batch processing with metric type validation (counter/histogram/gauge)
+- Service name validation (max 100 characters)
 
 **Endpoints:**
 - `GET /metrics` - Prometheus metrics

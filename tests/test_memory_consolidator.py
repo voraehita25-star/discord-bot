@@ -171,21 +171,28 @@ class TestMemoryConsolidatorBackgroundTask:
 
             mock_create.assert_not_called()
 
+    @pytest.mark.asyncio
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_stop_background_task(self):
+    async def test_stop_background_task(self):
         """Test stop_background_task cancels task."""
         from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
 
         consolidator = MemoryConsolidator()
-        mock_task = MagicMock()
-        consolidator._consolidation_task = mock_task
+        
+        # Create a real async task that we can cancel
+        async def dummy_task():
+            await asyncio.sleep(100)
+        
+        real_task = asyncio.create_task(dummy_task())
+        consolidator._consolidation_task = real_task
 
-        consolidator.stop_background_task()
+        await consolidator.stop_background_task()
 
-        mock_task.cancel.assert_called_once()
+        assert real_task.cancelled() or real_task.done()
         assert consolidator._consolidation_task is None
 
-    def test_stop_background_task_no_task(self):
+    @pytest.mark.asyncio
+    async def test_stop_background_task_no_task(self):
         """Test stop_background_task with no task."""
         from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
 
@@ -193,7 +200,7 @@ class TestMemoryConsolidatorBackgroundTask:
         consolidator._consolidation_task = None
 
         # Should not raise
-        consolidator.stop_background_task()
+        await consolidator.stop_background_task()
 
 
 class TestMemoryConsolidatorInitSchema:

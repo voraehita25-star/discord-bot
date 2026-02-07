@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -64,7 +65,7 @@ def find_json_files() -> dict:
     return files
 
 
-def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> int:
+async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> int:
     """Migrate a single history file to database."""
     try:
         history = json.loads(filepath.read_text(encoding="utf-8"))
@@ -93,7 +94,7 @@ def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> i
                 continue
 
             if not dry_run:
-                db.save_ai_message(
+                await db.save_ai_message(
                     channel_id=channel_id,
                     role=role,
                     content=content,
@@ -109,7 +110,7 @@ def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> i
         return 0
 
 
-def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = False) -> bool:
+async def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = False) -> bool:
     """Migrate a single metadata file to database."""
     try:
         metadata = json.loads(filepath.read_text(encoding="utf-8"))
@@ -120,7 +121,7 @@ def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = False) -> 
         thinking_enabled = metadata.get("thinking_enabled", True)
 
         if not dry_run:
-            db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
+            await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
 
         return True
 
@@ -142,7 +143,7 @@ def create_backup() -> Path:
     return backup_dir
 
 
-def main():
+async def async_main():
     """Main migration function."""
     parser = argparse.ArgumentParser(description="Migrate JSON files to SQLite database")
     parser.add_argument("--dry-run", action="store_true", help="Preview without making changes")
@@ -151,6 +152,9 @@ def main():
         "--delete-json", action="store_true", help="Delete JSON files after successful migration"
     )
     args = parser.parse_args()
+
+    # Initialize database before use
+    await db.init_schema()
 
     print()
     print("=" * 60)
@@ -197,7 +201,7 @@ def main():
     migrated_files = 0
 
     for channel_id, filepath in files["history"]:
-        count = migrate_history(channel_id, filepath, args.dry_run)
+        count = await migrate_history(channel_id, filepath, args.dry_run)
         if count > 0:
             migrated_messages += count
             migrated_files += 1
@@ -211,7 +215,7 @@ def main():
     metadata_count = 0
 
     for channel_id, filepath in files["metadata"]:
-        if migrate_metadata(channel_id, filepath, args.dry_run):
+        if await migrate_metadata(channel_id, filepath, args.dry_run):
             metadata_count += 1
             print(f"        ✓ Channel {channel_id}: metadata migrated")
 
@@ -251,13 +255,26 @@ def main():
         print()
 
     # Show database stats
-    stats = db.get_stats()
-    print("  📊 Database Statistics:")
-    print(f"     • AI History: {stats.get('ai_history_count', 0)} records")
-    print(f"     • AI Metadata: {stats.get('ai_metadata_count', 0)} records")
-    print(f"     • Database Size: {stats.get('db_size_mb', 0):.2f} MB")
-    print()
+    try:
+        import aiosqlite
+
+        db_path = Path("data/bot_database.db")
+        if db_path.exists():
+            async with aiosqlite.connect(str(db_path)) as conn:
+                cur = await conn.execute("SELECT COUNT(*) FROM ai_history")
+                history_count = (await cur.fetchone())[0]
+                cur = await conn.execute("SELECT COUNT(*) FROM ai_metadata")
+                metadata_count_db = (await cur.fetchone())[0]
+                db_size_mb = db_path.stat().st_size / (1024 * 1024)
+            print("  📊 Database Statistics:")
+            print(f"     • AI History: {history_count} records")
+            print(f"     • AI Metadata: {metadata_count_db} records")
+            print(f"     • Database Size: {db_size_mb:.2f} MB")
+            print()
+    except Exception as e:
+        print(f"  [!] Could not read database stats: {e}")
+        print()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(async_main())

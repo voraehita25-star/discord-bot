@@ -1,6 +1,10 @@
+# pyright: reportAttributeAccessIssue=false
 """
 Structured Logging Module for Discord Bot.
 Provides JSON-formatted logging with context tracking, performance timing, and ELK/monitoring support.
+
+Note: Type checker warnings for dynamic LogRecord attributes are suppressed
+because Python's logging module supports adding custom attributes via the extra parameter.
 
 Features:
 - JSON-formatted log output for easy parsing
@@ -14,6 +18,7 @@ Features:
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import functools
 import json
@@ -32,9 +37,7 @@ from pathlib import Path
 from typing import Any
 
 # Context variable for request tracking
-_log_context: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
-    "log_context"
-)
+_log_context: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("log_context")
 _log_context.set({})  # Initialize with empty dict
 
 
@@ -66,11 +69,30 @@ class StructuredFormatter(logging.Formatter):
 
     # Fields to exclude from extra data
     RESERVED_ATTRS = {
-        "name", "msg", "args", "created", "filename", "funcName",
-        "levelname", "levelno", "lineno", "module", "msecs",
-        "pathname", "process", "processName", "relativeCreated",
-        "stack_info", "exc_info", "exc_text", "thread", "threadName",
-        "message", "context", "extra_data", "duration_ms",
+        "name",
+        "msg",
+        "args",
+        "created",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "exc_info",
+        "exc_text",
+        "thread",
+        "threadName",
+        "message",
+        "context",
+        "extra_data",
+        "duration_ms",
     }
 
     def __init__(
@@ -88,6 +110,7 @@ class StructuredFormatter(logging.Formatter):
 
         if include_hostname:
             import socket
+
             self._hostname = socket.gethostname()
         else:
             self._hostname = None
@@ -170,10 +193,10 @@ class HumanReadableFormatter(logging.Formatter):
     """Human-readable formatter for console output."""
 
     COLORS = {
-        "DEBUG": "\033[36m",     # Cyan
-        "INFO": "\033[32m",      # Green
-        "WARNING": "\033[33m",   # Yellow
-        "ERROR": "\033[31m",     # Red
+        "DEBUG": "\033[36m",  # Cyan
+        "INFO": "\033[32m",  # Green
+        "WARNING": "\033[33m",  # Yellow
+        "ERROR": "\033[31m",  # Red
         "CRITICAL": "\033[35m",  # Magenta
     }
     RESET = "\033[0m"
@@ -238,6 +261,7 @@ class StructuredLogger:
 
     def __init__(self, name: str, level: int = logging.INFO):
         self.logger = logging.getLogger(name)
+        self.logger.setLevel(level)
         self._context_stack: list[dict[str, Any]] = []
 
     @contextmanager
@@ -347,7 +371,7 @@ class StructuredLogger:
                     "error_message": str(error),
                     **extra,
                 }
-            }
+            },
         )
 
 
@@ -364,8 +388,9 @@ class PerformanceTimer:
         print(timer.get_timing("api_call"))  # 150.5
     """
 
-    def __init__(self):
-        self._timings: dict[str, list[float]] = {}
+    def __init__(self, max_entries: int = 1000):
+        self._timings: dict[str, collections.deque[float]] = {}
+        self._max_entries = max_entries
         self._current_step: str | None = None
         self._start_time: float = 0
 
@@ -378,7 +403,7 @@ class PerformanceTimer:
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
             if step_name not in self._timings:
-                self._timings[step_name] = []
+                self._timings[step_name] = collections.deque(maxlen=self._max_entries)
             self._timings[step_name].append(duration_ms)
 
     def get_timing(self, step_name: str) -> float | None:
@@ -481,6 +506,9 @@ def setup_structured_logging(
     """
     root_logger = logging.getLogger()
 
+    # Prevent duplicate handlers on re-initialization
+    root_logger.handlers.clear()
+
     # Create formatters
     json_formatter = StructuredFormatter(service_name=service_name)
     human_formatter = HumanReadableFormatter()
@@ -526,6 +554,63 @@ def set_correlation_id(correlation_id: str) -> None:
 def get_logger(name: str) -> StructuredLogger:
     """Get a structured logger instance."""
     return StructuredLogger(name)
+
+
+def log_ai_request(
+    user_id: int | None = None,
+    channel_id: int | None = None,
+    guild_id: int | None = None,
+    message: str | None = None,
+    response_length: int | None = None,
+    duration_ms: float | None = None,
+    model: str | None = None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+    error: str | None = None,
+    **extra,
+) -> None:
+    """
+    Log an AI request with structured data.
+
+    Args:
+        user_id: Discord user ID
+        channel_id: Discord channel ID
+        guild_id: Discord guild ID
+        message: User message (truncated for privacy)
+        response_length: Length of AI response
+        duration_ms: Request duration in milliseconds
+        model: AI model used
+        tokens_in: Input token count
+        tokens_out: Output token count
+        error: Error message if request failed
+        **extra: Additional data to log
+    """
+    logger = get_logger("ai_request")
+
+    data = {
+        "user_id": user_id,
+        "channel_id": channel_id,
+        "guild_id": guild_id,
+        "response_length": response_length,
+        "duration_ms": duration_ms,
+        "model": model,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "error": error,
+        **extra,
+    }
+
+    # Remove None values
+    data = {k: v for k, v in data.items() if v is not None}
+
+    # Truncate message for privacy
+    if message:
+        data["message_preview"] = message[:100] + "..." if len(message) > 100 else message
+
+    if error:
+        logger.error("AI request failed", **data)
+    else:
+        logger.info("AI request completed", **data)
 
 
 # Global timer instance for shared timing

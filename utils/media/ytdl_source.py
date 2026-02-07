@@ -26,7 +26,7 @@ ytdl_opts_hq = {
     "outtmpl": "temp/%(extractor)s-%(id)s-%(title)s.%(ext)s",
     "restrictfilenames": True,
     "noplaylist": True,
-    "nocheckcertificate": True,
+    "nocheckcertificate": False,
     "ignoreerrors": False,
     "logtostderr": False,
     "quiet": True,
@@ -213,10 +213,14 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 logging.error("❌ All download attempts failed: %s", e2)
                 raise e2  # Give up
 
-        if data.get("entries"):
+        if "entries" in data:
             # take first item from a playlist
-            if len(data["entries"]) > 0:
-                data = data["entries"][0]
+            entries = data["entries"]
+            if entries and len(entries) > 0:
+                data = entries[0]
+                # yt-dlp can return None for unavailable entries
+                if data is None:
+                    raise ValueError("First entry is None - video may be unavailable")
             else:
                 raise ValueError("Playlist or search result is empty")
 
@@ -261,10 +265,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 None, lambda: ytdl_fallback.extract_info(query, download=False)
             )
 
-        if data.get("entries"):
+        if "entries" in data:
             # If it's a search result or playlist, take the first item
-            if len(data["entries"]) > 0:
-                data = data["entries"][0]
+            entries = data["entries"]
+            if entries and len(entries) > 0:
+                data = entries[0]
             else:
                 logging.warning("Search result has no entries")
                 return None

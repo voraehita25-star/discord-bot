@@ -1,6 +1,11 @@
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportOptionalMemberAccess=false
 """
 Spotify Handler Module for Music Cog.
 Handles Spotify link processing and track extraction with retry logic.
+
+Note: Type checker warnings for optional Spotify client methods are suppressed
+because the is_available() check ensures sp is not None at runtime.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ try:
     CIRCUIT_BREAKER_AVAILABLE = True
 except ImportError:
     CIRCUIT_BREAKER_AVAILABLE = False
+    spotify_circuit = None  # Fallback stub
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
@@ -38,6 +44,8 @@ class SpotifyHandler:
 
     MAX_RETRIES: int = 3
     RETRY_DELAY: int = 2  # seconds
+    MAX_PLAYLIST_TRACKS: int = 500  # Limit to prevent memory issues with huge playlists
+    RATE_LIMIT_DELAY: float = 0.1  # Delay between pagination requests to avoid rate limits
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
@@ -64,6 +72,19 @@ class SpotifyHandler:
         else:
             logging.warning("⚠️ Spotify credentials not found. Spotify links won't work.")
 
+    def cleanup(self) -> None:
+        """Cleanup Spotify client resources.
+
+        Call this when the Music cog unloads to release resources.
+        """
+        if self.sp and hasattr(self.sp, '_session'):
+            try:
+                self.sp._session.close()
+            except Exception:
+                pass
+        self.sp = None
+        logging.debug("🧹 Spotify handler cleaned up")
+
     def is_available(self) -> bool:
         """Check if Spotify client is available."""
         return self.sp is not None
@@ -73,7 +94,7 @@ class SpotifyHandler:
     ) -> Any:
         """Execute Spotify API call with retry logic and circuit breaker protection."""
         # Check circuit breaker before making API call
-        if CIRCUIT_BREAKER_AVAILABLE and not spotify_circuit.can_execute():
+        if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit and not spotify_circuit.can_execute():
             logging.warning("⚡ Spotify Circuit breaker OPEN - skipping API call")
             raise ConnectionError(
                 "Spotify API circuit breaker is open - service temporarily unavailable"
@@ -92,7 +113,7 @@ class SpotifyHandler:
                     None, functools.partial(func, *captured_args, **captured_kwargs)
                 )
                 # Record success for circuit breaker
-                if CIRCUIT_BREAKER_AVAILABLE:
+                if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
                     spotify_circuit.record_success()
                 return result
             except (
@@ -104,7 +125,7 @@ class SpotifyHandler:
                 OSError,
             ) as e:
                 # Record failure for circuit breaker
-                if CIRCUIT_BREAKER_AVAILABLE:
+                if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
                     spotify_circuit.record_failure()
 
                 if attempt < self.MAX_RETRIES - 1:
@@ -171,6 +192,9 @@ class SpotifyHandler:
 
     async def _handle_track(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
         """Handle a single Spotify track."""
+        if not self.sp:
+            return False
+
         track = await self._api_call_with_retry(self.sp.track, query)
 
         if not track:
@@ -221,6 +245,9 @@ class SpotifyHandler:
 
     async def _handle_playlist(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
         """Handle a Spotify playlist."""
+        if not self.sp:
+            return False
+
         loading_embed = discord.Embed(
             title=f"{Emojis.LOADING} กำลังโหลด Spotify Playlist",
             description="กรุณารอสักครู่...",
@@ -228,20 +255,34 @@ class SpotifyHandler:
         )
         msg = await ctx.send(embed=loading_embed)
 
+        # Capture self.sp to avoid repeated None checks in nested function
+        sp = self.sp
+
         def get_all_playlist_tracks(url):
-            results = self.sp.playlist_tracks(url)
-            tracks = results.get("items", [])
-            while results.get("next"):
-                results = self.sp.next(results)
+            results = sp.playlist_tracks(url)
+            tracks = results.get("items", []) if results else []
+            # Limit total tracks to prevent memory issues
+            # Also check results is not None to prevent infinite loop if sp.next() returns None
+            while results and results.get("next") and len(tracks) < self.MAX_PLAYLIST_TRACKS:
+                # Note: sleep is inside executor, which is acceptable
+                # as it doesn't block the main event loop
+                import time
+
+                time.sleep(self.RATE_LIMIT_DELAY)
+                results = sp.next(results)
                 if results and results.get("items"):
                     tracks.extend(results["items"])
-            return tracks
+            return tracks[: self.MAX_PLAYLIST_TRACKS]  # Ensure limit
 
         try:
             results = await self._api_call_with_retry(get_all_playlist_tracks, query)
         except (RequestsConnectionError, ReadTimeout) as e:
-            await msg.delete()
-            # Send error message before re-raising so user sees what happened
+            # Try to delete loading message, but don't fail if already deleted
+            try:
+                await msg.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            # Send error message (caller will also handle, so just log)
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ข้อผิดพลาด Spotify",
                 description=f"ไม่สามารถโหลด Playlist ได้\n```{type(e).__name__}```",
@@ -249,10 +290,13 @@ class SpotifyHandler:
             )
             embed.set_footer(text="ลองใหม่อีกครั้ง")
             await ctx.send(embed=embed)
-            raise
+            return False
 
         if not results or not isinstance(results, list):
-            await msg.delete()
+            try:
+                await msg.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} ไม่พบเพลงใน Playlist", color=Colors.ERROR
             )
@@ -277,7 +321,11 @@ class SpotifyHandler:
                 )
                 count += 1
 
-        await msg.delete()
+        # Delete loading message safely
+        try:
+            await msg.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
         if count == 0:
             embed = discord.Embed(
@@ -300,6 +348,9 @@ class SpotifyHandler:
 
     async def _handle_album(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
         """Handle a Spotify album."""
+        if not self.sp:
+            return False
+
         results = await self._api_call_with_retry(self.sp.album_tracks, query)
 
         if not results:
@@ -309,6 +360,15 @@ class SpotifyHandler:
 
         count = 0
         items = results.get("items", [])
+
+        # Paginate to get all tracks (album_tracks returns max 50 per page)
+        sp = self.sp
+        while results and results.get("next"):
+            await asyncio.sleep(self.RATE_LIMIT_DELAY)
+            results = await self._api_call_with_retry(sp.next, results)
+            if results and results.get("items"):
+                items.extend(results["items"])
+
         if not items:
             embed = discord.Embed(description=f"{Emojis.CROSS} Album นี้ไม่มีเพลง", color=Colors.ERROR)
             await ctx.send(embed=embed)

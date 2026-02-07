@@ -319,13 +319,13 @@ class SelfReflector:
 
         user_words = {
             w.lower()
-            for w in re.findall(r"\b\w+\b", user_message)
+            for w in re.findall(r"\S+", user_message)
             if len(w) > 3 and w.lower() not in common_words
         }
 
         response_words = {
             w.lower()
-            for w in re.findall(r"\b\w+\b", response)
+            for w in re.findall(r"\S+", response)
             if len(w) > 3 and w.lower() not in common_words
         }
 

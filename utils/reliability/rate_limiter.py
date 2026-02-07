@@ -27,6 +27,7 @@ try:
 except ImportError:
     CIRCUIT_BREAKER_AVAILABLE = False
     CircuitState = None
+    gemini_circuit = None  # Fallback stub
 
 
 class RateLimitType(Enum):
@@ -237,11 +238,37 @@ class RateLimiter:
         """
         # Check if bucket limit reached and evict oldest if necessary
         if key not in self._buckets and len(self._buckets) >= self.MAX_BUCKETS:
-            # Evict oldest bucket (by last_update time)
-            oldest_key = min(self._buckets, key=lambda k: self._buckets[k].last_update)
-            self._buckets.pop(oldest_key, None)
-            self._locks.pop(oldest_key, None)
-            logging.debug("🧹 Evicted oldest rate limit bucket: %s", oldest_key)
+            # Find oldest bucket that is NOT currently locked (safe eviction)
+            # Sort by last_update time, oldest first
+            sorted_keys = sorted(self._buckets.keys(), key=lambda k: self._buckets[k].last_update)
+            evicted = False
+            for candidate_key in sorted_keys:
+                candidate_lock = self._locks.get(candidate_key)
+                # Only evict if no lock exists or lock is not held
+                if candidate_lock is None or not candidate_lock.locked():
+                    self._buckets.pop(candidate_key, None)
+                    self._locks.pop(candidate_key, None)
+                    logging.debug("🧹 Evicted oldest rate limit bucket: %s", candidate_key)
+                    evicted = True
+                    break
+            # If all buckets are locked, force evict oldest anyway to prevent unbounded growth
+            if not evicted:
+                # Force evict the oldest bucket to maintain the limit
+                oldest_key = sorted_keys[0] if sorted_keys else None
+                if oldest_key:
+                    self._buckets.pop(oldest_key, None)
+                    self._locks.pop(oldest_key, None)
+                    logging.warning(
+                        "🧹 Force-evicted locked rate limit bucket: %s (all buckets were locked)",
+                        oldest_key,
+                    )
+                else:
+                    logging.warning(
+                        "🧹 All rate limit buckets are locked and no candidate found. "
+                        "Current count: %d (max: %d)",
+                        len(self._buckets),
+                        self.MAX_BUCKETS,
+                    )
 
         # Use setdefault for atomic get-or-create operation
         return self._buckets.setdefault(
@@ -344,7 +371,8 @@ class RateLimiter:
 
     def get_stats(self) -> dict[str, Any]:
         """Get rate limiting statistics."""
-        stats = dict(self._stats)
+        # Convert to regular dict with Any values to allow mixed types
+        stats: dict[str, Any] = dict(self._stats)
         # Add additional info
         stats["active_buckets"] = len(self._buckets)
         stats["total_blocked"] = sum(s.get("blocked", 0) for s in self._stats.values())
@@ -418,7 +446,7 @@ class RateLimiter:
         Returns higher multiplier when circuit is healthy,
         lower when circuit is degraded or open.
         """
-        if not CIRCUIT_BREAKER_AVAILABLE:
+        if not CIRCUIT_BREAKER_AVAILABLE or gemini_circuit is None:
             return 1.0
 
         try:
@@ -468,8 +496,7 @@ class RateLimiter:
 
         # Collect keys to remove first (snapshot of items)
         keys_to_remove = [
-            key for key, bucket in list(self._buckets.items())
-            if now - bucket.last_update > max_age
+            key for key, bucket in list(self._buckets.items()) if now - bucket.last_update > max_age
         ]
 
         # Remove buckets and their associated locks atomically per key
@@ -500,16 +527,21 @@ class RateLimiter:
 
         async def _cleanup_loop():
             while True:
-                await asyncio.sleep(interval)
-                await self.cleanup_old_buckets()
+                try:
+                    await asyncio.sleep(interval)
+                    await self.cleanup_old_buckets()
+                except asyncio.CancelledError:
+                    break
 
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(_cleanup_loop())
 
-    def stop_cleanup_task(self) -> None:
+    async def stop_cleanup_task(self) -> None:
         """Stop the cleanup background task."""
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
 
 
 # Global rate limiter instance
@@ -556,9 +588,12 @@ def ratelimit(
             )
 
             if not allowed:
-                if send_message and message:
+                if send_message and message and delete_after is not None:
                     with contextlib.suppress(discord.HTTPException):
                         await ctx.send(message, delete_after=delete_after)
+                elif send_message and message:
+                    with contextlib.suppress(discord.HTTPException):
+                        await ctx.send(message)
                 return None
 
             # Execute command
@@ -597,17 +632,12 @@ def ai_ratelimit(per_user: bool = True, check_global: bool = True, send_message:
             if message_or_ctx is None:
                 return await func(*args, **kwargs)
 
-            # Get IDs
-            if isinstance(message_or_ctx, discord.Message):
-                user_id = message_or_ctx.author.id
-                channel_id = message_or_ctx.channel.id
-                guild_id = message_or_ctx.guild.id if message_or_ctx.guild else None
-                send_func = message_or_ctx.channel.send
-            else:
-                user_id = message_or_ctx.author.id
-                channel_id = message_or_ctx.channel.id
-                guild_id = message_or_ctx.guild.id if message_or_ctx.guild else None
-                send_func = message_or_ctx.send
+            # Get IDs and send function
+            user_id = message_or_ctx.author.id
+            channel_id = message_or_ctx.channel.id
+            guild_id = message_or_ctx.guild.id if message_or_ctx.guild else None
+            # Always use channel.send for consistency (works for both Message and Context)
+            send_func = message_or_ctx.channel.send
 
             # Check global limit first
             if check_global:
@@ -652,16 +682,12 @@ async def check_rate_limit(
         if not await check_rate_limit("gemini_api", ctx):
             return
     """
-    if isinstance(ctx_or_message, discord.Message):
-        user_id = ctx_or_message.author.id
-        channel_id = ctx_or_message.channel.id
-        guild_id = ctx_or_message.guild.id if ctx_or_message.guild else None
-        send_func = ctx_or_message.channel.send
-    else:
-        user_id = ctx_or_message.author.id
-        channel_id = ctx_or_message.channel.id
-        guild_id = ctx_or_message.guild.id if ctx_or_message.guild else None
-        send_func = ctx_or_message.send
+    # Get IDs - works for both Message and Context
+    user_id = ctx_or_message.author.id
+    channel_id = ctx_or_message.channel.id
+    guild_id = ctx_or_message.guild.id if ctx_or_message.guild else None
+    # Always use channel.send for consistency
+    send_func = ctx_or_message.channel.send
 
     allowed, _retry_after, message = await rate_limiter.check(
         config_name, user_id=user_id, channel_id=channel_id, guild_id=guild_id

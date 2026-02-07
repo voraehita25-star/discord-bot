@@ -6,6 +6,8 @@ Summarizes long conversations into compact memory chunks.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -17,6 +19,7 @@ try:
 
     DB_AVAILABLE = True
 except ImportError:
+    db = None  # type: ignore
     DB_AVAILABLE = False
 
 
@@ -54,7 +57,7 @@ class ConversationSummary:
         return "\n".join(parts)
 
 
-class MemoryConsolidator:
+class ConversationSummarizer:
     """
     Consolidates conversation history into summaries.
 
@@ -71,12 +74,12 @@ class MemoryConsolidator:
     MAX_SUMMARY_LENGTH = 500
 
     def __init__(self):
-        self.logger = logging.getLogger("MemoryConsolidator")
+        self.logger = logging.getLogger("ConversationSummarizer")
         self._consolidation_task: asyncio.Task | None = None
 
     async def init_schema(self) -> None:
         """Initialize database schema for summaries."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return
 
         async with db.get_connection() as conn:
@@ -109,10 +112,12 @@ class MemoryConsolidator:
         self._consolidation_task = asyncio.create_task(self._consolidation_loop(interval_hours))
         self.logger.info("🔄 Consolidation background task started")
 
-    def stop_background_task(self) -> None:
+    async def stop_background_task(self) -> None:
         """Stop the consolidation task."""
         if self._consolidation_task:
             self._consolidation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._consolidation_task
             self._consolidation_task = None
 
     async def _consolidation_loop(self, interval_hours: float) -> None:
@@ -139,7 +144,7 @@ class MemoryConsolidator:
         Returns:
             Created summary or None
         """
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return None
 
         # Get old messages to consolidate
@@ -155,7 +160,7 @@ class MemoryConsolidator:
             """,
                 (channel_id, cutoff_time.isoformat()),
             )
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
 
         if len(rows) < self.MIN_MESSAGES_TO_SUMMARIZE and not force:
             return None
@@ -196,7 +201,7 @@ class MemoryConsolidator:
 
     async def consolidate_all_channels(self) -> int:
         """Consolidate all channels that need it."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return 0
 
         # Get channels with old messages
@@ -213,7 +218,7 @@ class MemoryConsolidator:
             """,
                 (cutoff.isoformat(), self.MIN_MESSAGES_TO_SUMMARIZE),
             )
-            channels = await cursor.fetchall()
+            channels = list(await cursor.fetchall())
 
         consolidated = 0
         for row in channels:
@@ -227,7 +232,7 @@ class MemoryConsolidator:
         self, channel_id: int, limit: int = 5
     ) -> list[ConversationSummary]:
         """Get recent summaries for a channel."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return []
 
         async with db.get_connection() as conn:
@@ -240,7 +245,7 @@ class MemoryConsolidator:
             """,
                 (channel_id, limit),
             )
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
 
         summaries = []
         for row in rows:
@@ -248,8 +253,8 @@ class MemoryConsolidator:
                 id=row["id"],
                 channel_id=row["channel_id"],
                 summary=row["summary"],
-                key_topics=row["key_topics"].split(",") if row["key_topics"] else [],
-                key_decisions=row["key_decisions"].split(",") if row["key_decisions"] else [],
+                key_topics=self._load_json_list(row["key_topics"]),
+                key_decisions=self._load_json_list(row["key_decisions"]),
                 start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
                 end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
                 message_count=row["message_count"],
@@ -289,7 +294,7 @@ class MemoryConsolidator:
         # Simple extractive approach:
         # Take first sentence from user, key points
         user_messages = [m["content"] for m in messages if m["role"] == "user" and m["content"]]
-        [m["content"] for m in messages if m["role"] == "model" and m["content"]]
+        ai_messages = [m["content"] for m in messages if m["role"] == "model" and m["content"]]
 
         # Extract key sentences (simple heuristic)
         key_sentences = []
@@ -378,9 +383,23 @@ class MemoryConsolidator:
         sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
         return [word for word, count in sorted_words[:10] if count >= 2]
 
+    @staticmethod
+    def _load_json_list(value: str | None) -> list[str]:
+        """Load a JSON list from a string, with fallback for comma-separated legacy data."""
+        if not value:
+            return []
+        try:
+            result = json.loads(value)
+            if isinstance(result, list):
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Fallback: legacy comma-separated format
+        return [item.strip() for item in value.split(",") if item.strip()]
+
     async def _save_summary(self, summary: ConversationSummary) -> int | None:
         """Save summary to database."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return None
 
         async with db.get_connection() as conn:
@@ -395,8 +414,8 @@ class MemoryConsolidator:
                     summary.channel_id,
                     summary.user_id,
                     summary.summary,
-                    ",".join(summary.key_topics) if summary.key_topics else "",
-                    ",".join(summary.key_decisions) if summary.key_decisions else "",
+                    json.dumps(summary.key_topics, ensure_ascii=False) if summary.key_topics else "[]",
+                    json.dumps(summary.key_decisions, ensure_ascii=False) if summary.key_decisions else "[]",
                     summary.start_time.isoformat() if summary.start_time else None,
                     summary.end_time.isoformat() if summary.end_time else None,
                     summary.message_count,
@@ -406,7 +425,7 @@ class MemoryConsolidator:
 
     async def _delete_consolidated_messages(self, message_ids: list[int]) -> None:
         """Delete messages that have been consolidated."""
-        if not DB_AVAILABLE or not message_ids:
+        if not DB_AVAILABLE or db is None or not message_ids:
             return
 
         placeholders = ",".join("?" * len(message_ids))
@@ -416,4 +435,8 @@ class MemoryConsolidator:
 
 
 # Global instance
-memory_consolidator = MemoryConsolidator()
+conversation_summarizer = ConversationSummarizer()
+
+# Backward-compatible aliases
+MemoryConsolidator = ConversationSummarizer
+memory_consolidator = conversation_summarizer

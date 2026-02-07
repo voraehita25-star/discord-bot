@@ -1,19 +1,30 @@
 # -*- coding: utf-8 -*-
 """Create desktop shortcut for 디스코드 봇 대시보드 using IShellLink"""
 import os
+import sys
 from pathlib import Path
 
 def create_shortcut_via_pythoncom():
     """Use pythoncom with IShellLink directly"""
-    import pythoncom  # type: ignore
-    from win32com.shell import shell  # type: ignore
+    try:
+        import pythoncom  # type: ignore
+        from win32com.shell import shell  # type: ignore
+    except ImportError:
+        print("ERROR: pywin32 is required. Install with: pip install pywin32")
+        return False
     
     korean_name = "디스코드 봇 대시보드"
-    exe_path = Path(r"C:\Users\ME\BOT\native_dashboard\target\release") / f"{korean_name}.exe"
+    
+    # Resolve paths relative to this script instead of hardcoding
+    script_dir = Path(__file__).resolve().parent
+    dashboard_dir = script_dir.parent  # native_dashboard/
+    bot_dir = dashboard_dir.parent     # BOT/
+    
+    exe_path = dashboard_dir / "target" / "release" / f"{korean_name}.exe"
     desktop = Path.home() / "Desktop"
     shortcut_path = desktop / f"{korean_name}.lnk"
-    icon_path = Path(r"C:\Users\ME\BOT\native_dashboard\icons\icon.ico")
-    work_dir = Path(r"C:\Users\ME\BOT")
+    icon_path = dashboard_dir / "icons" / "icon.ico"
+    work_dir = bot_dir
     
     print(f"Korean name: {korean_name}")
     print(f"Exe path: {exe_path}")
@@ -22,6 +33,10 @@ def create_shortcut_via_pythoncom():
     if not exe_path.exists():
         print("ERROR: Exe not found!")
         return False
+    
+    # Validate icon exists
+    if not icon_path.exists():
+        print(f"WARNING: Icon not found at {icon_path}, shortcut will use default icon")
     
     # Remove existing
     if shortcut_path.exists():
@@ -38,7 +53,8 @@ def create_shortcut_via_pythoncom():
     
     shortcut.SetPath(str(exe_path))
     shortcut.SetWorkingDirectory(str(work_dir))
-    shortcut.SetIconLocation(str(icon_path), 0)
+    if icon_path.exists():
+        shortcut.SetIconLocation(str(icon_path), 0)
     shortcut.SetDescription("Discord Bot Dashboard")
     
     # Save via IPersistFile

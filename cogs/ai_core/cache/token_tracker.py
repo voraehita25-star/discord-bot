@@ -12,12 +12,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from ..data.constants import DEFAULT_MODEL
+
 # Try to import database
 try:
     from utils.database import db
 
     DB_AVAILABLE = True
 except ImportError:
+    db = None  # type: ignore
     DB_AVAILABLE = False
 
 
@@ -31,7 +34,7 @@ class TokenUsage:
     user_id: int
     channel_id: int
     guild_id: int | None = None
-    model: str = "gemini-3-pro-preview"
+    model: str = DEFAULT_MODEL
     cached: bool = False
 
     @property
@@ -41,9 +44,15 @@ class TokenUsage:
 
     @property
     def estimated_cost(self) -> float:
-        """Estimated cost in USD (based on Gemini pricing)."""
-        # Gemini 2.0 Flash pricing (approximate)
-        # Input: $0.10 per 1M tokens, Output: $0.40 per 1M tokens
+        """Estimated cost in USD (based on Gemini pricing).
+
+        Note: Pricing is approximate and may change. Check Google's official
+        pricing page for current rates: https://ai.google.dev/pricing
+
+        Current estimates (as of 2024):
+        - Input: $0.10 per 1M tokens
+        - Output: $0.40 per 1M tokens
+        """
         input_cost = (self.input_tokens / 1_000_000) * 0.10
         output_cost = (self.output_tokens / 1_000_000) * 0.40
         return input_cost + output_cost
@@ -160,6 +169,9 @@ class TokenTracker:
 
     async def _persist_usage(self, usage: TokenUsage) -> None:
         """Persist usage to database."""
+        if not DB_AVAILABLE or db is None:
+            return
+
         try:
             async with db.get_connection() as conn:
                 await conn.execute(
@@ -184,9 +196,16 @@ class TokenTracker:
             self.logger.warning("Failed to persist token usage: %s", e)
 
     def _get_usage_in_period(self, key: str, period: timedelta) -> list[TokenUsage]:
-        """Get usage records within a time period."""
+        """Get usage records within a time period (returns snapshot, caller should use with lock if needed)."""
         cutoff = datetime.now() - period
-        return [u for u in self._usage_cache.get(key, []) if u.timestamp > cutoff]
+        # Return a copy to avoid modification during iteration
+        records = self._usage_cache.get(key, [])
+        return [u for u in records if u.timestamp > cutoff]
+
+    async def get_usage_in_period_safe(self, key: str, period: timedelta) -> list[TokenUsage]:
+        """Thread-safe version of _get_usage_in_period."""
+        async with self._lock:
+            return self._get_usage_in_period(key, period)
 
     def _aggregate_usage(self, records: list[TokenUsage]) -> UsageStats:
         """Aggregate multiple usage records into stats."""
@@ -227,7 +246,8 @@ class TokenTracker:
         }.get(period, timedelta(days=1))
 
         key = f"user:{user_id}"
-        records = self._get_usage_in_period(key, period_delta)
+        async with self._lock:
+            records = self._get_usage_in_period(key, period_delta)
         return self._aggregate_usage(records)
 
     async def get_channel_usage(self, channel_id: int, period: str = "day") -> UsageStats:
@@ -239,7 +259,8 @@ class TokenTracker:
         }.get(period, timedelta(days=1))
 
         key = f"channel:{channel_id}"
-        records = self._get_usage_in_period(key, period_delta)
+        async with self._lock:
+            records = self._get_usage_in_period(key, period_delta)
         return self._aggregate_usage(records)
 
     async def get_guild_usage(self, guild_id: int, period: str = "day") -> UsageStats:
@@ -251,7 +272,8 @@ class TokenTracker:
         }.get(period, timedelta(days=1))
 
         key = f"guild:{guild_id}"
-        records = self._get_usage_in_period(key, period_delta)
+        async with self._lock:
+            records = self._get_usage_in_period(key, period_delta)
         return self._aggregate_usage(records)
 
     async def check_limits(
@@ -298,8 +320,10 @@ class TokenTracker:
 
     def get_global_stats(self) -> dict[str, Any]:
         """Get global usage statistics."""
+        # Take a snapshot of keys to avoid RuntimeError during iteration
+        cache_snapshot = dict(self._usage_cache)
         # Calculate from user records only to avoid double/triple counting
-        user_records = {k: v for k, v in self._usage_cache.items() if k.startswith("user:")}
+        user_records = {k: v for k, v in cache_snapshot.items() if k.startswith("user:")}
         total_tokens = sum(
             sum(r.total_tokens for r in records) for records in user_records.values()
         )
@@ -309,8 +333,8 @@ class TokenTracker:
             "total_records": total_requests,
             "total_tokens": total_tokens,
             "unique_users": len(user_records),
-            "unique_channels": len([k for k in self._usage_cache if k.startswith("channel:")]),
-            "unique_guilds": len([k for k in self._usage_cache if k.startswith("guild:")]),
+            "unique_channels": len([k for k in cache_snapshot if k.startswith("channel:")]),
+            "unique_guilds": len([k for k in cache_snapshot if k.startswith("guild:")]),
         }
 
 

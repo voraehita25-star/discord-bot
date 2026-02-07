@@ -184,8 +184,11 @@ class AICache:
         best_match = None
         best_similarity = 0.0
 
-        # Create snapshot of cache items to avoid RuntimeError during iteration
-        for key, entry in list(self.cache.items()):
+        # Create snapshot of cache items under lock to avoid RuntimeError during iteration
+        with self._cache_lock:
+            cache_snapshot = list(self.cache.items())
+        
+        for key, entry in cache_snapshot:
             # Skip expired entries
             if self._is_expired(entry):
                 continue
@@ -249,8 +252,11 @@ class AICache:
         best_match = None
         best_similarity = 0.0
 
-        # Create snapshot of cache items to avoid RuntimeError during iteration
-        for key, entry in list(self.cache.items()):
+        # Create snapshot of cache items under lock to avoid RuntimeError during iteration
+        with self._cache_lock:
+            cache_snapshot = list(self.cache.items())
+
+        for key, entry in cache_snapshot:
             # Skip expired entries
             if self._is_expired(entry):
                 continue
@@ -292,29 +298,34 @@ class AICache:
         """
         key = self._generate_key(message, context_hash, intent)
 
-        entry = self.cache.get(key)
-        if entry is not None and not self._is_expired(entry):
-            # Exact cache hit - move to end (most recently used)
-            self.cache.move_to_end(key)
-            entry.hits += 1
-            self._update_adaptive_ttl(entry)
-            self._hits += 1
-            self.logger.debug("Cache hit (exact): %s... (hits: %d)", key[:8], entry.hits)
-            return entry.response
+        with self._cache_lock:
+            entry = self.cache.get(key)
+            if entry is not None and not self._is_expired(entry):
+                # Exact cache hit - move to end (most recently used)
+                self.cache.move_to_end(key)
+                entry.hits += 1
+                self._update_adaptive_ttl(entry)
+                self._hits += 1
+                self.logger.debug("Cache hit (exact): %s... (hits: %d)", key[:8], entry.hits)
+                return entry.response
 
-        # Try fuzzy matching as fallback
+        # Try fuzzy matching as fallback (OUTSIDE lock to avoid nested lock deadlock)
         if use_fuzzy and self.enable_semantic:
             similar = self.find_similar(message, intent)
             if similar:
                 similar_key, similar_entry, similarity = similar
-                self.cache.move_to_end(similar_key)
-                similar_entry.hits += 1
-                self._hits += 1
-                self._semantic_hits += 1
+                with self._cache_lock:
+                    # Re-verify entry still exists after releasing and re-acquiring lock
+                    if similar_key in self.cache:
+                        self.cache.move_to_end(similar_key)
+                        similar_entry.hits += 1
+                        self._hits += 1
+                        self._semantic_hits += 1
                 self.logger.debug("Cache hit (fuzzy %.2f): %s...", similarity, similar_key[:8])
                 return similar_entry.response
 
-        self._misses += 1
+        with self._cache_lock:
+            self._misses += 1
         return None
 
     def set(
@@ -339,19 +350,20 @@ class AICache:
 
         key = self._generate_key(message, context_hash, intent)
 
-        # Evict if necessary
-        self._evict_lru()
+        with self._cache_lock:
+            # Evict if necessary
+            self._evict_lru()
 
-        # Store normalized message for fuzzy matching
-        normalized = self._normalize_message(message)
+            # Store normalized message for fuzzy matching
+            normalized = self._normalize_message(message)
 
-        self.cache[key] = CacheEntry(
-            response=response,
-            created_at=time.time(),
-            context_hash=context_hash or "",
-            intent=intent or "",
-            normalized_message=normalized,
-        )
+            self.cache[key] = CacheEntry(
+                response=response,
+                created_at=time.time(),
+                context_hash=context_hash or "",
+                intent=intent or "",
+                normalized_message=normalized,
+            )
 
         self.logger.debug("Cached response: %s...", key[:8])
 
@@ -400,53 +412,56 @@ class AICache:
         Returns:
             Number of entries invalidated
         """
-        if pattern is None:
-            count = len(self.cache)
-            self.cache.clear()
-            return count
+        with self._cache_lock:
+            if pattern is None:
+                count = len(self.cache)
+                self.cache.clear()
+                return count
 
-        # Find and remove matching entries
-        to_remove = [key for key in self.cache if pattern in key]
-        for key in to_remove:
-            del self.cache[key]
+            # Find and remove matching entries
+            to_remove = [key for key in self.cache if pattern in key]
+            for key in to_remove:
+                del self.cache[key]
 
-        return len(to_remove)
+            return len(to_remove)
 
     def cleanup_expired(self) -> int:
         """Remove expired entries. Returns count removed."""
-        now = time.time()
-        expired_keys = [
-            key
-            for key, entry in self.cache.items()
-            if now - entry.created_at > self.ttl * entry.ttl_multiplier
-        ]
+        with self._cache_lock:
+            now = time.time()
+            expired_keys = [
+                key
+                for key, entry in self.cache.items()
+                if now - entry.created_at > self.ttl * entry.ttl_multiplier
+            ]
 
-        for key in expired_keys:
-            del self.cache[key]
+            for key in expired_keys:
+                del self.cache[key]
 
-        if expired_keys:
-            self.logger.info("Cleaned up %d expired cache entries", len(expired_keys))
+            if expired_keys:
+                self.logger.info("Cleaned up %d expired cache entries", len(expired_keys))
 
-        return len(expired_keys)
+            return len(expired_keys)
 
     def get_stats(self) -> CacheStats:
         """Get cache statistics."""
-        total = self._hits + self._misses
-        hit_rate = self._hits / total if total > 0 else 0.0
+        with self._cache_lock:
+            total = self._hits + self._misses
+            hit_rate = self._hits / total if total > 0 else 0.0
 
-        # Estimate memory usage
-        memory_bytes = sum(
-            len(entry.response) + len(entry.context_hash) + 100 for entry in self.cache.values()
-        )
+            # Estimate memory usage
+            memory_bytes = sum(
+                len(entry.response) + len(entry.context_hash) + 100 for entry in self.cache.values()
+            )
 
-        return CacheStats(
-            total_entries=len(self.cache),
-            hits=self._hits,
-            misses=self._misses,
-            hit_rate=hit_rate,
-            memory_estimate_kb=memory_bytes / 1024,
-            semantic_hits=self._semantic_hits,
-        )
+            return CacheStats(
+                total_entries=len(self.cache),
+                hits=self._hits,
+                misses=self._misses,
+                hit_rate=hit_rate,
+                memory_estimate_kb=memory_bytes / 1024,
+                semantic_hits=self._semantic_hits,
+            )
 
     def reset_stats(self) -> None:
         """Reset hit/miss statistics."""

@@ -7,6 +7,7 @@ Enhanced with hybrid search (semantic + keyword) and Reciprocal Rank Fusion.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import threading
@@ -134,17 +135,21 @@ class FAISSIndex:
         logging.debug("🔍 Built FAISS index with %d vectors", len(ids))
 
     def search(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
-        """Search for k nearest neighbors. Returns list of (id, similarity)."""
-        if not self._initialized or self.index is None:
-            return []
-
-        # Normalize query
+        """Search for k nearest neighbors. Returns list of (id, similarity).
+        
+        Note: This is a synchronous method. For async contexts, use search_async().
+        """
+        # Normalize query first (outside lock for performance)
         norm = np.linalg.norm(query_vector)
         if norm == 0:
             return []
         query_normalized = (query_vector / norm).reshape(1, -1).astype(np.float32)
 
         with self._lock:
+            # Check initialization inside lock to avoid race condition
+            if not self._initialized or self.index is None:
+                return []
+
             # Search
             k = min(k, self.index.ntotal)
             similarities, indices = self.index.search(query_normalized, k)
@@ -156,6 +161,10 @@ class FAISSIndex:
                     results.append((self.id_map[idx], float(similarities[0][i])))
 
         return results
+
+    async def search_async(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
+        """Async version of search that runs in executor to avoid blocking event loop."""
+        return await asyncio.to_thread(self.search, query_vector, k)
 
     @property
     def is_initialized(self) -> bool:
@@ -185,8 +194,12 @@ class FAISSIndex:
     def save_to_disk(self) -> bool:
         """Save FAISS index to disk for persistence.
 
-        Uses atomic write pattern: write to temp files, then rename.
-        This prevents inconsistent state if one write fails.
+        Uses atomic write pattern with transaction marker:
+        1. Write to temp files
+        2. Write completion marker
+        3. Rename to final paths
+        
+        This prevents inconsistent state if crash occurs between writes.
         """
         if not self._initialized or not FAISS_AVAILABLE:
             return False
@@ -197,14 +210,33 @@ class FAISSIndex:
             # Atomic write pattern: write to temp, then rename
             temp_index = FAISS_INDEX_FILE.with_suffix(".tmp")
             temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
+            transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
+
+            # Create transaction marker
+            transaction_marker.write_text(str(time.time()), encoding="utf-8")
 
             # Write to temp files first
             faiss.write_index(self.index, str(temp_index))
             np.save(str(temp_id_map), np.array(self.id_map))
 
-            # Rename to final paths (atomic on most filesystems)
+            # Both files written successfully - now rename atomically
+            # Backup old files first (if they exist)
+            backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+            backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+            
+            if FAISS_INDEX_FILE.exists():
+                FAISS_INDEX_FILE.replace(backup_index)
+            if FAISS_ID_MAP_FILE.exists():
+                FAISS_ID_MAP_FILE.replace(backup_id_map)
+
+            # Rename temp to final
             temp_index.replace(FAISS_INDEX_FILE)
             temp_id_map.replace(FAISS_ID_MAP_FILE)
+
+            # Remove transaction marker and backups on success
+            transaction_marker.unlink(missing_ok=True)
+            backup_index.unlink(missing_ok=True)
+            backup_id_map.unlink(missing_ok=True)
 
             logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
             return True
@@ -214,6 +246,7 @@ class FAISSIndex:
             for temp_file in [
                 FAISS_INDEX_FILE.with_suffix(".tmp"),
                 FAISS_ID_MAP_FILE.with_suffix(".tmp.npy"),
+                FAISS_INDEX_DIR / ".save_in_progress",
             ]:
                 try:
                     if temp_file.exists():
@@ -266,6 +299,9 @@ class MemorySystem:
         self._save_pending = False
         self._save_task: asyncio.Task | None = None
         self._periodic_save_task: asyncio.Task | None = None
+
+        # Lock for index building to prevent race conditions
+        self._index_lock = asyncio.Lock()
 
         if GEMINI_API_KEY:
             try:
@@ -352,52 +388,63 @@ class MemorySystem:
         return results
 
     async def _ensure_index(self, channel_id: int | None = None) -> None:
-        """Build FAISS index from database if not already built."""
+        """Build FAISS index from database if not already built.
+        
+        Uses lock to prevent race conditions from concurrent calls.
+        """
         if not FAISS_AVAILABLE or self._index_built:
             return
 
-        # Try to load from disk first (fast path)
-        if self._faiss_index is None:
-            self._faiss_index = FAISSIndex(EMBEDDING_DIM)
-            if self._faiss_index.load_from_disk():
-                self._index_built = True
-                # Load memories cache from DB
-                all_memories = await db.get_all_rag_memories(channel_id)
-                for mem in all_memories:
-                    mem_id = mem.get("id")
-                    if mem_id:
-                        self._memories_cache[mem_id] = mem
-                self._evict_cache_if_needed()
+        # Use lock to prevent multiple concurrent index builds
+        async with self._index_lock:
+            # Double-check after acquiring lock (another task may have built it)
+            if self._index_built:
                 return
 
-        # Build from database (slow path)
-        all_memories = await db.get_all_rag_memories(channel_id)
-        if not all_memories:
-            return
+            # Try to load from disk first (fast path)
+            if self._faiss_index is None:
+                self._faiss_index = FAISSIndex(EMBEDDING_DIM)
+                if self._faiss_index.load_from_disk():
+                    self._index_built = True
+                    # Load memories cache from DB
+                    # Load ALL memories (not just one channel) since FAISS index is global
+                    all_memories = await db.get_all_rag_memories(None)
+                    for mem in all_memories:
+                        mem_id = mem.get("id")
+                        if mem_id:
+                            self._memories_cache[mem_id] = mem
+                    self._evict_cache_if_needed()
+                    return
 
-        vectors = []
-        ids = []
+            # Build from database (slow path)
+            # Load ALL memories (not just one channel) since FAISS index is global
+            all_memories = await db.get_all_rag_memories(None)
+            if not all_memories:
+                return
 
-        for mem in all_memories:
-            try:
-                vec = np.frombuffer(mem["embedding"], dtype=np.float32)
-                if len(vec) == EMBEDDING_DIM:
-                    vectors.append(vec)
-                    mem_id = mem.get("id", len(ids))
-                    ids.append(mem_id)
-                    self._memories_cache[mem_id] = mem
-            except (ValueError, TypeError, KeyError) as e:
-                logging.debug("Skipping invalid memory embedding: %s", e)
-                continue
+            vectors = []
+            ids = []
 
-        if vectors:
-            self._faiss_index = FAISSIndex(EMBEDDING_DIM)
-            self._faiss_index.build(np.array(vectors), ids)
-            self._index_built = True
-            # Save to disk for next restart
-            self._faiss_index.save_to_disk()
-            self._evict_cache_if_needed()
-            logging.info("🚀 FAISS index built with %d memories", len(vectors))
+            for mem in all_memories:
+                try:
+                    vec = np.frombuffer(mem["embedding"], dtype=np.float32)
+                    if len(vec) == EMBEDDING_DIM:
+                        vectors.append(vec)
+                        mem_id = mem.get("id", len(ids))
+                        ids.append(mem_id)
+                        self._memories_cache[mem_id] = mem
+                except (ValueError, TypeError, KeyError) as e:
+                    logging.debug("Skipping invalid memory embedding: %s", e)
+                    continue
+
+            if vectors:
+                self._faiss_index = FAISSIndex(EMBEDDING_DIM)
+                self._faiss_index.build(np.array(vectors), ids)
+                self._index_built = True
+                # Save to disk for next restart
+                self._faiss_index.save_to_disk()
+                self._evict_cache_if_needed()
+                logging.info("🚀 FAISS index built with %d memories", len(vectors))
 
     def _schedule_index_save(self, delay: float = 30.0) -> None:
         """Schedule a debounced save of FAISS index (non-blocking)."""
@@ -407,11 +454,18 @@ class MemorySystem:
         self._save_pending = True
 
         async def do_save():
-            await asyncio.sleep(delay)
-            self._save_pending = False
-            if self._faiss_index and self._index_built:
-                self._faiss_index.save_to_disk()
+            try:
+                await asyncio.sleep(delay)
+                self._save_pending = False
+                if self._faiss_index and self._index_built:
+                    self._faiss_index.save_to_disk()
+            except asyncio.CancelledError:
+                self._save_pending = False
+                raise  # Re-raise to properly handle cancellation
 
+        # Cancel any existing save task before creating a new one
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
         self._save_task = asyncio.create_task(do_save())
 
     def start_periodic_save(self, interval: float = 300.0) -> None:
@@ -434,10 +488,23 @@ class MemorySystem:
             self._periodic_save_task = asyncio.create_task(save_loop())
             logging.info("🔄 Started periodic FAISS save task (every %.0fs)", interval)
 
-    def stop_periodic_save(self) -> None:
-        """Stop the periodic save task."""
+    async def stop_periodic_save(self) -> None:
+        """Stop the periodic save task (async to properly await cancellation)."""
+        # Cancel the debounced save task
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._save_task
+            self._save_task = None
+
+        # Cancel the periodic save task
         if self._periodic_save_task and not self._periodic_save_task.done():
             self._periodic_save_task.cancel()
+            # Properly await the cancelled task to avoid 'Task was destroyed' warning
+            try:
+                await self._periodic_save_task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling
             self._periodic_save_task = None
 
     async def force_save_index(self) -> bool:
@@ -459,11 +526,12 @@ class MemorySystem:
             content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
         )
 
-        # Add to FAISS index if available
-        if FAISS_AVAILABLE and self._faiss_index and self._index_built:
-            self._faiss_index.add_single(embedding, result if isinstance(result, int) else 0)
-            # Schedule debounced save instead of saving immediately (performance)
-            self._schedule_index_save()
+        # Add to FAISS index if available (with lock to prevent race conditions)
+        async with self._index_lock:
+            if FAISS_AVAILABLE and self._faiss_index and self._index_built:
+                self._faiss_index.add_single(embedding, result if isinstance(result, int) else -1)
+                # Schedule debounced save instead of saving immediately (performance)
+                self._schedule_index_save()
 
         logging.info("🧠 Saved RAG memory: %s...", content[:30])
         return True
@@ -474,10 +542,13 @@ class MemorySystem:
         Returns value between 0 and 1, where 1 is most recent.
         """
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
 
             created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-            now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now()
+            # Always use UTC for consistent comparison, avoiding timezone issues
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
             age_days = (now - created).total_seconds() / 86400
 
             # Exponential decay with half-life
@@ -556,7 +627,7 @@ class MemorySystem:
                     jaccard += 0.3
 
                 if jaccard > 0:
-                    scored.append((mem.get("id", 0), jaccard))
+                    scored.append((mem.get("id", -1), jaccard))
 
         # Sort by score
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -618,7 +689,7 @@ class MemorySystem:
 
         # Update cache
         for mem in all_memories:
-            self._memories_cache[mem.get("id", 0)] = mem
+            self._memories_cache[mem.get("id", -1)] = mem
         self._evict_cache_if_needed()
 
         # Semantic search
@@ -629,7 +700,8 @@ class MemorySystem:
             if FAISS_AVAILABLE:
                 await self._ensure_index(channel_id)
                 if self._faiss_index and self._faiss_index.is_initialized:
-                    semantic_results = self._faiss_index.search(query_vec, k=limit * 2)
+                    # Use async search to avoid blocking event loop
+                    semantic_results = await self._faiss_index.search_async(query_vec, k=limit * 2)
 
             # Fallback to linear if FAISS unavailable or not built
             if not semantic_results:
@@ -672,7 +744,8 @@ class MemorySystem:
                     from datetime import datetime
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now()
+                    from datetime import timezone as _tz
+                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(_tz.utc)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):
                     pass  # Invalid or missing datetime format
@@ -722,7 +795,7 @@ class MemorySystem:
                 similarity = 0 if norm_a == 0 or norm_b == 0 else dot_product / (norm_a * norm_b)
 
                 if similarity > LINEAR_SEARCH_MIN_SIMILARITY:
-                    scored.append((mem.get("id", 0), similarity))
+                    scored.append((mem.get("id", -1), similarity))
             except (ValueError, TypeError, KeyError) as e:
                 logging.debug("Skipping invalid memory in linear search: %s", e)
                 continue

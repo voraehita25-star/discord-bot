@@ -24,8 +24,8 @@ import (
 
 const (
 	defaultPort        = "8081"
-	maxContentLength   = 10 * 1024 * 1024  // 10MB
-	maxExtractedLength = 50000             // 50KB of text
+	maxContentLength   = 10 * 1024 * 1024 // 10MB
+	maxExtractedLength = 50000            // 50KB of text
 	requestTimeout     = 30 * time.Second
 	workerCount        = 10
 )
@@ -168,14 +168,44 @@ func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
 		wg.Add(1)
 		go func(idx int, u string) {
 			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+
+			// Check context before acquiring semaphore
+			select {
+			case <-ctx.Done():
+				response.Results[idx] = FetchResult{
+					URL:         u,
+					Error:       "context cancelled",
+					FetchTimeMs: time.Since(start).Milliseconds(),
+				}
+				return
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			}
 
 			response.Results[idx] = f.Fetch(ctx, u)
 		}(i, url)
 	}
 
-	wg.Wait()
+	// Wait with context cancellation support
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Context cancelled, wait briefly for in-flight requests
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-done:
+			timer.Stop()
+		case <-timer.C:
+			// Timeout waiting for in-flight requests
+		}
+	case <-done:
+		// All requests completed
+	}
 
 	// Count results
 	for _, r := range response.Results {
@@ -256,17 +286,18 @@ func cleanWhitespace(s string) string {
 	prevSpace := false
 
 	for _, r := range s {
-		if r == ' ' || r == '\t' {
+		switch r {
+		case ' ', '\t':
 			if !prevSpace {
 				result.WriteRune(' ')
 				prevSpace = true
 			}
-		} else if r == '\n' {
+		case '\n':
 			if !prevSpace {
 				result.WriteRune('\n')
 				prevSpace = true
 			}
-		} else {
+		default:
 			result.WriteRune(r)
 			prevSpace = false
 		}
@@ -314,6 +345,12 @@ func main() {
 			return
 		}
 
+		// Basic URL validation - must be http/https
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			http.Error(w, "url must use http or https scheme", http.StatusBadRequest)
+			return
+		}
+
 		result := fetcher.Fetch(r.Context(), url)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
@@ -321,6 +358,9 @@ func main() {
 
 	// Batch URL fetch
 	r.Post("/fetch/batch", func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size to 1MB
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 		var req FetchRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -337,10 +377,23 @@ func main() {
 			return
 		}
 
+		// Validate all URLs use http/https
+		for _, u := range req.URLs {
+			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				http.Error(w, "all URLs must use http or https scheme", http.StatusBadRequest)
+				return
+			}
+		}
+
 		ctx := r.Context()
 		if req.Timeout > 0 {
+			// Cap user-provided timeout to 120 seconds max
+			timeout := req.Timeout
+			if timeout > 120 {
+				timeout = 120
+			}
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Second)
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 			defer cancel()
 		}
 

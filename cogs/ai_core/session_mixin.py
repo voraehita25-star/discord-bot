@@ -33,6 +33,7 @@ class SessionMixin:
     - pending_messages: dict[int, list]
     - cancel_flags: dict[int, bool]
     - streaming_enabled: dict[int, bool]
+    - current_typing_msg: dict[int, Any] - channel_id -> typing message
     """
 
     bot: Bot
@@ -44,6 +45,7 @@ class SessionMixin:
     pending_messages: dict[int, list]
     cancel_flags: dict[int, bool]
     streaming_enabled: dict[int, bool]
+    current_typing_msg: dict[int, Any]
 
     async def get_chat_session(
         self, channel_id: int, guild_id: int | None = None
@@ -99,16 +101,24 @@ class SessionMixin:
                 logging.info("🧠 Force enabling thinking mode for RP channel %s", channel_id)
                 self.chats[channel_id]["thinking_enabled"] = True
 
-        # UNRESTRICTED MODE INJECTION
-        current_instruction = self.chats[channel_id].get("system_instruction", "")
-        if "[CREATIVE WRITING MODE - PRIVATE SESSION]" not in current_instruction:
-            logging.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
-            self.chats[channel_id]["system_instruction"] = (
-                UNRESTRICTED_MODE_INSTRUCTION + current_instruction
-            )
+        # UNRESTRICTED MODE INJECTION — only for channels explicitly marked unrestricted
+        try:
+            from .processing.guardrails import is_unrestricted
+            if is_unrestricted(channel_id):
+                current_instruction = self.chats[channel_id].get("system_instruction", "")
+                if "[CREATIVE WRITING MODE - PRIVATE SESSION]" not in current_instruction:
+                    logging.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
+                    self.chats[channel_id]["system_instruction"] = (
+                        UNRESTRICTED_MODE_INSTRUCTION + current_instruction
+                    )
+        except ImportError:
+            pass  # Guardrails not available, skip unrestricted injection
 
         # Update Last Accessed Time
         self.last_accessed[channel_id] = time.time()
+        
+        # Enforce channel limit to prevent unbounded memory growth
+        self._enforce_channel_limit()
 
         return self.chats[channel_id]
 
@@ -145,6 +155,8 @@ class SessionMixin:
                         self.processing_locks.pop(channel_id, None)
                         self.pending_messages.pop(channel_id, None)
                         self.cancel_flags.pop(channel_id, None)
+                        self.streaming_enabled.pop(channel_id, None)
+                        self.current_typing_msg.pop(channel_id, None)
 
                         logging.info(
                             "Unloaded inactive AI session for channel %s from RAM.", channel_id

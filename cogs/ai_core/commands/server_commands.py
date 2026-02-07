@@ -195,6 +195,9 @@ async def cmd_delete_channel(
         channel = guild.get_channel(int(name))
 
     if channel:
+        if channel.id == origin_channel.id:
+            await origin_channel.send("❌ ไม่สามารถลบช่องที่กำลังใช้งานอยู่ได้")
+            return
         try:
             await channel.delete()
             logging.info("🗑️ AI Deleted Channel: %s", name)

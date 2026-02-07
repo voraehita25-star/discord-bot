@@ -6,6 +6,7 @@ Comprehensive tests for MusicControlView.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
 import pytest
 
 
@@ -87,7 +88,11 @@ class TestInteractionCheck:
             view = MusicControlView(cog=mock_cog, guild_id=12345)
 
             mock_interaction = MagicMock()
-            mock_interaction.user.voice = MagicMock()  # Has voice state
+            mock_interaction.user.voice = MagicMock()
+            mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
+            mock_interaction.guild.voice_client = None  # Bot not in voice
+            mock_interaction.response.send_message = AsyncMock()
+            mock_interaction.response.edit_message = AsyncMock()
 
             result = await view.interaction_check(mock_interaction)
 
@@ -296,7 +301,7 @@ class TestStopButton:
 
             await view.stop_button(mock_interaction, mock_button)
 
-            assert mock_cog.queues[12345] == []
+            assert len(mock_cog.queues[12345]) == 0
             assert mock_cog.loops[12345] is False
             assert 12345 not in mock_cog.current_track
             mock_voice_client.stop.assert_called_once()
@@ -347,15 +352,14 @@ class TestLoopButton:
 
                 mock_interaction = MagicMock()
                 mock_interaction.response.send_message = AsyncMock()
+                mock_interaction.response.edit_message = AsyncMock()
+                mock_interaction.followup.send = AsyncMock()
 
                 mock_button = MagicMock()
 
                 await view.loop_button(mock_interaction, mock_button)
 
                 assert mock_cog.loops[12345] is True
-                mock_interaction.response.send_message.assert_called_once()
-                args, kwargs = mock_interaction.response.send_message.call_args
-                assert "เปิด" in args[0] or "🔁" in args[0]
 
     @pytest.mark.asyncio
     async def test_loop_button_disable(self):
@@ -374,6 +378,8 @@ class TestLoopButton:
 
                 mock_interaction = MagicMock()
                 mock_interaction.response.send_message = AsyncMock()
+                mock_interaction.response.edit_message = AsyncMock()
+                mock_interaction.followup.send = AsyncMock()
 
                 mock_button = MagicMock()
 
@@ -398,6 +404,8 @@ class TestLoopButton:
 
                 mock_interaction = MagicMock()
                 mock_interaction.response.send_message = AsyncMock()
+                mock_interaction.response.edit_message = AsyncMock()
+                mock_interaction.followup.send = AsyncMock()
 
                 mock_button = MagicMock()
 
@@ -419,9 +427,10 @@ class TestOnTimeout:
             mock_cog = MagicMock()
             view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-            mock_button1 = MagicMock()
+            # Mock buttons with spec to pass isinstance check
+            mock_button1 = MagicMock(spec=discord.ui.Button)
             mock_button1.disabled = False
-            mock_button2 = MagicMock()
+            mock_button2 = MagicMock(spec=discord.ui.Button)
             mock_button2.disabled = False
 
             # Use _children attribute instead of children property

@@ -11,7 +11,7 @@ import contextlib
 import copy
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 from google import genai
 from google.genai import types
@@ -21,10 +21,8 @@ from ..data.faust_data import (
     FAUST_DM_INSTRUCTION,
     FAUST_INSTRUCTION,
 )
+from ..data.constants import THINKING_BUDGET_DEFAULT
 from ..data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
-
-if TYPE_CHECKING:
-    pass
 
 # Import circuit breaker for API protection
 try:
@@ -61,10 +59,10 @@ try:
 except ImportError:
     GUARDRAILS_AVAILABLE = False
 
-    def detect_refusal(response):
+    def detect_refusal(response: str) -> tuple[bool, str | None]:
         return False, None
 
-    def is_silent_block(response, expected_min_length=50):
+    def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
         return False
 
 
@@ -107,8 +105,8 @@ def build_api_config(
         logging.info("🔍 Google Search: ENABLED (search requested)")
     elif (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         # Use Thinking mode for deep reasoning
-        config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=16000)
-        logging.info("🧠 Thinking Mode: ENABLED (budget: 16000)")
+        config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=THINKING_BUDGET_DEFAULT)
+        logging.info("🧠 Thinking Mode: ENABLED (budget: %d)", THINKING_BUDGET_DEFAULT)
     else:
         # Default: Google Search for non-RP modes
         config_params["tools"] = [types.Tool(google_search=types.GoogleSearch())]
@@ -201,6 +199,7 @@ async def call_gemini_api_streaming(
     last_update_time = 0
     update_interval = 1.0
     stream_start_time = 0.0  # Track start time for performance
+    chunks_received = 0  # Initialize outside try block for exception handler access
 
     try:
         # Check circuit breaker
@@ -220,7 +219,6 @@ async def call_gemini_api_streaming(
         # Progressive timeout configuration
         initial_chunk_timeout = 30.0
         chunk_timeout = 10.0
-        chunks_received = 0
         max_stall_time = 60.0
         stream_start_time = time.time()
 
@@ -229,7 +227,7 @@ async def call_gemini_api_streaming(
             stream = await asyncio.wait_for(
                 client.aio.models.generate_content_stream(
                     model=target_model,
-                    contents=contents,
+                    contents=cast(Any, contents),
                     config=types.GenerateContentConfig(**streaming_config),
                 ),
                 timeout=initial_chunk_timeout,
@@ -272,18 +270,17 @@ async def call_gemini_api_streaming(
                 if hasattr(chunk, "text") and chunk.text:
                     chunk_text = chunk.text
                 elif (
-                    hasattr(chunk, "candidates")
-                    and chunk.candidates
-                    and len(chunk.candidates) > 0
+                    hasattr(chunk, "candidates") and chunk.candidates and len(chunk.candidates) > 0
                 ):
                     candidate = chunk.candidates[0]
                     has_content = (
                         hasattr(candidate, "content")
                         and candidate.content
                         and hasattr(candidate.content, "parts")
+                        and candidate.content.parts
                     )
-                    if has_content:
-                        for part in candidate.content.parts:
+                    if has_content and candidate.content is not None:
+                        for part in list(candidate.content.parts or []):
                             if hasattr(part, "text") and part.text:
                                 chunk_text += part.text
                             if hasattr(part, "function_call") and part.function_call:
@@ -327,6 +324,7 @@ async def call_gemini_api_streaming(
         return model_text, search_indicator, function_calls
 
     except asyncio.TimeoutError as e:
+        # chunks_received is always defined at this point (line 220)
         logging.warning("⚠️ Streaming timeout after %d chunks: %s", chunks_received, e)
         if placeholder_msg:
             with contextlib.suppress(Exception):
@@ -411,15 +409,14 @@ async def call_gemini_api(
                 response = await asyncio.wait_for(
                     client.aio.models.generate_content(
                         model=target_model,
-                        contents=contents,
+                        contents=cast(Any, contents),
                         config=types.GenerateContentConfig(**config_params),
                     ),
                     timeout=api_timeout,
                 )
             except asyncio.TimeoutError:
                 logging.error(
-                    "⏱️ Gemini API timeout after %.0fs (attempt %d)",
-                    api_timeout, attempt + 1
+                    "⏱️ Gemini API timeout after %.0fs (attempt %d)", api_timeout, attempt + 1
                 )
                 if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                     gemini_circuit.record_failure()
@@ -448,7 +445,7 @@ async def call_gemini_api(
                 and response.candidates
                 and len(response.candidates) > 0
             )
-            if has_candidates:
+            if has_candidates and response.candidates:
                 candidate0 = response.candidates[0]
 
                 # Extract search metadata
@@ -535,31 +532,29 @@ async def call_gemini_api(
                         text = part["text"]
                         if len(text) > 10000:
                             truncated = (
-                                text[:5000]
-                                + "\n\n[... content truncated ...]\n\n"
-                                + text[-3000:]
+                                text[:5000] + "\n\n[... content truncated ...]\n\n" + text[-3000:]
                             )
                             part["text"] = truncated
                             logging.warning(
-                                "⚠️ Fallback Tier 2: Truncated large text (was %d chars)",
-                                len(text)
+                                "⚠️ Fallback Tier 2: Truncated large text (was %d chars)", len(text)
                             )
 
         # Tier 1-4: Escalation framing for refusal cases
         if attempt >= 1 and refusal_count > 0 and contents:
             tier_index = min(attempt, len(ESCALATION_FRAMINGS) - 1)
-            framing = ESCALATION_FRAMINGS[tier_index]
+            framing = (
+                ESCALATION_FRAMINGS[tier_index] if tier_index < len(ESCALATION_FRAMINGS) else None
+            )
             tier_names = ["None", "Soft", "Literary", "Meta-Author", "Nuclear"]
             tier_name = (
-                tier_names[tier_index]
-                if tier_index < len(tier_names)
-                else f"Tier{tier_index}"
+                tier_names[tier_index] if tier_index < len(tier_names) else f"Tier{tier_index}"
             )
 
             if framing:
                 last_message = contents[-1] if contents else None
                 if last_message and "parts" in last_message:
-                    for part in last_message["parts"]:
+                    parts_list = last_message.get("parts", [])
+                    for part in parts_list if parts_list else []:
                         if isinstance(part, dict) and "text" in part:
                             if framing not in part["text"]:
                                 part["text"] = part["text"] + framing

@@ -136,8 +136,8 @@
                 <div class="quick-actions">
                     <h2>Quick Actions</h2>
                     <div class="action-buttons">
-                        <button class="btn" onclick="openFolder('logs')">📁 Open Logs</button>
-                        <button class="btn" onclick="openFolder('data')">📁 Open Data</button>
+                        <button class="btn" id="btn-open-logs">📁 Open Logs</button>
+                        <button class="btn" id="btn-open-data">📁 Open Data</button>
                     </div>
                 </div>
             </section>
@@ -150,7 +150,7 @@
                         <span class="overlay-icon">🤖</span>
                         <h2>Bot Not Running</h2>
                         <p>Start the Discord bot to use AI Chat</p>
-                        <button class="btn btn-primary btn-large" onclick="showPage('status'); startBot();">
+                        <button class="btn btn-primary btn-large" id="btn-overlay-start">
                             ▶️ Start Bot
                         </button>
                     </div>
@@ -404,9 +404,9 @@
                             <option value="WARNING">WARNING</option>
                             <option value="ERROR">ERROR</option>
                         </select>
-                        <button id="btn-auto-scroll" class="btn" onclick="toggleAutoScroll()">⏸ Pause</button>
-                        <button class="btn" onclick="clearLogs()">🗑️ Clear</button>
-                        <button class="btn" onclick="loadLogs()">↻ Refresh</button>
+                        <button id="btn-auto-scroll" class="btn">⏸ Pause</button>
+                        <button class="btn" id="btn-clear-logs">🗑️ Clear</button>
+                        <button class="btn" id="btn-refresh-logs">↻ Refresh</button>
                     </div>
                 </div>
                 <div class="log-container" id="log-container">
@@ -450,7 +450,7 @@
                 <div class="danger-zone">
                     <h2>⚠️ Danger Zone</h2>
                     <p>These actions are irreversible.</p>
-                    <button class="btn btn-danger" onclick="clearHistory()">🗑️ Clear All History</button>
+                    <button class="btn btn-danger" id="btn-clear-history">🗑️ Clear All History</button>
                 </div>
             </section>
 

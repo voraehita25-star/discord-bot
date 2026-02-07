@@ -19,6 +19,7 @@ try:
 
     DB_AVAILABLE = True
 except ImportError:
+    db = None  # type: ignore
     DB_AVAILABLE = False
 
 
@@ -78,22 +79,29 @@ class Fact:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Fact:
-        """Create from dictionary."""
+        """Create from dictionary. Does not mutate the input dict."""
+        # Work on a copy to avoid mutating the caller's dict
+        data = dict(data)
         for key in ["first_mentioned", "last_confirmed"]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = datetime.fromisoformat(data[key])
                 except ValueError:
                     data[key] = None
-        return cls(**data)
+        # Filter to only known fields to avoid TypeError on unknown keys
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
 
     def decay_confidence(self, days_since_confirmed: int) -> float:
-        """Calculate decayed confidence based on time since last confirmation."""
+        """Calculate decayed confidence based on time since last confirmation.
+
+        Returns the decayed confidence value without mutating self.
+        """
         # Confidence decays 10% per 30 days without confirmation
         decay_rate = 0.1
         decay_periods = days_since_confirmed / 30
-        self.confidence = max(0.1, 1.0 - (decay_rate * decay_periods))
-        return self.confidence
+        return max(0.1, 1.0 - (decay_rate * decay_periods))
 
 
 class FactExtractor:
@@ -250,11 +258,12 @@ class LongTermMemory:
         self.logger = logging.getLogger("LongTermMemory")
         self.extractor = FactExtractor()
         self._cache: dict[int, list[Fact]] = {}  # user_id -> facts
+        self._next_cache_id: int = 0  # monotonic counter for cache-only IDs
         self._lock = asyncio.Lock()
 
     async def init_schema(self) -> None:
         """Initialize database schema for facts."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return
 
         async with db.get_connection() as conn:
@@ -383,7 +392,7 @@ class LongTermMemory:
         """
         similar = await self._find_similar_fact(user_id, content_query)
         if similar and similar.id:
-            if DB_AVAILABLE:
+            if DB_AVAILABLE and db is not None:
                 async with db.get_connection() as conn:
                     await conn.execute(
                         "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
@@ -413,7 +422,7 @@ class LongTermMemory:
         Returns:
             List of facts
         """
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             async with self._lock:
                 return list(self._cache.get(user_id, []))
 
@@ -480,7 +489,7 @@ class LongTermMemory:
         for fact in facts:
             if fact.last_confirmed:
                 days_old = (now - fact.last_confirmed).days
-                fact.decay_confidence(days_old)
+                fact.confidence = fact.decay_confidence(days_old)
 
         # Sort by importance and confidence
         facts.sort(key=lambda f: (f.importance, f.confidence), reverse=True)
@@ -516,12 +525,13 @@ class LongTermMemory:
 
     async def _store_fact(self, fact: Fact) -> int | None:
         """Store a fact to database."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             # Store in cache only (thread-safe)
             async with self._lock:
                 if fact.user_id not in self._cache:
                     self._cache[fact.user_id] = []
-                fact.id = len(self._cache[fact.user_id]) + 1
+                self._next_cache_id += 1
+                fact.id = self._next_cache_id
                 self._cache[fact.user_id].append(fact)
                 return fact.id
 
@@ -558,7 +568,7 @@ class LongTermMemory:
         fact.mention_count += 1
         fact.confidence = 1.0  # Reset confidence on confirmation
 
-        if DB_AVAILABLE and fact.id:
+        if DB_AVAILABLE and db is not None and fact.id:
             async with db.get_connection() as conn:
                 await conn.execute(
                     """
@@ -589,7 +599,7 @@ class LongTermMemory:
 
             if content_key in seen_contents:
                 # Mark duplicate as inactive
-                if fact.id and DB_AVAILABLE:
+                if fact.id and DB_AVAILABLE and db is not None:
                     async with db.get_connection() as conn:
                         await conn.execute(
                             "UPDATE user_facts SET is_active = 0 WHERE id = ?", (fact.id,)

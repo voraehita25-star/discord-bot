@@ -30,7 +30,8 @@ def sanitize_channel_name(name: str, max_length: int = 100) -> str:
     # Remove consecutive dashes
     cleaned = re.sub(r"-+", "-", cleaned)
     # Limit length and remove leading/trailing dashes
-    return cleaned[:max_length].strip("-")
+    result = cleaned[:max_length].strip("-")
+    return result or "untitled"
 
 
 def sanitize_role_name(name: str, max_length: int = 100) -> str:
@@ -45,7 +46,7 @@ def sanitize_role_name(name: str, max_length: int = 100) -> str:
     """
     # Remove characters that could be used for mention injection
     cleaned = _SAFE_ROLE_NAME.sub("", name)
-    return cleaned.strip()[:max_length]
+    return cleaned.strip()[:max_length] or "unnamed-role"
 
 
 def sanitize_message_content(content: str, max_length: int = 2000) -> str:

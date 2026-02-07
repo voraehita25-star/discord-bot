@@ -22,9 +22,16 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p data temp logs
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash botuser && \
+    chown -R botuser:botuser /app
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+
+# Switch to non-root user
+USER botuser
 
 # Run the bot
 CMD ["python", "bot.py"]

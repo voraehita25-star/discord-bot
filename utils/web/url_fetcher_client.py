@@ -31,11 +31,15 @@ class URLFetcherClient:
             results = await client.fetch_batch(["https://a.com", "https://b.com"])
     """
 
+    # Cache service availability for 5 minutes to allow recovery
+    SERVICE_CHECK_INTERVAL = 300  # seconds
+
     def __init__(self, base_url: str | None = None, timeout: int = 30):
         self.base_url = base_url or URL_FETCHER_URL
         self.timeout = timeout
         self._session: aiohttp.ClientSession | None = None
         self._service_available: bool | None = None
+        self._service_check_time: float = 0
 
     async def __aenter__(self):
         self._session = aiohttp.ClientSession(
@@ -49,18 +53,31 @@ class URLFetcherClient:
             await self._session.close()
 
     async def _check_service(self) -> bool:
-        """Check if Go service is available."""
+        """Check if Go service is available (with cache expiration)."""
+        import time
+        
+        # Check if cache is still valid
+        now = time.time()
         if self._service_available is not None:
-            return self._service_available
+            if now - self._service_check_time < self.SERVICE_CHECK_INTERVAL:
+                return self._service_available
+            # Cache expired, recheck
+
+        if self._session is None:
+            self._service_available = False
+            self._service_check_time = now
+            return False
 
         try:
             async with self._session.get(f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)) as resp:
                 self._service_available = resp.status == 200
+                self._service_check_time = now
                 if self._service_available:
                     logger.info("✅ Go URL Fetcher service available")
                 return self._service_available
         except Exception as e:
             self._service_available = False
+            self._service_check_time = now
             logger.debug("Go URL Fetcher health check failed: %s", e)
             logger.warning("⚠️ Go URL Fetcher not available, using aiohttp fallback")
             return False
@@ -131,9 +148,9 @@ class URLFetcherClient:
 
                         main = soup.find("main") or soup.find("article") or soup.find("body")
                         if main:
-                            result["content"] = main.get_text(separator="\n", strip=True)[:50000]
+                            result["content"] = main.get_text(separator="\n", strip=True)[:5000]
                     else:
-                        result["content"] = text[:50000]
+                        result["content"] = text[:5000]
         except Exception as e:
             result["error"] = str(e)
 

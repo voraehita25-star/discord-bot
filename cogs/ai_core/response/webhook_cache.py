@@ -20,6 +20,7 @@ _webhook_cache_time: dict[int, float] = {}  # channel_id -> last_update_time
 _webhook_cache_lock = threading.Lock()  # Thread-safe lock for cache operations
 WEBHOOK_CACHE_TTL = 1800  # 30 minutes (was 10 min) - webhooks rarely change
 _webhook_cache_cleanup_task: asyncio.Task | None = None  # Background cleanup task
+_webhook_task_lock = threading.Lock()  # Thread-safe lock for task management
 
 
 def get_cached_webhook(channel_id: int, webhook_name: str) -> discord.Webhook | None:
@@ -74,18 +75,35 @@ def start_webhook_cache_cleanup(bot) -> None:
         bot: The Discord bot instance
     """
     global _webhook_cache_cleanup_task  # pylint: disable=global-statement
-    if _webhook_cache_cleanup_task is None or _webhook_cache_cleanup_task.done():
-        _webhook_cache_cleanup_task = bot.loop.create_task(_cleanup_expired_webhook_cache())
-        logging.info("🧹 Started webhook cache cleanup task")
+    # Check if event loop is available and running
+    if not hasattr(bot, 'loop') or bot.loop is None or bot.loop.is_closed():
+        logging.warning("🧹 Cannot start webhook cleanup: event loop not ready")
+        return
+    # Use lock for thread-safe task creation
+    with _webhook_task_lock:
+        if _webhook_cache_cleanup_task is None or _webhook_cache_cleanup_task.done():
+            _webhook_cache_cleanup_task = bot.loop.create_task(_cleanup_expired_webhook_cache())
+            logging.info("🧹 Started webhook cache cleanup task")
 
 
-def stop_webhook_cache_cleanup() -> None:
+async def stop_webhook_cache_cleanup() -> None:
     """Stop the background webhook cache cleanup task."""
     global _webhook_cache_cleanup_task  # pylint: disable=global-statement
 
-    if _webhook_cache_cleanup_task and not _webhook_cache_cleanup_task.done():
-        _webhook_cache_cleanup_task.cancel()
-        _webhook_cache_cleanup_task = None
+    # Get task reference under lock, then await outside lock
+    task_to_cancel = None
+    with _webhook_task_lock:
+        if _webhook_cache_cleanup_task and not _webhook_cache_cleanup_task.done():
+            task_to_cancel = _webhook_cache_cleanup_task
+            _webhook_cache_cleanup_task = None
+
+    if task_to_cancel:
+        task_to_cancel.cancel()
+        # Await the task to ensure proper cleanup
+        try:
+            await task_to_cancel
+        except asyncio.CancelledError:
+            pass  # Expected when cancelling
         logging.info("🧹 Stopped webhook cache cleanup task")
 
     # Clear cache on stop to free memory (thread-safe)

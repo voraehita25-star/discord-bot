@@ -51,8 +51,14 @@ def extract_discord_emojis(text: str) -> list[dict]:
     return emojis
 
 
-async def fetch_emoji_images(emojis: list[dict]) -> list[tuple[str, Image.Image]]:
+async def fetch_emoji_images(
+    emojis: list[dict], session: "aiohttp.ClientSession | None" = None
+) -> list[tuple[str, Image.Image]]:
     """Fetch emoji images from Discord CDN.
+
+    Args:
+        emojis: List of emoji dicts with 'url' and 'name' keys.
+        session: Optional aiohttp session to reuse. If None, a new session is created.
 
     Returns list of (name, PIL.Image) tuples.
     """
@@ -60,10 +66,11 @@ async def fetch_emoji_images(emojis: list[dict]) -> list[tuple[str, Image.Image]
 
     results = []
 
-    async with aiohttp.ClientSession() as session:
+    async def _fetch_with_session(s: aiohttp.ClientSession) -> None:
         for emoji in emojis[:5]:  # Limit to 5 emojis to avoid overload
+            img = None
             try:
-                async with session.get(
+                async with s.get(
                     emoji["url"], timeout=aiohttp.ClientTimeout(total=3)
                 ) as resp:
                     if resp.status == 200:
@@ -71,9 +78,22 @@ async def fetch_emoji_images(emojis: list[dict]) -> list[tuple[str, Image.Image]
                         img = Image.open(io.BytesIO(data))
                         # Convert to RGB if needed (for GIFs, take first frame)
                         if img.mode in ("RGBA", "P"):
-                            img = img.convert("RGB")
+                            converted_img = img.convert("RGB")
+                            img.close()  # Close original after conversion
+                            img = converted_img
                         results.append((emoji["name"], img))
+                        img = None  # Transferred to results, don't close
             except Exception as e:
                 logging.debug("Failed to fetch emoji %s: %s", emoji.get("name", "unknown"), e)
+            finally:
+                # Close image if not transferred to results (error occurred)
+                if img is not None:
+                    img.close()
+
+    if session is not None:
+        await _fetch_with_session(session)
+    else:
+        async with aiohttp.ClientSession() as new_session:
+            await _fetch_with_session(new_session)
 
     return results

@@ -34,8 +34,8 @@ class TestHealthApiConstants:
             import utils.monitoring.health_api as health_api_module
             importlib.reload(health_api_module)
             
-            # Default should be 0.0.0.0
-            assert health_api_module.HEALTH_API_HOST == "0.0.0.0"
+            # Default should be 127.0.0.1 (localhost only for security)
+            assert health_api_module.HEALTH_API_HOST == "127.0.0.1"
 
 
 # ==================== TestBotHealthDataInit ====================

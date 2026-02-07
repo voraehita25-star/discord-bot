@@ -5,6 +5,7 @@ Tracks administrative actions for security and accountability.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -55,8 +56,6 @@ class AuditLogger:
 
         try:
             # Embed target_type into details JSON if provided
-            import json
-
             full_details = details or "{}"
             if target_type:
                 try:
@@ -75,6 +74,7 @@ class AuditLogger:
                 """,
                     (guild_id, user_id, action, target_id, full_details),
                 )
+                await conn.commit()
 
             logging.debug("📋 Logged audit action: %s by user %s", action, user_id)
             return True
@@ -139,7 +139,7 @@ async def log_channel_change(
         guild_id=guild_id,
         target_type="channel",
         target_id=channel_id,
-        details=f'{{"name": "{channel_name}"}}',
+        details=json.dumps({"name": channel_name}, ensure_ascii=False),
     )
 
 
@@ -152,10 +152,9 @@ async def log_role_change(
     target_user_id: int | None = None,
 ) -> bool:
     """Log a role-related action."""
-    details = f'{{"name": "{role_name}"'
+    details_dict = {"name": role_name}
     if target_user_id:
-        details += f', "target_user": {target_user_id}'
-    details += "}"
+        details_dict["target_user"] = target_user_id
 
     return await audit.log_action(
         user_id=user_id,
@@ -163,5 +162,5 @@ async def log_role_change(
         guild_id=guild_id,
         target_type="role",
         target_id=role_id,
-        details=details,
+        details=json.dumps(details_dict, ensure_ascii=False),
     )

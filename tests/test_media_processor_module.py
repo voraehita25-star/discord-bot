@@ -127,12 +127,12 @@ class TestImageioAvailability:
 
 
 class TestServerCharacters:
-    """Tests for SERVER_CHARACTERS import."""
+    """Tests for SERVER_CHARACTER_NAMES import."""
 
     def test_server_characters_imported(self):
-        """Test SERVER_CHARACTERS is imported in media_processor."""
-        from cogs.ai_core.media_processor import SERVER_CHARACTERS
-        assert SERVER_CHARACTERS is not None
+        """Test SERVER_CHARACTER_NAMES is imported in media_processor."""
+        from cogs.ai_core.media_processor import SERVER_CHARACTER_NAMES
+        assert SERVER_CHARACTER_NAMES is not None
 
 
 class TestImageConversion:

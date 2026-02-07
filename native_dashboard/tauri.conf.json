@@ -1,5 +1,4 @@
 {
-    "$schema": "https://schema.tauri.app/config/2",
     "productName": "디스코드 봇 대시보드",
     "version": "1.0.0",
     "identifier": "com.botdashboard.desktop",
@@ -16,11 +15,11 @@
                 "resizable": true,
                 "fullscreen": false,
                 "decorations": true,
-                "devtools": true
+                "devtools": false
             }
         ],
         "security": {
-            "csp": null
+            "csp": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 http://localhost:8080 http://127.0.0.1:8080 http://localhost:9090 http://127.0.0.1:9090"
         }
     },
     "bundle": {

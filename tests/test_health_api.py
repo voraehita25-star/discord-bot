@@ -25,7 +25,7 @@ class TestHealthApiConstants:
         """Test default health API host."""
         from utils.monitoring.health_api import HEALTH_API_HOST
         
-        assert HEALTH_API_HOST == "0.0.0.0"
+        assert HEALTH_API_HOST == "127.0.0.1"
 
 
 class TestBotHealthData:

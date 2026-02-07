@@ -360,7 +360,7 @@ class TestCleanupTask:
         assert limiter._cleanup_task is not None
 
         # Clean up
-        limiter.stop_cleanup_task()
+        await limiter.stop_cleanup_task()
 
     @pytest.mark.asyncio
     async def test_stop_cleanup_task(self, limiter):
@@ -368,7 +368,7 @@ class TestCleanupTask:
         import asyncio
 
         limiter.start_cleanup_task(interval=3600)
-        limiter.stop_cleanup_task()
+        await limiter.stop_cleanup_task()
 
         # Wait a bit for cancellation to propagate
         await asyncio.sleep(0.1)

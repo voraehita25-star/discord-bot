@@ -83,7 +83,7 @@ def create_progress_bar(current: int | float, total: int | float, length: int = 
     """
     if total == 0:
         return "▱" * length
-    progress = int((current / total) * length)
+    progress = max(0, min(length, int((current / total) * length)))
     filled = "▰" * progress
     empty = "▱" * (length - progress)
     return filled + empty

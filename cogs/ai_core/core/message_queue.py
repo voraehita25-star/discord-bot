@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from ..data.constants import LOCK_TIMEOUT
-
-if TYPE_CHECKING:
-    pass
+from ..data.constants import LOCK_TIMEOUT, MAX_CHANNELS, MAX_PENDING_PER_CHANNEL
 
 
 @dataclass
@@ -34,20 +32,33 @@ class PendingMessage:
 class MessageQueue:
     """Manages message queues for channels."""
 
-    # Max channels to track to prevent unbounded memory growth
-    MAX_CHANNELS = 5000
-    # Max pending messages per channel
-    MAX_PENDING_PER_CHANNEL = 50
-
     def __init__(self) -> None:
         """Initialize the message queue manager."""
         self.pending_messages: dict[int, list[PendingMessage]] = {}
         self.cancel_flags: dict[int, bool] = {}
         self.processing_locks: dict[int, asyncio.Lock] = {}
         self._lock_times: dict[int, float] = {}
+        self._locks_lock = asyncio.Lock()  # Meta-lock for thread-safe lock creation
+        self._queue_lock = threading.Lock()  # Thread-safe lock for pending_messages operations
 
-    def get_lock(self, channel_id: int) -> asyncio.Lock:
-        """Get or create a lock for a channel.
+    async def get_lock(self, channel_id: int) -> asyncio.Lock:
+        """Get or create a lock for a channel (thread-safe).
+
+        Args:
+            channel_id: Channel ID
+
+        Returns:
+            asyncio.Lock for the channel
+        """
+        async with self._locks_lock:
+            if channel_id not in self.processing_locks:
+                self.processing_locks[channel_id] = asyncio.Lock()
+            return self.processing_locks[channel_id]
+
+    def get_lock_sync(self, channel_id: int) -> asyncio.Lock:
+        """Get or create a lock for a channel (sync version for backwards compatibility).
+
+        Note: Prefer using get_lock() in async contexts.
 
         Args:
             channel_id: Channel ID
@@ -92,46 +103,48 @@ class MessageQueue:
             generate_response: Whether to generate a response
             user_message_id: User message ID
         """
-        # Enforce max channels limit
-        if channel_id not in self.pending_messages:
-            if len(self.pending_messages) >= self.MAX_CHANNELS:
-                # Evict oldest channel (by oldest message timestamp)
-                oldest_channel = min(
-                    self.pending_messages,
-                    key=lambda cid: (
-                        self.pending_messages[cid][0].timestamp
-                        if self.pending_messages[cid]
-                        else float("inf")
-                    ),
-                )
-                self.pending_messages.pop(oldest_channel, None)
-                self.cancel_flags.pop(oldest_channel, None)
+        with self._queue_lock:
+            # Enforce max channels limit
+            if channel_id not in self.pending_messages:
+                if len(self.pending_messages) >= MAX_CHANNELS:
+                    # Evict oldest channel — prefer empty channels first, then oldest message
+                    oldest_channel = min(
+                        self.pending_messages,
+                        key=lambda cid: (
+                            0 if not self.pending_messages[cid] else 1,
+                            self.pending_messages[cid][0].timestamp
+                            if self.pending_messages[cid]
+                            else 0,
+                        ),
+                    )
+                    del self.pending_messages[oldest_channel]
+                    self.cancel_flags.pop(oldest_channel, None)
+                    logging.warning(
+                        "🧹 Message queue limit reached, evicted channel %s", oldest_channel
+                    )
+                self.pending_messages[channel_id] = []
+
+            # Enforce max pending messages per channel
+            if len(self.pending_messages[channel_id]) >= MAX_PENDING_PER_CHANNEL:
+                # Remove oldest messages to make room
+                self.pending_messages[channel_id] = self.pending_messages[channel_id][
+                    -(MAX_PENDING_PER_CHANNEL - 1) :
+                ]
                 logging.warning(
-                    "🧹 Message queue limit reached, evicted channel %s", oldest_channel
+                    "🧹 Pending messages limit reached for channel %s, trimmed queue",
+                    channel_id,
                 )
-            self.pending_messages[channel_id] = []
 
-        # Enforce max pending messages per channel
-        if len(self.pending_messages[channel_id]) >= self.MAX_PENDING_PER_CHANNEL:
-            # Remove oldest messages to make room
-            self.pending_messages[channel_id] = self.pending_messages[channel_id][
-                -(self.MAX_PENDING_PER_CHANNEL - 1) :
-            ]
-            logging.warning(
-                "🧹 Pending messages limit reached for channel %s, trimmed queue",
-                channel_id,
+            pending_msg = PendingMessage(
+                channel=channel,
+                user=user,
+                message=message,
+                attachments=attachments,
+                output_channel=output_channel,
+                generate_response=generate_response,
+                user_message_id=user_message_id,
             )
-
-        pending_msg = PendingMessage(
-            channel=channel,
-            user=user,
-            message=message,
-            attachments=attachments,
-            output_channel=output_channel,
-            generate_response=generate_response,
-            user_message_id=user_message_id,
-        )
-        self.pending_messages[channel_id].append(pending_msg)
+            self.pending_messages[channel_id].append(pending_msg)
 
     def signal_cancel(self, channel_id: int) -> None:
         """Signal to cancel current processing for a channel.
@@ -215,9 +228,7 @@ class MessageQueue:
 
         # Merge all messages
         if len(pending) > 1:
-            all_messages = [
-                f"[{msg.user.display_name}]: {msg.message}" for msg in pending
-            ]
+            all_messages = [f"[{msg.user.display_name}]: {msg.message}" for msg in pending]
             combined_message = "\n".join(all_messages)
             logging.info(
                 "📝 Merged %d pending messages for channel %s",
@@ -244,7 +255,7 @@ class MessageQueue:
         # Periodic cleanup of stale locks (every time we try to acquire)
         self.cleanup_stale_locks()
 
-        lock = self.get_lock(channel_id)
+        lock = await self.get_lock(channel_id)
         try:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)
             self._lock_times[channel_id] = time.time()
@@ -282,22 +293,73 @@ class MessageQueue:
     def cleanup_stale_locks(self, max_age: float = 300.0) -> int:
         """Clean up locks that have been held too long.
 
+        Note: This only cleans up lock metadata. If a lock is truly stale
+        (held for too long), we log a warning but do NOT force-release it
+        since the coroutine holding it may still be running slowly.
+        The lock will be released when the coroutine finishes or errors.
+
         Args:
-            max_age: Maximum age in seconds
+            max_age: Maximum age in seconds before warning
+
+        Returns:
+            Number of stale locks detected (not released)
+        """
+        now = time.time()
+        stale = [cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age]
+        for channel_id in stale:
+            # Only log warning - do not force-release as the task may still be running
+            logging.warning(
+                "🔒 Lock for channel %s has been held for >%ss (may be slow processing)",
+                channel_id,
+                max_age,
+            )
+        return len(stale)
+
+    def cleanup_unused_locks(self, inactive_threshold: float = 3600.0) -> int:
+        """Clean up locks for channels that haven't been used recently.
+
+        Removes lock objects for channels that:
+        1. Are not currently locked
+        2. Haven't had any pending messages for a while
+        3. Don't have any lock time recorded
+
+        Args:
+            inactive_threshold: Time in seconds after which an unused lock can be cleaned
 
         Returns:
             Number of locks cleaned up
         """
         now = time.time()
-        stale = [
-            cid
-            for cid, lock_time in self._lock_times.items()
-            if now - lock_time > max_age
-        ]
-        for channel_id in stale:
-            logging.warning("🔓 Force-releasing stale lock for channel %s", channel_id)
-            self.release_lock(channel_id)
-        return len(stale)
+        cleaned = 0
+
+        # Find channels with locks that are not in use
+        for channel_id in list(self.processing_locks.keys()):
+            lock = self.processing_locks.get(channel_id)
+            if lock is None:
+                continue
+
+            # Skip if lock is currently held
+            if lock.locked():
+                continue
+
+            # Skip if channel has pending messages
+            if self.pending_messages.get(channel_id):
+                continue
+
+            # Skip if lock was recently used (has lock_time within threshold)
+            lock_time = self._lock_times.get(channel_id)
+            if lock_time and (now - lock_time) < inactive_threshold:
+                continue
+
+            # Safe to remove this lock
+            self.processing_locks.pop(channel_id, None)
+            self._lock_times.pop(channel_id, None)
+            self.cancel_flags.pop(channel_id, None)
+            cleaned += 1
+
+        if cleaned > 0:
+            logging.debug("🧹 Cleaned up %d unused channel locks", cleaned)
+        return cleaned
 
 
 # Module-level instance for easy access

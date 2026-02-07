@@ -6,8 +6,10 @@ Extracts and fetches content from URLs in user messages for AI context.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
+import socket
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -16,20 +18,23 @@ from bs4 import BeautifulSoup
 if TYPE_CHECKING:
     pass
 
+# Import centralized timeout constant
+try:
+    from cogs.ai_core.data.constants import HTTP_REQUEST_TIMEOUT
+except ImportError:
+    HTTP_REQUEST_TIMEOUT = 10  # Fallback default
+
 logger = logging.getLogger(__name__)
 
 # URL pattern - matches http/https URLs
-URL_PATTERN = re.compile(
-    r'https?://[^\s<>"{}|\\^`\[\]]+',
-    re.IGNORECASE
-)
+URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 
 # Maximum content length per URL (characters)
 # Balanced between context and preventing Gemini silent blocks
 MAX_CONTENT_LENGTH = 4500
 
-# Request timeout in seconds
-REQUEST_TIMEOUT = 10
+# Request timeout in seconds (from centralized constants)
+REQUEST_TIMEOUT = HTTP_REQUEST_TIMEOUT
 
 # User agent for requests
 USER_AGENT = (
@@ -40,6 +45,50 @@ USER_AGENT = (
 
 # Domains that need special handling
 GITHUB_DOMAINS = ("github.com", "raw.githubusercontent.com")
+
+# Blocked private/internal IP ranges for SSRF protection
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),         # Private Class A
+    ipaddress.ip_network("172.16.0.0/12"),      # Private Class B
+    ipaddress.ip_network("192.168.0.0/16"),     # Private Class C
+    ipaddress.ip_network("169.254.0.0/16"),     # Link-local
+    ipaddress.ip_network("0.0.0.0/8"),          # Current network
+    ipaddress.ip_network("::1/128"),            # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),           # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),          # IPv6 link-local
+]
+
+
+def _is_private_url(url: str) -> bool:
+    """Check if a URL resolves to a private/internal IP address (SSRF protection)."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return True
+
+        # Resolve hostname to IP
+        try:
+            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except socket.gaierror:
+            return False  # Can't resolve, let the HTTP client handle it
+
+        for family, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                for network in _BLOCKED_NETWORKS:
+                    if ip in network:
+                        logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip_str)
+                        return True
+            except ValueError:
+                continue
+
+        return False
+    except Exception:
+        return True  # Block on any error for safety
 
 
 def extract_urls(text: str) -> list[str]:
@@ -86,11 +135,16 @@ async def fetch_url_content(
         Tuple of (title, content) - content is None if fetch failed
     """
     close_session = False
-    if session is None:
-        session = aiohttp.ClientSession()
-        close_session = True
-
     try:
+        # SSRF protection: block private/internal IPs
+        if _is_private_url(url):
+            logger.warning("Blocked SSRF attempt to private URL: %s", url)
+            return url, None
+
+        if session is None:
+            session = aiohttp.ClientSession()
+            close_session = True
+
         headers = {"User-Agent": USER_AGENT}
 
         # Special handling for GitHub
@@ -123,8 +177,8 @@ Description: {description}
 Language: {language}
 Stars: {stars} | Forks: {forks}
 
-Topics: {', '.join(data.get('topics', []))}
-Default Branch: {data.get('default_branch', 'main')}
+Topics: {", ".join(data.get("topics", []))}
+Default Branch: {data.get("default_branch", "main")}
 """
                             # Try to get README
                             readme_url = f"{api_url}/readme"
@@ -135,7 +189,7 @@ Default Branch: {data.get('default_branch', 'main')}
                             ) as readme_resp:
                                 if readme_resp.status == 200:
                                     readme_text = await readme_resp.text()
-                                    content += f"\n--- README ---\n{readme_text[:MAX_CONTENT_LENGTH - len(content)]}"
+                                    content += f"\n--- README ---\n{readme_text[: MAX_CONTENT_LENGTH - len(content)]}"
 
                             return title, content[:MAX_CONTENT_LENGTH]
                 except Exception as e:
@@ -147,6 +201,7 @@ Default Branch: {data.get('default_branch', 'main')}
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=timeout),
             allow_redirects=True,
+            max_redirects=5,
         ) as response:
             if response.status != 200:
                 logger.warning("URL fetch failed: %s (status %d)", url, response.status)
@@ -158,7 +213,12 @@ Default Branch: {data.get('default_branch', 'main')}
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return url, f"[Non-text content: {content_type}]"
 
-            html = await response.text()
+            # Handle encoding with fallback
+            try:
+                html = await response.text(encoding=None)  # Let aiohttp detect encoding
+            except UnicodeDecodeError:
+                # Fallback to latin-1 which accepts all byte values
+                html = await response.text(encoding='latin-1', errors='replace')
 
             # Parse HTML
             soup = BeautifulSoup(html, "lxml")
@@ -175,7 +235,14 @@ Default Branch: {data.get('default_branch', 'main')}
             main_content = None
 
             # Look for main content containers
-            for selector in ["article", "main", '[role="main"]', ".content", "#content", ".post-content"]:
+            for selector in [
+                "article",
+                "main",
+                '[role="main"]',
+                ".content",
+                "#content",
+                ".post-content",
+            ]:
                 element = soup.select_one(selector)
                 if element:
                     main_content = element.get_text(separator="\n", strip=True)
@@ -209,7 +276,7 @@ Default Branch: {data.get('default_branch', 'main')}
         logger.error("Unexpected error fetching %s: %s", url, e)
         return url, None
     finally:
-        if close_session:
+        if close_session and session is not None:
             await session.close()
 
 
@@ -236,12 +303,15 @@ async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, 
 
     fetched = []
     for url, result in zip(urls_to_fetch, results, strict=False):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logger.warning("Failed to fetch %s: %s", url, result)
             fetched.append((url, url, None))
-        else:
+        elif isinstance(result, tuple) and len(result) == 2:
             title, content = result
             fetched.append((url, title, content))
+        else:
+            # Unexpected result type
+            fetched.append((url, url, None))
 
     return fetched
 
@@ -264,10 +334,16 @@ def format_url_content_for_context(fetched_urls: list[tuple[str, str, str | None
     for url, title, content in fetched_urls:
         if content:
             # Truncate very long content to prevent context overflow
-            truncated = content[:MAX_CONTENT_LENGTH] if len(content) > MAX_CONTENT_LENGTH else content
+            truncated = (
+                content[:MAX_CONTENT_LENGTH] if len(content) > MAX_CONTENT_LENGTH else content
+            )
             parts.append(f"\n--- {title} ({url}) ---")
             parts.append(truncated)
-            logger.debug("URL content size: %d chars (truncated: %s)", len(content), len(content) > MAX_CONTENT_LENGTH)
+            logger.debug(
+                "URL content size: %d chars (truncated: %s)",
+                len(content),
+                len(content) > MAX_CONTENT_LENGTH,
+            )
         else:
             parts.append(f"\n--- {url} ---")
             parts.append("[Failed to fetch content]")

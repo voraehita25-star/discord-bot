@@ -210,7 +210,7 @@ class TestApiCallWithRetry:
             return
             
         mock_bot = MagicMock()
-        mock_bot.loop = asyncio.get_event_loop()
+        mock_bot.loop = asyncio.new_event_loop()
         
         with patch.dict('os.environ', {}, clear=True):
             handler = SpotifyHandler(mock_bot)

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import discord
+from discord.ext import commands
 
 from ..commands.server_commands import (
     COMMAND_HANDLERS,
@@ -35,9 +37,15 @@ from ..response.webhook_cache import (
     invalidate_webhook_cache,
     set_cached_webhook,
 )
+from ..data.constants import MAX_CHANNEL_NAME_LENGTH
 
 
-async def execute_tool_call(_bot, origin_channel, user, tool_call):
+async def execute_tool_call(
+    _bot: commands.Bot,
+    origin_channel: discord.TextChannel,
+    user: discord.Member,
+    tool_call: Any,
+) -> str:
     """Execute a function call from Gemini.
 
     Args:
@@ -54,41 +62,79 @@ async def execute_tool_call(_bot, origin_channel, user, tool_call):
 
     guild = origin_channel.guild
 
+    # Input validation helper
+    def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
+        """Validate channel/category name from AI input.
+        
+        Args:
+            name: The name to validate
+            max_length: Maximum allowed length (default: MAX_CHANNEL_NAME_LENGTH)
+            
+        Returns:
+            Tuple of (is_valid, cleaned_name_or_error_message)
+        """
+        if not name:
+            return False, "❌ Name is required"
+        name = str(name).strip()
+        if len(name) > max_length:
+            return False, f"❌ Name too long (max {max_length} chars)"
+        if len(name) < 1:
+            return False, "❌ Name cannot be empty"
+        return True, name
+
     # Permission check
     if not user.guild_permissions.administrator:
         return f"⛔ Permission denied: User {user.display_name} is not an Admin."
 
     try:
         if fname == "create_text_channel":
+            valid, result = validate_name(args.get("name"))
+            if not valid:
+                return result
             await cmd_create_text(
-                guild, origin_channel, args.get("name"), [None, args.get("category")]
+                guild, origin_channel, result, [None, args.get("category")]
             )
-            return f"Requested creation of text channel '{args.get('name')}'"
+            return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
+            valid, result = validate_name(args.get("name"))
+            if not valid:
+                return result
             await cmd_create_voice(
-                guild, origin_channel, args.get("name"), [None, args.get("category")]
+                guild, origin_channel, result, [None, args.get("category")]
             )
-            return f"Requested creation of voice channel '{args.get('name')}'"
+            return f"Requested creation of voice channel '{result}'"
 
         elif fname == "create_category":
-            await cmd_create_category(guild, origin_channel, args.get("name"), [])
-            return f"Requested creation of category '{args.get('name')}'"
+            valid, result = validate_name(args.get("name"))
+            if not valid:
+                return result
+            await cmd_create_category(guild, origin_channel, result, [])
+            return f"Requested creation of category '{result}'"
 
         elif fname == "delete_channel":
-            await cmd_delete_channel(guild, origin_channel, args.get("name_or_id"), [])
-            return f"Requested deletion of channel '{args.get('name_or_id')}'"
+            valid, result = validate_name(args.get("name_or_id"))
+            if not valid:
+                return result
+            await cmd_delete_channel(guild, origin_channel, result, [])
+            return f"Requested deletion of channel '{result}'"
 
         elif fname == "create_role":
-            cmd_args = [args.get("name")]
+            valid, result = validate_name(args.get("name"))
+            if not valid:
+                return result
+            cmd_args = [result]
             if args.get("color_hex"):
                 cmd_args.append(args.get("color_hex"))
             await cmd_create_role(guild, origin_channel, None, cmd_args)
-            return f"Requested creation of role '{args.get('name')}'"
+            return f"Requested creation of role '{result}'"
 
         elif fname == "delete_role":
-            await cmd_delete_role(guild, origin_channel, None, [args.get("name_or_id")])
-            return f"Requested deletion of role '{args.get('name_or_id')}'"
+            valid, result = validate_name(args.get("name_or_id"))
+            if not valid:
+                return result
+            await cmd_delete_role(guild, origin_channel, None, [result])
+            return f"Requested deletion of role '{result}'"
 
         elif fname == "add_role":
             await cmd_add_role(
@@ -284,8 +330,14 @@ async def send_as_webhook(bot, channel, name, message):
 
             if img_path:
                 # Fix path resolution: Use current working directory (bot root)
-                full_path = Path.cwd() / img_path
-                if full_path.exists():
+                # Security: Validate path is within expected directory to prevent path traversal
+                base_dir = Path.cwd().resolve()
+                full_path = (base_dir / img_path).resolve()
+                
+                # Ensure the resolved path is still within the base directory
+                if not str(full_path).startswith(str(base_dir)):
+                    logging.error("Path traversal attempt blocked: %s", img_path)
+                elif full_path.exists():
                     try:
                         avatar_bytes = full_path.read_bytes()
                     except OSError as err:

@@ -45,9 +45,13 @@ impl VectorIndex {
     pub fn remove(&mut self, id: &str) -> Option<usize> {
         let idx = self.id_to_idx.remove(id)?;
         
+        // Mark as removed in idx_to_id to avoid stale references
         // Note: We don't actually remove from idx_to_id or keyword_index
-        // to avoid O(n) operations. Just mark as removed.
+        // to avoid O(n) operations. Mark as empty instead.
         // For full cleanup, rebuild the index periodically.
+        if idx < self.idx_to_id.len() {
+            self.idx_to_id[idx] = String::new();
+        }
         
         Some(idx)
     }
@@ -59,7 +63,9 @@ impl VectorIndex {
 
     /// Get ID by index
     pub fn get_id(&self, idx: usize) -> Option<&str> {
-        self.idx_to_id.get(idx).map(|s| s.as_str())
+        self.idx_to_id.get(idx)
+            .filter(|s| !s.is_empty()) // Skip removed entries
+            .map(|s| s.as_str())
     }
 
     /// Search by keyword

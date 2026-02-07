@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
 import json
 
+import discord
+
 
 class TestMusicControlViewBasic:
     """Basic tests for MusicControlView class without event loop."""
@@ -64,6 +66,10 @@ class TestMusicControlViewBasic:
         
         mock_interaction = MagicMock()
         mock_interaction.user.voice = MagicMock()
+        mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
+        mock_interaction.guild.voice_client = None  # Bot not in voice
+        mock_interaction.response.send_message = AsyncMock()
+        mock_interaction.response.edit_message = AsyncMock()
         
         result = await view.interaction_check(mock_interaction)
         
@@ -77,9 +83,11 @@ class TestMusicControlViewBasic:
         mock_cog = MagicMock()
         view = MusicControlView(mock_cog, guild_id=123456)
         
-        # Add mock buttons
-        mock_button1 = MagicMock()
-        mock_button2 = MagicMock()
+        # Add mock buttons that pass isinstance check for discord.ui.Button
+        mock_button1 = MagicMock(spec=discord.ui.Button)
+        mock_button1.disabled = False
+        mock_button2 = MagicMock(spec=discord.ui.Button)
+        mock_button2.disabled = False
         view._children = [mock_button1, mock_button2]
         
         await view.on_timeout()

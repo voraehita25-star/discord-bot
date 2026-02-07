@@ -42,6 +42,8 @@ class TestGetChatSession:
         from cogs.ai_core.session_mixin import SessionMixin
 
         class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000  # Required for _enforce_channel_limit
+            
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -52,6 +54,11 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
+                self.current_typing_msg = {}
+            
+            def _enforce_channel_limit(self):
+                """Stub for LRU eviction."""
+                return 0
 
         instance = TestClass()
 
@@ -73,6 +80,8 @@ class TestGetChatSession:
         from cogs.ai_core.session_mixin import SessionMixin
 
         class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+            
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -89,6 +98,10 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
+                self.current_typing_msg = {}
+            
+            def _enforce_channel_limit(self):
+                return 0
 
         instance = TestClass()
         result = await instance.get_chat_session(12345)
@@ -102,6 +115,8 @@ class TestGetChatSession:
         from cogs.ai_core.session_mixin import SessionMixin
 
         class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+            
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -118,6 +133,10 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
+                self.current_typing_msg = {}
+            
+            def _enforce_channel_limit(self):
+                return 0
 
         instance = TestClass()
         before_time = time.time()
@@ -168,6 +187,8 @@ class TestToggleThinking:
         from cogs.ai_core.session_mixin import SessionMixin
 
         class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+            
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -184,6 +205,10 @@ class TestToggleThinking:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
+                self.current_typing_msg = {}
+            
+            def _enforce_channel_limit(self):
+                return 0
 
         instance = TestClass()
 
@@ -199,6 +224,8 @@ class TestToggleThinking:
         from cogs.ai_core.session_mixin import SessionMixin
 
         class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+            
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -215,6 +242,10 @@ class TestToggleThinking:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
+                self.current_typing_msg = {}
+            
+            def _enforce_channel_limit(self):
+                return 0
 
         instance = TestClass()
 

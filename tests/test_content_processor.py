@@ -1,6 +1,6 @@
 # pylint: disable=protected-access
 """
-Unit Tests for Content Processor Module.
+Unit Tests for Content Processor Module (deprecated, re-exports from media_processor).
 Tests image processing, caching, and avatar handling.
 """
 
@@ -13,6 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
+
+# Suppress the expected DeprecationWarning from importing the deprecated module
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:content_processor module is deprecated:DeprecationWarning"
+)
 
 
 class TestLoadCachedImageBytes:

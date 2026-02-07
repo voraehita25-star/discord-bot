@@ -9,10 +9,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 # Import constants
 try:
@@ -165,9 +162,7 @@ class ContextBuilder:
 
         return context
 
-    async def _get_rag_context(
-        self, channel_id: int, query: str
-    ) -> str:
+    async def _get_rag_context(self, channel_id: int, query: str) -> str:
         """Get RAG-based context for a query.
 
         Args:
@@ -192,9 +187,7 @@ class ContextBuilder:
                     min_similarity=RAG_MIN_SIMILARITY,
                 )
             elif hasattr(self.memory_manager, "search"):
-                results = await self.memory_manager.search(
-                    channel_id, query, limit=MAX_RAG_RESULTS
-                )
+                results = await self.memory_manager.search(channel_id, query, limit=MAX_RAG_RESULTS)
             else:
                 return ""
 
@@ -206,7 +199,8 @@ class ContextBuilder:
             for i, result in enumerate(results, 1):
                 if isinstance(result, dict):
                     text = result.get("text", result.get("content", ""))
-                    result.get("score", result.get("similarity", 0))
+                    # Score is available but not displayed in context
+                    # score = result.get("score", result.get("similarity", 0))
                 else:
                     text = str(result)
 
@@ -226,9 +220,7 @@ class ContextBuilder:
             logging.error("RAG context error: %s", e)
             return ""
 
-    async def _get_entity_memory(
-        self, channel_id: int, user_id: int, message: str
-    ) -> str:
+    async def _get_entity_memory(self, channel_id: int, user_id: int, message: str) -> str:
         """Get entity memory context.
 
         Args:
@@ -254,9 +246,7 @@ class ContextBuilder:
                     max_items=MAX_ENTITY_ITEMS,
                 )
             elif hasattr(self.entity_memory, "get_entities"):
-                entities = await self.entity_memory.get_entities(
-                    channel_id, limit=MAX_ENTITY_ITEMS
-                )
+                entities = await self.entity_memory.get_entities(channel_id, limit=MAX_ENTITY_ITEMS)
             else:
                 return ""
 
@@ -318,9 +308,7 @@ class ContextBuilder:
             logging.error("State tracker error: %s", e)
             return ""
 
-    async def _get_avatar_context(
-        self, channel_id: int, guild: Any
-    ) -> dict[str, Any] | None:
+    async def _get_avatar_context(self, channel_id: int, guild: Any) -> dict[str, Any] | None:
         """Get avatar context for a channel.
 
         Args:
@@ -364,9 +352,7 @@ class ContextBuilder:
             logging.error("Avatar context error: %s", e)
             return None
 
-    async def fetch_url_content(
-        self, urls: list[str], max_content_length: int = 2000
-    ) -> str:
+    async def fetch_url_content(self, urls: list[str], max_content_length: int = 2000) -> str:
         """Fetch content from URLs.
 
         Args:

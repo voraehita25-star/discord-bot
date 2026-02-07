@@ -7,6 +7,7 @@ Provides centralized multi-language message management (Thai/English).
 from __future__ import annotations
 
 import contextlib
+import logging
 from enum import Enum
 
 
@@ -227,6 +228,8 @@ class LocalizedMessages:
         """Allow attribute-style access to messages."""
         if key.startswith("_"):
             raise AttributeError(key)
+        if key not in MESSAGES:
+            logging.warning("Localization key not found: %s", key)
         return self.get(key)
 
 

@@ -5,6 +5,7 @@ Summarizes long chat histories to save tokens while preserving context.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -12,11 +13,17 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from ..data.constants import GEMINI_API_KEY, MIN_CONVERSATION_LENGTH
+from ..data.constants import (
+    DEFAULT_MODEL,
+    GEMINI_API_KEY,
+    MIN_CONVERSATION_LENGTH,
+    SUMMARIZATION_MAX_OUTPUT_TOKENS,
+    SUMMARIZATION_TEMPERATURE,
+)
 
 # Summarization Model (configurable via environment variable)
-# Default to gemini-3-pro-preview for high-quality summarization
-SUMMARIZATION_MODEL = os.getenv("GEMINI_SUMMARIZATION_MODEL", "gemini-3-pro-preview")
+# Falls back to DEFAULT_MODEL from constants if not specified
+SUMMARIZATION_MODEL = os.getenv("GEMINI_SUMMARIZATION_MODEL", DEFAULT_MODEL)
 
 
 # Summarization prompt template
@@ -64,30 +71,46 @@ class ConversationSummarizer:
             if len(conversation_text) < MIN_CONVERSATION_LENGTH:
                 return None  # Too short to summarize
 
-            # Generate summary
-            prompt = SUMMARIZE_PROMPT.format(conversation=conversation_text)
+            # Generate summary with retry logic
+            prompt = SUMMARIZE_PROMPT.replace("{conversation}", conversation_text)
 
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=300,
-                    temperature=0.3,  # Low temp for consistent summaries
-                ),
-            )
+            max_retries = 3
+            last_error = None
 
-            summary = response.text.strip() if response.text else None
+            for attempt in range(max_retries):
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=self.model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            max_output_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
+                            temperature=SUMMARIZATION_TEMPERATURE,
+                        ),
+                    )
 
-            if summary:
-                logging.info("📝 Generated conversation summary: %s...", summary[:50])
+                    summary = response.text.strip() if response.text else None
 
-            return summary
+                    if summary:
+                        logging.info("📝 Generated conversation summary: %s...", summary[:50])
+
+                    return summary
+
+                except (ValueError, TypeError, OSError, asyncio.TimeoutError, RuntimeError) as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (attempt + 1))  # Exponential backoff
+                        logging.warning("Summarization attempt %d failed: %s", attempt + 1, e)
+                    continue
+
+            # All retries failed
+            logging.error("Summarization failed after %d attempts: %s", max_retries, last_error)
+            return None
 
         except (ValueError, TypeError) as e:
             logging.warning("Summarization parsing error: %s", e)
             return None
         except Exception as e:
-            logging.error("Summarization failed unexpectedly: %s", e)
+            logging.error("Summarization failed unexpectedly: %s", e, exc_info=True)
             return None
 
     def _history_to_text(self, history: list[dict[str, Any]]) -> str:

@@ -79,18 +79,18 @@ class TestSanitizeChannelName:
         assert result == "channelname"
 
     def test_empty_string(self):
-        """Test empty string input."""
+        """Test empty string input returns fallback."""
         from cogs.ai_core.sanitization import sanitize_channel_name
-        
+
         result = sanitize_channel_name("")
-        assert result == ""
+        assert result == "untitled"
 
     def test_only_special_characters(self):
-        """Test input with only special characters."""
+        """Test input with only special characters returns fallback."""
         from cogs.ai_core.sanitization import sanitize_channel_name
-        
+
         result = sanitize_channel_name("@#$%^&*()")
-        assert result == ""
+        assert result == "untitled"
 
 
 class TestSanitizeRoleName:
@@ -162,18 +162,18 @@ class TestSanitizeRoleName:
         assert result == "Admin"
 
     def test_empty_string(self):
-        """Test empty string input."""
+        """Test empty string input returns fallback."""
         from cogs.ai_core.sanitization import sanitize_role_name
-        
+
         result = sanitize_role_name("")
-        assert result == ""
+        assert result == "unnamed-role"
 
     def test_only_dangerous_characters(self):
-        """Test input with only dangerous characters."""
+        """Test input with only dangerous characters returns fallback."""
         from cogs.ai_core.sanitization import sanitize_role_name
-        
+
         result = sanitize_role_name("<>@#&")
-        assert result == ""
+        assert result == "unnamed-role"
 
 
 class TestSanitizeMessageContent:

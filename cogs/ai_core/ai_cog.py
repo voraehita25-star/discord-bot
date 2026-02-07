@@ -1,6 +1,11 @@
+# pyright: reportArgumentType=false
+# pyright: reportAttributeAccessIssue=false
 """
 AI Cog Module for Discord Bot.
 Handles AI chat interactions using Gemini API with context management.
+
+Note: Type checker warnings for Discord.py channel/user type unions are suppressed
+because the runtime behavior handles these correctly through duck typing.
 """
 
 from __future__ import annotations
@@ -9,7 +14,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import discord
 from discord.ext import commands
@@ -51,10 +56,10 @@ try:
 except ImportError:
     GUARDRAILS_AVAILABLE = False
 
-    def is_unrestricted(channel_id):
+    def is_unrestricted(channel_id: int) -> bool:
         return False
 
-    def set_unrestricted(channel_id, enabled):
+    def set_unrestricted(channel_id: int, enabled: bool) -> bool:
         return False
 
     unrestricted_channels = set()
@@ -71,7 +76,7 @@ except ImportError:
     FEEDBACK_AVAILABLE = False
     feedback_collector = None
 
-    async def add_feedback_reactions(*args):
+    async def add_feedback_reactions(message, *args, **kwargs) -> None:
         pass
 
 
@@ -83,10 +88,10 @@ try:
 except ImportError:
     LOCALIZATION_AVAILABLE = False
 
-    def msg(key, **kwargs):
+    def msg(key: str, **kwargs) -> str:
         return key
 
-    def msg_en(key, **kwargs):
+    def msg_en(key: str, **kwargs) -> str:
         return key
 
 
@@ -138,10 +143,10 @@ class AI(commands.Cog):
                 await self._pending_request_cleanup_task
 
         # Stop webhook cache cleanup task
-        stop_webhook_cache_cleanup()
+        await stop_webhook_cache_cleanup()
 
         # Stop RAG periodic save and force final save
-        rag_system.stop_periodic_save()
+        await rag_system.stop_periodic_save()
         await rag_system.force_save_index()
 
         # Save all active sessions before unload
@@ -163,35 +168,48 @@ class AI(commands.Cog):
         cleanup_counter = 0
         memory_cleanup_counter = 0
         while True:
-            await asyncio.sleep(60)  # Every 60 seconds
-            self.chat_manager.cleanup_pending_requests()
+            try:
+                await asyncio.sleep(60)  # Every 60 seconds
+                self.chat_manager.cleanup_pending_requests()
 
-            # Run storage cache cleanup every 5 minutes (every 5 iterations)
-            cleanup_counter += 1
-            if cleanup_counter >= 5:
-                cleanup_counter = 0
-                removed = cleanup_storage_cache()
-                if removed > 0:
-                    logging.debug("🧹 Storage cache cleanup: removed %d entries", removed)
+                # Run storage cache cleanup every 5 minutes (every 5 iterations)
+                cleanup_counter += 1
+                if cleanup_counter >= 5:
+                    cleanup_counter = 0
+                    removed = cleanup_storage_cache()
+                    if removed > 0:
+                        logging.debug("🧹 Storage cache cleanup: removed %d entries", removed)
 
-            # Run memory system cleanup every 30 minutes (every 30 iterations)
-            memory_cleanup_counter += 1
-            if memory_cleanup_counter >= 30:
-                memory_cleanup_counter = 0
-                try:
-                    # Cleanup state tracker (uses defaults from constants)
-                    from .memory.state_tracker import state_tracker
-                    state_removed = state_tracker.cleanup_old_states()
-                    if state_removed > 0:
-                        logging.debug("🧹 State tracker cleanup: removed %d channels", state_removed)
+                # Run memory system cleanup every 30 minutes (every 30 iterations)
+                memory_cleanup_counter += 1
+                if memory_cleanup_counter >= 30:
+                    memory_cleanup_counter = 0
+                    try:
+                        # Cleanup state tracker (uses defaults from constants)
+                        from .memory.state_tracker import state_tracker
 
-                    # Cleanup consolidator tracking data (uses defaults from constants)
-                    from .memory.consolidator import memory_consolidator
-                    consol_removed = memory_consolidator.cleanup_old_channels()
-                    if consol_removed > 0:
-                        logging.debug("🧹 Consolidator cleanup: removed %d channels", consol_removed)
-                except Exception as e:
-                    logging.debug("Memory cleanup error (non-critical): %s", e)
+                        state_removed = state_tracker.cleanup_old_states()
+                        if state_removed > 0:
+                            logging.debug(
+                                "🧹 State tracker cleanup: removed %d channels", state_removed
+                            )
+
+                        # Cleanup consolidator tracking data (uses defaults from constants)
+                        from .memory.consolidator import memory_consolidator
+
+                        consol_removed = memory_consolidator.cleanup_old_channels()
+                        if consol_removed > 0:
+                            logging.debug(
+                                "🧹 Consolidator cleanup: removed %d channels", consol_removed
+                            )
+                    except Exception as e:
+                        logging.debug("Memory cleanup error (non-critical): %s", e)
+
+            except asyncio.CancelledError:
+                logging.debug("🧹 Cleanup loop cancelled during shutdown")
+                break
+            except Exception as e:
+                logging.error("🧹 Cleanup loop error (non-critical): %s", e)
 
     @commands.hybrid_command(name="chat", aliases=["ask"])
     @commands.cooldown(1, 3, commands.BucketType.user)  # 1 use per 3 seconds per user
@@ -332,9 +350,6 @@ class AI(commands.Cog):
             content = message_content.strip()
             if content and content.startswith("!"):
                 parts = content[1:].split(" ", 1)
-                if not parts:
-                    return  # Empty command, ignore
-
                 cmd = parts[0].lower() if parts[0] else ""
                 if not cmd or cmd not in ["chat", "ask", "gemini"]:
                     return  # Not a recognized command, ignore
@@ -388,7 +403,15 @@ class AI(commands.Cog):
 
             # Skip if it's a command
             message_content = message.content or ""
-            if message_content.startswith(self.bot.command_prefix):
+            # Convert command_prefix to tuple for startswith (handles both str and list)
+            prefix = self.bot.command_prefix
+            if callable(prefix):
+                prefix_tuple = ("!",)  # Default if callable
+            elif isinstance(prefix, str):
+                prefix_tuple = (prefix,)
+            else:
+                prefix_tuple = tuple(prefix) if prefix else ("!",)
+            if message_content.startswith(prefix_tuple):
                 return  # Let command handler process it
 
             # Check for voice channel commands
@@ -406,7 +429,7 @@ class AI(commands.Cog):
                 # Leave all voice channels
                 if self.bot.voice_clients:
                     for vc in self.bot.voice_clients:
-                        await vc.disconnect()
+                        await vc.disconnect(force=False)
                     await message.channel.send("✅ ออกจากห้องเสียงทั้งหมดแล้ว")
                 else:
                     await message.channel.send("❌ ไม่ได้อยู่ในห้องเสียงใดๆ")
@@ -493,8 +516,16 @@ class AI(commands.Cog):
         # This prevents double responses when user uses !chat while mentioning bot
         message_content = message.content or ""
         content_without_mention = re.sub(r"<@!?\d+>\s*", "", message_content).strip()
-        is_command = message_content.startswith(self.bot.command_prefix) or (
-            content_without_mention and content_without_mention.startswith(self.bot.command_prefix)
+        # Convert command_prefix to tuple for startswith (handles both str and list)
+        prefix = self.bot.command_prefix
+        if callable(prefix):
+            prefix_tuple = ("!",)  # Default if callable
+        elif isinstance(prefix, str):
+            prefix_tuple = (prefix,)
+        else:
+            prefix_tuple = tuple(prefix) if prefix else ("!",)
+        is_command = message_content.startswith(prefix_tuple) or (
+            content_without_mention and content_without_mention.startswith(prefix_tuple)
         )
 
         if should_respond and not is_command:

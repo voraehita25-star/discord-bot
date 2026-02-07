@@ -326,7 +326,7 @@ class TestCleanPidFile:
                 result = healer.clean_pid_file()
                 assert result is True
                 assert not os.path.exists(temp_path)
-        except:
+        except Exception:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise

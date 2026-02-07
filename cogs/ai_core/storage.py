@@ -70,7 +70,7 @@ import threading
 
 _history_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[int, tuple[float, dict[str, Any]]] = {}
-_cache_lock = threading.Lock()  # Thread-safe lock for cache operations
+_cache_lock = threading.RLock()  # Reentrant lock for thread-safe cache operations (supports nested locking)
 CACHE_TTL = 900  # 15 minutes (was 5 min) - keep data in RAM longer
 MAX_CACHE_SIZE = 2000  # Maximum channels to cache (was 1000)
 
@@ -196,6 +196,9 @@ async def _save_history_db(
 ) -> None:
     """Save history using SQLite database with batch operations."""
 
+    # Always fetch last few messages from DB for duplicate checking
+    db_history = await db.get_ai_history(channel_id, limit=10)
+
     # Use explicitly provided new entries if available
     new_messages = []
     if new_entries:
@@ -203,8 +206,6 @@ async def _save_history_db(
     else:
         # Fallback: smarter diffing logic
         history = chat_data.get("history", [])
-        # Get only the last 10 messages from DB for overlap check to avoid loading full history
-        db_history = await db.get_ai_history(channel_id, limit=10)
 
         if not db_history:
             new_messages = history
@@ -232,7 +233,14 @@ async def _save_history_db(
             # No overlap found? This implies disjoint history or different timestamps.
             # Fallback to appending everything that has a timestamp > last_db_ts
             elif last_db_ts:
-                new_messages = [m for m in history if m.get("timestamp", "") > last_db_ts]
+                # NOTE: This string comparison relies on ISO 8601 format (e.g. "2024-01-15T12:00:00Z")
+                # which sorts lexicographically. Non-ISO timestamps will produce incorrect results.
+                new_messages = [
+                    m for m in history
+                    if isinstance(m.get("timestamp", ""), str)
+                    and isinstance(last_db_ts, str)
+                    and m.get("timestamp", "") > last_db_ts
+                ]
             # Dangerous fallback, but better than nothing
             # If DB exists but we can't sync, we might duplicate or lose data.
             # Assuming history > db_history in size is a proxy (old buggy behavior but safer
@@ -244,6 +252,15 @@ async def _save_history_db(
     if new_messages:
         # Prepare batch data
         batch_data = []
+        seen_content_hashes: set[str] = set()  # Track content to prevent duplicates
+
+        # Get last message from DB to check for duplicates
+        # Use 500 chars for better duplicate detection (was 200)
+        HASH_LENGTH = 500
+        last_db_content = None
+        if db_history:
+            last_db_content = db_history[-1].get("content", "")[:HASH_LENGTH]
+
         for item in new_messages:
             if not isinstance(item, dict):
                 continue
@@ -259,16 +276,32 @@ async def _save_history_db(
             else:
                 content = str(parts)
 
-            if content:
-                batch_data.append(
-                    {
-                        "channel_id": channel_id,
-                        "role": role,
-                        "content": content,
-                        "message_id": message_id,
-                        "timestamp": timestamp,
-                    }
-                )
+            if not content:
+                continue
+
+            # Create content hash for duplicate detection (use first 500 chars + role)
+            content_hash = f"{role}:{content[:HASH_LENGTH]}"
+
+            # Skip if this exact content was just in DB (immediate duplicate)
+            if last_db_content and content[:HASH_LENGTH] == last_db_content and role == db_history[-1].get("role"):
+                logging.warning("⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50])
+                continue
+
+            # Skip if we've already seen this content in current batch
+            if content_hash in seen_content_hashes:
+                logging.warning("⚠️ Skipping duplicate message (already in batch): %s...", content[:50])
+                continue
+
+            seen_content_hashes.add(content_hash)
+            batch_data.append(
+                {
+                    "channel_id": channel_id,
+                    "role": role,
+                    "content": content,
+                    "message_id": message_id,
+                    "timestamp": timestamp,
+                }
+            )
 
         if batch_data:
             await db.save_ai_messages_batch(batch_data)
@@ -321,10 +354,7 @@ async def _save_history_json(
             json_dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        if filepath.exists():
-            temp_filepath.replace(filepath)
-        else:
-            temp_filepath.rename(filepath)
+        temp_filepath.replace(filepath)  # Atomic replace, works whether target exists or not
 
     await bot.loop.run_in_executor(None, _write)
 
@@ -342,13 +372,14 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
     """Load chat history from database or JSON file with caching."""
     now = time.time()
 
-    # Check cache first
-    if channel_id in _history_cache:
-        cached_time, cached_data = _history_cache[channel_id]
-        if now - cached_time < CACHE_TTL:
-            logging.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
-            # Use deep copy to prevent mutation of cached nested objects
-            return copy.deepcopy(cached_data)
+    # Check cache first (thread-safe)
+    with _cache_lock:
+        if channel_id in _history_cache:
+            cached_time, cached_data = _history_cache[channel_id]
+            if now - cached_time < CACHE_TTL:
+                logging.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
+                # Use deep copy to prevent mutation of cached nested objects
+                return copy.deepcopy(cached_data)
 
     if DATABASE_AVAILABLE:
         # Try database
@@ -360,8 +391,9 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
                 converted = {"role": item.get("role", "user"), "parts": [item.get("content", "")]}
                 history.append(converted)
 
-            # Update cache with converted format
-            _history_cache[channel_id] = (now, history)
+            # Update cache with converted format (thread-safe)
+            with _cache_lock:
+                _history_cache[channel_id] = (now, copy.deepcopy(history))
             logging.info(
                 "📖 Loaded %d messages from database for channel %s", len(history), channel_id
             )
@@ -370,7 +402,8 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
     # Fallback to JSON file
     history = await _load_history_json(bot, channel_id)
     if history:
-        _history_cache[channel_id] = (now, history)
+        with _cache_lock:
+            _history_cache[channel_id] = (now, copy.deepcopy(history))
     return history
 
 
@@ -426,24 +459,27 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
     """Load session metadata from database or JSON file with caching."""
     now = time.time()
 
-    # Check cache first
-    if channel_id in _metadata_cache:
-        cached_time, cached_data = _metadata_cache[channel_id]
-        if now - cached_time < CACHE_TTL:
-            logging.debug("📋 Cache hit for metadata channel %s", channel_id)
-            return cached_data.copy()
+    # Check cache first (thread-safe)
+    with _cache_lock:
+        if channel_id in _metadata_cache:
+            cached_time, cached_data = _metadata_cache[channel_id]
+            if now - cached_time < CACHE_TTL:
+                logging.debug("📋 Cache hit for metadata channel %s", channel_id)
+                return cached_data.copy()
 
     if DATABASE_AVAILABLE:
         metadata = await db.get_ai_metadata(channel_id)
         if metadata:
-            _metadata_cache[channel_id] = (now, metadata)
+            with _cache_lock:
+                _metadata_cache[channel_id] = (now, metadata)
             logging.info("📋 Loaded metadata from database for channel %s", channel_id)
             return metadata
 
     # Fallback to JSON file
     metadata = await _load_metadata_json(bot, channel_id)
     if metadata:
-        _metadata_cache[channel_id] = (now, metadata)
+        with _cache_lock:
+            _metadata_cache[channel_id] = (now, metadata)
     return metadata
 
 
@@ -542,6 +578,10 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             source_channel_id,
             target_channel_id,
         )
+        
+        # Invalidate cache for target channel to ensure fresh data on next read
+        invalidate_cache(target_channel_id)
+        
         return copied
 
     except OSError as e:
@@ -578,6 +618,11 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
         if copied > 0:
             # Delete source history
             await db.delete_ai_history(source_channel_id)
+            
+            # Invalidate cache for both channels
+            invalidate_cache(source_channel_id)
+            invalidate_cache(target_channel_id)
+            
             logging.info(
                 "🚚 Moved %d messages from channel %s to %s (source deleted)",
                 copied,

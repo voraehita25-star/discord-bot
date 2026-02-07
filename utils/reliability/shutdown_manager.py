@@ -120,6 +120,7 @@ class ShutdownManager:
         self._state = ShutdownState()
         self._shutdown_event = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._pending_shutdown_task: asyncio.Task[ShutdownState] | None = None
 
         self.logger = logging.getLogger("ShutdownManager")
 
@@ -285,9 +286,14 @@ class ShutdownManager:
 
                 # Adjust handler timeout based on remaining time
                 effective_timeout = min(handler.timeout, remaining_time)
+                # Use a local copy to avoid mutating the handler's original timeout
+                original_timeout = handler.timeout
                 handler.timeout = effective_timeout
 
                 await self._run_handler(handler)
+
+                # Restore original timeout
+                handler.timeout = original_timeout
 
                 elapsed = time.time() - start_time
                 remaining_time = self.timeout - elapsed
@@ -316,8 +322,10 @@ class ShutdownManager:
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running():
-                # Schedule shutdown in the running loop
-                asyncio.create_task(self.shutdown(signal_name))
+                # Schedule shutdown in the running loop and store reference
+                task = asyncio.create_task(self.shutdown(signal_name))
+                # Store task reference to prevent garbage collection
+                self._pending_shutdown_task = task
             else:
                 loop.run_until_complete(self.shutdown(signal_name))
         except RuntimeError:
@@ -341,8 +349,9 @@ class ShutdownManager:
                     if not handler.is_async:
                         try:
                             handler.callback()
-                        except Exception:
-                            pass  # Silently ignore errors during shutdown
+                        except Exception as shutdown_err:
+                            # Log to debug level to avoid stdout issues during interpreter shutdown
+                            logging.debug("Shutdown handler error (ignored): %s", shutdown_err)
             finally:
                 logging.raiseExceptions = old_raise_exceptions
 
@@ -383,10 +392,9 @@ class ShutdownManager:
             self.logger.warning("Force exit requested during shutdown")
             sys.exit(1)
 
+        # Schedule async shutdown but do NOT sys.exit immediately --
+        # let the event loop run the cleanup tasks first
         self.shutdown_sync(sig_name)
-
-        if self.force_exit:
-            sys.exit(self.exit_code)
 
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown to complete."""

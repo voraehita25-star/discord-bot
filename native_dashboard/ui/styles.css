@@ -732,12 +732,31 @@ h2 {
     line-height: 1.7;
     white-space: pre-wrap;
     word-break: break-all;
+    position: relative;
+    overflow-y: auto;
+    height: 100%;
+}
+
+/* Virtual Scroll Container */
+.virtual-scroll-inner {
+    min-height: 100%;
+}
+
+.virtual-scroll-content {
+    width: 100%;
+}
+
+.log-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-secondary);
 }
 
 .log-line {
-    padding: 3px 0;
+    padding: 3px 8px;
     border-radius: 4px;
     transition: background 0.2s;
+    line-height: 24px;
 }
 
 .log-line:hover {

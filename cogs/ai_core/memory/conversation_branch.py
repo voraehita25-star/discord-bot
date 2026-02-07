@@ -5,11 +5,23 @@ Provides undo and branch-and-continue functionality for AI chat sessions.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import copy
 import logging
+import random
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
+
+from ..data.constants import (
+    BRANCH_AUTO_CHECKPOINT_INTERVAL,
+    BRANCH_CLEANUP_INTERVAL_HOURS,
+    BRANCH_CLEANUP_MAX_AGE_HOURS,
+    BRANCH_MAX_CHECKPOINTS_PER_CHANNEL,
+)
 
 
 @dataclass
@@ -59,15 +71,88 @@ class ConversationBranchManager:
     - Automatic checkpoint creation before significant changes
     """
 
-    MAX_CHECKPOINTS_PER_CHANNEL = 20
-    AUTO_CHECKPOINT_INTERVAL = 10  # messages
+    MAX_CHECKPOINTS_PER_CHANNEL = BRANCH_MAX_CHECKPOINTS_PER_CHANNEL
+    AUTO_CHECKPOINT_INTERVAL = BRANCH_AUTO_CHECKPOINT_INTERVAL
+    CLEANUP_MAX_AGE_HOURS = BRANCH_CLEANUP_MAX_AGE_HOURS
+    CLEANUP_INTERVAL_HOURS = BRANCH_CLEANUP_INTERVAL_HOURS
 
     def __init__(self):
         self._checkpoints: dict[int, list[ConversationCheckpoint]] = defaultdict(list)
         self._branches: dict[str, ConversationBranch] = {}
         self._active_branch: dict[int, str | None] = {}  # channel_id -> branch_id
         self._message_counts: dict[int, int] = defaultdict(int)
+        self._lock = asyncio.Lock()  # Async lock for async cleanup
+        self._sync_lock = threading.Lock()  # Thread-safe lock for sync methods
+        self._cleanup_task: asyncio.Task | None = None
         self.logger = logging.getLogger("ConversationBranch")
+
+    def start_cleanup_task(self) -> None:
+        """Start background cleanup task for old branches and checkpoints."""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+            self.logger.info("🌿 Branch cleanup task started")
+
+    async def stop_cleanup_task(self) -> None:
+        """Stop the cleanup task gracefully."""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
+            self.logger.info("🌿 Branch cleanup task stopped")
+
+    async def _cleanup_loop(self) -> None:
+        """Background loop to periodically clean up old data."""
+        while True:
+            try:
+                await asyncio.sleep(self.CLEANUP_INTERVAL_HOURS * 3600)
+                cleaned = await self.cleanup_old_data()
+                if cleaned > 0:
+                    self.logger.info("🧹 Cleaned up %d old branches/checkpoints", cleaned)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error("Branch cleanup error: %s", e)
+
+    async def cleanup_old_data(self, max_age_hours: int | None = None) -> int:
+        """
+        Remove old checkpoints and branches to prevent memory leaks.
+
+        Args:
+            max_age_hours: Override for max age (default: CLEANUP_MAX_AGE_HOURS)
+
+        Returns:
+            Number of items removed
+        """
+        max_age = max_age_hours or self.CLEANUP_MAX_AGE_HOURS
+        cutoff_time = time.time() - (max_age * 3600)
+        removed = 0
+
+        async with self._lock:
+            with self._sync_lock:
+                # Clean old checkpoints
+                for channel_id in list(self._checkpoints.keys()):
+                    old_count = len(self._checkpoints[channel_id])
+                    self._checkpoints[channel_id] = [
+                        cp for cp in self._checkpoints[channel_id] if cp.timestamp > cutoff_time
+                    ]
+                    removed += old_count - len(self._checkpoints[channel_id])
+
+                    # Remove empty channel entries
+                    if not self._checkpoints[channel_id]:
+                        del self._checkpoints[channel_id]
+
+                # Clean old branches
+                for branch_id in list(self._branches.keys()):
+                    branch = self._branches[branch_id]
+                    if branch.created_at < cutoff_time:
+                        # Clear active branch reference if needed
+                        if self._active_branch.get(branch.channel_id) == branch_id:
+                            self._active_branch[branch.channel_id] = None
+                        del self._branches[branch_id]
+                        removed += 1
+
+        return removed
 
     def create_checkpoint(
         self,
@@ -88,24 +173,25 @@ class ConversationBranchManager:
         Returns:
             Created checkpoint
         """
-        checkpoint_id = f"cp_{channel_id}_{int(time.time() * 1000)}"
+        checkpoint_id = f"cp_{channel_id}_{int(time.time() * 1000)}_{random.randint(0, 999):03d}"
 
         checkpoint = ConversationCheckpoint(
             checkpoint_id=checkpoint_id,
             channel_id=channel_id,
             timestamp=time.time(),
-            history_snapshot=[msg.copy() for msg in history],
+            history_snapshot=[copy.deepcopy(msg) for msg in history],
             metadata=metadata or {},
             label=label,
         )
 
-        # Add to channel's checkpoints
-        self._checkpoints[channel_id].append(checkpoint)
+        with self._sync_lock:
+            # Add to channel's checkpoints
+            self._checkpoints[channel_id].append(checkpoint)
 
-        # Enforce max checkpoints
-        while len(self._checkpoints[channel_id]) > self.MAX_CHECKPOINTS_PER_CHANNEL:
-            removed = self._checkpoints[channel_id].pop(0)
-            self.logger.debug("Removed old checkpoint: %s", removed.checkpoint_id)
+            # Enforce max checkpoints
+            while len(self._checkpoints[channel_id]) > self.MAX_CHECKPOINTS_PER_CHANNEL:
+                removed = self._checkpoints[channel_id].pop(0)
+                self.logger.debug("Removed old checkpoint: %s", removed.checkpoint_id)
 
         self.logger.info(
             "📌 Checkpoint created: %s (history: %d messages)", checkpoint_id, len(history)
@@ -138,7 +224,8 @@ class ConversationBranchManager:
 
     def get_checkpoints(self, channel_id: int) -> list[ConversationCheckpoint]:
         """Get all checkpoints for a channel."""
-        return list(self._checkpoints.get(channel_id, []))
+        with self._sync_lock:
+            return list(self._checkpoints.get(channel_id, []))
 
     def get_checkpoint(
         self, channel_id: int, checkpoint_id: str | None = None
@@ -329,3 +416,13 @@ class ConversationBranchManager:
 
 # Global instance
 branch_manager = ConversationBranchManager()
+
+
+def start_branch_cleanup() -> None:
+    """Start the global branch manager cleanup task."""
+    branch_manager.start_cleanup_task()
+
+
+async def stop_branch_cleanup() -> None:
+    """Stop the global branch manager cleanup task."""
+    await branch_manager.stop_cleanup_task()

@@ -1,12 +1,18 @@
 # pylint: disable=too-many-lines
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportArgumentType=false
 """
 Music Cog Module for Discord Bot.
 Provides music playback functionality with YouTube and Spotify support.
+
+Note: Type checker warnings for VoiceProtocol/VoiceClient are suppressed
+because discord.py's type stubs don't fully reflect runtime behavior.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -14,7 +20,7 @@ import random
 import time
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import discord
 from discord.ext import commands
@@ -23,89 +29,10 @@ from cogs.ai_core.data.constants import CREATOR_ID
 from utils.media.ytdl_source import YTDLSource, get_ffmpeg_options
 
 from .utils import Colors, Emojis, create_progress_bar, format_duration
+from .views import MusicControlView  # Import from views module to avoid duplication
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
-
-
-class MusicControlView(discord.ui.View):
-    """Interactive music control buttons."""
-
-    def __init__(self, cog: Music, guild_id: int, timeout: float = 180.0):
-        super().__init__(timeout=timeout)
-        self.cog = cog
-        self.guild_id = guild_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Check if user is in the same voice channel."""
-        if not interaction.user.voice:
-            await interaction.response.send_message("❌ คุณต้องอยู่ในห้องเสียงก่อน", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="music_pause")
-    async def pause_resume_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        """Toggle pause/resume."""
-        voice_client = interaction.guild.voice_client
-        if not voice_client:
-            await interaction.response.send_message("❌ บอทไม่ได้เล่นเพลงอยู่", ephemeral=True)
-            return
-
-        if voice_client.is_paused():
-            voice_client.resume()
-            button.emoji = "⏸️"
-            await interaction.response.edit_message(view=self)
-        elif voice_client.is_playing():
-            voice_client.pause()
-            button.emoji = "▶️"
-            await interaction.response.edit_message(view=self)
-        else:
-            await interaction.response.send_message("❌ ไม่มีเพลงให้หยุดชั่วคราว", ephemeral=True)
-
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary, custom_id="music_skip")
-    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Skip current track."""
-        voice_client = interaction.guild.voice_client
-        if voice_client and voice_client.is_playing():
-            self.cog.loops[self.guild_id] = False  # Disable loop
-            voice_client.stop()
-            await interaction.response.send_message("⏭️ ข้ามเพลง", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ ไม่มีเพลงให้ข้าม", ephemeral=True)
-
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Stop playback and clear queue."""
-        self.cog.queues[self.guild_id] = []
-        self.cog.loops[self.guild_id] = False
-        self.cog.current_track.pop(self.guild_id, None)
-
-        voice_client = interaction.guild.voice_client
-        if voice_client:
-            voice_client.stop()
-
-        await interaction.response.send_message("⏹️ หยุดเล่นและล้างคิวแล้ว", ephemeral=True)
-        self.stop()  # Stop the view
-
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="music_loop")
-    async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Toggle loop mode."""
-        current_loop = self.cog.loops.get(self.guild_id, False)
-        self.cog.loops[self.guild_id] = not current_loop
-
-        if self.cog.loops[self.guild_id]:
-            button.style = discord.ButtonStyle.success
-            await interaction.response.send_message("🔁 เปิดโหมดวนซ้ำ", ephemeral=True)
-        else:
-            button.style = discord.ButtonStyle.secondary
-            await interaction.response.send_message("➡️ ปิดโหมดวนซ้ำ", ephemeral=True)
-
-    async def on_timeout(self):
-        """Disable buttons on timeout."""
-        for child in self.children:
-            child.disabled = True
 
 
 class Music(commands.Cog):
@@ -113,7 +40,7 @@ class Music(commands.Cog):
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
-        self.queues: dict[int, list[dict[str, Any]]] = {}  # Guild ID -> List of queries/urls
+        self.queues: dict[int, collections.deque[dict[str, Any]]] = {}  # Guild ID -> deque of queries/urls
         self.loops: dict[int, bool] = {}  # Guild ID -> Boolean
         # Guild ID -> Track Info (cleaned version)
         self.current_track: dict[int, dict[str, Any]] = {}
@@ -126,12 +53,13 @@ class Music(commands.Cog):
         self.last_text_channel: dict[int, int] = {}  # Guild ID -> Channel ID (last used)
         # Lazy import to avoid circular dependency with spotify_handler
         from cogs.spotify_handler import SpotifyHandler
+
         self.spotify: SpotifyHandler = SpotifyHandler(bot)
         self.auto_disconnect_delay: int = 180  # 3 minutes
 
     def _safe_run_coroutine(self, coro) -> None:
         """Safely run a coroutine in the bot's event loop.
-        
+
         This handles the case where the event loop may be closed during shutdown.
         """
         try:
@@ -147,6 +75,15 @@ class Music(commands.Cog):
         # Cancel all auto-disconnect tasks
         for task in self.auto_disconnect_tasks.values():
             task.cancel()
+        # Disconnect all voice clients to prevent resource leaks
+        for vc in list(self.bot.voice_clients):
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
+        # Cleanup Spotify handler
+        if hasattr(self, "spotify") and self.spotify:
+            self.spotify.cleanup()
         # Clear all stored data to prevent memory leaks
         self.queues.clear()
         self.loops.clear()
@@ -200,8 +137,8 @@ class Music(commands.Cog):
             await db.clear_music_queue(guild_id)
             return
 
-        # Save to database
-        await db.save_music_queue(guild_id, queue)
+        # Save to database (convert deque to list for serialization)
+        await db.save_music_queue(guild_id, list(queue))
         logging.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
 
     def _save_queue_json(self, guild_id: int) -> None:
@@ -215,7 +152,7 @@ class Music(commands.Cog):
             return
 
         data = {
-            "queue": queue,
+            "queue": list(queue),  # Convert deque to list for JSON serialization
             "volume": self.volumes.get(guild_id, 0.5),
             "loop": self.loops.get(guild_id, False),
             "mode_247": self.mode_247.get(guild_id, False),
@@ -235,7 +172,7 @@ class Music(commands.Cog):
 
             queue = await db.load_music_queue(guild_id)
             if queue:
-                self.queues[guild_id] = queue
+                self.queues[guild_id] = collections.deque(queue)
                 logging.info(
                     "📂 Loaded queue for guild %s (%d tracks) from database", guild_id, len(queue)
                 )
@@ -253,7 +190,7 @@ class Music(commands.Cog):
 
             queue = data.get("queue", [])
             if queue:
-                self.queues[guild_id] = queue
+                self.queues[guild_id] = collections.deque(queue)
                 self.volumes[guild_id] = data.get("volume", 0.5)
                 self.loops[guild_id] = data.get("loop", False)
                 self.mode_247[guild_id] = data.get("mode_247", False)
@@ -272,6 +209,13 @@ class Music(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_remove(self, guild):
         """Clean up when bot is removed from a guild."""
+        # Disconnect voice client first to prevent resource leak
+        if guild.voice_client:
+            try:
+                await guild.voice_client.disconnect(force=True)
+            except Exception as e:
+                logging.warning("Failed to disconnect voice client on guild remove: %s", e)
+
         await self.cleanup_guild_data(guild.id)
         logging.info("🧹 Cleaned up data for guild %s", guild.id)
 
@@ -286,9 +230,11 @@ class Music(commands.Cog):
 
         # Check all guilds where bot is connected
         # Create a copy to prevent RuntimeError if list changes during iteration
-        for vc in list(self.bot.voice_clients):
+        for vc_proto in list(self.bot.voice_clients):
+            # Cast to VoiceClient for proper type hints
+            vc = cast(discord.VoiceClient, vc_proto)
             # Check if voice client has guild and channel
-            if not vc.guild or not vc.channel:
+            if not hasattr(vc, "guild") or not vc.guild or not vc.channel:
                 continue
 
             guild = vc.guild
@@ -315,7 +261,7 @@ class Music(commands.Cog):
                     continue
 
                 # Count humans in channel (exclude bots) - check if channel exists
-                if not vc.channel:
+                if not vc.channel or not hasattr(vc.channel, "members"):
                     continue
                 humans = [m for m in vc.channel.members if not m.bot]
                 if len(humans) == 0:
@@ -336,7 +282,7 @@ class Music(commands.Cog):
                         "✅ Cancelled auto-disconnect for guild %s - user joined", guild_id
                     )
 
-    async def _auto_disconnect(self, guild_id: int, voice_client: discord.VoiceClient) -> None:
+    async def _auto_disconnect(self, guild_id: int, voice_client: discord.VoiceClient) -> None:  # type: ignore[type-arg]
         """Auto-disconnect after delay when alone in voice channel."""
         try:
             # Send warning message
@@ -435,46 +381,61 @@ class Music(commands.Cog):
 
         await self.bot.loop.run_in_executor(None, _delete)
 
-    def get_queue(self, ctx) -> list[dict[str, Any]]:
+    def get_queue(self, ctx) -> collections.deque[dict[str, Any]]:
         """Get or create queue for a guild."""
         if ctx.guild.id not in self.queues:
-            self.queues[ctx.guild.id] = []
+            self.queues[ctx.guild.id] = collections.deque()
         return self.queues[ctx.guild.id]
 
     async def play_next(self, ctx: Context) -> None:
         """Play the next track in the queue."""
         # Check if voice_client exists
-        if not ctx.voice_client:
+        if not ctx.voice_client or not ctx.guild:
             return
 
-        if ctx.guild.id not in self.play_locks:
-            self.play_locks[ctx.guild.id] = asyncio.Lock()
+        # Cast voice_client to VoiceClient for proper type hints
+        voice_client = cast(discord.VoiceClient, ctx.voice_client)
+        guild_id = ctx.guild.id
 
-        # Prevent race condition: check if lock is already acquired
-        if self.play_locks[ctx.guild.id].locked():
-            logging.debug("play_next already in progress for guild %s", ctx.guild.id)
+        # Use setdefault for atomic get-or-create to prevent race condition
+        lock = self.play_locks.setdefault(guild_id, asyncio.Lock())
+
+        # Atomic lock acquisition with timeout - avoids TOCTOU race condition
+        # by not checking lock.locked() separately from acquire()
+        try:
+            acquired = await asyncio.wait_for(lock.acquire(), timeout=0.1)
+            if not acquired:
+                logging.debug("play_next lock acquisition failed for guild %s", guild_id)
+                return
+        except asyncio.TimeoutError:
+            # Another task is processing - skip this call
+            logging.debug("play_next already in progress for guild %s", guild_id)
             return
 
-        async with self.play_locks[ctx.guild.id]:
+        _retry_next = False
+        try:
             # Check voice_client again inside lock
             if not ctx.voice_client:
                 return
 
+            # Re-cast after null check
+            voice_client = cast(discord.VoiceClient, ctx.voice_client)
+
             # Double check if playing inside lock to prevent race conditions
-            if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+            if voice_client.is_playing() or voice_client.is_paused():
                 return
 
             # 1. Check Loop Mode
-            if self.loops.get(ctx.guild.id) and self.current_track.get(ctx.guild.id):
+            if self.loops.get(guild_id) and self.current_track.get(guild_id):
                 # Replay current track
-                track_info = self.current_track[ctx.guild.id]
+                track_info = self.current_track[guild_id]
                 filename = track_info["filename"]
                 data = track_info["data"]
 
                 if Path(filename).exists():
                     try:
                         # Verify voice_client is still valid
-                        if not ctx.voice_client or not ctx.voice_client.is_connected():
+                        if not ctx.voice_client or not voice_client.is_connected():
                             logging.warning("Voice client disconnected during loop replay")
                             return
 
@@ -489,20 +450,20 @@ class Music(commands.Cog):
                         )
 
                         # Update start time
-                        self.current_track[ctx.guild.id]["start_time"] = time.time()
+                        self.current_track[guild_id]["start_time"] = time.time()
 
                         # Capture voice_client reference at callback definition time
-                        voice_client_loop = ctx.voice_client
+                        voice_client_loop = voice_client
 
                         def after_playing_loop(error):
-                            if self.fixing.get(ctx.guild.id):
+                            if self.fixing.get(guild_id):
                                 return  # Skip if fixing
 
                             # Guard: Check if voice_client is still valid
                             if not voice_client_loop or not voice_client_loop.is_connected():
                                 return
 
-                            if not self.loops.get(ctx.guild.id):
+                            if not self.loops.get(guild_id):
                                 # Loop disabled during play -> Delete file
                                 self._safe_run_coroutine(self.safe_delete(filename))
 
@@ -515,7 +476,7 @@ class Music(commands.Cog):
 
                             self._safe_run_coroutine(self.play_next(ctx))
 
-                        ctx.voice_client.play(player, after=after_playing_loop)
+                        voice_client.play(player, after=after_playing_loop)
 
                         # Loop embed
                         embed = discord.Embed(
@@ -528,21 +489,27 @@ class Music(commands.Cog):
                         return
                     except (discord.DiscordException, OSError) as e:
                         logging.error("Loop replay failed: %s", e)
-                        self.loops[ctx.guild.id] = False  # Disable loop on error
+                        self.loops[guild_id] = False  # Disable loop on error
 
             # 2. Normal Queue Logic
             queue = self.get_queue(ctx)
             if len(queue) > 0:
-                item = queue.pop(0)
+                item = queue.popleft()
                 url = item.get("url") if isinstance(item, dict) else item
+
+                if not url:
+                    return
 
                 try:
                     async with ctx.typing():
                         # Use Download Mode (stream=False)
                         player = await YTDLSource.from_url(url, loop=self.bot.loop, stream=False)
 
+                        # Apply stored volume to new track
+                        player.volume = self.volumes.get(guild_id, 0.5)
+
                         # Save current track info (only essential data)
-                        self.current_track[ctx.guild.id] = {
+                        self.current_track[guild_id] = {
                             "filename": player.filename,
                             "data": {
                                 "title": player.data.get("title"),
@@ -557,21 +524,21 @@ class Music(commands.Cog):
 
                         # Capture voice_client reference at callback definition time
                         # to avoid issues with ctx.voice_client becoming None
-                        voice_client = ctx.voice_client
+                        vc_callback = voice_client
 
                         def after_playing(error):
-                            if self.fixing.get(ctx.guild.id):
+                            if self.fixing.get(guild_id):
                                 return  # Skip if fixing
 
                             # Guard: Check if voice_client is still valid
-                            if not voice_client or not voice_client.is_connected():
+                            if not vc_callback or not vc_callback.is_connected():
                                 # Cleanup file even if disconnected
-                                if player.filename and not self.loops.get(ctx.guild.id):
+                                if player.filename and not self.loops.get(guild_id):
                                     self._safe_run_coroutine(self.safe_delete(player.filename))
                                 return
 
                             # Cleanup: Delete file ONLY if loop is OFF
-                            if not self.loops.get(ctx.guild.id):
+                            if not self.loops.get(guild_id):
                                 if player.filename:
                                     self._safe_run_coroutine(self.safe_delete(player.filename))
 
@@ -579,7 +546,7 @@ class Music(commands.Cog):
                                 logging.error("Player error: %s", error)
 
                             # Guard: Don't schedule if already playing or paused
-                            if voice_client.is_playing() or voice_client.is_paused():
+                            if vc_callback.is_playing() or vc_callback.is_paused():
                                 return
 
                             self._safe_run_coroutine(self.play_next(ctx))
@@ -588,11 +555,18 @@ class Music(commands.Cog):
                             ctx.voice_client.play(player, after=after_playing)
                         except (discord.DiscordException, OSError) as e:
                             logging.error("Failed to start playback: %s", e)
+                            # Cleanup FFmpeg process
+                            try:
+                                player.cleanup()
+                            except Exception as cleanup_err:
+                                logging.debug(
+                                    "Player cleanup failed (non-critical): %s", cleanup_err
+                                )
                             # Cleanup file on error
                             if player.filename and not self.loops.get(ctx.guild.id):
                                 self._safe_run_coroutine(self.safe_delete(player.filename))
-                            # Try next track
-                            await self.play_next(ctx)
+                            # Set flag to try next track after lock release
+                            _retry_next = True
                             return
 
                     # 🎨 PREMIUM NOW PLAYING EMBED
@@ -639,12 +613,14 @@ class Music(commands.Cog):
 
                     # Send embed with interactive controls
                     view = MusicControlView(self, ctx.guild.id)
-                    await ctx.send(embed=embed, view=view)
-                    await self.bot.change_presence(
-                        activity=discord.Activity(
-                            type=discord.ActivityType.listening, name=player.title
+                    view.message = await ctx.send(embed=embed, view=view)
+                    # Only update global presence if bot is in exactly one voice channel
+                    if len(self.bot.voice_clients) <= 1:
+                        await self.bot.change_presence(
+                            activity=discord.Activity(
+                                type=discord.ActivityType.listening, name=player.title
+                            )
                         )
-                    )
                 except (discord.DiscordException, OSError) as e:
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Playback Error",
@@ -653,13 +629,22 @@ class Music(commands.Cog):
                     )
                     await ctx.send(embed=embed)
                     logging.error("Play error: %s\n%s", e, traceback.format_exc())
-                    await self.play_next(ctx)  # Try next one
+                    _retry_next = True  # Try next one after lock release
             else:
                 # Queue empty
                 self.current_track.pop(ctx.guild.id, None)  # Clear track info
-                await self.bot.change_presence(
-                    activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
-                )
+                # Only update global presence if bot has no other active voice clients
+                if len(self.bot.voice_clients) <= 1:
+                    await self.bot.change_presence(
+                        activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
+                    )
+        finally:
+            # Always release the lock
+            lock.release()
+
+        # Retry next track AFTER lock is released (avoids deadlock)
+        if _retry_next:
+            await self.play_next(ctx)
 
     @commands.hybrid_command(name="loop", aliases=["l"])
     async def loop(self, ctx):
@@ -877,7 +862,8 @@ class Music(commands.Cog):
             embed = discord.Embed(
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         channel = ctx.author.voice.channel
 
@@ -887,17 +873,19 @@ class Music(commands.Cog):
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
                 description=f"Bot ไม่มีสิทธิ์เข้าหรือพูดในห้อง **{channel.name}**\n"
-                            f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
-                color=Colors.ERROR
+                f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
+                color=Colors.ERROR,
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         if ctx.voice_client is not None:
             await ctx.voice_client.move_to(channel)
             embed = discord.Embed(
                 description=f"{Emojis.CHECK} ย้ายไป **{channel.name}**", color=Colors.RESUMED
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         await channel.connect()
         embed = discord.Embed(
@@ -928,41 +916,48 @@ class Music(commands.Cog):
                 ),
                 inline=False,
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         if not ctx.author.voice:
             embed = discord.Embed(
                 description=(f"{Emojis.CROSS} คุณต้องอยู่ในห้องเสียงก่อน"), color=Colors.ERROR
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         # Check channel-specific permissions before connecting
-        channel = ctx.author.voice.channel
+        channel = ctx.author.voice.channel  # type: ignore[union-attr]
+        if not channel or not ctx.guild:
+            embed = discord.Embed(description=f"{Emojis.CROSS} ไม่พบช่องเสียง", color=Colors.ERROR)
+            await ctx.send(embed=embed)
+            return
+
         permissions = channel.permissions_for(ctx.guild.me)
         if not permissions.connect or not permissions.speak:
+            channel_name = channel.name if channel else "unknown"
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
-                description=f"Bot ไม่มีสิทธิ์เข้าหรือพูดในห้อง **{channel.name}**\n"
-                            f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
-                color=Colors.ERROR
+                description=f"Bot ไม่มีสิทธิ์เข้าหรือพูดในห้อง **{channel_name}**\n"
+                f"กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot",
+                color=Colors.ERROR,
             )
-            return await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
+            return
 
         # Connect if not connected
         if ctx.voice_client is None:
             try:
-                await ctx.author.voice.channel.connect()
-            except discord.DiscordException as e:
+                await channel.connect()
+            except discord.ClientException as e:
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
                 )
-                return await ctx.send(embed=embed)
-        elif (
-            ctx.voice_client.channel
-            and ctx.voice_client.channel != ctx.author.voice.channel
-        ):
+                await ctx.send(embed=embed)
+                return
+        elif ctx.voice_client.channel and ctx.voice_client.channel != channel:
             # Move to user's channel if in different channel
-            await ctx.voice_client.move_to(ctx.author.voice.channel)
+            await ctx.voice_client.move_to(channel)
 
         queue = self.get_queue(ctx)
 
@@ -974,6 +969,17 @@ class Music(commands.Cog):
         else:
             # YouTube / Search
             async with ctx.typing():
+                # Check queue size limit
+                from .queue import MAX_QUEUE_SIZE
+
+                if len(queue) >= MAX_QUEUE_SIZE:
+                    embed = discord.Embed(
+                        description=f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)",
+                        color=Colors.ERROR,
+                    )
+                    await ctx.send(embed=embed)
+                    return
+
                 try:
                     # Use search_source to get info first
                     info = await YTDLSource.search_source(query, loop=self.bot.loop)
@@ -1030,7 +1036,11 @@ class Music(commands.Cog):
                     return
 
         # If not playing, start playing
-        if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
+        if (
+            ctx.voice_client
+            and not ctx.voice_client.is_playing()
+            and not ctx.voice_client.is_paused()
+        ):
             await self.play_next(ctx)
 
     @commands.hybrid_command(name="skip", aliases=["s"])
@@ -1080,7 +1090,7 @@ class Music(commands.Cog):
 
             # Queue List (with numbers)
             description = ""
-            for i, item in enumerate(queue[:10], 1):
+            for i, item in enumerate(list(queue)[:10], 1):
                 if isinstance(item, dict):
                     title = item.get("title", "Unknown")
                     title = title[:40] + "..." if len(title) > 40 else title
@@ -1106,7 +1116,7 @@ class Music(commands.Cog):
     @commands.hybrid_command(name="stop", aliases=["st"])
     async def stop(self, ctx):
         """หยุดเล่นและล้างคิว."""
-        self.queues[ctx.guild.id] = []
+        self.queues[ctx.guild.id] = collections.deque()
         self.loops[ctx.guild.id] = False  # Disable loop
         self.current_track.pop(ctx.guild.id, None)
 
@@ -1126,7 +1136,7 @@ class Music(commands.Cog):
     async def clear(self, ctx):
         """ล้างคิวเพลงทั้งหมด (แต่ไม่หยุดเพลงที่เล่นอยู่)."""
         cleared_count = len(self.queues.get(ctx.guild.id, []))
-        self.queues[ctx.guild.id] = []
+        self.queues[ctx.guild.id] = collections.deque()
 
         embed = discord.Embed(
             title=f"{Emojis.CHECK} ล้างคิวแล้ว",
@@ -1141,7 +1151,7 @@ class Music(commands.Cog):
         """ออกจากช่องเสียง."""
         if ctx.voice_client:
             # Cleanup
-            self.queues[ctx.guild.id] = []
+            self.queues[ctx.guild.id] = collections.deque()
             self.loops[ctx.guild.id] = False
             self.current_track.pop(ctx.guild.id, None)
 
@@ -1186,7 +1196,8 @@ class Music(commands.Cog):
 
         # Apply to current player if playing
         if ctx.voice_client and ctx.voice_client.source:
-            ctx.voice_client.source.volume = volume / 100.0
+            if isinstance(ctx.voice_client.source, discord.PCMVolumeTransformer):
+                ctx.voice_client.source.volume = volume / 100.0
 
         # Volume bar visualization
         bar_length = 10
@@ -1266,7 +1277,7 @@ class Music(commands.Cog):
 
         # Show first 3 tracks after shuffle
         preview = ""
-        for i, item in enumerate(queue[:3], 1):
+        for i, item in enumerate(list(queue)[:3], 1):
             title = item.get("title", "Unknown") if isinstance(item, dict) else str(item)
             title = title[:30] + "..." if len(title) > 30 else title
             preview += f"`{i}.` {title}\n"
@@ -1299,7 +1310,8 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        removed = queue.pop(position - 1)
+        removed = queue[position - 1]
+        del queue[position - 1]
         title = removed.get("title", "Unknown") if isinstance(removed, dict) else str(removed)
 
         embed = discord.Embed(
@@ -1320,7 +1332,7 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if not ctx.voice_client or not ctx.voice_client.is_playing():
+        if not ctx.voice_client or (not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()):
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Nothing is playing", color=Colors.ERROR
             )
@@ -1366,6 +1378,12 @@ class Music(commands.Cog):
 
         # Get track duration
         duration = track_info.get("data", {}).get("duration", 0)
+        if duration == 0:
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} Cannot seek in this track (unknown duration)",
+                color=Colors.ERROR,
+            )
+            return await ctx.send(embed=embed)
         if seek_time > duration:
             embed = discord.Embed(
                 description=(
@@ -1407,7 +1425,13 @@ class Music(commands.Cog):
                 logging.error("Seek player error: %s", error)
             self._safe_run_coroutine(self.play_next(ctx))
 
-        ctx.voice_client.play(player, after=after_seek)
+        try:
+            ctx.voice_client.play(player, after=after_seek)
+        except Exception as e:
+            # Reset fixing flag if play() fails
+            self.fixing[guild_id] = False
+            logging.error("Seek play error: %s", e)
+            raise
 
         embed = discord.Embed(
             title=f"{Emojis.PLAY} Seeking",
@@ -1567,7 +1591,7 @@ class Music(commands.Cog):
                 inline=False,
             )
 
-        if self.bot.user.display_avatar:
+        if self.bot.user and self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
         embed.set_footer(text="Music Bot v3.2 Pro • !h for help")
 
@@ -1646,8 +1670,8 @@ class Music(commands.Cog):
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
                 description=f"Bot ต้องมีสิทธิ์ `{missing}` เพื่อเข้าห้องเสียง\n"
-                            f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
-                color=Colors.ERROR
+                f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
+                color=Colors.ERROR,
             )
             await ctx.send(embed=embed)
         else:
@@ -1661,8 +1685,8 @@ class Music(commands.Cog):
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ไม่มีสิทธิ์",
                 description=f"Bot ต้องมีสิทธิ์ `{missing}` เพื่อเล่นเพลง\n"
-                            f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
-                color=Colors.ERROR
+                f"กรุณาตรวจสอบ Role ของ Bot ใน Server Settings",
+                color=Colors.ERROR,
             )
             await ctx.send(embed=embed)
         else:

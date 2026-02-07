@@ -1,7 +1,7 @@
 # AI Core Module
 
-> Last Updated: January 21, 2026  
-> Version: 3.3.8
+> Last Updated: February 7, 2026
+> Version: 3.3.10
 
 ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
 
@@ -234,9 +234,16 @@ python -m pytest tests/test_tools.py -v
 python -m pytest tests/test_webhooks.py -v
 ```
 
-## Recent Updates (January 21, 2026)
+## Recent Updates
 
-### v3.3.8 - ai_core Reorganization + E501 Fixes
+### v3.3.10 - Deep Code Audit & Test Verification (February 7, 2026)
+- 🛡️ **Security hardening** across all modules (specific exceptions, input validation, resource cleanup)
+- 🔒 **XSS prevention** in server_commands with `sanitize_channel_name` fallback to `"untitled"`
+- 🧪 **Test suite perfected** - 3,157 passed, 0 skipped, 0 warnings
+- 🧹 **Removed duplicate code** in webhook_cache event loop validation
+- ✅ All broad `except Exception` replaced with specific types
+
+### v3.3.8 - ai_core Reorganization + E501 Fixes (January 21, 2026)
 - 📁 **Reorganized ai_core** into logical subdirectories:
   - `api/` - Gemini API integration (api_handler.py)
   - `core/` - Performance, message queue, context builder

@@ -102,7 +102,7 @@ discord-bot/
 │   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
 │   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (452 tests)
+├── tests/              # Test suite (3,157 tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -262,4 +262,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.9 | **Python:** 3.10+ | **Tests:** 3,157 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** January 22, 2026
+**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,157 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 7, 2026

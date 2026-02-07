@@ -175,6 +175,10 @@ class TestMusicControlViewInteractionCheck:
         
         mock_interaction = MagicMock()
         mock_interaction.user.voice = MagicMock()
+        mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
+        mock_interaction.guild.voice_client = None  # Bot not in voice
+        mock_interaction.response.send_message = AsyncMock()
+        mock_interaction.response.edit_message = AsyncMock()
         
         result = await view.interaction_check(mock_interaction)
         

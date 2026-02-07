@@ -176,39 +176,81 @@ class EntityMemoryManager:
         if not await self.initialize():
             return None
 
+        # Safety check: ensure db_manager is still available after initialize
+        if db_manager is None:
+            logging.error("Database manager became unavailable after initialization")
+            return None
+
         try:
             now = time.time()
             facts_json = json.dumps(facts.to_dict(), ensure_ascii=False)
 
             async with db_manager.get_connection() as conn:
-                cursor = await conn.execute(
-                    """
-                    INSERT INTO entity_memories (
-                        name, entity_type, facts, channel_id, guild_id,
-                        confidence, source, created_at, updated_at
+                # Explicit check for existing entity to handle NULL values
+                # in UNIQUE constraint (SQLite treats NULLs as distinct)
+                if channel_id is None and guild_id is None:
+                    check_cursor = await conn.execute(
+                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id IS NULL",
+                        (name,),
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(name, channel_id, guild_id) DO UPDATE SET
-                        facts = excluded.facts,
-                        confidence = excluded.confidence,
-                        source = excluded.source,
-                        updated_at = excluded.updated_at,
-                        access_count = access_count + 1
-                    """,
-                    (
-                        name,
-                        entity_type,
-                        facts_json,
-                        channel_id,
-                        guild_id,
-                        confidence,
-                        source,
-                        now,
-                        now,
-                    ),
-                )
-                await conn.commit()
-                entity_id = cursor.lastrowid
+                elif channel_id is None:
+                    check_cursor = await conn.execute(
+                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id = ?",
+                        (name, guild_id),
+                    )
+                elif guild_id is None:
+                    check_cursor = await conn.execute(
+                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id IS NULL",
+                        (name, channel_id),
+                    )
+                else:
+                    check_cursor = await conn.execute(
+                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id = ?",
+                        (name, channel_id, guild_id),
+                    )
+                existing_row = await check_cursor.fetchone()
+
+                if existing_row:
+                    # UPDATE existing entity
+                    existing_id = existing_row[0]
+                    await conn.execute(
+                        """
+                        UPDATE entity_memories SET
+                            facts = ?,
+                            confidence = ?,
+                            source = ?,
+                            updated_at = ?,
+                            access_count = access_count + 1
+                        WHERE id = ?
+                        """,
+                        (facts_json, confidence, source, now, existing_id),
+                    )
+                    await conn.commit()
+                    entity_id = existing_id
+                else:
+                    # INSERT new entity
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO entity_memories (
+                            name, entity_type, facts, channel_id, guild_id,
+                            confidence, source, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            name,
+                            entity_type,
+                            facts_json,
+                            channel_id,
+                            guild_id,
+                            confidence,
+                            source,
+                            now,
+                            now,
+                        ),
+                    )
+                    await conn.commit()
+                    entity_id = cursor.lastrowid
 
             logging.info("🧠 Added/Updated entity: %s (%s)", name, entity_type)
             return entity_id
@@ -222,6 +264,11 @@ class EntityMemoryManager:
     ) -> Entity | None:
         """Get an entity by name."""
         if not await self.initialize():
+            return None
+
+        # Safety check: ensure db_manager is still available
+        if db_manager is None:
+            logging.error("Database manager became unavailable")
             return None
 
         try:
@@ -268,6 +315,11 @@ class EntityMemoryManager:
         if not await self.initialize():
             return []
 
+        # Safety check: ensure db_manager is available after initialize
+        if db_manager is None:
+            logging.warning("db_manager became None after initialize")
+            return []
+
         try:
             async with db_manager.get_connection() as conn:
                 sql = """
@@ -280,11 +332,11 @@ class EntityMemoryManager:
                     sql += " AND entity_type = ?"
                     params.append(entity_type)
 
-                if channel_id:
+                if channel_id is not None:
                     sql += " AND (channel_id = ? OR channel_id IS NULL)"
                     params.append(channel_id)
 
-                if guild_id:
+                if guild_id is not None:
                     sql += " AND (guild_id = ? OR guild_id IS NULL)"
                     params.append(guild_id)
 
@@ -384,11 +436,11 @@ class EntityMemoryManager:
                     sql += " AND entity_type = ?"
                     params.append(entity_type)
 
-                if channel_id:
+                if channel_id is not None:
                     sql += " AND (channel_id = ? OR channel_id IS NULL)"
                     params.append(channel_id)
 
-                if guild_id:
+                if guild_id is not None:
                     sql += " AND (guild_id = ? OR guild_id IS NULL)"
                     params.append(guild_id)
 

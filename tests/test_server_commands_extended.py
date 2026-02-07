@@ -25,17 +25,30 @@ class TestCmdCreateVoice:
 
     @pytest.mark.asyncio
     async def test_create_voice_channel_invalid_name(self):
-        """Test creating voice channel with invalid name."""
+        """Test creating voice channel with invalid name falls back to 'untitled'."""
         from cogs.ai_core.commands.server_commands import cmd_create_voice
-        
+
+        mock_voice_channel = MagicMock(spec=discord.VoiceChannel)
+        mock_voice_channel.id = 456
+
         mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.create_voice_channel = AsyncMock(return_value=mock_voice_channel)
+        mock_guild.categories = []
+        mock_guild.me = MagicMock()
+        mock_guild.me.id = 999
+        mock_guild.id = 123456
+
         mock_channel = MagicMock(spec=discord.TextChannel)
         mock_channel.send = AsyncMock()
-        
-        # Name that becomes empty after sanitization
-        await cmd_create_voice(mock_guild, mock_channel, "@#$%^", [])
-        mock_channel.send.assert_called()
-        assert "ไม่ถูกต้อง" in str(mock_channel.send.call_args)
+
+        # Name with only special chars is sanitized to "untitled" fallback
+        with patch("cogs.ai_core.commands.server_commands.AUDIT_AVAILABLE", False):
+            await cmd_create_voice(mock_guild, mock_channel, "@#$%^", [])
+
+        # Channel should be created with fallback name "untitled"
+        mock_guild.create_voice_channel.assert_called_once()
+        call_args = mock_guild.create_voice_channel.call_args
+        assert call_args[0][0] == "untitled"
 
     @pytest.mark.asyncio
     async def test_create_voice_channel_success(self):
@@ -119,16 +132,20 @@ class TestCmdCreateCategory:
 
     @pytest.mark.asyncio
     async def test_create_category_invalid_name(self):
-        """Test creating category with invalid name."""
+        """Test creating category with invalid name falls back to 'untitled'."""
         from cogs.ai_core.commands.server_commands import cmd_create_category
-        
+
         mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.create_category = AsyncMock()
+
         mock_channel = MagicMock(spec=discord.TextChannel)
         mock_channel.send = AsyncMock()
-        
+
+        # Name with only special chars is sanitized to "untitled" fallback
         await cmd_create_category(mock_guild, mock_channel, "@#$%", [])
-        mock_channel.send.assert_called()
-        assert "ไม่ถูกต้อง" in str(mock_channel.send.call_args)
+
+        # Category should be created with fallback name "untitled"
+        mock_guild.create_category.assert_called_once_with("untitled")
 
     @pytest.mark.asyncio
     async def test_create_category_success(self):

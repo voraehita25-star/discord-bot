@@ -19,7 +19,7 @@ from pathlib import Path
 # ==================== Performance: Faster Event Loop ====================
 # uvloop provides 2-4x faster async operations on Unix systems
 try:
-    import uvloop
+    import uvloop  # type: ignore[import-not-found]
 
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     _UVLOOP_ENABLED = True
@@ -51,6 +51,11 @@ try:
     HEALTH_API_AVAILABLE = True
 except ImportError:
     HEALTH_API_AVAILABLE = False
+    health_data = None  # type: ignore
+    setup_health_hooks = None  # type: ignore
+    start_health_api = None  # type: ignore
+    stop_health_api = None  # type: ignore
+    update_health_loop = None  # type: ignore
     logging.warning("Health API not available")
 
 # Import Dashboard WebSocket Server
@@ -79,8 +84,8 @@ except ImportError:
 # Fix Windows console encoding for Unicode characters
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
     except AttributeError:
         # Python < 3.7 fallback
         pass
@@ -105,19 +110,30 @@ try:
     SELF_HEALER_AVAILABLE = True
 except ImportError:
     SELF_HEALER_AVAILABLE = False
+    SelfHealer = None  # type: ignore
     logging.warning("Self-Healer not available - using basic duplicate detection")
 
 # PID file path
 PID_FILE = Path("bot.pid")
 
-# Write PID immediately on startup (before any checks)
+# Read old PID before overwriting (for duplicate detection)
+_old_pid: int | None = None
+if PID_FILE.exists():
+    try:
+        _old_pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        if _old_pid == os.getpid():
+            _old_pid = None  # Same process, no conflict
+    except (ValueError, OSError):
+        _old_pid = None
+
+# Write current PID immediately on startup
 # This allows dashboard to detect bot is starting
 PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
 def smart_startup_check() -> bool:
     """Use Self-Healer for intelligent startup check"""
-    if SELF_HEALER_AVAILABLE:
+    if SELF_HEALER_AVAILABLE and SelfHealer is not None:
         print(f"\n{'=' * 60}")
         print("  [BOT] Self-Healer Active")
         print(f"{'=' * 60}")
@@ -152,35 +168,30 @@ def smart_startup_check() -> bool:
 
 def basic_startup_check() -> bool:
     """Basic duplicate check (fallback)"""
-    if PID_FILE.exists():
+    if _old_pid is not None and psutil.pid_exists(_old_pid):
         try:
-            old_pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+            proc = psutil.Process(_old_pid)
+            cmdline = " ".join(proc.cmdline()).lower()
+            # Match only the exact bot.py script, not test_bot.py or similar
+            if "python" in cmdline and ("bot.py" in cmdline and "test_" not in cmdline):
+                print(f"\n{'=' * 60}")
+                print(f"  [!] Found existing bot (PID: {_old_pid})")
+                print("  [*] Stopping old instance...")
+                print(f"{'=' * 60}")
 
-            if psutil.pid_exists(old_pid):
+                proc.terminate()
                 try:
-                    proc = psutil.Process(old_pid)
-                    cmdline = " ".join(proc.cmdline()).lower()
-                    if "python" in cmdline and "bot.py" in cmdline:
-                        print(f"\n{'=' * 60}")
-                        print(f"  [!] Found existing bot (PID: {old_pid})")
-                        print("  [*] Stopping old instance...")
-                        print(f"{'=' * 60}")
+                    proc.wait(timeout=5)
+                except psutil.TimeoutExpired:
+                    proc.kill()
 
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=5)
-                        except psutil.TimeoutExpired:
-                            proc.kill()
+                if PID_FILE.exists():
+                    with contextlib.suppress(OSError):
+                        PID_FILE.unlink()
 
-                        if PID_FILE.exists():
-                            with contextlib.suppress(OSError):
-                                PID_FILE.unlink()
-
-                        time.sleep(1)
-                        print("  [OK] Ready to start\n")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        except (ValueError, OSError):
+                time.sleep(1)
+                print("  [OK] Ready to start\n")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     return True
 
@@ -226,6 +237,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 # Setup Discord Bot
 class MusicBot(commands.AutoShardedBot):
     """Custom Bot Class"""
+
+    # Class attribute for start time
+    start_time: float = 0.0
 
     async def setup_hook(self) -> None:
         # Setup signal handlers for graceful shutdown (Unix only)
@@ -278,11 +292,17 @@ class MusicBot(commands.AutoShardedBot):
             try:
                 success = await start_dashboard_ws_server()
                 if success:
-                    logging.info("💬 Dashboard AI Chat WebSocket server started on ws://127.0.0.1:8765")
+                    logging.info(
+                        "💬 Dashboard AI Chat WebSocket server started on ws://127.0.0.1:8765"
+                    )
                 else:
                     logging.warning("⚠️ Failed to start Dashboard WebSocket server")
             except Exception as e:
                 logging.error("❌ Dashboard WebSocket server error: %s", e)
+
+    # Track background tasks and initialization state
+    _health_task: asyncio.Task | None = None
+    _metrics_started: bool = False
 
     async def on_ready(self) -> None:
         """Called when bot is ready and connected to Discord"""
@@ -308,19 +328,21 @@ class MusicBot(commands.AutoShardedBot):
         if perf_status:
             logging.info("⚡ Performance optimizations active: %s", ", ".join(perf_status))
 
-        # Start Health API background update loop
-        if HEALTH_API_AVAILABLE:
-            health_data.update_from_bot(self)
-            self.loop.create_task(update_health_loop(self, interval=10.0))
+        # Start Health API background update loop (only once, guard against repeated on_ready)
+        if HEALTH_API_AVAILABLE and health_data is not None and update_health_loop is not None:
+            health_data.update_from_bot(self)  # type: ignore[union-attr]
+            if self._health_task is None or self._health_task.done():
+                self._health_task = asyncio.create_task(update_health_loop(self, interval=10.0))  # type: ignore[arg-type]
 
-        # Initialize metrics
+        # Initialize metrics (only once, guard against repeated on_ready)
         if METRICS_AVAILABLE and metrics:
             metrics.set_guilds(len(self.guilds))
             metrics.set_voice_clients(len(self.voice_clients))
             metrics.set_memory(psutil.Process().memory_info().rss)
-            # Start Prometheus metrics server on port 9090
-            if metrics.start_server(port=9090):
-                logging.info("📊 Prometheus metrics available at http://localhost:9090")
+            if not self._metrics_started:
+                if metrics.start_server(port=9090):
+                    logging.info("📊 Prometheus metrics available at http://localhost:9090")
+                self._metrics_started = True
 
     async def on_command_error(self, ctx, error):  # pylint: disable=arguments-differ
         """Global error handler for all commands with Thai messages."""
@@ -434,22 +456,23 @@ def create_bot() -> MusicBot:
 
 # Global bot instance
 bot = create_bot()
-bot.start_time = time.time()  # pylint: disable=attribute-defined-outside-init
+bot.start_time = time.time()
 
 # Setup Health API hooks
-if HEALTH_API_AVAILABLE:
-    setup_health_hooks(bot)
+if HEALTH_API_AVAILABLE and setup_health_hooks is not None:
+    setup_health_hooks(bot)  # type: ignore[arg-type]
 
-    @bot.command(name="sync")
-    @commands.is_owner()
-    async def sync_commands(ctx):
-        """Sync slash commands globally (Owner only)."""
-        msg = await ctx.send("⏳ Syncing commands...")
-        try:
-            synced = await bot.tree.sync()
-            await msg.edit(content=f"✅ Synced {len(synced)} commands globally.")
-        except discord.HTTPException as e:
-            await msg.edit(content=f"❌ Failed to sync: {e}")
+
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync_commands(ctx):
+    """Sync slash commands globally (Owner only)."""
+    msg = await ctx.send("⏳ Syncing commands...")
+    try:
+        synced = await bot.tree.sync()
+        await msg.edit(content=f"✅ Synced {len(synced)} commands globally.")
+    except discord.HTTPException as e:
+        await msg.edit(content=f"❌ Failed to sync: {e}")
 
 
 @bot.command(name="health", aliases=["status", "ping"])
@@ -511,10 +534,10 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
 
     # Flush pending database exports before closing
     try:
-        from utils.database.database import Database
+        from utils.database import db
 
-        db = Database()
-        await db.flush_pending_exports()
+        if db is not None:
+            await db.flush_pending_exports()
     except ImportError:
         pass  # Database module not available
     except OSError as e:
@@ -547,6 +570,9 @@ def run_bot_with_confirmation() -> None:
     global bot  # pylint: disable=global-statement
     while True:
         try:
+            if TOKEN is None:
+                logging.critical("❌ DISCORD_TOKEN is not set")
+                return
             bot.run(TOKEN)
             break  # Normal exit
         except KeyboardInterrupt:
@@ -558,6 +584,10 @@ def run_bot_with_confirmation() -> None:
                 print("[SYNC] Restarting bot...")
                 # Recreate bot instance for restart (old one is closed)
                 bot = create_bot()
+                bot.start_time = time.time()
+                # Re-setup health hooks for new instance
+                if HEALTH_API_AVAILABLE and setup_health_hooks is not None:
+                    setup_health_hooks(bot)
                 continue
 
 
@@ -570,7 +600,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Start Health API server
-    if HEALTH_API_AVAILABLE:
+    if HEALTH_API_AVAILABLE and start_health_api is not None:
         start_health_api()
 
     try:
@@ -583,5 +613,5 @@ if __name__ == "__main__":
         logging.critical("❌ Fatal Error: %s", e)
     finally:
         # Stop Health API on exit
-        if HEALTH_API_AVAILABLE:
+        if HEALTH_API_AVAILABLE and stop_health_api is not None:
             stop_health_api()

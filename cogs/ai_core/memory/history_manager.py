@@ -110,6 +110,9 @@ class HistoryManager:
         Returns:
             Estimated token count
         """
+        if not history:
+            return 0
+            
         total_tokens = 0
 
         for msg in history:
@@ -121,13 +124,37 @@ class HistoryManager:
                 # Accurate token counting
                 total_tokens += len(_TIKTOKEN_ENCODER.encode(content))
             else:
-                # Fallback: ~4 characters per token (rough estimate)
-                total_tokens += len(content) // 4
+                # Fallback: Smart character-based estimation
+                # Thai/Unicode text typically has ~2-3 chars per token
+                # ASCII text typically has ~4 chars per token
+                total_tokens += self._estimate_tokens_fallback(content)
 
             # Add overhead for message structure (role, separators)
             total_tokens += 5
 
         return total_tokens
+
+    def _estimate_tokens_fallback(self, content: str) -> int:
+        """
+        Smart fallback token estimation for mixed Thai/English text.
+        
+        Thai characters and other Unicode typically tokenize differently than ASCII:
+        - ASCII/English: ~4 characters per token
+        - Thai/Unicode: ~2-3 characters per token (more conservative)
+        """
+        if not content:
+            return 0
+        
+        # Count ASCII vs non-ASCII characters
+        ascii_count = sum(1 for c in content if ord(c) < 128)
+        non_ascii_count = len(content) - ascii_count
+        
+        # Estimate tokens for each type
+        # ASCII: 4 chars/token, Non-ASCII (Thai etc): 2.5 chars/token
+        ascii_tokens = ascii_count / 4
+        non_ascii_tokens = non_ascii_count / 2.5
+        
+        return max(1, int(ascii_tokens + non_ascii_tokens))
 
     def estimate_message_tokens(self, message: dict[str, Any]) -> int:
         """Estimate tokens for a single message."""
@@ -137,7 +164,7 @@ class HistoryManager:
 
         if TIKTOKEN_AVAILABLE and _TIKTOKEN_ENCODER:
             return len(_TIKTOKEN_ENCODER.encode(content)) + 5
-        return len(content) // 4 + 5
+        return self._estimate_tokens_fallback(content) + 5
 
     def get_stats(self, history: list[dict[str, Any]]) -> HistoryStats:
         """Get statistics about the history."""
@@ -222,7 +249,7 @@ class HistoryManager:
         max_messages = max_messages or self.max_history
 
         if len(history) <= max_messages:
-            return history  # No trimming needed
+            return list(history)  # Return a copy to prevent caller mutation
 
         self.logger.info("📦 Smart trimming history: %d -> %d messages", len(history), max_messages)
 
@@ -244,7 +271,7 @@ class HistoryManager:
 
         # Reserve some slots for a summary
         summary_slots = 1 if SUMMARIZER_AVAILABLE else 0
-        message_slots = available_slots - summary_slots
+        message_slots = max(0, available_slots - summary_slots)
 
         # 5. Select top important messages (preserving order)
         important_indices = {msg[0] for msg in scored_messages[:message_slots]}
@@ -338,31 +365,34 @@ class HistoryManager:
         # Work with a copy
         working_history = list(history)
 
+        # Pre-calculate per-message tokens to avoid O(n²) recalculation
+        message_tokens = [self.estimate_message_tokens(msg) for msg in working_history]
+        running_total = sum(message_tokens)
+
         # Always protect the most recent messages
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
-        while self.estimate_tokens(working_history) > target_tokens:
+        while running_total > target_tokens:
             if len(working_history) <= protected_count + 1:
                 self.logger.warning("Cannot trim further without losing recent context")
                 break
 
             # Find lowest importance message (excluding protected recent ones)
-            trimmable = (
-                working_history[:-protected_count] if protected_count > 0 else working_history
-            )
+            trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
 
-            if not trimmable:
+            if trim_end <= 0:
                 break
 
             # Score all trimmable messages
-            scored = [(i, self._calculate_importance(msg)[0]) for i, msg in enumerate(trimmable)]
+            scored = [(i, self._calculate_importance(msg)[0]) for i, msg in enumerate(working_history[:trim_end])]
 
             # Remove lowest importance message
             scored.sort(key=lambda x: x[1])
             remove_idx = scored[0][0]
 
-            removed_msg = working_history.pop(remove_idx)
-            removed_tokens = self.estimate_message_tokens(removed_msg)
+            removed_tokens = message_tokens.pop(remove_idx)
+            working_history.pop(remove_idx)
+            running_total -= removed_tokens
 
             self.logger.debug(
                 "Removed message at %d (importance: %.2f, tokens: %d)",
@@ -371,7 +401,7 @@ class HistoryManager:
                 removed_tokens,
             )
 
-        final_tokens = self.estimate_tokens(working_history)
+        final_tokens = running_total
         self.logger.info(
             "📦 Token trim complete: %d -> %d messages (%d tokens)",
             len(history),

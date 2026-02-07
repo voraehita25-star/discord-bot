@@ -131,8 +131,13 @@ impl VectorStorage {
 
         if let Some(ref mmap) = self.mmap {
             let vector_size = self.dimension * std::mem::size_of::<f32>();
-            let offset = Self::HEADER_SIZE + idx * vector_size;
-            let bytes = &mmap[offset..offset + vector_size];
+            let offset = Self::HEADER_SIZE.checked_add(idx.checked_mul(vector_size)?)?;
+            let end = offset.checked_add(vector_size)?;
+            // Bounds check to prevent panic on corrupted/truncated file
+            if end > mmap.len() {
+                return None;
+            }
+            let bytes = &mmap[offset..end];
             let floats: &[f32] = bytemuck::cast_slice(bytes);
             Some(floats.to_vec())
         } else {

@@ -75,6 +75,10 @@ class TokenTracker:
         top_users = tracker.get_top_users(limit=10)
     """
 
+    # Memory limits to prevent unbounded growth
+    MAX_USERS = 10000  # Maximum number of users to track
+    MAX_CHANNELS = 5000  # Maximum number of channels to track
+
     def __init__(self, max_history_days: int = 30):
         self._user_stats: dict[int, UserTokenStats] = {}
         self._channel_usage: dict[int, TokenUsage] = defaultdict(TokenUsage)
@@ -89,6 +93,14 @@ class TokenTracker:
         now = time.time()
         hour_key = datetime.now().strftime("%Y-%m-%d-%H")
         day_key = datetime.now().strftime("%Y-%m-%d")
+
+        # Evict old users if we hit the limit (LRU-style based on last_use)
+        if user_id not in self._user_stats and len(self._user_stats) >= self.MAX_USERS:
+            self._evict_least_recently_used_users()
+        
+        # Evict old channels if we hit the limit
+        if channel_id and channel_id not in self._channel_usage and len(self._channel_usage) >= self.MAX_CHANNELS:
+            self._evict_least_used_channels()
 
         # Initialize user stats if needed
         if user_id not in self._user_stats:
@@ -105,11 +117,23 @@ class TokenTracker:
         # Update hourly usage
         if hour_key not in stats.hourly_usage:
             stats.hourly_usage[hour_key] = TokenUsage()
+            # Limit hourly entries to prevent unbounded memory growth (7 days * 24 hours)
+            max_hourly_entries = 168
+            if len(stats.hourly_usage) > max_hourly_entries:
+                oldest_keys = sorted(stats.hourly_usage.keys())[: len(stats.hourly_usage) - max_hourly_entries]
+                for old_key in oldest_keys:
+                    del stats.hourly_usage[old_key]
         stats.hourly_usage[hour_key].add(input_tokens, output_tokens)
 
         # Update daily usage
         if day_key not in stats.daily_usage:
             stats.daily_usage[day_key] = TokenUsage()
+            # Limit daily entries to prevent unbounded memory growth (3 months)
+            max_daily_entries = 90
+            if len(stats.daily_usage) > max_daily_entries:
+                oldest_keys = sorted(stats.daily_usage.keys())[: len(stats.daily_usage) - max_daily_entries]
+                for old_key in oldest_keys:
+                    del stats.daily_usage[old_key]
         stats.daily_usage[day_key].add(input_tokens, output_tokens)
 
         # Update channel usage
@@ -182,21 +206,57 @@ class TokenTracker:
 
         return summaries
 
+    def _evict_least_recently_used_users(self, count: int = 100) -> None:
+        """Remove least recently used users to free memory."""
+        if len(self._user_stats) <= self.MAX_USERS - count:
+            return
+        
+        # Sort by last_use and remove oldest
+        sorted_users = sorted(
+            self._user_stats.items(),
+            key=lambda x: x[1].last_use
+        )
+        
+        to_remove = sorted_users[:count]
+        for user_id, _ in to_remove:
+            del self._user_stats[user_id]
+        
+        self.logger.info("Evicted %d least recently used users from token tracker", len(to_remove))
+
+    def _evict_least_used_channels(self, count: int = 100) -> None:
+        """Remove least used channels to free memory."""
+        if len(self._channel_usage) <= self.MAX_CHANNELS - count:
+            return
+        
+        # Sort by request_count and remove least used
+        sorted_channels = sorted(
+            self._channel_usage.items(),
+            key=lambda x: x[1].request_count
+        )
+        
+        to_remove = sorted_channels[:count]
+        for channel_id, _ in to_remove:
+            del self._channel_usage[channel_id]
+        
+        self.logger.info("Evicted %d least used channels from token tracker", len(to_remove))
+
     def cleanup_old_data(self) -> int:
         """Remove usage data older than max_history_days."""
         cutoff = datetime.now() - timedelta(days=self._max_history_days)
-        cutoff_key = cutoff.strftime("%Y-%m-%d")
+        cutoff_day_key = cutoff.strftime("%Y-%m-%d")
+        # Hourly keys use format YYYY-MM-DD-HH, so compare with hourly cutoff
+        cutoff_hour_key = cutoff.strftime("%Y-%m-%d-%H")
         removed = 0
 
         for stats in self._user_stats.values():
-            # Clean hourly data
-            old_hours = [k for k in stats.hourly_usage if k < cutoff_key]
+            # Clean hourly data (using hourly format for proper comparison)
+            old_hours = [k for k in stats.hourly_usage if k < cutoff_hour_key]
             for k in old_hours:
                 del stats.hourly_usage[k]
                 removed += 1
 
-            # Clean daily data
-            old_days = [k for k in stats.daily_usage if k < cutoff_key]
+            # Clean daily data (using daily format)
+            old_days = [k for k in stats.daily_usage if k < cutoff_day_key]
             for k in old_days:
                 del stats.daily_usage[k]
                 removed += 1

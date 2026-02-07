@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
 use std::os::windows::process::CommandExt;
@@ -20,11 +19,17 @@ pub struct BotStatus {
 
 pub struct BotManager {
     base_path: PathBuf,
+    sys: System,
+    python_cmd: String,
 }
 
 impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
-        Self { base_path }
+        let mut sys = System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+        // Use PYTHON_CMD env var or default to "python"
+        let python_cmd = std::env::var("PYTHON_CMD").unwrap_or_else(|_| "python".to_string());
+        Self { base_path, sys, python_cmd }
     }
 
     fn pid_file(&self) -> PathBuf {
@@ -44,11 +49,10 @@ impl BotManager {
     }
 
     #[allow(dead_code)]
-    fn is_dev_watcher_running(&self) -> bool {
+    fn is_dev_watcher_running(&mut self) -> bool {
         if let Some(pid) = self.get_dev_watcher_pid() {
-            let mut sys = System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
-            sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
         } else {
             false
         }
@@ -92,10 +96,89 @@ impl BotManager {
             Err(_) => return vec![],
         };
 
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        // Read from end of file to avoid loading entire file into memory
+        let metadata = match file.metadata() {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
         
-        lines.into_iter().rev().take(count).rev().collect()
+        let file_size = metadata.len();
+        if file_size == 0 {
+            return vec![];
+        }
+        
+        // Read at most 1MB from end of file (enough for ~count lines)
+        let max_read: u64 = std::cmp::min(file_size, (count as u64) * 1024); // ~1KB per line estimate
+        let max_read = std::cmp::min(max_read, 1024 * 1024); // Cap at 1MB
+        let start_pos = file_size.saturating_sub(max_read);
+        
+        use std::io::{Seek, SeekFrom, Read};
+        let mut file = file;
+        if file.seek(SeekFrom::Start(start_pos)).is_err() {
+            return vec![];
+        }
+        
+        let mut buffer = String::new();
+        if file.read_to_string(&mut buffer).is_err() {
+            return vec![];
+        }
+        
+        let lines: Vec<String> = buffer.lines()
+            .map(|l| l.to_string())
+            .collect();
+        
+        // If we started mid-file, skip potentially partial first line
+        let skip = if start_pos > 0 { 1 } else { 0 };
+        lines.into_iter()
+            .skip(skip)
+            .rev()
+            .take(count)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
+    /// Rotate logs if file exceeds max_size_mb
+    pub fn rotate_logs_if_needed(&self, max_size_mb: f64) -> Result<(), String> {
+        let log_path = self.log_file();
+        
+        if !log_path.exists() {
+            return Ok(());
+        }
+
+        let metadata = fs::metadata(&log_path)
+            .map_err(|e| format!("Failed to get log metadata: {}", e))?;
+        
+        let size_mb = metadata.len() as f64 / 1024.0 / 1024.0;
+        
+        if size_mb > max_size_mb {
+            // Rotate: rename current to .old and create new
+            let old_log = log_path.with_extension("log.old");
+            let _ = fs::remove_file(&old_log); // Remove old backup if exists
+            fs::rename(&log_path, &old_log)
+                .map_err(|e| format!("Failed to rotate logs: {}", e))?;
+        }
+        
+        Ok(())
+    }
+
+    /// Health check - verify bot process is actually responsive
+    pub fn health_check(&mut self) -> bool {
+        if !self.is_running() {
+            return false;
+        }
+        
+        // Check if process exists and is not zombie
+        if let Some(pid) = self.get_pid() {
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
+                // Check memory > 0 indicates process is alive
+                return process.memory() > 0;
+            }
+        }
+        
+        false
     }
 
     pub fn clear_logs(&self) -> Result<String, String> {
@@ -120,17 +203,16 @@ impl BotManager {
             .ok()
     }
 
-    pub fn is_running(&self) -> bool {
+    pub fn is_running(&mut self) -> bool {
         if let Some(pid) = self.get_pid() {
-            let mut sys = System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
-            sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
         } else {
             false
         }
     }
 
-    pub fn get_uptime(&self) -> String {
+    pub fn get_uptime(&mut self) -> String {
         let pid_file = self.pid_file();
         if !pid_file.exists() || !self.is_running() {
             return "-".to_string();
@@ -158,23 +240,21 @@ impl BotManager {
         "-".to_string()
     }
 
-    pub fn get_memory_mb(&self) -> f64 {
+    pub fn get_memory_mb(&mut self) -> f64 {
         if let Some(pid) = self.get_pid() {
-            let mut sys = System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
-            if let Some(process) = sys.process(sysinfo::Pid::from_u32(pid)) {
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 return process.memory() as f64 / 1024.0 / 1024.0;
             }
         }
         0.0
     }
 
-    pub fn get_mode(&self) -> String {
+    pub fn get_mode(&mut self) -> String {
         // Check if dev_watcher.pid exists and the watcher is running
         if let Some(pid) = self.get_dev_watcher_pid() {
-            let mut sys = System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
-            if sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if self.sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
                 return "Dev".to_string();
             }
         }
@@ -185,17 +265,68 @@ impl BotManager {
         }
     }
 
-    pub fn get_status(&self) -> BotStatus {
+    pub fn get_status(&mut self) -> BotStatus {
+        // Single process refresh for all status fields (instead of 3-5 separate refreshes)
+        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+        
+        let pid = self.get_pid();
+        let is_running = pid.map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some()).unwrap_or(false);
+        
+        let uptime = if is_running { self.get_uptime_no_refresh() } else { "-".to_string() };
+        let memory_mb = if is_running {
+            pid.and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
+                .map(|proc| proc.memory() as f64 / 1024.0 / 1024.0)
+                .unwrap_or(0.0)
+        } else { 0.0 };
+        
+        let mode = {
+            let dev_running = self.get_dev_watcher_pid()
+                .map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some())
+                .unwrap_or(false);
+            if dev_running { "Dev".to_string() }
+            else if is_running { "Normal".to_string() }
+            else { "-".to_string() }
+        };
+        
         BotStatus {
-            is_running: self.is_running(),
-            pid: self.get_pid(),
-            uptime: self.get_uptime(),
-            memory_mb: self.get_memory_mb(),
-            mode: self.get_mode(),
+            is_running,
+            pid,
+            uptime,
+            memory_mb,
+            mode,
         }
     }
+    
+    /// Get uptime without refreshing processes (used by get_status which already refreshed)
+    fn get_uptime_no_refresh(&self) -> String {
+        let pid_file = self.pid_file();
+        if !pid_file.exists() {
+            return "-".to_string();
+        }
 
-    pub fn start(&self) -> Result<String, String> {
+        if let Ok(metadata) = fs::metadata(&pid_file) {
+            if let Ok(modified) = metadata.modified() {
+                let start: DateTime<Local> = modified.into();
+                let now = Local::now();
+                let duration = now.signed_duration_since(start);
+
+                let hours = duration.num_hours();
+                let mins = duration.num_minutes() % 60;
+                let secs = duration.num_seconds() % 60;
+
+                if hours > 0 {
+                    return format!("{}h {}m {}s", hours, mins, secs);
+                } else if mins > 0 {
+                    return format!("{}m {}s", mins, secs);
+                } else {
+                    return format!("{}s", secs);
+                }
+            }
+        }
+        "-".to_string()
+    }
+
+    pub fn start(&mut self) -> Result<String, String> {
         if self.is_running() {
             return Err("Bot is already running".to_string());
         }
@@ -205,7 +336,7 @@ impl BotManager {
 
         let bot_script = self.base_path.join("bot.py");
         
-        let child = Command::new("python")
+        let child = Command::new(&self.python_cmd)
             .arg(&bot_script)
             .current_dir(&self.base_path)
             .creation_flags(CREATE_NO_WINDOW)
@@ -225,9 +356,8 @@ impl BotManager {
             }
             
             // Check if spawned process died
-            let mut sys = System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
-            if sys.process(sysinfo::Pid::from_u32(spawned_pid)).is_none() {
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if self.sys.process(sysinfo::Pid::from_u32(spawned_pid)).is_none() {
                 // Process died - but check if bot.pid was written (bot may have restarted itself)
                 if self.is_running() {
                     return Ok("Bot started successfully".to_string());
@@ -244,7 +374,7 @@ impl BotManager {
         }
     }
 
-    pub fn start_dev(&self) -> Result<String, String> {
+    pub fn start_dev(&mut self) -> Result<String, String> {
         if self.is_running() {
             return Err("Bot is already running".to_string());
         }
@@ -255,7 +385,7 @@ impl BotManager {
         let dev_watcher = self.base_path.join("scripts").join("dev_watcher.py");
         
         // Dev mode: run dev_watcher.py hidden with CREATE_NO_WINDOW
-        let child = Command::new("python")
+        let child = Command::new(&self.python_cmd)
             .arg(&dev_watcher)
             .current_dir(&self.base_path)
             .creation_flags(CREATE_NO_WINDOW)
@@ -280,7 +410,7 @@ impl BotManager {
         }
     }
 
-    pub fn stop(&self) -> Result<String, String> {
+    pub fn stop(&mut self) -> Result<String, String> {
         let pid = self.get_pid().ok_or("Bot is not running")?;
         
         if !self.is_running() {
@@ -303,10 +433,11 @@ impl BotManager {
         Ok("Bot stopped".to_string())
     }
 
-    pub fn restart(&self) -> Result<String, String> {
+    pub fn restart(&mut self) -> Result<String, String> {
         if self.is_running() {
             self.stop()?;
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            // Wait for process to fully exit before restarting
+            std::thread::sleep(std::time::Duration::from_secs(2));
         }
         self.start()
     }

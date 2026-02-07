@@ -5,7 +5,7 @@ mod database;
 
 use bot_manager::{BotManager, BotStatus};
 use database::{DatabaseService, DbStats, ChannelInfo, UserInfo};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -13,7 +13,7 @@ use tauri::{
 };
 
 struct AppState {
-    bot_manager: Mutex<BotManager>,
+    bot_manager: Arc<Mutex<BotManager>>,
     db_service: Mutex<DatabaseService>,
 }
 
@@ -34,38 +34,81 @@ macro_rules! lock_db_service {
 
 #[tauri::command]
 fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
-    let manager = lock_bot_manager!(state)?;
-    Ok(manager.get_status())
+    match state.bot_manager.try_lock() {
+        Ok(mut manager) => Ok(manager.get_status()),
+        Err(_) => {
+            // Lock is held by start/stop/restart — return busy status
+            // so the UI doesn't freeze waiting for the mutex
+            Ok(BotStatus {
+                is_running: false,
+                pid: None,
+                uptime: "...".to_string(),
+                memory_mb: 0.0,
+                mode: "Updating...".to_string(),
+            })
+        }
+    }
 }
 
 #[tauri::command]
-fn start_bot(state: State<AppState>) -> Result<String, String> {
-    let manager = lock_bot_manager!(state)?;
-    manager.start()
+async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.bot_manager.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut mgr = manager.lock()
+            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+        mgr.start()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn stop_bot(state: State<AppState>) -> Result<String, String> {
-    let manager = lock_bot_manager!(state)?;
-    manager.stop()
+async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.bot_manager.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut mgr = manager.lock()
+            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+        mgr.stop()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn restart_bot(state: State<AppState>) -> Result<String, String> {
-    let manager = lock_bot_manager!(state)?;
-    manager.restart()
+async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.bot_manager.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut mgr = manager.lock()
+            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+        mgr.restart()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn start_dev_bot(state: State<AppState>) -> Result<String, String> {
-    let manager = lock_bot_manager!(state)?;
-    manager.start_dev()
+async fn start_dev_bot(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.bot_manager.clone();
+    
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut mgr = manager.lock()
+            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+        mgr.start_dev()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
 fn get_logs(state: State<AppState>, count: usize) -> Result<Vec<String>, String> {
-    let manager = lock_bot_manager!(state)?;
-    Ok(manager.read_logs(count))
+    let count = count.min(10_000); // Cap at 10k lines to prevent abuse
+    match state.bot_manager.try_lock() {
+        Ok(manager) => Ok(manager.read_logs(count)),
+        Err(_) => Ok(vec!["[Dashboard] Bot manager busy — retrying...".to_string()]),
+    }
 }
 
 #[tauri::command]
@@ -100,12 +143,14 @@ fn get_db_stats(state: State<AppState>) -> Result<DbStats, String> {
 
 #[tauri::command]
 fn get_recent_channels(state: State<AppState>, limit: i32) -> Result<Vec<ChannelInfo>, String> {
+    let limit = limit.clamp(1, 100); // Cap to prevent abuse
     let db = lock_db_service!(state)?;
     Ok(db.get_recent_channels(limit))
 }
 
 #[tauri::command]
 fn get_top_users(state: State<AppState>, limit: i32) -> Result<Vec<UserInfo>, String> {
+    let limit = limit.clamp(1, 100); // Cap to prevent abuse
     let db = lock_db_service!(state)?;
     Ok(db.get_top_users(limit))
 }
@@ -117,15 +162,36 @@ fn clear_history(state: State<AppState>) -> Result<i32, String> {
 }
 
 #[tauri::command]
-fn open_folder(path: String) {
-    let _ = std::process::Command::new("explorer")
-        .arg(&path)
-        .spawn();
+fn open_folder(path: String) -> Result<(), String> {
+    let path_obj = std::path::Path::new(&path);
+    if !path_obj.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+    
+    // Canonicalize to resolve symlinks and .. traversal
+    let canonical = path_obj.canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+    
+    // Only allow opening directories (not arbitrary files)
+    if !canonical.is_dir() {
+        return Err("Path is not a directory".to_string());
+    }
+    
+    std::process::Command::new("explorer")
+        .arg(canonical.as_os_str())
+        .spawn()
+        .map_err(|e| format!("Failed to open folder: {}", e))?;
+    
+    Ok(())
 }
 
 #[tauri::command]
 fn log_frontend_error(state: State<AppState>, error_type: String, message: String, stack: Option<String>) -> Result<String, String> {
     use std::io::Write;
+    
+    // Sanitize inputs to prevent log injection (strip newlines from type)
+    let error_type = error_type.replace('\n', " ").replace('\r', " ");
+    let message = message.chars().take(4096).collect::<String>(); // Limit message size
     
     let manager = lock_bot_manager!(state)?;
     let log_dir = manager.logs_dir();
@@ -159,6 +225,7 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
 
 #[tauri::command]
 fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<String>, String> {
+    let count = count.min(500); // Cap to prevent abuse
     let manager = lock_bot_manager!(state)?;
     let error_log_path = manager.logs_dir().join("dashboard_errors.log");
     
@@ -229,7 +296,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
-            bot_manager: Mutex::new(bot_manager),
+            bot_manager: Arc::new(Mutex::new(bot_manager)),
             db_service: Mutex::new(db_service),
         })
         .setup(|app| {
@@ -239,8 +306,14 @@ fn main() {
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
             // Build tray icon
+            // WARNING: DO NOT MODIFY THE TOOLTIP TEXT BELOW!
+            // The Korean text "디스코드 봇 대시보드" is INTENTIONAL.
+            // This is a design choice by the owner - DO NOT CHANGE IT!
+            // ห้ามแก้ไข tooltip นี้เด็ดขาด! ตั้งใจให้เป็นภาษาเกาหลี
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(app.default_window_icon()
+                    .ok_or("Default window icon not configured in tauri.conf.json")?
+                    .clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("디스코드 봇 대시보드")
@@ -327,5 +400,5 @@ fn main() {
             clear_dashboard_errors
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| eprintln!("Error while running tauri application: {}", e));
 }

@@ -11,15 +11,12 @@ import io
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import discord
 from PIL import Image
 
-from .data.roleplay_data import SERVER_CHARACTERS
-
-if TYPE_CHECKING:
-    pass
+from .data.roleplay_data import SERVER_CHARACTER_NAMES
 
 # Try to import imageio for GIF to video conversion
 try:
@@ -28,12 +25,17 @@ try:
     IMAGEIO_AVAILABLE = True
 except ImportError:
     IMAGEIO_AVAILABLE = False
+    iio = None  # type: ignore
 
 
 # ==================== Image Caching ====================
 
+# Cache configuration - limit memory usage for image bytes
+# 50 images * ~500KB average = ~25MB max memory for cache
+IMAGE_CACHE_MAX_SIZE = 50
 
-@lru_cache(maxsize=200)
+
+@lru_cache(maxsize=IMAGE_CACHE_MAX_SIZE)
 def load_cached_image_bytes(full_path: str) -> bytes | None:
     """Load and cache image bytes from disk.
 
@@ -42,6 +44,10 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
 
     Returns:
         Image bytes if file exists and readable, None otherwise.
+    
+    Note:
+        Cache is limited to IMAGE_CACHE_MAX_SIZE entries to prevent
+        memory issues. Use clear_image_cache() to manually clear if needed.
     """
     path = Path(full_path)
     if path.exists():
@@ -50,6 +56,27 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
         except OSError:
             return None
     return None
+
+
+def clear_image_cache() -> None:
+    """Clear the image bytes cache to free memory."""
+    load_cached_image_bytes.cache_clear()
+    logging.debug("Image cache cleared")
+
+
+def get_image_cache_info() -> dict:
+    """Get image cache statistics.
+    
+    Returns:
+        Dict with hits, misses, maxsize, and currsize.
+    """
+    info = load_cached_image_bytes.cache_info()
+    return {
+        "hits": info.hits,
+        "misses": info.misses,
+        "maxsize": info.maxsize,
+        "currsize": info.currsize,
+    }
 
 
 # ==================== PIL Conversion ====================
@@ -111,7 +138,7 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
     Returns:
         MP4 video bytes or None if conversion failed.
     """
-    if not IMAGEIO_AVAILABLE:
+    if not IMAGEIO_AVAILABLE or iio is None:
         return None
 
     try:
@@ -125,7 +152,7 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         pil_img = None
         try:
             pil_img = Image.open(io.BytesIO(gif_data))
-            duration = pil_img.info.get("duration", 100)  # Default 100ms per frame
+            duration = pil_img.info.get("duration", 100) or 100  # Default 100ms, fallback if 0
         finally:
             if pil_img is not None:
                 pil_img.close()
@@ -154,9 +181,7 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
 # ==================== Character Image Loading ====================
 
 
-def load_character_image(
-    message: str, guild_id: int | None
-) -> tuple[str, Image.Image] | None:
+def load_character_image(message: str, guild_id: int | None) -> tuple[str, Image.Image] | None:
     """Load character reference image if character name is mentioned.
 
     Args:
@@ -166,10 +191,10 @@ def load_character_image(
     Returns:
         Tuple of (character_name, PIL Image) or None if no match.
     """
-    if not guild_id or guild_id not in SERVER_CHARACTERS:
+    if not guild_id or guild_id not in SERVER_CHARACTER_NAMES:
         return None
 
-    character_map = SERVER_CHARACTERS[guild_id]
+    character_map = SERVER_CHARACTER_NAMES[guild_id]
     message_lower = message.lower()
 
     for char_name, img_path in character_map.items():
@@ -180,9 +205,11 @@ def load_character_image(
                 # Use cached image bytes
                 img_bytes = load_cached_image_bytes(full_path)
                 if img_bytes:
-                    char_image = Image.open(io.BytesIO(img_bytes))
+                    # Use context manager and copy to prevent resource leak
+                    with Image.open(io.BytesIO(img_bytes)) as char_image:
+                        char_copy = char_image.copy()
                     logging.info("🎭 Loaded character image for %s (cached)", char_name)
-                    return (char_name, char_image)
+                    return (char_name, char_copy)
             except OSError as e:
                 logging.warning("Failed to load character image for %s: %s", char_name, e)
     return None
@@ -422,8 +449,10 @@ async def process_attachments(
                             continue
 
                 # Regular static image
-                image = Image.open(io.BytesIO(image_data))
-                image_parts.append(image)
+                with Image.open(io.BytesIO(image_data)) as image:
+                    # Copy the image so we can close the original
+                    image_copy = image.copy()
+                image_parts.append(image_copy)
                 logging.info("Processed image from %s", user_name)
             except (OSError, discord.HTTPException) as e:
                 logging.warning("Failed to process attachment: %s", e)

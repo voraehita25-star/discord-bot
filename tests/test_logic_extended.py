@@ -236,13 +236,13 @@ class TestToolsImport:
 
 
 class TestServerCharactersImport:
-    """Tests for SERVER_CHARACTERS import."""
+    """Tests for SERVER_CHARACTER_NAMES import."""
 
     def test_server_characters_import(self):
-        """Test SERVER_CHARACTERS is imported."""
-        from cogs.ai_core.logic import SERVER_CHARACTERS
+        """Test SERVER_CHARACTER_NAMES is imported."""
+        from cogs.ai_core.logic import SERVER_CHARACTER_NAMES
         
-        assert SERVER_CHARACTERS is not None
+        assert SERVER_CHARACTER_NAMES is not None
 
 
 class TestModuleDocstring:

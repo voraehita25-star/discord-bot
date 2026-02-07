@@ -16,7 +16,7 @@ class TestQueueManager:
     def test_get_queue_creates_empty(self):
         """Test that get_queue creates an empty queue for new guild."""
         queue = self.manager.get_queue(self.guild_id)
-        assert queue == []
+        assert len(queue) == 0
         assert self.guild_id in self.manager.queues
 
     def test_add_to_queue(self):

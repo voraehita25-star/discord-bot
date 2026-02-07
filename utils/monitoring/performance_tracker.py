@@ -6,8 +6,11 @@ Tracks response times and provides percentile statistics.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import logging
 import statistics
+import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -24,14 +27,16 @@ class PerformanceStats:
     min_time: float = float("inf")
     max_time: float = 0.0
     recent_times: deque = field(default_factory=lambda: deque(maxlen=1000))
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def record(self, duration: float) -> None:
         """Record a timing measurement."""
-        self.count += 1
-        self.total_time += duration
-        self.min_time = min(self.min_time, duration)
-        self.max_time = max(self.max_time, duration)
-        self.recent_times.append(duration)
+        with self._lock:
+            self.count += 1
+            self.total_time += duration
+            self.min_time = min(self.min_time, duration)
+            self.max_time = max(self.max_time, duration)
+            self.recent_times.append(duration)
 
     @property
     def avg_time(self) -> float:
@@ -214,17 +219,22 @@ class PerformanceTracker:
         """
         async def _cleanup_loop():
             while True:
-                await asyncio.sleep(interval)
-                self.cleanup_old_stats()
+                try:
+                    await asyncio.sleep(interval)
+                    self.cleanup_old_stats()
+                except asyncio.CancelledError:
+                    break
 
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(_cleanup_loop())
             self.logger.info("Started periodic cleanup task (interval: %.0fs)", interval)
 
-    def stop_cleanup_task(self) -> None:
+    async def stop_cleanup_task(self) -> None:
         """Stop the cleanup background task."""
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
             self._cleanup_task = None
             self.logger.info("Stopped periodic cleanup task")
 
@@ -256,10 +266,12 @@ def track_performance(operation: str):
     """Decorator to track function performance."""
 
     def decorator(func):
+        @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             with perf_tracker.measure(operation):
                 return await func(*args, **kwargs)
 
+        @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             with perf_tracker.measure(operation):
                 return func(*args, **kwargs)

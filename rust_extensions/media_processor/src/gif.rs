@@ -16,7 +16,10 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
     let flags = data[10];
     if flags & 0x80 != 0 {
         let table_size = 3 * (1 << ((flags & 0x07) + 1));
-        i += table_size;
+        i = i.saturating_add(table_size);
+        if i >= data.len() {
+            return false; // Corrupted GIF
+        }
     }
 
     while i + 2 < data.len() {
@@ -34,13 +37,19 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
                 i += 2;
                 while i < data.len() && data[i] != 0 {
                     let block_size = data[i] as usize;
+                    if i.saturating_add(1).saturating_add(block_size) > data.len() {
+                        break;
+                    }
                     i += 1 + block_size;
+                }
+                if i >= data.len() {
+                    break;
                 }
                 i += 1; // Skip block terminator
             }
             0x2C => {
                 // Image Descriptor
-                if i + 10 >= data.len() {
+                if i + 10 > data.len() {
                     break;
                 }
                 
@@ -50,16 +59,28 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
                 // Skip Local Color Table if present
                 if local_flags & 0x80 != 0 {
                     let table_size = 3 * (1 << ((local_flags & 0x07) + 1));
+                    if i.saturating_add(table_size) > data.len() {
+                        break;
+                    }
                     i += table_size;
                 }
                 
                 // Skip LZW minimum code size
+                if i >= data.len() {
+                    break;
+                }
                 i += 1;
                 
                 // Skip image data blocks
                 while i < data.len() && data[i] != 0 {
                     let block_size = data[i] as usize;
+                    if i.saturating_add(1).saturating_add(block_size) > data.len() {
+                        break;
+                    }
                     i += 1 + block_size;
+                }
+                if i >= data.len() {
+                    break;
                 }
                 i += 1; // Skip block terminator
             }

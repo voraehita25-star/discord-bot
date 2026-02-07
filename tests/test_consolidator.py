@@ -141,7 +141,7 @@ class TestMemoryConsolidatorMethods:
 
         # Set last consolidation time far in the past
         consolidator._last_consolidation[channel_id] = time.time() - 7200  # 2 hours ago
-        consolidator._message_counts[channel_id] = 1  # Below message threshold
+        consolidator._message_counts[channel_id] = 5  # Minimum required for time-based trigger
 
         result = consolidator.should_consolidate(channel_id)
         assert result is True

@@ -1,7 +1,12 @@
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportAssignmentType=false
 """
 AI Logic Module
 Handles the core chat logic, Gemini API integration, and context management.
 Optimized with precompiled regex patterns and lazy image loading.
+
+Note: Type checker warnings for optional imports and Discord.py types are suppressed
+because the conditional imports with fallback stubs work correctly at runtime.
 """
 
 from __future__ import annotations
@@ -87,6 +92,19 @@ try:
 except ImportError:
     URL_FETCHER_AVAILABLE = False
 
+    # Fallback stubs for URL fetcher
+    def extract_urls(text: str) -> list[str]:
+        return []
+
+    async def fetch_all_urls(
+        urls: list[str], max_urls: int = 3
+    ) -> list[tuple[str, str, str | None]]:
+        return []
+
+    def format_url_content_for_context(fetched_urls: list[tuple[str, str, str | None]]) -> str:
+        return ""
+
+
 # Import new AI enhancement modules
 try:
     from .processing.guardrails import (
@@ -102,22 +120,26 @@ try:
 except ImportError:
     GUARDRAILS_AVAILABLE = False
 
-    def validate_response(text):
-        return True, text, []
-
-    def is_unrestricted(channel_id):
-        return False
-
-    def validate_response_for_channel(response, channel_id):
+    def validate_response(response: str) -> tuple[bool, str, list[str]]:
         return True, response, []
 
-    def validate_input_for_channel(user_input, channel_id):
+    def is_unrestricted(channel_id: int) -> bool:
+        return False
+
+    def validate_response_for_channel(
+        response: str, channel_id: int
+    ) -> tuple[bool, str, list[str]]:
+        return True, response, []
+
+    def validate_input_for_channel(
+        user_input: str, channel_id: int
+    ) -> tuple[bool, str, float, list[str]]:
         return True, user_input, 0.0, []
 
-    def detect_refusal(response):
+    def detect_refusal(response: str) -> tuple[bool, str | None]:
         return False, None
 
-    def is_silent_block(response, expected_min_length=50):
+    def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
         return False
 
 
@@ -156,6 +178,7 @@ try:
     CIRCUIT_BREAKER_AVAILABLE = True
 except ImportError:
     CIRCUIT_BREAKER_AVAILABLE = False
+    gemini_circuit = None  # Fallback stub
 
 # Import token tracker for usage analytics
 try:
@@ -205,21 +228,25 @@ except ImportError:
 # Import error recovery for graceful degradation
 try:
     from utils.reliability.error_recovery import (
-        GracefulDegradation,
+        GracefulDegradation as _GracefulDegradation,
         service_monitor,
     )
 
+    GracefulDegradation = _GracefulDegradation
     ERROR_RECOVERY_AVAILABLE = True
 except ImportError:
     ERROR_RECOVERY_AVAILABLE = False
     service_monitor = None
 
-    class GracefulDegradation:
+    class GracefulDegradation:  # type: ignore[no-redef]
         """Fallback stub for GracefulDegradation."""
+
         def __init__(self, *args, **kwargs):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *args):
             return False
 
@@ -266,6 +293,14 @@ PATTERN_SERVER_COMMAND = re.compile(
 # Character tag pattern {{Name}}
 PATTERN_CHARACTER_TAG = re.compile(r"\{\{(.+?)\}\}")
 
+# Pattern to detect AI comments about character tags that should be actual tags
+# Matches: (ตรงนี้ควรใช้เป็น {{Name}}...) or similar patterns
+PATTERN_AI_TAG_COMMENT = re.compile(
+    r"\(ตรงนี้ควร(?:ใช้|เป็น|เปลี่ยน).*?\{\{(.+?)\}\}.*?\)|"
+    r"\((?:should use|switch to|this should be)\s*\{\{(.+?)\}\}.*?\)",
+    re.IGNORECASE,
+)
+
 # Channel ID extraction pattern
 PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 
@@ -288,6 +323,9 @@ class ChatManager(SessionMixin, ResponseMixin):
     - SessionMixin: Session lifecycle, history, cleanup
     - ResponseMixin: Response processing, voice status, history retrieval
     """
+
+    # Maximum number of channels to track to prevent unbounded memory growth
+    MAX_CHANNELS = 5000
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
@@ -313,11 +351,41 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Legacy aliases for backward compatibility
         self.pending_messages = self._message_queue.pending_messages
         self.cancel_flags = self._message_queue.cancel_flags
-        self._pending_requests = self._deduplicator._pending_requests
         self._lock_times = self._message_queue._lock_times
         self._performance_metrics = self._performance._metrics
 
         self.setup_ai()
+
+    def _enforce_channel_limit(self) -> int:
+        """Enforce max channel limit by removing oldest accessed channels (LRU eviction).
+
+        Returns:
+            Number of channels evicted.
+        """
+        if len(self.chats) <= self.MAX_CHANNELS:
+            return 0
+
+        # Sort by last_accessed timestamp (oldest first)
+        sorted_channels = sorted(self.last_accessed.items(), key=lambda x: x[1])
+
+        # Calculate how many to evict (evict 10% to avoid frequent evictions)
+        evict_count = max(1, len(self.chats) - self.MAX_CHANNELS + (self.MAX_CHANNELS // 10))
+        evicted = 0
+
+        for channel_id, _ in sorted_channels[:evict_count]:
+            # Clean up all data for this channel
+            self.chats.pop(channel_id, None)
+            self.last_accessed.pop(channel_id, None)
+            self.seen_users.pop(channel_id, None)
+            self.processing_locks.pop(channel_id, None)
+            self.streaming_enabled.pop(channel_id, None)
+            self.current_typing_msg.pop(channel_id, None)
+            evicted += 1
+
+        if evicted > 0:
+            logging.info("🧹 ChatManager LRU eviction: removed %d channels", evicted)
+
+        return evicted
 
     def setup_ai(self) -> None:
         """Initialize the Gemini AI client."""
@@ -411,12 +479,13 @@ class ChatManager(SessionMixin, ResponseMixin):
         """Load character reference image. Delegates to media_processor."""
         return load_character_image(message, guild_id)
 
-
     # Response methods (_get_voice_status, _get_chat_history_index, _extract_channel_id_request,
     # _is_asking_about_channels, _get_requested_history) are inherited from ResponseMixin
 
     async def _detect_search_intent(self, message: str) -> bool:
         """Detect if message requires web search. Delegates to api_handler."""
+        if self.client is None or self.target_model is None:
+            return False
         return await detect_search_intent(self.client, self.target_model, message)
 
     def _build_api_config(
@@ -436,6 +505,8 @@ class ChatManager(SessionMixin, ResponseMixin):
         channel_id: int | None = None,
     ) -> tuple[str, str, list[Any]]:
         """Call Gemini API with streaming. Delegates to api_handler."""
+        if self.client is None or self.target_model is None:
+            raise ValueError("Gemini client not initialized")
         return await call_gemini_api_streaming(
             client=self.client,
             target_model=self.target_model,
@@ -454,6 +525,8 @@ class ChatManager(SessionMixin, ResponseMixin):
         channel_id: int | None = None,
     ) -> tuple[str, str, list[Any]]:
         """Call Gemini API with retry logic. Delegates to api_handler."""
+        if self.client is None or self.target_model is None:
+            raise ValueError("Gemini client not initialized")
         return await call_gemini_api(
             client=self.client,
             target_model=self.target_model,
@@ -471,6 +544,9 @@ class ChatManager(SessionMixin, ResponseMixin):
         response_text = PATTERN_QUOTE.sub(r"\1", response_text)
         response_text = PATTERN_SPACED.sub(r"\1", response_text)
 
+        # Fix AI comments about character tags - convert to actual tags
+        response_text = self._fix_ai_character_tag_comments(response_text)
+
         # Convert standalone character names to {{Name}} tags
         if guild_id and guild_id in SERVER_CHARACTER_NAMES:
             char_names = list(SERVER_CHARACTER_NAMES[guild_id].keys())
@@ -487,6 +563,33 @@ class ChatManager(SessionMixin, ResponseMixin):
             response_text = search_indicator + response_text
 
         return response_text
+
+    def _fix_ai_character_tag_comments(self, text: str) -> str:
+        """Fix AI-generated comments about character tags by converting them to actual tags.
+
+        Sometimes AI writes comments like "(ตรงนี้ควรใช้เป็น {{Han Seo-ah}}...)"
+        instead of actually using the tag. This function detects these patterns
+        and converts them into proper {{Name}} tags.
+
+        Args:
+            text: The response text to process
+
+        Returns:
+            Text with comment patterns converted to actual character tags
+        """
+        if not text:
+            return text
+
+        def replace_comment_with_tag(match: re.Match) -> str:
+            """Replace the comment with an actual character tag."""
+            # Try both capture groups (Thai and English patterns)
+            char_name = match.group(1) or match.group(2)
+            if char_name:
+                logging.info("🔧 Converting AI comment to tag: %s", char_name)
+                return f"\n\n{{{{{char_name}}}}}\n"
+            return match.group(0)
+
+        return PATTERN_AI_TAG_COMMENT.sub(replace_comment_with_tag, text)
 
     async def _process_pending_messages(self, channel_id: int) -> None:
         """Process any pending messages for a channel.
@@ -537,7 +640,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         self._deduplicator.add_request(request_key)
 
         # Graceful degradation - check circuit breaker before processing
-        if CIRCUIT_BREAKER_AVAILABLE and not gemini_circuit.can_execute():
+        if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit and not gemini_circuit.can_execute():
             await send_channel.send(
                 "⏳ ระบบ AI กำลังพักผ่อนสักครู่ กรุณาลองใหม่อีกครั้งในอีก 1 นาที", delete_after=30
             )
@@ -568,19 +671,13 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         # Use asyncio.wait_for for lock acquisition with timeout to prevent deadlock
         try:
-            await asyncio.wait_for(
-                lock.acquire(),
-                timeout=LOCK_TIMEOUT
-            )
+            await asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT)
         except asyncio.TimeoutError:
             logging.error(
-                "⚠️ Lock acquisition timeout for channel %s (>%ss)",
-                channel_id, LOCK_TIMEOUT
+                "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
             )
             self._deduplicator.remove_request(request_key)
-            await send_channel.send(
-                "⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15
-            )
+            await send_channel.send("⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15)
             return
 
         try:  # Manual lock management with timeout protection
@@ -597,7 +694,6 @@ class ChatManager(SessionMixin, ResponseMixin):
             image_parts: list[Image.Image] = []
 
             async with typing_context:
-
                 try:
                     # Get guild_id if available
                     guild_id = None
@@ -607,7 +703,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     chat_data = await self.get_chat_session(context_channel.id, guild_id)
                     if not chat_data:
                         logging.error("Could not create chat session.")
-                        self._pending_requests.pop(request_key, None)
+                        self._deduplicator.remove_request(request_key)
                         return
 
                     user_name = user.display_name
@@ -668,14 +764,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                             urls = extract_urls(message or "")
                             if urls:
                                 logging.info(
-                                    "🔗 Found %d URL(s) in message, fetching content...",
-                                    len(urls)
+                                    "🔗 Found %d URL(s) in message, fetching content...", len(urls)
                                 )
                                 fetched = await fetch_all_urls(urls, max_urls=2)
                                 url_context = format_url_content_for_context(fetched)
                                 if url_context:
                                     logging.info("🔗 Fetched content from %d URL(s)", len(fetched))
-                        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as e:
+                        except (
+                            aiohttp.ClientError,
+                            asyncio.TimeoutError,
+                            ValueError,
+                            OSError,
+                        ) as e:
                             logging.debug("URL fetching failed: %s", e)
 
                     # --- RAG: Retrieve Relevant Memories ---
@@ -734,7 +834,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                         memory_context += f"\n{url_context}"
                     if rag_context:
                         memory_context += rag_context
-
 
                     # Build prompt with context
                     # For DM (guild_id is None), add voice status and chat history access
@@ -800,12 +899,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                         if isinstance(part, str):
                             current_parts.append({"text": part})
                         elif isinstance(part, Image.Image):
-                            current_parts.append(self._pil_to_inline_data(part))
-                            part.close()
+                            try:
+                                current_parts.append(self._pil_to_inline_data(part))
+                            finally:
+                                part.close()
 
                     for img in image_parts:
-                        current_parts.append(self._pil_to_inline_data(img))
-                        img.close()
+                        try:
+                            current_parts.append(self._pil_to_inline_data(img))
+                        finally:
+                            img.close()
 
                     # Add text file contents
                     for text_content in text_parts:
@@ -964,14 +1067,27 @@ class ChatManager(SessionMixin, ResponseMixin):
                             user_msg_text += "\n\n" + "\n".join(text_parts)
                         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                        new_item = {
+                        new_entries = []
+                        user_item = {
                             "role": "user",
                             "parts": [user_msg_text],
                             "timestamp": current_time,
                         }
-                        chat_data["history"].append(new_item)
+                        chat_data["history"].append(user_item)
+                        new_entries.append(user_item)
+
+                        # Also save the model response if we got one (avoid wasting API tokens)
+                        if model_text and model_text.strip():
+                            model_item = {
+                                "role": "model",
+                                "parts": [model_text],
+                                "timestamp": current_time,
+                            }
+                            chat_data["history"].append(model_item)
+                            new_entries.append(model_item)
+
                         await save_history(
-                            self.bot, context_channel.id, chat_data, new_entries=[new_item]
+                            self.bot, context_channel.id, chat_data, new_entries=new_entries
                         )
                         # Don't return - fall through to process pending messages
                         raise asyncio.CancelledError("New message received")
@@ -1056,15 +1172,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 ),
                                 name=f"consolidate_{context_channel.id}",
                             )
+
                             # Add callback to log any unhandled exceptions
                             def _handle_consolidation_error(t: asyncio.Task) -> None:
                                 if t.cancelled():
                                     return
                                 exc = t.exception()
                                 if exc:
-                                    logging.warning(
-                                        "Memory consolidation task failed: %s", exc
-                                    )
+                                    logging.warning("Memory consolidation task failed: %s", exc)
+
                             task.add_done_callback(_handle_consolidation_error)
                         except (RuntimeError, asyncio.InvalidStateError) as e:
                             logging.debug("Memory consolidation trigger failed: %s", e)
@@ -1084,7 +1200,7 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 10.5 Apply guardrails to sanitize response
                     if GUARDRAILS_AVAILABLE:
-                        _is_valid, sanitized, warnings = validate_response(response_text)
+                        _is_valid, sanitized, warnings = validate_response_for_channel(response_text, channel_id)
                         if warnings:
                             logging.info("🛡️ Guardrails applied: %s", warnings)
                         response_text = sanitized

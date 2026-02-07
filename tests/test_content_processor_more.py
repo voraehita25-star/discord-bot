@@ -126,18 +126,18 @@ class TestImageioAvailable:
 
 
 class TestServerCharactersImport:
-    """Tests for SERVER_CHARACTERS import."""
+    """Tests for SERVER_CHARACTER_NAMES import."""
 
     def test_server_characters_imported(self):
-        """Test SERVER_CHARACTERS is imported."""
+        """Test SERVER_CHARACTER_NAMES is imported from roleplay_data."""
         try:
-            from cogs.ai_core.content_processor import SERVER_CHARACTERS
+            from cogs.ai_core.data.roleplay_data import SERVER_CHARACTER_NAMES
         except ImportError:
-            pytest.skip("content_processor not available")
+            pytest.skip("roleplay_data not available")
             return
             
-        # SERVER_CHARACTERS should be a list
-        assert isinstance(SERVER_CHARACTERS, list)
+        # SERVER_CHARACTER_NAMES should be a dict
+        assert isinstance(SERVER_CHARACTER_NAMES, dict)
 
 
 class TestModuleDocstring:

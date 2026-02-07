@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -104,58 +106,64 @@ class FeedbackCollector:
     MAX_FEEDBACK_ENTRIES = 10000
 
     def __init__(self, max_tracked_messages: int = 1000):
-        self._tracked_messages: dict[int, dict] = {}  # message_id -> metadata
+        self._tracked_messages: OrderedDict[int, dict] = OrderedDict()  # message_id -> metadata
         self._feedback: list[FeedbackEntry] = []
         self._max_tracked = max_tracked_messages
         self._callbacks: list[Callable[[FeedbackEntry], None]] = []
+        self._lock = threading.RLock()  # Reentrant lock for callback safety
         self.logger = logging.getLogger("FeedbackCollector")
 
     def track_message(
         self, message_id: int, channel_id: int, response_preview: str | None = None
     ) -> None:
-        """Track a message for feedback collection."""
-        # Cleanup old tracked messages if needed
-        if len(self._tracked_messages) >= self._max_tracked:
-            oldest = min(self._tracked_messages.keys())
-            del self._tracked_messages[oldest]
+        """Track a message for feedback collection (thread-safe)."""
+        with self._lock:
+            # Cleanup old tracked messages if needed - O(1) with OrderedDict
+            if len(self._tracked_messages) >= self._max_tracked:
+                self._tracked_messages.popitem(last=False)
 
-        self._tracked_messages[message_id] = {
-            "channel_id": channel_id,
-            "timestamp": time.time(),
-            "preview": response_preview[:100] if response_preview else None,
-        }
+            self._tracked_messages[message_id] = {
+                "channel_id": channel_id,
+                "timestamp": time.time(),
+                "preview": response_preview[:100] if response_preview else None,
+            }
 
     def is_tracked(self, message_id: int) -> bool:
-        """Check if a message is being tracked."""
-        return message_id in self._tracked_messages
+        """Check if a message is being tracked (thread-safe)."""
+        with self._lock:
+            return message_id in self._tracked_messages
 
     def process_reaction(self, message_id: int, user_id: int, emoji: str) -> FeedbackEntry | None:
-        """Process a reaction and record feedback if applicable."""
-        # Check if message is tracked
-        if message_id not in self._tracked_messages:
-            return None
+        """Process a reaction and record feedback if applicable (thread-safe)."""
+        with self._lock:
+            # Check if message is tracked
+            if message_id not in self._tracked_messages:
+                return None
 
-        # Check if emoji is a feedback reaction
-        if emoji not in REACTION_MAP:
-            return None
+            # Check if emoji is a feedback reaction
+            if emoji not in REACTION_MAP:
+                return None
 
-        metadata = self._tracked_messages[message_id]
-        feedback_type = REACTION_MAP[emoji]
+            metadata = self._tracked_messages[message_id]
+            feedback_type = REACTION_MAP[emoji]
 
-        # Create feedback entry
-        entry = FeedbackEntry(
-            message_id=message_id,
-            channel_id=metadata["channel_id"],
-            user_id=user_id,
-            feedback_type=feedback_type,
-            context=metadata.get("preview"),
-        )
+            # Create feedback entry
+            entry = FeedbackEntry(
+                message_id=message_id,
+                channel_id=metadata["channel_id"],
+                user_id=user_id,
+                feedback_type=feedback_type,
+                context=metadata.get("preview"),
+            )
 
-        self._feedback.append(entry)
+            self._feedback.append(entry)
 
-        # Cleanup old entries to prevent memory growth
-        if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
-            self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
+            # Cleanup old entries to prevent memory growth
+            if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
+                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
+
+            # Take snapshot of callbacks to avoid race condition
+            callbacks_snapshot = list(self._callbacks)
 
         self.logger.info(
             "Recorded %s feedback from user %d on message %d",
@@ -164,8 +172,8 @@ class FeedbackCollector:
             message_id,
         )
 
-        # Trigger callbacks
-        for callback in self._callbacks:
+        # Trigger callbacks (outside lock to avoid deadlocks)
+        for callback in callbacks_snapshot:
             try:
                 callback(entry)
             except Exception as e:
@@ -174,18 +182,22 @@ class FeedbackCollector:
         return entry
 
     def on_feedback(self, callback: Callable[[FeedbackEntry], None]) -> None:
-        """Register a callback for new feedback."""
-        self._callbacks.append(callback)
+        """Register a callback for new feedback (thread-safe)."""
+        with self._lock:
+            self._callbacks.append(callback)
 
     def get_stats(self, hours: int | None = None) -> FeedbackStats:
-        """Get aggregated feedback statistics."""
+        """Get aggregated feedback statistics (thread-safe)."""
         stats = FeedbackStats()
 
         cutoff = 0
         if hours:
             cutoff = time.time() - (hours * 3600)
 
-        for entry in self._feedback:
+        with self._lock:
+            feedback_snapshot = list(self._feedback)
+
+        for entry in feedback_snapshot:
             if entry.timestamp < cutoff:
                 continue
 
@@ -205,13 +217,15 @@ class FeedbackCollector:
         return stats
 
     def get_recent_negative(self, limit: int = 10) -> list[FeedbackEntry]:
-        """Get recent negative feedback for review."""
-        negative = [f for f in self._feedback if f.feedback_type == FeedbackType.NEGATIVE]
+        """Get recent negative feedback for review (thread-safe)."""
+        with self._lock:
+            negative = [f for f in self._feedback if f.feedback_type == FeedbackType.NEGATIVE]
         return sorted(negative, key=lambda x: x.timestamp, reverse=True)[:limit]
 
     def get_channel_stats(self, channel_id: int) -> FeedbackStats:
-        """Get stats for a specific channel."""
-        channel_feedback = [f for f in self._feedback if f.channel_id == channel_id]
+        """Get stats for a specific channel (thread-safe)."""
+        with self._lock:
+            channel_feedback = [f for f in self._feedback if f.channel_id == channel_id]
 
         stats = FeedbackStats()
         for entry in channel_feedback:

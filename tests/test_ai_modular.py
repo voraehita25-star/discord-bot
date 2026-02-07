@@ -285,7 +285,7 @@ class TestMessageQueue:
         from cogs.ai_core.message_queue import MessageQueue
 
         queue = MessageQueue()
-        lock = queue.get_lock(123)
+        lock = queue.get_lock_sync(123)
 
         assert isinstance(lock, asyncio.Lock)
         assert 123 in queue.processing_locks
@@ -295,8 +295,8 @@ class TestMessageQueue:
         from cogs.ai_core.message_queue import MessageQueue
 
         queue = MessageQueue()
-        lock1 = queue.get_lock(123)
-        lock2 = queue.get_lock(123)
+        lock1 = queue.get_lock_sync(123)
+        lock2 = queue.get_lock_sync(123)
 
         assert lock1 is lock2
 
@@ -448,7 +448,7 @@ class TestMessageQueue:
         from cogs.ai_core.message_queue import MessageQueue
 
         queue = MessageQueue()
-        lock = queue.get_lock(123)
+        lock = queue.get_lock_sync(123)
         await lock.acquire()  # Lock it first
 
         # Try to acquire again - should timeout
@@ -464,10 +464,10 @@ class TestMessageQueue:
         from cogs.ai_core.message_queue import MessageQueue
 
         queue = MessageQueue()
-        _ = queue.get_lock(123)  # Lock created for side effect
+        _ = queue.get_lock_sync(123)  # Lock created for side effect
 
         # Acquire then release
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.new_event_loop().run_until_complete(
             queue.acquire_lock_with_timeout(123)
         )
         queue.release_lock(123)
@@ -475,18 +475,21 @@ class TestMessageQueue:
         assert queue.is_locked(123) is False
 
     def test_cleanup_stale_locks(self):
-        """Test cleaning up stale locks."""
+        """Test detecting stale locks (no longer force-releases)."""
         from cogs.ai_core.message_queue import MessageQueue
 
         queue = MessageQueue()
         # Add old lock time
         queue._lock_times[123] = time.time() - 400  # 400 seconds ago
-        queue.get_lock(123)
+        queue.get_lock_sync(123)
 
-        cleaned = queue.cleanup_stale_locks(max_age=300.0)
+        # cleanup_stale_locks now only detects stale locks (doesn't release)
+        stale_count = queue.cleanup_stale_locks(max_age=300.0)
 
-        assert cleaned == 1
-        assert 123 not in queue._lock_times
+        # Should detect 1 stale lock
+        assert stale_count == 1
+        # Lock time should still be present (not released)
+        assert 123 in queue._lock_times
 
 
 # ============================================================================

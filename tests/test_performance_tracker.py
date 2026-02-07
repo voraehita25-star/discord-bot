@@ -398,14 +398,14 @@ class TestRequestDeduplicator:
         assert "123" in key
 
     def test_generate_key_long_message(self):
-        """Test generating key with long message uses only first 50 chars."""
+        """Test generating key with long message uses only first 100 chars."""
         from cogs.ai_core.core.performance import RequestDeduplicator
 
-        long_msg = "A" * 100
+        long_msg = "A" * 200
         key1 = RequestDeduplicator.generate_key(123, 456, long_msg)
-        key2 = RequestDeduplicator.generate_key(123, 456, long_msg[:50])
+        key2 = RequestDeduplicator.generate_key(123, 456, long_msg[:100])
         
-        # Should produce same key since only first 50 chars used
+        # Should produce same key since only first 100 chars used
         assert key1 == key2
 
 

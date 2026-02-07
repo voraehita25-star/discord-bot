@@ -106,19 +106,19 @@ var (
 
 // HealthStatus represents the health of the system
 type HealthStatus struct {
-	Status      string            `json:"status"`
-	Timestamp   string            `json:"timestamp"`
-	Version     string            `json:"version"`
-	Uptime      string            `json:"uptime"`
-	Services    map[string]bool   `json:"services"`
-	Metrics     map[string]any    `json:"metrics"`
+	Status    string          `json:"status"`
+	Timestamp string          `json:"timestamp"`
+	Version   string          `json:"version"`
+	Uptime    string          `json:"uptime"`
+	Services  map[string]bool `json:"services"`
+	Metrics   map[string]any  `json:"metrics"`
 }
 
 // MetricsPayload for receiving metrics from Python
 type MetricsPayload struct {
-	Type  string  `json:"type"`
-	Name  string  `json:"name"`
-	Value float64 `json:"value"`
+	Type   string            `json:"type"`
+	Name   string            `json:"name"`
+	Value  float64           `json:"value"`
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
@@ -174,10 +174,10 @@ func (h *HealthService) GetStatus() HealthStatus {
 		Uptime:    time.Since(h.startTime).String(),
 		Services:  servicesCopy,
 		Metrics: map[string]any{
-			"memory_alloc_mb":  float64(m.Alloc) / 1024 / 1024,
-			"memory_sys_mb":    float64(m.Sys) / 1024 / 1024,
-			"goroutines":       runtime.NumGoroutine(),
-			"gc_cycles":        m.NumGC,
+			"memory_alloc_mb": float64(m.Alloc) / 1024 / 1024,
+			"memory_sys_mb":   float64(m.Sys) / 1024 / 1024,
+			"goroutines":      runtime.NumGoroutine(),
+			"gc_cycles":       m.NumGC,
 		},
 	}
 }
@@ -222,11 +222,11 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		if status.Status != "healthy" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		
+
 		json.NewEncoder(w).Encode(status)
 	})
 
@@ -250,22 +250,34 @@ func main() {
 
 	// Update service status (called from Python)
 	r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
+
 		var payload struct {
 			Name    string `json:"name"`
 			Healthy bool   `json:"healthy"`
 		}
-		
+
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
-		
+
+		// Validate service name (prevent unbounded map growth)
+		if len(payload.Name) == 0 || len(payload.Name) > 100 {
+			http.Error(w, "invalid service name", http.StatusBadRequest)
+			return
+		}
+
 		healthService.SetServiceStatus(payload.Name, payload.Healthy)
 		w.WriteHeader(http.StatusOK)
 	})
 
 	// Push metrics (called from Python)
 	r.Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
+
 		var payload MetricsPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -310,20 +322,66 @@ func main() {
 
 	// Batch push metrics
 	r.Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size to 1MB to prevent abuse
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 		var payloads []MetricsPayload
 		if err := json.NewDecoder(r.Body).Decode(&payloads); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
 
-		// Process each metric (simplified - in production, batch process)
+		// Limit batch size to prevent abuse
+		if len(payloads) > 1000 {
+			http.Error(w, "batch too large (max 1000)", http.StatusBadRequest)
+			return
+		}
+
+		processed := 0
 		for _, p := range payloads {
-			// Same logic as single push...
-			_ = p
+			switch p.Type {
+			case "counter":
+				switch p.Name {
+				case "requests":
+					status := "success"
+					if s, ok := p.Labels["status"]; ok {
+						status = s
+					}
+					requestsTotal.WithLabelValues(p.Labels["endpoint"], status).Add(p.Value)
+					processed++
+				case "rate_limit":
+					rateLimitHits.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					processed++
+				case "cache":
+					cacheHits.WithLabelValues(p.Labels["result"]).Add(p.Value)
+					processed++
+				case "tokens":
+					tokensUsed.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					processed++
+				}
+			case "histogram":
+				switch p.Name {
+				case "request_duration":
+					requestDuration.WithLabelValues(p.Labels["endpoint"]).Observe(p.Value)
+					processed++
+				case "ai_response_time":
+					aiResponseTime.Observe(p.Value)
+					processed++
+				}
+			case "gauge":
+				switch p.Name {
+				case "active_connections":
+					activeConnections.Set(p.Value)
+					processed++
+				case "circuit_breaker":
+					circuitBreakerState.WithLabelValues(p.Labels["service"]).Set(p.Value)
+					processed++
+				}
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]int{"processed": len(payloads)})
+		json.NewEncoder(w).Encode(map[string]int{"processed": processed})
 	})
 
 	// Stats summary
@@ -334,14 +392,23 @@ func main() {
 		json.NewEncoder(w).Encode(status)
 	})
 
-	// Start metrics collector
-	go func() {
+	// Create context for metrics collector goroutine
+	metricsCtx, metricsCancel := context.WithCancel(context.Background())
+
+	// Start metrics collector with cancellation support
+	go func(ctx context.Context) {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			collectSystemMetrics()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("Metrics collector stopped")
+				return
+			case <-ticker.C:
+				collectSystemMetrics()
+			}
 		}
-	}()
+	}(metricsCtx)
 
 	// Server
 	server := &http.Server{
@@ -359,6 +426,9 @@ func main() {
 		<-sigCh
 
 		log.Println("Shutting down...")
+		// Cancel metrics collector first
+		metricsCancel()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		server.Shutdown(ctx)
@@ -366,7 +436,7 @@ func main() {
 
 	log.Printf("Health API service starting on :%s", port)
 	log.Printf("Metrics available at http://localhost:%s/metrics", port)
-	
+
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
