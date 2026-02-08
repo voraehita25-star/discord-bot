@@ -180,14 +180,14 @@ class MemoryManager {
             return;
         }
         container.innerHTML = filteredMemories.map(memory => `
-            <div class="memory-card" data-id="${this.escapeHtml(String(memory.id))}">
+            <div class="memory-card" data-id="${escapeHtml(String(memory.id))}">
                 <div class="memory-card-header">
-                    <span class="memory-category-badge">${this.escapeHtml(memory.category || 'general')}</span>
+                    <span class="memory-category-badge">${escapeHtml(memory.category || 'general')}</span>
                 </div>
-                <div class="memory-card-content">${this.escapeHtml(memory.content)}</div>
+                <div class="memory-card-content">${escapeHtml(memory.content)}</div>
                 <div class="memory-card-footer">
                     <span class="memory-timestamp">${this.formatTime(memory.created_at)}</span>
-                    <button class="memory-delete-btn" data-id="${this.escapeHtml(String(memory.id))}">Delete</button>
+                    <button class="memory-delete-btn" data-id="${escapeHtml(String(memory.id))}">Delete</button>
                 </div>
             </div>
         `).join('');
@@ -200,11 +200,6 @@ class MemoryManager {
                 }
             });
         });
-    }
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
     formatTime(isoString) {
         try {
@@ -819,7 +814,7 @@ class ChatManager {
             container.innerHTML = `
                 <div class="chat-welcome">
                     ${welcomeAvatarHtml}
-                    <h3>Chat with ${this.escapeHtml(name)}</h3>
+                    <h3>Chat with ${escapeHtml(name)}</h3>
                     <p>Type a message to start the conversation</p>
                 </div>
             `;

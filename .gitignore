@@ -55,6 +55,8 @@ logs/
 temp/
 *.tmp
 *.temp
+tmpclaude-*
+nul
 
 # OS
 .DS_Store
