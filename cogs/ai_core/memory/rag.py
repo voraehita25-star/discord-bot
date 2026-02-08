@@ -223,7 +223,7 @@ class FAISSIndex:
             # Backup old files first (if they exist)
             backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
             backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
-            
+
             if FAISS_INDEX_FILE.exists():
                 FAISS_INDEX_FILE.replace(backup_index)
             if FAISS_ID_MAP_FILE.exists():

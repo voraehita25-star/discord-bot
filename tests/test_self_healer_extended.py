@@ -3,11 +3,11 @@ Extended tests for Self Healer module.
 Tests bot process detection and healing mechanisms.
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
 import logging
 import os
-from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 
 class TestSelfHealerInit:
@@ -20,13 +20,13 @@ class TestSelfHealerInit:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer(caller_script="test")
-        
+
         assert healer.caller_script == "test"
         assert healer.my_pid == os.getpid()
         assert healer.actions_taken == []
-        
+
     def test_self_healer_default_caller(self):
         """Test SelfHealer with default caller_script."""
         try:
@@ -34,11 +34,11 @@ class TestSelfHealerInit:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         assert healer.caller_script == "unknown"
-        
+
     def test_self_healer_has_logger(self):
         """Test SelfHealer has logger attribute."""
         try:
@@ -46,9 +46,9 @@ class TestSelfHealerInit:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         assert hasattr(healer, 'logger')
         assert isinstance(healer.logger, logging.Logger)
 
@@ -63,10 +63,10 @@ class TestSetupLogger:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         logger = healer._setup_logger()
-        
+
         assert logger.name == "SelfHealer"
         assert logger.level == logging.DEBUG
 
@@ -81,13 +81,13 @@ class TestLogMethod:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         healer.log("info", "Test message")
-        
+
         # INFO doesn't get added to actions_taken
         assert len(healer.actions_taken) == 0
-        
+
     def test_log_warning(self):
         """Test logging at WARNING level."""
         try:
@@ -95,13 +95,13 @@ class TestLogMethod:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         healer.log("warning", "Test warning")
-        
+
         assert len(healer.actions_taken) == 1
         assert "[WARNING]" in healer.actions_taken[0]
-        
+
     def test_log_error(self):
         """Test logging at ERROR level."""
         try:
@@ -109,13 +109,13 @@ class TestLogMethod:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         healer.log("error", "Test error")
-        
+
         assert len(healer.actions_taken) == 1
         assert "[ERROR]" in healer.actions_taken[0]
-        
+
     def test_log_critical(self):
         """Test logging at CRITICAL level."""
         try:
@@ -123,10 +123,10 @@ class TestLogMethod:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         healer.log("critical", "Test critical")
-        
+
         assert len(healer.actions_taken) == 1
         assert "[CRITICAL]" in healer.actions_taken[0]
 
@@ -141,12 +141,12 @@ class TestFindAllBotProcesses:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         with patch('psutil.process_iter', return_value=[]):
             result = healer.find_all_bot_processes()
-            
+
         assert isinstance(result, list)
 
 
@@ -160,12 +160,12 @@ class TestFindAllDevWatchers:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         with patch('psutil.process_iter', return_value=[]):
             result = healer.find_all_dev_watchers()
-            
+
         assert isinstance(result, list)
 
 
@@ -179,9 +179,9 @@ class TestConstants:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         assert PID_FILE == "bot.pid"
-        
+
     def test_healer_log_file_constant(self):
         """Test HEALER_LOG_FILE constant is defined."""
         try:
@@ -189,7 +189,7 @@ class TestConstants:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         assert "self_healer" in HEALER_LOG_FILE
 
 
@@ -203,7 +203,7 @@ class TestModuleDocstring:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         assert self_healer.__doc__ is not None
         assert "Self-Healer" in self_healer.__doc__ or "healer" in self_healer.__doc__.lower()
 
@@ -218,11 +218,11 @@ class TestActionsTaken:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         assert healer.actions_taken == []
-        
+
     def test_actions_taken_accumulates(self):
         """Test actions_taken accumulates warnings/errors."""
         try:
@@ -230,12 +230,12 @@ class TestActionsTaken:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
         healer.log("warning", "First warning")
         healer.log("error", "First error")
         healer.log("warning", "Second warning")
-        
+
         assert len(healer.actions_taken) == 3
 
 
@@ -249,9 +249,9 @@ class TestMyPid:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         assert healer.my_pid == os.getpid()
         assert isinstance(healer.my_pid, int)
         assert healer.my_pid > 0
@@ -267,8 +267,8 @@ class TestLoggerConfiguration:
         except ImportError:
             pytest.skip("self_healer not available")
             return
-            
+
         healer = SelfHealer()
-        
+
         # The logger should have handlers (file handler)
         assert healer.logger.handlers is not None

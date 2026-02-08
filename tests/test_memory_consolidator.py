@@ -4,10 +4,11 @@ Tests for cogs/ai_core/memory/memory_consolidator.py
 Comprehensive tests for MemoryConsolidator and ConversationSummary classes.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from datetime import datetime, timedelta
 import asyncio
+from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestConversationSummaryDataclass:
@@ -178,11 +179,11 @@ class TestMemoryConsolidatorBackgroundTask:
         from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
 
         consolidator = MemoryConsolidator()
-        
+
         # Create a real async task that we can cancel
         async def dummy_task():
             await asyncio.sleep(100)
-        
+
         real_task = asyncio.create_task(dummy_task())
         consolidator._consolidation_task = real_task
 

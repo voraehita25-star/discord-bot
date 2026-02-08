@@ -112,7 +112,7 @@ class HistoryManager:
         """
         if not history:
             return 0
-            
+
         total_tokens = 0
 
         for msg in history:
@@ -144,16 +144,16 @@ class HistoryManager:
         """
         if not content:
             return 0
-        
+
         # Count ASCII vs non-ASCII characters
         ascii_count = sum(1 for c in content if ord(c) < 128)
         non_ascii_count = len(content) - ascii_count
-        
+
         # Estimate tokens for each type
         # ASCII: 4 chars/token, Non-ASCII (Thai etc): 2.5 chars/token
         ascii_tokens = ascii_count / 4
         non_ascii_tokens = non_ascii_count / 2.5
-        
+
         return max(1, int(ascii_tokens + non_ascii_tokens))
 
     def estimate_message_tokens(self, message: dict[str, Any]) -> int:

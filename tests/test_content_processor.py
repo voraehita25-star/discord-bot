@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import base64
 import io
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from PIL import Image
@@ -225,7 +224,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
-        mock_attachment.read = AsyncMock(return_value="สวัสดี".encode('utf-8'))
+        mock_attachment.read = AsyncMock(return_value="สวัสดี".encode())
 
         image_parts, video_parts, text_parts = await process_attachments(
             [mock_attachment], "TestUser"

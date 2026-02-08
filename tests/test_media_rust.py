@@ -4,10 +4,11 @@ Tests for utils/media/media_rust.py
 Comprehensive tests for MediaProcessorWrapper and PIL fallback.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import base64
 import io
+from unittest.mock import patch
+
+import pytest
 
 
 class TestMediaProcessorWrapperInit:
@@ -231,10 +232,10 @@ class TestStandaloneFunctions:
     @patch("utils.media.media_rust.PIL_AVAILABLE", True)
     def test_resize_image(self):
         """Test resize_image function."""
-        from utils.media.media_rust import resize_image
-
         # Create a test image
         from PIL import Image
+
+        from utils.media.media_rust import resize_image
         img = Image.new("RGB", (200, 200), color="red")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
@@ -249,10 +250,10 @@ class TestStandaloneFunctions:
     @patch("utils.media.media_rust.PIL_AVAILABLE", True)
     def test_is_animated_gif(self):
         """Test is_animated_gif function."""
-        from utils.media.media_rust import is_animated_gif
-
         # Create a static image
         from PIL import Image
+
+        from utils.media.media_rust import is_animated_gif
         img = Image.new("RGB", (100, 100), color="blue")
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")

@@ -18,7 +18,7 @@ import random
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -113,7 +113,7 @@ def _cleanup_old_backoff_states() -> None:
     2. Called periodically from _get_backoff_state
     """
     current_time = time.time()
-    
+
     # Always perform TTL-based cleanup
     # Clean up states that are:
     # 1. Older than TTL with no failures (successful recovery)
@@ -138,10 +138,10 @@ _backoff_call_counter = 0
 def _get_backoff_state(key: str) -> BackoffState:
     """Get or create backoff state for a key (thread-safe with sync lock)."""
     global _backoff_call_counter
-    
+
     with _backoff_states_lock:
         _backoff_call_counter += 1
-        
+
         # Periodically cleanup old states (every 100 calls or when over limit)
         # Use counter instead of modulo on dict size for reliable triggering
         if len(_backoff_states) >= _MAX_BACKOFF_STATES or _backoff_call_counter >= 100:

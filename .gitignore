@@ -40,6 +40,11 @@ ENV/
 native_dashboard/target/
 rust_extensions/target/
 
+# Dashboard executables (build artifacts - should not be committed)
+*.exe
+bot-dashboard.exe
+디스코드 봇 대시보드.exe
+
 # Node modules
 native_dashboard/node_modules/
 

@@ -187,7 +187,7 @@ class AICache:
         # Create snapshot of cache items under lock to avoid RuntimeError during iteration
         with self._cache_lock:
             cache_snapshot = list(self.cache.items())
-        
+
         for key, entry in cache_snapshot:
             # Skip expired entries
             if self._is_expired(entry):

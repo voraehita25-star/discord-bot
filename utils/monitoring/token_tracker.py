@@ -97,7 +97,7 @@ class TokenTracker:
         # Evict old users if we hit the limit (LRU-style based on last_use)
         if user_id not in self._user_stats and len(self._user_stats) >= self.MAX_USERS:
             self._evict_least_recently_used_users()
-        
+
         # Evict old channels if we hit the limit
         if channel_id and channel_id not in self._channel_usage and len(self._channel_usage) >= self.MAX_CHANNELS:
             self._evict_least_used_channels()
@@ -210,34 +210,34 @@ class TokenTracker:
         """Remove least recently used users to free memory."""
         if len(self._user_stats) <= self.MAX_USERS - count:
             return
-        
+
         # Sort by last_use and remove oldest
         sorted_users = sorted(
             self._user_stats.items(),
             key=lambda x: x[1].last_use
         )
-        
+
         to_remove = sorted_users[:count]
         for user_id, _ in to_remove:
             del self._user_stats[user_id]
-        
+
         self.logger.info("Evicted %d least recently used users from token tracker", len(to_remove))
 
     def _evict_least_used_channels(self, count: int = 100) -> None:
         """Remove least used channels to free memory."""
         if len(self._channel_usage) <= self.MAX_CHANNELS - count:
             return
-        
+
         # Sort by request_count and remove least used
         sorted_channels = sorted(
             self._channel_usage.items(),
             key=lambda x: x[1].request_count
         )
-        
+
         to_remove = sorted_channels[:count]
         for channel_id, _ in to_remove:
             del self._channel_usage[channel_id]
-        
+
         self.logger.info("Evicted %d least used channels from token tracker", len(to_remove))
 
     def cleanup_old_data(self) -> int:

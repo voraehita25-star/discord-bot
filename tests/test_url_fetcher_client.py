@@ -4,7 +4,6 @@ Tests for utils/web/url_fetcher_client.py
 Comprehensive tests for URLFetcherClient.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -110,7 +109,7 @@ class TestURLFetcherClientCheckService:
         # _service_available=True means already checked and available
         # _check_service will still try to check, so we need to mock the http call
         client._service_available = True
-        
+
         # The method returns cached value if already checked
         result = client._service_available
 

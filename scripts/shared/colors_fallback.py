@@ -45,4 +45,4 @@ except ImportError:
         BRIGHT_CYAN: str = "\033[96m"
 
 
-__all__ = ["Colors", "COLORS_FROM_UTILS"]
+__all__ = ["COLORS_FROM_UTILS", "Colors"]

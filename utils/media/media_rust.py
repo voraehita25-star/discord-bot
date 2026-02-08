@@ -10,7 +10,6 @@ import base64
 import importlib
 import io
 import logging
-from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 

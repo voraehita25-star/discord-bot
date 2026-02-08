@@ -4,8 +4,9 @@ Tests for cogs/ai_core/response/response_sender.py
 Comprehensive tests for ResponseSender class.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestSendResultDataclass:

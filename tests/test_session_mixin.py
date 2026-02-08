@@ -43,7 +43,7 @@ class TestGetChatSession:
 
         class TestClass(SessionMixin):
             MAX_CHANNELS = 1000  # Required for _enforce_channel_limit
-            
+
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -55,7 +55,7 @@ class TestGetChatSession:
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
                 self.current_typing_msg = {}
-            
+
             def _enforce_channel_limit(self):
                 """Stub for LRU eviction."""
                 return 0
@@ -81,7 +81,7 @@ class TestGetChatSession:
 
         class TestClass(SessionMixin):
             MAX_CHANNELS = 1000
-            
+
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -99,7 +99,7 @@ class TestGetChatSession:
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
                 self.current_typing_msg = {}
-            
+
             def _enforce_channel_limit(self):
                 return 0
 
@@ -116,7 +116,7 @@ class TestGetChatSession:
 
         class TestClass(SessionMixin):
             MAX_CHANNELS = 1000
-            
+
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -134,7 +134,7 @@ class TestGetChatSession:
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
                 self.current_typing_msg = {}
-            
+
             def _enforce_channel_limit(self):
                 return 0
 
@@ -188,7 +188,7 @@ class TestToggleThinking:
 
         class TestClass(SessionMixin):
             MAX_CHANNELS = 1000
-            
+
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -206,7 +206,7 @@ class TestToggleThinking:
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
                 self.current_typing_msg = {}
-            
+
             def _enforce_channel_limit(self):
                 return 0
 
@@ -225,7 +225,7 @@ class TestToggleThinking:
 
         class TestClass(SessionMixin):
             MAX_CHANNELS = 1000
-            
+
             def __init__(self):
                 self.client = MagicMock()
                 self.bot = MagicMock()
@@ -243,7 +243,7 @@ class TestToggleThinking:
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
                 self.current_typing_msg = {}
-            
+
             def _enforce_channel_limit(self):
                 return 0
 

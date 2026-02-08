@@ -18,11 +18,10 @@ import base64
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import web, WSMsgType
-
+from aiohttp import WSMsgType, web
 from google import genai
 from google.genai import types
 
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
 
 # Import Faust persona and unrestricted mode framing
 try:
-    from ..data.faust_data import FAUST_PERSONA, ENI_ESCALATION_FRAMING
+    from ..data.faust_data import ENI_ESCALATION_FRAMING, FAUST_PERSONA
     FAUST_AVAILABLE = True
 except ImportError:
     FAUST_AVAILABLE = False
@@ -112,7 +111,7 @@ class DashboardWebSocketServer:
         self.clients: set[WebSocketResponse] = set()
         self.gemini_client: genai.Client | None = None
         self._running = False
-        
+
         # Initialize Gemini client
         if GEMINI_API_KEY:
             self.gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -129,14 +128,14 @@ class DashboardWebSocketServer:
         try:
             # Try to free the port if it's in use
             await self._ensure_port_available()
-            
+
             self.app = web.Application()
             self.app.router.add_get("/ws", self.websocket_handler)
             self.app.router.add_get("/health", self.health_handler)
 
             self.runner = web.AppRunner(self.app)
             await self.runner.setup()
-            
+
             # Create TCPSite with reuse_address for faster restart
             # Note: reuse_port is only supported on Linux, not Windows
             import sys
@@ -145,19 +144,19 @@ class DashboardWebSocketServer:
             }
             if sys.platform != 'win32':
                 site_kwargs['reuse_port'] = True  # Linux only
-                
+
             self.site = web.TCPSite(
-                self.runner, 
-                WS_HOST, 
+                self.runner,
+                WS_HOST,
                 WS_PORT,
                 **site_kwargs
             )
             await self.site.start()
-            
+
             self._running = True
             logging.info(f"🚀 Dashboard WebSocket server started on ws://{WS_HOST}:{WS_PORT}")
             return True
-            
+
         except Exception as e:
             logging.error(f"❌ Failed to start Dashboard WebSocket server: {e}")
             return False
@@ -169,39 +168,37 @@ class DashboardWebSocketServer:
         by checking for specific identifiers in the command line.
         """
         import socket
-        import subprocess
-        import sys
-        
+
         # Quick check if port is in use
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
         result = sock.connect_ex((WS_HOST, WS_PORT))
         sock.close()
-        
+
         if result == 0:  # Port is in use
             logging.warning(f"⚠️ Port {WS_PORT} is in use, attempting to free it...")
-            
+
             # SAFETY: We will NOT auto-kill processes anymore.
             # Instead, we wait for the port to become available or fail gracefully.
             # This prevents accidentally killing unrelated processes.
-            
+
             max_wait = 5  # Maximum seconds to wait for port
             waited = 0
-            
+
             while waited < max_wait:
                 await asyncio.sleep(0.5)
                 waited += 0.5
-                
+
                 # Re-check if port is free
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1)
                 result = sock.connect_ex((WS_HOST, WS_PORT))
                 sock.close()
-                
+
                 if result != 0:  # Port is now free
                     logging.info(f"✅ Port {WS_PORT} is now available")
                     return
-            
+
             # If still not free, log warning but continue (will fail gracefully on bind)
             logging.warning(
                 f"⚠️ Port {WS_PORT} still in use after {max_wait}s wait. "
@@ -214,7 +211,7 @@ class DashboardWebSocketServer:
             return
 
         logging.info("🛑 Stopping Dashboard WebSocket server...")
-        
+
         # Close all client connections
         for ws in list(self.clients):
             await ws.close(code=1001, message=b"Server shutting down")
@@ -225,7 +222,7 @@ class DashboardWebSocketServer:
             await self.site.stop()
         if self.runner:
             await self.runner.cleanup()
-            
+
         self._running = False
         logging.info("🛑 Dashboard WebSocket server stopped")
 
@@ -242,7 +239,7 @@ class DashboardWebSocketServer:
         # Security: Validate origin for localhost-only connections
         origin = request.headers.get("Origin", "")
         host = request.headers.get("Host", "")
-        
+
         # Allow connections from localhost only (127.0.0.1 or localhost)
         allowed_origins = [
             "http://127.0.0.1",
@@ -251,23 +248,23 @@ class DashboardWebSocketServer:
             "https://localhost",
             "file://",  # For local HTML files
         ]
-        
+
         # Check if origin is allowed (match prefix, or no origin for direct WS tools)
         origin_allowed = origin == "" or any(
             origin.startswith(allowed)
             for allowed in allowed_origins
         )
-        
+
         # Also check host header
         host_allowed = host.startswith("127.0.0.1") or host.startswith("localhost")
-        
+
         if not origin_allowed and not host_allowed:
             logging.warning(f"⚠️ Rejected WebSocket connection from origin: {origin}, host: {host}")
             return web.Response(status=403, text="Forbidden: Connection only allowed from localhost")
-        
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        
+
         self.clients.add(ws)
         client_id = str(uuid.uuid4())[:8]
         logging.info(f"👋 Dashboard client connected: {client_id}")
@@ -345,13 +342,13 @@ class DashboardWebSocketServer:
         """Create a new conversation."""
         role_preset = data.get("role_preset", "general")
         thinking_enabled = data.get("thinking_enabled", False)
-        
+
         if role_preset not in DASHBOARD_ROLE_PRESETS:
             role_preset = "general"
-        
+
         preset = DASHBOARD_ROLE_PRESETS[role_preset]
         conversation_id = str(uuid.uuid4())
-        
+
         # Save to database if available
         if DB_AVAILABLE:
             try:
@@ -396,7 +393,7 @@ class DashboardWebSocketServer:
             return
 
         preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
-        
+
         # Save user message to DB
         if DB_AVAILABLE and conversation_id:
             try:
@@ -407,7 +404,7 @@ class DashboardWebSocketServer:
 
         # Build context with user identity and memories
         context_parts = []
-        
+
         # Load user profile from database
         user_profile = {}
         if DB_AVAILABLE:
@@ -416,22 +413,22 @@ class DashboardWebSocketServer:
                 user_profile = await db.get_dashboard_user_profile() or {}
             except Exception as e:
                 logging.warning(f"Failed to load user profile: {e}")
-        
+
         # Build user identity context
         profile_name = user_profile.get("display_name") or user_name
         profile_info_parts = [f"Name: {profile_name}"]
-        
+
         # Check if user is the creator/developer
         if user_profile.get("is_creator"):
             profile_info_parts.append("Role: Creator/Developer of this bot (treat with special respect, they made you!)")
-        
+
         if user_profile.get("bio"):
             profile_info_parts.append(f"About: {user_profile['bio']}")
         if user_profile.get("preferences"):
             profile_info_parts.append(f"Preferences: {user_profile['preferences']}")
-        
+
         user_context = "[User Profile]\n" + "\n".join(profile_info_parts)
-        
+
         # Load long-term memories
         memories_context = ""
         if DB_AVAILABLE:
@@ -452,10 +449,10 @@ class DashboardWebSocketServer:
                 role=role,
                 parts=[types.Part(text=msg.get("content", ""))]
             ))
-        
+
         # Build current message parts
         current_parts = []
-        
+
         # Add images if present
         for img_data in images:
             try:
@@ -467,7 +464,7 @@ class DashboardWebSocketServer:
                 else:
                     b64_data = img_data
                     mime_type = "image/png"
-                
+
                 image_bytes = base64.b64decode(b64_data)
                 current_parts.append(types.Part(
                     inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
@@ -475,17 +472,17 @@ class DashboardWebSocketServer:
                 logging.info(f"📷 Added image to message ({len(image_bytes)} bytes)")
             except Exception as e:
                 logging.warning(f"Failed to process image: {e}")
-        
+
         # Add text content
         if content:
             current_parts.append(types.Part(text=content))
-        
+
         contents.append(types.Content(role="user", parts=current_parts))
 
         # Build config with realtime datetime and context
         now = datetime.now()
         current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
-        
+
         # Build unrestricted mode injection if enabled
         unrestricted_injection = ""
         if unrestricted_mode and ENI_ESCALATION_FRAMING:
@@ -509,7 +506,7 @@ Current Time: {current_time_str} (ICT)
 
 IMPORTANT: If user asks you to remember something, respond with the information you'll remember. The system will automatically save important facts.
 """
-        
+
         config = types.GenerateContentConfig(
             system_instruction=full_context,
             safety_settings=[
@@ -541,23 +538,23 @@ IMPORTANT: If user asks you to remember something, respond with the information 
 
         # Use the configured model (gemini-3-pro-preview supports thinking)
         logging.info(f"📍 Using model: {GEMINI_MODEL}, Thinking: {thinking_enabled}")
-        
+
         # Store mode string for saving to DB
         mode_str = " • ".join(mode_info) if mode_info else "💬 Standard"
 
         # Stream response
         try:
             await ws.send_json({
-                "type": "stream_start", 
+                "type": "stream_start",
                 "conversation_id": conversation_id,
                 "mode": mode_str
             })
-            
+
             full_response = ""
             thinking_content = ""
             chunks_count = 0
             is_thinking = False
-            
+
             stream = await asyncio.wait_for(
                 self.gemini_client.aio.models.generate_content_stream(
                     model=GEMINI_MODEL,
@@ -573,10 +570,10 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             async for chunk in stream:
                 chunk_text = ""
                 chunk_thinking = ""
-                
+
                 # Debug: Log chunk structure
                 logging.debug(f"Chunk type: {type(chunk)}, attrs: {dir(chunk)}")
-                
+
                 # Extract text and thinking from chunk
                 if hasattr(chunk, "candidates") and chunk.candidates:
                     for candidate in chunk.candidates:
@@ -586,21 +583,21 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                                 for part in parts:
                                     # Debug log part structure
                                     logging.debug(f"Part attrs: {dir(part)}")
-                                    
+
                                     # Debug: Log ALL parts in every chunk to find thought parts
                                     thought_val = getattr(part, 'thought', None)
                                     text_val = getattr(part, 'text', None)
                                     if thought_val is not None or chunks_count < 3:
-                                        logging.info(f"🔍 Chunk#{chunks_count} Part: thought={thought_val}, text={repr(text_val[:50] if text_val else None)}")
+                                        logging.info(f"🔍 Chunk#{chunks_count} Part: thought={thought_val}, text={text_val[:50] if text_val else None!r}")
 
                                     # Re-engineered extraction for Gemini 3.0 Thinking
                                     thought_text = ""
                                     is_thought_part = False
-                                    
+
                                     # Check if this part is marked as a "thought" (internal reasoning)
                                     # In google-genai SDK, part.thought is True for thinking parts
                                     thought_flag = getattr(part, 'thought', None)
-                                    
+
                                     if thought_flag is True:
                                         # This is a thought part - the content is in part.text
                                         is_thought_part = True
@@ -658,11 +655,11 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                 try:
                     db = Database()
                     await db.save_dashboard_message(
-                        conversation_id, "assistant", full_response, 
+                        conversation_id, "assistant", full_response,
                         thinking=thinking_content if thinking_content else None,
                         mode=mode_str
                     )
-                    
+
                     # Auto-set title from first user message
                     conv = await db.get_dashboard_conversation(conversation_id)
                     if conv and (not conv.get('title') or conv.get('title') == 'New Conversation'):
@@ -675,7 +672,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                                 "title": title,
                             })
                             logging.info(f"📝 Set title from user message: {title}")
-                        
+
                 except Exception as e:
                     logging.warning(f"Failed to save assistant message: {e}")
 
@@ -711,8 +708,8 @@ Rules:
 User said: "{user_msg[:100]}"
 
 Title:"""
-            
-            logging.info(f"📝 Calling gemini-3-flash-preview for title...")
+
+            logging.info("📝 Calling gemini-3-flash-preview for title...")
             response = await self.gemini_client.aio.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=prompt,
@@ -722,7 +719,7 @@ Title:"""
                 )
             )
             logging.info(f"📝 Response text: {response.text if response else 'None'}")
-            
+
             if response and response.text:
                 title = response.text.strip().strip('"\'').strip()[:50]
                 # Skip if title is too short or just "การ"
@@ -768,7 +765,7 @@ Title:"""
     async def handle_load_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Load a specific conversation with messages."""
         conversation_id = data.get("id")
-        
+
         if not conversation_id:
             await ws.send_json({"type": "error", "message": "Missing conversation ID"})
             return
@@ -781,7 +778,7 @@ Title:"""
             db = Database()
             conversation = await db.get_dashboard_conversation(conversation_id)
             messages = await db.get_dashboard_messages(conversation_id)
-            
+
             if not conversation:
                 await ws.send_json({"type": "error", "message": "Conversation not found"})
                 return
@@ -808,7 +805,7 @@ Title:"""
     async def handle_delete_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Delete a conversation."""
         conversation_id = data.get("id")
-        
+
         if not conversation_id or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot delete"})
             return
@@ -828,9 +825,9 @@ Title:"""
         """Toggle star status of a conversation."""
         conversation_id = data.get("id")
         starred = data.get("starred", True)
-        
+
         logging.info(f"Star conversation request: id={conversation_id}, starred={starred}")
-        
+
         if not conversation_id or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot update"})
             return
@@ -844,7 +841,7 @@ Title:"""
                 "id": conversation_id,
                 "starred": starred,
             })
-            logging.info(f"Sent conversation_starred response")
+            logging.info("Sent conversation_starred response")
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -853,7 +850,7 @@ Title:"""
         """Rename a conversation."""
         conversation_id = data.get("id")
         new_title = data.get("title", "").strip()
-        
+
         if not conversation_id or not new_title or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot rename"})
             return
@@ -874,7 +871,7 @@ Title:"""
         """Export a conversation to JSON."""
         conversation_id = data.get("id")
         export_format = data.get("format", "json")
-        
+
         if not conversation_id or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot export"})
             return
@@ -900,7 +897,7 @@ Title:"""
         """Save a memory for the user."""
         content = data.get("content", "").strip()
         category = data.get("category", "general")
-        
+
         if not content or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot save memory"})
             return
@@ -921,7 +918,7 @@ Title:"""
     async def handle_get_memories(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Get all memories."""
         category = data.get("category")  # Optional filter
-        
+
         if not DB_AVAILABLE:
             await ws.send_json({"type": "memories", "memories": []})
             return
@@ -940,7 +937,7 @@ Title:"""
     async def handle_delete_memory(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Delete a memory."""
         memory_id = data.get("id")
-        
+
         if not memory_id or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot delete memory"})
             return
@@ -980,7 +977,7 @@ Title:"""
     async def handle_save_profile(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Save user profile."""
         profile_data = data.get("profile", {})
-        
+
         if not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot save profile"})
             return

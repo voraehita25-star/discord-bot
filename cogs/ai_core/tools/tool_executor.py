@@ -30,6 +30,7 @@ from ..commands.server_commands import (
     cmd_set_channel_perm,
     cmd_set_role_perm,
 )
+from ..data.constants import MAX_CHANNEL_NAME_LENGTH
 from ..data.roleplay_data import SERVER_AVATARS
 from ..memory.rag import rag_system
 from ..response.webhook_cache import (
@@ -37,7 +38,6 @@ from ..response.webhook_cache import (
     invalidate_webhook_cache,
     set_cached_webhook,
 )
-from ..data.constants import MAX_CHANNEL_NAME_LENGTH
 
 
 async def execute_tool_call(
@@ -333,7 +333,7 @@ async def send_as_webhook(bot, channel, name, message):
                 # Security: Validate path is within expected directory to prevent path traversal
                 base_dir = Path.cwd().resolve()
                 full_path = (base_dir / img_path).resolve()
-                
+
                 # Ensure the resolved path is still within the base directory
                 if not str(full_path).startswith(str(base_dir)):
                     logging.error("Path traversal attempt blocked: %s", img_path)

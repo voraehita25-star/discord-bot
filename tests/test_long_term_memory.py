@@ -2,9 +2,7 @@
 Tests for cogs.ai_core.memory.long_term_memory module.
 """
 
-import pytest
 from datetime import datetime
-from unittest.mock import patch, MagicMock
 
 
 class TestFactCategoryEnum:
@@ -71,18 +69,18 @@ class TestFactDataclass:
     def test_create_fact(self):
         """Test creating a Fact."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         fact = Fact(user_id=12345, content="Test fact")
-        
+
         assert fact.user_id == 12345
         assert fact.content == "Test fact"
 
     def test_fact_defaults(self):
         """Test Fact default values."""
         from cogs.ai_core.memory.long_term_memory import Fact, FactCategory, ImportanceLevel
-        
+
         fact = Fact()
-        
+
         assert fact.id is None
         assert fact.user_id == 0
         assert fact.category == FactCategory.CUSTOM.value
@@ -94,27 +92,27 @@ class TestFactDataclass:
     def test_fact_to_dict(self):
         """Test Fact to_dict method."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         fact = Fact(user_id=12345, content="Test")
         result = fact.to_dict()
-        
+
         assert result["user_id"] == 12345
         assert result["content"] == "Test"
 
     def test_fact_to_dict_with_datetime(self):
         """Test Fact to_dict with datetime fields."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         now = datetime.now()
         fact = Fact(user_id=12345, first_mentioned=now)
         result = fact.to_dict()
-        
+
         assert isinstance(result["first_mentioned"], str)
 
     def test_fact_from_dict(self):
         """Test Fact from_dict method."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         data = {
             "id": None,
             "user_id": 12345,
@@ -130,16 +128,16 @@ class TestFactDataclass:
             "is_active": True,
             "is_user_defined": False
         }
-        
+
         fact = Fact.from_dict(data)
-        
+
         assert fact.user_id == 12345
         assert fact.content == "Test fact"
 
     def test_fact_from_dict_with_iso_datetime(self):
         """Test Fact from_dict with ISO datetime strings."""
         from cogs.ai_core.memory.long_term_memory import Fact
-        
+
         now = datetime.now()
         data = {
             "id": None,
@@ -156,9 +154,9 @@ class TestFactDataclass:
             "is_active": True,
             "is_user_defined": False
         }
-        
+
         fact = Fact.from_dict(data)
-        
+
         assert isinstance(fact.first_mentioned, datetime)
 
     def test_fact_decay_confidence(self):
@@ -189,60 +187,60 @@ class TestFactExtractor:
     def test_create_extractor(self):
         """Test creating FactExtractor."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         assert extractor is not None
 
     def test_extraction_patterns_exist(self):
         """Test EXTRACTION_PATTERNS is defined."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         assert len(extractor.EXTRACTION_PATTERNS) > 0
 
     def test_compiled_patterns_exist(self):
         """Test patterns are compiled."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         assert len(extractor._compiled_patterns) > 0
 
     def test_extract_facts_empty_message(self):
         """Test extract_facts with empty message."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         result = extractor.extract_facts("", 12345)
-        
+
         assert isinstance(result, list)
 
     def test_extract_facts_name_thai(self):
         """Test extract_facts extracts Thai name."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         result = extractor.extract_facts("ผมชื่อสมชาย", 12345)
-        
+
         # May or may not extract depending on pattern
         assert isinstance(result, list)
 
     def test_extract_facts_name_english(self):
         """Test extract_facts extracts English name."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         result = extractor.extract_facts("my name is John", 12345)
-        
+
         # May or may not extract depending on pattern
         assert isinstance(result, list)
 
     def test_extract_facts_remember_command(self):
         """Test extract_facts with remember command."""
         from cogs.ai_core.memory.long_term_memory import FactExtractor
-        
+
         extractor = FactExtractor()
         result = extractor.extract_facts("remember that I like pizza", 12345)
-        
+
         assert isinstance(result, list)
 
 
@@ -252,7 +250,7 @@ class TestDbAvailable:
     def test_db_available_is_bool(self):
         """Test DB_AVAILABLE is boolean."""
         from cogs.ai_core.memory.long_term_memory import DB_AVAILABLE
-        
+
         assert isinstance(DB_AVAILABLE, bool)
 
 
@@ -262,7 +260,7 @@ class TestFactWithAllFields:
     def test_fact_all_fields(self):
         """Test Fact with all fields."""
         from cogs.ai_core.memory.long_term_memory import Fact, FactCategory, ImportanceLevel
-        
+
         now = datetime.now()
         fact = Fact(
             id=1,
@@ -279,7 +277,7 @@ class TestFactWithAllFields:
             is_active=True,
             is_user_defined=True
         )
-        
+
         assert fact.id == 1
         assert fact.user_id == 12345
         assert fact.channel_id == 67890

@@ -4,7 +4,6 @@ Tests for cogs/ai_core/processing/intent_detector.py
 Comprehensive tests for IntentDetector and related classes.
 """
 
-import pytest
 
 
 class TestIntentEnum:

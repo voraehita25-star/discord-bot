@@ -4,8 +4,8 @@ Provides music playback functionality with YouTube and Spotify support.
 """
 
 from .cog import Music
-from .views import MusicControlView
 from .utils import Colors, Emojis, create_progress_bar, format_duration
+from .views import MusicControlView
 
 __all__ = [
     "Colors",

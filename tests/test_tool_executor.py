@@ -6,8 +6,9 @@ Tests tool execution and webhook functionality.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 
 class TestExecuteToolCall:
@@ -21,11 +22,11 @@ class TestExecuteToolCall:
         bot = MagicMock()
         channel = MagicMock()
         channel.guild = MagicMock()
-        
+
         user = MagicMock()
         user.display_name = "TestUser"
         user.guild_permissions.administrator = False
-        
+
         tool_call = MagicMock()
         tool_call.name = "create_text_channel"
         tool_call.args = {"name": "test"}
@@ -42,10 +43,10 @@ class TestExecuteToolCall:
         bot = MagicMock()
         channel = MagicMock()
         channel.guild = MagicMock()
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
-        
+
         tool_call = MagicMock()
         tool_call.name = "unknown_function_xyz"
         tool_call.args = {}
@@ -63,10 +64,10 @@ class TestExecuteToolCall:
         channel = MagicMock()
         channel.guild = MagicMock()
         channel.id = 123456789
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
-        
+
         tool_call = MagicMock()
         tool_call.name = "remember"
         tool_call.args = {"content": "Remember this important fact"}
@@ -85,10 +86,10 @@ class TestExecuteToolCall:
         bot = MagicMock()
         channel = MagicMock()
         channel.guild = MagicMock()
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
-        
+
         tool_call = MagicMock()
         tool_call.name = "remember"
         tool_call.args = {}
@@ -109,7 +110,7 @@ class TestExecuteServerCommand:
         bot = MagicMock()
         channel = MagicMock()
         channel.send = AsyncMock()
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = False
         user.display_name = "TestUser"
@@ -129,7 +130,7 @@ class TestExecuteServerCommand:
         channel = MagicMock()
         channel.send = AsyncMock()
         channel.guild = None  # No guild
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
 
@@ -148,7 +149,7 @@ class TestExecuteServerCommand:
         channel = MagicMock()
         channel.send = AsyncMock()
         channel.guild = MagicMock()
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
 
@@ -168,7 +169,7 @@ class TestExecuteServerCommand:
         channel = MagicMock()
         channel.send = AsyncMock()
         channel.guild = MagicMock()
-        
+
         user = MagicMock()
         user.guild_permissions.administrator = True
 
@@ -189,7 +190,7 @@ class TestSendAsWebhook:
         channel.send = AsyncMock()
         channel.guild = MagicMock()
         channel.guild.me = MagicMock()
-        
+
         permissions = MagicMock()
         permissions.manage_webhooks = False
         channel.permissions_for.return_value = permissions
@@ -211,7 +212,7 @@ class TestSendAsWebhook:
         channel.id = 123456
         channel.guild = MagicMock()
         channel.guild.me = MagicMock()
-        
+
         permissions = MagicMock()
         permissions.manage_webhooks = True
         channel.permissions_for.return_value = permissions
@@ -221,7 +222,7 @@ class TestSendAsWebhook:
 
         with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
             mock_get.return_value = mock_webhook
-            
+
             result = await send_as_webhook(bot, channel, "TestChar", "Hello!")
 
         mock_webhook.send.assert_called_once()
@@ -236,7 +237,7 @@ class TestSendAsWebhook:
         channel.id = 123456
         channel.guild = MagicMock()
         channel.guild.me = MagicMock()
-        
+
         permissions = MagicMock()
         permissions.manage_webhooks = True
         channel.permissions_for.return_value = permissions
@@ -246,7 +247,7 @@ class TestSendAsWebhook:
 
         with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
             mock_get.return_value = mock_webhook
-            
+
             long_message = "A" * 3000  # Over 2000 limit
             await send_as_webhook(bot, channel, "TestChar", long_message)
 

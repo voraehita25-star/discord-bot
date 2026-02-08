@@ -8,8 +8,12 @@ from __future__ import annotations
 import io
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    import aiohttp
 
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
@@ -52,7 +56,7 @@ def extract_discord_emojis(text: str) -> list[dict]:
 
 
 async def fetch_emoji_images(
-    emojis: list[dict], session: "aiohttp.ClientSession | None" = None
+    emojis: list[dict], session: aiohttp.ClientSession | None = None
 ) -> list[tuple[str, Image.Image]]:
     """Fetch emoji images from Discord CDN.
 

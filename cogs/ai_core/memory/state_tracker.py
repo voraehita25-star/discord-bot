@@ -102,12 +102,11 @@ class CharacterStateTracker:
                     )
                     self._states.pop(oldest_channel, None)
                     self._last_scene.pop(oldest_channel, None)
-                else:
-                    # All channels are empty, clear one arbitrarily
-                    if self._states:
-                        oldest_channel = next(iter(self._states))
-                        self._states.pop(oldest_channel, None)
-                        self._last_scene.pop(oldest_channel, None)
+                # All channels are empty, clear one arbitrarily
+                elif self._states:
+                    oldest_channel = next(iter(self._states))
+                    self._states.pop(oldest_channel, None)
+                    self._last_scene.pop(oldest_channel, None)
             self._states[channel_id] = {}
 
         existing = self._states[channel_id].get(character_name)

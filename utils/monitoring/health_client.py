@@ -89,7 +89,7 @@ class HealthAPIClient:
                 if self._service_available:
                     logger.info("✅ Go Health API service available")
                 return self._service_available
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             self._service_available = False
             self._last_service_check = now
             logger.warning("⚠️ Go Health API not available, metrics disabled")

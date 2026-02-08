@@ -116,7 +116,7 @@ class SessionMixin:
 
         # Update Last Accessed Time
         self.last_accessed[channel_id] = time.time()
-        
+
         # Enforce channel limit to prevent unbounded memory growth
         self._enforce_channel_limit()
 

@@ -318,7 +318,7 @@ class TestSmartTrimAsync:
         from cogs.ai_core.memory.history_manager import HistoryManager
 
         manager = HistoryManager(keep_recent=5)
-        
+
         # Create history with one important message in the middle
         history = []
         for i in range(50):

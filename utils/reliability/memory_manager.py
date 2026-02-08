@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import gc
 import logging
 import sys
 import threading
@@ -426,7 +425,7 @@ class MemoryMonitor:
     async def _run_cleanups_async(self, aggressive: bool = False) -> dict[str, int]:
         """Async version of cleanup that handles gc.collect properly."""
         results = self._run_cleanups(aggressive=False)  # Run sync cleanups
-        
+
         if aggressive:
             # Run full gc.collect in executor to avoid blocking event loop
             import gc

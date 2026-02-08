@@ -80,7 +80,7 @@ class AIAnalytics:
 
     # Token estimation (rough)
     CHARS_PER_TOKEN = 4
-    
+
     # Limits to prevent memory growth
     MAX_HOURLY_KEYS = 168  # 7 days of hourly data
     MAX_INTENT_KEYS = 100  # Limit unique intents tracked
@@ -147,14 +147,14 @@ class AIAnalytics:
         # Track hourly (with cleanup to prevent unbounded growth)
         hour_key = datetime.now().strftime("%Y-%m-%d-%H")
         self._stats["hourly_counts"][hour_key] += 1
-        
+
         # Cleanup old hourly keys if too many
         if len(self._stats["hourly_counts"]) > self.MAX_HOURLY_KEYS:
             sorted_keys = sorted(self._stats["hourly_counts"].keys())
             keys_to_remove = sorted_keys[: len(sorted_keys) - self.MAX_HOURLY_KEYS]
             for key in keys_to_remove:
                 del self._stats["hourly_counts"][key]
-        
+
         # Limit intent_counts growth
         if len(self._stats["intent_counts"]) > self.MAX_INTENT_KEYS:
             # Keep top intents by count

@@ -4,8 +4,6 @@ Tests for utils/monitoring/health_client.py
 Comprehensive tests for HealthAPIClient and helper functions.
 """
 
-import asyncio
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -127,6 +125,7 @@ class TestHealthAPIClientCheckService:
     async def test_check_service_returns_cached(self):
         """Test cached result is returned."""
         import time as _time
+
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
@@ -141,6 +140,7 @@ class TestHealthAPIClientCheckService:
     async def test_check_service_cached_false(self):
         """Test cached False is returned."""
         import time as _time
+
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
@@ -192,8 +192,9 @@ class TestHealthAPIClientGetHealth:
     @pytest.mark.asyncio
     async def test_get_health_exception(self):
         """Test get_health handles exception."""
-        from utils.monitoring.health_client import HealthAPIClient
         import aiohttp
+
+        from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
         client._service_available = True

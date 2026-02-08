@@ -1,6 +1,5 @@
 """Unit tests for URL Content Fetcher module."""
 
-import pytest
 
 from utils.web.url_fetcher import (
     MAX_CONTENT_LENGTH,

@@ -23,10 +23,8 @@ import contextvars
 import functools
 import json
 import logging
-import os
 import sys
 import time
-import traceback
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager

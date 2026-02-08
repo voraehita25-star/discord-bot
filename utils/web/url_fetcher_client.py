@@ -55,7 +55,7 @@ class URLFetcherClient:
     async def _check_service(self) -> bool:
         """Check if Go service is available (with cache expiration)."""
         import time
-        
+
         # Check if cache is still valid
         now = time.time()
         if self._service_available is not None:

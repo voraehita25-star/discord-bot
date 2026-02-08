@@ -158,11 +158,11 @@ class MemoryConsolidator:
         # Consolidate every N messages or every hour (but only if has some messages)
         if msg_count >= self.consolidate_every_n_messages:
             return True
-        
+
         # For time-based consolidation, require at least some messages
         if last_time > 0 and time.time() - last_time > self.consolidate_interval_seconds:
             return msg_count >= 5  # Require at least 5 messages for time-based trigger
-        
+
         return False
 
     async def consolidate(
@@ -263,7 +263,7 @@ class MemoryConsolidator:
         """Parse JSON extraction response with multiple fallback strategies."""
         if not response_text:
             return None
-            
+
         try:
             # Clean up response
             text = response_text.strip()
@@ -276,7 +276,7 @@ class MemoryConsolidator:
             text = text.strip()
 
             result = json.loads(text)
-            
+
             # Validate structure
             if isinstance(result, dict) and "entities" in result:
                 return result
@@ -287,7 +287,7 @@ class MemoryConsolidator:
 
         except (json.JSONDecodeError, ValueError) as e:
             logging.debug("JSON parse failed, trying fallback: %s", e)
-            
+
         # Fallback 1: Try to find JSON object in response
         try:
             match = re.search(r"\{[\s\S]*?\}", response_text)
@@ -301,7 +301,7 @@ class MemoryConsolidator:
                         return {"entities": [result]}
         except (json.JSONDecodeError, ValueError) as fallback_error:
             logging.debug("JSON object fallback failed: %s", fallback_error)
-            
+
         # Fallback 2: Try to find JSON array in response
         try:
             match = re.search(r"\[[\s\S]*?\]", response_text)

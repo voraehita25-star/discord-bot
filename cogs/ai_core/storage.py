@@ -578,10 +578,10 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             source_channel_id,
             target_channel_id,
         )
-        
+
         # Invalidate cache for target channel to ensure fresh data on next read
         invalidate_cache(target_channel_id)
-        
+
         return copied
 
     except OSError as e:
@@ -618,11 +618,11 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
         if copied > 0:
             # Delete source history
             await db.delete_ai_history(source_channel_id)
-            
+
             # Invalidate cache for both channels
             invalidate_cache(source_channel_id)
             invalidate_cache(target_channel_id)
-            
+
             logging.info(
                 "🚚 Moved %d messages from channel %s to %s (source deleted)",
                 copied,

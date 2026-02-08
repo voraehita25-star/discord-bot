@@ -492,7 +492,7 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
     for pid in pids:
         try:
             proc = psutil.Process(pid)
-            
+
             # Try SIGINT first (graceful) - allows cleanup handlers to run
             # On Windows, SIGINT doesn't work well, so we use terminate
             if sys.platform != "win32":
@@ -509,7 +509,7 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
                         pass  # Fall through to terminate
                 except (OSError, psutil.NoSuchProcess):
                     pass  # Process may have already exited
-            
+
             # Graceful shutdown with SIGTERM
             proc.terminate()
             print(f"{Colors.YELLOW}  Terminating {name} (PID: {pid})...{Colors.RESET}")

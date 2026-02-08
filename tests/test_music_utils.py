@@ -2,7 +2,6 @@
 Tests for cogs.music.utils module.
 """
 
-import pytest
 
 
 class TestColors:

@@ -4,12 +4,10 @@ Tests for cogs/ai_core/memory/rag_rust.py
 Comprehensive tests for RagEngineWrapper and Python fallback.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import json
-import tempfile
 import os
-from pathlib import Path
+import tempfile
+from unittest.mock import patch
 
 
 class TestRagEngineWrapperInit:
@@ -190,8 +188,9 @@ class TestRagEngineWrapperPythonSearch:
     @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
     def test_python_search_time_decay(self):
         """Test search with time decay."""
-        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
         import time
+
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
         engine = RagEngineWrapper(dimension=3, similarity_threshold=0.0)
         # Old entry

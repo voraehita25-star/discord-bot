@@ -6,11 +6,6 @@ Tests retry logic, graceful degradation, and health monitoring.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 
 class TestRetryConfig:
     """Tests for RetryConfig class."""

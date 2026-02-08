@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -420,7 +419,6 @@ class TestCorrelationId:
         """Test setting correlation ID."""
         from utils.monitoring.structured_logger import (
             _log_context,
-            get_correlation_id,
             set_correlation_id,
         )
 
