@@ -122,7 +122,7 @@ class MemoryConsolidator:
 
         # Also cleanup orphaned entries in _message_counts that never consolidated
         # (channels that have messages but never reached consolidation threshold)
-        orphaned_max_age = max_age_seconds * 2  # Give more time before cleaning orphans
+        # Note: orphaned entries don't have timestamps, so we only remove when over limit
         for channel_id in list(self._message_counts.keys()):
             if channel_id not in self._last_consolidation:
                 # This channel has message counts but never consolidated
@@ -290,7 +290,7 @@ class MemoryConsolidator:
 
         # Fallback 1: Try to find JSON object in response
         try:
-            match = re.search(r"\{[\s\S]*?\}", response_text)
+            match = re.search(r"\{[\s\S]*\}", response_text)
             if match:
                 result = json.loads(match.group())
                 if isinstance(result, dict):
@@ -304,7 +304,7 @@ class MemoryConsolidator:
 
         # Fallback 2: Try to find JSON array in response
         try:
-            match = re.search(r"\[[\s\S]*?\]", response_text)
+            match = re.search(r"\[[\s\S]*\]", response_text)
             if match:
                 result = json.loads(match.group())
                 if isinstance(result, list):

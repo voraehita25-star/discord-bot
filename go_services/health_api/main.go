@@ -20,7 +20,9 @@ import (
 )
 
 const (
-	defaultPort = "8082"
+	defaultPort    = "8082"
+	maxServices    = 100
+	maxLabelLength = 64
 )
 
 // Metrics
@@ -143,6 +145,10 @@ func NewHealthService(version string) *HealthService {
 func (h *HealthService) SetServiceStatus(name string, healthy bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// Only allow update for existing keys or insert if under cap
+	if _, exists := h.services[name]; !exists && len(h.services) >= maxServices {
+		return // Silently reject to prevent unbounded map growth
+	}
 	h.services[name] = healthy
 }
 
@@ -188,6 +194,15 @@ func collectSystemMetrics() {
 	runtime.ReadMemStats(&m)
 	memoryUsage.Set(float64(m.Alloc))
 	goroutineCount.Set(float64(runtime.NumGoroutine()))
+}
+
+// sanitizeLabel truncates and cleans a Prometheus label value to prevent
+// cardinality explosion from arbitrary user-supplied values.
+func sanitizeLabel(value string) string {
+	if len(value) > maxLabelLength {
+		value = value[:maxLabelLength]
+	}
+	return value
 }
 
 func main() {
@@ -286,25 +301,30 @@ func main() {
 
 		switch payload.Type {
 		case "counter":
+			// Prometheus Counter.Add() panics on negative values
+			if payload.Value < 0 {
+				http.Error(w, "counter value must be non-negative", http.StatusBadRequest)
+				return
+			}
 			switch payload.Name {
 			case "requests":
 				status := "success"
 				if s, ok := payload.Labels["status"]; ok {
-					status = s
+					status = sanitizeLabel(s)
 				}
-				endpoint := payload.Labels["endpoint"]
+				endpoint := sanitizeLabel(payload.Labels["endpoint"])
 				requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
 			case "rate_limit":
-				rateLimitHits.WithLabelValues(payload.Labels["type"]).Add(payload.Value)
+				rateLimitHits.WithLabelValues(sanitizeLabel(payload.Labels["type"])).Add(payload.Value)
 			case "cache":
-				cacheHits.WithLabelValues(payload.Labels["result"]).Add(payload.Value)
+				cacheHits.WithLabelValues(sanitizeLabel(payload.Labels["result"])).Add(payload.Value)
 			case "tokens":
-				tokensUsed.WithLabelValues(payload.Labels["type"]).Add(payload.Value)
+				tokensUsed.WithLabelValues(sanitizeLabel(payload.Labels["type"])).Add(payload.Value)
 			}
 		case "histogram":
 			switch payload.Name {
 			case "request_duration":
-				requestDuration.WithLabelValues(payload.Labels["endpoint"]).Observe(payload.Value)
+				requestDuration.WithLabelValues(sanitizeLabel(payload.Labels["endpoint"])).Observe(payload.Value)
 			case "ai_response_time":
 				aiResponseTime.Observe(payload.Value)
 			}
@@ -313,8 +333,11 @@ func main() {
 			case "active_connections":
 				activeConnections.Set(payload.Value)
 			case "circuit_breaker":
-				circuitBreakerState.WithLabelValues(payload.Labels["service"]).Set(payload.Value)
+				circuitBreakerState.WithLabelValues(sanitizeLabel(payload.Labels["service"])).Set(payload.Value)
 			}
+		default:
+			http.Error(w, "unknown metric type", http.StatusBadRequest)
+			return
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -341,28 +364,32 @@ func main() {
 		for _, p := range payloads {
 			switch p.Type {
 			case "counter":
+				// Skip negative counter values to prevent Prometheus panic
+				if p.Value < 0 {
+					continue
+				}
 				switch p.Name {
 				case "requests":
 					status := "success"
 					if s, ok := p.Labels["status"]; ok {
-						status = s
+						status = sanitizeLabel(s)
 					}
-					requestsTotal.WithLabelValues(p.Labels["endpoint"], status).Add(p.Value)
+					requestsTotal.WithLabelValues(sanitizeLabel(p.Labels["endpoint"]), status).Add(p.Value)
 					processed++
 				case "rate_limit":
-					rateLimitHits.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					rateLimitHits.WithLabelValues(sanitizeLabel(p.Labels["type"])).Add(p.Value)
 					processed++
 				case "cache":
-					cacheHits.WithLabelValues(p.Labels["result"]).Add(p.Value)
+					cacheHits.WithLabelValues(sanitizeLabel(p.Labels["result"])).Add(p.Value)
 					processed++
 				case "tokens":
-					tokensUsed.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					tokensUsed.WithLabelValues(sanitizeLabel(p.Labels["type"])).Add(p.Value)
 					processed++
 				}
 			case "histogram":
 				switch p.Name {
 				case "request_duration":
-					requestDuration.WithLabelValues(p.Labels["endpoint"]).Observe(p.Value)
+					requestDuration.WithLabelValues(sanitizeLabel(p.Labels["endpoint"])).Observe(p.Value)
 					processed++
 				case "ai_response_time":
 					aiResponseTime.Observe(p.Value)
@@ -374,9 +401,10 @@ func main() {
 					activeConnections.Set(p.Value)
 					processed++
 				case "circuit_breaker":
-					circuitBreakerState.WithLabelValues(p.Labels["service"]).Set(p.Value)
+					circuitBreakerState.WithLabelValues(sanitizeLabel(p.Labels["service"])).Set(p.Value)
 					processed++
 				}
+				// Unknown metric types in batch are silently skipped (consistent with batch semantics)
 			}
 		}
 

@@ -39,8 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash botuser
 
-# Copy installed packages from builder
-COPY --from=builder /root/.local /home/botuser/.local
+# Copy installed packages from builder (chown to botuser to avoid permission issues)
+COPY --from=builder --chown=botuser:botuser /root/.local /home/botuser/.local
 ENV PATH=/home/botuser/.local/bin:$PATH
 
 # Copy application code

@@ -40,6 +40,37 @@ from ..response.webhook_cache import (
 )
 
 
+def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
+    """Split a message into chunks without breaking mid-line or mid-Unicode.
+
+    Args:
+        text: Message text to split
+        limit: Maximum chunk size
+
+    Returns:
+        List of message chunks
+    """
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Try to split at newline
+        split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            # Try to split at space
+            split_at = text.rfind(" ", 0, limit)
+        if split_at == -1:
+            # Hard split at limit, but ensure we don't break a surrogate pair
+            split_at = limit
+            # Back up if we're in the middle of a surrogate pair
+            while split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff":
+                split_at -= 1
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
+
+
 async def execute_tool_call(
     _bot: commands.Bot,
     origin_channel: discord.TextChannel,
@@ -288,6 +319,10 @@ async def send_as_webhook(bot, channel, name, message):
         webhook_name = f"AI: {name}"
         channel_id = channel.id
 
+        # Sanitize dangerous mentions in webhook messages
+        # (webhooks bypass allowed_mentions for @everyone/@here)
+        message = message.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+
         # Try cache first
         webhook = get_cached_webhook(channel_id, webhook_name)
 
@@ -297,9 +332,10 @@ async def send_as_webhook(bot, channel, name, message):
                 sent_message = None
                 limit = 2000
                 if len(message) > limit:
-                    for i in range(0, len(message), limit):
+                    chunks = _safe_split_message(message, limit)
+                    for chunk in chunks:
                         sent_message = await webhook.send(
-                            content=message[i : i + limit], username=name, wait=True
+                            content=chunk, username=name, wait=True
                         )
                 else:
                     sent_message = await webhook.send(content=message, username=name, wait=True)
@@ -381,12 +417,13 @@ async def send_as_webhook(bot, channel, name, message):
             set_cached_webhook(channel_id, webhook_name, webhook)
 
             sent_message = None
-            # Send message (truncate if too long)
+            # Send message (split safely if too long)
             limit = 2000
             if len(message) > limit:
-                for i in range(0, len(message), limit):
+                chunks = _safe_split_message(message, limit)
+                for chunk in chunks:
                     sent_message = await webhook.send(
-                        content=message[i : i + limit], username=name, wait=True
+                        content=chunk, username=name, wait=True
                     )
             else:
                 sent_message = await webhook.send(content=message, username=name, wait=True)

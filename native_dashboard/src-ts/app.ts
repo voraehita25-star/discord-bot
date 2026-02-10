@@ -841,7 +841,7 @@ class ChatManager {
         const timeStr = this.formatTime(new Date().toISOString());
         const modeHtml = mode ? `<span class="message-mode">${escapeHtml(mode)}</span>` : '';
         const avatarHtml = settings.aiAvatar 
-            ? `<img src="${settings.aiAvatar}" alt="ai" class="user-avatar-img">`
+            ? `<img src="${escapeHtml(settings.aiAvatar)}" alt="ai" class="user-avatar-img">`
             : (this.currentConversation?.role_emoji || '🤖');
         
         msgDiv.innerHTML = `
@@ -1024,7 +1024,7 @@ class ChatManager {
             const emoji = this.currentConversation?.role_emoji || '🤖';
             const name = this.currentConversation?.role_name || 'AI';
             const welcomeAvatarHtml = settings.aiAvatar 
-                ? `<img src="${settings.aiAvatar}" alt="AI" class="welcome-avatar">`
+                ? `<img src="${escapeHtml(settings.aiAvatar)}" alt="AI" class="welcome-avatar">`
                 : `<div class="welcome-emoji">${emoji}</div>`;
             container.innerHTML = `
                 <div class="chat-welcome">
@@ -1051,11 +1051,11 @@ class ChatManager {
             let avatarHtml: string;
             if (isUser) {
                 avatarHtml = userAvatar 
-                    ? `<img src="${userAvatar}" alt="avatar" class="user-avatar-img">`
+                    ? `<img src="${escapeHtml(userAvatar)}" alt="avatar" class="user-avatar-img">`
                     : '👤';
             } else {
                 avatarHtml = aiAvatar
-                    ? `<img src="${aiAvatar}" alt="ai" class="user-avatar-img">`
+                    ? `<img src="${escapeHtml(aiAvatar)}" alt="ai" class="user-avatar-img">`
                     : aiEmoji;
             }
 
@@ -1164,30 +1164,47 @@ class ChatManager {
     }
 
     formatMessage(content: string): string {
-        let html = escapeHtml(content);
-        
-        // Render block LaTeX equations ($$...$$)
-        html = html.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
+        // Extract LaTeX blocks BEFORE HTML escaping so KaTeX gets raw math notation
+        const latexBlocks: string[] = [];
+        const blockPlaceholder = '\x00BLOCK_LATEX_';
+        const inlinePlaceholder = '\x00INLINE_LATEX_';
+
+        // Extract block LaTeX ($$...$$)
+        let processed = content.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
+            const idx = latexBlocks.length;
             try {
                 if (typeof window !== 'undefined' && (window as unknown as { katex?: { renderToString: (tex: string, options: object) => string } }).katex) {
-                    return `<div class="math-block">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })}</div>`;
+                    latexBlocks.push(`<div class="math-block">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })}</div>`);
+                } else {
+                    latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
                 }
-                return `<div class="math-block">$$${tex}$$</div>`;
             } catch {
-                return `<div class="math-block">$$${tex}$$</div>`;
+                latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
             }
+            return `${blockPlaceholder}${idx}\x00`;
         });
-        
-        // Render inline LaTeX equations ($...$) - but not $$
-        html = html.replace(/(?<!\$)\$(?!\$)([^$]+)\$(?!\$)/g, (_match, tex) => {
+
+        // Extract inline LaTeX ($...$)
+        processed = processed.replace(/(?<!\$)\$(?!\$)([^$]+)\$(?!\$)/g, (_match, tex) => {
+            const idx = latexBlocks.length;
             try {
                 if (typeof window !== 'undefined' && (window as unknown as { katex?: { renderToString: (tex: string, options: object) => string } }).katex) {
-                    return `<span class="math-inline">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })}</span>`;
+                    latexBlocks.push(`<span class="math-inline">${(window as unknown as { katex: { renderToString: (tex: string, options: object) => string } }).katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })}</span>`);
+                } else {
+                    latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
                 }
-                return `<span class="math-inline">$${tex}$</span>`;
             } catch {
-                return `<span class="math-inline">$${tex}$</span>`;
+                latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
             }
+            return `${inlinePlaceholder}${idx}\x00`;
+        });
+
+        // Now HTML-escape the rest (placeholders will be escaped but we restore them below)
+        let html = escapeHtml(processed);
+
+        // Restore LaTeX blocks from placeholders
+        html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => {
+            return latexBlocks[parseInt(idx)] || '';
         });
         
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');

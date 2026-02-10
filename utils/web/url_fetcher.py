@@ -6,6 +6,7 @@ Extracts and fetches content from URLs in user messages for AI context.
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import logging
 import re
@@ -60,7 +61,7 @@ _BLOCKED_NETWORKS = [
 ]
 
 
-def _is_private_url(url: str) -> bool:
+async def _is_private_url(url: str) -> bool:
     """Check if a URL resolves to a private/internal IP address (SSRF protection)."""
     try:
         from urllib.parse import urlparse
@@ -69,13 +70,19 @@ def _is_private_url(url: str) -> bool:
         if not hostname:
             return True
 
-        # Resolve hostname to IP
+        # Resolve hostname to IP - use executor to avoid blocking the event loop
         try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            loop = asyncio.get_running_loop()
+            addr_info = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+                ),
+            )
         except socket.gaierror:
-            return False  # Can't resolve, let the HTTP client handle it
+            return True  # Block on DNS resolution failure for safety
 
-        for family, _, _, _, sockaddr in addr_info:
+        for _family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
             try:
                 ip = ipaddress.ip_address(ip_str)
@@ -137,7 +144,7 @@ async def fetch_url_content(
     close_session = False
     try:
         # SSRF protection: block private/internal IPs
-        if _is_private_url(url):
+        if await _is_private_url(url):
             logger.warning("Blocked SSRF attempt to private URL: %s", url)
             return url, None
 

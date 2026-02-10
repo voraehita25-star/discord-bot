@@ -183,6 +183,11 @@ class Database:
             return
 
         async with self.get_connection() as conn:
+            # One-time database-wide PRAGMAs (only need to be set once per DB file)
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA mmap_size=2147483648")
+            await conn.execute("PRAGMA wal_autocheckpoint=2000")
+
             # AI Chat History Table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS ai_history (
@@ -461,20 +466,13 @@ class Database:
             conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
             conn.row_factory = aiosqlite.Row
 
-            # Performance optimizations — set once per connection (lightweight)
-            # Note: journal_mode=WAL and page_size only need to be set once per DB,
-            # but WAL is cheap to re-set and ensures consistency.
-            await conn.execute("PRAGMA journal_mode=WAL")
+            # Performance optimizations — per-connection PRAGMAs only
+            # One-time DB-wide PRAGMAs (WAL, mmap_size, wal_autocheckpoint)
+            # are set during init_schema() to avoid redundant execution.
             await conn.execute("PRAGMA synchronous=NORMAL")
             await conn.execute("PRAGMA cache_size=250000")
             await conn.execute("PRAGMA temp_store=MEMORY")
-            await conn.execute("PRAGMA mmap_size=2147483648")
             await conn.execute("PRAGMA foreign_keys=ON")
-            # page_size only takes effect on new databases, skip on existing
-            # await conn.execute("PRAGMA page_size=8192")
-            await conn.execute(
-                "PRAGMA wal_autocheckpoint=2000"
-            )  # Checkpoint every 2000 pages (less frequent)
 
             try:
                 yield conn
@@ -563,41 +561,41 @@ class Database:
         Note:
             Uses @asynccontextmanager to ensure proper cleanup even if
             the consumer code raises an exception.
+            Retry logic only applies to connection establishment, NOT
+            to errors from the caller's code after yield.
         """
         last_error = None
         conn = None
 
+        # Retry logic only for establishing the connection (before yield)
         for attempt in range(max_retries):
             conn = None
             try:
-                # Acquire semaphore slot
-                async with self._pool_semaphore:
-                    self._connection_count += 1
-                    try:
-                        conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
-                        conn.row_factory = aiosqlite.Row
+                await self._pool_semaphore.acquire()
+                self._connection_count += 1
+                try:
+                    conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
+                    conn.row_factory = aiosqlite.Row
 
-                        # Performance optimizations
-                        await conn.execute("PRAGMA journal_mode=WAL")
-                        await conn.execute("PRAGMA synchronous=NORMAL")
-                        await conn.execute("PRAGMA cache_size=100000")
-                        await conn.execute("PRAGMA temp_store=MEMORY")
-                        await conn.execute("PRAGMA mmap_size=1073741824")
-                        await conn.execute("PRAGMA foreign_keys=ON")
-                        await conn.execute("PRAGMA page_size=8192")
-                        await conn.execute("PRAGMA wal_autocheckpoint=1000")
+                    # Performance optimizations
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.execute("PRAGMA synchronous=NORMAL")
+                    await conn.execute("PRAGMA cache_size=100000")
+                    await conn.execute("PRAGMA temp_store=MEMORY")
+                    await conn.execute("PRAGMA mmap_size=1073741824")
+                    await conn.execute("PRAGMA foreign_keys=ON")
+                    await conn.execute("PRAGMA page_size=8192")
+                    await conn.execute("PRAGMA wal_autocheckpoint=1000")
+                except Exception:
+                    if conn is not None:
+                        await conn.close()
+                        conn = None
+                    self._connection_count -= 1
+                    self._pool_semaphore.release()
+                    raise
 
-                        try:
-                            yield conn
-                            await conn.commit()
-                            return  # Success, exit
-                        except aiosqlite.Error:
-                            await conn.rollback()
-                            raise
-                    finally:
-                        if conn is not None:
-                            await conn.close()
-                        self._connection_count -= 1
+                # Connection established successfully - break out of retry loop
+                break
 
             except Exception as e:
                 last_error = e
@@ -614,11 +612,25 @@ class Database:
                     # Try reinitializing on subsequent failures
                     if attempt >= 1:
                         await self._reinitialize_pool()
+        else:
+            # All retries exhausted
+            logging.error("💀 All database connection attempts failed")
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Unknown database error occurred during connection")
 
-        logging.error("💀 All database connection attempts failed")
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Unknown database error occurred during connection")
+        # Yield exactly once - let caller exceptions propagate naturally
+        try:
+            yield conn
+            await conn.commit()
+        except aiosqlite.Error:
+            await conn.rollback()
+            raise
+        finally:
+            if conn is not None:
+                await conn.close()
+            self._connection_count -= 1
+            self._pool_semaphore.release()
 
     # ==================== RAG Operations ====================
 

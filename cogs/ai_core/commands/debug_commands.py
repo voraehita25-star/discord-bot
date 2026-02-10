@@ -358,7 +358,7 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.cache.token_tracker import token_tracker
 
-            stats = token_tracker.get_global_stats()
+            stats = await token_tracker.get_global_stats()
 
             embed = discord.Embed(title="💰 Token Usage Tracker", color=discord.Color.gold())
 

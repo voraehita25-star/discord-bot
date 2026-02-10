@@ -23,6 +23,11 @@ impl VectorIndex {
 
     /// Add an entry to the index
     pub fn add(&mut self, id: &str, text: &str) -> usize {
+        // If this ID already exists, return the existing index to avoid corruption
+        if let Some(&existing_idx) = self.id_to_idx.get(id) {
+            return existing_idx;
+        }
+
         let idx = self.idx_to_id.len();
         self.idx_to_id.push(id.to_string());
         self.id_to_idx.insert(id.to_string(), idx);
@@ -68,11 +73,21 @@ impl VectorIndex {
             .map(|s| s.as_str())
     }
 
-    /// Search by keyword
+    /// Search by keyword (filters out stale/removed entries)
     pub fn search_keyword(&self, keyword: &str) -> Vec<usize> {
         self.keyword_index
             .get(&keyword.to_lowercase())
-            .cloned()
+            .map(|indices| {
+                indices.iter()
+                    .copied()
+                    .filter(|&idx| {
+                        // Filter out removed entries (marked as empty string)
+                        self.idx_to_id.get(idx)
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

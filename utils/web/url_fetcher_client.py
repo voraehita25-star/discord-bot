@@ -113,6 +113,16 @@ class URLFetcherClient:
         start = time.time()
         result = {"url": url}
 
+        # SSRF Protection: Block private/internal IPs
+        try:
+            from utils.web.url_fetcher import _is_private_url
+            if await _is_private_url(url):
+                result["error"] = "SSRF blocked: URL resolves to private/internal address"
+                result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                return result
+        except ImportError:
+            pass  # url_fetcher not available, proceed with caution
+
         try:
             async with self._session.get(
                 url,
@@ -203,7 +213,7 @@ class URLFetcherClient:
         error_count = 0
 
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 processed.append({"url": urls[i], "error": str(result)})
                 error_count += 1
             else:

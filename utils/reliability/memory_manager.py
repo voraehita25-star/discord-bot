@@ -28,6 +28,9 @@ T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
 
+# Sentinel object to distinguish "not in cache" from a cached None value
+_CACHE_MISS = object()
+
 
 @dataclass
 class CacheStats:
@@ -117,20 +120,23 @@ class TTLCache(Generic[K, V]):
         """Estimate memory size of value."""
         return sys.getsizeof(value)
 
-    def get(self, key: K) -> V | None:
-        """Get value from cache, returns None if not found or expired."""
+    def get(self, key: K, default=None):
+        """Get value from cache, returns default if not found or expired.
+        
+        Pass default=_CACHE_MISS to distinguish a cached None from a miss.
+        """
         with self._lock:
             entry = self._cache.get(key)
 
             if entry is None:
                 self._misses += 1
-                return None
+                return default
 
             if self._is_expired(entry):
                 self._cache.pop(key, None)
                 self._expired += 1
                 self._misses += 1
-                return None
+                return default
 
             # Update access time and move to end (most recently used)
             entry.last_accessed = time.time()
@@ -538,15 +544,15 @@ def cached_with_ttl(
             else:
                 key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
 
-            # Check cache
-            cached = cache.get(key)
-            if cached is not None:
+            # Check cache (use sentinel to distinguish cached None from miss)
+            cached = cache.get(key, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
                 return cached
 
             # Call function
             result = await func(*args, **kwargs)
 
-            # Cache result
+            # Cache result (including None to prevent stampede)
             cache.set(key, result)
             return result
 
@@ -557,8 +563,8 @@ def cached_with_ttl(
             else:
                 key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
 
-            cached = cache.get(key)
-            if cached is not None:
+            cached = cache.get(key, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
                 return cached
 
             result = func(*args, **kwargs)

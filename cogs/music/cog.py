@@ -63,7 +63,7 @@ class Music(commands.Cog):
         This handles the case where the event loop may be closed during shutdown.
         """
         try:
-            loop = self.bot.loop
+            loop = asyncio.get_event_loop()
             if loop and loop.is_running() and not loop.is_closed():
                 asyncio.run_coroutine_threadsafe(coro, loop)
         except (RuntimeError, AttributeError):
@@ -111,7 +111,9 @@ class Music(commands.Cog):
         self.current_track.pop(guild_id, None)
         self.fixing.pop(guild_id, None)
         self.pause_start.pop(guild_id, None)
-        self.play_locks.pop(guild_id, None)
+        # Don't remove play_locks during cleanup: play_next may hold the lock.
+        # Removing it could cause concurrent access without mutual exclusion.
+        # The lock object is lightweight and will be reused on next play.
         self.volumes.pop(guild_id, None)
         # Note: We don't remove mode_247 here so 24/7 setting persists
 
@@ -382,7 +384,12 @@ class Music(commands.Cog):
         await self.bot.loop.run_in_executor(None, _delete)
 
     def get_queue(self, ctx) -> collections.deque[dict[str, Any]]:
-        """Get or create queue for a guild."""
+        """Get or create queue for a guild.
+
+        Note: Caller must ensure ctx.guild is not None (use @commands.guild_only()).
+        """
+        if not ctx.guild:
+            raise commands.NoPrivateMessage("This command can only be used in a server.")
         if ctx.guild.id not in self.queues:
             self.queues[ctx.guild.id] = collections.deque()
         return self.queues[ctx.guild.id]
@@ -644,9 +651,16 @@ class Music(commands.Cog):
 
         # Retry next track AFTER lock is released (avoids deadlock)
         if _retry_next:
-            await self.play_next(ctx)
+            # Limit retries to prevent unbounded recursion
+            retry_count = getattr(ctx, '_play_next_retries', 0)
+            if retry_count < 10:  # Max 10 retries to prevent stack overflow
+                ctx._play_next_retries = retry_count + 1
+                await self.play_next(ctx)
+            else:
+                logging.warning("play_next retry limit reached for guild %s", ctx.guild.id)
 
     @commands.hybrid_command(name="loop", aliases=["l"])
+    @commands.guild_only()
     async def loop(self, ctx):
         """เปิด/ปิด โหมดวนซ้ำเพลงปัจจุบัน."""
         current = self.loops.get(ctx.guild.id, False)
@@ -668,6 +682,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="pause", aliases=["pa"])
+    @commands.guild_only()
     async def pause(self, ctx):
         """หยุดเล่นเพลงชั่วคราว."""
         if not ctx.voice_client:
@@ -700,6 +715,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="resume", aliases=["unpause"])
+    @commands.guild_only()
     async def resume(self, ctx):
         """เล่นเพลงต่อ."""
         if not ctx.voice_client:
@@ -1044,6 +1060,7 @@ class Music(commands.Cog):
             await self.play_next(ctx)
 
     @commands.hybrid_command(name="skip", aliases=["s"])
+    @commands.guild_only()
     async def skip(self, ctx):
         """ข้ามเพลงปัจจุบัน."""
         if ctx.voice_client and ctx.voice_client.is_playing():
@@ -1063,6 +1080,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.command(name="queue", aliases=["q"])
+    @commands.guild_only()
     async def queue(self, ctx):
         """แสดงรายการเพลงในคิว."""
         queue = self.get_queue(ctx)
@@ -1114,6 +1132,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="stop", aliases=["st"])
+    @commands.guild_only()
     async def stop(self, ctx):
         """หยุดเล่นและล้างคิว."""
         self.queues[ctx.guild.id] = collections.deque()
@@ -1123,9 +1142,11 @@ class Music(commands.Cog):
         if ctx.voice_client:
             ctx.voice_client.stop()
 
-        await self.bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
-        )
+        # Only change global presence if this is the last voice client
+        if len(self.bot.voice_clients) <= 1:
+            await self.bot.change_presence(
+                activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
+            )
 
         embed = discord.Embed(
             title=f"{Emojis.STOP} หยุดแล้ว", description="หยุดเล่นและล้างคิวแล้ว", color=Colors.STOP
@@ -1133,6 +1154,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="clear", aliases=["cl", "clr"])
+    @commands.guild_only()
     async def clear(self, ctx):
         """ล้างคิวเพลงทั้งหมด (แต่ไม่หยุดเพลงที่เล่นอยู่)."""
         cleared_count = len(self.queues.get(ctx.guild.id, []))
@@ -1147,6 +1169,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="leave", aliases=["disconnect", "dc"])
+    @commands.guild_only()
     async def leave(self, ctx):
         """ออกจากช่องเสียง."""
         if ctx.voice_client:
@@ -1156,9 +1179,11 @@ class Music(commands.Cog):
             self.current_track.pop(ctx.guild.id, None)
 
             await ctx.voice_client.disconnect()
-            await self.bot.change_presence(
-                activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
-            )
+            # Only change global presence if this was the last voice client
+            if len(self.bot.voice_clients) <= 1:
+                await self.bot.change_presence(
+                    activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
+                )
 
             embed = discord.Embed(
                 title=f"{Emojis.WAVE} Disconnected",
@@ -1175,6 +1200,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.command(name="volume", aliases=["vol", "v"])
+    @commands.guild_only()
     async def volume(self, ctx, volume: int | None = None):
         """ปรับระดับเสียง (0-200%)."""
         if volume is None:
@@ -1256,6 +1282,7 @@ class Music(commands.Cog):
             raise error
 
     @commands.command(name="shuffle", aliases=["sh", "mix"])
+    @commands.guild_only()
     async def shuffle(self, ctx):
         """สุ่มลำดับเพลงในคิว."""
         queue = self.get_queue(ctx)
@@ -1288,6 +1315,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="remove", aliases=["rm", "del"])
+    @commands.guild_only()
     async def remove(self, ctx, position: int | None = None):
         """ลบเพลงออกจากคิวตามตำแหน่ง."""
         if position is None:
@@ -1323,6 +1351,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="seek", aliases=["sk"])
+    @commands.guild_only()
     async def seek(self, ctx, position: str | None = None):
         """ข้ามไปยังเวลาที่ต้องการ (MM:SS หรือ seconds)."""
         if not position:
@@ -1444,6 +1473,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="nowplaying", aliases=["np", "current"])
+    @commands.guild_only()
     async def nowplaying(self, ctx):
         """แสดงเพลงที่กำลังเล่นอยู่พร้อม progress."""
         guild_id = ctx.guild.id

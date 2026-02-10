@@ -23,6 +23,7 @@ pub struct BotManager {
     python_cmd: String,
 }
 
+#[allow(dead_code)]
 impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
         let mut sys = System::new();

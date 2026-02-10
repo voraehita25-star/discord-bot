@@ -86,8 +86,9 @@ class BotSettings:
     def __post_init__(self):
         """Ensure directories exist (only when running as main bot, not on import)."""
         # Only create dirs if we appear to be running as the bot (not test/import context)
-        for dir_path in [self.data_dir, self.temp_dir, self.logs_dir]:
-            Path(dir_path).mkdir(parents=True, exist_ok=True)
+        if os.environ.get("BOT_RUNNING") or os.environ.get("DISCORD_TOKEN"):
+            for dir_path in [self.data_dir, self.temp_dir, self.logs_dir]:
+                Path(dir_path).mkdir(parents=True, exist_ok=True)
 
     def __repr__(self) -> str:
         """Custom repr that redacts sensitive fields."""

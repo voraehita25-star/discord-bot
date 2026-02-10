@@ -208,7 +208,8 @@ class TestURLFetcherClientFetchFallback:
     """Tests for _fetch_fallback method."""
 
     @pytest.mark.asyncio
-    async def test_fetch_fallback_success_html(self):
+    @patch("utils.web.url_fetcher._is_private_url", new_callable=AsyncMock, return_value=False)
+    async def test_fetch_fallback_success_html(self, _mock_ssrf):
         """Test successful fallback fetch with HTML."""
         from utils.web.url_fetcher_client import URLFetcherClient
 
@@ -239,7 +240,8 @@ class TestURLFetcherClientFetchFallback:
         assert "fetch_time_ms" in result
 
     @pytest.mark.asyncio
-    async def test_fetch_fallback_non_200_status(self):
+    @patch("utils.web.url_fetcher._is_private_url", new_callable=AsyncMock, return_value=False)
+    async def test_fetch_fallback_non_200_status(self, _mock_ssrf):
         """Test fallback with non-200 status."""
         from utils.web.url_fetcher_client import URLFetcherClient
 
@@ -262,7 +264,8 @@ class TestURLFetcherClientFetchFallback:
         assert "404" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_fetch_fallback_exception(self):
+    @patch("utils.web.url_fetcher._is_private_url", new_callable=AsyncMock, return_value=False)
+    async def test_fetch_fallback_exception(self, _mock_ssrf):
         """Test fallback handles exception."""
         from utils.web.url_fetcher_client import URLFetcherClient
 

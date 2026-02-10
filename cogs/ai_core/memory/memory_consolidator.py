@@ -294,7 +294,7 @@ class ConversationSummarizer:
         # Simple extractive approach:
         # Take first sentence from user, key points
         user_messages = [m["content"] for m in messages if m["role"] == "user" and m["content"]]
-        ai_messages = [m["content"] for m in messages if m["role"] == "model" and m["content"]]
+        _ai_messages = [m["content"] for m in messages if m["role"] == "model" and m["content"]]
 
         # Extract key sentences (simple heuristic)
         key_sentences = []
@@ -432,6 +432,7 @@ class ConversationSummarizer:
 
         async with db.get_connection() as conn:
             await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", message_ids)
+            await conn.commit()
 
 
 # Global instance

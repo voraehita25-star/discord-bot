@@ -213,6 +213,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 logging.error("❌ All download attempts failed: %s", e2)
                 raise e2  # Give up
 
+        if data is None:
+            raise yt_dlp.DownloadError("No data returned from yt-dlp")
+
         if "entries" in data:
             # take first item from a playlist
             entries = data["entries"]
@@ -264,6 +267,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = await loop.run_in_executor(
                 None, lambda: ytdl_fallback.extract_info(query, download=False)
             )
+
+        if data is None:
+            logging.warning("No data extracted from search query")
+            return None
 
         if "entries" in data:
             # If it's a search result or playlist, take the first item

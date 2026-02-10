@@ -183,7 +183,8 @@ class MessageQueue:
         Returns:
             True if there are pending messages
         """
-        return bool(self.pending_messages.get(channel_id))
+        with self._queue_lock:
+            return bool(self.pending_messages.get(channel_id))
 
     def get_pending_count(self, channel_id: int) -> int:
         """Get the number of pending messages for a channel.
@@ -194,7 +195,8 @@ class MessageQueue:
         Returns:
             Number of pending messages
         """
-        return len(self.pending_messages.get(channel_id, []))
+        with self._queue_lock:
+            return len(self.pending_messages.get(channel_id, []))
 
     def pop_pending_messages(self, channel_id: int) -> list[PendingMessage]:
         """Get and clear pending messages for a channel.
@@ -205,10 +207,11 @@ class MessageQueue:
         Returns:
             List of pending messages
         """
-        pending = self.pending_messages.get(channel_id, [])
-        self.pending_messages[channel_id] = []
-        self.cancel_flags[channel_id] = False
-        return pending
+        with self._queue_lock:
+            pending = self.pending_messages.get(channel_id, [])
+            self.pending_messages[channel_id] = []
+            self.cancel_flags[channel_id] = False
+            return pending
 
     def merge_pending_messages(self, channel_id: int) -> tuple[PendingMessage | None, str]:
         """Merge pending messages into a single message.

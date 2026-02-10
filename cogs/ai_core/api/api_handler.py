@@ -210,8 +210,8 @@ async def call_gemini_api_streaming(
         # Send initial placeholder
         placeholder_msg = await send_channel.send("💭 กำลังคิด...")
 
-        # Remove thinking_config for streaming
-        streaming_config = config_params.copy()
+        # Remove thinking_config for streaming (deep copy to avoid mutating nested objects)
+        streaming_config = copy.deepcopy(config_params)
         if "thinking_config" in streaming_config:
             streaming_config.pop("thinking_config")
             logging.info("🌊 Streaming mode: Disabled thinking for real-time updates")
@@ -493,7 +493,7 @@ async def call_gemini_api(
                     model_text = temp_text
                     break
 
-            if is_silent_block(temp_text):
+            if not refusal_count and is_silent_block(temp_text):
                 logging.warning(
                     "⚠️ Silent block detected (attempt %s). AI response: %s",
                     attempt + 1,

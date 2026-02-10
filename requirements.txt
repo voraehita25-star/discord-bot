@@ -21,7 +21,7 @@ imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini
 # ==================== Music ====================
 yt-dlp==2025.12.8             # YouTube downloader
 spotipy==2.25.2               # Spotify API wrapper
-PyNaCl==1.6.2                 # Voice encryption (discord.py requires <1.6)
+PyNaCl==1.6.2                 # Voice encryption for discord.py voice
 
 # ==================== Database ====================
 aiosqlite==0.22.1             # Async SQLite
@@ -40,8 +40,8 @@ orjson==3.11.5               # 10x faster JSON parsing (drop-in replacement)
 uvloop==0.22.1; sys_platform != 'win32'  # 2-4x faster event loop (Unix only)
 
 # ==================== Windows Utilities ====================
-winshell==0.6                 # Windows shell integration
-pywin32==311                  # Windows COM automation
+winshell==0.6; sys_platform == 'win32'   # Windows shell integration
+pywin32==311; sys_platform == 'win32'    # Windows COM automation
 
 # ==================== Token Counting ====================
 tiktoken==0.12.0              # Accurate token counting for AI

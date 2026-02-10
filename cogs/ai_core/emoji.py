@@ -10,6 +10,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+import aiohttp
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -66,8 +67,6 @@ async def fetch_emoji_images(
 
     Returns list of (name, PIL.Image) tuples.
     """
-    import aiohttp
-
     results = []
 
     async def _fetch_with_session(s: aiohttp.ClientSession) -> None:

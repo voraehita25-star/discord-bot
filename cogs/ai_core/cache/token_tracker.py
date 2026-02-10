@@ -318,10 +318,11 @@ class TokenTracker:
 
         return True, warning
 
-    def get_global_stats(self) -> dict[str, Any]:
+    async def get_global_stats(self) -> dict[str, Any]:
         """Get global usage statistics."""
-        # Take a snapshot of keys to avoid RuntimeError during iteration
-        cache_snapshot = dict(self._usage_cache)
+        # Acquire lock to safely iterate shared mutable lists
+        async with self._lock:
+            cache_snapshot = {k: list(v) for k, v in self._usage_cache.items()}
         # Calculate from user records only to avoid double/triple counting
         user_records = {k: v for k, v in cache_snapshot.items() if k.startswith("user:")}
         total_tokens = sum(

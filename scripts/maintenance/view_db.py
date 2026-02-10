@@ -6,8 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "bot_database.db"
-OUTPUT_DIR = Path(__file__).parent.parent / "data" / "db_export"
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "bot_database.db"
+OUTPUT_DIR = Path(__file__).parent.parent.parent / "data" / "db_export"
 
 
 def main() -> None:

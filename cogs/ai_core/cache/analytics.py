@@ -316,8 +316,9 @@ class AIAnalytics:
 
         # Keep only last 1000 scores for memory efficiency
         if len(self._stats["quality_scores"]) > 1000:
-            removed = self._stats["quality_scores"].pop(0)
-            self._stats["quality_sum"] -= removed
+            self._stats["quality_scores"].pop(0)
+            # Recalculate sum from scratch to avoid floating-point drift
+            self._stats["quality_sum"] = sum(self._stats["quality_scores"])
             self._stats["quality_count"] = len(self._stats["quality_scores"])
 
         self.logger.debug("📊 Quality logged: %.2f (factors: %s)", quality.score, quality.factors)

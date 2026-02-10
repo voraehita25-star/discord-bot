@@ -18,6 +18,11 @@ try:
 
     def json_dumps(obj, **kwargs):
         # orjson returns bytes, decode to str for compatibility
+        # Note: orjson does not support ensure_ascii/indent kwargs;
+        # use standard json if those are needed
+        if kwargs.get("indent") or kwargs.get("ensure_ascii") is False:
+            import json
+            return json.dumps(obj, **kwargs)
         return orjson.dumps(obj).decode("utf-8")
 
     _ORJSON_ENABLED = True
@@ -28,6 +33,7 @@ except ImportError:
     json_dumps = json.dumps
     _ORJSON_ENABLED = False
 
+import asyncio
 import logging
 import re
 import time
@@ -179,12 +185,15 @@ async def save_history(
 
         if DATABASE_AVAILABLE:
             # Use database storage
-            await _save_history_db(channel_id, chat_data, limit, new_entries)
+            try:
+                await _save_history_db(channel_id, chat_data, limit, new_entries)
+            except Exception as e:
+                logging.error("Database save failed for channel %s: %s", channel_id, e)
         else:
             # Fallback to JSON
             await _save_history_json(bot, channel_id, chat_data, limit)
 
-    except OSError as e:
+    except Exception as e:
         logging.error("Failed to save history: %s", e)
 
 
@@ -356,7 +365,8 @@ async def _save_history_json(
 
         temp_filepath.replace(filepath)  # Atomic replace, works whether target exists or not
 
-    await bot.loop.run_in_executor(None, _write)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _write)
 
     # Save metadata
     metadata = {"thinking_enabled": chat_data.get("thinking_enabled", True)}
@@ -365,7 +375,7 @@ async def _save_history_json(
         filepath = CONFIG_DIR / f"ai_metadata_{channel_id}.json"
         filepath.write_text(json_dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    await bot.loop.run_in_executor(None, _write_meta)
+    await loop.run_in_executor(None, _write_meta)
 
 
 async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
@@ -421,7 +431,7 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
             logging.error("File read error for %s: %s", filepath, e)
             return None
 
-    data = await bot.loop.run_in_executor(None, _read)
+    data = await asyncio.get_running_loop().run_in_executor(None, _read)
 
     if data:
         logging.info("📖 Loaded %d messages from JSON for channel %s", len(data), channel_id)
@@ -497,7 +507,7 @@ async def _load_metadata_json(bot: Bot, channel_id: int) -> dict[str, Any]:
             logging.error("Metadata read error for %s: %s", channel_id, e)
             return {}
 
-    metadata = await bot.loop.run_in_executor(None, _read)
+    metadata = await asyncio.get_running_loop().run_in_executor(None, _read)
 
     if metadata:
         logging.info("📋 Loaded metadata from JSON for channel %s", channel_id)

@@ -91,9 +91,7 @@ def main():
         Path("config.py"),
     }
 
-    # Scripts are typically run directly
-    Path("scripts")
-    Path("tools")
+    # Scripts and tools are typically run directly (skip them below)
 
     # Find unused files
     unused = []

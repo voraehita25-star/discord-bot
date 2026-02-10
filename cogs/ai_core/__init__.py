@@ -30,8 +30,8 @@ from .commands import DebugCommands, MemoryCommands, ServerCommands
 from .context_builder import AIContext, ContextBuilder, context_builder
 from .core import PERFORMANCE_SAMPLES_MAX
 from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
-from .data.faust_data import FAUST_INSTRUCTION
-from .data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
+from .data import FAUST_INSTRUCTION
+from .data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
 from .memory.conversation_branch import branch_manager
 from .memory.history_manager import HistoryManager
 from .memory.rag import rag_system

@@ -18,7 +18,13 @@ from pathlib import Path
 import numpy as np
 from google import genai
 
-from utils.database import db
+try:
+    from utils.database import db
+    _DB_AVAILABLE = True
+except ImportError:
+    db = None
+    _DB_AVAILABLE = False
+    logging.warning("Database not available for RAG module")
 
 from ..data.constants import GEMINI_API_KEY
 
@@ -259,6 +265,18 @@ class FAISSIndex:
         """Load FAISS index from disk."""
         if not FAISS_AVAILABLE:
             return False
+
+        # Recovery: check for backup files from interrupted save
+        backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+        backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+        if not FAISS_INDEX_FILE.exists() and backup_index.exists():
+            logging.warning("🔄 Recovering FAISS index from backup (interrupted save detected)")
+            try:
+                backup_index.replace(FAISS_INDEX_FILE)
+                if backup_id_map.exists():
+                    backup_id_map.replace(FAISS_ID_MAP_FILE)
+            except OSError as e:
+                logging.error("Failed to recover FAISS backup: %s", e)
 
         if not FAISS_INDEX_FILE.exists() or not FAISS_ID_MAP_FILE.exists():
             return False
@@ -529,9 +547,13 @@ class MemorySystem:
         # Add to FAISS index if available (with lock to prevent race conditions)
         async with self._index_lock:
             if FAISS_AVAILABLE and self._faiss_index and self._index_built:
-                self._faiss_index.add_single(embedding, result if isinstance(result, int) else -1)
-                # Schedule debounced save instead of saving immediately (performance)
-                self._schedule_index_save()
+                memory_id = result if isinstance(result, int) and result > 0 else None
+                if memory_id is not None:
+                    self._faiss_index.add_single(embedding, memory_id)
+                    # Schedule debounced save instead of saving immediately (performance)
+                    self._schedule_index_save()
+                else:
+                    logging.warning("⚠️ RAG memory saved to DB but got invalid ID: %s", result)
 
         logging.info("🧠 Saved RAG memory: %s...", content[:30])
         return True

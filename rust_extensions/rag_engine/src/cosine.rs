@@ -29,8 +29,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 fn simd_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     use simsimd::SpatialSimilarity;
     
-    // simsimd provides hardware-accelerated similarity
-    f32::cosine(a, b).map(|v| v as f32)
+    // simsimd returns cosine *distance* (1.0 - similarity), so convert to similarity
+    f32::cosine(a, b).map(|v| 1.0 - v as f32)
 }
 
 /// Scalar fallback for cosine similarity

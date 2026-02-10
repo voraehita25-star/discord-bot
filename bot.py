@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import logging
 import os
 import shutil
@@ -247,7 +248,7 @@ class MusicBot(commands.AutoShardedBot):
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.add_signal_handler(
-                    sig, lambda s=sig: asyncio.create_task(graceful_shutdown(s))
+                    sig, lambda s=sig: self._schedule_shutdown(s)
                 )
             logging.info("🛡️ Signal handlers registered for graceful shutdown")
 
@@ -303,6 +304,20 @@ class MusicBot(commands.AutoShardedBot):
     # Track background tasks and initialization state
     _health_task: asyncio.Task | None = None
     _metrics_started: bool = False
+    _shutdown_task: asyncio.Task | None = None
+
+    def _schedule_shutdown(self, sig) -> None:
+        """Schedule graceful shutdown, keeping a reference to prevent GC."""
+        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig))
+
+    @staticmethod
+    def _on_health_task_done(task: asyncio.Task) -> None:
+        """Callback when health loop task completes unexpectedly."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logging.error("Health loop task failed: %s", exc)
 
     async def on_ready(self) -> None:
         """Called when bot is ready and connected to Discord"""
@@ -333,6 +348,7 @@ class MusicBot(commands.AutoShardedBot):
             health_data.update_from_bot(self)  # type: ignore[union-attr]
             if self._health_task is None or self._health_task.done():
                 self._health_task = asyncio.create_task(update_health_loop(self, interval=10.0))  # type: ignore[arg-type]
+                self._health_task.add_done_callback(self._on_health_task_done)
 
         # Initialize metrics (only once, guard against repeated on_ready)
         if METRICS_AVAILABLE and metrics:
@@ -414,12 +430,13 @@ class MusicBot(commands.AutoShardedBot):
                     "channel": str(ctx.channel),
                     "message": ctx.message.content[:200] if ctx.message else None,
                 },
-                user_id=ctx.author.id,
+                user_id=ctx.author.id if ctx.author else None,
                 guild_id=ctx.guild.id if ctx.guild else None,
             )
 
         # Send generic error message with reference
-        error_id = hex(hash(str(error)) & 0xFFFFFF)[2:].upper()
+        import hashlib
+        error_id = hashlib.sha256(str(error).encode()).hexdigest()[:6].upper()
         await ctx.send(
             f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
         )

@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """Create desktop shortcut for 디스코드 봇 대시보드 using IShellLink"""
-import os
-import sys
 from pathlib import Path
 
 def create_shortcut_via_pythoncom():

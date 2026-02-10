@@ -293,6 +293,7 @@ class LongTermMemory:
                 CREATE INDEX IF NOT EXISTS idx_user_facts_category
                 ON user_facts(user_id, category)
             """)
+            await conn.commit()
 
         self.logger.info("📚 Long-term memory schema initialized")
 

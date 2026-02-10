@@ -145,7 +145,8 @@ impl RagEngine {
                 
                 // Apply time decay if factor > 0
                 let final_score = if time_decay_factor > 0.0 {
-                    let age_hours = (current_time - entry.timestamp) / 3600.0;
+                    // Clamp age to >= 0 to prevent score inflation for future timestamps
+                    let age_hours = ((current_time - entry.timestamp) / 3600.0).max(0.0);
                     let decay = (-time_decay_factor * age_hours).exp() as f32;
                     base_score * decay * entry.importance
                 } else {

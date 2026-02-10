@@ -5,7 +5,6 @@ Provides pre-defined responses when API is unavailable or fails.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import random
 from dataclasses import dataclass
@@ -180,9 +179,13 @@ class FallbackSystem:
         messages = REASON_FALLBACKS.get(reason, REASON_FALLBACKS[FallbackReason.UNKNOWN])
         message = random.choice(messages)
 
-        # Format message with kwargs
-        with contextlib.suppress(KeyError):
-            message = message.format(**kwargs)
+        # Format message with kwargs (provide defaults to avoid raw placeholders)
+        try:
+            fmt_kwargs = {"seconds": 30}
+            fmt_kwargs.update(kwargs)
+            message = message.format(**fmt_kwargs)
+        except (KeyError, ValueError, IndexError):
+            pass  # Leave message as-is if formatting fails
 
         # Determine retry settings
         should_retry = reason not in {FallbackReason.CONTEXT_TOO_LONG}

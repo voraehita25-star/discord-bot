@@ -273,7 +273,7 @@ class ConversationBranchManager:
             self.logger.warning("No checkpoint found for channel %d", channel_id)
             return None
 
-        restored = [msg.copy() for msg in checkpoint.history_snapshot]
+        restored = [copy.deepcopy(msg) for msg in checkpoint.history_snapshot]
 
         self.logger.info(
             "⏪ Restored to checkpoint: %s (%d messages)", checkpoint.checkpoint_id, len(restored)
@@ -307,7 +307,7 @@ class ConversationBranchManager:
             parent_checkpoint_id=checkpoint_id,
             channel_id=channel_id,
             created_at=time.time(),
-            history=[msg.copy() for msg in checkpoint.history_snapshot],
+            history=[copy.deepcopy(msg) for msg in checkpoint.history_snapshot],
             label=label,
         )
 
@@ -346,7 +346,7 @@ class ConversationBranchManager:
 
         self.logger.info("🌿 Switched to branch: %s (%d messages)", branch_id, len(branch.history))
 
-        return [msg.copy() for msg in branch.history]
+        return [copy.deepcopy(msg) for msg in branch.history]
 
     def get_active_branch(self, channel_id: int) -> str | None:
         """Get the active branch ID for a channel (None = main timeline)."""
@@ -367,7 +367,7 @@ class ConversationBranchManager:
         branch_id = self._active_branch.get(channel_id)
 
         if branch_id and branch_id in self._branches:
-            self._branches[branch_id].history = [msg.copy() for msg in history]
+            self._branches[branch_id].history = [copy.deepcopy(msg) for msg in history]
 
     def delete_branch(self, branch_id: str) -> bool:
         """Delete a branch."""

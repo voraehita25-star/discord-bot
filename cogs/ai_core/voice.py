@@ -68,7 +68,7 @@ async def leave_voice_channel(bot: Bot, guild_id: int) -> tuple[bool, str]:
         if not guild or not guild.voice_client:
             return False, "❌ ไม่ได้อยู่ในช่องเสียง"
 
-        channel_name = guild.voice_client.channel.name
+        channel_name = guild.voice_client.channel.name if guild.voice_client.channel else "Unknown"
         await guild.voice_client.disconnect()
         logging.info("🎤 AI left voice channel: %s", channel_name)
         return True, f"✅ ออกจาก **{channel_name}** แล้ว"

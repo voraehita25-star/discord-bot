@@ -72,7 +72,7 @@ impl MediaProcessor {
     }
 
     /// Load image from bytes
-    fn load<'py>(&self, py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<ImageData> {
+    fn load<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         
         let img = image::load_from_memory(bytes)

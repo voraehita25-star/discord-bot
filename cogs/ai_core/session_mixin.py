@@ -147,8 +147,16 @@ class SessionMixin:
                     if channel_id in self.chats:
                         # Save before unloading
                         await save_history(self.bot, channel_id, self.chats[channel_id])
-                        del self.chats[channel_id]
-                        del self.last_accessed[channel_id]
+                        # Re-check after await: channel may have been re-accessed
+                        if (
+                            channel_id in self.last_accessed
+                            and time.time() - self.last_accessed[channel_id] > timeout
+                        ):
+                            self.chats.pop(channel_id, None)
+                            self.last_accessed.pop(channel_id, None)
+                        else:
+                            # Channel was re-accessed during save, skip cleanup
+                            continue
 
                         # Clean up related data structures
                         self.seen_users.pop(channel_id, None)
@@ -162,7 +170,7 @@ class SessionMixin:
                             "Unloaded inactive AI session for channel %s from RAM.", channel_id
                         )
 
-            except OSError as e:
+            except Exception as e:
                 logging.error("Error in cleanup task: %s", e)
 
             await asyncio.sleep(600)  # Check every 10 minutes

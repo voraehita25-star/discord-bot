@@ -203,7 +203,9 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     }
     
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let stack_trace = stack.unwrap_or_else(|| "No stack trace".to_string());
+    let stack_trace = stack
+        .unwrap_or_else(|| "No stack trace".to_string())
+        .chars().take(16384).collect::<String>(); // Limit stack trace size
     
     let log_entry = format!(
         "\n[{}] {}\nMessage: {}\nStack: {}\n{}",

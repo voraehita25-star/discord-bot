@@ -25,6 +25,11 @@ pub fn resize_image(
     mode: ResizeMode,
     jpeg_quality: u8,
 ) -> Result<ImageData, MediaError> {
+    // Validate dimensions to prevent panic in image crate
+    if max_width == 0 || max_height == 0 {
+        return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
+    }
+
     let img = image::load_from_memory(data)?;
     let (orig_w, orig_h) = img.dimensions();
 
@@ -120,7 +125,7 @@ fn calculate_fit_dimensions(orig_w: u32, orig_h: u32, max_w: u32, max_h: u32) ->
     if ratio >= 1.0 {
         (orig_w, orig_h)
     } else {
-        ((orig_w as f64 * ratio).round() as u32, (orig_h as f64 * ratio).round() as u32)
+        (((orig_w as f64 * ratio).round() as u32).max(1), ((orig_h as f64 * ratio).round() as u32).max(1))
     }
 }
 

@@ -127,7 +127,7 @@ class HealthAPIClient:
             async with self._session.post(
                 f"{self.base_url}/health/service",
                 json={"name": name, "healthy": healthy}
-            ) as resp:
+            ):
                 pass  # Response is auto-closed by async with
         except Exception as e:
             logger.debug("Failed to set service status for %s: %s", name, e)
@@ -180,7 +180,7 @@ class HealthAPIClient:
             async with self._session.post(
                 f"{self.base_url}/metrics/batch",
                 json=metrics
-            ) as resp:
+            ):
                 pass  # Response is auto-closed by async with
         except Exception as e:
             # Re-add to buffer on failure (limited)
@@ -202,8 +202,13 @@ async def get_health_client() -> HealthAPIClient:
     """Get or create the global health client."""
     global _client
     if _client is None:
-        _client = HealthAPIClient()
-        await _client.connect()
+        client = HealthAPIClient()
+        try:
+            await client.connect()
+        except Exception:
+            await client.close()
+            raise
+        _client = client
     return _client
 
 

@@ -154,10 +154,10 @@ class AI(commands.Cog):
 
         # Flush pending database exports to prevent "Task was destroyed" warning
         try:
-            from utils.database.database import Database
+            from utils.database import db
 
-            db = Database()
-            await db.flush_pending_exports()
+            if db is not None:
+                await db.flush_pending_exports()
         except Exception as e:
             logging.warning("Failed to flush pending exports: %s", e)
 
@@ -240,7 +240,7 @@ class AI(commands.Cog):
                 return
 
         if not message:
-            if ctx.message.reference:
+            if ctx.message.reference and ctx.message.reference.message_id is not None:
                 # Handle reply to a message as input
                 try:
                     ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
@@ -501,12 +501,15 @@ class AI(commands.Cog):
         # Check if mentioned or in allowed channel (if configured)
         is_mentioned = self.bot.user in message.mentions
         is_reply = False
-        if message.reference:
+        if message.reference and message.reference.message_id is not None:
             try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                # Use cached resolved message first to avoid unnecessary API calls
+                ref_msg = message.reference.resolved
+                if ref_msg is None:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
                 if ref_msg.author == self.bot.user:
                     is_reply = True
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, TypeError):
                 pass
 
         # Logic: Respond if Mentioned OR Reply
@@ -545,8 +548,9 @@ class AI(commands.Cog):
             )
 
     @commands.command(name="thinking", aliases=["think"])
+    @commands.has_permissions(manage_guild=True)
     async def toggle_thinking_cmd(self, ctx, mode: str | None = None):
-        """Toggle AI Thinking Mode (on/off)."""
+        """Toggle AI Thinking Mode (on/off). Requires Manage Server permission."""
         # Determine target channel (support RP redirection)
         target_channel_id = ctx.channel.id
         if ctx.guild and ctx.guild.id == GUILD_ID_RP:
@@ -584,8 +588,9 @@ class AI(commands.Cog):
             await ctx.send("❌ ไม่สามารถตั้งค่าได้ (Session not found)")
 
     @commands.command(name="streaming", aliases=["stream"])
+    @commands.has_permissions(manage_guild=True)
     async def toggle_streaming_cmd(self, ctx, mode: str | None = None):
-        """Toggle AI Streaming Mode (on/off).
+        """Toggle AI Streaming Mode (on/off). Requires Manage Server permission.
 
         When enabled, AI responses stream in real-time as they are generated.
         This provides a more responsive experience but disables thinking mode.
@@ -1134,10 +1139,13 @@ class AI(commands.Cog):
             import json
             from datetime import datetime
 
-            from utils.database.database import Database
+            from utils.database import db as shared_db
 
-            db = Database()
-            logs = await db.get_audit_logs(days=days)
+            if shared_db is None:
+                await ctx.send("❌ Database not available")
+                return
+
+            logs = await shared_db.get_audit_logs(days=days)
 
             if not logs:
                 await ctx.send(f"📭 No audit logs found in the last {days} days")
@@ -1147,24 +1155,26 @@ class AI(commands.Cog):
             filename = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             filepath = Path("temp") / filename
 
-            filepath.write_text(
-                json.dumps(logs, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
+            try:
+                filepath.write_text(
+                    json.dumps(logs, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
 
-            await ctx.send(
-                f"📤 Exported {len(logs)} audit entries from last {days} days",
-                file=discord.File(str(filepath), filename=filename),
-            )
-
-            # Cleanup
-            filepath.unlink()
+                await ctx.send(
+                    f"📤 Exported {len(logs)} audit entries from last {days} days",
+                    file=discord.File(str(filepath), filename=filename),
+                )
+            finally:
+                # Always cleanup temp file
+                if filepath.exists():
+                    filepath.unlink()
 
         except ImportError:
             await ctx.send("❌ Audit logging not available")
         except Exception as e:
             logging.error("Failed to export audit logs: %s", e)
-            await ctx.send(f"❌ Failed to export: {e}")
+            await ctx.send("❌ Failed to export audit logs")
 
     @commands.command(name="auto_summarize")
     @commands.is_owner()

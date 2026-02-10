@@ -231,8 +231,9 @@ class RequestDeduplicator:
         if content.startswith(("!chat ", "!c ", "!ถาม ")):
             content = content.split(" ", 1)[-1] if " " in content else ""
 
-        # Use more characters for better uniqueness (100 instead of 50)
-        msg_hash = hash(content[:100] if content else "")
+        # Use hashlib for deterministic hashing across Python restarts
+        import hashlib
+        msg_hash = hashlib.sha256((content[:100] if content else "").encode()).hexdigest()[:16]
         return f"{channel_id}:{user_id}:{msg_hash}"
 
 

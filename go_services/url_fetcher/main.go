@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,6 +32,66 @@ const (
 	requestTimeout     = 30 * time.Second
 	workerCount        = 10
 )
+
+// isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []string{
+		"127.0.0.0/8",    // Loopback
+		"10.0.0.0/8",     // Private Class A
+		"172.16.0.0/12",  // Private Class B
+		"192.168.0.0/16", // Private Class C
+		"169.254.0.0/16", // Link-local
+		"0.0.0.0/8",      // Current network
+		"100.64.0.0/10",  // Shared address space
+	}
+	for _, cidr := range privateRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	// Check IPv6 loopback
+	if ip.Equal(net.IPv6loopback) {
+		return true
+	}
+	return false
+}
+
+// isPrivateURL checks if a URL resolves to a private/internal IP (SSRF protection)
+func isPrivateURL(rawURL string) (bool, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true, fmt.Errorf("invalid URL: %v", err)
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return true, fmt.Errorf("empty hostname")
+	}
+
+	// Block known dangerous hostnames
+	dangerousHosts := []string{
+		"metadata.google.internal",
+		"metadata.internal",
+	}
+	for _, h := range dangerousHosts {
+		if strings.EqualFold(hostname, h) {
+			return true, nil
+		}
+	}
+
+	// Resolve hostname to IP and check
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		// Block on DNS resolution failure for safety
+		return true, fmt.Errorf("DNS resolution failed: %v", err)
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // FetchRequest represents a URL fetch request
 type FetchRequest struct {
@@ -83,6 +146,18 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	start := time.Now()
 	result := FetchResult{URL: url}
 
+	// SSRF Protection: Block private/internal IPs
+	if isPrivate, err := isPrivateURL(url); isPrivate {
+		errMsg := "SSRF blocked: URL resolves to private/internal address"
+		if err != nil {
+			errMsg = fmt.Sprintf("SSRF blocked: %v", err)
+		}
+		result.Error = errMsg
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		log.Printf("⚠️ SSRF blocked: %s", url)
+		return result
+	}
+
 	// Wait for rate limiter
 	if err := f.limiter.Wait(ctx); err != nil {
 		result.Error = "rate limited"
@@ -124,18 +199,21 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Limit body size
 	limitedReader := io.LimitReader(resp.Body, maxContentLength)
 
-	// Handle charset
-	utf8Reader, err := charset.NewReader(limitedReader, result.ContentType)
-	if err != nil {
-		utf8Reader = limitedReader
-	}
-
-	// Read body
-	body, err := io.ReadAll(utf8Reader)
+	// Read raw body first to avoid consuming bytes on charset detection failure
+	rawBody, err := io.ReadAll(limitedReader)
 	if err != nil {
 		result.Error = fmt.Sprintf("read error: %v", err)
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
+	}
+
+	// Handle charset conversion
+	body := rawBody
+	utf8Reader, err := charset.NewReader(bytes.NewReader(rawBody), result.ContentType)
+	if err == nil {
+		if converted, err := io.ReadAll(utf8Reader); err == nil {
+			body = converted
+		}
 	}
 
 	// Extract content
@@ -201,7 +279,9 @@ func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
 		case <-done:
 			timer.Stop()
 		case <-timer.C:
-			// Timeout waiting for in-flight requests
+			// Timeout waiting for in-flight requests, still must wait for
+			// goroutines to finish writing before we read Results (avoid data race)
+			<-done
 		}
 	case <-done:
 		// All requests completed

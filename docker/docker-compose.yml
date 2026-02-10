@@ -8,14 +8,14 @@ version: '3.8'
 services:
   bot:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: discord-bot
     restart: unless-stopped
 
     # Environment configuration
     env_file:
-      - .env
+      - ../.env
 
     environment:
       # Override these in .env or here
@@ -25,13 +25,13 @@ services:
     # Volume mounts for persistence
     volumes:
       # Persist data directory (database, cache)
-      - ./data:/app/data
+      - ../data:/app/data
       # Persist logs
-      - ./logs:/app/logs
+      - ../logs:/app/logs
       # Persist temporary files (optional)
-      - ./temp:/app/temp
-      # Mount cookies.txt if using YouTube authentication
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ../temp:/app/temp
+      # Mount cookies.txt if using YouTube authentication (file must exist)
+      # - ../cookies.txt:/app/cookies.txt:ro
 
     # Health check (uses bot's health API)
     healthcheck:

@@ -109,7 +109,7 @@ class SpotifyHandler:
         for attempt in range(self.MAX_RETRIES):
             try:
                 # Use functools.partial to avoid closure capturing mutable variables
-                result = await self.bot.loop.run_in_executor(
+                result = await asyncio.get_running_loop().run_in_executor(
                     None, functools.partial(func, *captured_args, **captured_kwargs)
                 )
                 # Record success for circuit breaker
@@ -144,6 +144,12 @@ class SpotifyHandler:
                     if attempt >= 1:
                         logging.info("🔄 Recreating Spotify client...")
                         self._setup_client()
+                        if self.sp is None:
+                            logging.error("Failed to recreate Spotify client")
+                            raise ConnectionError("Spotify client recreation failed")
+                        # Re-bind func to the new client if it was a bound method
+                        if hasattr(func, '__self__') and isinstance(func.__self__, spotipy.Spotify):
+                            func = getattr(self.sp, func.__name__)
                 else:
                     logging.error("Spotify connection failed after %d attempts", self.MAX_RETRIES)
                     raise

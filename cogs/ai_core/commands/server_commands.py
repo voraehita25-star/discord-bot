@@ -603,7 +603,7 @@ async def cmd_get_user_info(
             f"Display Name: {member.display_name}\n"
             f"ID: {member.id}\n"
             f"Status: {str(member.status).title()}\n"
-            f"Joined: {member.joined_at.strftime('%Y-%m-%d')}\n"
+            f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'Unknown'}\n"
             f"Roles: {roles}"
         )
         await origin_channel.send(f"```\n{info}\n```")
@@ -662,16 +662,19 @@ async def cmd_read_channel(guild, origin_channel, _name, args):
         target_channel = guild.get_channel(int(target_name))
 
     if target_channel:
-        messages = []
-        async for msg in target_channel.history(limit=limit):
-            content = msg.content or "[Image/Attachment]"
-            messages.append(
-                f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {content}"
+        try:
+            messages = []
+            async for msg in target_channel.history(limit=limit):
+                content = msg.content or "[Image/Attachment]"
+                messages.append(
+                    f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {content}"
+                )
+            messages.reverse()
+            await send_long_message(
+                origin_channel, f"**📖 Reading Channel: #{target_channel.name}**\n", messages
             )
-        messages.reverse()
-        await send_long_message(
-            origin_channel, f"**📖 Reading Channel: #{target_channel.name}**\n", messages
-        )
+        except discord.Forbidden:
+            await origin_channel.send(f"❌ บอทไม่มีสิทธิ์อ่านช่อง **{target_channel.name}**")
     else:
         await origin_channel.send(f"❌ ไม่พบช่อง: {target_name}")
 
