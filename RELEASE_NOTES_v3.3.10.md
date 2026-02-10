@@ -1,6 +1,6 @@
 # 📋 Release Notes - v3.3.10
 
-**Release Date:** January 25, 2026  
+**Release Date:** January 25, 2026 (Updated: February 10, 2026)  
 **Type:** Patch Release (Security & Reliability Improvements)
 
 ---
@@ -112,6 +112,11 @@ Added limits to prevent unbounded memory growth:
 # Pull latest changes
 git pull origin main
 
+# New optional environment variables (add to .env if needed):
+# DASHBOARD_WS_TOKEN=your_secret_token   # Auth for WebSocket dashboard
+# DASHBOARD_ALLOW_UNRESTRICTED=false      # Gate unrestricted mode in dashboard
+# HEALTH_API_HOST=127.0.0.1              # Now defaults to localhost (was 0.0.0.0)
+
 # No new dependencies required
 # Just restart the bot
 python bot.py
@@ -119,9 +124,68 @@ python bot.py
 
 ---
 
+## 🔒 Security Hardening (February 10, 2026)
+
+### SSRF Protection (Go Services)
+- **DNS rebinding prevention:** `ssrfSafeDialContext()` validates resolved IPs at connect time, not just at request start
+- **IPv6 coverage:** Pre-parsed `privateNetworks` now includes IPv4-mapped IPv6 ranges (`::ffff:127.0.0.0/104`, etc.)
+- **Localhost binding:** Both Go services (`url_fetcher`, `health_api`) now bind to `127.0.0.1` by default instead of `0.0.0.0`
+- **Configurable:** `HEALTH_API_HOST` env var allows overriding bind address when needed
+
+### Dashboard Security
+- **WebSocket authentication:** `DASHBOARD_WS_TOKEN` env var required for dashboard connections
+- **Origin check hardened:** Prefix matching now requires delimiter (`:` or `/`) to prevent subdomain bypass (e.g., `evil-localhost.com`)
+- **Unrestricted mode gated:** Requires `DASHBOARD_ALLOW_UNRESTRICTED=true` env var to activate
+
+### Permission & Injection Protection
+- **AI permission allowlists:** `_SAFE_PERMISSIONS` / `_DANGEROUS_PERMISSIONS` frozensets block `administrator`, `manage_guild`, `ban_members`, etc. from AI-controlled server commands
+- **Mention sanitization:** Webhook messages and tool executor outputs sanitize `<@&ID>` (role) and `<@ID>` (user) mentions with zero-width space
+- **Path traversal:** `conversation_id` validated with `^[a-zA-Z0-9_-]+$` regex before file operations
+
+### Prometheus Hardening
+- **Metric allowlist:** `allowedMetricNames` rejects unknown metric names at push endpoints
+- **Label allowlist:** `safeLabel()` restricts label values to known sets, preventing cardinality explosion
+
+---
+
+## 🛡️ Reliability Fixes (February 10, 2026)
+
+| Component | Issue | Fix |
+|-----------|-------|-----|
+| `logic.py` | `asyncio.wait_for(lock.acquire())` deadlock | `asyncio.shield()` wrapper (CPython #42130) |
+| `memory_manager.py` | GC can deadlock WeakRefCache | `threading.RLock()` instead of `Lock()` |
+| `error_recovery.py` | Sync backoff state in async function | `await _get_backoff_state_async()` |
+| `shutdown_manager.py` | Event/Lock bound to wrong loop at import | Lazy creation via getter methods |
+| `storage.rs` | Data loss on crash (unflushed mmap) | `mmap.flush()` after every `push()` |
+| `lib.rs` | Corrupted save file on crash | Atomic write via temp file + rename |
+| `cog.py` | Queue lost on cog reload | Save all queues before clearing in `cog_unload` |
+| `cog.py` | Cross-guild retry state leak | Per-guild tracking (`_play_next_retries_{guild_id}`) |
+
+---
+
+## ✅ Correctness Fixes (February 10, 2026)
+
+| Component | Issue | Fix |
+|-----------|-------|-----|
+| `logic.py` | `CancelledError` conflated with message interrupts | New `_NewMessageInterrupt` exception |
+| `logic.py` | Naive timestamps in history | `datetime.now(datetime.timezone.utc)` |
+| `queue.py` | O(n²) shuffle on deque | Convert to list → shuffle → extend back |
+| `index.rs` | Keywords stale on re-add | Remove old associations, re-index |
+| `resize.rs` | Skip-if-smaller on Fill/Stretch | Restrict to `Fit` mode via `matches!()` |
+| `gif.rs` | Frames counted by GCE (optional) | Count Image Descriptor (0x2C) blocks |
+| `lib.rs` | Stale entries on load | `entries.clear()` before loading |
+| `logic.py` | MessageQueue leaks on eviction | Clean up `pending_messages`/`cancel_flags` |
+| `database.py` | Global debounce drops exports | Per-channel `_export_pending_keys` |
+| `url_fetcher.py` | Unbounded response body | `MAX_RESPONSE_SIZE = 5MB` |
+| `fast_json.py` | `ensure_ascii` default mismatch | Aligned both branches to `False` |
+
+---
+
 ## ⚠️ Breaking Changes
 
 None - All changes are backward compatible.
+
+> **Note:** `HEALTH_API_HOST` now defaults to `127.0.0.1` (was `0.0.0.0`). If you need external access to the Health API, set `HEALTH_API_HOST=0.0.0.0` in your environment.
 
 ---
 

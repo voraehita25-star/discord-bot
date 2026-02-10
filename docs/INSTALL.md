@@ -110,6 +110,9 @@ nano .env     # Linux
 | `SPOTIFY_CLIENT_ID` | ❌ | (Optional) Spotify API Client ID |
 | `SPOTIFY_CLIENT_SECRET` | ❌ | (Optional) Spotify API Secret |
 | `SENTRY_DSN` | ❌ | (Optional) Sentry Error Tracking |
+| `DASHBOARD_WS_TOKEN` | ❌ | (Optional) Auth token สำหรับ WebSocket dashboard |
+| `DASHBOARD_ALLOW_UNRESTRICTED` | ❌ | (Optional) เปิด unrestricted mode ใน dashboard (`1`/`true`) |
+| `HEALTH_API_HOST` | ❌ | (Optional) Bind address สำหรับ Health API (default: `127.0.0.1`) |
 
 ### Step 5: (Optional) ตั้งค่า Persona
 
@@ -337,4 +340,4 @@ cd native_dashboard && cargo build --release
 
 ---
 
-*Last Updated: January 2026 | Version: 3.3.0*
+*Last Updated: February 2026 | Version: 3.3.10*
