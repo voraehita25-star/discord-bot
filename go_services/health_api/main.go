@@ -332,6 +332,12 @@ func main() {
 			return
 		}
 
+		// Validate metric name against allowlist
+		if !allowedMetricNames[payload.Name] {
+			http.Error(w, "unknown metric name", http.StatusBadRequest)
+			return
+		}
+
 		switch payload.Type {
 		case "counter":
 			// Prometheus Counter.Add() panics on negative values
@@ -341,18 +347,18 @@ func main() {
 			}
 			switch payload.Name {
 			case "requests":
-				status := "success"
-				if s, ok := payload.Labels["status"]; ok {
-					status = sanitizeLabel(s)
+				status := safeLabel("status", payload.Labels["status"])
+				if status == "other" {
+					status = "success"
 				}
 				endpoint := sanitizeLabel(payload.Labels["endpoint"])
 				requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
 			case "rate_limit":
-				rateLimitHits.WithLabelValues(sanitizeLabel(payload.Labels["type"])).Add(payload.Value)
+				rateLimitHits.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 			case "cache":
-				cacheHits.WithLabelValues(sanitizeLabel(payload.Labels["result"])).Add(payload.Value)
+				cacheHits.WithLabelValues(safeLabel("result", payload.Labels["result"])).Add(payload.Value)
 			case "tokens":
-				tokensUsed.WithLabelValues(sanitizeLabel(payload.Labels["type"])).Add(payload.Value)
+				tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 			}
 		case "histogram":
 			switch payload.Name {
@@ -395,6 +401,10 @@ func main() {
 
 		processed := 0
 		for _, p := range payloads {
+			// Skip unknown metric names
+			if !allowedMetricNames[p.Name] {
+				continue
+			}
 			switch p.Type {
 			case "counter":
 				// Skip negative counter values to prevent Prometheus panic
@@ -403,20 +413,20 @@ func main() {
 				}
 				switch p.Name {
 				case "requests":
-					status := "success"
-					if s, ok := p.Labels["status"]; ok {
-						status = sanitizeLabel(s)
+					status := safeLabel("status", p.Labels["status"])
+					if status == "other" {
+						status = "success"
 					}
 					requestsTotal.WithLabelValues(sanitizeLabel(p.Labels["endpoint"]), status).Add(p.Value)
 					processed++
 				case "rate_limit":
-					rateLimitHits.WithLabelValues(sanitizeLabel(p.Labels["type"])).Add(p.Value)
+					rateLimitHits.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
 					processed++
 				case "cache":
-					cacheHits.WithLabelValues(sanitizeLabel(p.Labels["result"])).Add(p.Value)
+					cacheHits.WithLabelValues(safeLabel("result", p.Labels["result"])).Add(p.Value)
 					processed++
 				case "tokens":
-					tokensUsed.WithLabelValues(sanitizeLabel(p.Labels["type"])).Add(p.Value)
+					tokensUsed.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
 					processed++
 				}
 			case "histogram":
