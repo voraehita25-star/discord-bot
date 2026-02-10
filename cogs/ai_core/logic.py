@@ -33,8 +33,8 @@ import aiohttp
 from google import genai
 from PIL import Image
 
-# Import API handler module (via backward compatible re-export)
-from .api_handler import (
+# Import API handler module (direct subfolder import)
+from .api.api_handler import (
     build_api_config,
     call_gemini_api,
     call_gemini_api_streaming,
@@ -68,12 +68,12 @@ from .memory.entity_memory import entity_memory
 from .memory.rag import rag_system
 from .memory.state_tracker import state_tracker
 from .memory.summarizer import summarizer
-from .message_queue import MessageQueue
+from .core.message_queue import MessageQueue
 
-# Import new modular components (v3.3.6 - via backward compatible re-exports)
-from .performance import PerformanceTracker, RequestDeduplicator
-from .response_mixin import ResponseMixin
-from .response_sender import ResponseSender
+# Import new modular components (v3.3.6 - direct subfolder imports)
+from .core.performance import PerformanceTracker, RequestDeduplicator
+from .response.response_mixin import ResponseMixin
+from .response.response_sender import ResponseSender
 from .session_mixin import SessionMixin
 from .storage import (
     save_history,

@@ -186,8 +186,8 @@ class TestBackwardCompatibilityModule:
     """Tests for backward compatibility api_handler module."""
 
     def test_import_from_api_handler(self):
-        """Test importing from cogs.ai_core.api_handler."""
-        from cogs.ai_core.api_handler import (
+        """Test importing from cogs.ai_core.api.api_handler."""
+        from cogs.ai_core.api.api_handler import (
             build_api_config,
             call_gemini_api,
             call_gemini_api_streaming,

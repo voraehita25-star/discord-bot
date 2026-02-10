@@ -22,7 +22,7 @@ class TestPerformanceTracker:
 
     def test_init(self):
         """Test PerformanceTracker initialization."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         assert tracker._metrics is not None
@@ -30,7 +30,7 @@ class TestPerformanceTracker:
 
     def test_record_timing(self):
         """Test recording timing for a step."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.5)
@@ -41,7 +41,7 @@ class TestPerformanceTracker:
 
     def test_record_multiple_timings(self):
         """Test recording multiple timings for same step."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         for i in range(5):
@@ -51,7 +51,7 @@ class TestPerformanceTracker:
 
     def test_max_samples_limit(self):
         """Test that max_samples limit is enforced."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         # Record more than PERFORMANCE_SAMPLES_MAX (100)
@@ -63,7 +63,7 @@ class TestPerformanceTracker:
 
     def test_get_stats_empty(self):
         """Test get_stats with only initialized steps (no data added)."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         stats = tracker.get_stats()
@@ -73,7 +73,7 @@ class TestPerformanceTracker:
 
     def test_get_stats_with_data(self):
         """Test get_stats with recorded data."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.1)
@@ -89,7 +89,7 @@ class TestPerformanceTracker:
 
     def test_get_stats_single_step(self):
         """Test get_step_stats for a single step."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("rag_search", 0.05)
@@ -101,7 +101,7 @@ class TestPerformanceTracker:
 
     def test_clear_metrics(self):
         """Test clearing metrics."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.5)
@@ -111,7 +111,7 @@ class TestPerformanceTracker:
 
     def test_clear_single_step(self):
         """Test clearing a single step."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.5)
@@ -123,7 +123,7 @@ class TestPerformanceTracker:
 
     def test_get_summary(self):
         """Test getting performance summary."""
-        from cogs.ai_core.performance import PerformanceTracker
+        from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.5)
@@ -138,14 +138,14 @@ class TestRequestDeduplicator:
 
     def test_init(self):
         """Test RequestDeduplicator initialization."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         assert dedup._pending_requests == {}
 
     def test_is_duplicate_new_request(self):
         """Test that new request is not duplicate."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         is_dup = dedup.is_duplicate("key1")
@@ -158,7 +158,7 @@ class TestRequestDeduplicator:
 
     def test_is_duplicate_existing_request(self):
         """Test that existing request is duplicate."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         dedup.add_request("key1")  # First add
@@ -168,7 +168,7 @@ class TestRequestDeduplicator:
 
     def test_remove_request(self):
         """Test removing a request."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         dedup.add_request("key1")
@@ -178,7 +178,7 @@ class TestRequestDeduplicator:
 
     def test_cleanup_old_requests(self):
         """Test cleanup of old requests."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         # Add a request with old timestamp
@@ -193,7 +193,7 @@ class TestRequestDeduplicator:
 
     def test_generate_key(self):
         """Test key generation."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         key = dedup.generate_key(123, 456, "test message")
@@ -203,7 +203,7 @@ class TestRequestDeduplicator:
 
     def test_get_pending_count(self):
         """Test getting pending count."""
-        from cogs.ai_core.performance import RequestDeduplicator
+        from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         assert dedup.get_pending_count() == 0
@@ -223,7 +223,7 @@ class TestPendingMessage:
 
     def test_create_pending_message(self):
         """Test creating a PendingMessage."""
-        from cogs.ai_core.message_queue import PendingMessage
+        from cogs.ai_core.core.message_queue import PendingMessage
 
         channel = MagicMock()
         user = MagicMock()
@@ -243,7 +243,7 @@ class TestPendingMessage:
 
     def test_pending_message_with_all_fields(self):
         """Test PendingMessage with all fields."""
-        from cogs.ai_core.message_queue import PendingMessage
+        from cogs.ai_core.core.message_queue import PendingMessage
 
         channel = MagicMock()
         user = MagicMock()
@@ -271,7 +271,7 @@ class TestMessageQueue:
 
     def test_init(self):
         """Test MessageQueue initialization."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         assert queue.pending_messages == {}
@@ -280,7 +280,7 @@ class TestMessageQueue:
 
     def test_get_lock(self):
         """Test getting a lock for a channel."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         lock = queue.get_lock_sync(123)
@@ -290,7 +290,7 @@ class TestMessageQueue:
 
     def test_get_lock_same_channel(self):
         """Test getting same lock for same channel."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         lock1 = queue.get_lock_sync(123)
@@ -300,7 +300,7 @@ class TestMessageQueue:
 
     def test_queue_message(self):
         """Test queuing a message."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         channel = MagicMock()
@@ -318,7 +318,7 @@ class TestMessageQueue:
 
     def test_signal_cancel(self):
         """Test signaling cancel for a channel."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         queue.signal_cancel(123)
@@ -327,7 +327,7 @@ class TestMessageQueue:
 
     def test_reset_cancel(self):
         """Test resetting cancel flag."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         queue.signal_cancel(123)
@@ -337,7 +337,7 @@ class TestMessageQueue:
 
     def test_is_cancelled(self):
         """Test checking if cancelled."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         assert queue.is_cancelled(123) is False
@@ -347,7 +347,7 @@ class TestMessageQueue:
 
     def test_has_pending(self):
         """Test checking for pending messages."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         assert queue.has_pending(123) is False
@@ -357,7 +357,7 @@ class TestMessageQueue:
 
     def test_get_pending_count(self):
         """Test getting pending message count."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         assert queue.get_pending_count(123) == 0
@@ -368,7 +368,7 @@ class TestMessageQueue:
 
     def test_pop_pending_messages(self):
         """Test popping pending messages."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         queue.queue_message(123, MagicMock(), MagicMock(), "Test1")
@@ -383,7 +383,7 @@ class TestMessageQueue:
 
     def test_merge_pending_messages(self):
         """Test merging pending messages."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
 
@@ -403,7 +403,7 @@ class TestMessageQueue:
 
     def test_merge_single_message(self):
         """Test merging single message returns original."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         user = MagicMock()
@@ -417,7 +417,7 @@ class TestMessageQueue:
 
     def test_merge_empty_queue(self):
         """Test merging empty queue."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
 
@@ -429,7 +429,7 @@ class TestMessageQueue:
     @pytest.mark.asyncio
     async def test_acquire_lock_with_timeout(self):
         """Test acquiring lock with timeout."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         result = await queue.acquire_lock_with_timeout(123, timeout=5.0)
@@ -443,7 +443,7 @@ class TestMessageQueue:
     @pytest.mark.asyncio
     async def test_acquire_lock_timeout(self):
         """Test lock acquisition timeout."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         lock = queue.get_lock_sync(123)
@@ -459,7 +459,7 @@ class TestMessageQueue:
 
     def test_release_lock(self):
         """Test releasing a lock."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         _ = queue.get_lock_sync(123)  # Lock created for side effect
@@ -474,7 +474,7 @@ class TestMessageQueue:
 
     def test_cleanup_stale_locks(self):
         """Test detecting stale locks (no longer force-releases)."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         # Add old lock time
@@ -500,7 +500,7 @@ class TestAIContext:
 
     def test_create_context(self):
         """Test creating AIContext."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
 
@@ -510,7 +510,7 @@ class TestAIContext:
 
     def test_has_avatar(self):
         """Test has_avatar property."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
         assert ctx.has_avatar is False
@@ -520,7 +520,7 @@ class TestAIContext:
 
     def test_build_system_context_empty(self):
         """Test building empty system context."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
         result = ctx.build_system_context()
@@ -529,7 +529,7 @@ class TestAIContext:
 
     def test_build_system_context_full(self):
         """Test building full system context."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(
             instructions="Be helpful",
@@ -554,7 +554,7 @@ class TestContextBuilder:
 
     def test_init(self):
         """Test ContextBuilder initialization."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
 
@@ -563,7 +563,7 @@ class TestContextBuilder:
 
     def test_init_with_components(self):
         """Test ContextBuilder with components."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory = MagicMock()
         entity = MagicMock()
@@ -579,7 +579,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_build_context_empty(self):
         """Test building context with no components."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         ctx = await builder.build_context(
@@ -594,7 +594,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_build_context_with_rag(self):
         """Test building context with RAG."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock()
         memory_manager.semantic_search = AsyncMock(return_value=[
@@ -615,7 +615,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_build_context_with_avatar(self):
         """Test building context with avatar."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         avatar_manager = MagicMock()
         avatar_manager.get_avatar = AsyncMock(return_value={
@@ -640,7 +640,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_get_rag_context_no_results(self):
         """Test RAG context with no results."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock()
         memory_manager.semantic_search = AsyncMock(return_value=[])
@@ -653,7 +653,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_get_rag_context_fallback_search(self):
         """Test RAG context with fallback search method."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock(spec=["search"])
         memory_manager.search = AsyncMock(return_value=[
@@ -668,7 +668,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_get_entity_memory(self):
         """Test getting entity memory."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         entity_memory = MagicMock()
         entity_memory.get_relevant = AsyncMock(return_value=[
@@ -684,7 +684,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_get_state_tracker(self):
         """Test getting state tracker."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         state_tracker = MagicMock()
         state_tracker.get_state_summary = AsyncMock(return_value="Current state: active")
@@ -697,7 +697,7 @@ class TestContextBuilder:
     @pytest.mark.asyncio
     async def test_build_context_handles_exceptions(self):
         """Test that build_context handles exceptions gracefully."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock()
         memory_manager.semantic_search = AsyncMock(side_effect=Exception("Test error"))
@@ -723,7 +723,7 @@ class TestSendResult:
 
     def test_create_success_result(self):
         """Test creating success result."""
-        from cogs.ai_core.response_sender import SendResult
+        from cogs.ai_core.response.response_sender import SendResult
 
         result = SendResult(success=True, message_id=12345)
 
@@ -733,7 +733,7 @@ class TestSendResult:
 
     def test_create_error_result(self):
         """Test creating error result."""
-        from cogs.ai_core.response_sender import SendResult
+        from cogs.ai_core.response.response_sender import SendResult
 
         result = SendResult(success=False, error="Failed to send")
 
@@ -746,7 +746,7 @@ class TestResponseSender:
 
     def test_init(self):
         """Test ResponseSender initialization."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -755,7 +755,7 @@ class TestResponseSender:
 
     def test_extract_character_tag(self):
         """Test extracting character tag."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -766,7 +766,7 @@ class TestResponseSender:
 
     def test_extract_character_tag_none(self):
         """Test extracting when no tag present."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -777,7 +777,7 @@ class TestResponseSender:
 
     def test_split_content_short(self):
         """Test splitting short content."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -788,7 +788,7 @@ class TestResponseSender:
 
     def test_split_content_long(self):
         """Test splitting long content."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -802,7 +802,7 @@ class TestResponseSender:
 
     def test_split_content_at_paragraph(self):
         """Test splitting at paragraph break."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -813,7 +813,7 @@ class TestResponseSender:
 
     def test_split_content_at_sentence(self):
         """Test splitting at sentence break."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -825,7 +825,7 @@ class TestResponseSender:
 
     def test_sanitize_content(self):
         """Test sanitizing content."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -837,7 +837,7 @@ class TestResponseSender:
 
     def test_sanitize_empty_content(self):
         """Test sanitizing empty content."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -850,7 +850,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_send_response_empty(self):
         """Test sending empty response."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
         channel = MagicMock()
@@ -863,7 +863,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_send_response_direct(self):
         """Test sending response directly."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -886,7 +886,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_send_response_chunked(self):
         """Test sending chunked response."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -911,7 +911,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_send_response_with_character_tag(self):
         """Test sending response with character tag."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -934,7 +934,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_edit_message(self):
         """Test editing a message."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -949,7 +949,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_edit_message_truncate(self):
         """Test editing message with truncation."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -967,7 +967,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_edit_message_error(self):
         """Test editing message with error."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -981,7 +981,7 @@ class TestResponseSender:
     @pytest.mark.asyncio
     async def test_send_typing(self):
         """Test sending typing indicator."""
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         sender = ResponseSender()
 
@@ -1002,31 +1002,31 @@ class TestModuleInstances:
 
     def test_performance_tracker_instance(self):
         """Test performance_tracker module instance."""
-        from cogs.ai_core.performance import performance_tracker
+        from cogs.ai_core.core.performance import performance_tracker
 
         assert performance_tracker is not None
 
     def test_request_deduplicator_instance(self):
         """Test request_deduplicator module instance."""
-        from cogs.ai_core.performance import request_deduplicator
+        from cogs.ai_core.core.performance import request_deduplicator
 
         assert request_deduplicator is not None
 
     def test_message_queue_instance(self):
         """Test message_queue module instance."""
-        from cogs.ai_core.message_queue import message_queue
+        from cogs.ai_core.core.message_queue import message_queue
 
         assert message_queue is not None
 
     def test_context_builder_instance(self):
         """Test context_builder module instance."""
-        from cogs.ai_core.context_builder import context_builder
+        from cogs.ai_core.core.context_builder import context_builder
 
         assert context_builder is not None
 
     def test_response_sender_instance(self):
         """Test response_sender module instance."""
-        from cogs.ai_core.response_sender import response_sender
+        from cogs.ai_core.response.response_sender import response_sender
 
         assert response_sender is not None
 
@@ -1042,7 +1042,7 @@ class TestModularIntegration:
     @pytest.mark.asyncio
     async def test_message_queue_flow(self):
         """Test complete message queue flow."""
-        from cogs.ai_core.message_queue import MessageQueue
+        from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
 
@@ -1075,8 +1075,8 @@ class TestModularIntegration:
     @pytest.mark.asyncio
     async def test_context_and_response_flow(self):
         """Test context building and response sending flow."""
-        from cogs.ai_core.context_builder import ContextBuilder
-        from cogs.ai_core.response_sender import ResponseSender
+        from cogs.ai_core.core.context_builder import ContextBuilder
+        from cogs.ai_core.response.response_sender import ResponseSender
 
         # Build context
         builder = ContextBuilder()
@@ -1106,7 +1106,7 @@ class TestModularIntegration:
 
     def test_performance_tracking_flow(self):
         """Test performance tracking flow."""
-        from cogs.ai_core.performance import PerformanceTracker, RequestDeduplicator
+        from cogs.ai_core.core.performance import PerformanceTracker, RequestDeduplicator
 
         tracker = PerformanceTracker()
         dedup = RequestDeduplicator()

@@ -26,8 +26,8 @@ from .cache.ai_cache import AICache, ai_cache
 from .cache.analytics import AIAnalytics, ai_analytics
 from .commands import DebugCommands, MemoryCommands, ServerCommands
 
-# Modular components (via backward compatible re-exports)
-from .context_builder import AIContext, ContextBuilder, context_builder
+# Modular components (direct imports from subfolders)
+from .core.context_builder import AIContext, ContextBuilder, context_builder
 from .core import PERFORMANCE_SAMPLES_MAX
 from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
 from .data import FAUST_INSTRUCTION
@@ -36,8 +36,8 @@ from .memory.conversation_branch import branch_manager
 from .memory.history_manager import HistoryManager
 from .memory.rag import rag_system
 from .memory.summarizer import summarizer
-from .message_queue import MessageQueue, PendingMessage, message_queue
-from .performance import (
+from .core.message_queue import MessageQueue, PendingMessage, message_queue
+from .core.performance import (
     PerformanceTracker,
     RequestDeduplicator,
     performance_tracker,
@@ -47,7 +47,7 @@ from .processing.guardrails import validate_response
 from .processing.intent_detector import detect_intent
 from .processing.prompt_manager import prompt_manager
 from .response import ResponseMixin
-from .response_sender import ResponseSender, SendResult, response_sender
+from .response.response_sender import ResponseSender, SendResult, response_sender
 from .tools import execute_tool_call, get_tool_definitions, send_as_webhook
 
 __all__ = [

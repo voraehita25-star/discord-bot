@@ -405,8 +405,8 @@ class TestBackwardCompatibility:
     """Tests for backward compatibility re-exports."""
 
     def test_import_from_message_queue(self):
-        """Test importing from cogs.ai_core.message_queue."""
-        from cogs.ai_core.message_queue import (
+        """Test importing from cogs.ai_core.core.message_queue."""
+        from cogs.ai_core.core.message_queue import (
             MessageQueue,
             PendingMessage,
             message_queue,

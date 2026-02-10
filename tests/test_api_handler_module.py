@@ -112,22 +112,22 @@ class TestModuleImports:
 
     def test_import_build_api_config(self):
         """Test build_api_config can be imported."""
-        from cogs.ai_core.api_handler import build_api_config
+        from cogs.ai_core.api.api_handler import build_api_config
         assert build_api_config is not None
 
     def test_import_call_gemini_api(self):
         """Test call_gemini_api can be imported."""
-        from cogs.ai_core.api_handler import call_gemini_api
+        from cogs.ai_core.api.api_handler import call_gemini_api
         assert call_gemini_api is not None
 
     def test_import_call_gemini_api_streaming(self):
         """Test call_gemini_api_streaming can be imported."""
-        from cogs.ai_core.api_handler import call_gemini_api_streaming
+        from cogs.ai_core.api.api_handler import call_gemini_api_streaming
         assert call_gemini_api_streaming is not None
 
     def test_import_detect_search_intent(self):
         """Test detect_search_intent can be imported."""
-        from cogs.ai_core.api_handler import detect_search_intent
+        from cogs.ai_core.api.api_handler import detect_search_intent
         assert detect_search_intent is not None
 
 
