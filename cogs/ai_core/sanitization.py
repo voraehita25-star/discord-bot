@@ -68,7 +68,6 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     content = content.replace("@here", "@\u200bhere")
 
     # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>) from AI output
-    import re
     content = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", content)  # Role mentions
     content = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", content)   # User mentions
 

@@ -34,6 +34,9 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 # Balanced between context and preventing Gemini silent blocks
 MAX_CONTENT_LENGTH = 4500
 
+# Maximum response body size (bytes) to prevent memory exhaustion
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
+
 # Request timeout in seconds (from centralized constants)
 REQUEST_TIMEOUT = HTTP_REQUEST_TIMEOUT
 
@@ -220,12 +223,14 @@ Default Branch: {data.get("default_branch", "main")}
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return url, f"[Non-text content: {content_type}]"
 
-            # Handle encoding with fallback
+            # Handle encoding with fallback, size-limited to prevent memory exhaustion
             try:
-                html = await response.text(encoding=None)  # Let aiohttp detect encoding
-            except UnicodeDecodeError:
+                raw_bytes = await response.content.read(MAX_RESPONSE_SIZE)
+                encoding = response.get_encoding()
+                html = raw_bytes.decode(encoding or 'utf-8')
+            except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values
-                html = await response.text(encoding='latin-1', errors='replace')
+                html = raw_bytes.decode('latin-1', errors='replace')
 
             # Parse HTML
             soup = BeautifulSoup(html, "lxml")

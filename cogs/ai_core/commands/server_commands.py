@@ -11,6 +11,39 @@ import discord
 
 from ..sanitization import sanitize_channel_name, sanitize_role_name
 
+# Allowlist of safe permissions that the AI is allowed to set.
+# Dangerous permissions (administrator, manage_guild, manage_roles, etc.) are excluded.
+_SAFE_PERMISSIONS: frozenset[str] = frozenset({
+    # Channel-level permissions
+    "view_channel", "read_messages",  # read_messages is alias for view_channel
+    "send_messages", "send_messages_in_threads",
+    "create_public_threads", "create_private_threads",
+    "embed_links", "attach_files", "add_reactions",
+    "use_external_emojis", "use_external_stickers",
+    "read_message_history", "connect", "speak",
+    "stream", "use_voice_activation",
+    "manage_messages", "manage_threads",
+    "mute_members", "deafen_members", "move_members",
+    "priority_speaker", "request_to_speak",
+    "use_application_commands", "use_embedded_activities",
+    "use_soundboard", "use_external_sounds",
+    "send_voice_messages", "send_polls",
+    "create_events", "manage_events",
+    # General non-dangerous permissions
+    "change_nickname", "manage_nicknames",
+    "create_instant_invite", "external_emojis",
+    "external_stickers",
+})
+
+# Explicitly blocked dangerous permissions
+_DANGEROUS_PERMISSIONS: frozenset[str] = frozenset({
+    "administrator", "manage_guild", "manage_roles",
+    "manage_channels", "manage_webhooks", "manage_expressions",
+    "kick_members", "ban_members", "mention_everyone",
+    "view_audit_log", "view_guild_insights",
+    "moderate_members",
+})
+
 # Import Audit Logger for tracking admin actions
 try:
     from utils.monitoring.audit_log import log_admin_action, log_channel_change, log_role_change
@@ -440,6 +473,19 @@ async def cmd_set_channel_perm(
         if perm_name == "read_messages":
             perm_name = "view_channel"
 
+        # Security: Only allow safe permissions
+        if perm_name in _DANGEROUS_PERMISSIONS:
+            await origin_channel.send(
+                f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
+                f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+            )
+            return
+        if perm_name not in _SAFE_PERMISSIONS and hasattr(overwrite, perm_name):
+            await origin_channel.send(
+                f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
+            )
+            return
+
         if hasattr(overwrite, perm_name):
             try:
                 setattr(overwrite, perm_name, value)
@@ -490,6 +536,20 @@ async def cmd_set_role_perm(
         return
 
     perms = role.permissions
+
+    # Security: Only allow safe permissions
+    if perm_name in _DANGEROUS_PERMISSIONS:
+        await origin_channel.send(
+            f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
+            f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+        )
+        return
+    if perm_name not in _SAFE_PERMISSIONS and hasattr(perms, perm_name):
+        await origin_channel.send(
+            f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
+        )
+        return
+
     if hasattr(perms, perm_name):
         try:
             setattr(perms, perm_name, value)

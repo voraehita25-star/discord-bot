@@ -23,8 +23,22 @@ impl VectorIndex {
 
     /// Add an entry to the index
     pub fn add(&mut self, id: &str, text: &str) -> usize {
-        // If this ID already exists, return the existing index to avoid corruption
+        // If this ID already exists, update keywords for the new text
         if let Some(&existing_idx) = self.id_to_idx.get(id) {
+            // Remove old keyword associations for this index
+            for indices in self.keyword_index.values_mut() {
+                indices.retain(|&i| i != existing_idx);
+            }
+            // Re-index with new text
+            for word in text.split_whitespace() {
+                let word_lower = word.to_lowercase();
+                if word_lower.len() >= 3 {
+                    self.keyword_index
+                        .entry(word_lower)
+                        .or_insert_with(Vec::new)
+                        .push(existing_idx);
+                }
+            }
             return existing_idx;
         }
 

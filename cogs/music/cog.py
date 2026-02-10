@@ -75,6 +75,13 @@ class Music(commands.Cog):
         # Cancel all auto-disconnect tasks
         for task in self.auto_disconnect_tasks.values():
             task.cancel()
+        # Save queues before clearing to preserve state across reloads
+        for guild_id in list(self.queues.keys()):
+            try:
+                from .queue import queue_manager
+                await queue_manager.save_queue(guild_id)
+            except Exception:
+                pass
         # Disconnect all voice clients to prevent resource leaks
         for vc in list(self.bot.voice_clients):
             try:
@@ -651,13 +658,15 @@ class Music(commands.Cog):
 
         # Retry next track AFTER lock is released (avoids deadlock)
         if _retry_next:
-            # Limit retries to prevent unbounded recursion
-            retry_count = getattr(ctx, '_play_next_retries', 0)
+            # Limit retries to prevent unbounded recursion (per-guild tracking)
+            retry_key = f'_play_next_retries_{guild_id}'
+            retry_count = getattr(self, retry_key, 0)
             if retry_count < 10:  # Max 10 retries to prevent stack overflow
-                ctx._play_next_retries = retry_count + 1
+                setattr(self, retry_key, retry_count + 1)
                 await self.play_next(ctx)
             else:
-                logging.warning("play_next retry limit reached for guild %s", ctx.guild.id)
+                logging.warning("play_next retry limit reached for guild %s", guild_id)
+                setattr(self, retry_key, 0)  # Reset for next session
 
     @commands.hybrid_command(name="loop", aliases=["l"])
     @commands.guild_only()

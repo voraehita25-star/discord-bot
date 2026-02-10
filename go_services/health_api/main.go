@@ -205,10 +205,43 @@ func sanitizeLabel(value string) string {
 	return value
 }
 
+// allowedMetricNames restricts which metric names are accepted via push endpoints.
+var allowedMetricNames = map[string]bool{
+	"requests": true, "rate_limit": true, "cache": true, "tokens": true,
+	"request_duration": true, "ai_response_time": true,
+	"active_connections": true, "circuit_breaker": true,
+}
+
+// allowedLabelValues restricts label values to a known set to prevent cardinality explosion.
+var allowedLabelValues = map[string]map[string]bool{
+	"status": {"success": true, "error": true, "timeout": true},
+	"result": {"hit": true, "miss": true},
+	"type":   {"input": true, "output": true, "user": true, "channel": true, "guild": true},
+}
+
+// safeLabel returns value only if it's in the allowed set for that label key,
+// otherwise returns "other".
+func safeLabel(key, value string) string {
+	if allowed, ok := allowedLabelValues[key]; ok {
+		sanitized := sanitizeLabel(value)
+		if allowed[sanitized] {
+			return sanitized
+		}
+		return "other"
+	}
+	return sanitizeLabel(value)
+}
+
 func main() {
 	port := os.Getenv("HEALTH_API_PORT")
 	if port == "" {
 		port = defaultPort
+	}
+
+	// Default to localhost binding for security (prevent unauthenticated external access)
+	bindHost := os.Getenv("HEALTH_API_HOST")
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
 	}
 
 	version := os.Getenv("BOT_VERSION")
@@ -440,7 +473,7 @@ func main() {
 
 	// Server
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         bindHost + ":" + port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -462,8 +495,8 @@ func main() {
 		server.Shutdown(ctx)
 	}()
 
-	log.Printf("Health API service starting on :%s", port)
-	log.Printf("Metrics available at http://localhost:%s/metrics", port)
+	log.Printf("Health API service starting on %s:%s", bindHost, port)
+	log.Printf("Metrics available at http://%s:%s/metrics", bindHost, port)
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)

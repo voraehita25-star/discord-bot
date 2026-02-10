@@ -40,8 +40,8 @@ pub fn resize_image(
         ResizeMode::Stretch => (max_width, max_height),
     };
 
-    // Skip if already smaller
-    if new_w >= orig_w && new_h >= orig_h {
+    // Skip if already smaller (only for Fit mode — Fill/Stretch must reach requested dimensions)
+    if matches!(mode, ResizeMode::Fit) && new_w >= orig_w && new_h >= orig_h {
         return Ok(ImageData {
             data: data.to_vec(),
             width: orig_w,

@@ -254,7 +254,9 @@ class WeakRefCache(Generic[K, V]):
     def __init__(self, name: str = "weak_cache"):
         self.name = name
         self._cache: dict[K, weakref.ref[V]] = {}
-        self._lock = threading.Lock()
+        # Use RLock (reentrant) because GC callbacks may fire while we hold the lock
+        # (e.g., allocating a new weakref in set() triggers GC, which runs on_collected)
+        self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
         self._collected = 0

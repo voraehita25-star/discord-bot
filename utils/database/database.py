@@ -70,15 +70,21 @@ class Database:
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""
-        # Use sync check first to avoid creating task if already pending
-        if self._export_pending:
+        # Use a per-channel pending key to avoid dropping exports for different channels
+        pending_key = f"channel_{channel_id}" if channel_id else "__global__"
+        if not hasattr(self, "_export_pending_keys"):
+            self._export_pending_keys: set[str] = set()
+
+        if pending_key in self._export_pending_keys:
             return
 
-        self._export_pending = True
+        self._export_pending_keys.add(pending_key)
         max_retries = 3
 
         async def do_export():
             await asyncio.sleep(self._export_delay)
+            self._export_pending_keys.discard(pending_key)
+            # Also clear legacy flag for backward compat
             self._export_pending = False
 
             for attempt in range(max_retries):
@@ -101,10 +107,15 @@ class Database:
                         logging.error("Auto-export failed after %d attempts: %s", max_retries, e)
 
         # Create and track the task
-        task = asyncio.create_task(do_export())
-        self._export_tasks.add(task)
-        # Auto-remove task when done
-        task.add_done_callback(self._export_tasks.discard)
+        try:
+            task = asyncio.create_task(do_export())
+            self._export_tasks.add(task)
+            # Auto-remove task when done
+            task.add_done_callback(self._export_tasks.discard)
+        except RuntimeError:
+            # No running event loop (e.g., during init)
+            self._export_pending_keys.discard(pending_key)
+            logging.debug("Cannot schedule export: no running event loop")
 
     def _schedule_dashboard_export(self, conversation_id: str) -> None:
         """Schedule a debounced export for a dashboard conversation (non-blocking)."""
@@ -1209,6 +1220,12 @@ class Database:
 
     async def delete_dashboard_conversation(self, conversation_id: str) -> bool:
         """Delete a dashboard conversation and all its messages."""
+        # Security: Validate conversation_id to prevent path traversal
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9_-]+$', conversation_id):
+            logging.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
+            return False
+
         async with self.get_connection() as conn:
             # Messages will be deleted automatically due to ON DELETE CASCADE
             await conn.execute(

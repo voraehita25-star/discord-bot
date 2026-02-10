@@ -83,36 +83,38 @@ class TestScheduleExport:
 
     @pytest.mark.asyncio
     async def test_schedule_export_sets_pending_flag(self):
-        """Test that _schedule_export sets _export_pending flag."""
+        """Test that _schedule_export sets pending key for channel."""
         from utils.database.database import Database
 
         db = Database()
-        db._export_pending = False
+        db._export_pending_keys = set()
 
-        db._schedule_export()
+        db._schedule_export(channel_id=123)
 
-        assert db._export_pending is True
+        assert "channel_123" in db._export_pending_keys
 
         # Cancel the task to cleanup
         for task in list(db._export_tasks):
             task.cancel()
+        db._export_pending_keys.clear()
         db._export_pending = False
 
     @pytest.mark.asyncio
     async def test_schedule_export_skips_if_already_pending(self):
-        """Test that _schedule_export skips if already pending."""
+        """Test that _schedule_export skips if already pending for same channel."""
         from utils.database.database import Database
 
         db = Database()
-        db._export_pending = True
+        db._export_pending_keys = {"channel_123"}
         initial_task_count = len(db._export_tasks)
 
-        db._schedule_export()
+        db._schedule_export(channel_id=123)
 
         # Should not create new task
         assert len(db._export_tasks) == initial_task_count
 
         # Reset
+        db._export_pending_keys.clear()
         db._export_pending = False
 
 

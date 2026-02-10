@@ -21,6 +21,14 @@ import time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+
+class _NewMessageInterrupt(Exception):
+    """Raised when a new message arrives to cancel current processing.
+
+    This is a distinct exception from asyncio.CancelledError to avoid
+    conflating application logic with real task cancellation.
+    """
+
 import aiohttp
 from google import genai
 from PIL import Image
@@ -373,6 +381,11 @@ class ChatManager(SessionMixin, ResponseMixin):
         evicted = 0
 
         for channel_id, _ in sorted_channels[:evict_count]:
+            # Skip channels that are currently being processed (have a locked lock)
+            lock = self.processing_locks.get(channel_id)
+            if lock is not None and lock.locked():
+                continue
+
             # Clean up all data for this channel
             self.chats.pop(channel_id, None)
             self.last_accessed.pop(channel_id, None)
@@ -380,6 +393,9 @@ class ChatManager(SessionMixin, ResponseMixin):
             self.processing_locks.pop(channel_id, None)
             self.streaming_enabled.pop(channel_id, None)
             self.current_typing_msg.pop(channel_id, None)
+            # Also clean up message queue data for this channel
+            self._message_queue.pending_messages.pop(channel_id, None)
+            self._message_queue.cancel_flags.pop(channel_id, None)
             evicted += 1
 
         if evicted > 0:
@@ -669,10 +685,26 @@ class ChatManager(SessionMixin, ResponseMixin):
             self._deduplicator.remove_request(request_key)
             return
 
-        # Use asyncio.wait_for for lock acquisition with timeout to prevent deadlock
+        # Acquire lock with timeout using a safe pattern that avoids the known
+        # asyncio.wait_for(lock.acquire()) deadlock (CPython issue #42130).
+        # Instead, we use asyncio.wait_for on an Event set after acquisition.
+        lock_acquired = False
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT)
+            async def _acquire_with_event():
+                await lock.acquire()
+                return True
+
+            lock_acquired = await asyncio.wait_for(
+                asyncio.shield(_acquire_with_event()), timeout=LOCK_TIMEOUT
+            )
         except asyncio.TimeoutError:
+            # If the shielded task acquired the lock after our timeout,
+            # we need to release it.
+            if lock.locked():
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
             )
@@ -988,7 +1020,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_item = {
                             "role": "user",
@@ -1065,7 +1097,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_entries = []
                         user_item = {
@@ -1090,7 +1122,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             self.bot, context_channel.id, chat_data, new_entries=new_entries
                         )
                         # Don't return - fall through to process pending messages
-                        raise asyncio.CancelledError("New message received")
+                        raise _NewMessageInterrupt("New message received")
 
                     # 9. Update history
                     user_msg_text = prompt_with_context
@@ -1099,7 +1131,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Include text file contents in saved history
                     if text_parts:
                         user_msg_text += "\n\n" + "\n".join(text_parts)
-                    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                     new_entries = []
 
@@ -1266,7 +1298,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # Save again to persist ID
                                 await update_message_id(context_channel.id, sent_message.id)
 
-                except asyncio.CancelledError:
+                except (_NewMessageInterrupt, asyncio.CancelledError):
                     # This is expected when a new message arrives - just pass through
                     logging.info("🔄 Processing interrupted, will handle pending messages")
                 except (discord.HTTPException, ValueError, TypeError) as e:

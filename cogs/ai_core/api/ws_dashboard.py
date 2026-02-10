@@ -240,7 +240,18 @@ class DashboardWebSocketServer:
         origin = request.headers.get("Origin", "")
         host = request.headers.get("Host", "")
 
+        # Authentication: Require API key from environment or query param
+        expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
+        if expected_token:
+            # Check Authorization header or query param
+            auth_header = request.headers.get("Authorization", "")
+            query_token = request.query.get("token", "")
+            if auth_header != f"Bearer {expected_token}" and query_token != expected_token:
+                logging.warning("⚠️ Rejected WebSocket connection: invalid or missing auth token")
+                return web.Response(status=401, text="Unauthorized: Invalid or missing token")
+
         # Allow connections from localhost only (127.0.0.1 or localhost)
+        # Use exact prefix matching to prevent subdomain bypass (e.g., evil-localhost.com)
         allowed_origins = [
             "http://127.0.0.1",
             "http://localhost",
@@ -249,11 +260,19 @@ class DashboardWebSocketServer:
             "file://",  # For local HTML files
         ]
 
-        # Check if origin is allowed (match prefix, or no origin for direct WS tools)
-        origin_allowed = origin == "" or any(
-            origin.startswith(allowed)
-            for allowed in allowed_origins
-        )
+        # Check if origin is allowed
+        # Require origin header from browser clients—empty origin is only allowed
+        # if host header explicitly matches localhost
+        def _is_safe_origin(o: str) -> bool:
+            """Check if origin matches an allowed prefix followed by port or end-of-string."""
+            for allowed in allowed_origins:
+                if o == allowed:
+                    return True
+                if o.startswith(allowed + ":") or o.startswith(allowed + "/"):
+                    return True
+            return False
+
+        origin_allowed = _is_safe_origin(origin) if origin else False
 
         # Also check host header
         host_allowed = host.startswith("127.0.0.1") or host.startswith("localhost")
@@ -484,8 +503,10 @@ class DashboardWebSocketServer:
         current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
         # Build unrestricted mode injection if enabled
+        # Security: Only allow unrestricted mode when DASHBOARD_ALLOW_UNRESTRICTED env var is set
         unrestricted_injection = ""
-        if unrestricted_mode and ENI_ESCALATION_FRAMING:
+        allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in ("1", "true", "yes")
+        if unrestricted_mode and allow_unrestricted and ENI_ESCALATION_FRAMING:
             unrestricted_injection = f"\n\n[UNRESTRICTED MODE ACTIVE]\n{ENI_ESCALATION_FRAMING}\n"
             logging.info("🔓 Unrestricted Mode: ENABLED")
 

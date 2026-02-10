@@ -33,26 +33,44 @@ const (
 	workerCount        = 10
 )
 
-// isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
-func isPrivateIP(ip net.IP) bool {
-	privateRanges := []string{
-		"127.0.0.0/8",    // Loopback
-		"10.0.0.0/8",     // Private Class A
-		"172.16.0.0/12",  // Private Class B
-		"192.168.0.0/16", // Private Class C
-		"169.254.0.0/16", // Link-local
-		"0.0.0.0/8",      // Current network
-		"100.64.0.0/10",  // Shared address space
+// privateNetworks is a list of private/internal IP ranges for SSRF protection.
+// Initialized once to avoid repeated parsing.
+var privateNetworks []*net.IPNet
+
+func init() {
+	ranges := []string{
+		"127.0.0.0/8",            // Loopback
+		"10.0.0.0/8",             // Private Class A
+		"172.16.0.0/12",          // Private Class B
+		"192.168.0.0/16",         // Private Class C
+		"169.254.0.0/16",         // Link-local
+		"0.0.0.0/8",              // Current network
+		"100.64.0.0/10",          // Shared address space
+		"255.255.255.255/32",     // Broadcast
+		"::1/128",                // IPv6 loopback
+		"fc00::/7",               // IPv6 unique local
+		"fe80::/10",              // IPv6 link-local
+		"::ffff:127.0.0.0/104",   // IPv4-mapped loopback
+		"::ffff:10.0.0.0/104",    // IPv4-mapped private A
+		"::ffff:172.16.0.0/108",  // IPv4-mapped private B
+		"::ffff:192.168.0.0/112", // IPv4-mapped private C
+		"::ffff:169.254.0.0/112", // IPv4-mapped link-local
+		"::ffff:0.0.0.0/104",     // IPv4-mapped current network
 	}
-	for _, cidr := range privateRanges {
+	for _, cidr := range ranges {
 		_, network, err := net.ParseCIDR(cidr)
-		if err == nil && network.Contains(ip) {
-			return true
+		if err == nil {
+			privateNetworks = append(privateNetworks, network)
 		}
 	}
-	// Check IPv6 loopback
-	if ip.Equal(net.IPv6loopback) {
-		return true
+}
+
+// isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
+func isPrivateIP(ip net.IP) bool {
+	for _, network := range privateNetworks {
+		if network.Contains(ip) {
+			return true
+		}
 	}
 	return false
 }
@@ -125,15 +143,51 @@ type Fetcher struct {
 	limiter *rate.Limiter
 }
 
-// NewFetcher creates a new Fetcher
+// ssrfSafeDialContext returns a DialContext function that checks resolved IPs
+// against private ranges at connect time, preventing DNS rebinding attacks.
+func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: invalid address %q: %v", addr, err)
+		}
+
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: DNS resolution failed for %q: %v", host, err)
+		}
+
+		for _, ip := range ips {
+			if isPrivateIP(ip) {
+				return nil, fmt.Errorf("SSRF blocked: %q resolves to private IP %s", host, ip)
+			}
+		}
+
+		// All IPs are safe — dial normally
+		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+}
+
+// NewFetcher creates a new Fetcher with SSRF-safe transport
 func NewFetcher() *Fetcher {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext:         ssrfSafeDialContext(dialer),
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
 	return &Fetcher{
 		client: &http.Client{
-			Timeout: requestTimeout,
+			Timeout:   requestTimeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
+				// Redirect target IP is validated by ssrfSafeDialContext
+				// so no additional check needed here.
 				return nil
 			},
 		},
@@ -482,9 +536,9 @@ func main() {
 		json.NewEncoder(w).Encode(response)
 	})
 
-	// Server
+	// Server — bind to localhost to prevent unauthenticated external access
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         "127.0.0.1:" + port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,

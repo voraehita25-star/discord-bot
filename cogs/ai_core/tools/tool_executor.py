@@ -320,8 +320,12 @@ async def send_as_webhook(bot, channel, name, message):
         channel_id = channel.id
 
         # Sanitize dangerous mentions in webhook messages
-        # (webhooks bypass allowed_mentions for @everyone/@here)
+        # (webhooks bypass allowed_mentions for @everyone/@here and role/user mentions)
         message = message.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+        # Also sanitize role and user mention formats
+        import re as _re
+        message = _re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
+        message = _re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
         # Try cache first
         webhook = get_cached_webhook(channel_id, webhook_name)

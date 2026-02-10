@@ -146,6 +146,9 @@ impl VectorStorage {
             self.count += 1;
             let count_offset = 12; // After magic + version + dimension
             mmap[count_offset..count_offset + 8].copy_from_slice(&(self.count as u64).to_ne_bytes());
+            
+            // Flush to ensure data is persisted to disk
+            mmap.flush()?;
         } else {
             return Err(RagError::Serialization("Cannot push vectors without file backing (in-memory mode not supported)".to_string()));
         }

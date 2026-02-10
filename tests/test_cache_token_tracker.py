@@ -381,13 +381,14 @@ class TestTokenTracker:
         assert warning is not None
         assert "เหลือโควต้า" in warning
 
-    def test_get_global_stats_empty(self):
+    @pytest.mark.asyncio
+    async def test_get_global_stats_empty(self):
         """Test get_global_stats with no records."""
         from cogs.ai_core.cache.token_tracker import TokenTracker
 
         tracker = TokenTracker()
 
-        stats = tracker.get_global_stats()
+        stats = await tracker.get_global_stats()
 
         assert stats["total_records"] == 0
         assert stats["total_tokens"] == 0
@@ -414,7 +415,7 @@ class TestTokenTracker:
         with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
-        stats = tracker.get_global_stats()
+        stats = await tracker.get_global_stats()
 
         assert stats["unique_users"] == 1
         assert stats["unique_channels"] == 1

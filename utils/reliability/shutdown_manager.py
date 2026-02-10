@@ -118,14 +118,28 @@ class ShutdownManager:
 
         self._handlers: list[CleanupHandler] = []
         self._state = ShutdownState()
-        self._shutdown_event = asyncio.Event()
-        self._lock = asyncio.Lock()
+        # Defer Event creation to avoid binding to the wrong event loop at import time.
+        # asyncio.Event() created here may be associated with no loop or a different loop.
+        self._shutdown_event: asyncio.Event | None = None
+        self._lock: asyncio.Lock | None = None
         self._pending_shutdown_task: asyncio.Task[ShutdownState] | None = None
 
         self.logger = logging.getLogger("ShutdownManager")
 
         # Register atexit handler for sync cleanup
         atexit.register(self._atexit_handler)
+
+    def _get_shutdown_event(self) -> asyncio.Event:
+        """Lazily create the shutdown event in the correct event loop."""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        return self._shutdown_event
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Lazily create the lock in the correct event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def state(self) -> ShutdownState:
@@ -239,7 +253,7 @@ class ShutdownManager:
         Returns:
             Final shutdown state
         """
-        async with self._lock:
+        async with self._get_lock():
             if self._state.phase != ShutdownPhase.RUNNING:
                 self.logger.warning("Shutdown already in progress")
                 return self._state
@@ -303,7 +317,7 @@ class ShutdownManager:
         self._state.completed_at = time.time()
 
         # Set shutdown event
-        self._shutdown_event.set()
+        self._get_shutdown_event().set()
 
         # Log summary
         duration = self._state.duration_seconds or 0
@@ -398,7 +412,7 @@ class ShutdownManager:
 
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown to complete."""
-        await self._shutdown_event.wait()
+        await self._get_shutdown_event().wait()
 
     def get_status(self) -> dict[str, Any]:
         """Get current shutdown manager status."""

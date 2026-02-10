@@ -82,7 +82,11 @@ class QueueManager:
         queue = self.get_queue(guild_id)
         if len(queue) < 2:
             return False
-        random.shuffle(queue)
+        # Convert to list for O(n) shuffle — random.shuffle on deque is O(n²)
+        items = list(queue)
+        random.shuffle(items)
+        queue.clear()
+        queue.extend(items)
         return True
 
     def remove_track(self, guild_id: int, position: int) -> dict[str, Any] | None:

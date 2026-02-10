@@ -29,7 +29,7 @@ try:
     def json_dumps(
         obj: Any,
         *,
-        ensure_ascii: bool = True,  # NOTE: Ignored by orjson (always outputs UTF-8)
+        ensure_ascii: bool = False,  # NOTE: Ignored by orjson (always outputs UTF-8)
         indent: int | None = None,
         **kwargs,
     ) -> str:
@@ -65,7 +65,7 @@ except ImportError:
         return _json.loads(data)
 
     def json_dumps(
-        obj: Any, *, ensure_ascii: bool = True, indent: int | None = None, **kwargs
+        obj: Any, *, ensure_ascii: bool = False, indent: int | None = None, **kwargs
     ) -> str:
         """Serialize Python object to JSON string (standard json)."""
         return _json.dumps(obj, ensure_ascii=ensure_ascii, indent=indent, **kwargs)

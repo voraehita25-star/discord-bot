@@ -7,8 +7,8 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
         return false;
     }
 
-    // Count frame markers (Graphic Control Extension)
-    // 0x21 0xF9 indicates a Graphic Control Extension
+    // Count frames by Image Descriptor (0x2C) blocks, which is the
+    // authoritative frame marker. GCE (0x21 0xF9) is optional per frame.
     let mut frame_count: usize = 0;
     let mut i: usize = 13; // Skip header
 
@@ -25,15 +25,7 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
     while i + 2 < data.len() {
         match data[i] {
             0x21 => {
-                // Extension
-                if i + 1 < data.len() && data[i + 1] == 0xF9 {
-                    // Graphic Control Extension = frame marker
-                    frame_count += 1;
-                    if frame_count > 1 {
-                        return true; // Multiple frames = animated
-                    }
-                }
-                // Skip extension
+                // Extension — skip it
                 i += 2;
                 while i < data.len() && data[i] != 0 {
                     let block_size = data[i] as usize;
@@ -48,7 +40,11 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
                 i += 1; // Skip block terminator
             }
             0x2C => {
-                // Image Descriptor
+                // Image Descriptor = one frame
+                frame_count += 1;
+                if frame_count > 1 {
+                    return true; // Multiple frames = animated
+                }
                 if i + 10 > data.len() {
                     break;
                 }

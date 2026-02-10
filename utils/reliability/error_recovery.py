@@ -330,7 +330,7 @@ async def retry_async(
 
     # Get backoff state for this function
     state_key = service_name or func.__name__
-    state = _get_backoff_state(state_key)
+    state = await _get_backoff_state_async(state_key)
 
     # Get service health for adaptive delays
     service_health = 1.0
