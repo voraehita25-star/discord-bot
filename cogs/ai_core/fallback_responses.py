@@ -21,7 +21,7 @@ except ImportError:
 
 # Try to import circuit breaker to check API status
 try:
-    from utils.reliability.circuit_breaker import gemini_circuit
+    from utils.reliability.circuit_breaker import gemini_circuit, CircuitState
 
     CIRCUIT_BREAKER_AVAILABLE = True
 except ImportError:
@@ -134,7 +134,7 @@ class FallbackSystem:
     def should_use_fallback(self) -> bool:
         """Check if fallback should be used based on circuit breaker state."""
         if CIRCUIT_BREAKER_AVAILABLE:
-            return not gemini_circuit.can_execute()
+            return gemini_circuit.state == CircuitState.OPEN
         return False
 
     def get_by_intent(

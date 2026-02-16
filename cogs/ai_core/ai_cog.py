@@ -110,11 +110,12 @@ class AI(commands.Cog):
         self.chat_manager: ChatManager = ChatManager(bot)
         self.cleanup_task: asyncio.Task | None = None
         self._pending_request_cleanup_task: asyncio.Task | None = None
-        # Rate limiter handles cooldowns now
-        rate_limiter.start_cleanup_task()  # Start cleanup for old rate limit buckets
+        # Rate limiter cleanup will be started in cog_load()
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded - safe place for async initialization."""
+        # Start rate limiter cleanup (requires running event loop)
+        rate_limiter.start_cleanup_task()
         self.cleanup_task = asyncio.create_task(self.chat_manager.cleanup_inactive_sessions())
         # Start webhook cache cleanup task
         start_webhook_cache_cleanup(self.bot)
@@ -317,15 +318,43 @@ class AI(commands.Cog):
             del self.chat_manager.chats[channel.id]
         if channel.id in self.chat_manager.seen_users:
             del self.chat_manager.seen_users[channel.id]
+        # Clean up all remaining per-channel state to prevent memory leaks
+        self.chat_manager.last_accessed.pop(channel.id, None)
+        self.chat_manager.processing_locks.pop(channel.id, None)
+        self.chat_manager.streaming_enabled.pop(channel.id, None)
+        self.chat_manager.current_typing_msg.pop(channel.id, None)
+        self.chat_manager._message_queue.pending_messages.pop(channel.id, None)
+        self.chat_manager._message_queue.cancel_flags.pop(channel.id, None)
 
     @commands.Cog.listener()
     async def on_message(self, message):
         """Handle incoming messages for AI responses."""
-        # 1. Handle Webhooks (Tupperbox)
+        # 1. Handle Webhooks (Tupperbox only)
         if message.webhook_id:
             # Skip DMs (webhooks shouldn't come from DMs, but safety check)
             if not message.guild:
                 return
+
+            # Validate webhook identity - only allow known proxy bots (Tupperbox, PluralKit)
+            # Reject webhooks from unknown sources to prevent abuse
+            ALLOWED_WEBHOOK_NAMES = {"Tupperbox", "PluralKit"}
+            webhook_name = getattr(message.author, "name", "")
+            is_known_proxy = False
+            try:
+                # Fetch the actual webhook to verify it belongs to a known bot
+                webhooks = await message.channel.webhooks()
+                for wh in webhooks:
+                    if wh.id == message.webhook_id:
+                        # Check if webhook was created by a known proxy bot
+                        if wh.user and wh.user.bot:
+                            is_known_proxy = True
+                        break
+            except (discord.Forbidden, discord.HTTPException):
+                # If we can't verify, reject for safety
+                pass
+
+            if not is_known_proxy:
+                return  # Reject unverified webhooks
 
             # Restriction Logic
             allowed = False
@@ -406,7 +435,13 @@ class AI(commands.Cog):
             # Convert command_prefix to tuple for startswith (handles both str and list)
             prefix = self.bot.command_prefix
             if callable(prefix):
-                prefix_tuple = ("!",)  # Default if callable
+                try:
+                    result = prefix(self.bot, message)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    prefix_tuple = tuple(result) if isinstance(result, (list, tuple)) else (result,)
+                except Exception:
+                    prefix_tuple = ("!",)  # Fallback if callable fails
             elif isinstance(prefix, str):
                 prefix_tuple = (prefix,)
             else:
@@ -522,7 +557,13 @@ class AI(commands.Cog):
         # Convert command_prefix to tuple for startswith (handles both str and list)
         prefix = self.bot.command_prefix
         if callable(prefix):
-            prefix_tuple = ("!",)  # Default if callable
+            try:
+                result = prefix(self.bot, message)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                prefix_tuple = tuple(result) if isinstance(result, (list, tuple)) else (result,)
+            except Exception:
+                prefix_tuple = ("!",)  # Fallback if callable fails
         elif isinstance(prefix, str):
             prefix_tuple = (prefix,)
         else:
@@ -1262,7 +1303,7 @@ class AI(commands.Cog):
                 await ctx.send(f"🚦 Channel rate limit: {current} requests/minute")
             else:
                 # Set new limit
-                rate_limiter.set_channel_limit(channel_id, limit)
+                await rate_limiter.set_channel_limit(channel_id, limit)
                 await ctx.send(f"✅ Channel rate limit set to: {limit} requests/minute")
 
         except (ImportError, AttributeError):

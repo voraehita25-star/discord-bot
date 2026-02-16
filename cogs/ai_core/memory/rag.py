@@ -314,7 +314,6 @@ class MemorySystem:
         self._memories_cache: dict[int, dict] = {}  # id -> memory dict
 
         # Debounced save state
-        self._save_pending = False
         self._save_task: asyncio.Task | None = None
         self._periodic_save_task: asyncio.Task | None = None
 
@@ -426,16 +425,20 @@ class MemorySystem:
                     self._index_built = True
                     # Load memories cache from DB
                     # Load ALL memories (not just one channel) since FAISS index is global
-                    all_memories = await db.get_all_rag_memories(None)
-                    for mem in all_memories:
-                        mem_id = mem.get("id")
-                        if mem_id:
-                            self._memories_cache[mem_id] = mem
-                    self._evict_cache_if_needed()
+                    if _DB_AVAILABLE and db is not None:
+                        all_memories = await db.get_all_rag_memories(None)
+                        for mem in all_memories:
+                            mem_id = mem.get("id")
+                            if mem_id:
+                                self._memories_cache[mem_id] = mem
+                        self._evict_cache_if_needed()
                     return
 
             # Build from database (slow path)
             # Load ALL memories (not just one channel) since FAISS index is global
+            if not _DB_AVAILABLE or db is None:
+                return
+
             all_memories = await db.get_all_rag_memories(None)
             if not all_memories:
                 return
@@ -466,24 +469,18 @@ class MemorySystem:
 
     def _schedule_index_save(self, delay: float = 30.0) -> None:
         """Schedule a debounced save of FAISS index (non-blocking)."""
-        if self._save_pending:
-            return  # Already scheduled
-
-        self._save_pending = True
+        # Cancel any existing save task before creating a new one
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
 
         async def do_save():
             try:
                 await asyncio.sleep(delay)
-                self._save_pending = False
                 if self._faiss_index and self._index_built:
                     self._faiss_index.save_to_disk()
             except asyncio.CancelledError:
-                self._save_pending = False
                 raise  # Re-raise to properly handle cancellation
 
-        # Cancel any existing save task before creating a new one
-        if self._save_task and not self._save_task.done():
-            self._save_task.cancel()
         self._save_task = asyncio.create_task(do_save())
 
     def start_periodic_save(self, interval: float = 300.0) -> None:
@@ -533,6 +530,10 @@ class MemorySystem:
 
     async def add_memory(self, content: str, channel_id: int | None = None) -> bool:
         """Add a text chunk to long-term memory."""
+        if not _DB_AVAILABLE or db is None:
+            logging.warning("Database not available for RAG add_memory")
+            return False
+
         embedding = await self.generate_embedding(content)
         if embedding is None:
             return False
@@ -704,13 +705,17 @@ class MemorySystem:
         Returns:
             List of MemoryResult objects
         """
+        if not _DB_AVAILABLE or db is None:
+            return []
+
         # Get all memories for keyword search
         all_memories = await db.get_all_rag_memories(channel_id)
         if not all_memories:
             return []
 
-        # Update cache
-        for mem in all_memories:
+        # Update cache (batch with size limit to prevent memory spike)
+        MAX_CACHE_BATCH = 2000
+        for mem in all_memories[:MAX_CACHE_BATCH]:
             self._memories_cache[mem.get("id", -1)] = mem
         self._evict_cache_if_needed()
 
@@ -800,10 +805,10 @@ class MemorySystem:
         results = await self.hybrid_search(query, limit, channel_id)
         return [r.content for r in results if r.score > 0.1]
 
-    async def _linear_search_raw(
+    def _linear_search_raw_sync(
         self, query_vec: np.ndarray, limit: int, memories: list[dict]
     ) -> list[tuple[int, float]]:
-        """Linear scan search returning (id, similarity) pairs."""
+        """Linear scan search returning (id, similarity) pairs (sync, runs in thread)."""
         scored = []
 
         for mem in memories:
@@ -825,10 +830,19 @@ class MemorySystem:
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:limit]
 
+    async def _linear_search_raw(
+        self, query_vec: np.ndarray, limit: int, memories: list[dict]
+    ) -> list[tuple[int, float]]:
+        """Linear scan search returning (id, similarity) pairs."""
+        return await asyncio.to_thread(self._linear_search_raw_sync, query_vec, limit, memories)
+
     async def _linear_search(
         self, query_vec: np.ndarray, limit: int, channel_id: int | None
     ) -> list[str]:
         """Fallback linear scan search (legacy method)."""
+        if not _DB_AVAILABLE or db is None:
+            return []
+
         all_memories = await db.get_all_rag_memories(channel_id)
 
         if not all_memories:

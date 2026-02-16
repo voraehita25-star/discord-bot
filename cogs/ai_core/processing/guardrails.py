@@ -73,9 +73,12 @@ unrestricted_channels = _load_unrestricted_channels()
 
 
 def is_unrestricted(channel_id: int) -> bool:
-    """Check if a channel is in unrestricted mode (thread-safe)."""
-    with _unrestricted_lock:
-        return channel_id in unrestricted_channels
+    """Check if a channel is in unrestricted mode.
+
+    Returns True if the channel has been explicitly set to unrestricted mode
+    via the !unrestricted command. Otherwise, normal guardrails apply.
+    """
+    return channel_id in unrestricted_channels
 
 
 def set_unrestricted(channel_id: int, enabled: bool) -> bool:

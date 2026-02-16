@@ -107,7 +107,7 @@ class TestPerformanceTracker:
         tracker.record_timing("api_call", 0.5)
         tracker.clear_metrics()
 
-        assert tracker._metrics["api_call"] == []
+        assert len(tracker._metrics["api_call"]) == 0
 
     def test_clear_single_step(self):
         """Test clearing a single step."""
@@ -118,7 +118,7 @@ class TestPerformanceTracker:
         tracker.record_timing("rag_search", 0.1)
         tracker.clear_metrics("api_call")
 
-        assert tracker._metrics["api_call"] == []
+        assert len(tracker._metrics["api_call"]) == 0
         assert len(tracker._metrics["rag_search"]) == 1
 
     def test_get_summary(self):

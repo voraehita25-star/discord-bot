@@ -219,6 +219,7 @@ class TestAIHistoryMethods:
         from utils.database.database import Database
 
         db = Database()
+        db._schema_initialized = False  # Force re-init to run migration
         await db.init_schema()
 
         test_channel_id = 999999999
@@ -230,7 +231,7 @@ class TestAIHistoryMethods:
 
         # Verify it was saved
         history = await db.get_ai_history(test_channel_id, limit=1)
-        assert len(history) >= 0  # May or may not have data depending on test isolation
+        assert len(history) >= 1  # Should have at least 1 message after saving
 
         # Cleanup
         await db.delete_ai_history(test_channel_id)
@@ -243,6 +244,7 @@ class TestAIHistoryMethods:
         from utils.database.database import Database
 
         db = Database()
+        db._schema_initialized = False  # Force re-init to run migration
         await db.init_schema()
 
         test_channel_id = 888888888
@@ -250,6 +252,7 @@ class TestAIHistoryMethods:
         batch_data = [
             {
                 "channel_id": test_channel_id,
+                "user_id": None,
                 "role": "user",
                 "content": "Hello",
                 "message_id": None,
@@ -257,6 +260,7 @@ class TestAIHistoryMethods:
             },
             {
                 "channel_id": test_channel_id,
+                "user_id": None,
                 "role": "model",
                 "content": "Hi there",
                 "message_id": None,
@@ -361,8 +365,9 @@ class TestAIMetadataMethods:
         await db.save_ai_metadata(channel_id=test_channel_id, thinking_enabled=True)
 
         metadata = await db.get_ai_metadata(test_channel_id)
-        # Metadata may or may not exist depending on test order
-        assert metadata is None or isinstance(metadata, dict)
+        # Metadata should exist after saving
+        assert metadata is not None
+        assert isinstance(metadata, dict)
 
     @pytest.mark.asyncio
     async def test_get_ai_metadata_nonexistent(self):
@@ -411,8 +416,9 @@ class TestGuildSettingsMethods:
         )
 
         settings = await db.get_guild_settings(test_guild_id)
-        # Verify settings were saved
-        assert settings is None or isinstance(settings, dict)
+        # Verify settings were saved - should exist and be a dict
+        assert settings is not None
+        assert isinstance(settings, dict)
 
 
 class TestUserStatsMethods:
@@ -432,8 +438,9 @@ class TestUserStatsMethods:
         await db.increment_user_stat(test_user_id, test_guild_id, "messages_count")
 
         stats = await db.get_user_stats(test_user_id, test_guild_id)
-        # Stats may or may not exist
-        assert stats is None or isinstance(stats, dict)
+        # Stats should exist after incrementing
+        assert stats is not None
+        assert isinstance(stats, dict)
 
     @pytest.mark.asyncio
     async def test_get_user_stats_nonexistent(self):

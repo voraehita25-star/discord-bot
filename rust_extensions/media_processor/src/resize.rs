@@ -30,8 +30,16 @@ pub fn resize_image(
         return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
     }
 
+    // Clamp JPEG quality to valid range (1-100)
+    let jpeg_quality = jpeg_quality.max(1).min(100);
+
     let img = image::load_from_memory(data)?;
     let (orig_w, orig_h) = img.dimensions();
+
+    // Guard against degenerate/corrupt images with zero dimensions
+    if orig_w == 0 || orig_h == 0 {
+        return Err(MediaError::Encode("Image has zero dimensions".to_string()));
+    }
 
     // Calculate new dimensions
     let (new_w, new_h) = match mode {
@@ -59,8 +67,8 @@ pub fn resize_image(
                 new_w as f64 / orig_w as f64,
                 new_h as f64 / orig_h as f64,
             );
-            let scaled_w = (orig_w as f64 * scale).ceil() as u32;
-            let scaled_h = (orig_h as f64 * scale).ceil() as u32;
+            let scaled_w = (orig_w as f64 * scale).ceil().min(u32::MAX as f64) as u32;
+            let scaled_h = (orig_h as f64 * scale).ceil().min(u32::MAX as f64) as u32;
             
             let scaled = img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
             

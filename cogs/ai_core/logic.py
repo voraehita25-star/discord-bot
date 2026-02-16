@@ -21,6 +21,13 @@ import time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+# Pre-allocate timezone to avoid re-creating on every message
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+
+import aiohttp
+from google import genai
+from PIL import Image
+
 
 class _NewMessageInterrupt(Exception):
     """Raised when a new message arrives to cancel current processing.
@@ -28,10 +35,6 @@ class _NewMessageInterrupt(Exception):
     This is a distinct exception from asyncio.CancelledError to avoid
     conflating application logic with real task cancellation.
     """
-
-import aiohttp
-from google import genai
-from PIL import Image
 
 # Import API handler module (direct subfolder import)
 from .api.api_handler import (
@@ -380,11 +383,37 @@ class ChatManager(SessionMixin, ResponseMixin):
         evict_count = max(1, len(self.chats) - self.MAX_CHANNELS + (self.MAX_CHANNELS // 10))
         evicted = 0
 
+        # Collect channels to evict (saving history requires async, schedule it)
+        channels_to_evict = []
         for channel_id, _ in sorted_channels[:evict_count]:
             # Skip channels that are currently being processed (have a locked lock)
             lock = self.processing_locks.get(channel_id)
             if lock is not None and lock.locked():
                 continue
+            channels_to_evict.append(channel_id)
+
+        for channel_id in channels_to_evict:
+            # Save history before evicting to prevent data loss
+            if channel_id in self.chats:
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Schedule save as a fire-and-forget task with error callback
+                    from .storage import save_history
+                    task = loop.create_task(save_history(self.bot, channel_id, self.chats[channel_id]))
+
+                    def _handle_lru_save_result(t: asyncio.Task) -> None:
+                        if t.cancelled():
+                            return
+                        exc = t.exception()
+                        if exc:
+                            logging.error("LRU save failed: %s", exc)
+
+                    task.add_done_callback(_handle_lru_save_result)
+                except RuntimeError:
+                    # No running event loop
+                    logging.warning("No event loop for LRU eviction save of channel %s", channel_id)
+                except Exception as e:
+                    logging.warning("Failed to save history before LRU eviction for %s: %s", channel_id, e)
 
             # Clean up all data for this channel
             self.chats.pop(channel_id, None)
@@ -399,7 +428,7 @@ class ChatManager(SessionMixin, ResponseMixin):
             evicted += 1
 
         if evicted > 0:
-            logging.info("🧹 ChatManager LRU eviction: removed %d channels", evicted)
+            logging.info("🧹 ChatManager LRU eviction: removed %d channels (history saved)", evicted)
 
         return evicted
 
@@ -643,6 +672,12 @@ class ChatManager(SessionMixin, ResponseMixin):
         if not self.client:
             return  # AI not initialized
 
+        # Input length validation - prevent extremely large messages
+        MAX_MESSAGE_LENGTH = 100_000  # 100KB max
+        if message and len(message) > MAX_MESSAGE_LENGTH:
+            message = message[:MAX_MESSAGE_LENGTH] + "\n[... ข้อความถูกตัดเนื่องจากยาวเกินไป ...]"
+            logging.warning("Truncated oversized message from user %s (%d chars)", user.id, len(message))
+
         # Determine Context and Send channels
         context_channel = output_channel if output_channel else channel
         send_channel = output_channel if output_channel else channel
@@ -687,24 +722,33 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         # Acquire lock with timeout using a safe pattern that avoids the known
         # asyncio.wait_for(lock.acquire()) deadlock (CPython issue #42130).
-        # Instead, we use asyncio.wait_for on an Event set after acquisition.
+        # We shield the acquire task so wait_for's cancellation doesn't corrupt
+        # the lock state, then attach a done_callback to release the lock if
+        # the shielded task completes after we've already timed out.
         lock_acquired = False
+        _timed_out = False
         try:
-            async def _acquire_with_event():
+            async def _acquire_lock():
                 await lock.acquire()
                 return True
 
+            _acquire_task = asyncio.create_task(_acquire_lock())
+
+            def _release_if_timed_out(task: asyncio.Task) -> None:
+                """Release the lock if we already gave up waiting."""
+                if _timed_out and not task.cancelled() and task.exception() is None:
+                    try:
+                        lock.release()
+                    except RuntimeError:
+                        pass
+
+            _acquire_task.add_done_callback(_release_if_timed_out)
+
             lock_acquired = await asyncio.wait_for(
-                asyncio.shield(_acquire_with_event()), timeout=LOCK_TIMEOUT
+                asyncio.shield(_acquire_task), timeout=LOCK_TIMEOUT
             )
         except asyncio.TimeoutError:
-            # If the shielded task acquired the lock after our timeout,
-            # we need to release it.
-            if lock.locked():
-                try:
-                    lock.release()
-                except RuntimeError:
-                    pass
+            _timed_out = True
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
             )
@@ -740,8 +784,7 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     user_name = user.display_name
                     # Get real-time in Bangkok timezone (ICT)
-                    bangkok_tz = ZoneInfo("Asia/Bangkok")
-                    now_bangkok = datetime.datetime.now(bangkok_tz)
+                    now_bangkok = datetime.datetime.now(BANGKOK_TZ)
                     now = now_bangkok.strftime("%A, %d %B %Y %H:%M:%S (ICT)")
 
                     # 1. Prepare user avatar using helper method
@@ -875,13 +918,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Check if user is requesting specific channel history
                         requested_channel = self._extract_channel_id_request(display_message)
                         if requested_channel:
-                            history_data = await self._get_requested_history(requested_channel)
+                            history_data = await self._get_requested_history(requested_channel, requester_id=user.id)
                             prompt_with_context = (
                                 f"[System Info] Current Time: {now} | "
                                 f"User: {user_name}{creator_tag}\n"
                                 f"[Voice Status] {voice_status}\n"
                                 f"[Requested Chat History]\n{history_data}\n"
                                 f"{memory_context}\n"
+                                f"---END SYSTEM CONTEXT---\n"
                                 f"User Message: {display_message}"
                             )
                         elif self._is_asking_about_channels(display_message):
@@ -893,7 +937,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 f"[Voice Status] {voice_status}\n"
                                 f"[Chat History Access]\n{history_index}\n"
                                 f"{memory_context}\n"
-                                f"{display_message}"
+                                f"---END SYSTEM CONTEXT---\n"
+                                f"User Message: {display_message}"
                             )
                         else:
                             # Normal DM chat - just voice status
@@ -902,14 +947,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 f"User: {user_name}{creator_tag}\n"
                                 f"[Voice Status] {voice_status}\n"
                                 f"{memory_context}\n"
-                                f"{display_message}"
+                                f"---END SYSTEM CONTEXT---\n"
+                                f"User Message: {display_message}"
                             )
                     else:
                         prompt_with_context = (
                             f"[System Info] Current Time: {now} | "
                             f"User: {user_name}{creator_tag}\n"
                             f"{memory_context}\n"
-                            f"{display_message}"
+                            f"---END SYSTEM CONTEXT---\n"
+                            f"User Message: {display_message}"
                         )
                     content_parts.append(prompt_with_context)
 
@@ -1026,6 +1073,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             "role": "user",
                             "parts": [user_msg_text],
                             "timestamp": current_time,
+                            "user_id": user.id,
                         }
                         chat_data["history"].append(new_item)
                         await save_history(
@@ -1104,6 +1152,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             "role": "user",
                             "parts": [user_msg_text],
                             "timestamp": current_time,
+                            "user_id": user.id,
                         }
                         chat_data["history"].append(user_item)
                         new_entries.append(user_item)
@@ -1140,6 +1189,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         "parts": [user_msg_text],
                         "timestamp": current_time,
                         "message_id": user_message_id,
+                        "user_id": user.id,
                     }
                     chat_data["history"].append(user_item)
                     new_entries.append(user_item)
@@ -1282,9 +1332,21 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Normal Sending (Discord has a 2000 char limit)
                     sent_message = None
                     if len(response_text) > 2000:
-                        # Split into chunks
-                        for i in range(0, len(response_text), 2000):
-                            sent_message = await send_channel.send(response_text[i : i + 2000])
+                        # Smart split at natural boundaries to avoid breaking
+                        # multi-byte chars (Thai text) or markdown
+                        remaining = response_text
+                        while remaining:
+                            if len(remaining) <= 2000:
+                                sent_message = await send_channel.send(remaining)
+                                break
+                            # Find best split point near 2000 chars
+                            split_at = remaining.rfind('\n', 0, 2000)
+                            if split_at == -1 or split_at < 1000:
+                                split_at = remaining.rfind(' ', 0, 2000)
+                            if split_at == -1 or split_at < 1000:
+                                split_at = 2000
+                            sent_message = await send_channel.send(remaining[:split_at])
+                            remaining = remaining[split_at:].lstrip('\n')
                     elif response_text:  # Only send if there is text left
                         sent_message = await send_channel.send(response_text)
 
@@ -1299,15 +1361,19 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 await update_message_id(context_channel.id, sent_message.id)
 
                 except (_NewMessageInterrupt, asyncio.CancelledError):
-                    # This is expected when a new message arrives - just pass through
+                    # _NewMessageInterrupt: expected when a new message arrives
+                    # CancelledError: must re-raise to allow proper task cancellation
                     logging.info("🔄 Processing interrupted, will handle pending messages")
+                    # Re-raise CancelledError to propagate cancellation properly
+                    raise
                 except (discord.HTTPException, ValueError, TypeError) as e:
                     error_msg = str(e)
                     # Truncate error message if too long
                     if len(error_msg) > 500:
                         error_msg = error_msg[:500] + "..."
                     logging.error("Gemini Error: %s", e)
-                    await send_channel.send(f"❌ เกิดข้อผิดพลาดจาก AI: {error_msg}")
+                    # Send generic error to user (don't leak internal details)
+                    await send_channel.send("❌ เกิดข้อผิดพลาดจาก AI กรุณาลองใหม่อีกครั้ง")
                 finally:
                     # Cleanup: Close any remaining PIL images to prevent memory leaks
                     # Most images are closed during processing, this is a safety net
@@ -1328,9 +1394,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Cleanup request deduplication key
                     self._deduplicator.remove_request(request_key)
         finally:
-            # Always release the lock properly (use 'lock' variable from setdefault)
-            if lock.locked():
-                lock.release()
+            # Always release the lock properly — only if we actually acquired it
+            try:
+                if lock_acquired and lock.locked():
+                    lock.release()
+            except RuntimeError:
+                pass  # Lock was not acquired or already released
             # Clear lock time tracking
             self._message_queue._lock_times.pop(channel_id, None)
 

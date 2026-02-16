@@ -8,6 +8,7 @@ python-dotenv==1.2.1          # Environment variable management
 aiohttp==3.13.3               # Async HTTP client
 psutil==7.2.1                 # Process and system utilities
 certifi>=2026.1.4             # SSL certificates (security updates)
+tzdata>=2024.1                # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
 google-genai==1.59.0          # Google Gemini API
@@ -37,7 +38,7 @@ prometheus-client==0.24.1     # Metrics & monitoring
 
 # ==================== Performance ====================
 orjson==3.11.5               # 10x faster JSON parsing (drop-in replacement)
-uvloop==0.22.1; sys_platform != 'win32'  # 2-4x faster event loop (Unix only)
+
 
 # ==================== Windows Utilities ====================
 winshell==0.6; sys_platform == 'win32'   # Windows shell integration

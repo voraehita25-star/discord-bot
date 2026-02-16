@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Command;
 use std::os::windows::process::CommandExt;
@@ -109,20 +110,22 @@ impl BotManager {
         }
         
         // Read at most 1MB from end of file (enough for ~count lines)
-        let max_read: u64 = std::cmp::min(file_size, (count as u64) * 1024); // ~1KB per line estimate
+        let max_read: u64 = std::cmp::min(file_size, (count as u64).saturating_mul(1024)); // ~1KB per line estimate
         let max_read = std::cmp::min(max_read, 1024 * 1024); // Cap at 1MB
         let start_pos = file_size.saturating_sub(max_read);
         
-        use std::io::{Seek, SeekFrom, Read};
         let mut file = file;
         if file.seek(SeekFrom::Start(start_pos)).is_err() {
             return vec![];
         }
         
-        let mut buffer = String::new();
-        if file.read_to_string(&mut buffer).is_err() {
+        // Read as raw bytes and convert with lossy UTF-8 to avoid
+        // corruption when seek lands on a multi-byte character boundary
+        let mut raw_bytes = Vec::new();
+        if file.read_to_end(&mut raw_bytes).is_err() {
             return vec![];
         }
+        let buffer = String::from_utf8_lossy(&raw_bytes);
         
         let lines: Vec<String> = buffer.lines()
             .map(|l| l.to_string())
@@ -225,9 +228,11 @@ impl BotManager {
                 let now = Local::now();
                 let duration = now.signed_duration_since(start);
 
-                let hours = duration.num_hours();
-                let mins = duration.num_minutes() % 60;
-                let secs = duration.num_seconds() % 60;
+                // Clamp to 0 to prevent negative uptime from clock skew
+                let total_secs = duration.num_seconds().max(0);
+                let hours = total_secs / 3600;
+                let mins = (total_secs % 3600) / 60;
+                let secs = total_secs % 60;
 
                 if hours > 0 {
                     return format!("{}h {}m {}s", hours, mins, secs);
@@ -311,9 +316,11 @@ impl BotManager {
                 let now = Local::now();
                 let duration = now.signed_duration_since(start);
 
-                let hours = duration.num_hours();
-                let mins = duration.num_minutes() % 60;
-                let secs = duration.num_seconds() % 60;
+                // Clamp to 0 to prevent negative uptime from clock skew
+                let total_secs = duration.num_seconds().max(0);
+                let hours = total_secs / 3600;
+                let mins = (total_secs % 3600) / 60;
+                let secs = total_secs % 60;
 
                 if hours > 0 {
                     return format!("{}h {}m {}s", hours, mins, secs);
@@ -421,12 +428,31 @@ impl BotManager {
         // IMPORTANT: Stop dev_watcher FIRST so it doesn't restart the bot
         self.stop_dev_watcher();
 
-        // Windows: taskkill (hidden) with /T to kill child processes too
-        Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F", "/T"])
+        // Try graceful shutdown first (taskkill without /F sends WM_CLOSE)
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("Failed to stop bot: {}", e))?;
+            .output();
+
+        // Wait up to 5 seconds for graceful exit
+        let mut exited = false;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
+                exited = true;
+                break;
+            }
+        }
+
+        // Force kill if still running
+        if !exited {
+            Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("Failed to stop bot: {}", e))?;
+        }
 
         // Delete PID file
         let _ = fs::remove_file(self.pid_file());
@@ -438,7 +464,7 @@ impl BotManager {
         if self.is_running() {
             self.stop()?;
             // Wait for process to fully exit before restarting
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
         self.start()
     }

@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Serialize i64 as string to prevent JavaScript precision loss for Discord Snowflake IDs.
+/// JS Number.MAX_SAFE_INTEGER = 2^53 - 1 = 9007199254740991, but Discord IDs exceed this.
+fn serialize_i64_as_string<S: serde::Serializer>(val: &i64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&val.to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct DbStats {
     pub total_messages: i64,
@@ -13,6 +19,7 @@ pub struct DbStats {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChannelInfo {
+    #[serde(serialize_with = "serialize_i64_as_string")]
     pub channel_id: i64,
     pub message_count: i64,
     pub last_active: String,
@@ -20,6 +27,7 @@ pub struct ChannelInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserInfo {
+    #[serde(serialize_with = "serialize_i64_as_string")]
     pub user_id: i64,
     pub message_count: i64,
 }
@@ -88,27 +96,33 @@ impl DatabaseService {
         
         if let Some(guard) = self.get_connection() {
             let conn = guard.conn();
-            // Combined query for better performance - single query instead of 4
-            let combined_query = r#"
-                SELECT 
-                    (SELECT COUNT(*) FROM ai_history),
-                    (SELECT COUNT(DISTINCT channel_id) FROM ai_history),
-                    (SELECT COUNT(*) FROM entity_memories),
-                    (SELECT COUNT(*) FROM rag_memories)
-            "#;
             
-            if let Ok(row) = conn.query_row(combined_query, [], |row| {
-                Ok((
-                    row.get::<_, i64>(0).unwrap_or(0),
-                    row.get::<_, i64>(1).unwrap_or(0),
-                    row.get::<_, i64>(2).unwrap_or(0),
-                    row.get::<_, i64>(3).unwrap_or(0),
-                ))
-            }) {
+            // Query ai_history stats (always exists)
+            if let Ok(row) = conn.query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT channel_id) FROM ai_history",
+                [],
+                |row| Ok((row.get::<_, i64>(0).unwrap_or(0), row.get::<_, i64>(1).unwrap_or(0)))
+            ) {
                 stats.total_messages = row.0;
                 stats.active_channels = row.1;
-                stats.total_entities = row.2;
-                stats.rag_memories = row.3;
+            }
+            
+            // Query entity_memories (may not exist in older schemas)
+            if let Ok(count) = conn.query_row(
+                "SELECT COUNT(*) FROM entity_memories", [], |row| row.get::<_, i64>(0)
+            ) {
+                stats.total_entities = count;
+            }
+            
+            // Query RAG memories — ai_long_term_memory is the actual RAG memory table,
+            // knowledge_entries is structured knowledge (fallback for backward compatibility)
+            for table in &["ai_long_term_memory", "knowledge_entries"] {
+                if let Ok(count) = conn.query_row(
+                    &format!("SELECT COUNT(*) FROM [{}]", table), [], |row| row.get::<_, i64>(0)
+                ) {
+                    stats.rag_memories = count;
+                    break;
+                }
             }
             // Connection returned to cache automatically when guard drops
         }
@@ -151,7 +165,7 @@ impl DatabaseService {
             let conn = guard.conn();
             let query = "SELECT user_id, COUNT(*) as cnt 
                          FROM ai_history 
-                         WHERE role = 'user'
+                         WHERE role = 'user' AND user_id IS NOT NULL
                          GROUP BY user_id 
                          ORDER BY cnt DESC 
                          LIMIT ?";
@@ -176,9 +190,32 @@ impl DatabaseService {
         if let Some(guard) = self.get_connection() {
             let conn = guard.conn();
             conn.execute("DELETE FROM ai_history", [])
-                .map(|count| count as i32)
+                .map(|count| count.min(i32::MAX as usize) as i32)
                 .map_err(|e| format!("Failed to clear history: {}", e))
             // Connection returned to cache automatically when guard drops
+        } else {
+            Err("Database not found".to_string())
+        }
+    }
+
+    /// Delete history for specific channel IDs
+    pub fn delete_channels_history(&self, channel_ids: &[i64]) -> Result<i32, String> {
+        if channel_ids.is_empty() {
+            return Ok(0);
+        }
+        if let Some(guard) = self.get_connection() {
+            let conn = guard.conn();
+            // Build parameterized IN clause
+            let placeholders: Vec<String> = channel_ids.iter().map(|_| "?".to_string()).collect();
+            let query = format!("DELETE FROM ai_history WHERE channel_id IN ({})", placeholders.join(","));
+            let params: Vec<Box<dyn rusqlite::types::ToSql>> = channel_ids
+                .iter()
+                .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                .collect();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            conn.execute(&query, param_refs.as_slice())
+                .map(|count| count.min(i32::MAX as usize) as i32)
+                .map_err(|e| format!("Failed to delete channel history: {}", e))
         } else {
             Err("Database not found".to_string())
         }

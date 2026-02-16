@@ -94,7 +94,10 @@ SERVER_CHARACTERS = [
 ]
 
 # Server lore mapping: guild_id -> lore content
-_GUILD_ID_RP = int(os.getenv("GUILD_ID_RP", "0"))
+try:
+    _GUILD_ID_RP = int(os.getenv("GUILD_ID_RP", "0"))
+except (ValueError, TypeError):
+    _GUILD_ID_RP = 0
 
 SERVER_LORE: dict[int, str] = {}
 if _GUILD_ID_RP:

@@ -73,9 +73,10 @@ class SelfHealer:
                 cmdline = proc.info.get("cmdline") or []
                 cmdline_str = " ".join(cmdline).lower()
 
-                # Look for bot.py but exclude manager, watcher, etc.
+                # Look for bot.py but exclude manager, watcher, test files, etc.
+                # Use more precise matching: must end with 'bot.py' (not 'test_bot.py')
                 if "python" in cmdline_str and "bot.py" in cmdline_str:
-                    ignore_list = ["bot_manager", "dev_watcher", "self_healer"]
+                    ignore_list = ["bot_manager", "dev_watcher", "self_healer", "test_bot", "test_"]
                     if not any(x in cmdline_str for x in ignore_list):
                         bot_processes.append(
                             {
@@ -239,15 +240,13 @@ class SelfHealer:
     def clean_pid_file(self) -> bool:
         """Remove stale PID file"""
         pid_path = Path(PID_FILE)
-        if pid_path.exists():
-            try:
-                pid_path.unlink()
-                self.log("info", "Cleaned up PID file")
-                return True
-            except OSError as e:
-                self.log("error", f"Failed to clean PID file: {e}")
-                return False
-        return True
+        try:
+            pid_path.unlink(missing_ok=True)
+            self.log("info", "Cleaned up PID file")
+            return True
+        except OSError as e:
+            self.log("error", f"Failed to clean PID file: {e}")
+            return False
 
     def kill_duplicate_bots(self, keep_newest: bool = False) -> int:
         """Kill duplicate bot instances, keep oldest (or newest) one"""

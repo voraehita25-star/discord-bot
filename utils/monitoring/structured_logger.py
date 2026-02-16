@@ -271,7 +271,13 @@ class StructuredLogger:
         token = _log_context.set(current)
 
         try:
-            yield LogContext(**kwargs)
+            # Only pass known LogContext fields; put the rest in 'extra'
+            known_fields = {"request_id", "correlation_id", "user_id", "channel_id", "guild_id", "command", "service"}
+            ctx_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
+            extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_fields}
+            if extra_kwargs:
+                ctx_kwargs["extra"] = extra_kwargs
+            yield LogContext(**ctx_kwargs)
         finally:
             _log_context.reset(token)
 

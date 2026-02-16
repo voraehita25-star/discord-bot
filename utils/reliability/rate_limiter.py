@@ -394,7 +394,7 @@ class RateLimiter:
         gemini_config = self._configs.get("gemini_api")
         return gemini_config.requests if gemini_config else 15
 
-    def set_channel_limit(self, channel_id: int, requests_per_minute: int) -> None:
+    async def set_channel_limit(self, channel_id: int, requests_per_minute: int) -> None:
         """Set custom rate limit for a specific channel."""
         config_name = "channel_custom"
 
@@ -410,18 +410,20 @@ class RateLimiter:
                 ),
             )
 
-        # Update or create bucket
+        # Update or create bucket under lock to prevent race conditions
         key = f"{config_name}:channel:{channel_id}"
-        if key in self._buckets:
-            self._buckets[key].max_tokens = requests_per_minute
-            self._buckets[key].tokens = float(requests_per_minute)
-        else:
-            self._buckets[key] = RateLimitBucket(
-                tokens=float(requests_per_minute),
-                last_update=time.time(),
-                window=60,
-                max_tokens=requests_per_minute,
-            )
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self._buckets:
+                self._buckets[key].max_tokens = requests_per_minute
+                self._buckets[key].tokens = float(requests_per_minute)
+            else:
+                self._buckets[key] = RateLimitBucket(
+                    tokens=float(requests_per_minute),
+                    last_update=time.time(),
+                    window=60,
+                    max_tokens=requests_per_minute,
+                )
 
         logging.info("🚦 Set channel %d rate limit to %d/min", channel_id, requests_per_minute)
 

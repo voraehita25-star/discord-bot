@@ -1,30 +1,62 @@
 # =============================================================================
-# Discord Bot - Dockerfile
-# Multi-stage build for optimized production image
+# Discord Bot - Dockerfile (Production)
+# Multi-stage build: Go + Rust + Python
 # =============================================================================
 
-# Stage 1: Build stage (install dependencies)
-FROM python:3.12-slim as builder
+# ======================== Stage 1: Go Builder ========================
+FROM golang:1.22-bookworm AS go-builder
+
+WORKDIR /build
+
+# Copy Go module files first for layer caching
+COPY go_services/go.mod go_services/go.sum* ./go_services/
+RUN cd go_services && go mod download 2>/dev/null || true
+
+# Copy Go source and build
+COPY go_services/ ./go_services/
+RUN cd go_services/health_api && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/health_api .
+RUN cd go_services/url_fetcher && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/url_fetcher .
+
+# ======================== Stage 2: Rust Builder ========================
+FROM rust:1.80-bookworm AS rust-builder
+
+WORKDIR /build
+
+# Install Python headers for PyO3
+RUN apt-get update && apt-get install -y --no-install-recommends python3-dev && rm -rf /var/lib/apt/lists/*
+
+# Copy Cargo manifests for caching
+COPY rust_extensions/Cargo.toml rust_extensions/Cargo.lock* ./rust_extensions/
+COPY rust_extensions/media_processor/Cargo.toml ./rust_extensions/media_processor/
+COPY rust_extensions/rag_engine/Cargo.toml ./rust_extensions/rag_engine/
+
+# Create stub src for dependency caching
+RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src && \
+    echo "fn main() {}" > rust_extensions/media_processor/src/lib.rs && \
+    echo "fn main() {}" > rust_extensions/rag_engine/src/lib.rs && \
+    cd rust_extensions && cargo build --release 2>/dev/null || true
+
+# Copy real Rust source and rebuild
+COPY rust_extensions/ ./rust_extensions/
+RUN cd rust_extensions && cargo build --release 2>&1 || echo "WARNING: Rust extensions failed to build — they will be unavailable at runtime"
+
+# Stage only the needed .so files for minimal COPY into production
+RUN mkdir -p /out-rust && (cp /build/rust_extensions/target/release/lib*.so /out-rust/ 2>/dev/null && echo "Rust libs staged" || echo "WARNING: No Rust .so files found")
+
+# ======================== Stage 3: Python Builder ========================
+FROM python:3.12-slim AS py-builder
 
 WORKDIR /app
 
-# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
+    gcc g++ libffi-dev && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-# =============================================================================
-# Stage 2: Production image
-# =============================================================================
+# ======================== Stage 4: Production ========================
 FROM python:3.12-slim
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
@@ -32,50 +64,35 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install runtime dependencies (ffmpeg for music playback)
+# Runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libopus0 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash botuser
+    ffmpeg libopus0 && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --create-home --shell /bin/bash botuser
 
-# Copy installed packages from builder (chown to botuser to avoid permission issues)
-COPY --from=builder --chown=botuser:botuser /root/.local /home/botuser/.local
+# Copy Python packages
+COPY --from=py-builder --chown=botuser:botuser /root/.local /home/botuser/.local
 ENV PATH=/home/botuser/.local/bin:$PATH
+
+# Copy Go binaries
+COPY --from=go-builder --chown=botuser:botuser /out/health_api /app/go_services/health_api/health_api
+COPY --from=go-builder --chown=botuser:botuser /out/url_fetcher /app/go_services/url_fetcher/url_fetcher
+
+# Copy Rust shared libraries (if built) — only .so files, not entire target/release/
+RUN mkdir -p /app/rust_extensions
+COPY --from=rust-builder /out-rust/ /app/rust_extensions/
 
 # Copy application code
 COPY --chown=botuser:botuser . .
 
-# Create required directories
-RUN mkdir -p /app/logs /app/data /app/temp \
-    && chown -R botuser:botuser /app
+# Create directories
+RUN mkdir -p /app/logs /app/data /app/temp && chown -R botuser:botuser /app
 
-# Switch to non-root user
 USER botuser
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
-# Expose health API port
-EXPOSE 8080
+EXPOSE 8080 8081 8082
 
-# Default command
 CMD ["python", "bot.py"]
-
-# =============================================================================
-# Build and run instructions:
-#
-# Build image:
-#   docker build -t discord-bot .
-#
-# Run container:
-#   docker run -d --name bot \
-#     --env-file .env \
-#     -v ./data:/app/data \
-#     -v ./logs:/app/logs \
-#     discord-bot
-#
-# Or use docker-compose:
-#   docker-compose up -d
-# =============================================================================

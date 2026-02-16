@@ -43,9 +43,19 @@ from .core.performance import (
     performance_tracker,
     request_deduplicator,
 )
-from .processing.guardrails import validate_response
-from .processing.intent_detector import detect_intent
 from .processing.prompt_manager import prompt_manager
+
+# Optional processing modules — gracefully degrade if dependencies are missing
+try:
+    from .processing.guardrails import validate_response
+except ImportError:
+    validate_response = None  # type: ignore[assignment]
+
+try:
+    from .processing.intent_detector import detect_intent
+except ImportError:
+    detect_intent = None  # type: ignore[assignment]
+
 from .response import ResponseMixin
 from .response.response_sender import ResponseSender, SendResult, response_sender
 from .tools import execute_tool_call, get_tool_definitions, send_as_webhook

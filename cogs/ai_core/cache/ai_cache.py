@@ -1,6 +1,7 @@
 """
 AI Response Cache Module
 Caches common AI responses for improved performance.
+Features L1 in-memory (OrderedDict) and L2 persistent (SQLite) cache layers.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -310,7 +312,8 @@ class AICache:
                 return entry.response
 
         # Try fuzzy matching as fallback (OUTSIDE lock to avoid nested lock deadlock)
-        if use_fuzzy and self.enable_semantic:
+        # Note: find_similar uses difflib.SequenceMatcher (stdlib), does NOT require numpy
+        if use_fuzzy:
             similar = self.find_similar(message, intent)
             if similar:
                 similar_key, similar_entry, similarity = similar
@@ -510,6 +513,130 @@ def _load_resource_config() -> dict:
     return {}
 
 
+# ==================== L2 Persistent Cache ====================
+
+class L2SqliteCache:
+    """
+    SQLite-backed persistent cache layer (L2).
+
+    Survives restarts and warms up the in-memory L1 cache on startup.
+    """
+
+    DB_PATH = Path(__file__).parent.parent.parent.parent / "data" / "ai_cache_l2.db"
+    MAX_ENTRIES = 20_000  # hard cap on disk rows
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._conn: sqlite3.Connection | None = None
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Create DB and schema if needed."""
+        try:
+            self.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(self.DB_PATH), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS cache_entries (
+                    key       TEXT PRIMARY KEY,
+                    response  TEXT NOT NULL,
+                    intent    TEXT DEFAULT '',
+                    norm_msg  TEXT DEFAULT '',
+                    ctx_hash  TEXT DEFAULT '',
+                    created   REAL NOT NULL,
+                    hits      INTEGER DEFAULT 0
+                )
+            """)
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cache_created ON cache_entries(created)"
+            )
+            self._conn.commit()
+        except Exception as e:
+            logging.warning("L2 cache init failed (non-fatal): %s", e)
+            self._conn = None
+
+    def store(self, key: str, entry: CacheEntry) -> None:
+        """Persist a cache entry to SQLite."""
+        if self._conn is None:
+            return
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO cache_entries "
+                    "(key, response, intent, norm_msg, ctx_hash, created, hits) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        entry.response,
+                        entry.intent or "",
+                        entry.normalized_message or "",
+                        entry.context_hash or "",
+                        entry.created_at,
+                        entry.hits,
+                    ),
+                )
+                self._conn.commit()
+                self._evict_excess()
+            except Exception as e:
+                logging.debug("L2 store failed: %s", e)
+
+    def load_recent(self, limit: int = 1000, max_age: float = 86400) -> list[tuple[str, CacheEntry]]:
+        """Load recent entries for L1 warm-up."""
+        if self._conn is None:
+            return []
+        cutoff = time.time() - max_age
+        try:
+            rows = self._conn.execute(
+                "SELECT key, response, intent, norm_msg, ctx_hash, created, hits "
+                "FROM cache_entries WHERE created > ? ORDER BY hits DESC, created DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+            entries = []
+            for key, response, intent, norm_msg, ctx_hash, created, hits in rows:
+                entry = CacheEntry(
+                    response=response,
+                    created_at=created,
+                    context_hash=ctx_hash,
+                    intent=intent,
+                    normalized_message=norm_msg,
+                    hits=hits,
+                )
+                entries.append((key, entry))
+            return entries
+        except Exception as e:
+            logging.warning("L2 load failed: %s", e)
+            return []
+
+    def _evict_excess(self) -> None:
+        """Remove oldest entries if over MAX_ENTRIES."""
+        if self._conn is None:
+            return
+        try:
+            count = self._conn.execute("SELECT COUNT(*) FROM cache_entries").fetchone()[0]
+            if count > self.MAX_ENTRIES:
+                excess = count - self.MAX_ENTRIES
+                self._conn.execute(
+                    "DELETE FROM cache_entries WHERE key IN "
+                    "(SELECT key FROM cache_entries ORDER BY created ASC LIMIT ?)",
+                    (excess,),
+                )
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Close the SQLite connection."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+
+# ==================== Global Instances ====================
+
 # Load config and create global instances
 _resource_config = _load_resource_config()
 _ai_config = _resource_config.get("ai_cache", {})
@@ -519,6 +646,43 @@ ai_cache = AICache(
     max_size=_ai_config.get("max_entries", AICache.DEFAULT_MAX_SIZE),
 )
 context_hasher = ContextHasher()
+
+# L2 persistent cache — warm up L1
+_l2_cache = L2SqliteCache()
+try:
+    _warm_entries = _l2_cache.load_recent(limit=500)
+    if _warm_entries:
+        for _key, _entry in _warm_entries:
+            if _key not in ai_cache.cache:
+                ai_cache.cache[_key] = _entry
+        logging.info("L2 cache: warmed L1 with %d entries", len(_warm_entries))
+except Exception as _e:
+    logging.warning("L2 warm-up failed (non-fatal): %s", _e)
+
+
+def _persist_to_l2(key: str, entry: CacheEntry) -> None:
+    """Background persist a new entry to L2."""
+    _l2_cache.store(key, entry)
+
+
+# Monkey-patch AICache.set to also persist to L2
+_original_set = AICache.set
+
+
+def _patched_set(self: AICache, *args: Any, **kwargs: Any) -> None:
+    _original_set(self, *args, **kwargs)
+    # Persist the just-added entry
+    message = args[0] if args else kwargs.get("message", "")
+    context_hash = args[2] if len(args) > 2 else kwargs.get("context_hash")
+    intent = args[3] if len(args) > 3 else kwargs.get("intent")
+    key = self._generate_key(message, context_hash, intent)
+    with self._cache_lock:
+        entry = self.cache.get(key)
+    if entry:
+        _persist_to_l2(key, entry)
+
+
+AICache.set = _patched_set  # type: ignore[assignment]
 
 
 def get_cache_stats() -> CacheStats:

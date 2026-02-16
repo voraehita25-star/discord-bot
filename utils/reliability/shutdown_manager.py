@@ -387,12 +387,17 @@ class ShutdownManager:
             # Windows doesn't support loop.add_signal_handler
             return
 
+        # Store task references to prevent GC collection
+        self._signal_tasks: list[asyncio.Task] = []
+
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(
                 sig,
-                lambda s=sig: asyncio.create_task(
-                    self.shutdown(signal.Signals(s).name)
-                )
+                lambda s=sig: self._signal_tasks.append(
+                    asyncio.create_task(
+                        self.shutdown(signal.Signals(s).name)
+                    )
+                ),
             )
 
         self.logger.info("🛡️ Async signal handlers registered: SIGTERM, SIGINT")

@@ -65,7 +65,7 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ ระบบความจำยังไม่พร้อมใช้งาน")
         except Exception as e:
             self.logger.error("Remember command error: %s", e)
-            await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+            await ctx.send("❌ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง")
 
     @commands.command(name="forget")
     async def forget_fact(self, ctx: Context, *, query: str) -> None:
@@ -95,7 +95,7 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ ระบบความจำยังไม่พร้อมใช้งาน")
         except Exception as e:
             self.logger.error("Forget command error: %s", e)
-            await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+            await ctx.send("❌ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง")
 
     @commands.command(name="memories", aliases=["mymemory", "facts"])
     async def view_memories(self, ctx: Context, category: str | None = None) -> None:
@@ -122,7 +122,7 @@ class MemoryCommands(commands.Cog):
                 return
 
             embed = discord.Embed(
-                title=f"🧠 ความจำของ {ctx.author.display_name}", color=Colors.PRIMARY
+                title=f"🧠 ความจำของ {ctx.author.display_name}", color=Colors.INFO
             )
 
             # Group by category
@@ -168,7 +168,7 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ ระบบความจำยังไม่พร้อมใช้งาน")
         except Exception as e:
             self.logger.error("Memories command error: %s", e)
-            await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+            await ctx.send("❌ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง")
 
     @commands.command(name="consolidate")
     @commands.is_owner()

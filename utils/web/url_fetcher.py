@@ -14,6 +14,7 @@ import socket
 from typing import TYPE_CHECKING
 
 import aiohttp
+import yarl
 from bs4 import BeautifulSoup
 
 if TYPE_CHECKING:
@@ -168,6 +169,11 @@ async def fetch_url_content(
                 api_url = url.replace("github.com", "api.github.com/repos")
                 api_url = api_url.rstrip("/")
 
+                # Re-check SSRF on transformed URL
+                if await _is_private_url(api_url):
+                    logger.warning("Blocked SSRF attempt on transformed GitHub API URL: %s", api_url)
+                    return url, None
+
                 try:
                     async with session.get(
                         api_url,
@@ -205,19 +211,38 @@ Default Branch: {data.get("default_branch", "main")}
                 except Exception as e:
                     logger.debug("GitHub API failed for %s: %s", url, e)
 
-        # Standard webpage fetch
+        # Standard webpage fetch — disable auto-redirects and check each target for SSRF
         async with session.get(
             url,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=True,
-            max_redirects=5,
+            allow_redirects=False,
         ) as response:
-            if response.status != 200:
-                logger.warning("URL fetch failed: %s (status %d)", url, response.status)
+            # Manually follow redirects with SSRF check on each target
+            final_response = response
+            redirect_count = 0
+            while final_response.status in (301, 302, 303, 307, 308) and redirect_count < 5:
+                redirect_url = final_response.headers.get("Location")
+                if not redirect_url:
+                    break
+                # Resolve relative URLs
+                redirect_url = str(final_response.url.join(yarl.URL(redirect_url)))
+                if await _is_private_url(redirect_url):
+                    logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
+                    return url, None
+                redirect_count += 1
+                final_response = await session.get(
+                    redirect_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                    allow_redirects=False,
+                )
+
+            if final_response.status != 200:
+                logger.warning("URL fetch failed: %s (status %d)", url, final_response.status)
                 return url, None
 
-            content_type = response.headers.get("Content-Type", "")
+            content_type = final_response.headers.get("Content-Type", "")
 
             # Only process HTML/text content
             if "text/html" not in content_type and "text/plain" not in content_type:
@@ -225,8 +250,8 @@ Default Branch: {data.get("default_branch", "main")}
 
             # Handle encoding with fallback, size-limited to prevent memory exhaustion
             try:
-                raw_bytes = await response.content.read(MAX_RESPONSE_SIZE)
-                encoding = response.get_encoding()
+                raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
+                encoding = final_response.get_encoding()
                 html = raw_bytes.decode(encoding or 'utf-8')
             except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values

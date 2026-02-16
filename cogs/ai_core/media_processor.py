@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from functools import lru_cache
+from collections import namedtuple
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +34,10 @@ except ImportError:
 # 50 images * ~500KB average = ~25MB max memory for cache
 IMAGE_CACHE_MAX_SIZE = 50
 
+# Manual cache dict to avoid caching misses (lru_cache would permanently cache None)
+_image_cache: dict[str, bytes] = {}
 
-@lru_cache(maxsize=IMAGE_CACHE_MAX_SIZE)
+
 def load_cached_image_bytes(full_path: str) -> bytes | None:
     """Load and cache image bytes from disk.
 
@@ -47,35 +49,52 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
     
     Note:
         Cache is limited to IMAGE_CACHE_MAX_SIZE entries to prevent
-        memory issues. Use clear_image_cache() to manually clear if needed.
+        memory issues. Only successful reads are cached; missing files
+        are NOT cached so they can be found after deployment.
     """
+    if full_path in _image_cache:
+        return _image_cache[full_path]
     path = Path(full_path)
     if path.exists():
         try:
-            return path.read_bytes()
+            data = path.read_bytes()
+            if len(_image_cache) < IMAGE_CACHE_MAX_SIZE:
+                _image_cache[full_path] = data
+            return data
         except OSError:
             return None
-    return None
+    return None  # Don't cache misses
 
 
 def clear_image_cache() -> None:
     """Clear the image bytes cache to free memory."""
-    load_cached_image_bytes.cache_clear()
+    _image_cache.clear()
     logging.debug("Image cache cleared")
+
+
+# Backward-compatible attribute so callers using load_cached_image_bytes.cache_clear() still work
+load_cached_image_bytes.cache_clear = clear_image_cache  # type: ignore[attr-defined]
+
+# Backward-compatible cache_info for callers expecting lru_cache-style info
+_CacheInfo = namedtuple("CacheInfo", ["hits", "misses", "maxsize", "currsize"])
+
+def _cache_info():
+    return _CacheInfo(hits=0, misses=0, maxsize=IMAGE_CACHE_MAX_SIZE, currsize=len(_image_cache))
+
+load_cached_image_bytes.cache_info = _cache_info  # type: ignore[attr-defined]
 
 
 def get_image_cache_info() -> dict:
     """Get image cache statistics.
     
     Returns:
-        Dict with hits, misses, maxsize, and currsize.
+        Dict with maxsize and currsize (hits/misses not tracked with manual cache).
     """
-    info = load_cached_image_bytes.cache_info()
     return {
-        "hits": info.hits,
-        "misses": info.misses,
-        "maxsize": info.maxsize,
-        "currsize": info.currsize,
+        "hits": 0,
+        "misses": 0,
+        "maxsize": IMAGE_CACHE_MAX_SIZE,
+        "currsize": len(_image_cache),
     }
 
 
@@ -160,18 +179,21 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
 
         # Write to MP4 video bytes
         video_buffer = io.BytesIO()
-        iio.imwrite(
-            video_buffer,
-            frames,
-            extension=".mp4",
-            fps=fps,
-            codec="libx264",
-            pixelformat="yuv420p",
-        )
-        video_buffer.seek(0)
+        try:
+            iio.imwrite(
+                video_buffer,
+                frames,
+                extension=".mp4",
+                fps=fps,
+                codec="libx264",
+                pixelformat="yuv420p",
+            )
+            video_buffer.seek(0)
 
-        logging.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
-        return video_buffer.read()
+            logging.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
+            return video_buffer.read()
+        finally:
+            video_buffer.close()
 
     except (OSError, ValueError, Image.DecompressionBombError, RuntimeError) as e:
         logging.warning("Failed to convert GIF to video: %s", e)
@@ -373,7 +395,20 @@ async def process_attachments(
     if not attachments:
         return image_parts, video_parts, text_parts
 
+    # Maximum attachment size to download (10 MB)
+    MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+
     for attachment in attachments:
+        # Skip attachments that are too large to prevent memory issues
+        if attachment.size and attachment.size > MAX_ATTACHMENT_SIZE:
+            logging.warning(
+                "Skipping attachment '%s' (%d bytes) — exceeds %d byte limit",
+                attachment.filename,
+                attachment.size,
+                MAX_ATTACHMENT_SIZE,
+            )
+            continue
+
         # Check for text files first
         is_text = (
             attachment.content_type and any(m in attachment.content_type for m in TEXT_MIMES)

@@ -167,16 +167,31 @@ class ResponseMixin:
         message_lower = message.lower()
         return any(kw in message_lower for kw in LIST_KEYWORDS)
 
-    async def _get_requested_history(self, channel_id: int) -> str:
+    async def _get_requested_history(self, channel_id: int, requester_id: int | None = None) -> str:
         """Get formatted history preview for requested channel (compact).
 
         Args:
             channel_id: Discord channel ID.
+            requester_id: ID of the user requesting the history (for permission check).
 
         Returns:
             Formatted history preview string.
         """
         try:
+            # Permission check: verify requester has access to the target channel
+            channel = self.bot.get_channel(channel_id)
+            if channel and requester_id:
+                member = None
+                if hasattr(channel, "guild") and channel.guild:
+                    member = channel.guild.get_member(requester_id)
+                if member is not None:
+                    perms = channel.permissions_for(member)
+                    if not perms.read_messages:
+                        return f"❌ คุณไม่มีสิทธิ์เข้าถึง channel {channel_id}"
+                elif hasattr(channel, "guild") and channel.guild:
+                    # User is not a member of the guild
+                    return f"❌ คุณไม่มีสิทธิ์เข้าถึง channel {channel_id}"
+
             preview = await get_channel_history_preview(channel_id, limit=15)
             if not preview:
                 return f"❌ ไม่พบประวัติแชทของ channel {channel_id}"

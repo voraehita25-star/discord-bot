@@ -447,6 +447,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
+        mock_attachment.size = 11
         mock_attachment.read = AsyncMock(return_value=b"Hello World")
 
         images, videos, texts = await process_attachments([mock_attachment], "TestUser")
@@ -474,6 +475,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "image/png"
         mock_attachment.filename = "test.png"
+        mock_attachment.size = len(img_bytes)
         mock_attachment.read = AsyncMock(return_value=img_bytes)
 
         images, videos, texts = await process_attachments([mock_attachment], "TestUser")
@@ -494,6 +496,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "large.txt"
+        mock_attachment.size = 30000
         mock_attachment.read = AsyncMock(return_value=large_text.encode('utf-8'))
 
         images, videos, texts = await process_attachments([mock_attachment], "TestUser")
@@ -515,6 +518,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "latin.txt"
+        mock_attachment.size = len(latin1_text)
         mock_attachment.read = AsyncMock(return_value=latin1_text)
 
         images, videos, texts = await process_attachments([mock_attachment], "TestUser")

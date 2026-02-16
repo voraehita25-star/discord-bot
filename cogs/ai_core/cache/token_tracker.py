@@ -94,6 +94,9 @@ class TokenTracker:
     - Cost estimation
     """
 
+    # Maximum records per cache key to prevent unbounded growth between cleanups
+    MAX_RECORDS_PER_KEY = 5000
+
     def __init__(self, limits: UsageLimits | None = None):
         self.limits = limits or UsageLimits()
         self._usage_cache: dict[str, list[TokenUsage]] = defaultdict(list)
@@ -145,15 +148,21 @@ class TokenTracker:
             # Store by user
             user_key = f"user:{usage.user_id}"
             self._usage_cache[user_key].append(usage)
+            if len(self._usage_cache[user_key]) > self.MAX_RECORDS_PER_KEY:
+                self._usage_cache[user_key] = self._usage_cache[user_key][-self.MAX_RECORDS_PER_KEY:]
 
             # Store by channel
             channel_key = f"channel:{usage.channel_id}"
             self._usage_cache[channel_key].append(usage)
+            if len(self._usage_cache[channel_key]) > self.MAX_RECORDS_PER_KEY:
+                self._usage_cache[channel_key] = self._usage_cache[channel_key][-self.MAX_RECORDS_PER_KEY:]
 
             # Store by guild if available
             if usage.guild_id:
                 guild_key = f"guild:{usage.guild_id}"
                 self._usage_cache[guild_key].append(usage)
+                if len(self._usage_cache[guild_key]) > self.MAX_RECORDS_PER_KEY:
+                    self._usage_cache[guild_key] = self._usage_cache[guild_key][-self.MAX_RECORDS_PER_KEY:]
 
         # Persist to database if available
         if DB_AVAILABLE:

@@ -8,13 +8,9 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import TYPE_CHECKING
 
 import aiohttp
 from PIL import Image
-
-if TYPE_CHECKING:
-    import aiohttp
 
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")

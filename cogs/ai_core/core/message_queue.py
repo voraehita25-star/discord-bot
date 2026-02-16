@@ -259,11 +259,33 @@ class MessageQueue:
         self.cleanup_stale_locks()
 
         lock = await self.get_lock(channel_id)
+
+        # Use shield + done_callback pattern to avoid the known
+        # asyncio.wait_for(lock.acquire()) deadlock (CPython #42130).
+        _timed_out = False
+
+        async def _acquire_lock():
+            await lock.acquire()
+            return True
+
+        _acquire_task = asyncio.create_task(_acquire_lock())
+
+        def _release_if_timed_out(task: asyncio.Task) -> None:
+            """Release the lock if we already gave up waiting."""
+            if _timed_out and not task.cancelled() and task.exception() is None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+        _acquire_task.add_done_callback(_release_if_timed_out)
+
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=timeout)
             self._lock_times[channel_id] = time.time()
             return True
         except asyncio.TimeoutError:
+            _timed_out = True
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)",
                 channel_id,

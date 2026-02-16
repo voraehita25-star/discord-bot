@@ -6,6 +6,7 @@ Tracks token usage per user, channel, and provides analytics.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -80,6 +81,7 @@ class TokenTracker:
     MAX_CHANNELS = 5000  # Maximum number of channels to track
 
     def __init__(self, max_history_days: int = 30):
+        self._lock = threading.Lock()
         self._user_stats: dict[int, UserTokenStats] = {}
         self._channel_usage: dict[int, TokenUsage] = defaultdict(TokenUsage)
         self._global_usage = TokenUsage()
@@ -90,58 +92,59 @@ class TokenTracker:
         self, user_id: int, input_tokens: int, output_tokens: int, channel_id: int | None = None
     ) -> None:
         """Record token usage for a user."""
-        now = time.time()
-        hour_key = datetime.now().strftime("%Y-%m-%d-%H")
-        day_key = datetime.now().strftime("%Y-%m-%d")
+        with self._lock:
+            now = time.time()
+            hour_key = datetime.now().strftime("%Y-%m-%d-%H")
+            day_key = datetime.now().strftime("%Y-%m-%d")
 
-        # Evict old users if we hit the limit (LRU-style based on last_use)
-        if user_id not in self._user_stats and len(self._user_stats) >= self.MAX_USERS:
-            self._evict_least_recently_used_users()
+            # Evict old users if we hit the limit (LRU-style based on last_use)
+            if user_id not in self._user_stats and len(self._user_stats) >= self.MAX_USERS:
+                self._evict_least_recently_used_users()
 
-        # Evict old channels if we hit the limit
-        if channel_id and channel_id not in self._channel_usage and len(self._channel_usage) >= self.MAX_CHANNELS:
-            self._evict_least_used_channels()
+            # Evict old channels if we hit the limit
+            if channel_id and channel_id not in self._channel_usage and len(self._channel_usage) >= self.MAX_CHANNELS:
+                self._evict_least_used_channels()
 
-        # Initialize user stats if needed
-        if user_id not in self._user_stats:
-            self._user_stats[user_id] = UserTokenStats(user_id=user_id)
+            # Initialize user stats if needed
+            if user_id not in self._user_stats:
+                self._user_stats[user_id] = UserTokenStats(user_id=user_id)
 
-        stats = self._user_stats[user_id]
+            stats = self._user_stats[user_id]
 
-        # Update totals
-        stats.total_input += input_tokens
-        stats.total_output += output_tokens
-        stats.total_requests += 1
-        stats.last_use = now
+            # Update totals
+            stats.total_input += input_tokens
+            stats.total_output += output_tokens
+            stats.total_requests += 1
+            stats.last_use = now
 
-        # Update hourly usage
-        if hour_key not in stats.hourly_usage:
-            stats.hourly_usage[hour_key] = TokenUsage()
-            # Limit hourly entries to prevent unbounded memory growth (7 days * 24 hours)
-            max_hourly_entries = 168
-            if len(stats.hourly_usage) > max_hourly_entries:
-                oldest_keys = sorted(stats.hourly_usage.keys())[: len(stats.hourly_usage) - max_hourly_entries]
-                for old_key in oldest_keys:
-                    del stats.hourly_usage[old_key]
-        stats.hourly_usage[hour_key].add(input_tokens, output_tokens)
+            # Update hourly usage
+            if hour_key not in stats.hourly_usage:
+                stats.hourly_usage[hour_key] = TokenUsage()
+                # Limit hourly entries to prevent unbounded memory growth (7 days * 24 hours)
+                max_hourly_entries = 168
+                if len(stats.hourly_usage) > max_hourly_entries:
+                    oldest_keys = sorted(stats.hourly_usage.keys())[: len(stats.hourly_usage) - max_hourly_entries]
+                    for old_key in oldest_keys:
+                        del stats.hourly_usage[old_key]
+            stats.hourly_usage[hour_key].add(input_tokens, output_tokens)
 
-        # Update daily usage
-        if day_key not in stats.daily_usage:
-            stats.daily_usage[day_key] = TokenUsage()
-            # Limit daily entries to prevent unbounded memory growth (3 months)
-            max_daily_entries = 90
-            if len(stats.daily_usage) > max_daily_entries:
-                oldest_keys = sorted(stats.daily_usage.keys())[: len(stats.daily_usage) - max_daily_entries]
-                for old_key in oldest_keys:
-                    del stats.daily_usage[old_key]
-        stats.daily_usage[day_key].add(input_tokens, output_tokens)
+            # Update daily usage
+            if day_key not in stats.daily_usage:
+                stats.daily_usage[day_key] = TokenUsage()
+                # Limit daily entries to prevent unbounded memory growth (3 months)
+                max_daily_entries = 90
+                if len(stats.daily_usage) > max_daily_entries:
+                    oldest_keys = sorted(stats.daily_usage.keys())[: len(stats.daily_usage) - max_daily_entries]
+                    for old_key in oldest_keys:
+                        del stats.daily_usage[old_key]
+            stats.daily_usage[day_key].add(input_tokens, output_tokens)
 
-        # Update channel usage
-        if channel_id:
-            self._channel_usage[channel_id].add(input_tokens, output_tokens)
+            # Update channel usage
+            if channel_id:
+                self._channel_usage[channel_id].add(input_tokens, output_tokens)
 
-        # Update global usage
-        self._global_usage.add(input_tokens, output_tokens)
+            # Update global usage
+            self._global_usage.add(input_tokens, output_tokens)
 
         self.logger.debug(
             "Recorded tokens for user %d: +%d input, +%d output",

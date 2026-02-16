@@ -823,6 +823,35 @@ h2 {
     backdrop-filter: blur(10px);
 }
 
+.data-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.data-section-header h2 {
+    margin: 0;
+}
+
+.selection-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.selection-count {
+    color: var(--accent-cyan);
+    font-size: 0.9em;
+    font-weight: 500;
+}
+
+.btn-sm {
+    padding: 6px 14px;
+    font-size: 0.85em;
+    border-radius: 8px;
+}
+
 .data-list {
     display: flex;
     flex-direction: column;
@@ -832,16 +861,39 @@ h2 {
 .data-item {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     padding: 14px 18px;
     background: rgba(50, 25, 80, 0.4);
     border-radius: 12px;
     border: 1px solid transparent;
     transition: all 0.2s ease;
+    cursor: pointer;
+    user-select: none;
 }
 
 .data-item:hover {
     border-color: var(--border-color);
     background: rgba(168, 85, 247, 0.15);
+}
+
+.data-item.selected {
+    border-color: var(--accent-cyan);
+    background: rgba(34, 211, 238, 0.12);
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.15);
+}
+
+.data-item-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.data-item-checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-cyan);
+    cursor: pointer;
+    flex-shrink: 0;
 }
 
 .data-item-id {

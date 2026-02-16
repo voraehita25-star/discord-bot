@@ -84,11 +84,33 @@ class BotSettings:
     logs_dir: str = "logs"
 
     def __post_init__(self):
-        """Ensure directories exist (only when running as main bot, not on import)."""
+        """Validate settings and ensure directories exist."""
+        # Validate volume range
+        self.default_volume = max(0.0, min(1.0, self.default_volume))
+
         # Only create dirs if we appear to be running as the bot (not test/import context)
         if os.environ.get("BOT_RUNNING") or os.environ.get("DISCORD_TOKEN"):
             for dir_path in [self.data_dir, self.temp_dir, self.logs_dir]:
                 Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+    def validate_required_secrets(self) -> list[str]:
+        """Validate that critical secrets are present. Returns list of errors."""
+        errors: list[str] = []
+        if not self.discord_token or self.discord_token == "your_token_here":
+            errors.append("DISCORD_TOKEN is not set or is a placeholder")
+        if not self.gemini_api_key:
+            errors.append("GEMINI_API_KEY is not set (AI features will be disabled)")
+        return errors
+
+    def get_secrets_summary(self) -> dict[str, bool]:
+        """Get a summary of which optional secrets are configured."""
+        return {
+            "discord_token": bool(self.discord_token and self.discord_token != "your_token_here"),
+            "gemini_api_key": bool(self.gemini_api_key),
+            "spotify_credentials": bool(self.spotipy_client_id and self.spotipy_client_secret),
+            "guild_id_main": self.guild_id_main != 0,
+            "creator_id": self.creator_id != 0,
+        }
 
     def __repr__(self) -> str:
         """Custom repr that redacts sensitive fields."""
@@ -99,5 +121,36 @@ class BotSettings:
         )
 
 
-# Global settings instance
+class FeatureFlags:
+    """Registry tracking which optional features loaded successfully.
+    
+    Exposed via the health API for debugging.
+    """
+
+    def __init__(self) -> None:
+        self._flags: dict[str, bool] = {}
+
+    def register(self, name: str, available: bool) -> None:
+        """Register a feature and its availability status."""
+        self._flags[name] = available
+
+    def is_available(self, name: str) -> bool:
+        """Check if a feature is available."""
+        return self._flags.get(name, False)
+
+    def get_all(self) -> dict[str, bool]:
+        """Get all feature flags."""
+        return dict(self._flags)
+
+    def summary(self) -> str:
+        """Get a human-readable summary of feature status."""
+        lines = []
+        for name, available in sorted(self._flags.items()):
+            icon = "✅" if available else "❌"
+            lines.append(f"  {icon} {name}")
+        return "\n".join(lines)
+
+
+# Global instances
 settings = BotSettings()
+feature_flags = FeatureFlags()

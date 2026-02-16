@@ -558,7 +558,7 @@ class TestValidateFunctions:
             set_unrestricted(channel_id, False)
 
     def test_validate_response_for_channel_normal(self):
-        """Test validate_response_for_channel without unrestricted mode."""
+        """Test validate_response_for_channel in normal (restricted) mode."""
         from cogs.ai_core.processing.guardrails import validate_response_for_channel
 
         channel_id = 111222333444
@@ -566,6 +566,7 @@ class TestValidateFunctions:
             "Normal response", channel_id
         )
         assert is_valid is True
+        # Channel is not unrestricted, so normal validation applies
         assert "unrestricted_mode" not in warnings
 
 
@@ -573,17 +574,18 @@ class TestUnrestrictedChannels:
     """Tests for unrestricted channel management."""
 
     def test_is_unrestricted_default(self):
-        """Test is_unrestricted returns False by default."""
+        """Test is_unrestricted returns False for channels not explicitly set."""
         from cogs.ai_core.processing.guardrails import is_unrestricted
 
         result = is_unrestricted(987654321098)
         assert result is False
 
     def test_set_and_check_unrestricted(self):
-        """Test setting and checking unrestricted mode."""
+        """Test set_unrestricted toggles unrestricted mode per channel."""
         from cogs.ai_core.processing.guardrails import is_unrestricted, set_unrestricted
 
         channel_id = 555666777888
+        # Default is not unrestricted
         assert is_unrestricted(channel_id) is False
 
         set_unrestricted(channel_id, True)

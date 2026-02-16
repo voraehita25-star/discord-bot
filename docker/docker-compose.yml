@@ -3,8 +3,6 @@
 # Production deployment with volume mounts and restart policies
 # =============================================================================
 
-version: '3.8'
-
 services:
   bot:
     build:
@@ -21,6 +19,14 @@ services:
       # Override these in .env or here
       - TZ=Asia/Bangkok
       - PYTHONUNBUFFERED=1
+
+    # Read-only root filesystem for security hardening
+    read_only: true
+
+    # Writable tmpfs mounts for runtime data
+    tmpfs:
+      - /tmp:size=256M
+      - /app/__pycache__:size=64M
 
     # Volume mounts for persistence
     volumes:
@@ -41,15 +47,11 @@ services:
       retries: 3
       start_period: 60s
 
-    # Resource limits (optional - adjust based on your server)
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '0.5'
-          memory: 1G
+    # Resource limits
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2.0
+    mem_reservation: 1g
 
     # Logging configuration
     logging:

@@ -103,15 +103,29 @@ cargo tauri dev
 ```
 
 ### Production Build
+
+> ⚠️ **IMPORTANT**: `cargo build --release` only produces `bot-dashboard.exe`.
+> The Korean-named exe (`디스코드 봇 대시보드.exe`) is a **copy**, not a separate target.
+> **Always use the build scripts** to ensure both exes are updated together.
+
 ```bash
 cd native_dashboard
-npm run release      # Build + auto-rename to Korean name
+
+# ✅ Recommended: builds TS + Rust + copies both exes automatically
+.\scripts\build-release.ps1
+
+# ✅ Alternative: builds TS + Rust + copies + creates Tauri installer
+.\scripts\build-tauri.ps1
 ```
 
-Or manually:
+Manual build (if needed — **must copy both exes**):
 ```bash
-npm run build
-cargo tauri build --release
+npm run build                          # 1. Compile TypeScript
+cargo build --release                  # 2. Build Rust
+# 3. Copy to Korean name (REQUIRED!)
+Copy-Item target\release\bot-dashboard.exe "target\release\디스코드 봇 대시보드.exe"
+Copy-Item target\release\bot-dashboard.exe ..\bot-dashboard.exe
+Copy-Item target\release\bot-dashboard.exe "..\디스코드 봇 대시보드.exe"
 ```
 
 ### Create Desktop Shortcut

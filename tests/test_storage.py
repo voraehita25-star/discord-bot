@@ -399,7 +399,7 @@ class TestCopyHistory:
             mock_db.get_ai_history = AsyncMock(
                 return_value=[{"role": "user", "content": "msg1"}]
             )
-            mock_db.save_ai_message = AsyncMock()
+            mock_db.save_ai_messages_batch = AsyncMock(return_value=1)
 
             result = await storage.copy_history(111, 222)
             assert result == 1

@@ -121,7 +121,19 @@ class URLFetcherClient:
                 result["fetch_time_ms"] = int((time.time() - start) * 1000)
                 return result
         except ImportError:
-            pass  # url_fetcher not available, proceed with caution
+            # url_fetcher not available — apply basic SSRF protection
+            import ipaddress
+            from urllib.parse import urlparse
+
+            try:
+                hostname = urlparse(url).hostname or ""
+                addr = ipaddress.ip_address(hostname)
+                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+                    result["error"] = "SSRF blocked: URL points to private/internal address"
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
+            except ValueError:
+                pass  # hostname is not an IP literal, allow (DNS resolution check unavailable)
 
         try:
             async with self._session.get(
@@ -137,7 +149,10 @@ class URLFetcherClient:
                 if resp.status != 200:
                     result["error"] = f"HTTP {resp.status}"
                 else:
-                    text = await resp.text()
+                    # Limit response size to 5MB to prevent memory exhaustion
+                    MAX_RESPONSE_SIZE = 5 * 1024 * 1024
+                    raw_bytes = await resp.content.read(MAX_RESPONSE_SIZE)
+                    text = raw_bytes.decode("utf-8", errors="replace")
 
                     if "text/html" in result["content_type"]:
                         soup = BeautifulSoup(text, "html.parser")

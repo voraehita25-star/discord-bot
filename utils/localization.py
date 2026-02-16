@@ -6,7 +6,6 @@ Provides centralized multi-language message management (Thai/English).
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from enum import Enum
 
@@ -191,8 +190,11 @@ def get_message(key: str, lang: Language = DEFAULT_LANGUAGE, **kwargs) -> str:
 
     # Format with kwargs if provided
     if kwargs:
-        with contextlib.suppress(KeyError):
+        try:
             message = message.format(**kwargs)
+        except KeyError as e:
+            logging.warning("Missing format key %s for message '%s'", e, key)
+            # Return partially formatted or raw message rather than silently failing
 
     return message
 

@@ -556,13 +556,17 @@ async def call_gemini_api(
                     parts_list = last_message.get("parts", [])
                     for part in parts_list if parts_list else []:
                         if isinstance(part, dict) and "text" in part:
-                            if framing not in part["text"]:
-                                part["text"] = part["text"] + framing
-                                logging.warning(
-                                    "🔓 Escalation Tier %d (%s): Injecting stronger framing",
-                                    tier_index,
-                                    tier_name,
-                                )
+                            # Remove any previous escalation framings before adding new one
+                            # to prevent accumulation across retries
+                            for prev_framing in ESCALATION_FRAMINGS:
+                                if prev_framing and prev_framing in part["text"]:
+                                    part["text"] = part["text"].replace(prev_framing, "")
+                            part["text"] = part["text"] + framing
+                            logging.warning(
+                                "🔓 Escalation Tier %d (%s): Injecting stronger framing",
+                                tier_index,
+                                tier_name,
+                            )
                             break
 
         if attempt < max_retries - 1:

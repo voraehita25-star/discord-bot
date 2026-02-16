@@ -6,6 +6,7 @@ Handles execution of Gemini AI function calls and server commands.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -311,6 +312,17 @@ async def send_as_webhook(bot, channel, name, message):
         The sent message object, or None if failed
     """
     try:
+        # Sanitize dangerous mentions FIRST (before any send path)
+        message = re.sub(r"@everyone", "@\u200beveryone", message, flags=re.IGNORECASE)
+        message = re.sub(r"@here", "@\u200bhere", message, flags=re.IGNORECASE)
+        message = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
+        message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
+
+        # Guard against DM channels (no guild/webhooks)
+        if not hasattr(channel, 'guild') or channel.guild is None:
+            await channel.send(f"**{name}**: {message}")
+            return None
+
         # Check bot permissions first
         if not channel.permissions_for(channel.guild.me).manage_webhooks:
             await channel.send(f"**{name}**: {message}")
@@ -318,14 +330,6 @@ async def send_as_webhook(bot, channel, name, message):
 
         webhook_name = f"AI: {name}"
         channel_id = channel.id
-
-        # Sanitize dangerous mentions in webhook messages
-        # (webhooks bypass allowed_mentions for @everyone/@here and role/user mentions)
-        message = message.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-        # Also sanitize role and user mention formats
-        import re as _re
-        message = _re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
-        message = _re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
         # Try cache first
         webhook = get_cached_webhook(channel_id, webhook_name)
@@ -417,8 +421,9 @@ async def send_as_webhook(bot, channel, name, message):
 
         # 3. Send Message and cache webhook
         if webhook:
-            # Cache the webhook for future use
-            set_cached_webhook(channel_id, webhook_name, webhook)
+            # Only cache if the webhook name actually matches (don't cache reused webhooks)
+            if webhook.name == webhook_name:
+                set_cached_webhook(channel_id, webhook_name, webhook)
 
             sent_message = None
             # Send message (split safely if too long)

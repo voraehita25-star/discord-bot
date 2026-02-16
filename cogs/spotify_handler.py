@@ -81,7 +81,7 @@ class SpotifyHandler:
             try:
                 self.sp._session.close()
             except Exception:
-                pass
+                logging.debug("Failed to close Spotify session during cleanup")
         self.sp = None
         logging.debug("🧹 Spotify handler cleaned up")
 
@@ -261,11 +261,10 @@ class SpotifyHandler:
         )
         msg = await ctx.send(embed=loading_embed)
 
-        # Capture self.sp to avoid repeated None checks in nested function
-        sp = self.sp
-
         def get_all_playlist_tracks(url):
-            results = sp.playlist_tracks(url)
+            # Use self.sp directly (not a captured local) so retries
+            # after client recreation use the fresh client instance
+            results = self.sp.playlist_tracks(url)
             tracks = results.get("items", []) if results else []
             # Limit total tracks to prevent memory issues
             # Also check results is not None to prevent infinite loop if sp.next() returns None
@@ -275,7 +274,7 @@ class SpotifyHandler:
                 import time
 
                 time.sleep(self.RATE_LIMIT_DELAY)
-                results = sp.next(results)
+                results = self.sp.next(results)
                 if results and results.get("items"):
                     tracks.extend(results["items"])
             return tracks[: self.MAX_PLAYLIST_TRACKS]  # Ensure limit
@@ -368,10 +367,9 @@ class SpotifyHandler:
         items = results.get("items", [])
 
         # Paginate to get all tracks (album_tracks returns max 50 per page)
-        sp = self.sp
         while results and results.get("next"):
             await asyncio.sleep(self.RATE_LIMIT_DELAY)
-            results = await self._api_call_with_retry(sp.next, results)
+            results = await self._api_call_with_retry(self.sp.next, results)
             if results and results.get("items"):
                 items.extend(results["items"])
 

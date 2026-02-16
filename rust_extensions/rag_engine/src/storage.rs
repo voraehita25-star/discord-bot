@@ -43,7 +43,8 @@ impl VectorStorage {
 
     /// Create or open a memory-mapped file
     pub fn open<P: AsRef<Path>>(path: P, dimension: usize, capacity: usize) -> Result<Self, RagError> {
-        let vector_size = dimension * std::mem::size_of::<f32>();
+        let vector_size = dimension.checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| RagError::Serialization("Dimension overflow in vector size calculation".to_string()))?;
         let file_size = Self::HEADER_SIZE
             .checked_add(
                 capacity.checked_mul(vector_size)
@@ -142,10 +143,16 @@ impl VectorStorage {
             let bytes: &[u8] = bytemuck::cast_slice(vector);
             mmap[offset..offset + vector_size].copy_from_slice(bytes);
             
-            // Update count in header (use native endian to match bytemuck header read/write)
+            // Update count in header via full header struct rewrite
             self.count += 1;
-            let count_offset = 12; // After magic + version + dimension
-            mmap[count_offset..count_offset + 8].copy_from_slice(&(self.count as u64).to_ne_bytes());
+            let header = StorageHeader {
+                magic: Self::MAGIC,
+                version: Self::VERSION,
+                dimension: self.dimension as u32,
+                count: self.count as u64,
+                reserved: [0; 48],
+            };
+            mmap[..Self::HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
             
             // Flush to ensure data is persisted to disk
             mmap.flush()?;

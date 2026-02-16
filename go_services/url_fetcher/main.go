@@ -157,14 +157,19 @@ func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 			return nil, fmt.Errorf("SSRF blocked: DNS resolution failed for %q: %v", host, err)
 		}
 
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("SSRF blocked: DNS returned no IPs for %q", host)
+		}
+
 		for _, ip := range ips {
 			if isPrivateIP(ip) {
 				return nil, fmt.Errorf("SSRF blocked: %q resolves to private IP %s", host, ip)
 			}
 		}
 
-		// All IPs are safe — dial normally
-		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+		// Dial using the first resolved IP directly to prevent DNS rebinding
+		// (a second DNS lookup could return a different, private IP)
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 	}
 }
 

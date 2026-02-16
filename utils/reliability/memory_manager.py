@@ -266,8 +266,11 @@ class WeakRefCache(Generic[K, V]):
         """Create callback for when weak ref is collected."""
         def on_collected(ref: weakref.ref[V]) -> None:
             with self._lock:
-                self._cache.pop(key, None)
-                self._collected += 1
+                # Only remove if the stored ref is the same one being collected,
+                # to prevent stale callbacks from deleting newer entries
+                if self._cache.get(key) is ref:
+                    del self._cache[key]
+                    self._collected += 1
             self.logger.debug("Object collected for key: %s", key)
         return on_collected
 
@@ -437,7 +440,7 @@ class MemoryMonitor:
         if aggressive:
             # Run full gc.collect in executor to avoid blocking event loop
             import gc
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, gc.collect)
 
         return results

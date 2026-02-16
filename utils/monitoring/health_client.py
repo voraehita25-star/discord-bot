@@ -36,6 +36,7 @@ class HealthAPIClient:
         self.base_url = base_url or HEALTH_API_URL
         self._session: aiohttp.ClientSession | None = None
         self._service_available: bool | None = None
+        self._last_service_check: float = 0
         self._metrics_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -196,12 +197,26 @@ class HealthAPIClient:
 
 # Global client instance
 _client: HealthAPIClient | None = None
+_client_lock: asyncio.Lock | None = None
+
+
+def _get_client_lock() -> asyncio.Lock:
+    """Lazily create the client lock."""
+    global _client_lock
+    if _client_lock is None:
+        _client_lock = asyncio.Lock()
+    return _client_lock
 
 
 async def get_health_client() -> HealthAPIClient:
-    """Get or create the global health client."""
+    """Get or create the global health client (race-safe)."""
     global _client
-    if _client is None:
+    if _client is not None:
+        return _client
+    async with _get_client_lock():
+        # Double-check after acquiring lock
+        if _client is not None:
+            return _client
         client = HealthAPIClient()
         try:
             await client.connect()

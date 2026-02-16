@@ -206,6 +206,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
+        mock_attachment.size = 11
         mock_attachment.read = AsyncMock(return_value=b"Hello World")
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -224,6 +225,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
+        mock_attachment.size = 100
         mock_attachment.read = AsyncMock(return_value="สวัสดี".encode())
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -244,6 +246,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "large.txt"
+        mock_attachment.size = 20000
         mock_attachment.read = AsyncMock(return_value=large_content.encode('utf-8'))
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -261,6 +264,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = None  # No MIME type
         mock_attachment.filename = "script.py"
+        mock_attachment.size = 14
         mock_attachment.read = AsyncMock(return_value=b"print('hello')")
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -278,6 +282,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "application/json"
         mock_attachment.filename = "data.json"
+        mock_attachment.size = 16
         mock_attachment.read = AsyncMock(return_value=b'{"key": "value"}')
 
         image_parts, video_parts, text_parts = await process_attachments(

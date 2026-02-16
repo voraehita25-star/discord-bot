@@ -50,7 +50,7 @@ async def join_voice_channel(bot: Bot, channel_id: int) -> tuple[bool, str]:
 
     except Exception as e:
         logging.error("Failed to join voice channel: %s", e)
-        return False, f"❌ ไม่สามารถเข้าช่องเสียงได้: {str(e)[:50]}"
+        return False, "❌ ไม่สามารถเข้าช่องเสียงได้ กรุณาลองใหม่อีกครั้ง"
 
 
 async def leave_voice_channel(bot: Bot, guild_id: int) -> tuple[bool, str]:
@@ -75,7 +75,7 @@ async def leave_voice_channel(bot: Bot, guild_id: int) -> tuple[bool, str]:
 
     except Exception as e:
         logging.error("Failed to leave voice channel: %s", e)
-        return False, f"❌ ไม่สามารถออกจากช่องเสียงได้: {str(e)[:50]}"
+        return False, "❌ ไม่สามารถออกจากช่องเสียงได้ กรุณาลองใหม่อีกครั้ง"
 
 
 def parse_voice_command(message: str) -> tuple[str | None, int | None]:

@@ -214,9 +214,11 @@ var allowedMetricNames = map[string]bool{
 
 // allowedLabelValues restricts label values to a known set to prevent cardinality explosion.
 var allowedLabelValues = map[string]map[string]bool{
-	"status": {"success": true, "error": true, "timeout": true},
-	"result": {"hit": true, "miss": true},
-	"type":   {"input": true, "output": true, "user": true, "channel": true, "guild": true},
+	"status":   {"success": true, "error": true, "timeout": true},
+	"result":   {"hit": true, "miss": true},
+	"type":     {"input": true, "output": true, "user": true, "channel": true, "guild": true},
+	"endpoint": {"ai": true, "music": true, "spotify": true, "health": true, "dashboard": true, "command": true, "api": true},
+	"service":  {"gemini": true, "spotify": true, "database": true, "health": true, "url_fetcher": true},
 }
 
 // safeLabel returns value only if it's in the allowed set for that label key,
@@ -275,13 +277,17 @@ func main() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 
-		json.NewEncoder(w).Encode(status)
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Failed to encode health status: %v", err)
+		}
 	})
 
 	// Simple liveness probe
 	r.Get("/health/live", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("Failed to write liveness response: %v", err)
+		}
 	})
 
 	// Readiness probe
@@ -289,10 +295,14 @@ func main() {
 		status := healthService.GetStatus()
 		if status.Status == "healthy" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("READY"))
+			if _, err := w.Write([]byte("READY")); err != nil {
+				log.Printf("Failed to write readiness response: %v", err)
+			}
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("NOT READY"))
+			if _, err := w.Write([]byte("NOT READY")); err != nil {
+				log.Printf("Failed to write readiness response: %v", err)
+			}
 		}
 	})
 
@@ -351,7 +361,7 @@ func main() {
 				if status == "other" {
 					status = "success"
 				}
-				endpoint := sanitizeLabel(payload.Labels["endpoint"])
+				endpoint := safeLabel("endpoint", payload.Labels["endpoint"])
 				requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
 			case "rate_limit":
 				rateLimitHits.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
@@ -363,7 +373,7 @@ func main() {
 		case "histogram":
 			switch payload.Name {
 			case "request_duration":
-				requestDuration.WithLabelValues(sanitizeLabel(payload.Labels["endpoint"])).Observe(payload.Value)
+				requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
 			case "ai_response_time":
 				aiResponseTime.Observe(payload.Value)
 			}
@@ -372,7 +382,7 @@ func main() {
 			case "active_connections":
 				activeConnections.Set(payload.Value)
 			case "circuit_breaker":
-				circuitBreakerState.WithLabelValues(sanitizeLabel(payload.Labels["service"])).Set(payload.Value)
+				circuitBreakerState.WithLabelValues(safeLabel("service", payload.Labels["service"])).Set(payload.Value)
 			}
 		default:
 			http.Error(w, "unknown metric type", http.StatusBadRequest)
@@ -417,7 +427,7 @@ func main() {
 					if status == "other" {
 						status = "success"
 					}
-					requestsTotal.WithLabelValues(sanitizeLabel(p.Labels["endpoint"]), status).Add(p.Value)
+					requestsTotal.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"]), status).Add(p.Value)
 					processed++
 				case "rate_limit":
 					rateLimitHits.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
@@ -432,7 +442,7 @@ func main() {
 			case "histogram":
 				switch p.Name {
 				case "request_duration":
-					requestDuration.WithLabelValues(sanitizeLabel(p.Labels["endpoint"])).Observe(p.Value)
+					requestDuration.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"])).Observe(p.Value)
 					processed++
 				case "ai_response_time":
 					aiResponseTime.Observe(p.Value)
@@ -444,7 +454,7 @@ func main() {
 					activeConnections.Set(p.Value)
 					processed++
 				case "circuit_breaker":
-					circuitBreakerState.WithLabelValues(sanitizeLabel(p.Labels["service"])).Set(p.Value)
+					circuitBreakerState.WithLabelValues(safeLabel("service", p.Labels["service"])).Set(p.Value)
 					processed++
 				}
 				// Unknown metric types in batch are silently skipped (consistent with batch semantics)
@@ -452,7 +462,9 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]int{"processed": processed})
+		if err := json.NewEncoder(w).Encode(map[string]int{"processed": processed}); err != nil {
+			log.Printf("Failed to encode batch response: %v", err)
+		}
 	})
 
 	// Stats summary
@@ -460,7 +472,9 @@ func main() {
 		collectSystemMetrics()
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Failed to encode stats response: %v", err)
+		}
 	})
 
 	// Create context for metrics collector goroutine

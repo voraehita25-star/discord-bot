@@ -5,6 +5,7 @@ Intelligent trimming and management of chat history.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import re
 from dataclasses import dataclass
@@ -373,7 +374,6 @@ class HistoryManager:
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
         # Pre-compute importance scores and build a min-heap for O(n log n) trimming
-        import heapq
         trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
         if trim_end > 0:
             # Build heap of (importance, original_index) for trimmable messages

@@ -182,7 +182,7 @@ class TestCorePerformanceTracker:
         tracker.record_timing("custom_step", 1.0)
 
         assert "custom_step" in tracker._metrics
-        assert tracker._metrics["custom_step"] == [1.0]
+        assert list(tracker._metrics["custom_step"]) == [1.0]
 
     def test_record_timing_respects_max_samples(self):
         """Test recording respects max samples limit."""
@@ -256,8 +256,8 @@ class TestCorePerformanceTracker:
 
         tracker.clear_metrics()
 
-        assert tracker._metrics["api_call"] == []
-        assert tracker._metrics["streaming"] == []
+        assert len(tracker._metrics["api_call"]) == 0
+        assert len(tracker._metrics["streaming"]) == 0
 
     def test_clear_metrics_specific_step(self):
         """Test clearing specific step metrics."""
@@ -269,8 +269,8 @@ class TestCorePerformanceTracker:
 
         tracker.clear_metrics("api_call")
 
-        assert tracker._metrics["api_call"] == []
-        assert tracker._metrics["streaming"] == [0.2]
+        assert len(tracker._metrics["api_call"]) == 0
+        assert list(tracker._metrics["streaming"]) == [0.2]
 
     def test_get_summary_with_data(self):
         """Test get_summary with recorded data."""

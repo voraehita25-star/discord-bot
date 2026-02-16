@@ -205,8 +205,11 @@ async def _save_history_db(
 ) -> None:
     """Save history using SQLite database with batch operations."""
 
-    # Always fetch last few messages from DB for duplicate checking
-    db_history = await db.get_ai_history(channel_id, limit=10)
+    # Fetch enough messages from DB for reliable duplicate checking
+    # Using a small limit caused missed duplicates when history was long
+    history = chat_data.get("history", [])
+    dedup_limit = max(50, len(history)) if history else 50
+    db_history = await db.get_ai_history(channel_id, limit=dedup_limit)
 
     # Use explicitly provided new entries if available
     new_messages = []
@@ -305,6 +308,7 @@ async def _save_history_db(
             batch_data.append(
                 {
                     "channel_id": channel_id,
+                    "user_id": item.get("user_id"),
                     "role": role,
                     "content": content,
                     "message_id": message_id,
@@ -338,14 +342,17 @@ async def _save_history_json(
 
     # Smart pruning
     if len(history) > limit:
-        keep_start = 6
-        keep_end = limit - keep_start
+        # For small limits, just keep the most recent messages
+        if limit <= 6:
+            history = history[-limit:]
+        else:
+            keep_start = 6
+            keep_end = limit - keep_start
 
-        if keep_end > 0:
             if keep_end % 2 != 0:
                 keep_end -= 1
 
-            if keep_end > len(history):
+            if keep_end > len(history) - keep_start:
                 keep_end = len(history) - keep_start
                 keep_end = max(keep_end, 0)
 
@@ -560,8 +567,8 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             logging.warning("No history found in source channel %s", source_channel_id)
             return 0
 
-        # Copy each message to target channel
-        copied = 0
+        # Copy messages in batch for performance instead of one-by-one
+        batch_messages = []
         for item in source_history:
             if not isinstance(item, dict):
                 continue
@@ -573,14 +580,18 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             timestamp = item.get("timestamp")
 
             if content:
-                await db.save_ai_message(
-                    channel_id=target_channel_id,
-                    role=role,
-                    content=content,
-                    message_id=message_id,
-                    timestamp=timestamp,
-                )
-                copied += 1
+                batch_messages.append({
+                    "channel_id": target_channel_id,
+                    "role": role,
+                    "content": content,
+                    "message_id": message_id,
+                    "timestamp": timestamp,
+                    "user_id": None,
+                })
+
+        copied = 0
+        if batch_messages:
+            copied = await db.save_ai_messages_batch(batch_messages)
 
         logging.info(
             "📋 Copied %d messages from channel %s to %s",

@@ -115,7 +115,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert isinstance(cog.queues, dict)
+        assert hasattr(cog.queues, '__getitem__')
         assert len(cog.queues) == 0
 
     def test_music_cog_loops_init(self):
@@ -126,7 +126,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert isinstance(cog.loops, dict)
+        assert hasattr(cog.loops, '__getitem__')
         assert len(cog.loops) == 0
 
     def test_music_cog_volumes_init(self):
@@ -137,7 +137,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert isinstance(cog.volumes, dict)
+        assert hasattr(cog.volumes, '__getitem__')
 
     def test_music_cog_mode_247_init(self):
         """Test Music cog initializes mode_247 dict."""
@@ -147,7 +147,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert isinstance(cog.mode_247, dict)
+        assert hasattr(cog.mode_247, '__getitem__')
 
     def test_music_cog_auto_disconnect_delay(self):
         """Test Music cog auto disconnect delay."""
@@ -340,7 +340,7 @@ class TestMusicCogSaveQueueJson:
             # Should not raise
 
     def test_save_queue_json_with_tracks(self):
-        """Test _save_queue_json with tracks."""
+        """Test _save_queue_json_sync with tracks."""
         from cogs.music.cog import Music
 
         mock_bot = MagicMock()
@@ -353,7 +353,7 @@ class TestMusicCogSaveQueueJson:
         cog.mode_247[guild_id] = False
 
         with patch('pathlib.Path.write_text') as mock_write:
-            cog._save_queue_json(guild_id)
+            cog._save_queue_json_sync(guild_id)
             mock_write.assert_called_once()
 
 
@@ -581,5 +581,5 @@ class TestMusicButtonStates:
         assert cog.current_track[guild_id]["title"] == "Test Song"
 
         # Remove current track
-        cog.current_track.pop(guild_id, None)
-        assert guild_id not in cog.current_track
+        cog.current_track[guild_id] = None
+        assert cog.current_track[guild_id] is None

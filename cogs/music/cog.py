@@ -19,6 +19,7 @@ import logging
 import random
 import time
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -35,35 +36,204 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
 
 
+@dataclass
+class MusicGuildState:
+    """Per-guild music state, consolidating 11 scattered dicts into one object."""
+
+    queue: collections.deque[dict[str, Any]] = field(default_factory=collections.deque)
+    loop: bool = False
+    current_track: dict[str, Any] | None = None
+    fixing: bool = False
+    pause_start: float | None = None
+    play_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    volume: float = 0.5
+    auto_disconnect_task: asyncio.Task | None = None
+    mode_247: bool = False
+    last_text_channel: int | None = None
+    play_retries: int = 0
+
+    def reset(self) -> None:
+        """Reset transient state (preserves mode_247 and play_lock)."""
+        if self.auto_disconnect_task is not None:
+            self.auto_disconnect_task.cancel()
+            self.auto_disconnect_task = None
+        self.queue.clear()
+        self.loop = False
+        self.current_track = None
+        self.fixing = False
+        self.pause_start = None
+        self.volume = 0.5
+        self.play_retries = 0
+
+
 class Music(commands.Cog):
     """Music Cog - Provides music playback with YouTube and Spotify support."""
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
-        self.queues: dict[int, collections.deque[dict[str, Any]]] = {}  # Guild ID -> deque of queries/urls
-        self.loops: dict[int, bool] = {}  # Guild ID -> Boolean
-        # Guild ID -> Track Info (cleaned version)
-        self.current_track: dict[int, dict[str, Any]] = {}
-        self.fixing: dict[int, bool] = {}  # Guild ID -> Boolean (Fixing state)
-        self.pause_start: dict[int, float] = {}  # Guild ID -> Timestamp when paused
-        self.play_locks: dict[int, asyncio.Lock] = {}  # Guild ID -> asyncio.Lock
-        self.volumes: dict[int, float] = {}  # Guild ID -> Volume (0.0 - 2.0)
-        self.auto_disconnect_tasks: dict[int, asyncio.Task] = {}  # Guild ID -> asyncio.Task
-        self.mode_247: dict[int, bool] = {}  # Guild ID -> Boolean (24/7 mode enabled)
-        self.last_text_channel: dict[int, int] = {}  # Guild ID -> Channel ID (last used)
+        # Consolidated per-guild state
+        self._guild_states: dict[int, MusicGuildState] = {}
+
+        # Legacy dict accessors (property-style) kept for backward compat
+        # — code that does self.queues[gid] etc. still works via __getattr__ below
+
         # Lazy import to avoid circular dependency with spotify_handler
         from cogs.spotify_handler import SpotifyHandler
 
         self.spotify: SpotifyHandler = SpotifyHandler(bot)
         self.auto_disconnect_delay: int = 180  # 3 minutes
 
+    # ----- Guild state helpers -----
+
+    def _gs(self, guild_id: int) -> MusicGuildState:
+        """Get or create per-guild state."""
+        if guild_id not in self._guild_states:
+            self._guild_states[guild_id] = MusicGuildState()
+        return self._guild_states[guild_id]
+
+    # Convenience properties kept as thin proxies so existing code
+    # that does  self.queues[gid]  /  self.loops[gid]  keeps working.
+
+    class _DictProxy:
+        """Proxy that maps dict[guild_id] access to MusicGuildState fields."""
+
+        def __init__(self, cog: "Music", attr: str) -> None:
+            self._cog = cog
+            self._attr = attr
+
+        def __getitem__(self, guild_id: int):
+            return getattr(self._cog._gs(guild_id), self._attr)
+
+        def __setitem__(self, guild_id: int, value):
+            setattr(self._cog._gs(guild_id), self._attr, value)
+
+        def __contains__(self, guild_id: int) -> bool:
+            if guild_id not in self._cog._guild_states:
+                return False
+            val = getattr(self._cog._guild_states[guild_id], self._attr)
+            return val is not None
+
+        def __len__(self) -> int:
+            return len(self._cog._guild_states)
+
+        def __iter__(self):
+            return iter(self._cog._guild_states)
+
+        def get(self, guild_id: int, default=None):
+            if guild_id in self._cog._guild_states:
+                return getattr(self._cog._guild_states[guild_id], self._attr)
+            return default
+
+        def pop(self, guild_id: int, *args):
+            # pop returns the current value and resets the field to its default
+            if guild_id in self._cog._guild_states:
+                gs = self._cog._guild_states[guild_id]
+                val = getattr(gs, self._attr)
+                # Reset to dataclass default: None for Optional fields,
+                # False for bool, 0.5 for volume, 0 for int counters
+                if self._attr == "queue":
+                    gs.queue = collections.deque()
+                else:
+                    _defaults = {
+                        "current_track": None, "pause_start": None,
+                        "auto_disconnect_task": None, "last_text_channel": None,
+                        "loop": False, "fixing": False, "mode_247": False,
+                        "volume": 0.5, "play_retries": 0,
+                    }
+                    default_val = _defaults.get(self._attr)
+                    setattr(gs, self._attr, default_val)
+                return val
+            if args:
+                return args[0]
+            raise KeyError(guild_id)
+
+        def setdefault(self, guild_id: int, default=None):
+            gs = self._cog._gs(guild_id)
+            val = getattr(gs, self._attr)
+            if val is None:
+                setattr(gs, self._attr, default)
+                return default
+            return val
+
+        def keys(self):
+            return self._cog._guild_states.keys()
+
+        def values(self):
+            return [getattr(gs, self._attr) for gs in self._cog._guild_states.values()]
+
+        def items(self):
+            return [(gid, getattr(gs, self._attr)) for gid, gs in self._cog._guild_states.items()]
+
+        def clear(self):
+            # Only clear this specific attribute across all guilds, not all state
+            _defaults = {
+                "current_track": None, "pause_start": None,
+                "auto_disconnect_task": None, "last_text_channel": None,
+                "loop": False, "fixing": False, "mode_247": False,
+                "volume": 0.5, "play_retries": 0,
+            }
+            default_val = _defaults.get(self._attr)
+            for gs in self._cog._guild_states.values():
+                # For queue, use .clear() on the deque instead of replacing
+                if self._attr == "queue":
+                    gs.queue.clear()
+                else:
+                    setattr(gs, self._attr, default_val)
+
+    @property
+    def queues(self):
+        return self._DictProxy(self, "queue")
+
+    @property
+    def loops(self):
+        return self._DictProxy(self, "loop")
+
+    @property
+    def current_track(self):
+        return self._DictProxy(self, "current_track")
+
+    @property
+    def fixing(self):
+        return self._DictProxy(self, "fixing")
+
+    @property
+    def pause_start(self):
+        return self._DictProxy(self, "pause_start")
+
+    @property
+    def play_locks(self):
+        return self._DictProxy(self, "play_lock")
+
+    @property
+    def volumes(self):
+        return self._DictProxy(self, "volume")
+
+    @property
+    def auto_disconnect_tasks(self):
+        return self._DictProxy(self, "auto_disconnect_task")
+
+    @property
+    def mode_247(self):
+        return self._DictProxy(self, "mode_247")
+
+    @property
+    def last_text_channel(self):
+        return self._DictProxy(self, "last_text_channel")
+
+    @property
+    def _play_retries(self):
+        return self._DictProxy(self, "play_retries")
+
     def _safe_run_coroutine(self, coro) -> None:
         """Safely run a coroutine in the bot's event loop.
 
         This handles the case where the event loop may be closed during shutdown.
+        Uses self.bot.loop which always returns the bot's event loop (needed
+        because this method is called from non-async callback threads where
+        asyncio.get_event_loop() may return the wrong loop).
         """
         try:
-            loop = asyncio.get_event_loop()
+            loop = self.bot.loop
             if loop and loop.is_running() and not loop.is_closed():
                 asyncio.run_coroutine_threadsafe(coro, loop)
         except (RuntimeError, AttributeError):
@@ -73,56 +243,50 @@ class Music(commands.Cog):
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
         # Cancel all auto-disconnect tasks
-        for task in self.auto_disconnect_tasks.values():
-            task.cancel()
+        for gs in self._guild_states.values():
+            if gs.auto_disconnect_task is not None:
+                gs.auto_disconnect_task.cancel()
         # Save queues before clearing to preserve state across reloads
-        for guild_id in list(self.queues.keys()):
+        for guild_id in list(self._guild_states.keys()):
             try:
-                from .queue import queue_manager
-                await queue_manager.save_queue(guild_id)
+                await self.save_queue(guild_id)
             except Exception:
-                pass
+                logging.debug("Failed to save queue for guild %s during unload", guild_id)
         # Disconnect all voice clients to prevent resource leaks
         for vc in list(self.bot.voice_clients):
             try:
                 await vc.disconnect(force=True)
             except Exception:
-                pass
+                logging.debug("Failed to disconnect voice client during unload")
         # Cleanup Spotify handler
         if hasattr(self, "spotify") and self.spotify:
             self.spotify.cleanup()
         # Clear all stored data to prevent memory leaks
-        self.queues.clear()
-        self.loops.clear()
-        self.current_track.clear()
-        self.fixing.clear()
-        self.pause_start.clear()
-        self.play_locks.clear()
-        self.volumes.clear()
-        self.auto_disconnect_tasks.clear()
-        self.mode_247.clear()
-        self.last_text_channel.clear()
+        self._guild_states.clear()
         logging.info("🎵 Music Cog unloaded - all data cleaned up")
 
     async def cleanup_guild_data(self, guild_id: int) -> None:
         """Clean up all data for a specific guild."""
+        # Skip cleanup if the fix command is in progress (race condition prevention)
+        if guild_id in self._guild_states and self._guild_states[guild_id].fixing:
+            logging.debug("Skipping cleanup for guild %s - fix command in progress", guild_id)
+            return
+
         # Save queue before cleanup for persistence
         await self.save_queue(guild_id)
 
-        # Cancel auto-disconnect task if exists
-        if guild_id in self.auto_disconnect_tasks:
-            self.auto_disconnect_tasks[guild_id].cancel()
-            self.auto_disconnect_tasks.pop(guild_id, None)
-        self.queues.pop(guild_id, None)
-        self.loops.pop(guild_id, None)
-        self.current_track.pop(guild_id, None)
-        self.fixing.pop(guild_id, None)
-        self.pause_start.pop(guild_id, None)
-        # Don't remove play_locks during cleanup: play_next may hold the lock.
-        # Removing it could cause concurrent access without mutual exclusion.
-        # The lock object is lightweight and will be reused on next play.
-        self.volumes.pop(guild_id, None)
-        # Note: We don't remove mode_247 here so 24/7 setting persists
+        if guild_id in self._guild_states:
+            gs = self._guild_states[guild_id]
+            # Cancel auto-disconnect task
+            if gs.auto_disconnect_task is not None:
+                gs.auto_disconnect_task.cancel()
+            # Preserve mode_247 setting across cleanup
+            keep_247 = gs.mode_247
+            # Remove the guild state entirely
+            del self._guild_states[guild_id]
+            # Re-create minimal state if 24/7 mode was enabled
+            if keep_247:
+                self._guild_states[guild_id] = MusicGuildState(mode_247=True)
 
     async def cog_before_invoke(self, ctx: commands.Context) -> None:
         """Called before every command - track last used text channel."""
@@ -138,7 +302,7 @@ class Music(commands.Cog):
             from utils.database import db
         except ImportError:
             # Fallback to JSON if database not available
-            self._save_queue_json(guild_id)
+            await self._save_queue_json(guild_id)
             return
 
         if not queue:
@@ -150,8 +314,12 @@ class Music(commands.Cog):
         await db.save_music_queue(guild_id, list(queue))
         logging.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
 
-    def _save_queue_json(self, guild_id: int) -> None:
-        """Legacy JSON save as fallback."""
+    async def _save_queue_json(self, guild_id: int) -> None:
+        """Legacy JSON save as fallback. Runs blocking I/O in a thread."""
+        await asyncio.to_thread(self._save_queue_json_sync, guild_id)
+
+    def _save_queue_json_sync(self, guild_id: int) -> None:
+        """Synchronous JSON save implementation."""
         queue = self.queues.get(guild_id, [])
         if not queue:
             filepath = Path(f"data/queue_{guild_id}.json")
@@ -258,9 +426,10 @@ class Music(commands.Cog):
             # Bot was moved to another channel
             if member == self.bot.user and before.channel != after.channel and after.channel:
                 # Cancel any pending auto-disconnect
-                if guild_id in self.auto_disconnect_tasks:
-                    self.auto_disconnect_tasks[guild_id].cancel()
-                    self.auto_disconnect_tasks.pop(guild_id, None)
+                task = self.auto_disconnect_tasks.get(guild_id)
+                if task is not None:
+                    task.cancel()
+                    self.auto_disconnect_tasks[guild_id] = None
                 continue
 
             # Check if someone left bot's channel
@@ -284,9 +453,10 @@ class Music(commands.Cog):
             # Check if someone joined bot's channel
             if after.channel == vc.channel and before.channel != vc.channel:
                 # Cancel auto-disconnect if someone joins
-                if guild_id in self.auto_disconnect_tasks:
-                    self.auto_disconnect_tasks[guild_id].cancel()
-                    self.auto_disconnect_tasks.pop(guild_id, None)
+                task = self.auto_disconnect_tasks.get(guild_id)
+                if task is not None:
+                    task.cancel()
+                    self.auto_disconnect_tasks[guild_id] = None
                     logging.info(
                         "✅ Cancelled auto-disconnect for guild %s - user joined", guild_id
                     )
@@ -388,7 +558,7 @@ class Music(commands.Cog):
             # Should not reach here, but just in case
             return False
 
-        await self.bot.loop.run_in_executor(None, _delete)
+        await asyncio.get_running_loop().run_in_executor(None, _delete)
 
     def get_queue(self, ctx) -> collections.deque[dict[str, Any]]:
         """Get or create queue for a guild.
@@ -415,13 +585,32 @@ class Music(commands.Cog):
         lock = self.play_locks.setdefault(guild_id, asyncio.Lock())
 
         # Atomic lock acquisition with timeout - avoids TOCTOU race condition
-        # by not checking lock.locked() separately from acquire()
+        # by not checking lock.locked() separately from acquire().
+        # Uses shield + done_callback to avoid CPython #42130 deadlock.
+        _timed_out = False
+
+        async def _acquire_lock():
+            await lock.acquire()
+            return True
+
+        _acquire_task = asyncio.create_task(_acquire_lock())
+
+        def _release_if_timed_out(task: asyncio.Task) -> None:
+            if _timed_out and not task.cancelled() and task.exception() is None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+        _acquire_task.add_done_callback(_release_if_timed_out)
+
         try:
-            acquired = await asyncio.wait_for(lock.acquire(), timeout=0.1)
+            acquired = await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=0.1)
             if not acquired:
                 logging.debug("play_next lock acquisition failed for guild %s", guild_id)
                 return
         except asyncio.TimeoutError:
+            _timed_out = True
             # Another task is processing - skip this call
             logging.debug("play_next already in progress for guild %s", guild_id)
             return
@@ -517,7 +706,7 @@ class Music(commands.Cog):
                 try:
                     async with ctx.typing():
                         # Use Download Mode (stream=False)
-                        player = await YTDLSource.from_url(url, loop=self.bot.loop, stream=False)
+                        player = await YTDLSource.from_url(url, loop=asyncio.get_running_loop(), stream=False)
 
                         # Apply stored volume to new track
                         player.volume = self.volumes.get(guild_id, 0.5)
@@ -566,7 +755,9 @@ class Music(commands.Cog):
                             self._safe_run_coroutine(self.play_next(ctx))
 
                         try:
-                            ctx.voice_client.play(player, after=after_playing)
+                            voice_client.play(player, after=after_playing)
+                            # Reset retry counter on successful playback start
+                            self._play_retries[guild_id] = 0
                         except (discord.DiscordException, OSError) as e:
                             logging.error("Failed to start playback: %s", e)
                             # Cleanup FFmpeg process
@@ -638,7 +829,7 @@ class Music(commands.Cog):
                 except (discord.DiscordException, OSError) as e:
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Playback Error",
-                        description=f"Failed to play next track\n```{e}```",
+                        description="ไม่สามารถเล่นเพลงถัดไปได้ กรุณาลองใหม่",
                         color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
@@ -659,14 +850,13 @@ class Music(commands.Cog):
         # Retry next track AFTER lock is released (avoids deadlock)
         if _retry_next:
             # Limit retries to prevent unbounded recursion (per-guild tracking)
-            retry_key = f'_play_next_retries_{guild_id}'
-            retry_count = getattr(self, retry_key, 0)
+            retry_count = self._play_retries.get(guild_id, 0)
             if retry_count < 10:  # Max 10 retries to prevent stack overflow
-                setattr(self, retry_key, retry_count + 1)
+                self._play_retries[guild_id] = retry_count + 1
                 await self.play_next(ctx)
             else:
                 logging.warning("play_next retry limit reached for guild %s", guild_id)
-                setattr(self, retry_key, 0)  # Reset for next session
+                self._play_retries[guild_id] = 0  # Reset for next session
 
     @commands.hybrid_command(name="loop", aliases=["l"])
     @commands.guild_only()
@@ -856,7 +1046,7 @@ class Music(commands.Cog):
                     logging.error("Fix player error: %s", error)
                 self._safe_run_coroutine(self.play_next(ctx))
 
-            ctx.voice_client.play(player, after=after_playing_fix)
+            voice_client_fix.play(player, after=after_playing_fix)
 
             # Success embed
             success_embed = discord.Embed(
@@ -871,7 +1061,7 @@ class Music(commands.Cog):
 
         except (discord.DiscordException, OSError) as e:
             error_embed = discord.Embed(
-                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description=f"```{e}```", color=Colors.ERROR
+                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง", color=Colors.ERROR
             )
             await fix_msg.edit(embed=error_embed)
             logging.error("Fix failed: %s", e)
@@ -1007,7 +1197,7 @@ class Music(commands.Cog):
 
                 try:
                     # Use search_source to get info first
-                    info = await YTDLSource.search_source(query, loop=self.bot.loop)
+                    info = await YTDLSource.search_source(query, loop=asyncio.get_running_loop())
                     if info:
                         title = info.get("title", "Unknown Title")
                         url = info.get("webpage_url", query)
@@ -1046,15 +1236,17 @@ class Music(commands.Cog):
 
                         await ctx.send(embed=embed)
                     else:
+                        # Truncate query for safe embed display
+                        safe_query = query[:100] + "..." if len(query) > 100 else query
                         embed = discord.Embed(
-                            description=(f"{Emojis.CROSS} No results found for: `{query}`"),
+                            description=(f"{Emojis.CROSS} No results found for: `{safe_query}`"),
                             color=Colors.ERROR,
                         )
                         await ctx.send(embed=embed)
                         return
                 except (discord.DiscordException, OSError) as e:
                     embed = discord.Embed(
-                        title=f"{Emojis.CROSS} Error", description=f"```{e}```", color=Colors.ERROR
+                        title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่", color=Colors.ERROR
                     )
                     await ctx.send(embed=embed)
                     logging.error("Search error: %s", e)
@@ -1259,9 +1451,10 @@ class Music(commands.Cog):
 
         if new_state:
             # Cancel any pending auto-disconnect
-            if guild_id in self.auto_disconnect_tasks:
-                self.auto_disconnect_tasks[guild_id].cancel()
-                self.auto_disconnect_tasks.pop(guild_id, None)
+            task = self.auto_disconnect_tasks.get(guild_id)
+            if task is not None:
+                task.cancel()
+                self.auto_disconnect_tasks[guild_id] = None
 
             embed = discord.Embed(
                 title=f"{Emojis.CHECK} 24/7 Mode Enabled",
@@ -1303,7 +1496,11 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        random.shuffle(queue)
+        # Convert deque to list for O(n) shuffle, then replace
+        items = list(queue)
+        random.shuffle(items)
+        queue.clear()
+        queue.extend(items)
 
         embed = discord.Embed(
             title=f"{Emojis.SPARKLES} Queue Shuffled!",
@@ -1434,42 +1631,67 @@ class Music(commands.Cog):
 
         # Stop current playback and restart with seek
         self.fixing[guild_id] = True
-        ctx.voice_client.stop()
-
-        filename = track_info["filename"]
-        data = track_info["data"]
-
-        # Get ffmpeg options with seek
-        current_options = get_ffmpeg_options(stream=False, start_time=seek_time)
-
-        player = YTDLSource(
-            discord.FFmpegPCMAudio(filename, **current_options, executable="ffmpeg"),
-            data=data,
-            filename=filename,
-        )
-
-        # Apply volume
-        player.volume = self.volumes.get(guild_id, 0.5)
-
-        # Update start time
-        self.current_track[guild_id]["start_time"] = time.time() - seek_time
-
-        def after_seek(error):
-            # Reset fixing flag in callback to prevent race condition
-            self.fixing[guild_id] = False
-            if not self.loops.get(guild_id) and filename:
-                self._safe_run_coroutine(self.safe_delete(filename))
-            if error:
-                logging.error("Seek player error: %s", error)
-            self._safe_run_coroutine(self.play_next(ctx))
-
         try:
-            ctx.voice_client.play(player, after=after_seek)
+            ctx.voice_client.stop()
+
+            filename = track_info["filename"]
+            data = track_info["data"]
+
+            # Get ffmpeg options with seek
+            current_options = get_ffmpeg_options(stream=False, start_time=seek_time)
+
+            player = YTDLSource(
+                discord.FFmpegPCMAudio(filename, **current_options, executable="ffmpeg"),
+                data=data,
+                filename=filename,
+            )
+
+            # Apply volume
+            player.volume = self.volumes.get(guild_id, 0.5)
+
+            # Update start time
+            self.current_track[guild_id]["start_time"] = time.time() - seek_time
+
+            # Capture voice_client reference for callback
+            vc_seek = ctx.voice_client
+
+            def after_seek(error):
+                # Reset fixing flag in callback to prevent race condition
+                self.fixing[guild_id] = False
+
+                # Guard: Check if voice_client is still valid
+                if not vc_seek or not vc_seek.is_connected():
+                    if not self.loops.get(guild_id) and filename:
+                        self._safe_run_coroutine(self.safe_delete(filename))
+                    return
+
+                if not self.loops.get(guild_id) and filename:
+                    self._safe_run_coroutine(self.safe_delete(filename))
+                if error:
+                    logging.error("Seek player error: %s", error)
+
+                # Guard: Don't schedule if already playing or paused
+                if vc_seek.is_playing() or vc_seek.is_paused():
+                    return
+
+                self._safe_run_coroutine(self.play_next(ctx))
+
+            try:
+                vc_seek.play(player, after=after_seek)
+            except Exception as e:
+                # Reset fixing flag if play() fails
+                self.fixing[guild_id] = False
+                logging.error("Seek play error: %s", e)
+                raise
         except Exception as e:
-            # Reset fixing flag if play() fails
             self.fixing[guild_id] = False
-            logging.error("Seek play error: %s", e)
-            raise
+            logging.error("Seek failed: %s", e)
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} Seek failed: {e}",
+                color=Colors.ERROR,
+            )
+            await ctx.send(embed=embed)
+            return
 
         embed = discord.Embed(
             title=f"{Emojis.PLAY} Seeking",
@@ -1672,13 +1894,18 @@ class Music(commands.Cog):
                     filepath.unlink()
                     deleted_count += 1
                     freed_bytes += size
-                except (OSError, PermissionError) as e:
+                except PermissionError:
+                    # File is locked by another process — skip silently
+                    # This is normal for temp files used by active terminals/tests
+                    pass
+                except OSError as e:
                     logging.warning("Failed to delete unused file %s: %s", filepath, e)
             return deleted_count, freed_bytes
 
-        return await self.bot.loop.run_in_executor(None, _cleanup)
+        return await asyncio.get_running_loop().run_in_executor(None, _cleanup)
 
     @commands.hybrid_command(name="clearcache", aliases=["cc", "clean"])
+    @commands.has_permissions(manage_guild=True)
     async def clearcache(self, ctx):
         """ล้างไฟล์ขยะที่ไม่ได้ใช้งาน."""
         async with ctx.typing():

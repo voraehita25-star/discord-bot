@@ -48,11 +48,14 @@ async def reindex_ai_history():
 
         # Step 1: Create new table with same schema (must match database.py)
         print("[STEP] Creating temporary table...")
+        # Drop stale temp table from any previous failed run
+        await conn.execute("DROP TABLE IF EXISTS ai_history_new")
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ai_history_new (
+            CREATE TABLE ai_history_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 local_id INTEGER,
                 channel_id INTEGER NOT NULL,
+                user_id INTEGER,
                 role TEXT NOT NULL CHECK(role IN ('user', 'model')),
                 content TEXT NOT NULL,
                 message_id INTEGER,
@@ -65,8 +68,8 @@ async def reindex_ai_history():
         # The new AUTO INCREMENT will assign 1, 2, 3, ...
         print("[STEP] Copying data with new IDs...")
         await conn.execute("""
-            INSERT INTO ai_history_new (local_id, channel_id, role, content, message_id, timestamp, created_at)
-            SELECT local_id, channel_id, role, content, message_id, timestamp, created_at
+            INSERT INTO ai_history_new (local_id, channel_id, user_id, role, content, message_id, timestamp, created_at)
+            SELECT local_id, channel_id, user_id, role, content, message_id, timestamp, created_at
             FROM ai_history
             ORDER BY id ASC
         """)

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +65,9 @@ class Database:
         # SQLite doesn't handle high concurrent writes well, 20 is a good balance
         self._pool_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent connections (was 50)
         self._connection_count = 0
+        # Persistent connection pool for reuse (avoids open/close overhead)
+        self._conn_pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=5)
+        self._pool_initialized = False
         self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
         self._export_lock = asyncio.Lock()  # Lock for export scheduling
         logging.info("💾 Async Database manager created: %s (pool=20, WAL mode)", self.db_path)
@@ -133,13 +137,24 @@ class Database:
             except Exception as e:
                 logging.warning("Dashboard export failed for %s: %s", conversation_id, e)
 
-        task = asyncio.create_task(do_export())
-        self._export_tasks.add(task)
-        task.add_done_callback(self._export_tasks.discard)
+        try:
+            task = asyncio.create_task(do_export())
+            self._export_tasks.add(task)
+            task.add_done_callback(self._export_tasks.discard)
+        except RuntimeError:
+            # No running event loop (e.g., during init)
+            self._dashboard_export_pending.discard(conversation_id)
+            logging.debug("Cannot schedule dashboard export: no running event loop")
 
     async def export_dashboard_conversation_to_json(self, conversation_id: str) -> None:
         """Export a single dashboard conversation to JSON file."""
         try:
+            # Validate conversation_id to prevent path traversal
+            import re as _re
+            if not _re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+                logging.warning("Invalid conversation_id rejected: %s", conversation_id[:50])
+                return
+
             dashboard_export_dir = EXPORT_DIR / "dashboard_chats"
             dashboard_export_dir.mkdir(exist_ok=True)
 
@@ -179,14 +194,25 @@ class Database:
                     pass  # Expected when we cancel the task
         self._export_tasks.clear()
 
-        if self._export_pending:
+        # Always run final export on shutdown to ensure data safety
+        has_pending = (
+            self._export_pending
+            or (hasattr(self, '_export_pending_keys') and self._export_pending_keys)
+            or self._dashboard_export_pending
+        )
+        if has_pending:
             logging.info("💾 Flushing pending database exports...")
             self._export_pending = False
-            try:
-                await self.export_to_json()
-                logging.info("💾 Database export completed during shutdown")
-            except Exception as e:
-                logging.error("Failed to export during shutdown: %s", e)
+            if hasattr(self, '_export_pending_keys'):
+                self._export_pending_keys.clear()
+            self._dashboard_export_pending.clear()
+        
+        # Always export on shutdown for data safety
+        try:
+            await self.export_to_json()
+            logging.info("💾 Database export completed during shutdown")
+        except Exception as e:
+            logging.error("Failed to export during shutdown: %s", e)
 
     async def init_schema(self) -> None:
         """Initialize database schema (call once at startup)."""
@@ -205,6 +231,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     local_id INTEGER,
                     channel_id INTEGER NOT NULL,
+                    user_id INTEGER,
                     role TEXT NOT NULL CHECK(role IN ('user', 'model')),
                     content TEXT NOT NULL,
                     message_id INTEGER,
@@ -212,6 +239,16 @@ class Database:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Migration: add user_id column if missing (existing databases)
+            try:
+                cursor = await conn.execute("PRAGMA table_info(ai_history)")
+                columns = {row[1] for row in await cursor.fetchall()}
+                if "user_id" not in columns:
+                    await conn.execute("ALTER TABLE ai_history ADD COLUMN user_id INTEGER")
+                    logging.info("🔄 Migrated ai_history: added user_id column")
+            except Exception as e:
+                logging.warning("Migration check for user_id failed: %s", e)
 
             # Indexes
             await conn.execute("""
@@ -468,32 +505,71 @@ class Database:
             self._schema_initialized = True
             logging.info("💾 Database schema initialized (async)")
 
+            # Run versioned migrations
+            try:
+                from utils.database.migrations import run_migrations
+                await run_migrations(conn)
+            except Exception as e:
+                logging.warning("Migration system error (non-fatal): %s", e)
+
     @asynccontextmanager
     async def get_connection(self):
-        """Get an async database connection with pooling and optimizations."""
+        """Get an async database connection from the persistent pool.
+        
+        Connections are reused across requests to avoid the overhead of
+        opening/closing a new aiosqlite connection for each query.
+        When the pool is empty, a new connection is created on the fly.
+        """
         # Acquire semaphore slot (limits concurrent connections)
         async with self._pool_semaphore:
-            self._connection_count += 1
-            conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
-            conn.row_factory = aiosqlite.Row
+            conn = None
+            from_pool = False
+            
+            # Try to get a connection from the pool
+            try:
+                conn = self._conn_pool.get_nowait()
+                from_pool = True
+                # Validate the pooled connection is still alive
+                try:
+                    await conn.execute("SELECT 1")
+                except Exception:
+                    # Connection is stale, close and create a new one
+                    try:
+                        await conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+                    from_pool = False
+            except asyncio.QueueEmpty:
+                pass
+            
+            # Create a new connection if needed
+            if conn is None:
+                self._connection_count += 1
+                conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
+                conn.row_factory = aiosqlite.Row
 
-            # Performance optimizations — per-connection PRAGMAs only
-            # One-time DB-wide PRAGMAs (WAL, mmap_size, wal_autocheckpoint)
-            # are set during init_schema() to avoid redundant execution.
-            await conn.execute("PRAGMA synchronous=NORMAL")
-            await conn.execute("PRAGMA cache_size=250000")
-            await conn.execute("PRAGMA temp_store=MEMORY")
-            await conn.execute("PRAGMA foreign_keys=ON")
+                # Performance optimizations — per-connection PRAGMAs only
+                await conn.execute("PRAGMA synchronous=NORMAL")
+                await conn.execute("PRAGMA cache_size=250000")
+                await conn.execute("PRAGMA temp_store=MEMORY")
+                await conn.execute("PRAGMA foreign_keys=ON")
 
             try:
                 yield conn
                 await conn.commit()
-            except aiosqlite.Error:
-                await conn.rollback()
+            except (aiosqlite.Error, asyncio.CancelledError):
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
                 raise
             finally:
-                await conn.close()
-                self._connection_count -= 1
+                # Return connection to pool instead of closing
+                try:
+                    self._conn_pool.put_nowait(conn)
+                except asyncio.QueueFull:
+                    # Pool is full, close this connection
+                    await conn.close()
+                    self._connection_count -= 1
 
     async def health_check(self) -> bool:
         """
@@ -545,9 +621,33 @@ class Database:
                 "⚠️ %d connections still active during reinitialization", self._connection_count
             )
 
-        # Recreate the semaphore (resets available slots)
-        # Use same value as __init__ (20) to prevent mismatch
-        self._pool_semaphore = asyncio.Semaphore(20)
+        # Drain and close all pooled connections to prevent stale connections
+        drained = 0
+        while not self._conn_pool.empty():
+            try:
+                old_conn = self._conn_pool.get_nowait()
+                try:
+                    await old_conn.close()
+                except Exception:
+                    pass
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+
+        if drained:
+            logging.info("Drained %d stale connections from pool", drained)
+            self._connection_count = max(0, self._connection_count - drained)
+
+        # Reset the semaphore safely.
+        # Creating a new semaphore is simpler and more reliable than drain/refill.
+        # Existing waiters on the old semaphore will get an error, but this only
+        # runs during reinitialization after failures, so that's acceptable.
+        try:
+            self._pool_semaphore = asyncio.Semaphore(20)
+            logging.info("Reset pool semaphore to 20 slots")
+        except Exception as e:
+            logging.warning("Failed to reset semaphore: %s", e)
+            self._pool_semaphore = asyncio.Semaphore(20)
 
         # Re-ensure schema on next connection
         self._schema_initialized = False
@@ -588,15 +688,13 @@ class Database:
                     conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
                     conn.row_factory = aiosqlite.Row
 
-                    # Performance optimizations
-                    await conn.execute("PRAGMA journal_mode=WAL")
+                    # Performance optimizations — per-connection PRAGMAs only
+                    # DB-wide PRAGMAs (WAL, mmap_size, page_size, wal_autocheckpoint)
+                    # are set once during init_schema() — no need to repeat here.
                     await conn.execute("PRAGMA synchronous=NORMAL")
                     await conn.execute("PRAGMA cache_size=100000")
                     await conn.execute("PRAGMA temp_store=MEMORY")
-                    await conn.execute("PRAGMA mmap_size=1073741824")
                     await conn.execute("PRAGMA foreign_keys=ON")
-                    await conn.execute("PRAGMA page_size=8192")
-                    await conn.execute("PRAGMA wal_autocheckpoint=1000")
                 except Exception:
                     if conn is not None:
                         await conn.close()
@@ -681,23 +779,19 @@ class Database:
         content: str,
         message_id: int | None = None,
         timestamp: str | None = None,
+        user_id: int | None = None,
     ) -> int:
         """Save a single AI message to history."""
         async with self.get_connection() as conn:
             ts = timestamp or datetime.now().isoformat()
 
-            # Get next local_id for this channel
+            # Atomic local_id generation + insert in a single statement
+            # Prevents race condition where two concurrent saves get the same local_id
             cursor = await conn.execute(
-                "SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?",
-                (channel_id,),
-            )
-            row = await cursor.fetchone()
-            next_local_id = row[0] if row and row[0] else 1
-
-            cursor = await conn.execute(
-                """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (channel_id, role, content, message_id, ts, next_local_id),
+                """INSERT INTO ai_history (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                   VALUES (?, ?, ?, ?, ?, ?,
+                       (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
+                (channel_id, user_id, role, content, message_id, ts, channel_id),
             )
             lastrowid = cursor.lastrowid
 
@@ -721,24 +815,16 @@ class Database:
 
         async with self.get_connection() as conn:
             for channel_id, channel_messages in by_channel.items():
-                # Get next local_id for this channel
-                cursor = await conn.execute(
-                    "SELECT COALESCE(MAX(local_id), 0) FROM ai_history WHERE channel_id = ?",
-                    (channel_id,),
-                )
-                row = await cursor.fetchone()
-                next_local_id = ((row[0] if row else 0) or 0) + 1
-
-                # Add local_id to each message
+                # Use atomic subquery for local_id to prevent race condition
+                # when concurrent calls target the same channel_id
                 for msg in channel_messages:
-                    msg["local_id"] = next_local_id
-                    next_local_id += 1
-
-                await conn.executemany(
-                    """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
-                       VALUES (:channel_id, :role, :content, :message_id, :timestamp, :local_id)""",
-                    channel_messages,
-                )
+                    msg["channel_id"] = channel_id
+                    await conn.execute(
+                        """INSERT INTO ai_history (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                           VALUES (:channel_id, :user_id, :role, :content, :message_id, :timestamp,
+                               (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = :channel_id))""",
+                        msg,
+                    )
 
         # Trigger auto-export for each channel
         for channel_id in by_channel:
@@ -1116,7 +1202,7 @@ class Database:
                        VALUES (?, ?, ?, ?, ?)""",
                     (action_type, guild_id, user_id, target_id, details),
                 )
-                await conn.commit()
+                # Note: get_connection() auto-commits on success, no explicit commit needed
                 rowid = cursor.lastrowid
                 return int(rowid) if rowid is not None else 0
         except Exception as e:
@@ -1191,7 +1277,13 @@ class Database:
             return False
 
         async with self.get_connection() as conn:
-            set_clause = ", ".join([f"{k} = ?" for k in safe_updates])
+            # Defense-in-depth: validate column names are simple identifiers
+            # even though they're already filtered by allowed_columns
+            for col in safe_updates:
+                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                    logging.error("Invalid column name rejected: %s", col)
+                    return False
+            set_clause = ", ".join([f"[{k}] = ?" for k in safe_updates])
             values = [*list(safe_updates.values()), conversation_id]
 
             await conn.execute(
@@ -1445,21 +1537,37 @@ class Database:
         display_name: str,
         bio: str | None = None,
         preferences: str | None = None,
-        is_creator: bool = False,
+        is_creator: bool | None = None,
     ) -> None:
-        """Save or update dashboard user profile."""
+        """Save or update dashboard user profile.
+        
+        When is_creator is None (default), the existing value is preserved.
+        Pass True/False explicitly only when you intend to change it.
+        """
         async with self.get_connection() as conn:
-            await conn.execute(
-                """INSERT INTO dashboard_user_profile (id, display_name, bio, preferences, is_creator)
-                   VALUES (1, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                   display_name = excluded.display_name,
-                   bio = excluded.bio,
-                   preferences = excluded.preferences,
-                   is_creator = excluded.is_creator,
-                   updated_at = CURRENT_TIMESTAMP""",
-                (display_name, bio, preferences, 1 if is_creator else 0),
-            )
+            if is_creator is not None:
+                await conn.execute(
+                    """INSERT INTO dashboard_user_profile (id, display_name, bio, preferences, is_creator)
+                       VALUES (1, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       bio = excluded.bio,
+                       preferences = excluded.preferences,
+                       is_creator = excluded.is_creator,
+                       updated_at = CURRENT_TIMESTAMP""",
+                    (display_name, bio, preferences, 1 if is_creator else 0),
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO dashboard_user_profile (id, display_name, bio, preferences)
+                       VALUES (1, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       bio = excluded.bio,
+                       preferences = excluded.preferences,
+                       updated_at = CURRENT_TIMESTAMP""",
+                    (display_name, bio, preferences),
+                )
 
     # ==================== Export ====================
 
@@ -1583,4 +1691,10 @@ db = Database()
 async def init_database() -> Database:
     """Initialize database and return instance."""
     await db.init_schema()
+    # Initialize user_facts table for long-term memory persistence
+    try:
+        from cogs.ai_core.memory.long_term_memory import long_term_memory
+        await long_term_memory.init_schema()
+    except Exception:
+        pass  # Module may not be available in all environments
     return db

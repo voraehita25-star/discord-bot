@@ -334,10 +334,13 @@ class MemoryManager {
 
         // Add delete handlers
         container.querySelectorAll('.memory-delete-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const id = (e.target as HTMLElement).dataset.id;
-                if (id && confirm('Delete this memory?')) {
-                    this.deleteMemory(id);
+                if (id) {
+                    const confirmed = await showConfirmDialog('Delete this memory?');
+                    if (confirmed) {
+                        this.deleteMemory(id);
+                    }
                 }
             });
         });
@@ -436,7 +439,26 @@ class ChatManager {
         }
 
         try {
-            this.ws = new WebSocket('ws://127.0.0.1:8765/ws');
+            // Get WS token from Rust backend, then connect with authentication
+            invoke<string>('get_ws_token').then(token => {
+                const wsUrl = token
+                    ? `ws://127.0.0.1:8765/ws?token=${encodeURIComponent(token)}`
+                    : 'ws://127.0.0.1:8765/ws';
+                this._connectWithUrl(wsUrl);
+            }).catch(() => {
+                // Fallback: connect without token (will work if DASHBOARD_WS_TOKEN is not set)
+                this._connectWithUrl('ws://127.0.0.1:8765/ws');
+            });
+        } catch (e) {
+            console.error('Failed to create WebSocket:', e);
+            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
+            this.scheduleReconnect();
+        }
+    }
+
+    private _connectWithUrl(wsUrl: string): void {
+        try {
+            this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
                 this.connected = true;
@@ -991,8 +1013,8 @@ class ChatManager {
             const isActive = this.currentConversation?.id === conv.id;
             const starClass = conv.is_starred ? 'starred' : '';
             const avatarHtml = settings.aiAvatar 
-                ? `<img class="conv-avatar" src="${settings.aiAvatar}" alt="AI">`
-                : `<span class="conv-emoji">${preset.emoji || '💬'}</span>`;
+                ? `<img class="conv-avatar" src="${escapeHtml(settings.aiAvatar)}" alt="AI">`
+                : `<span class="conv-emoji">${escapeHtml(preset.emoji || '💬')}</span>`;
 
             return `
                 <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}" 
@@ -1207,7 +1229,14 @@ class ChatManager {
             return latexBlocks[parseInt(idx)] || '';
         });
         
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
+        // Extract code blocks into placeholders BEFORE converting \n to <br>
+        const codeBlocks: string[] = [];
+        const codePlaceholder = '\x01CODE_BLOCK_';
+        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+            const idx = codeBlocks.length;
+            codeBlocks.push(`<pre><code class="language-${lang}">${code}</code></pre>`);
+            return `${codePlaceholder}${idx}\x01`;
+        });
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
@@ -1216,6 +1245,11 @@ class ChatManager {
         // Merge consecutive blockquotes
         html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
         html = html.replace(/\n/g, '<br>');
+        
+        // Restore code blocks (newlines preserved inside <pre>)
+        html = html.replace(/\x01CODE_BLOCK_(\d+)\x01/g, (_match, idx) => {
+            return codeBlocks[parseInt(idx)] || '';
+        });
         return html;
     }
 
@@ -1608,6 +1642,21 @@ function initToastContainer(): void {
     }
 }
 
+/**
+ * Show a confirmation dialog that works reliably in Tauri v2 WebView2.
+ * Falls back to Tauri's dialog plugin command, then to native confirm().
+ */
+async function showConfirmDialog(message: string): Promise<boolean> {
+    try {
+        // Try Tauri dialog plugin first (most reliable in desktop apps)
+        const result = await invoke<boolean>('show_confirm_dialog', { message });
+        return result;
+    } catch {
+        // Fallback to browser confirm() if Tauri command not available
+        return confirm(message);
+    }
+}
+
 function showToast(message: string, options: ToastOptions = { type: 'info' }): void {
     if (!settings.notifications) return;
 
@@ -1974,6 +2023,7 @@ function initNavigation(): void {
     document.getElementById('btn-clear-logs')?.addEventListener('click', clearLogs);
     document.getElementById('btn-refresh-logs')?.addEventListener('click', loadLogs);
     document.getElementById('btn-clear-history')?.addEventListener('click', clearHistory);
+    document.getElementById('btn-delete-selected')?.addEventListener('click', deleteSelectedChannels);
     
     // Settings handlers
     document.getElementById('refresh-interval')?.addEventListener('change', (e) => {
@@ -2393,21 +2443,52 @@ async function loadDbStats(): Promise<void> {
         if (channelsList) {
             if (channels.length === 0) {
                 channelsList.innerHTML = '<p class="no-data">No channels found.</p>';
+                updateChannelSelectionUI();
             } else {
                 channelsList.innerHTML = '';
                 channels.forEach((ch: ChannelInfo) => {
                     const item = document.createElement('div');
                     item.className = 'data-item';
+                    item.dataset.channelId = String(ch.channel_id);
+
+                    const leftDiv = document.createElement('div');
+                    leftDiv.className = 'data-item-left';
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'data-item-checkbox';
+                    checkbox.dataset.channelId = String(ch.channel_id);
+                    checkbox.addEventListener('change', () => {
+                        item.classList.toggle('selected', checkbox.checked);
+                        updateChannelSelectionUI();
+                    });
+
                     const idSpan = document.createElement('span');
                     idSpan.className = 'data-item-id';
                     idSpan.textContent = String(ch.channel_id);
+
+                    leftDiv.appendChild(checkbox);
+                    leftDiv.appendChild(idSpan);
+
                     const valSpan = document.createElement('span');
                     valSpan.className = 'data-item-value';
                     valSpan.textContent = `${ch.message_count.toLocaleString()} messages`;
-                    item.appendChild(idSpan);
+
+                    item.appendChild(leftDiv);
                     item.appendChild(valSpan);
+
+                    // Click row to toggle checkbox
+                    item.addEventListener('click', (e) => {
+                        if ((e.target as HTMLElement).tagName !== 'INPUT') {
+                            checkbox.checked = !checkbox.checked;
+                            item.classList.toggle('selected', checkbox.checked);
+                            updateChannelSelectionUI();
+                        }
+                    });
+
                     channelsList.appendChild(item);
                 });
+                updateChannelSelectionUI();
             }
         }
 
@@ -2440,13 +2521,54 @@ async function loadDbStats(): Promise<void> {
 }
 
 async function clearHistory(): Promise<void> {
-    if (!confirm('⚠️ This will permanently delete ALL chat history. Continue?')) {
+    const confirmed = await showConfirmDialog('⚠️ This will permanently delete ALL chat history. Continue?');
+    if (!confirmed) {
         return;
     }
 
     try {
         const count = await invoke<number>('clear_history');
         showToast(`Deleted ${count.toLocaleString()} messages`, { type: 'success' });
+        dataCache.invalidate('dbStats');
+        loadDbStats();
+    } catch (error) {
+        showToast(String(error), { type: 'error' });
+    }
+}
+
+function getSelectedChannelIds(): string[] {
+    const checkboxes = document.querySelectorAll<HTMLInputElement>('.data-item-checkbox:checked');
+    return Array.from(checkboxes).map(cb => cb.dataset.channelId!).filter(Boolean);
+}
+
+function updateChannelSelectionUI(): void {
+    const selected = getSelectedChannelIds();
+    const controls = document.getElementById('channel-selection-controls');
+    const countEl = document.getElementById('channel-selection-count');
+    if (controls) {
+        controls.style.display = selected.length > 0 ? 'flex' : 'none';
+    }
+    if (countEl) {
+        countEl.textContent = `${selected.length} selected`;
+    }
+}
+
+async function deleteSelectedChannels(): Promise<void> {
+    const channelIds = getSelectedChannelIds();
+    if (channelIds.length === 0) {
+        showToast('No channels selected', { type: 'warning' });
+        return;
+    }
+
+    const confirmed = await showConfirmDialog(`⚠️ Delete history for ${channelIds.length} channel(s)? This cannot be undone.`);
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        // Pass channel IDs as strings to avoid JavaScript Number precision loss for Discord Snowflake IDs
+        const count = await invoke<number>('delete_channels_history', { channelIds: channelIds });
+        showToast(`Deleted ${count.toLocaleString()} messages from ${channelIds.length} channel(s)`, { type: 'success' });
         dataCache.invalidate('dbStats');
         loadDbStats();
     } catch (error) {
@@ -2884,7 +3006,8 @@ async function openFolder(type: string): Promise<void> {
         } else if (type === 'data') {
             path = await invoke<string>('get_data_path');
         } else {
-            path = type; // Allow direct path
+            showToast('Unknown folder type', { type: 'error' });
+            return;
         }
 
         await invoke('open_folder', { path });

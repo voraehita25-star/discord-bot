@@ -407,7 +407,9 @@ async def retry_async(
         logger.info("📦 Using fallback value after retries exhausted")
         return fallback
 
-    raise last_error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})")
 
 
 def with_retry(

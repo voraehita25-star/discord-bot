@@ -80,7 +80,7 @@ class TestRemovePid:
         remove_pid()
 
         # Should be removed
-        assert not PID_FILE.exists() or True  # May be recreated by bot module
+        assert not PID_FILE.exists()  # Verify PID file was actually removed
 
     def test_remove_pid_file_not_exists(self):
         """Test remove_pid when file doesn't exist."""
@@ -190,12 +190,6 @@ class TestConstants:
 
         assert isinstance(PID_FILE, Path)
         assert PID_FILE.name == "bot.pid"
-
-    def test_uvloop_enabled_flag(self):
-        """Test _UVLOOP_ENABLED is defined."""
-        from bot import _UVLOOP_ENABLED
-
-        assert isinstance(_UVLOOP_ENABLED, bool)
 
 
 class TestAsyncFunctions:
