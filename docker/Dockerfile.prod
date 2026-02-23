@@ -18,7 +18,7 @@ RUN cd go_services/health_api && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out
 RUN cd go_services/url_fetcher && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/url_fetcher .
 
 # ======================== Stage 2: Rust Builder ========================
-FROM rust:1.80-bookworm AS rust-builder
+FROM rust:1.93-bookworm AS rust-builder
 
 WORKDIR /build
 
