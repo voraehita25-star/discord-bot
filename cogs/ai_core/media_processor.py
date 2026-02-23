@@ -16,7 +16,7 @@ from typing import Any
 import discord
 from PIL import Image
 
-from .data.roleplay_data import SERVER_CHARACTER_NAMES
+from .data import SERVER_CHARACTER_NAMES
 
 # Try to import imageio for GIF to video conversion
 try:

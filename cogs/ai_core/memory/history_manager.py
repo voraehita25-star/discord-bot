@@ -33,11 +33,28 @@ class HistoryStats:
 
 # Try to import tiktoken for accurate token counting
 try:
+    import threading
+
     import tiktoken
 
-    TIKTOKEN_AVAILABLE = True
-    # Use cl100k_base encoding (closest to Gemini tokenization)
-    _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+    # Load encoder in a daemon thread with timeout to handle network-unavailable
+    # environments where tiktoken may try to download BPE files
+    _encoder_result: list[object] = [None]
+    _encoder_done = threading.Event()
+
+    def _load_tiktoken_encoder() -> None:
+        try:
+            _encoder_result[0] = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            pass
+        finally:
+            _encoder_done.set()
+
+    _t = threading.Thread(target=_load_tiktoken_encoder, daemon=True)
+    _t.start()
+    _encoder_done.wait(timeout=10)
+    _TIKTOKEN_ENCODER = _encoder_result[0]
+    TIKTOKEN_AVAILABLE = _TIKTOKEN_ENCODER is not None
 except ImportError:
     TIKTOKEN_AVAILABLE = False
     _TIKTOKEN_ENCODER = None

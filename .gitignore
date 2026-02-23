@@ -103,9 +103,10 @@ data/db_export/
 # Keep example files
 !env.example
 
-# Sensitive AI data (persona prompts, RP lore)
-cogs/ai_core/data/faust_data.py
-cogs/ai_core/data/roleplay_data.py
+# Sensitive AI data overrides (persona prompts, RP lore)
+# The default files contain example data and are committed to the repo.
+# Replace them locally with your private persona data — git will track
+# your overrides separately if you re-add or use a local .gitignore.
 cogs/ai_core/data/unrestricted_channels.json
 
 # RP character images (private)

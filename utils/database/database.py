@@ -19,6 +19,20 @@ from typing import Any
 
 import aiosqlite
 
+# Patch aiosqlite to use daemon threads so they don't block process exit.
+# aiosqlite creates a non-daemon Thread per connection that keeps running
+# until the connection is explicitly closed.  In test environments and during
+# normal shutdown this can prevent the process from exiting cleanly.
+_orig_aio_connection_init = aiosqlite.Connection.__init__
+
+
+def _patched_aio_connection_init(self, *args: object, **kwargs: object) -> None:  # type: ignore[misc]
+    _orig_aio_connection_init(self, *args, **kwargs)
+    self._thread.daemon = True  # type: ignore[union-attr]
+
+
+aiosqlite.Connection.__init__ = _patched_aio_connection_init  # type: ignore[method-assign]
+
 # Database timeout configuration (in seconds)
 # Can be overridden via environment variable
 DB_CONNECTION_TIMEOUT = float(os.getenv("DB_CONNECTION_TIMEOUT", "30.0"))

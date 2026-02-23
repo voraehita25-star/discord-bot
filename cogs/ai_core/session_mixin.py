@@ -12,8 +12,8 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from .data.constants import GUILD_ID_RP
-from .data.faust_data import FAUST_DM_INSTRUCTION, FAUST_INSTRUCTION, UNRESTRICTED_MODE_INSTRUCTION
-from .data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_LORE
+from .data import FAUST_DM_INSTRUCTION, FAUST_INSTRUCTION, UNRESTRICTED_MODE_INSTRUCTION
+from .data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_LORE
 from .storage import load_history, load_metadata, save_history
 
 if TYPE_CHECKING:
