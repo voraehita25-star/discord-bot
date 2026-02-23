@@ -17,12 +17,12 @@ from google import genai
 from google.genai import types
 
 from ..data.constants import THINKING_BUDGET_DEFAULT
-from ..data.faust_data import (
+from ..data import (
     ESCALATION_FRAMINGS,
     FAUST_DM_INSTRUCTION,
     FAUST_INSTRUCTION,
+    ROLEPLAY_ASSISTANT_INSTRUCTION,
 )
-from ..data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
 
 # Import circuit breaker for API protection
 try:

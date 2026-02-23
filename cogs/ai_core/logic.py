@@ -59,7 +59,7 @@ from .data.constants import (
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
 )
-from .data.roleplay_data import SERVER_CHARACTER_NAMES
+from .data import SERVER_CHARACTER_NAMES
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
 # Import media processing module

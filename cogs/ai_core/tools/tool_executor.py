@@ -32,7 +32,7 @@ from ..commands.server_commands import (
     cmd_set_role_perm,
 )
 from ..data.constants import MAX_CHANNEL_NAME_LENGTH
-from ..data.roleplay_data import SERVER_AVATARS
+from ..data import SERVER_AVATARS
 from ..memory.rag import rag_system
 from ..response.webhook_cache import (
     get_cached_webhook,

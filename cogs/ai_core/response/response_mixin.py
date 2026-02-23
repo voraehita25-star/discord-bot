@@ -10,7 +10,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from ..data.roleplay_data import SERVER_CHARACTER_NAMES
+from ..data import SERVER_CHARACTER_NAMES
 from ..storage import get_all_channels_summary, get_channel_history_preview
 
 if TYPE_CHECKING:
