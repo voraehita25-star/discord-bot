@@ -395,7 +395,6 @@ class GoServiceMonitor:
 
     async def _restart_service(self, svc: dict):
         """Attempt to restart a Go service."""
-        import subprocess
         import sys
 
         try:

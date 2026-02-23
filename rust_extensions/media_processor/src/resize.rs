@@ -38,7 +38,7 @@ pub fn resize_image(
     }
 
     // Clamp JPEG quality to valid range (1-100)
-    let jpeg_quality = jpeg_quality.max(1).min(100);
+    let jpeg_quality = jpeg_quality.clamp(1, 100);
 
     let img = image::load_from_memory(data)?;
     let (orig_w, orig_h) = img.dimensions();

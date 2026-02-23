@@ -62,6 +62,7 @@ impl VectorStorage {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path.as_ref())?;
 
         // Check existing file: only grow, never truncate existing data

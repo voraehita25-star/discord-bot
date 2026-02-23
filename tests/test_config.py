@@ -154,6 +154,7 @@ class TestBotSettings:
         temp_dir = str(tmp_path / "temp")
         logs_dir = str(tmp_path / "logs")
 
+        monkeypatch.setenv("BOT_RUNNING", "1")
         BotSettings(
             data_dir=data_dir,
             temp_dir=temp_dir,

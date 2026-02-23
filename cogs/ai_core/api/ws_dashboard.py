@@ -277,9 +277,7 @@ class DashboardWebSocketServer:
 
         # Authentication: Require API key from environment or query param
         expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
-        # Determine if connection is from localhost (already origin-restricted)
         peername = request.transport.get_extra_info("peername") if request.transport else None
-        is_localhost = bool(peername and peername[0] in ("127.0.0.1", "::1", "localhost"))
 
         if not expected_token:
             if self._auto_token is None:

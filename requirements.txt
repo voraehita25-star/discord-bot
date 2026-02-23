@@ -22,7 +22,7 @@ imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini
 # ==================== Music ====================
 yt-dlp==2025.12.8             # YouTube downloader
 spotipy==2.25.2               # Spotify API wrapper
-PyNaCl==1.6.2                 # Voice encryption for discord.py voice
+PyNaCl>=1.5.0,<1.6            # Voice encryption for discord.py voice
 
 # ==================== Database ====================
 aiosqlite==0.22.1             # Async SQLite
