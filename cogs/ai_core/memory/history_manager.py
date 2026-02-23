@@ -138,7 +138,7 @@ class HistoryManager:
     def _estimate_tokens_fallback(self, content: str) -> int:
         """
         Smart fallback token estimation for mixed Thai/English text.
-        
+
         Thai characters and other Unicode typically tokenize differently than ASCII:
         - ASCII/English: ~4 characters per token
         - Thai/Unicode: ~2-3 characters per token (more conservative)
@@ -325,7 +325,7 @@ class HistoryManager:
         max_messages = max_messages or self.max_history
 
         if len(history) <= max_messages:
-            return history
+            return list(history)
 
         # Simple approach: keep first few + last many
         keep_start = max_messages // 10
@@ -374,7 +374,9 @@ class HistoryManager:
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
         # Pre-compute importance scores and build a min-heap for O(n log n) trimming
-        trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        trim_end = (
+            len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        )
         if trim_end > 0:
             # Build heap of (importance, original_index) for trimmable messages
             importance_heap = [
@@ -411,10 +413,7 @@ class HistoryManager:
             )
 
         # Build result excluding removed indices
-        working_history = [
-            msg for i, msg in enumerate(working_history)
-            if i not in removed_indices
-        ]
+        working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
 
         final_tokens = running_total
         self.logger.info(

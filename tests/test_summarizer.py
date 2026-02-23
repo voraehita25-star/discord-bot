@@ -117,9 +117,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "user", "parts": ["Hello world"]}
-        ]
+        history = [{"role": "user", "parts": ["Hello world"]}]
 
         result = summarizer._history_to_text(history)
 
@@ -130,9 +128,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "user", "parts": [{"text": "Hello world"}]}
-        ]
+        history = [{"role": "user", "parts": [{"text": "Hello world"}]}]
 
         result = summarizer._history_to_text(history)
 
@@ -144,9 +140,7 @@ class TestHistoryToText:
 
         summarizer = ConversationSummarizer()
         long_text = "A" * 1000
-        history = [
-            {"role": "user", "parts": [long_text]}
-        ]
+        history = [{"role": "user", "parts": [long_text]}]
 
         result = summarizer._history_to_text(history)
 
@@ -159,9 +153,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "model", "parts": ["Response"]}
-        ]
+        history = [{"role": "model", "parts": ["Response"]}]
 
         result = summarizer._history_to_text(history)
 

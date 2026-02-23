@@ -1,6 +1,6 @@
 # 📋 Release Notes - v3.3.10
 
-**Release Date:** January 25, 2026 (Updated: February 10, 2026)  
+**Release Date:** January 25, 2026 (Updated: February 17, 2026)  
 **Type:** Patch Release (Security & Reliability Improvements)
 
 ---
@@ -186,6 +186,39 @@ python bot.py
 None - All changes are backward compatible.
 
 > **Note:** `HEALTH_API_HOST` now defaults to `127.0.0.1` (was `0.0.0.0`). If you need external access to the Health API, set `HEALTH_API_HOST=0.0.0.0` in your environment.
+
+---
+
+## 🔒 Security & Reliability Audit Phase 2 (February 17, 2026)
+
+### Security Fixes
+
+| Issue | Fix | File |
+|-------|-----|------|
+| WS dashboard accepts all connections when `DASHBOARD_WS_TOKEN` not set | Auto-generate token with `secrets.token_urlsafe(32)` and log it | `ws_dashboard.py` |
+| `setattr` permission fallthrough via `hasattr` | Strict whitelist gate — removed `hasattr` condition | `server_commands.py` |
+| `unrestricted_channels.json` world-readable | Added `os.chmod(600)` after atomic write | `guardrails.py` |
+| LIKE wildcard injection in entity memory search | Escape `%`, `_`, `\` in user input + `ESCAPE '\'` clause | `entity_memory.py` |
+| MD5 used for cache key generation | Replaced `hashlib.md5` with `hashlib.sha256` (2 locations) | `ai_cache.py` |
+| No rate limit on tool execution per message | Added `MAX_TOOL_CALLS_PER_MESSAGE = 5` with break | `logic.py` |
+| `conversation_id` not validated in WS handler | Added `uuid.UUID()` format validation | `ws_dashboard.py` |
+| Stale locks never force-released in message queue | Added force-release after 600s with ERROR-level logging | `message_queue.py` |
+
+### Intentional Design Notes (Won't Fix)
+
+| Item | Reason |
+|------|--------|
+| Gemini Safety Filters `BLOCK_NONE` | Intentional — application-level guardrails (OutputGuardrails, input validation) handle filtering |
+| Escalation Framings | Intentional — retry with stronger prompts, output filtered by guardrails |
+
+### 📊 Test Results
+
+```
+===================== 3,203 passed, 3 warnings in 7.13s =====================
+```
+
+✅ All 3,203 tests passing  
+✅ 0 failures after changes  
 
 ---
 

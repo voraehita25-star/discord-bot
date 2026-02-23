@@ -53,15 +53,15 @@ GITHUB_DOMAINS = ("github.com", "raw.githubusercontent.com")
 
 # Blocked private/internal IP ranges for SSRF protection
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
-    ipaddress.ip_network("10.0.0.0/8"),         # Private Class A
-    ipaddress.ip_network("172.16.0.0/12"),      # Private Class B
-    ipaddress.ip_network("192.168.0.0/16"),     # Private Class C
-    ipaddress.ip_network("169.254.0.0/16"),     # Link-local
-    ipaddress.ip_network("0.0.0.0/8"),          # Current network
-    ipaddress.ip_network("::1/128"),            # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),           # IPv6 unique local
-    ipaddress.ip_network("fe80::/10"),          # IPv6 link-local
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # Private Class A
+    ipaddress.ip_network("172.16.0.0/12"),  # Private Class B
+    ipaddress.ip_network("192.168.0.0/16"),  # Private Class C
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local
+    ipaddress.ip_network("0.0.0.0/8"),  # Current network
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
 ]
 
 
@@ -69,6 +69,7 @@ async def _is_private_url(url: str) -> bool:
     """Check if a URL resolves to a private/internal IP address (SSRF protection)."""
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
@@ -171,7 +172,9 @@ async def fetch_url_content(
 
                 # Re-check SSRF on transformed URL
                 if await _is_private_url(api_url):
-                    logger.warning("Blocked SSRF attempt on transformed GitHub API URL: %s", api_url)
+                    logger.warning(
+                        "Blocked SSRF attempt on transformed GitHub API URL: %s", api_url
+                    )
                     return url, None
 
                 try:
@@ -231,6 +234,9 @@ Default Branch: {data.get("default_branch", "main")}
                     logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
                     return url, None
                 redirect_count += 1
+                # Release the previous redirect response to avoid connection leak
+                if final_response is not response:
+                    final_response.release()
                 final_response = await session.get(
                     redirect_url,
                     headers=headers,
@@ -252,10 +258,10 @@ Default Branch: {data.get("default_branch", "main")}
             try:
                 raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
                 encoding = final_response.get_encoding()
-                html = raw_bytes.decode(encoding or 'utf-8')
+                html = raw_bytes.decode(encoding or "utf-8")
             except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values
-                html = raw_bytes.decode('latin-1', errors='replace')
+                html = raw_bytes.decode("latin-1", errors="replace")
 
             # Parse HTML
             soup = BeautifulSoup(html, "lxml")

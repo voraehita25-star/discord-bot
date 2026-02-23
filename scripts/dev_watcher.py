@@ -21,6 +21,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,6 +186,7 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
         # Minimal fallback inline Colors class
@@ -320,9 +322,10 @@ def check_and_stop_existing_bot() -> None:
 
 def clear_screen() -> None:
     """Clear terminal screen."""
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
         shell=False,
+        check=False,
     )
 
 
@@ -540,7 +543,9 @@ if WATCHDOG_AVAILABLE:
                         self.logger.warning("Bot crashed with code %d", return_code)
 
                         print()
-                        print_status(f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]")
+                        print_status(
+                            f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]"
+                        )
 
                         # Auto-retry if enabled
                         if self.config.auto_retry_on_crash:
@@ -560,7 +565,9 @@ if WATCHDOG_AVAILABLE:
                                     "[STOP]",
                                 )
                                 print_status(
-                                    "Fix the error and save a file to restart", Colors.YELLOW, "  └─"
+                                    "Fix the error and save a file to restart",
+                                    Colors.YELLOW,
+                                    "  └─",
                                 )
 
                         return True

@@ -188,11 +188,7 @@ class TestGuardrailResult:
         """Test creating GuardrailResult."""
         from cogs.ai_core.processing.guardrails import GuardrailResult
 
-        result = GuardrailResult(
-            is_valid=True,
-            sanitized_content="Hello world",
-            warnings=[]
-        )
+        result = GuardrailResult(is_valid=True, sanitized_content="Hello world", warnings=[])
         assert result.is_valid is True
         assert result.sanitized_content == "Hello world"
         assert result.warnings == []
@@ -205,7 +201,7 @@ class TestGuardrailResult:
             is_valid=False,
             sanitized_content="",
             warnings=["Warning"],
-            blocked_reason="Sensitive content"
+            blocked_reason="Sensitive content",
         )
         assert result.is_valid is False
         assert result.blocked_reason == "Sensitive content"
@@ -495,10 +491,7 @@ class TestInputValidationResult:
         from cogs.ai_core.processing.guardrails import InputValidationResult
 
         result = InputValidationResult(
-            is_valid=True,
-            sanitized_input="Hello",
-            risk_score=0.0,
-            flags=[]
+            is_valid=True, sanitized_input="Hello", risk_score=0.0, flags=[]
         )
         assert result.is_valid is True
         assert result.sanitized_input == "Hello"
@@ -513,7 +506,7 @@ class TestInputValidationResult:
             sanitized_input="",
             risk_score=0.9,
             flags=["injection:jailbreak"],
-            blocked_reason="Risk too high"
+            blocked_reason="Risk too high",
         )
         assert result.is_valid is False
         assert result.blocked_reason == "Risk too high"
@@ -562,9 +555,7 @@ class TestValidateFunctions:
         from cogs.ai_core.processing.guardrails import validate_response_for_channel
 
         channel_id = 111222333444
-        is_valid, sanitized, warnings = validate_response_for_channel(
-            "Normal response", channel_id
-        )
+        is_valid, sanitized, warnings = validate_response_for_channel("Normal response", channel_id)
         assert is_valid is True
         # Channel is not unrestricted, so normal validation applies
         assert "unrestricted_mode" not in warnings

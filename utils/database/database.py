@@ -6,12 +6,12 @@ Provides async SQLite database connection using aiosqlite.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import threading
-import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -58,13 +58,16 @@ class Database:
         self.db_path = str(DB_FILE)
         self._schema_initialized = False
         self._export_pending = False
+        self._export_pending_keys: set[str] = set()  # Per-channel export pending keys
         self._export_delay = 3  # seconds
         # Track multiple export tasks to prevent task destruction warnings
         self._export_tasks: set[asyncio.Task] = set()
         # Connection pool semaphore - reduced for better SQLite compatibility with WAL mode
         # SQLite doesn't handle high concurrent writes well, 20 is a good balance
         self._pool_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent connections (was 50)
+        self._pool_max = 20
         self._connection_count = 0
+        self._active_connections = 0  # Track active connections for monitoring
         # Persistent connection pool for reuse (avoids open/close overhead)
         self._conn_pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=5)
         self._pool_initialized = False
@@ -76,8 +79,6 @@ class Database:
         """Schedule a debounced export with retry logic (non-blocking)."""
         # Use a per-channel pending key to avoid dropping exports for different channels
         pending_key = f"channel_{channel_id}" if channel_id else "__global__"
-        if not hasattr(self, "_export_pending_keys"):
-            self._export_pending_keys: set[str] = set()
 
         if pending_key in self._export_pending_keys:
             return
@@ -151,7 +152,8 @@ class Database:
         try:
             # Validate conversation_id to prevent path traversal
             import re as _re
-            if not _re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+
+            if not _re.match(r"^[a-zA-Z0-9_\-]+$", conversation_id):
                 logging.warning("Invalid conversation_id rejected: %s", conversation_id[:50])
                 return
 
@@ -197,16 +199,16 @@ class Database:
         # Always run final export on shutdown to ensure data safety
         has_pending = (
             self._export_pending
-            or (hasattr(self, '_export_pending_keys') and self._export_pending_keys)
+            or (hasattr(self, "_export_pending_keys") and self._export_pending_keys)
             or self._dashboard_export_pending
         )
         if has_pending:
             logging.info("💾 Flushing pending database exports...")
             self._export_pending = False
-            if hasattr(self, '_export_pending_keys'):
+            if hasattr(self, "_export_pending_keys"):
                 self._export_pending_keys.clear()
             self._dashboard_export_pending.clear()
-        
+
         # Always export on shutdown for data safety
         try:
             await self.export_to_json()
@@ -258,6 +260,11 @@ class Database:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ai_history_timestamp
                 ON ai_history(channel_id, timestamp DESC)
+            """)
+            # Index for Rust dashboard get_top_users query
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_history_user_id
+                ON ai_history(user_id)
             """)
 
             # AI Session Metadata Table
@@ -356,6 +363,34 @@ class Database:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Index for audit log time-range queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_created
+                ON audit_log(created_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_guild_created
+                ON audit_log(guild_id, created_at DESC)
+            """)
+
+            # Knowledge Entries Table (structured knowledge for RAG)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    games TEXT DEFAULT '[]',
+                    tags TEXT DEFAULT '[]',
+                    is_spoiler BOOLEAN DEFAULT 0,
+                    confidence REAL DEFAULT 1.0,
+                    source TEXT DEFAULT 'official',
+                    embedding BLOB,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
             # AI Analytics Table
             await conn.execute("""
@@ -393,7 +428,7 @@ class Database:
                     guild_id INTEGER,
                     input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
-                    model TEXT DEFAULT 'gemini-3-pro-preview',
+                    model TEXT DEFAULT 'gemini-3.1-pro-preview',
                     cached BOOLEAN DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -501,6 +536,93 @@ class Database:
                 ON dashboard_memories(category, importance DESC)
             """)
 
+            # User Facts Table (long-term memory)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER,
+                    category TEXT DEFAULT 'general',
+                    content TEXT NOT NULL,
+                    importance INTEGER DEFAULT 1,
+                    first_mentioned DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_confirmed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    mention_count INTEGER DEFAULT 1,
+                    confidence REAL DEFAULT 1.0,
+                    source_message TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    is_user_defined BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_facts_user
+                ON user_facts(user_id, is_active, importance DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_facts_category
+                ON user_facts(user_id, category)
+            """)
+
+            # Conversation Summaries Table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    summary TEXT NOT NULL,
+                    key_topics TEXT DEFAULT '[]',
+                    key_decisions TEXT DEFAULT '[]',
+                    start_time TEXT,
+                    end_time TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_summaries_channel
+                ON conversation_summaries(channel_id, created_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_summaries_user
+                ON conversation_summaries(user_id, created_at DESC)
+            """)
+
+            # Entity Memories Table (also created on-demand by EntityMemoryManager,
+            # defined here for centralized schema completeness)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS entity_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    facts TEXT NOT NULL,
+                    channel_id INTEGER,
+                    guild_id INTEGER,
+                    confidence REAL DEFAULT 1.0,
+                    source TEXT DEFAULT 'user',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    access_count INTEGER DEFAULT 0,
+                    UNIQUE(name, channel_id, guild_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_name
+                ON entity_memories(name)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_type
+                ON entity_memories(entity_type)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_channel
+                ON entity_memories(channel_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_entity_guild
+                ON entity_memories(guild_id)
+            """)
+
             await conn.commit()
             self._schema_initialized = True
             logging.info("💾 Database schema initialized (async)")
@@ -508,6 +630,7 @@ class Database:
             # Run versioned migrations
             try:
                 from utils.database.migrations import run_migrations
+
                 await run_migrations(conn)
             except Exception as e:
                 logging.warning("Migration system error (non-fatal): %s", e)
@@ -515,7 +638,7 @@ class Database:
     @asynccontextmanager
     async def get_connection(self):
         """Get an async database connection from the persistent pool.
-        
+
         Connections are reused across requests to avoid the overhead of
         opening/closing a new aiosqlite connection for each query.
         When the pool is empty, a new connection is created on the fly.
@@ -523,12 +646,10 @@ class Database:
         # Acquire semaphore slot (limits concurrent connections)
         async with self._pool_semaphore:
             conn = None
-            from_pool = False
-            
+
             # Try to get a connection from the pool
             try:
                 conn = self._conn_pool.get_nowait()
-                from_pool = True
                 # Validate the pooled connection is still alive
                 try:
                     await conn.execute("SELECT 1")
@@ -539,10 +660,9 @@ class Database:
                     except Exception:
                         pass
                     conn = None
-                    from_pool = False
             except asyncio.QueueEmpty:
                 pass
-            
+
             # Create a new connection if needed
             if conn is None:
                 self._connection_count += 1
@@ -556,6 +676,7 @@ class Database:
                 await conn.execute("PRAGMA foreign_keys=ON")
 
             try:
+                self._active_connections += 1
                 yield conn
                 await conn.commit()
             except (aiosqlite.Error, asyncio.CancelledError):
@@ -563,6 +684,7 @@ class Database:
                     await conn.rollback()
                 raise
             finally:
+                self._active_connections = max(0, self._active_connections - 1)
                 # Return connection to pool instead of closing
                 try:
                     self._conn_pool.put_nowait(conn)
@@ -570,6 +692,15 @@ class Database:
                     # Pool is full, close this connection
                     await conn.close()
                     self._connection_count -= 1
+
+    def get_pool_stats(self) -> dict:
+        """Get connection pool statistics for monitoring."""
+        return {
+            "active_connections": self._active_connections,
+            "total_created": self._connection_count,
+            "pool_max": self._pool_max,
+            "pool_available": self._conn_pool.qsize(),
+        }
 
     async def health_check(self) -> bool:
         """
@@ -996,8 +1127,10 @@ class Database:
             "mode_247",
         }
 
-        # Filter settings to only allowed columns
-        safe_settings = {k: v for k, v in settings.items() if k in allowed_columns}
+        # Filter settings to only allowed columns with format validation
+        safe_settings = {
+            k: v for k, v in settings.items() if k in allowed_columns and re.match(r"^[a-z_]+$", k)
+        }
 
         if not safe_settings:
             return
@@ -1024,6 +1157,9 @@ class Database:
         """Increment a user statistic."""
         valid_stats = ["messages_count", "commands_count", "ai_interactions", "music_requests"]
         if stat_name not in valid_stats:
+            return
+        # Defense-in-depth: validate column name format even though it's whitelisted
+        if not re.match(r"^[a-z_]+$", stat_name):
             return
 
         async with self.get_connection() as conn:
@@ -1144,31 +1280,34 @@ class Database:
         """
         try:
             async with self.get_connection() as conn:
+                original_factory = conn.row_factory
                 conn.row_factory = aiosqlite.Row
+                try:
+                    # Build query with optional filters
+                    query = """
+                        SELECT id, action_type, guild_id, user_id, target_id, details, created_at
+                        FROM audit_log
+                        WHERE created_at >= datetime('now', ?)
+                    """
+                    params: list[Any] = [f"-{days} days"]
 
-                # Build query with optional filters
-                query = """
-                    SELECT id, action_type, guild_id, user_id, target_id, details, created_at
-                    FROM audit_log
-                    WHERE created_at >= datetime('now', ?)
-                """
-                params: list[Any] = [f"-{days} days"]
+                    if guild_id is not None:
+                        query += " AND guild_id = ?"
+                        params.append(guild_id)
 
-                if guild_id is not None:
-                    query += " AND guild_id = ?"
-                    params.append(guild_id)
+                    if action_type is not None:
+                        query += " AND action_type = ?"
+                        params.append(action_type)
 
-                if action_type is not None:
-                    query += " AND action_type = ?"
-                    params.append(action_type)
+                    query += " ORDER BY created_at DESC LIMIT ?"
+                    params.append(limit)
 
-                query += " ORDER BY created_at DESC LIMIT ?"
-                params.append(limit)
+                    cursor = await conn.execute(query, params)
+                    rows = await cursor.fetchall()
 
-                cursor = await conn.execute(query, params)
-                rows = await cursor.fetchall()
-
-                return [dict(row) for row in rows]
+                    return [dict(row) for row in rows]
+                finally:
+                    conn.row_factory = original_factory
         except Exception as e:
             logging.error("Failed to get audit logs: %s", e)
             return []
@@ -1280,7 +1419,7 @@ class Database:
             # Defense-in-depth: validate column names are simple identifiers
             # even though they're already filtered by allowed_columns
             for col in safe_updates:
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", col):
                     logging.error("Invalid column name rejected: %s", col)
                     return False
             set_clause = ", ".join([f"[{k}] = ?" for k in safe_updates])
@@ -1314,7 +1453,8 @@ class Database:
         """Delete a dashboard conversation and all its messages."""
         # Security: Validate conversation_id to prevent path traversal
         import re as _re
-        if not _re.match(r'^[a-zA-Z0-9_-]+$', conversation_id):
+
+        if not _re.match(r"^[a-zA-Z0-9_-]+$", conversation_id):
             logging.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
             return False
 
@@ -1335,6 +1475,29 @@ class Database:
             except Exception as e:
                 logging.warning("Failed to delete exported JSON for %s: %s", conversation_id, e)
 
+            return True
+
+    async def delete_dashboard_messages_from(self, conversation_id: str, message_id: int) -> bool:
+        """Delete messages in a dashboard conversation from a specific message ID onwards."""
+        # Security: Validate conversation_id to prevent path traversal
+        import re as _re
+
+        if not _re.match(r"^[a-zA-Z0-9_-]+$", conversation_id):
+            logging.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
+            return False
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "DELETE FROM dashboard_messages WHERE conversation_id = ? AND id >= ?",
+                (conversation_id, message_id),
+            )
+            # Update updated_at for the conversation
+            from datetime import datetime
+            local_now = datetime.now().isoformat()
+            await conn.execute(
+                "UPDATE dashboard_conversations SET updated_at = ? WHERE id = ?",
+                (local_now, conversation_id),
+            )
             return True
 
     async def save_dashboard_message(
@@ -1445,6 +1608,12 @@ class Database:
 
             for conv in conversations:
                 conv_id = conv["id"]
+                # Validate conv_id to prevent path traversal
+                if not re.match(r"^[a-zA-Z0-9_\-]+$", str(conv_id)):
+                    logging.warning(
+                        "Skipping export of conversation with invalid id: %s", str(conv_id)[:50]
+                    )
+                    continue
                 messages = await self.get_dashboard_messages(conv_id)
 
                 export_data = {
@@ -1540,7 +1709,7 @@ class Database:
         is_creator: bool | None = None,
     ) -> None:
         """Save or update dashboard user profile.
-        
+
         When is_creator is None (default), the existing value is preserved.
         Pass True/False explicitly only when you intend to change it.
         """
@@ -1621,7 +1790,7 @@ class Database:
 
                     # Normal tables - export with validated table name
                     # Validate table name against known schema tables for safety
-                    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):
+                    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table):
                         logging.warning("Skipping table with invalid name: %s", table)
                         continue
                     cursor = await conn.execute(f"SELECT * FROM [{table}]")
@@ -1630,6 +1799,10 @@ class Database:
                     summary[table] = len(data)
 
                     output_file = EXPORT_DIR / f"{table}.json"
+                    # Defense-in-depth: verify resolved path is under EXPORT_DIR
+                    if output_file.resolve().parent != EXPORT_DIR.resolve():
+                        logging.warning("Skipping table with unsafe path: %s", table)
+                        continue
                     output_file.write_text(
                         json.dumps(data, ensure_ascii=False, indent=2, default=str),
                         encoding="utf-8",
@@ -1694,6 +1867,7 @@ async def init_database() -> Database:
     # Initialize user_facts table for long-term memory persistence
     try:
         from cogs.ai_core.memory.long_term_memory import long_term_memory
+
         await long_term_memory.init_schema()
     except Exception:
         pass  # Module may not be available in all environments

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -209,7 +211,7 @@ func sanitizeLabel(value string) string {
 var allowedMetricNames = map[string]bool{
 	"requests": true, "rate_limit": true, "cache": true, "tokens": true,
 	"request_duration": true, "ai_response_time": true,
-	"active_connections": true, "circuit_breaker": true,
+	"active_connections": true, "circuit_breaker": true, "errors": true,
 }
 
 // allowedLabelValues restricts label values to a known set to prevent cardinality explosion.
@@ -234,8 +236,35 @@ func safeLabel(key, value string) string {
 	return sanitizeLabel(value)
 }
 
+// bearerAuthMiddleware returns a middleware that checks for a valid Bearer token.
+// If HEALTH_API_TOKEN is not set, auth is skipped (backward compatible).
+func bearerAuthMiddleware(token string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				http.Error(w, "Unauthorized: missing Bearer token", http.StatusUnauthorized)
+				return
+			}
+
+			provided := strings.TrimPrefix(auth, "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+				http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func main() {
-	port := os.Getenv("HEALTH_API_PORT")
+	port := os.Getenv("GO_HEALTH_API_PORT")
 	if port == "" {
 		port = defaultPort
 	}
@@ -257,6 +286,12 @@ func main() {
 	healthService.SetServiceStatus("bot", true)
 	healthService.SetServiceStatus("database", true)
 	healthService.SetServiceStatus("gemini_api", true)
+
+	// Auth token for mutating endpoints (optional — skip if unset)
+	apiToken := os.Getenv("HEALTH_API_TOKEN")
+	if apiToken != "" {
+		log.Println("🔑 Health API token authentication enabled")
+	}
 
 	r := chi.NewRouter()
 
@@ -306,8 +341,8 @@ func main() {
 		}
 	})
 
-	// Update service status (called from Python)
-	r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
+	// Update service status (called from Python) — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
 
@@ -331,8 +366,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Push metrics (called from Python)
-	r.Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
+	// Push metrics (called from Python) — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
 
@@ -392,8 +427,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Batch push metrics
-	r.Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
+	// Batch push metrics — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size to 1MB to prevent abuse
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 

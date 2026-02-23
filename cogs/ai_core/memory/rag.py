@@ -20,6 +20,7 @@ from google import genai
 
 try:
     from utils.database import db
+
     _DB_AVAILABLE = True
 except ImportError:
     db = None
@@ -142,7 +143,7 @@ class FAISSIndex:
 
     def search(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Search for k nearest neighbors. Returns list of (id, similarity).
-        
+
         Note: This is a synchronous method. For async contexts, use search_async().
         """
         # Normalize query first (outside lock for performance)
@@ -204,7 +205,7 @@ class FAISSIndex:
         1. Write to temp files
         2. Write completion marker
         3. Rename to final paths
-        
+
         This prevents inconsistent state if crash occurs between writes.
         """
         if not self._initialized or not FAISS_AVAILABLE:
@@ -218,33 +219,34 @@ class FAISSIndex:
             temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
             transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
 
-            # Create transaction marker
-            transaction_marker.write_text(str(time.time()), encoding="utf-8")
+            with self._lock:
+                # Create transaction marker
+                transaction_marker.write_text(str(time.time()), encoding="utf-8")
 
-            # Write to temp files first
-            faiss.write_index(self.index, str(temp_index))
-            np.save(str(temp_id_map), np.array(self.id_map))
+                # Write to temp files first
+                faiss.write_index(self.index, str(temp_index))
+                np.save(str(temp_id_map), np.array(self.id_map))
 
-            # Both files written successfully - now rename atomically
-            # Backup old files first (if they exist)
-            backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
-            backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+                # Both files written successfully - now rename atomically
+                # Backup old files first (if they exist)
+                backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+                backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
 
-            if FAISS_INDEX_FILE.exists():
-                FAISS_INDEX_FILE.replace(backup_index)
-            if FAISS_ID_MAP_FILE.exists():
-                FAISS_ID_MAP_FILE.replace(backup_id_map)
+                if FAISS_INDEX_FILE.exists():
+                    FAISS_INDEX_FILE.replace(backup_index)
+                if FAISS_ID_MAP_FILE.exists():
+                    FAISS_ID_MAP_FILE.replace(backup_id_map)
 
-            # Rename temp to final
-            temp_index.replace(FAISS_INDEX_FILE)
-            temp_id_map.replace(FAISS_ID_MAP_FILE)
+                # Rename temp to final
+                temp_index.replace(FAISS_INDEX_FILE)
+                temp_id_map.replace(FAISS_ID_MAP_FILE)
 
-            # Remove transaction marker and backups on success
-            transaction_marker.unlink(missing_ok=True)
-            backup_index.unlink(missing_ok=True)
-            backup_id_map.unlink(missing_ok=True)
+                # Remove transaction marker and backups on success
+                transaction_marker.unlink(missing_ok=True)
+                backup_index.unlink(missing_ok=True)
+                backup_id_map.unlink(missing_ok=True)
 
-            logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
+                logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
             return True
         except Exception as e:
             logging.error("Failed to save FAISS index: %s", e)
@@ -406,7 +408,7 @@ class MemorySystem:
 
     async def _ensure_index(self, channel_id: int | None = None) -> None:
         """Build FAISS index from database if not already built.
-        
+
         Uses lock to prevent race conditions from concurrent calls.
         """
         if not FAISS_AVAILABLE or self._index_built:
@@ -716,7 +718,9 @@ class MemorySystem:
         # Update cache (batch with size limit to prevent memory spike)
         MAX_CACHE_BATCH = 2000
         for mem in all_memories[:MAX_CACHE_BATCH]:
-            self._memories_cache[mem.get("id", -1)] = mem
+            mem_id = mem.get("id")
+            if mem_id is not None:
+                self._memories_cache[mem_id] = mem
         self._evict_cache_if_needed()
 
         # Semantic search
@@ -772,6 +776,7 @@ class MemorySystem:
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     from datetime import timezone as _tz
+
                     now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(_tz.utc)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):

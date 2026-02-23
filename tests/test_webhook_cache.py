@@ -3,6 +3,7 @@ Tests for cogs/ai_core/response/webhook_cache.py
 
 Comprehensive tests for webhook caching functionality.
 """
+
 import asyncio
 import time
 from unittest.mock import MagicMock
@@ -18,6 +19,7 @@ class TestGetCachedWebhook:
         # Clear cache first
         from cogs.ai_core.response import webhook_cache
         from cogs.ai_core.response.webhook_cache import get_cached_webhook
+
         webhook_cache._webhook_cache.clear()
         webhook_cache._webhook_cache_time.clear()
 
@@ -210,7 +212,10 @@ class TestStartStopCleanupTask:
         assert webhook_cache._webhook_cache_cleanup_task is not None
 
         # Cancel the task to clean up
-        if webhook_cache._webhook_cache_cleanup_task and not webhook_cache._webhook_cache_cleanup_task.done():
+        if (
+            webhook_cache._webhook_cache_cleanup_task
+            and not webhook_cache._webhook_cache_cleanup_task.done()
+        ):
             webhook_cache._webhook_cache_cleanup_task.cancel()
             try:
                 await webhook_cache._webhook_cache_cleanup_task

@@ -46,7 +46,7 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
 
     Returns:
         Image bytes if file exists and readable, None otherwise.
-    
+
     Note:
         Cache is limited to IMAGE_CACHE_MAX_SIZE entries to prevent
         memory issues. Only successful reads are cached; missing files
@@ -78,15 +78,17 @@ load_cached_image_bytes.cache_clear = clear_image_cache  # type: ignore[attr-def
 # Backward-compatible cache_info for callers expecting lru_cache-style info
 _CacheInfo = namedtuple("CacheInfo", ["hits", "misses", "maxsize", "currsize"])
 
+
 def _cache_info():
     return _CacheInfo(hits=0, misses=0, maxsize=IMAGE_CACHE_MAX_SIZE, currsize=len(_image_cache))
+
 
 load_cached_image_bytes.cache_info = _cache_info  # type: ignore[attr-defined]
 
 
 def get_image_cache_info() -> dict:
     """Get image cache statistics.
-    
+
     Returns:
         Dict with maxsize and currsize (hits/misses not tracked with manual cache).
     """
@@ -160,12 +162,26 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
     if not IMAGEIO_AVAILABLE or iio is None:
         return None
 
+    # Reject GIFs larger than 8 MB to avoid excessive memory/CPU usage
+    MAX_GIF_SIZE = 8 * 1024 * 1024  # 8 MB
+    if len(gif_data) > MAX_GIF_SIZE:
+        logging.warning(
+            "GIF too large for conversion (%d bytes, limit %d)", len(gif_data), MAX_GIF_SIZE
+        )
+        return None
+
     try:
         # Read GIF frames using imageio
         frames = iio.imread(gif_data, index=None, extension=".gif")
 
         if len(frames) < 2:
             return None  # Not animated
+
+        # Truncate to 100 frames max to limit resource usage
+        MAX_FRAMES = 100
+        if len(frames) > MAX_FRAMES:
+            logging.warning("GIF has %d frames, truncating to %d", len(frames), MAX_FRAMES)
+            frames = frames[:MAX_FRAMES]
 
         # Get frame duration from PIL (imageio doesn't expose this well)
         pil_img = None

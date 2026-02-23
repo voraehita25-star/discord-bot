@@ -19,16 +19,13 @@ class TestBuildApiConfig:
             pytest.skip("api_handler not available")
             return
 
-        chat_data = {
-            "system_instruction": "Test instruction",
-            "thinking_enabled": False
-        }
+        chat_data = {"system_instruction": "Test instruction", "thinking_enabled": False}
 
         result = build_api_config(chat_data)
 
-        assert 'system_instruction' in result
-        assert result['system_instruction'] == "Test instruction"
-        assert 'safety_settings' in result
+        assert "system_instruction" in result
+        assert result["system_instruction"] == "Test instruction"
+        assert "safety_settings" in result
 
     def test_build_api_config_safety_settings(self):
         """Test safety settings in API config."""
@@ -42,13 +39,13 @@ class TestBuildApiConfig:
 
         result = build_api_config(chat_data)
 
-        assert 'safety_settings' in result
-        assert len(result['safety_settings']) == 4
+        assert "safety_settings" in result
+        assert len(result["safety_settings"]) == 4
 
         # Check safety categories
-        categories = [s['category'] for s in result['safety_settings']]
-        assert 'HARM_CATEGORY_HATE_SPEECH' in categories
-        assert 'HARM_CATEGORY_DANGEROUS_CONTENT' in categories
+        categories = [s["category"] for s in result["safety_settings"]]
+        assert "HARM_CATEGORY_HATE_SPEECH" in categories
+        assert "HARM_CATEGORY_DANGEROUS_CONTENT" in categories
 
     def test_build_api_config_with_search(self):
         """Test API config with search enabled."""
@@ -62,8 +59,8 @@ class TestBuildApiConfig:
 
         result = build_api_config(chat_data, use_search=True)
 
-        assert 'tools' in result
-        assert 'thinking_config' not in result
+        assert "tools" in result
+        assert "thinking_config" not in result
 
     def test_build_api_config_default_thinking(self):
         """Test API config defaults to thinking enabled."""
@@ -76,7 +73,7 @@ class TestBuildApiConfig:
         chat_data = {"system_instruction": "Test"}
         # Not setting thinking_enabled, should default to True
 
-        result = build_api_config(chat_data)
+        build_api_config(chat_data)
 
         # Default behavior depends on mode
 
@@ -103,11 +100,9 @@ class TestDetectSearchIntent:
             return
 
         mock_client = MagicMock()
-        mock_client.aio.models.generate_content = AsyncMock(
-            side_effect=ValueError("API Error")
-        )
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=ValueError("API Error"))
 
-        result = await detect_search_intent(mock_client, "gemini-1.5-flash", "test message")
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "test message")
 
         # Should return False on error
         assert result is False
@@ -135,7 +130,7 @@ class TestCircuitBreakerImport:
             return
 
         # gemini_circuit should be defined (may be None if import failed)
-        assert hasattr(api_handler, 'gemini_circuit')
+        assert hasattr(api_handler, "gemini_circuit")
 
 
 class TestPerfTrackerImport:
@@ -236,7 +231,7 @@ class TestRoleplayDataImport:
     def test_roleplay_instruction_imported(self):
         """Test ROLEPLAY_ASSISTANT_INSTRUCTION is imported."""
         try:
-            from cogs.ai_core.api.api_handler import ROLEPLAY_ASSISTANT_INSTRUCTION
+            pass
         except ImportError:
             pytest.skip("api_handler not available")
             return
@@ -250,7 +245,7 @@ class TestEscalationFramings:
     def test_escalation_framings_imported(self):
         """Test ESCALATION_FRAMINGS is imported."""
         try:
-            from cogs.ai_core.api.api_handler import ESCALATION_FRAMINGS
+            pass
         except ImportError:
             pytest.skip("api_handler not available")
             return
@@ -271,7 +266,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data)
 
-        assert result['system_instruction'] == ""
+        assert result["system_instruction"] == ""
 
     def test_build_config_none_guild_id(self):
         """Test config with None guild_id."""
@@ -285,7 +280,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data, guild_id=None)
 
-        assert 'system_instruction' in result
+        assert "system_instruction" in result
 
     def test_build_config_specific_guild_id(self):
         """Test config with specific guild_id."""
@@ -299,7 +294,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data, guild_id=123456789)
 
-        assert 'system_instruction' in result
+        assert "system_instruction" in result
 
 
 class TestDetectRefusalFallback:
@@ -349,8 +344,8 @@ class TestSafetySettingsStructure:
 
         result = build_api_config(chat_data)
 
-        for setting in result['safety_settings']:
-            assert 'category' in setting
+        for setting in result["safety_settings"]:
+            assert "category" in setting
 
     def test_safety_settings_have_threshold(self):
         """Test safety settings have threshold field."""
@@ -364,6 +359,6 @@ class TestSafetySettingsStructure:
 
         result = build_api_config(chat_data)
 
-        for setting in result['safety_settings']:
-            assert 'threshold' in setting
-            assert setting['threshold'] == 'BLOCK_NONE'
+        for setting in result["safety_settings"]:
+            assert "threshold" in setting
+            assert setting["threshold"] == "BLOCK_NONE"

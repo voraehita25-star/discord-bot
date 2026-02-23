@@ -132,7 +132,7 @@ class TestEnableWindowsANSI:
         """Test non-Windows platform returns True."""
         from utils.media.colors import enable_windows_ansi
 
-        with patch.object(sys, 'platform', 'linux'):
+        with patch.object(sys, "platform", "linux"):
             result = enable_windows_ansi()
             assert result is True
 

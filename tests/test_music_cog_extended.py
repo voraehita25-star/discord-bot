@@ -150,7 +150,7 @@ class TestMusicControlViewInteractionCheck:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'interaction_check')
+        assert hasattr(view, "interaction_check")
 
     @pytest.mark.asyncio
     async def test_interaction_check_no_voice(self):
@@ -209,7 +209,7 @@ class TestAsyncioImport:
         from cogs.music import cog
 
         # Module should have asyncio-related code
-        assert 'asyncio' in dir(cog) or hasattr(cog, 'asyncio')
+        assert "asyncio" in dir(cog) or hasattr(cog, "asyncio")
 
 
 class TestMusicControlViewAttributes:
@@ -223,7 +223,7 @@ class TestMusicControlViewAttributes:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'cog')
+        assert hasattr(view, "cog")
 
     @pytest.mark.asyncio
     async def test_has_guild_id_attribute(self):
@@ -233,4 +233,4 @@ class TestMusicControlViewAttributes:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'guild_id')
+        assert hasattr(view, "guild_id")

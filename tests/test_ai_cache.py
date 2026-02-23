@@ -12,10 +12,7 @@ class TestCacheEntryDataclass:
         """Test creating CacheEntry."""
         from cogs.ai_core.cache.ai_cache import CacheEntry
 
-        entry = CacheEntry(
-            response="Test response",
-            created_at=time.time()
-        )
+        entry = CacheEntry(response="Test response", created_at=time.time())
 
         assert entry.response == "Test response"
         assert entry.hits == 0
@@ -24,10 +21,7 @@ class TestCacheEntryDataclass:
         """Test CacheEntry default hits."""
         from cogs.ai_core.cache.ai_cache import CacheEntry
 
-        entry = CacheEntry(
-            response="Test",
-            created_at=time.time()
-        )
+        entry = CacheEntry(response="Test", created_at=time.time())
 
         assert entry.hits == 0
         assert entry.context_hash == ""
@@ -42,11 +36,7 @@ class TestCacheStatsDataclass:
         from cogs.ai_core.cache.ai_cache import CacheStats
 
         stats = CacheStats(
-            total_entries=100,
-            hits=80,
-            misses=20,
-            hit_rate=0.8,
-            memory_estimate_kb=256.0
+            total_entries=100, hits=80, misses=20, hit_rate=0.8, memory_estimate_kb=256.0
         )
 
         assert stats.total_entries == 100
@@ -209,7 +199,7 @@ class TestAICacheStats:
         cache.set("key1 longer message", "value1 longer response content")
 
         # Hit (must use same message)
-        result = cache.get("key1 longer message")
+        cache.get("key1 longer message")
 
         # Miss - use nonexistent key
         cache.get("nonexistent key here")
@@ -231,7 +221,7 @@ class TestAICacheClear:
         cache.set("key1 longer message", "value1 longer response content")
         cache.set("key2 longer message", "value2 longer response content")
 
-        count = cache.invalidate()
+        cache.invalidate()
 
         assert cache.get("key1 longer message") is None
         assert cache.get("key2 longer message") is None
@@ -244,7 +234,7 @@ class TestAICacheClear:
         cache.set("test message here", "test response content here")
 
         # Initially not expired
-        stats = cache.get_stats()
+        cache.get_stats()
         # Entry may or may not be stored depending on internal logic
 
         # cleanup_expired returns count of removed entries

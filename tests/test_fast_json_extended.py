@@ -3,8 +3,6 @@ Tests for utils.fast_json module.
 """
 
 
-
-
 class TestFastJSONLoads:
     """Tests for fast_json.json_loads function."""
 
@@ -19,7 +17,7 @@ class TestFastJSONLoads:
         """Test loading simple list."""
         from utils.fast_json import json_loads
 
-        result = json_loads('[1, 2, 3]')
+        result = json_loads("[1, 2, 3]")
         assert result == [1, 2, 3]
 
     def test_loads_nested_structure(self):
@@ -140,11 +138,8 @@ class TestFastJSONRoundTrip:
         from utils.fast_json import json_dumps, json_loads
 
         original = {
-            "users": [
-                {"name": "Alice", "age": 30},
-                {"name": "Bob", "age": 25}
-            ],
-            "meta": {"version": 1}
+            "users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}],
+            "meta": {"version": 1},
         }
         result = json_loads(json_dumps(original))
 

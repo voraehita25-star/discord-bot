@@ -221,7 +221,7 @@ class RequestDeduplicator:
             # Find content after the status block
             status_end = content.rfind("\n\n")
             if status_end != -1:
-                content = content[status_end + 2:]
+                content = content[status_end + 2 :]
 
         # Strip command prefix (!chat, !c, etc.)
         content = content.lstrip()

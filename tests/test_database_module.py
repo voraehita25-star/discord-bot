@@ -1,6 +1,5 @@
 """Extended tests for database module."""
 
-
 import pytest
 
 
@@ -96,11 +95,13 @@ class TestModuleImports:
     def test_import_database_class(self):
         """Test importing Database class."""
         from utils.database.database import Database
+
         assert Database is not None
 
     def test_import_db_singleton(self):
         """Test importing db singleton."""
         from utils.database.database import db
+
         assert db is not None
 
 
@@ -123,7 +124,7 @@ class TestDatabaseMethods:
 
         db = Database()
 
-        assert hasattr(db, 'save_ai_message')
+        assert hasattr(db, "save_ai_message")
 
     def test_get_ai_history_structure(self):
         """Test get_ai_history method exists."""
@@ -131,7 +132,7 @@ class TestDatabaseMethods:
 
         db = Database()
 
-        assert hasattr(db, 'get_ai_history')
+        assert hasattr(db, "get_ai_history")
 
     def test_delete_ai_history_structure(self):
         """Test delete_ai_history method exists."""
@@ -139,7 +140,7 @@ class TestDatabaseMethods:
 
         db = Database()
 
-        assert hasattr(db, 'delete_ai_history')
+        assert hasattr(db, "delete_ai_history")
 
     def test_export_to_json_structure(self):
         """Test export_to_json method exists."""
@@ -147,7 +148,7 @@ class TestDatabaseMethods:
 
         db = Database()
 
-        assert hasattr(db, 'export_to_json')
+        assert hasattr(db, "export_to_json")
 
     def test_export_channel_to_json_structure(self):
         """Test export_channel_to_json method exists."""
@@ -155,7 +156,7 @@ class TestDatabaseMethods:
 
         db = Database()
 
-        assert hasattr(db, 'export_channel_to_json')
+        assert hasattr(db, "export_channel_to_json")
 
 
 class TestRAGMethods:
@@ -167,7 +168,7 @@ class TestRAGMethods:
 
         db = Database()
 
-        assert hasattr(db, 'save_rag_memory')
+        assert hasattr(db, "save_rag_memory")
 
     def test_get_all_rag_memories_structure(self):
         """Test get_all_rag_memories method exists."""
@@ -175,7 +176,7 @@ class TestRAGMethods:
 
         db = Database()
 
-        assert hasattr(db, 'get_all_rag_memories')
+        assert hasattr(db, "get_all_rag_memories")
 
 
 class TestUserStatsMethods:
@@ -187,7 +188,7 @@ class TestUserStatsMethods:
 
         db = Database()
 
-        assert hasattr(db, 'increment_user_stat')
+        assert hasattr(db, "increment_user_stat")
 
     def test_get_user_stats_structure(self):
         """Test get_user_stats method exists."""
@@ -195,7 +196,7 @@ class TestUserStatsMethods:
 
         db = Database()
 
-        assert hasattr(db, 'get_user_stats')
+        assert hasattr(db, "get_user_stats")
 
 
 class TestGuildSettingsMethods:
@@ -207,7 +208,7 @@ class TestGuildSettingsMethods:
 
         db = Database()
 
-        assert hasattr(db, 'get_guild_settings')
+        assert hasattr(db, "get_guild_settings")
 
     def test_save_guild_settings_structure(self):
         """Test save_guild_settings method exists."""
@@ -215,7 +216,7 @@ class TestGuildSettingsMethods:
 
         db = Database()
 
-        assert hasattr(db, 'save_guild_settings')
+        assert hasattr(db, "save_guild_settings")
 
 
 class TestMusicQueueMethods:
@@ -227,7 +228,7 @@ class TestMusicQueueMethods:
 
         db = Database()
 
-        assert hasattr(db, 'save_music_queue')
+        assert hasattr(db, "save_music_queue")
 
     def test_load_music_queue_structure(self):
         """Test load_music_queue method exists."""
@@ -235,7 +236,7 @@ class TestMusicQueueMethods:
 
         db = Database()
 
-        assert hasattr(db, 'load_music_queue')
+        assert hasattr(db, "load_music_queue")
 
     def test_clear_music_queue_structure(self):
         """Test clear_music_queue method exists."""
@@ -243,7 +244,7 @@ class TestMusicQueueMethods:
 
         db = Database()
 
-        assert hasattr(db, 'clear_music_queue')
+        assert hasattr(db, "clear_music_queue")
 
 
 class TestHealthAndMetadata:
@@ -255,7 +256,7 @@ class TestHealthAndMetadata:
 
         db = Database()
 
-        assert hasattr(db, 'health_check')
+        assert hasattr(db, "health_check")
 
     def test_save_ai_metadata_structure(self):
         """Test save_ai_metadata method exists."""
@@ -263,7 +264,7 @@ class TestHealthAndMetadata:
 
         db = Database()
 
-        assert hasattr(db, 'save_ai_metadata')
+        assert hasattr(db, "save_ai_metadata")
 
     def test_get_ai_metadata_structure(self):
         """Test get_ai_metadata method exists."""
@@ -271,7 +272,7 @@ class TestHealthAndMetadata:
 
         db = Database()
 
-        assert hasattr(db, 'get_ai_metadata')
+        assert hasattr(db, "get_ai_metadata")
 
     def test_log_error_structure(self):
         """Test log_error method exists."""
@@ -279,7 +280,7 @@ class TestHealthAndMetadata:
 
         db = Database()
 
-        assert hasattr(db, 'log_error')
+        assert hasattr(db, "log_error")
 
 
 class TestHistoryManagement:
@@ -291,7 +292,7 @@ class TestHistoryManagement:
 
         db = Database()
 
-        assert hasattr(db, 'prune_ai_history')
+        assert hasattr(db, "prune_ai_history")
 
     def test_get_ai_history_count_structure(self):
         """Test get_ai_history_count method exists."""
@@ -299,7 +300,7 @@ class TestHistoryManagement:
 
         db = Database()
 
-        assert hasattr(db, 'get_ai_history_count')
+        assert hasattr(db, "get_ai_history_count")
 
     def test_get_all_ai_channel_ids_structure(self):
         """Test get_all_ai_channel_ids method exists."""
@@ -307,7 +308,7 @@ class TestHistoryManagement:
 
         db = Database()
 
-        assert hasattr(db, 'get_all_ai_channel_ids')
+        assert hasattr(db, "get_all_ai_channel_ids")
 
 
 class TestBatchMethods:
@@ -319,7 +320,7 @@ class TestBatchMethods:
 
         db = Database()
 
-        assert hasattr(db, 'save_ai_messages_batch')
+        assert hasattr(db, "save_ai_messages_batch")
 
 
 class TestConnectionMethods:
@@ -331,7 +332,7 @@ class TestConnectionMethods:
 
         db = Database()
 
-        assert hasattr(db, 'get_connection_with_retry')
+        assert hasattr(db, "get_connection_with_retry")
 
     def test_stop_watchers_structure(self):
         """Test stop_watchers method exists."""
@@ -339,7 +340,7 @@ class TestConnectionMethods:
 
         db = Database()
 
-        assert hasattr(db, 'stop_watchers')
+        assert hasattr(db, "stop_watchers")
 
 
 class TestUpdateMethods:
@@ -351,7 +352,7 @@ class TestUpdateMethods:
 
         db = Database()
 
-        assert hasattr(db, 'update_last_accessed')
+        assert hasattr(db, "update_last_accessed")
 
     def test_update_message_id_structure(self):
         """Test update_message_id method exists."""
@@ -359,4 +360,4 @@ class TestUpdateMethods:
 
         db = Database()
 
-        assert hasattr(db, 'update_message_id')
+        assert hasattr(db, "update_message_id")

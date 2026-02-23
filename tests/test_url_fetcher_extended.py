@@ -176,7 +176,9 @@ class TestFetchURLContent:
             mock_response = AsyncMock()
             mock_response.status = 200
             mock_response.headers = {"Content-Type": "text/html"}
-            mock_response.text = AsyncMock(return_value="<html><head><title>Test</title></head><body>Content</body></html>")
+            mock_response.text = AsyncMock(
+                return_value="<html><head><title>Test</title></head><body>Content</body></html>"
+            )
             mock_response.__aenter__ = AsyncMock(return_value=mock_response)
             mock_response.__aexit__ = AsyncMock(return_value=None)
 
@@ -200,7 +202,9 @@ class TestFetchURLContent:
 
         mock_session.get = MagicMock(return_value=mock_response)
 
-        title, content = await fetch_url_content("http://example.com/notfound", session=mock_session)
+        title, content = await fetch_url_content(
+            "http://example.com/notfound", session=mock_session
+        )
 
         assert content is None
 
@@ -218,7 +222,9 @@ class TestFetchURLContent:
 
         mock_session.get = MagicMock(return_value=mock_response)
 
-        title, content = await fetch_url_content("http://example.com/image.png", session=mock_session)
+        title, content = await fetch_url_content(
+            "http://example.com/image.png", session=mock_session
+        )
 
         assert "Non-text content" in content
 
@@ -243,6 +249,7 @@ class TestFetchAllURLs:
         assert result == []
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_max_urls_parameter(self):
         """Test max_urls limits results."""
         from utils.web.url_fetcher import fetch_all_urls
@@ -278,9 +285,7 @@ class TestFormatURLContentForContext:
         """Test formatting single URL content."""
         from utils.web.url_fetcher import format_url_content_for_context
 
-        fetched_urls = [
-            ("http://example.com", "Test Title", "Test content here")
-        ]
+        fetched_urls = [("http://example.com", "Test Title", "Test content here")]
 
         result = format_url_content_for_context(fetched_urls)
 
@@ -292,9 +297,7 @@ class TestFormatURLContentForContext:
         """Test handling of failed URL (None content)."""
         from utils.web.url_fetcher import format_url_content_for_context
 
-        fetched_urls = [
-            ("http://failed.com", "Failed URL", None)
-        ]
+        fetched_urls = [("http://failed.com", "Failed URL", None)]
 
         result = format_url_content_for_context(fetched_urls)
 

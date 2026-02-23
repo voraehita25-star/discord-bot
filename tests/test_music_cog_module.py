@@ -12,6 +12,7 @@ class TestMusicControlViewBasic:
     def test_music_control_view_import(self):
         """Test MusicControlView can be imported."""
         from cogs.music.cog import MusicControlView
+
         assert MusicControlView is not None
 
     @pytest.mark.asyncio
@@ -115,7 +116,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert hasattr(cog.queues, '__getitem__')
+        assert hasattr(cog.queues, "__getitem__")
         assert len(cog.queues) == 0
 
     def test_music_cog_loops_init(self):
@@ -126,7 +127,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert hasattr(cog.loops, '__getitem__')
+        assert hasattr(cog.loops, "__getitem__")
         assert len(cog.loops) == 0
 
     def test_music_cog_volumes_init(self):
@@ -137,7 +138,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert hasattr(cog.volumes, '__getitem__')
+        assert hasattr(cog.volumes, "__getitem__")
 
     def test_music_cog_mode_247_init(self):
         """Test Music cog initializes mode_247 dict."""
@@ -147,7 +148,7 @@ class TestMusicCogInit:
 
         cog = Music(mock_bot)
 
-        assert hasattr(cog.mode_247, '__getitem__')
+        assert hasattr(cog.mode_247, "__getitem__")
 
     def test_music_cog_auto_disconnect_delay(self):
         """Test Music cog auto disconnect delay."""
@@ -298,7 +299,7 @@ class TestMusicCogSaveQueue:
         guild_id = 12345
         cog.queues[guild_id] = []
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.clear_music_queue = AsyncMock()
             await cog.save_queue(guild_id)
             mock_db.clear_music_queue.assert_called_once_with(guild_id)
@@ -315,7 +316,7 @@ class TestMusicCogSaveQueue:
         queue = [{"title": "song1"}, {"title": "song2"}]
         cog.queues[guild_id] = queue
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.save_music_queue = AsyncMock()
             await cog.save_queue(guild_id)
             mock_db.save_music_queue.assert_called_once_with(guild_id, queue)
@@ -324,6 +325,7 @@ class TestMusicCogSaveQueue:
 class TestMusicCogSaveQueueJson:
     """Tests for _save_queue_json method."""
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_save_queue_json_empty(self):
         """Test _save_queue_json with empty queue."""
         from cogs.music.cog import Music
@@ -334,7 +336,7 @@ class TestMusicCogSaveQueueJson:
         guild_id = 12345
         cog.queues[guild_id] = []
 
-        with patch('pathlib.Path.exists') as mock_exists:
+        with patch("pathlib.Path.exists") as mock_exists:
             mock_exists.return_value = False
             cog._save_queue_json(guild_id)
             # Should not raise
@@ -352,7 +354,7 @@ class TestMusicCogSaveQueueJson:
         cog.loops[guild_id] = False
         cog.mode_247[guild_id] = False
 
-        with patch('pathlib.Path.write_text') as mock_write:
+        with patch("pathlib.Path.write_text") as mock_write:
             cog._save_queue_json_sync(guild_id)
             mock_write.assert_called_once()
 
@@ -370,7 +372,7 @@ class TestMusicCogLoadQueue:
 
         guild_id = 12345
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.load_music_queue = AsyncMock(return_value=[{"title": "song1"}])
             result = await cog.load_queue(guild_id)
 
@@ -387,10 +389,10 @@ class TestMusicCogLoadQueue:
 
         guild_id = 12345
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.load_music_queue = AsyncMock(return_value=None)
 
-            with patch('pathlib.Path.exists') as mock_exists:
+            with patch("pathlib.Path.exists") as mock_exists:
                 mock_exists.return_value = False
                 result = await cog.load_queue(guild_id)
 
@@ -424,21 +426,25 @@ class TestMusicCogUtils:
     def test_import_colors(self):
         """Test Colors can be imported."""
         from cogs.music.utils import Colors
+
         assert Colors is not None
 
     def test_import_emojis(self):
         """Test Emojis can be imported."""
         from cogs.music.utils import Emojis
+
         assert Emojis is not None
 
     def test_import_create_progress_bar(self):
         """Test create_progress_bar can be imported."""
         from cogs.music.utils import create_progress_bar
+
         assert create_progress_bar is not None
 
     def test_import_format_duration(self):
         """Test format_duration can be imported."""
         from cogs.music.utils import format_duration
+
         assert format_duration is not None
 
 
@@ -575,7 +581,7 @@ class TestMusicButtonStates:
         cog.current_track[guild_id] = {
             "title": "Test Song",
             "duration": 180,
-            "url": "https://example.com"
+            "url": "https://example.com",
         }
 
         assert cog.current_track[guild_id]["title"] == "Test Song"

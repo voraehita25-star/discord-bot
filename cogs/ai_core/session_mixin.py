@@ -50,7 +50,7 @@ class SessionMixin:
     streaming_enabled: dict[int, bool]
     current_typing_msg: dict[int, Any]
 
-    def _enforce_channel_limit(self) -> None:
+    async def _enforce_channel_limit(self) -> None:
         """Enforce max active channel limit. Must be implemented by the consuming class."""
         raise NotImplementedError("Consuming class must implement _enforce_channel_limit")
 
@@ -112,6 +112,7 @@ class SessionMixin:
         # Also REMOVES the instruction when unrestricted mode is disabled
         try:
             from .processing.guardrails import is_unrestricted
+
             current_instruction = self.chats[channel_id].get("system_instruction", "")
             if is_unrestricted(channel_id):
                 if "[CREATIVE WRITING MODE - PRIVATE SESSION]" not in current_instruction:
@@ -119,13 +120,12 @@ class SessionMixin:
                     self.chats[channel_id]["system_instruction"] = (
                         UNRESTRICTED_MODE_INSTRUCTION + current_instruction
                     )
-            else:
-                # Remove unrestricted instruction if it was previously injected
-                if "[CREATIVE WRITING MODE - PRIVATE SESSION]" in current_instruction:
-                    logging.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
-                    self.chats[channel_id]["system_instruction"] = (
-                        current_instruction.replace(UNRESTRICTED_MODE_INSTRUCTION, "")
-                    )
+            # Remove unrestricted instruction if it was previously injected
+            elif "[CREATIVE WRITING MODE - PRIVATE SESSION]" in current_instruction:
+                logging.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
+                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
+                    UNRESTRICTED_MODE_INSTRUCTION, ""
+                )
         except ImportError:
             pass  # Guardrails not available, skip unrestricted injection
 
@@ -133,7 +133,7 @@ class SessionMixin:
         self.last_accessed[channel_id] = time.time()
 
         # Enforce channel limit to prevent unbounded memory growth
-        self._enforce_channel_limit()
+        await self._enforce_channel_limit()
 
         return self.chats[channel_id]
 

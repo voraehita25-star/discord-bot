@@ -43,6 +43,12 @@ impl VectorStorage {
 
     /// Create or open a memory-mapped file
     pub fn open<P: AsRef<Path>>(path: P, dimension: usize, capacity: usize) -> Result<Self, RagError> {
+        if dimension > u32::MAX as usize {
+            return Err(RagError::Serialization(format!(
+                "Dimension {} exceeds maximum of {}", dimension, u32::MAX
+            )));
+        }
+
         let vector_size = dimension.checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| RagError::Serialization("Dimension overflow in vector size calculation".to_string()))?;
         let file_size = Self::HEADER_SIZE
@@ -87,8 +93,8 @@ impl VectorStorage {
             mmap.flush()?;
         }
 
-        // Read header to get count
-        let header: StorageHeader = *bytemuck::from_bytes(&mmap[..Self::HEADER_SIZE]);
+        // Read header to get count (use pod_read_unaligned to avoid UB with packed struct)
+        let header: StorageHeader = bytemuck::pod_read_unaligned(&mmap[..Self::HEADER_SIZE]);
 
         // Validate version (copy packed field to local to avoid unaligned access)
         let hdr_version = header.version;
@@ -201,5 +207,13 @@ impl VectorStorage {
             mmap.flush()?;
         }
         Ok(())
+    }
+}
+
+impl Drop for VectorStorage {
+    fn drop(&mut self) {
+        if let Some(ref mut mmap) = self.mmap {
+            let _ = mmap.flush();
+        }
     }
 }

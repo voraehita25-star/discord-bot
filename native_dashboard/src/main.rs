@@ -38,9 +38,9 @@ fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
         Ok(mut manager) => Ok(manager.get_status()),
         Err(_) => {
             // Lock is held by start/stop/restart — return busy status
-            // so the UI doesn't freeze waiting for the mutex
+            // with is_running: true so the UI shows a spinner instead of "stopped"
             Ok(BotStatus {
-                is_running: false,
+                is_running: true,
                 pid: None,
                 uptime: "...".to_string(),
                 memory_mb: 0.0,

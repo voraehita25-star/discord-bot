@@ -44,7 +44,7 @@ TEST_GUILD_ID = 111222333
 @pytest.fixture(autouse=True)
 def _reset_guardrails_state():
     """Reset module-level mutable state in guardrails to prevent test pollution.
-    
+
     The guardrails module has a module-level `unrestricted_channels` set that
     persists across tests. Tests that call set_unrestricted() can leak state
     into subsequent tests, causing spurious failures.
@@ -52,6 +52,7 @@ def _reset_guardrails_state():
     yield
     try:
         from cogs.ai_core.processing import guardrails
+
         guardrails.unrestricted_channels.clear()
     except (ImportError, AttributeError):
         pass

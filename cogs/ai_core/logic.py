@@ -36,6 +36,7 @@ class _NewMessageInterrupt(Exception):
     conflating application logic with real task cancellation.
     """
 
+
 # Import API handler module (direct subfolder import)
 from .api.api_handler import (
     build_api_config,
@@ -43,6 +44,10 @@ from .api.api_handler import (
     call_gemini_api_streaming,
     detect_search_intent,
 )
+from .core.message_queue import MessageQueue
+
+# Import new modular components (v3.3.6 - direct subfolder imports)
+from .core.performance import PerformanceTracker, RequestDeduplicator
 
 # Import extracted modules
 from .data.constants import (
@@ -71,10 +76,6 @@ from .memory.entity_memory import entity_memory
 from .memory.rag import rag_system
 from .memory.state_tracker import state_tracker
 from .memory.summarizer import summarizer
-from .core.message_queue import MessageQueue
-
-# Import new modular components (v3.3.6 - direct subfolder imports)
-from .core.performance import PerformanceTracker, RequestDeduplicator
 from .response.response_mixin import ResponseMixin
 from .response.response_sender import ResponseSender
 from .session_mixin import SessionMixin
@@ -155,28 +156,28 @@ except ImportError:
 
 
 try:
-    from .processing.intent_detector import Intent, detect_intent
+    from .processing.intent_detector import Intent, detect_intent  # noqa: F401
 
     INTENT_DETECTOR_AVAILABLE = True
 except ImportError:
     INTENT_DETECTOR_AVAILABLE = False
 
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction
+    from .cache.analytics import get_ai_stats, log_ai_interaction  # noqa: F401
 
     ANALYTICS_AVAILABLE = True
 except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher
+    from .cache.ai_cache import ai_cache, context_hasher  # noqa: F401
 
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 try:
-    from .memory.history_manager import history_manager
+    from .memory.history_manager import history_manager  # noqa: F401
 
     HISTORY_MANAGER_AVAILABLE = True
 except ImportError:
@@ -367,7 +368,7 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         self.setup_ai()
 
-    def _enforce_channel_limit(self) -> int:
+    async def _enforce_channel_limit(self) -> int:
         """Enforce max channel limit by removing oldest accessed channels (LRU eviction).
 
         Returns:
@@ -396,24 +397,13 @@ class ChatManager(SessionMixin, ResponseMixin):
             # Save history before evicting to prevent data loss
             if channel_id in self.chats:
                 try:
-                    loop = asyncio.get_running_loop()
-                    # Schedule save as a fire-and-forget task with error callback
                     from .storage import save_history
-                    task = loop.create_task(save_history(self.bot, channel_id, self.chats[channel_id]))
 
-                    def _handle_lru_save_result(t: asyncio.Task) -> None:
-                        if t.cancelled():
-                            return
-                        exc = t.exception()
-                        if exc:
-                            logging.error("LRU save failed: %s", exc)
-
-                    task.add_done_callback(_handle_lru_save_result)
-                except RuntimeError:
-                    # No running event loop
-                    logging.warning("No event loop for LRU eviction save of channel %s", channel_id)
+                    await save_history(self.bot, channel_id, self.chats[channel_id])
                 except Exception as e:
-                    logging.warning("Failed to save history before LRU eviction for %s: %s", channel_id, e)
+                    logging.warning(
+                        "Failed to save history before LRU eviction for %s: %s", channel_id, e
+                    )
 
             # Clean up all data for this channel
             self.chats.pop(channel_id, None)
@@ -428,7 +418,9 @@ class ChatManager(SessionMixin, ResponseMixin):
             evicted += 1
 
         if evicted > 0:
-            logging.info("🧹 ChatManager LRU eviction: removed %d channels (history saved)", evicted)
+            logging.info(
+                "🧹 ChatManager LRU eviction: removed %d channels (history saved)", evicted
+            )
 
         return evicted
 
@@ -443,7 +435,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         try:
             # Initialize new Google GenAI Client
             self.client = genai.Client(api_key=GEMINI_API_KEY)
-            # Use gemini-3-pro-preview for premium AI with thinking
+            # Use gemini-3.1-pro-preview for premium AI with thinking
             self.target_model = GEMINI_MODEL
             logging.info("Gemini AI Initialized (Model: %s)", self.target_model)
         except (ValueError, OSError) as e:
@@ -676,7 +668,9 @@ class ChatManager(SessionMixin, ResponseMixin):
         MAX_MESSAGE_LENGTH = 100_000  # 100KB max
         if message and len(message) > MAX_MESSAGE_LENGTH:
             message = message[:MAX_MESSAGE_LENGTH] + "\n[... ข้อความถูกตัดเนื่องจากยาวเกินไป ...]"
-            logging.warning("Truncated oversized message from user %s (%d chars)", user.id, len(message))
+            logging.warning(
+                "Truncated oversized message from user %s (%d chars)", user.id, len(message)
+            )
 
         # Determine Context and Send channels
         context_channel = output_channel if output_channel else channel
@@ -728,6 +722,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         lock_acquired = False
         _timed_out = False
         try:
+
             async def _acquire_lock():
                 await lock.acquire()
                 return True
@@ -918,7 +913,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Check if user is requesting specific channel history
                         requested_channel = self._extract_channel_id_request(display_message)
                         if requested_channel:
-                            history_data = await self._get_requested_history(requested_channel, requester_id=user.id)
+                            history_data = await self._get_requested_history(
+                                requested_channel, requester_id=user.id
+                            )
                             prompt_with_context = (
                                 f"[System Info] Current Time: {now} | "
                                 f"User: {user_name}{creator_tag}\n"
@@ -1067,7 +1064,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
 
                         new_item = {
                             "role": "user",
@@ -1145,7 +1144,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
 
                         new_entries = []
                         user_item = {
@@ -1180,7 +1181,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Include text file contents in saved history
                     if text_parts:
                         user_msg_text += "\n\n" + "\n".join(text_parts)
-                    current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.datetime.now(datetime.timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
 
                     new_entries = []
 
@@ -1205,8 +1208,18 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 9.5 Handle Function Calls
                     tool_outputs = []
+                    MAX_TOOL_CALLS_PER_MESSAGE = 5
                     if function_calls:
-                        for tool_call in function_calls:
+                        for tool_idx, tool_call in enumerate(function_calls):
+                            if tool_idx >= MAX_TOOL_CALLS_PER_MESSAGE:
+                                logging.warning(
+                                    "⚠️ Tool call limit reached (%d), skipping remaining",
+                                    MAX_TOOL_CALLS_PER_MESSAGE,
+                                )
+                                tool_outputs.append(
+                                    f"⚠️ Skipped {len(function_calls) - MAX_TOOL_CALLS_PER_MESSAGE} tool call(s) — limit is {MAX_TOOL_CALLS_PER_MESSAGE} per message"
+                                )
+                                break
                             logging.info("🛠️ Executing Tool: %s", tool_call.name)
                             result = await execute_tool_call(
                                 self.bot, send_channel, user, tool_call
@@ -1282,7 +1295,9 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 10.5 Apply guardrails to sanitize response
                     if GUARDRAILS_AVAILABLE:
-                        _is_valid, sanitized, warnings = validate_response_for_channel(response_text, channel_id)
+                        _is_valid, sanitized, warnings = validate_response_for_channel(
+                            response_text, channel_id
+                        )
                         if warnings:
                             logging.info("🛡️ Guardrails applied: %s", warnings)
                         response_text = sanitized
@@ -1340,13 +1355,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 sent_message = await send_channel.send(remaining)
                                 break
                             # Find best split point near 2000 chars
-                            split_at = remaining.rfind('\n', 0, 2000)
+                            split_at = remaining.rfind("\n", 0, 2000)
                             if split_at == -1 or split_at < 1000:
-                                split_at = remaining.rfind(' ', 0, 2000)
+                                split_at = remaining.rfind(" ", 0, 2000)
                             if split_at == -1 or split_at < 1000:
                                 split_at = 2000
                             sent_message = await send_channel.send(remaining[:split_at])
-                            remaining = remaining[split_at:].lstrip('\n')
+                            remaining = remaining[split_at:].lstrip("\n")
                     elif response_text:  # Only send if there is text left
                         sent_message = await send_channel.send(response_text)
 
@@ -1360,11 +1375,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # Save again to persist ID
                                 await update_message_id(context_channel.id, sent_message.id)
 
-                except (_NewMessageInterrupt, asyncio.CancelledError):
+                except _NewMessageInterrupt:
                     # _NewMessageInterrupt: expected when a new message arrives
+                    # Do NOT re-raise — let pending messages be processed
+                    logging.info(
+                        "🔄 Processing interrupted by new message, will handle pending messages"
+                    )
+                except asyncio.CancelledError:
                     # CancelledError: must re-raise to allow proper task cancellation
-                    logging.info("🔄 Processing interrupted, will handle pending messages")
-                    # Re-raise CancelledError to propagate cancellation properly
+                    logging.info("🔄 Task cancelled, propagating cancellation")
                     raise
                 except (discord.HTTPException, ValueError, TypeError) as e:
                     error_msg = str(e)

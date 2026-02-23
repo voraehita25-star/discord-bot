@@ -32,7 +32,7 @@ class TestAuditLoggerInit:
         from utils.monitoring.audit_log import AuditLogger
 
         logger = AuditLogger()
-        assert hasattr(logger, 'log_action')
+        assert hasattr(logger, "log_action")
         assert callable(logger.log_action)
 
     def test_audit_logger_has_get_recent_actions(self):
@@ -40,7 +40,7 @@ class TestAuditLoggerInit:
         from utils.monitoring.audit_log import AuditLogger
 
         logger = AuditLogger()
-        assert hasattr(logger, 'get_recent_actions')
+        assert hasattr(logger, "get_recent_actions")
         assert callable(logger.get_recent_actions)
 
 
@@ -54,10 +54,7 @@ class TestLogAction:
 
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
-            result = await logger.log_action(
-                user_id=123,
-                action="test_action"
-            )
+            result = await logger.log_action(user_id=123, action="test_action")
 
             # Should still return True (logs to console)
             assert result is True
@@ -75,7 +72,7 @@ class TestLogAction:
                 guild_id=456,
                 target_type="channel",
                 target_id=789,
-                details='{"name": "test-channel"}'
+                details='{"name": "test-channel"}',
             )
 
             assert result is True
@@ -118,7 +115,7 @@ class TestGetUserActions:
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
 
-            if hasattr(logger, 'get_user_actions'):
+            if hasattr(logger, "get_user_actions"):
                 result = await logger.get_user_actions(user_id=123)
                 assert result == []
 
@@ -254,4 +251,3 @@ class TestLogActionDetailsHandling:
             )
 
             assert result is True
-

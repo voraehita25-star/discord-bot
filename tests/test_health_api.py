@@ -16,6 +16,7 @@ class TestHealthApiConstants:
             import importlib
 
             import utils.monitoring.health_api
+
             importlib.reload(utils.monitoring.health_api)
 
             # Default port should be 8080

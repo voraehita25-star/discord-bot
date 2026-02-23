@@ -300,7 +300,7 @@ class ResponseSender:
                     # Continue with direct send for remaining chunks (skip timed-out chunk
                     # as it may have been partially delivered)
                     return await self._send_remaining_direct(
-                        channel, chunks[i + 1:], reference, allowed_mentions, i + 1
+                        channel, chunks[i + 1 :], reference, allowed_mentions, i + 1
                     )
 
             elapsed = time.time() - start_time

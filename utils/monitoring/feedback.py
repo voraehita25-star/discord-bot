@@ -162,7 +162,7 @@ class FeedbackCollector:
 
             # Cleanup old entries to prevent memory growth
             if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
-                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
+                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES :]
 
             # Take snapshot of callbacks to avoid race condition
             callbacks_snapshot = list(self._callbacks)

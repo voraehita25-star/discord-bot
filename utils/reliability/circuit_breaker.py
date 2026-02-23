@@ -178,7 +178,6 @@ class CircuitBreaker:
             self._last_failure_time = None
         logging.info("⚡ Circuit Breaker [%s]: Manually reset", self.name)
 
-
     async def async_can_execute(self) -> bool:
         """Async-safe version of can_execute for coroutine callers."""
         async with self._async_lock:

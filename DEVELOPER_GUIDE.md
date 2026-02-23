@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** February 10, 2026
+> **Last Updated:** February 17, 2026
 > **Version:** 3.3.10
 > **Python Version:** 3.10+
 > **Framework:** discord.py 2.x
-> **Total Files:** 251 Python files | 126 Test files | 3,157 Tests
+> **Total Files:** 251 Python files | 126 Test files | 3,203 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅
 
@@ -801,6 +801,10 @@ async def mycommand(self, ctx):
 15. **Lock Safety:** `asyncio.shield()` used for lock acquisition to avoid known CPython deadlock (#42130); `ShutdownManager` defers Event/Lock creation to correct event loop
 16. **Mention Sanitization:** Both `sanitization.py` and webhook `send_as_webhook()` sanitize role mentions (`<@&ID>`) and user mentions (`<@ID>`) with zero-width space
 17. **Atomic Persistence:** RAG engine uses temp-file+rename for atomic saves; VectorStorage flushes mmap after every push
+18. **Cache Key Hashing:** `ai_cache.py` uses SHA-256 (not MD5) for cache key generation to avoid collision risk
+19. **Tool Rate Limit:** Tool execution limited to 5 calls per message to prevent abuse
+20. **Stale Lock Recovery:** Message queue force-releases locks held >600s with ERROR-level logging
+21. **LIKE Injection:** Entity memory search escapes `%`, `_`, `\` in LIKE queries
 
 ---
 
@@ -993,6 +997,21 @@ async def mycommand(self, ctx):
 | `ensure_ascii` default mismatch between orjson/stdlib | Aligned both to `False` | `fast_json.py` |
 | Redundant `import re` in sanitization | Removed (already imported at top) | `sanitization.py` |
 
+### Phase 12 - Security Audit Remediation (February 17, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| WS dashboard no auth when token not set | Auto-generate token with `secrets.token_urlsafe(32)` | `ws_dashboard.py` |
+| `setattr` permission fallthrough via `hasattr` | Strict whitelist gate, removed `hasattr` condition | `server_commands.py` |
+| `unrestricted_channels.json` world-readable | `os.chmod(S_IRUSR \| S_IWUSR)` after atomic write | `guardrails.py` |
+| LIKE wildcard injection in entity search | Escape `%`, `_`, `\` + `ESCAPE '\'` clause | `entity_memory.py` |
+| MD5 for cache key (collision risk) | `hashlib.sha256` (2 locations) | `ai_cache.py` |
+| No tool execution rate limit | `MAX_TOOL_CALLS_PER_MESSAGE = 5` with break | `logic.py` |
+| `conversation_id` not validated in WS | `uuid.UUID()` format validation | `ws_dashboard.py` |
+| Stale locks never force-released | Force-release after 600s with ERROR logging | `message_queue.py` |
+| Gemini `BLOCK_NONE` (intentional) | Added code comments documenting design choice | `api_handler.py`, `ws_dashboard.py` |
+| Escalation Framings (intentional) | Added code comments documenting design choice | `faust_data.py` |
+
 ---
 
 ## 📚 Further Reading
@@ -1003,4 +1022,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: February 10, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,157 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*
+*Documentation last updated: February 17, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security audit remediation: WS auth, permission allowlists, LIKE escape, SHA-256 cache, tool rate limit, stale lock recovery | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,203 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*

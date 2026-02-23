@@ -2,7 +2,6 @@
 Tests for cogs.ai_core.memory.entity_memory module.
 """
 
-
 import pytest
 
 
@@ -27,7 +26,7 @@ class TestEntityFactsDataclass:
             age=25,
             occupation="Student",
             personality="Friendly",
-            appearance="Tall with dark hair"
+            appearance="Tall with dark hair",
         )
 
         assert facts.age == 25
@@ -38,9 +37,7 @@ class TestEntityFactsDataclass:
         """Test EntityFacts with relationships."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            relationships={"Alice": "friend", "Bob": "sibling"}
-        )
+        facts = EntityFacts(relationships={"Alice": "friend", "Bob": "sibling"})
 
         assert facts.relationships["Alice"] == "friend"
         assert facts.relationships["Bob"] == "sibling"
@@ -49,11 +46,7 @@ class TestEntityFactsDataclass:
         """Test EntityFacts to_dict method."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            description="Test description",
-            age=30,
-            occupation="Teacher"
-        )
+        facts = EntityFacts(description="Test description", age=30, occupation="Teacher")
 
         result = facts.to_dict()
 
@@ -66,11 +59,7 @@ class TestEntityFactsDataclass:
         """Test EntityFacts from_dict method."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        data = {
-            "description": "Test entity",
-            "age": 25,
-            "occupation": "Engineer"
-        }
+        data = {"description": "Test entity", "age": 25, "occupation": "Engineer"}
 
         facts = EntityFacts.from_dict(data)
 
@@ -82,10 +71,7 @@ class TestEntityFactsDataclass:
         """Test EntityFacts from_dict with custom fields."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        data = {
-            "description": "Test",
-            "custom_field": "custom_value"
-        }
+        data = {"description": "Test", "custom_field": "custom_value"}
 
         facts = EntityFacts.from_dict(data)
 
@@ -96,11 +82,7 @@ class TestEntityFactsDataclass:
         """Test EntityFacts to_prompt_text method."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            description="A mysterious person",
-            age=30,
-            occupation="Detective"
-        )
+        facts = EntityFacts(description="A mysterious person", age=30, occupation="Detective")
 
         result = facts.to_prompt_text()
 
@@ -117,12 +99,7 @@ class TestEntityDataclass:
         from cogs.ai_core.memory.entity_memory import Entity, EntityFacts
 
         facts = EntityFacts(description="Test character")
-        entity = Entity(
-            entity_id=1,
-            name="Faust",
-            entity_type="character",
-            facts=facts
-        )
+        entity = Entity(entity_id=1, name="Faust", entity_type="character", facts=facts)
 
         assert entity.name == "Faust"
         assert entity.entity_type == "character"
@@ -133,12 +110,7 @@ class TestEntityDataclass:
         from cogs.ai_core.memory.entity_memory import Entity, EntityFacts
 
         facts = EntityFacts(description="A wise person")
-        entity = Entity(
-            entity_id=1,
-            name="Sage",
-            entity_type="character",
-            facts=facts
-        )
+        entity = Entity(entity_id=1, name="Sage", entity_type="character", facts=facts)
 
         result = entity.to_prompt_text()
 
@@ -151,12 +123,7 @@ class TestEntityDataclass:
         from cogs.ai_core.memory.entity_memory import Entity, EntityFacts
 
         facts = EntityFacts()
-        entity = Entity(
-            entity_id=1,
-            name="Test",
-            entity_type="item",
-            facts=facts
-        )
+        entity = Entity(entity_id=1, name="Test", entity_type="item", facts=facts)
 
         assert entity.confidence == 1.0
         assert entity.source == "user"
@@ -240,10 +207,7 @@ class TestEntityFactsLocationFields:
         """Test location-specific fields."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            location_type="apartment",
-            address="123 Main Street"
-        )
+        facts = EntityFacts(location_type="apartment", address="123 Main Street")
 
         assert facts.location_type == "apartment"
         assert facts.address == "123 Main Street"
@@ -252,10 +216,7 @@ class TestEntityFactsLocationFields:
         """Test location fields in prompt text."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            location_type="cafe",
-            address="Downtown Area"
-        )
+        facts = EntityFacts(location_type="cafe", address="Downtown Area")
 
         result = facts.to_prompt_text()
 
@@ -270,10 +231,7 @@ class TestEntityFactsItemFields:
         """Test item-specific fields."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            owner="Alice",
-            item_type="weapon"
-        )
+        facts = EntityFacts(owner="Alice", item_type="weapon")
 
         assert facts.owner == "Alice"
         assert facts.item_type == "weapon"
@@ -286,9 +244,7 @@ class TestEntityFactsCustomFields:
         """Test custom fields dictionary."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            custom={"special_ability": "teleport", "power_level": 9000}
-        )
+        facts = EntityFacts(custom={"special_ability": "teleport", "power_level": 9000})
 
         assert facts.custom["special_ability"] == "teleport"
         assert facts.custom["power_level"] == 9000
@@ -297,9 +253,7 @@ class TestEntityFactsCustomFields:
         """Test custom fields appear in prompt text."""
         from cogs.ai_core.memory.entity_memory import EntityFacts
 
-        facts = EntityFacts(
-            custom={"special_ability": "teleportation"}
-        )
+        facts = EntityFacts(custom={"special_ability": "teleportation"})
 
         result = facts.to_prompt_text()
 

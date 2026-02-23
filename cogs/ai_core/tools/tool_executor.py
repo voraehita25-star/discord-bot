@@ -65,7 +65,9 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
             # Hard split at limit, but ensure we don't break a surrogate pair
             split_at = limit
             # Back up if we're in the middle of a surrogate pair
-            while split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff":
+            while (
+                split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff"
+            ):
                 split_at -= 1
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
@@ -95,13 +97,15 @@ async def execute_tool_call(
     guild = origin_channel.guild
 
     # Input validation helper
-    def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
+    def validate_name(
+        name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH
+    ) -> tuple[bool, str]:
         """Validate channel/category name from AI input.
-        
+
         Args:
             name: The name to validate
             max_length: Maximum allowed length (default: MAX_CHANNEL_NAME_LENGTH)
-            
+
         Returns:
             Tuple of (is_valid, cleaned_name_or_error_message)
         """
@@ -123,18 +127,14 @@ async def execute_tool_call(
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(
-                guild, origin_channel, result, [None, args.get("category")]
-            )
+            await cmd_create_text(guild, origin_channel, result, [None, args.get("category")])
             return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_voice(
-                guild, origin_channel, result, [None, args.get("category")]
-            )
+            await cmd_create_voice(guild, origin_channel, result, [None, args.get("category")])
             return f"Requested creation of voice channel '{result}'"
 
         elif fname == "create_category":
@@ -319,7 +319,7 @@ async def send_as_webhook(bot, channel, name, message):
         message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
         # Guard against DM channels (no guild/webhooks)
-        if not hasattr(channel, 'guild') or channel.guild is None:
+        if not hasattr(channel, "guild") or channel.guild is None:
             await channel.send(f"**{name}**: {message}")
             return None
 
@@ -342,9 +342,7 @@ async def send_as_webhook(bot, channel, name, message):
                 if len(message) > limit:
                     chunks = _safe_split_message(message, limit)
                     for chunk in chunks:
-                        sent_message = await webhook.send(
-                            content=chunk, username=name, wait=True
-                        )
+                        sent_message = await webhook.send(content=chunk, username=name, wait=True)
                 else:
                     sent_message = await webhook.send(content=message, username=name, wait=True)
                 logging.debug("🎭 AI spoke as %s (cached webhook)", name)
@@ -431,9 +429,7 @@ async def send_as_webhook(bot, channel, name, message):
             if len(message) > limit:
                 chunks = _safe_split_message(message, limit)
                 for chunk in chunks:
-                    sent_message = await webhook.send(
-                        content=chunk, username=name, wait=True
-                    )
+                    sent_message = await webhook.send(content=chunk, username=name, wait=True)
             else:
                 sent_message = await webhook.send(content=message, username=name, wait=True)
             logging.info("🎭 AI spoke as %s", name)

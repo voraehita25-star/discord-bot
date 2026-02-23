@@ -224,6 +224,7 @@ class PerformanceTracker:
         Args:
             interval: Cleanup interval in seconds (default: 1 hour)
         """
+
         async def _cleanup_loop():
             while True:
                 try:
@@ -271,7 +272,7 @@ perf_tracker = PerformanceTracker()
 # ==================== Prometheus Bridge ====================
 # Bridge Python performance stats to prometheus_client histograms
 try:
-    from prometheus_client import Histogram, CollectorRegistry, generate_latest
+    from prometheus_client import CollectorRegistry, Histogram, generate_latest
 
     _prom_registry = CollectorRegistry()
     _prom_histograms: dict[str, Histogram] = {}

@@ -185,7 +185,7 @@ class TestMemorySystem:
         """Test creating MemorySystem."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system._faiss_index = None
             system._index_built = False
@@ -198,7 +198,7 @@ class TestMemorySystem:
             stats = system.get_stats()
 
             assert stats["faiss_available"] is not None
-            assert stats["index_built"] == False
+            assert not stats["index_built"]
             assert stats["memories_cached"] == 0
 
     def test_calculate_time_decay_now(self):
@@ -207,7 +207,7 @@ class TestMemorySystem:
 
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             # Test with current time
@@ -223,7 +223,7 @@ class TestMemorySystem:
 
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             # Test with 60 days old
@@ -238,7 +238,7 @@ class TestMemorySystem:
         """Test time decay with invalid input."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             decay = system._calculate_time_decay("invalid_date")
@@ -250,7 +250,7 @@ class TestMemorySystem:
         """Test query expansion with no synonyms."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             result = system.expand_query("hello world")
@@ -261,7 +261,7 @@ class TestMemorySystem:
         """Test query expansion with Thai synonyms."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             result = system.expand_query("ชื่อ")
@@ -274,7 +274,7 @@ class TestMemorySystem:
         """Test query expansion with English synonyms."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             result = system.expand_query("work and home")
@@ -286,7 +286,7 @@ class TestMemorySystem:
         """Test keyword search with empty memories."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             results = system._keyword_search("test query", [])
@@ -297,7 +297,7 @@ class TestMemorySystem:
         """Test keyword search with no matches."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             memories = [{"id": 1, "content": "apple banana cherry"}]
@@ -309,7 +309,7 @@ class TestMemorySystem:
         """Test keyword search with partial match."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             memories = [{"id": 1, "content": "hello world programming"}]
@@ -322,12 +322,12 @@ class TestMemorySystem:
         """Test keyword search with exact phrase match."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             memories = [
                 {"id": 1, "content": "hello world"},
-                {"id": 2, "content": "hello there world"}
+                {"id": 2, "content": "hello there world"},
             ]
             results = system._keyword_search("hello world", memories)
 
@@ -338,7 +338,7 @@ class TestMemorySystem:
         """Test RRF with empty inputs."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             results = system._reciprocal_rank_fusion([], [])
@@ -349,7 +349,7 @@ class TestMemorySystem:
         """Test RRF with semantic results only."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             semantic = [(1, 0.9), (2, 0.8)]
@@ -361,7 +361,7 @@ class TestMemorySystem:
         """Test RRF with both semantic and keyword results."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             semantic = [(1, 0.9), (2, 0.8)]
@@ -383,7 +383,7 @@ class TestAsyncMethods:
         """Test generate_embedding with no client."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system.client = None
 
@@ -396,7 +396,7 @@ class TestAsyncMethods:
         """Test batch embedding with no client."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system.client = None
 
@@ -409,7 +409,7 @@ class TestAsyncMethods:
         """Test batch embedding with empty list."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system.client = MagicMock()
 
@@ -422,14 +422,14 @@ class TestAsyncMethods:
         """Test search_memory with no results."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system._faiss_index = None
             system._index_built = False
             system._memories_cache = {}
             system.client = None
 
-            with patch('cogs.ai_core.memory.rag.db') as mock_db:
+            with patch("cogs.ai_core.memory.rag.db") as mock_db:
                 mock_db.get_all_rag_memories = AsyncMock(return_value=[])
 
                 results = await system.search_memory("test query")
@@ -441,7 +441,7 @@ class TestAsyncMethods:
         """Test _linear_search_raw with empty memories."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             query_vec = np.random.rand(768).astype(np.float32)
@@ -454,18 +454,14 @@ class TestAsyncMethods:
         """Test _linear_search_raw with valid memory."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
 
             # Create a query vector and matching memory vector
             query_vec = np.random.rand(768).astype(np.float32)
             mem_vec = query_vec.copy()  # Same vector for high similarity
 
-            memories = [{
-                "id": 1,
-                "content": "test memory",
-                "embedding": mem_vec.tobytes()
-            }]
+            memories = [{"id": 1, "content": "test memory", "embedding": mem_vec.tobytes()}]
 
             results = await system._linear_search_raw(query_vec, 5, memories)
 
@@ -477,7 +473,7 @@ class TestAsyncMethods:
         """Test add_memory when embedding fails."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system.client = None
             system._faiss_index = None
@@ -492,7 +488,7 @@ class TestAsyncMethods:
         """Test force_save_index when index not built."""
         from cogs.ai_core.memory.rag import MemorySystem
 
-        with patch.object(MemorySystem, '__init__', lambda x: None):
+        with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
             system._faiss_index = None
             system._index_built = False
@@ -508,26 +504,31 @@ class TestModuleImports:
     def test_import_memory_result(self):
         """Test importing MemoryResult."""
         from cogs.ai_core.memory.rag import MemoryResult
+
         assert MemoryResult is not None
 
     def test_import_memory_metadata(self):
         """Test importing MemoryMetadata."""
         from cogs.ai_core.memory.rag import MemoryMetadata
+
         assert MemoryMetadata is not None
 
     def test_import_faiss_index(self):
         """Test importing FAISSIndex."""
         from cogs.ai_core.memory.rag import FAISSIndex
+
         assert FAISSIndex is not None
 
     def test_import_memory_system(self):
         """Test importing MemorySystem."""
         from cogs.ai_core.memory.rag import MemorySystem
+
         assert MemorySystem is not None
 
     def test_import_rag_system(self):
         """Test importing global rag_system."""
         from cogs.ai_core.memory.rag import rag_system
+
         assert rag_system is not None
 
     def test_embedding_constants(self):

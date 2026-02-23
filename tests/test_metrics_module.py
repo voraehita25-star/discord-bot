@@ -188,9 +188,7 @@ class TestBotMetricsIncrementCommands:
             metrics.increment_commands("play", success=True)
 
             if not PROMETHEUS_AVAILABLE:
-                metrics.commands_total.labels.assert_called_with(
-                    command="play", status="success"
-                )
+                metrics.commands_total.labels.assert_called_with(command="play", status="success")
         finally:
             metrics.enabled = original_enabled
             if not PROMETHEUS_AVAILABLE:
@@ -210,9 +208,7 @@ class TestBotMetricsIncrementCommands:
             metrics.increment_commands("play", success=False)
 
             if not PROMETHEUS_AVAILABLE:
-                metrics.commands_total.labels.assert_called_with(
-                    command="play", status="error"
-                )
+                metrics.commands_total.labels.assert_called_with(command="play", status="error")
         finally:
             metrics.enabled = original_enabled
             if not PROMETHEUS_AVAILABLE:

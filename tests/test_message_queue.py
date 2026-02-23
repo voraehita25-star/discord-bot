@@ -18,11 +18,7 @@ class TestPendingMessageDataclass:
         channel = MagicMock()
         user = MagicMock()
 
-        msg = PendingMessage(
-            channel=channel,
-            user=user,
-            message="Hello"
-        )
+        msg = PendingMessage(channel=channel, user=user, message="Hello")
 
         assert msg.channel == channel
         assert msg.user == user
@@ -33,11 +29,7 @@ class TestPendingMessageDataclass:
         """Test PendingMessage default values."""
         from cogs.ai_core.core.message_queue import PendingMessage
 
-        msg = PendingMessage(
-            channel=MagicMock(),
-            user=MagicMock(),
-            message="Test"
-        )
+        msg = PendingMessage(channel=MagicMock(), user=MagicMock(), message="Test")
 
         assert msg.attachments is None
         assert msg.output_channel is None
@@ -52,10 +44,7 @@ class TestPendingMessageDataclass:
         attachments = [MagicMock(), MagicMock()]
 
         msg = PendingMessage(
-            channel=MagicMock(),
-            user=MagicMock(),
-            message="Test",
-            attachments=attachments
+            channel=MagicMock(), user=MagicMock(), message="Test", attachments=attachments
         )
 
         assert msg.attachments == attachments
@@ -143,12 +132,7 @@ class TestMessageQueueQueue:
         channel = MagicMock()
         user = MagicMock()
 
-        queue.queue_message(
-            channel_id=12345,
-            channel=channel,
-            user=user,
-            message="Hello"
-        )
+        queue.queue_message(channel_id=12345, channel=channel, user=user, message="Hello")
 
         assert 12345 in queue.pending_messages
         assert len(queue.pending_messages[12345]) == 1

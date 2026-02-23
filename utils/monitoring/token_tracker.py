@@ -102,7 +102,11 @@ class TokenTracker:
                 self._evict_least_recently_used_users()
 
             # Evict old channels if we hit the limit
-            if channel_id and channel_id not in self._channel_usage and len(self._channel_usage) >= self.MAX_CHANNELS:
+            if (
+                channel_id
+                and channel_id not in self._channel_usage
+                and len(self._channel_usage) >= self.MAX_CHANNELS
+            ):
                 self._evict_least_used_channels()
 
             # Initialize user stats if needed
@@ -123,7 +127,9 @@ class TokenTracker:
                 # Limit hourly entries to prevent unbounded memory growth (7 days * 24 hours)
                 max_hourly_entries = 168
                 if len(stats.hourly_usage) > max_hourly_entries:
-                    oldest_keys = sorted(stats.hourly_usage.keys())[: len(stats.hourly_usage) - max_hourly_entries]
+                    oldest_keys = sorted(stats.hourly_usage.keys())[
+                        : len(stats.hourly_usage) - max_hourly_entries
+                    ]
                     for old_key in oldest_keys:
                         del stats.hourly_usage[old_key]
             stats.hourly_usage[hour_key].add(input_tokens, output_tokens)
@@ -134,7 +140,9 @@ class TokenTracker:
                 # Limit daily entries to prevent unbounded memory growth (3 months)
                 max_daily_entries = 90
                 if len(stats.daily_usage) > max_daily_entries:
-                    oldest_keys = sorted(stats.daily_usage.keys())[: len(stats.daily_usage) - max_daily_entries]
+                    oldest_keys = sorted(stats.daily_usage.keys())[
+                        : len(stats.daily_usage) - max_daily_entries
+                    ]
                     for old_key in oldest_keys:
                         del stats.daily_usage[old_key]
             stats.daily_usage[day_key].add(input_tokens, output_tokens)
@@ -215,10 +223,7 @@ class TokenTracker:
             return
 
         # Sort by last_use and remove oldest
-        sorted_users = sorted(
-            self._user_stats.items(),
-            key=lambda x: x[1].last_use
-        )
+        sorted_users = sorted(self._user_stats.items(), key=lambda x: x[1].last_use)
 
         to_remove = sorted_users[:count]
         for user_id, _ in to_remove:
@@ -232,10 +237,7 @@ class TokenTracker:
             return
 
         # Sort by request_count and remove least used
-        sorted_channels = sorted(
-            self._channel_usage.items(),
-            key=lambda x: x[1].request_count
-        )
+        sorted_channels = sorted(self._channel_usage.items(), key=lambda x: x[1].request_count)
 
         to_remove = sorted_channels[:count]
         for channel_id, _ in to_remove:

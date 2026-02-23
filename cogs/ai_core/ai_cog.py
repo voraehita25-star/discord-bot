@@ -253,7 +253,8 @@ class AI(commands.Cog):
                     await ctx.send("❌ ไม่มีสิทธิ์อ่านข้อความที่ Reply")
                     return
                 except discord.HTTPException as e:
-                    await ctx.send(f"❌ เกิดข้อผิดพลาดในการอ่านข้อความ: {e}")
+                    logging.error("Failed to fetch reply message: %s", e)
+                    await ctx.send("❌ เกิดข้อผิดพลาดในการอ่านข้อความ")
                     return
             elif ctx.message.attachments:
                 # Allow empty message with attachments (images)
@@ -313,11 +314,15 @@ class AI(commands.Cog):
         # Invalidate webhook cache for deleted channel
         invalidate_webhook_cache_on_channel_delete(channel.id)
 
-        # Clean up chat manager data for this channel
-        if channel.id in self.chat_manager.chats:
-            del self.chat_manager.chats[channel.id]
-        if channel.id in self.chat_manager.seen_users:
-            del self.chat_manager.seen_users[channel.id]
+        # Clean up chat manager data for this channel under the processing lock if one exists
+        lock = self.chat_manager.processing_locks.get(channel.id)
+        if lock:
+            async with lock:
+                self.chat_manager.chats.pop(channel.id, None)
+                self.chat_manager.seen_users.pop(channel.id, None)
+        else:
+            self.chat_manager.chats.pop(channel.id, None)
+            self.chat_manager.seen_users.pop(channel.id, None)
         # Clean up all remaining per-channel state to prevent memory leaks
         self.chat_manager.last_accessed.pop(channel.id, None)
         self.chat_manager.processing_locks.pop(channel.id, None)
@@ -338,7 +343,7 @@ class AI(commands.Cog):
             # Validate webhook identity - only allow known proxy bots (Tupperbox, PluralKit)
             # Reject webhooks from unknown sources to prevent abuse
             ALLOWED_WEBHOOK_NAMES = {"Tupperbox", "PluralKit"}
-            webhook_name = getattr(message.author, "name", "")
+            getattr(message.author, "name", "")
             is_known_proxy = False
             try:
                 # Fetch the actual webhook to verify it belongs to a known bot
@@ -346,7 +351,7 @@ class AI(commands.Cog):
                 for wh in webhooks:
                     if wh.id == message.webhook_id:
                         # Check if webhook was created by a known proxy bot
-                        if wh.user and wh.user.bot:
+                        if wh.user and wh.user.bot and wh.user.name in ALLOWED_WEBHOOK_NAMES:
                             is_known_proxy = True
                         break
             except (discord.Forbidden, discord.HTTPException):
@@ -811,8 +816,8 @@ class AI(commands.Cog):
                 await status_msg.edit(content="❌ ไม่พบประวัติแชทใน channel ต้นทาง")
 
         except Exception as e:
-            logging.error("Failed to link memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to link memory: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     @commands.command(name="resend", aliases=["rs", "resendmsg"])
     async def resend_last_message(self, ctx: commands.Context, local_id: int | None = None) -> None:
@@ -910,8 +915,8 @@ class AI(commands.Cog):
             await status_msg.edit(content="✅ ส่งข้อความใหม่สำเร็จ!")
 
         except Exception as e:
-            logging.error("Failed to resend message: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to resend message: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     @commands.hybrid_command(name="move_memory", aliases=["mm", "movemem"])
     async def move_memory_cmd(
@@ -1038,8 +1043,8 @@ class AI(commands.Cog):
                 await status_msg.edit(content="❌ ไม่พบประวัติแชทใน channel ต้นทาง")
 
         except Exception as e:
-            logging.error("Failed to move memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to move memory: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     # ==================== Advanced Admin Commands ====================
 

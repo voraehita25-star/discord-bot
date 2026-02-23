@@ -88,10 +88,7 @@ class TestFeedbackEntry:
         from utils.monitoring.feedback import FeedbackEntry, FeedbackType
 
         entry = FeedbackEntry(
-            message_id=123,
-            channel_id=456,
-            user_id=789,
-            feedback_type=FeedbackType.POSITIVE
+            message_id=123, channel_id=456, user_id=789, feedback_type=FeedbackType.POSITIVE
         )
 
         assert entry.message_id == 123
@@ -105,10 +102,7 @@ class TestFeedbackEntry:
 
         before = time.time()
         entry = FeedbackEntry(
-            message_id=1,
-            channel_id=2,
-            user_id=3,
-            feedback_type=FeedbackType.NEUTRAL
+            message_id=1, channel_id=2, user_id=3, feedback_type=FeedbackType.NEUTRAL
         )
         after = time.time()
 
@@ -123,7 +117,7 @@ class TestFeedbackEntry:
             channel_id=2,
             user_id=3,
             feedback_type=FeedbackType.HELPFUL,
-            context="Test response"
+            context="Test response",
         )
 
         assert entry.context == "Test response"
@@ -154,11 +148,7 @@ class TestFeedbackStats:
         """Test satisfaction_rate calculation."""
         from utils.monitoring.feedback import FeedbackStats
 
-        stats = FeedbackStats(
-            total_feedback=10,
-            positive_count=7,
-            negative_count=3
-        )
+        stats = FeedbackStats(total_feedback=10, positive_count=7, negative_count=3)
 
         assert stats.satisfaction_rate == 0.7
 
@@ -174,11 +164,7 @@ class TestFeedbackStats:
         """Test negative_rate calculation."""
         from utils.monitoring.feedback import FeedbackStats
 
-        stats = FeedbackStats(
-            total_feedback=10,
-            positive_count=7,
-            negative_count=3
-        )
+        stats = FeedbackStats(total_feedback=10, positive_count=7, negative_count=3)
 
         assert stats.negative_rate == 0.3
 

@@ -295,27 +295,28 @@ class ConversationBranchManager:
         Returns:
             Created branch if successful, None otherwise
         """
-        checkpoint = self.get_checkpoint(channel_id, checkpoint_id)
+        with self._sync_lock:
+            checkpoint = self.get_checkpoint(channel_id, checkpoint_id)
 
-        if checkpoint is None:
-            return None
+            if checkpoint is None:
+                return None
 
-        branch_id = f"br_{channel_id}_{int(time.time() * 1000)}"
+            branch_id = f"br_{channel_id}_{int(time.time() * 1000)}"
 
-        branch = ConversationBranch(
-            branch_id=branch_id,
-            parent_checkpoint_id=checkpoint_id,
-            channel_id=channel_id,
-            created_at=time.time(),
-            history=[copy.deepcopy(msg) for msg in checkpoint.history_snapshot],
-            label=label,
-        )
+            branch = ConversationBranch(
+                branch_id=branch_id,
+                parent_checkpoint_id=checkpoint_id,
+                channel_id=channel_id,
+                created_at=time.time(),
+                history=[copy.deepcopy(msg) for msg in checkpoint.history_snapshot],
+                label=label,
+            )
 
-        self._branches[branch_id] = branch
+            self._branches[branch_id] = branch
 
-        self.logger.info("🌿 Branch created: %s from checkpoint %s", branch_id, checkpoint_id)
+            self.logger.info("🌿 Branch created: %s from checkpoint %s", branch_id, checkpoint_id)
 
-        return branch
+            return branch
 
     def switch_branch(
         self, channel_id: int, branch_id: str | None = None
@@ -330,23 +331,26 @@ class ConversationBranchManager:
         Returns:
             History of the branch if successful, None otherwise
         """
-        if branch_id is None:
-            # Switch back to main
-            self._active_branch[channel_id] = None
-            self.logger.info("🌿 Switched to main timeline for channel %d", channel_id)
-            return None  # Caller should use main history
+        with self._sync_lock:
+            if branch_id is None:
+                # Switch back to main
+                self._active_branch[channel_id] = None
+                self.logger.info("🌿 Switched to main timeline for channel %d", channel_id)
+                return None  # Caller should use main history
 
-        branch = self._branches.get(branch_id)
+            branch = self._branches.get(branch_id)
 
-        if branch is None or branch.channel_id != channel_id:
-            self.logger.warning("Branch not found: %s", branch_id)
-            return None
+            if branch is None or branch.channel_id != channel_id:
+                self.logger.warning("Branch not found: %s", branch_id)
+                return None
 
-        self._active_branch[channel_id] = branch_id
+            self._active_branch[channel_id] = branch_id
 
-        self.logger.info("🌿 Switched to branch: %s (%d messages)", branch_id, len(branch.history))
+            self.logger.info(
+                "🌿 Switched to branch: %s (%d messages)", branch_id, len(branch.history)
+            )
 
-        return [copy.deepcopy(msg) for msg in branch.history]
+            return [copy.deepcopy(msg) for msg in branch.history]
 
     def get_active_branch(self, channel_id: int) -> str | None:
         """Get the active branch ID for a channel (None = main timeline)."""
@@ -354,7 +358,8 @@ class ConversationBranchManager:
 
     def list_branches(self, channel_id: int) -> list[ConversationBranch]:
         """List all branches for a channel."""
-        return [branch for branch in self._branches.values() if branch.channel_id == channel_id]
+        with self._sync_lock:
+            return [branch for branch in self._branches.values() if branch.channel_id == channel_id]
 
     def update_branch_history(self, channel_id: int, history: list[dict[str, Any]]) -> None:
         """
@@ -364,41 +369,44 @@ class ConversationBranchManager:
             channel_id: Discord channel ID
             history: Updated history
         """
-        branch_id = self._active_branch.get(channel_id)
+        with self._sync_lock:
+            branch_id = self._active_branch.get(channel_id)
 
-        if branch_id and branch_id in self._branches:
-            self._branches[branch_id].history = [copy.deepcopy(msg) for msg in history]
+            if branch_id and branch_id in self._branches:
+                self._branches[branch_id].history = [copy.deepcopy(msg) for msg in history]
 
     def delete_branch(self, branch_id: str) -> bool:
         """Delete a branch."""
-        if branch_id in self._branches:
-            branch = self._branches.pop(branch_id)
+        with self._sync_lock:
+            if branch_id in self._branches:
+                branch = self._branches.pop(branch_id)
 
-            # Clear active branch if it was this one
-            if self._active_branch.get(branch.channel_id) == branch_id:
-                self._active_branch[branch.channel_id] = None
+                # Clear active branch if it was this one
+                if self._active_branch.get(branch.channel_id) == branch_id:
+                    self._active_branch[branch.channel_id] = None
 
-            self.logger.info("🗑️ Deleted branch: %s", branch_id)
-            return True
+                self.logger.info("🗑️ Deleted branch: %s", branch_id)
+                return True
 
-        return False
+            return False
 
     def clear_channel(self, channel_id: int) -> None:
         """Clear all checkpoints and branches for a channel."""
-        self._checkpoints[channel_id].clear()
-        self._active_branch.pop(channel_id, None)
-        self._message_counts.pop(channel_id, None)
+        with self._sync_lock:
+            self._checkpoints[channel_id].clear()
+            self._active_branch.pop(channel_id, None)
+            self._message_counts.pop(channel_id, None)
 
-        # Remove branches for this channel
-        to_remove = [
-            branch_id
-            for branch_id, branch in self._branches.items()
-            if branch.channel_id == channel_id
-        ]
-        for branch_id in to_remove:
-            del self._branches[branch_id]
+            # Remove branches for this channel
+            to_remove = [
+                branch_id
+                for branch_id, branch in self._branches.items()
+                if branch.channel_id == channel_id
+            ]
+            for branch_id in to_remove:
+                del self._branches[branch_id]
 
-        self.logger.info("🧹 Cleared branching data for channel %d", channel_id)
+            self.logger.info("🧹 Cleared branching data for channel %d", channel_id)
 
     def get_stats(self) -> dict[str, Any]:
         """Get statistics about branching system."""

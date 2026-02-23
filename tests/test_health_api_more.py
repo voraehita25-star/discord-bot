@@ -188,7 +188,11 @@ class TestBotHealthDataGuilds:
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
         mock_bot.latency = 0.05
-        mock_bot.guilds = [MagicMock(member_count=50), MagicMock(member_count=100), MagicMock(member_count=25)]
+        mock_bot.guilds = [
+            MagicMock(member_count=50),
+            MagicMock(member_count=100),
+            MagicMock(member_count=25),
+        ]
         mock_bot.cogs = {}
 
         health.update_from_bot(mock_bot)

@@ -37,7 +37,7 @@ class TestFindMember:
         # Mock discord.utils.get to return None first (for display_name), then match
         with patch("discord.utils.get") as mock_get:
             mock_get.side_effect = [None, mock_member, None, None]
-            result = find_member(mock_guild, "username")
+            find_member(mock_guild, "username")
             # May return the member from iteration
 
     def test_find_case_insensitive(self):
@@ -52,7 +52,7 @@ class TestFindMember:
         mock_guild.members = [mock_member]
 
         with patch("discord.utils.get", return_value=None):
-            result = find_member(mock_guild, "TESTUSER")
+            find_member(mock_guild, "TESTUSER")
             # Should find even with different case
 
     def test_find_not_found(self):

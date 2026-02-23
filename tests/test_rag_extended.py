@@ -50,12 +50,7 @@ class TestMemoryResult:
         """Test creating MemoryResult."""
         from cogs.ai_core.memory.rag import MemoryResult
 
-        result = MemoryResult(
-            content="Test content",
-            score=0.85,
-            memory_id=123,
-            source="semantic"
-        )
+        result = MemoryResult(content="Test content", score=0.85, memory_id=123, source="semantic")
 
         assert result.content == "Test content"
         assert result.score == 0.85
@@ -66,12 +61,7 @@ class TestMemoryResult:
         """Test MemoryResult default age_days."""
         from cogs.ai_core.memory.rag import MemoryResult
 
-        result = MemoryResult(
-            content="Test",
-            score=0.5,
-            memory_id=1,
-            source="keyword"
-        )
+        result = MemoryResult(content="Test", score=0.5, memory_id=1, source="keyword")
 
         assert result.age_days == 0
 
@@ -79,13 +69,7 @@ class TestMemoryResult:
         """Test MemoryResult with age_days."""
         from cogs.ai_core.memory.rag import MemoryResult
 
-        result = MemoryResult(
-            content="Test",
-            score=0.5,
-            memory_id=1,
-            source="hybrid",
-            age_days=7.5
-        )
+        result = MemoryResult(content="Test", score=0.5, memory_id=1, source="hybrid", age_days=7.5)
 
         assert result.age_days == 7.5
 
@@ -109,10 +93,7 @@ class TestMemoryMetadata:
         from cogs.ai_core.memory.rag import MemoryMetadata
 
         meta = MemoryMetadata(
-            memory_id=1,
-            access_count=5,
-            last_accessed=time.time(),
-            boost_score=0.5
+            memory_id=1, access_count=5, last_accessed=time.time(), boost_score=0.5
         )
 
         assert meta.access_count == 5
@@ -241,7 +222,7 @@ class TestMemorySystemBasic:
         from cogs.ai_core.memory.rag import MemorySystem
 
         ms = MemorySystem()
-        assert hasattr(ms, 'get_stats')
+        assert hasattr(ms, "get_stats")
         assert callable(ms.get_stats)
 
     def test_memory_system_has_generate_embedding_method(self):
@@ -249,7 +230,7 @@ class TestMemorySystemBasic:
         from cogs.ai_core.memory.rag import MemorySystem
 
         ms = MemorySystem()
-        assert hasattr(ms, 'generate_embedding')
+        assert hasattr(ms, "generate_embedding")
         assert callable(ms.generate_embedding)
 
     def test_memory_system_has_add_memory_method(self):
@@ -257,7 +238,7 @@ class TestMemorySystemBasic:
         from cogs.ai_core.memory.rag import MemorySystem
 
         ms = MemorySystem()
-        assert hasattr(ms, 'add_memory')
+        assert hasattr(ms, "add_memory")
         assert callable(ms.add_memory)
 
     def test_get_stats_returns_dict(self):

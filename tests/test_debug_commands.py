@@ -26,7 +26,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_debug')
+        assert hasattr(cog, "ai_debug")
 
     def test_cog_has_ai_perf_command(self):
         """Test cog has ai_perf command."""
@@ -35,7 +35,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_perf')
+        assert hasattr(cog, "ai_perf")
 
     def test_cog_has_ai_cache_clear_command(self):
         """Test cog has ai_cache_clear command."""
@@ -44,7 +44,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_cache_clear')
+        assert hasattr(cog, "ai_cache_clear")
 
 
 class TestGetChatManager:
@@ -102,7 +102,7 @@ class TestAIDebugCommand:
         mock_ctx.send.assert_called_once()
         # Should have sent an embed
         call_args = mock_ctx.send.call_args
-        assert 'embed' in call_args.kwargs or len(call_args.args) > 0
+        assert "embed" in call_args.kwargs or len(call_args.args) > 0
 
     @pytest.mark.asyncio
     async def test_ai_debug_with_chat_manager(self):
@@ -223,7 +223,9 @@ class TestAICacheClearCommand:
         mock_cache = MagicMock()
         mock_cache.invalidate.return_value = 5
 
-        with patch.dict("sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}):
+        with patch.dict(
+            "sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}
+        ):
             with patch("cogs.ai_core.cache.ai_cache.ai_cache", mock_cache, create=True):
                 await cog.ai_cache_clear.callback(cog, mock_ctx)
 

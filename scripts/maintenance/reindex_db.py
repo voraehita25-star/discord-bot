@@ -19,6 +19,11 @@ BACKUP_DIR = Path("data/backups")
 async def reindex_ai_history():
     """Re-index all IDs in ai_history table to be sequential starting from 1."""
 
+    # Verify database exists before proceeding
+    if not Path(DB_PATH).exists():
+        print(f"[ERROR] Database not found: {DB_PATH}")
+        return
+
     # Create backup directory
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 

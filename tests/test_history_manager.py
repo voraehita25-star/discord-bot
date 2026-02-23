@@ -68,7 +68,7 @@ class TestHistoryManagerInit:
         manager = HistoryManager()
 
         assert len(manager._importance_patterns) > 0
-        assert hasattr(manager._importance_patterns[0][0], 'search')  # Compiled pattern
+        assert hasattr(manager._importance_patterns[0][0], "search")  # Compiled pattern
 
 
 class TestGetMessageContent:
@@ -330,9 +330,7 @@ class TestSmartTrimAsync:
         result = await manager.smart_trim(history, max_messages=20)
 
         # Important message should be preserved
-        all_content = " ".join(
-            manager._get_message_content(m) for m in result
-        )
+        all_content = " ".join(manager._get_message_content(m) for m in result)
         assert "John" in all_content or "สำคัญ" in all_content
 
 
@@ -358,9 +356,7 @@ class TestSmartTrimByTokens:
 
         manager = HistoryManager(keep_recent=2)
         # Create messages with substantial content
-        history = [
-            {"role": "user", "parts": ["A" * 100]} for _ in range(50)
-        ]
+        history = [{"role": "user", "parts": ["A" * 100]} for _ in range(50)]
 
         # Very small token budget
         result = await manager.smart_trim_by_tokens(history, max_tokens=500)

@@ -4,8 +4,6 @@ Tests configuration and constants.
 """
 
 
-
-
 class TestYtdlOptsHq:
     """Tests for ytdl_opts_hq configuration."""
 
@@ -25,43 +23,43 @@ class TestYtdlOptsHq:
         """Test ytdl_opts_hq has format key."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'format' in ytdl_opts_hq
+        assert "format" in ytdl_opts_hq
 
     def test_ytdl_opts_hq_format_contains_opus(self):
         """Test ytdl_opts_hq format prefers opus."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'opus' in ytdl_opts_hq['format']
+        assert "opus" in ytdl_opts_hq["format"]
 
     def test_ytdl_opts_hq_has_noplaylist(self):
         """Test ytdl_opts_hq has noplaylist True."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('noplaylist') is True
+        assert ytdl_opts_hq.get("noplaylist") is True
 
     def test_ytdl_opts_hq_has_quiet(self):
         """Test ytdl_opts_hq has quiet True."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('quiet') is True
+        assert ytdl_opts_hq.get("quiet") is True
 
     def test_ytdl_opts_hq_has_extractor_args(self):
         """Test ytdl_opts_hq has extractor_args."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'extractor_args' in ytdl_opts_hq
+        assert "extractor_args" in ytdl_opts_hq
 
     def test_ytdl_opts_hq_has_postprocessors(self):
         """Test ytdl_opts_hq has postprocessors."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'postprocessors' in ytdl_opts_hq
+        assert "postprocessors" in ytdl_opts_hq
 
     def test_ytdl_opts_hq_geo_bypass(self):
         """Test ytdl_opts_hq has geo_bypass True."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('geo_bypass') is True
+        assert ytdl_opts_hq.get("geo_bypass") is True
 
 
 class TestGetCookieOpts:
@@ -102,14 +100,14 @@ class TestGetFfmpegOptions:
         from utils.media.ytdl_source import get_ffmpeg_options
 
         result = get_ffmpeg_options()
-        assert 'before_options' in result
+        assert "before_options" in result
 
     def test_get_ffmpeg_options_has_options(self):
         """Test get_ffmpeg_options has options."""
         from utils.media.ytdl_source import get_ffmpeg_options
 
         result = get_ffmpeg_options()
-        assert 'options' in result
+        assert "options" in result
 
 
 class TestYtdlSourceClass:
@@ -151,20 +149,20 @@ class TestYtdlOptsQuality:
         """Test retries is set to a reasonable value."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('retries') is not None
-        assert isinstance(ytdl_opts_hq.get('retries'), int)
+        assert ytdl_opts_hq.get("retries") is not None
+        assert isinstance(ytdl_opts_hq.get("retries"), int)
 
     def test_socket_timeout_value(self):
         """Test socket_timeout is set."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('socket_timeout') is not None
+        assert ytdl_opts_hq.get("socket_timeout") is not None
 
     def test_buffersize_value(self):
         """Test buffersize is set."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('buffersize') is not None
+        assert ytdl_opts_hq.get("buffersize") is not None
 
 
 class TestDefaultSearch:
@@ -174,7 +172,7 @@ class TestDefaultSearch:
         """Test default_search is ytsearch."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert ytdl_opts_hq.get('default_search') == 'ytsearch'
+        assert ytdl_opts_hq.get("default_search") == "ytsearch"
 
 
 class TestUserAgent:
@@ -184,10 +182,10 @@ class TestUserAgent:
         """Test user_agent is set."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'user_agent' in ytdl_opts_hq
+        assert "user_agent" in ytdl_opts_hq
 
     def test_user_agent_contains_chrome(self):
         """Test user_agent mentions Chrome."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert 'Chrome' in ytdl_opts_hq.get('user_agent', '')
+        assert "Chrome" in ytdl_opts_hq.get("user_agent", "")

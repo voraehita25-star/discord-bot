@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 # Import Faust persona and unrestricted mode framing
 try:
     from ..data.faust_data import ENI_ESCALATION_FRAMING, FAUST_PERSONA
+
     FAUST_AVAILABLE = True
 except ImportError:
     FAUST_AVAILABLE = False
@@ -41,6 +42,7 @@ except ImportError:
 # Import database
 try:
     from utils.database import Database
+
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
@@ -54,7 +56,7 @@ DASHBOARD_ROLE_PRESETS = {
     "general": {
         "name": "General Assistant",
         "emoji": "🤖",
-        "system_instruction": """You are a helpful AI assistant. 
+        "system_instruction": """You are a helpful AI assistant.
 Respond in the same language the user uses (Thai or English).
 Be concise, helpful, and friendly.
 For simple questions, give brief answers (1-3 sentences).
@@ -64,7 +66,9 @@ For complex topics, provide detailed but well-organized responses.""",
     "faust": {
         "name": "Faust",
         "emoji": "👻",
-        "system_instruction": FAUST_PERSONA if FAUST_AVAILABLE else "You are Faust, a genius AI assistant who speaks in third person.",
+        "system_instruction": FAUST_PERSONA
+        if FAUST_AVAILABLE
+        else "You are Faust, a genius AI assistant who speaks in third person.",
         "color": "#ffb1b4",  # Cerebral Pink
     },
 }
@@ -75,6 +79,7 @@ For complex topics, provide detailed but well-organized responses.""",
 
 # Import os early for environment variables
 import os
+import secrets
 from pathlib import Path
 
 # WebSocket configuration - can be overridden via environment variables
@@ -99,6 +104,7 @@ if WS_REQUIRE_TLS and WS_HOST == "0.0.0.0":
 # Ensure .env is loaded
 try:
     from dotenv import load_dotenv
+
     # Find the root .env file
     env_path = Path(__file__).parent.parent.parent.parent / ".env"
     if env_path.exists():
@@ -108,12 +114,14 @@ except ImportError:
     pass
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
-# For thinking mode, use the same model (gemini-3-pro supports thinking)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+# For thinking mode, use the same model (gemini-3.1-pro-preview supports thinking)
+THINKING_MODEL = os.getenv("THINKING_MODEL", "gemini-3.1-pro-preview")
 
 # ============================================================================
 # WebSocket Dashboard Server
 # ============================================================================
+
 
 class DashboardWebSocketServer:
     """WebSocket server for dashboard AI chat."""
@@ -136,6 +144,7 @@ class DashboardWebSocketServer:
         self._running = False
         self._client_message_times: dict[str, list[float]] = {}  # rate limit tracking
         self._client_inflight: dict[str, int] = {}  # concurrent request tracking
+        self._auto_token: str | None = None  # persisted auto-generated token
 
         # Initialize Gemini client
         if GEMINI_API_KEY:
@@ -164,18 +173,14 @@ class DashboardWebSocketServer:
             # Create TCPSite with reuse_address for faster restart
             # Note: reuse_port is only supported on Linux, not Windows
             import sys
-            site_kwargs = {
-                'reuse_address': True,  # Allow port reuse after close
-            }
-            if sys.platform != 'win32':
-                site_kwargs['reuse_port'] = True  # Linux only
 
-            self.site = web.TCPSite(
-                self.runner,
-                WS_HOST,
-                WS_PORT,
-                **site_kwargs
-            )
+            site_kwargs = {
+                "reuse_address": True,  # Allow port reuse after close
+            }
+            if sys.platform != "win32":
+                site_kwargs["reuse_port"] = True  # Linux only
+
+            self.site = web.TCPSite(self.runner, WS_HOST, WS_PORT, **site_kwargs)
             await self.site.start()
 
             self._running = True
@@ -188,7 +193,7 @@ class DashboardWebSocketServer:
 
     async def _ensure_port_available(self) -> None:
         """Ensure port is available, killing old process if needed.
-        
+
         SAFETY: Only kills processes that are confirmed to be our own bot instances
         by checking for specific identifiers in the command line.
         """
@@ -226,7 +231,8 @@ class DashboardWebSocketServer:
             logging.warning(
                 "⚠️ Port %s still in use after %ss wait. "
                 "If this is an old bot instance, please stop it manually.",
-                WS_PORT, max_wait
+                WS_PORT,
+                max_wait,
             )
 
     async def stop(self) -> None:
@@ -255,11 +261,13 @@ class DashboardWebSocketServer:
 
     async def health_handler(self, request: web.Request) -> web.Response:
         """Health check endpoint."""
-        return web.json_response({
-            "status": "healthy",
-            "clients": len(self.clients),
-            "gemini_available": self.gemini_client is not None,
-        })
+        return web.json_response(
+            {
+                "status": "healthy",
+                "clients": len(self.clients),
+                "gemini_available": self.gemini_client is not None,
+            }
+        )
 
     async def websocket_handler(self, request: web.Request) -> WebSocketResponse:
         """Handle WebSocket connections."""
@@ -271,13 +279,38 @@ class DashboardWebSocketServer:
         expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
         # Determine if connection is from localhost (already origin-restricted)
         peername = request.transport.get_extra_info("peername") if request.transport else None
-        is_localhost = peername and peername[0] in ("127.0.0.1", "::1", "localhost")
+        is_localhost = bool(peername and peername[0] in ("127.0.0.1", "::1", "localhost"))
 
         if not expected_token:
-            logging.warning(
-                "⚠️ DASHBOARD_WS_TOKEN not set — WebSocket server has NO authentication! "
-                "Set DASHBOARD_WS_TOKEN in .env for security."
-            )
+            if self._auto_token is None:
+                # Try to load persisted token from file
+                token_file = Path("data/.dashboard_token")
+                if token_file.exists():
+                    try:
+                        self._auto_token = token_file.read_text(encoding="utf-8").strip()
+                        logging.info("🔑 Loaded persisted dashboard token from %s", token_file)
+                    except OSError:
+                        self._auto_token = None
+
+                if not self._auto_token:
+                    self._auto_token = secrets.token_urlsafe(32)
+                    # Persist token to file for reuse across restarts
+                    try:
+                        token_file.parent.mkdir(parents=True, exist_ok=True)
+                        token_file.write_text(self._auto_token, encoding="utf-8")
+                        logging.info(
+                            "🔑 Generated and persisted dashboard token to %s (token: %s...)",
+                            token_file,
+                            self._auto_token[:8],
+                        )
+                    except OSError as e:
+                        logging.warning(
+                            "⚠️ Could not persist dashboard token: %s. "
+                            "Token: %s... (will change on restart)",
+                            e,
+                            self._auto_token[:8],
+                        )
+            expected_token = self._auto_token
         if expected_token:
             # Check Authorization header or query param (timing-safe comparison)
             auth_header = request.headers.get("Authorization", "")
@@ -286,7 +319,10 @@ class DashboardWebSocketServer:
             token_match = hmac.compare_digest(query_token, expected_token)
             if not auth_match and not token_match:
                 # Require valid token for ALL connections, including localhost
-                logging.warning("⚠️ Rejected WebSocket connection: invalid or missing auth token (from %s)", peername)
+                logging.warning(
+                    "⚠️ Rejected WebSocket connection: invalid or missing auth token (from %s)",
+                    peername,
+                )
                 return web.Response(status=401, text="Unauthorized: Invalid or missing token")
 
         # Allow connections from localhost only (127.0.0.1 or localhost)
@@ -323,12 +359,18 @@ class DashboardWebSocketServer:
         host_allowed = _is_safe_host(host)
 
         if not origin_allowed and not host_allowed:
-            logging.warning("⚠️ Rejected WebSocket connection from origin: %s, host: %s", origin, host)
-            return web.Response(status=403, text="Forbidden: Connection only allowed from localhost")
+            logging.warning(
+                "⚠️ Rejected WebSocket connection from origin: %s, host: %s", origin, host
+            )
+            return web.Response(
+                status=403, text="Forbidden: Connection only allowed from localhost"
+            )
 
         # Enforce max concurrent connections
         if len(self.clients) >= self.MAX_CLIENTS:
-            logging.warning("⚠️ Rejected WebSocket connection: max clients (%s) reached", self.MAX_CLIENTS)
+            logging.warning(
+                "⚠️ Rejected WebSocket connection: max clients (%s) reached", self.MAX_CLIENTS
+            )
             return web.Response(status=503, text="Service Unavailable: Too many connections")
 
         ws = web.WebSocketResponse(max_msg_size=10 * 1024 * 1024)  # 10MB max message size
@@ -340,18 +382,20 @@ class DashboardWebSocketServer:
 
         try:
             # Send welcome message
-            await ws.send_json({
-                "type": "connected",
-                "client_id": client_id,
-                "presets": {
-                    key: {
-                        "name": preset["name"],
-                        "emoji": preset["emoji"],
-                        "color": preset["color"],
-                    }
-                    for key, preset in DASHBOARD_ROLE_PRESETS.items()
-                },
-            })
+            await ws.send_json(
+                {
+                    "type": "connected",
+                    "client_id": client_id,
+                    "presets": {
+                        key: {
+                            "name": preset["name"],
+                            "emoji": preset["emoji"],
+                            "color": preset["color"],
+                        }
+                        for key, preset in DASHBOARD_ROLE_PRESETS.items()
+                    },
+                }
+            )
 
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -364,7 +408,9 @@ class DashboardWebSocketServer:
                         times = [t for t in times if now - t < 60]
                         self._client_message_times[client_id] = times
                         if len(times) >= self.RATE_LIMIT_MESSAGES_PER_MINUTE:
-                            await ws.send_json({"type": "error", "message": "Rate limit exceeded. Please wait."})
+                            await ws.send_json(
+                                {"type": "error", "message": "Rate limit exceeded. Please wait."}
+                            )
                             continue
                         times.append(now)
                         await self.handle_message(ws, data, client_id)
@@ -384,14 +430,18 @@ class DashboardWebSocketServer:
 
         return ws
 
-    async def handle_message(self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "") -> None:
+    async def handle_message(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = ""
+    ) -> None:
         """Handle incoming WebSocket messages."""
         msg_type = data.get("type")
 
         if msg_type == "new_conversation":
             await self.handle_new_conversation(ws, data)
         elif msg_type == "message":
-            await self.handle_chat_message(ws, data)
+            await self.handle_chat_message(ws, data, client_id)
+        elif msg_type == "edit_message":
+            await self.handle_edit_message(ws, data, client_id)
         elif msg_type == "list_conversations":
             await self.handle_list_conversations(ws)
         elif msg_type == "load_conversation":
@@ -442,20 +492,79 @@ class DashboardWebSocketServer:
             except Exception as e:
                 logging.error("Failed to save conversation to DB: %s", e)
 
-        await ws.send_json({
-            "type": "conversation_created",
-            "id": conversation_id,
-            "role_preset": role_preset,
-            "role_name": preset["name"],
-            "role_emoji": preset["emoji"],
-            "role_color": preset["color"],
-            "thinking_enabled": thinking_enabled,
-            "created_at": datetime.now().isoformat(),
-        })
+        await ws.send_json(
+            {
+                "type": "conversation_created",
+                "id": conversation_id,
+                "role_preset": role_preset,
+                "role_name": preset["name"],
+                "role_emoji": preset["emoji"],
+                "role_color": preset["color"],
+                "thinking_enabled": thinking_enabled,
+                "created_at": datetime.now().isoformat(),
+            }
+        )
 
-    async def handle_chat_message(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    async def handle_chat_message(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = ""
+    ) -> None:
         """Handle incoming chat message and stream response."""
+        # Enforce max concurrent inflight requests per client
+        MAX_INFLIGHT = 3
+        current = self._client_inflight.get(client_id, 0)
+        if current >= MAX_INFLIGHT:
+            await ws.send_json(
+                {"type": "error", "message": "Too many concurrent requests. Please wait."}
+            )
+            return
+        self._client_inflight[client_id] = current + 1
+
+        try:
+            await self._handle_chat_message_inner(ws, data, client_id)
+        finally:
+            self._client_inflight[client_id] = max(0, self._client_inflight.get(client_id, 1) - 1)
+
+    async def handle_edit_message(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = ""
+    ) -> None:
+        """Edit a message by truncating history and generating a new response."""
         conversation_id = data.get("conversation_id")
+        message_index = data.get("message_index")
+
+        if not conversation_id or message_index is None:
+            await ws.send_json({"type": "error", "message": "Missing conversation_id or message_index for edit"})
+            return
+
+        if DB_AVAILABLE:
+            try:
+                db = Database()
+                messages = await db.get_dashboard_messages(conversation_id)
+                if 0 <= message_index < len(messages):
+                    target_id = messages[message_index]["id"]
+                    await db.delete_dashboard_messages_from(conversation_id, target_id)
+                    logging.info("✂️ Truncated conversation %s from message index %d (id: %d)", conversation_id, message_index, target_id)
+                else:
+                    logging.warning("Edit failed: message_index %d out of bounds for conversation %s", message_index, conversation_id)
+            except Exception as e:
+                logging.warning("Failed to delete messages for edit: %s", e)
+
+        # Treat the edited message as a new incoming message
+        await self.handle_chat_message(ws, data, client_id)
+
+    async def _handle_chat_message_inner(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = ""
+    ) -> None:
+        """Inner implementation of chat message handling."""
+        conversation_id = data.get("conversation_id")
+        # Validate conversation_id format (must be a valid UUID)
+        if conversation_id:
+            try:
+                uuid.UUID(conversation_id)
+            except (ValueError, AttributeError):
+                await ws.send_json(
+                    {"type": "error", "message": "Invalid conversation_id format (expected UUID)"}
+                )
+                return
         content = data.get("content", "").strip()
         role_preset = data.get("role_preset", "general")
         thinking_enabled = data.get("thinking_enabled", False)
@@ -467,12 +576,19 @@ class DashboardWebSocketServer:
 
         # Enforce input size limits
         if len(content) > self.MAX_CONTENT_LENGTH:
-            await ws.send_json({"type": "error", "message": f"Message too long (max {self.MAX_CONTENT_LENGTH} characters)"})
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Message too long (max {self.MAX_CONTENT_LENGTH} characters)",
+                }
+            )
             return
         if len(history) > self.MAX_HISTORY_MESSAGES:
-            history = history[-self.MAX_HISTORY_MESSAGES:]
+            history = history[-self.MAX_HISTORY_MESSAGES :]
         if len(images) > self.MAX_IMAGES:
-            await ws.send_json({"type": "error", "message": f"Too many images (max {self.MAX_IMAGES})"})
+            await ws.send_json(
+                {"type": "error", "message": f"Too many images (max {self.MAX_IMAGES})"}
+            )
             return
 
         if not content and not images:
@@ -494,7 +610,6 @@ class DashboardWebSocketServer:
                 logging.warning("Failed to save user message: %s", e)
 
         # Build context with user identity and memories
-        context_parts = []
 
         # Load user profile from database
         user_profile = {}
@@ -512,8 +627,9 @@ class DashboardWebSocketServer:
                 return ""
             # Remove control characters and bracket patterns that could break system instructions
             import re as _re
-            value = _re.sub(r'[\x00-\x1f\x7f]', '', value)  # Remove control chars
-            value = value.replace('[', '(').replace(']', ')')  # Neutralize bracket patterns
+
+            value = _re.sub(r"[\x00-\x1f\x7f]", "", value)  # Remove control chars
+            value = value.replace("[", "(").replace("]", ")")  # Neutralize bracket patterns
             return value[:max_len]
 
         profile_name = _sanitize_profile_field(user_profile.get("display_name") or user_name)
@@ -521,12 +637,16 @@ class DashboardWebSocketServer:
 
         # Check if user is the creator/developer
         if user_profile.get("is_creator"):
-            profile_info_parts.append("Role: Creator/Developer of this bot (treat with special respect, they made you!)")
+            profile_info_parts.append(
+                "Role: Creator/Developer of this bot (treat with special respect, they made you!)"
+            )
 
         if user_profile.get("bio"):
             profile_info_parts.append(f"About: {_sanitize_profile_field(user_profile['bio'], 500)}")
         if user_profile.get("preferences"):
-            profile_info_parts.append(f"Preferences: {_sanitize_profile_field(user_profile['preferences'], 500)}")
+            profile_info_parts.append(
+                f"Preferences: {_sanitize_profile_field(user_profile['preferences'], 500)}"
+            )
 
         user_context = "[User Profile]\n" + "\n".join(profile_info_parts)
 
@@ -538,7 +658,9 @@ class DashboardWebSocketServer:
                 memories = await db.get_dashboard_memories(limit=20)
                 if memories:
                     # Sanitize memory content to prevent injection
-                    memories_text = "\n".join([f"- {_sanitize_profile_field(m['content'], 500)}" for m in memories])
+                    memories_text = "\n".join(
+                        [f"- {_sanitize_profile_field(m['content'], 500)}" for m in memories]
+                    )
                     memories_context = f"\n\n[Long-term Memories about User]\n{memories_text}"
             except Exception as e:
                 logging.warning("Failed to load memories: %s", e)
@@ -547,10 +669,9 @@ class DashboardWebSocketServer:
         contents = []
         for msg in history:
             role = "user" if msg.get("role") == "user" else "model"
-            contents.append(types.Content(
-                role=role,
-                parts=[types.Part(text=msg.get("content", ""))]
-            ))
+            contents.append(
+                types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))])
+            )
 
         # Build current message parts
         current_parts = []
@@ -567,15 +688,40 @@ class DashboardWebSocketServer:
                     b64_data = img_data
                     mime_type = "image/png"
 
+                # Estimate decoded size before actually decoding to avoid memory DoS
+                estimated_size = len(b64_data) * 3 // 4
+                if estimated_size > self.MAX_IMAGE_SIZE_BYTES:
+                    logging.warning(
+                        "Rejected image before decode: estimated %s bytes exceeds %s limit",
+                        estimated_size,
+                        self.MAX_IMAGE_SIZE_BYTES,
+                    )
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "message": f"Image too large (max {self.MAX_IMAGE_SIZE_BYTES // 1024 // 1024}MB)",
+                        }
+                    )
+                    continue
+
                 image_bytes = base64.b64decode(b64_data)
                 # Enforce image size limit to prevent memory DoS
                 if len(image_bytes) > self.MAX_IMAGE_SIZE_BYTES:
-                    logging.warning("Rejected image: %s bytes exceeds %s limit", len(image_bytes), self.MAX_IMAGE_SIZE_BYTES)
-                    await ws.send_json({"type": "error", "message": f"Image too large (max {self.MAX_IMAGE_SIZE_BYTES // 1024 // 1024}MB)"})
+                    logging.warning(
+                        "Rejected image: %s bytes exceeds %s limit",
+                        len(image_bytes),
+                        self.MAX_IMAGE_SIZE_BYTES,
+                    )
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "message": f"Image too large (max {self.MAX_IMAGE_SIZE_BYTES // 1024 // 1024}MB)",
+                        }
+                    )
                     continue
-                current_parts.append(types.Part(
-                    inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
-                ))
+                current_parts.append(
+                    types.Part(inline_data=types.Blob(mime_type=mime_type, data=image_bytes))
+                )
                 logging.info("📷 Added image to message (%s bytes)", len(image_bytes))
             except Exception as e:
                 logging.warning("Failed to process image: %s", e)
@@ -593,7 +739,11 @@ class DashboardWebSocketServer:
         # Build unrestricted mode injection if enabled
         # Security: Only allow unrestricted mode when DASHBOARD_ALLOW_UNRESTRICTED env var is set
         unrestricted_injection = ""
-        allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in ("1", "true", "yes")
+        allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         if unrestricted_mode and allow_unrestricted and ENI_ESCALATION_FRAMING:
             unrestricted_injection = f"\n\n[UNRESTRICTED MODE ACTIVE]\n{ENI_ESCALATION_FRAMING}\n"
             logging.info("🔓 Unrestricted Mode: ENABLED")
@@ -618,11 +768,18 @@ IMPORTANT: If user asks you to remember something, respond with the information 
 
         config = types.GenerateContentConfig(
             system_instruction=full_context,
+            # NOTE: BLOCK_NONE is intentional — application-level guardrails
+            # (OutputGuardrails, input validation) handles content filtering instead
+            # of relying on API-level safety filters. Do not change.
             safety_settings=[
                 types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"
+                ),
                 types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"
+                ),
             ],
         )
 
@@ -636,7 +793,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             # Add thinking config - MUST include includeThoughts=True to get thoughts in response!
             config.thinking_config = types.ThinkingConfig(
                 thinking_budget=22000,
-                include_thoughts=True  # This is REQUIRED to receive thought parts in the stream
+                include_thoughts=True,  # This is REQUIRED to receive thought parts in the stream
             )
             mode_info.append("🧠 Thinking")
             logging.info("🧠 Thinking Mode: ENABLED (includeThoughts=True)")
@@ -645,19 +802,18 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         if images:
             mode_info.append(f"🖼️ {len(images)} image(s)")
 
-        # Use the configured model (gemini-3-pro-preview supports thinking)
-        logging.info("📍 Using model: %s, Thinking: %s", GEMINI_MODEL, thinking_enabled)
+        # Use the configured model (gemini-3.1-pro-preview supports thinking)
+        model_name = THINKING_MODEL if thinking_enabled else GEMINI_MODEL
+        logging.info("📍 Using model: %s, Thinking: %s", model_name, thinking_enabled)
 
         # Store mode string for saving to DB
         mode_str = " • ".join(mode_info) if mode_info else "💬 Standard"
 
         # Stream response
         try:
-            await ws.send_json({
-                "type": "stream_start",
-                "conversation_id": conversation_id,
-                "mode": mode_str
-            })
+            await ws.send_json(
+                {"type": "stream_start", "conversation_id": conversation_id, "mode": mode_str}
+            )
 
             full_response = ""
             thinking_content = ""
@@ -698,10 +854,15 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                                         logging.debug("Part attrs: %s", dir(part))
 
                                         # Debug: Log ALL parts in every chunk to find thought parts
-                                        thought_val = getattr(part, 'thought', None)
-                                        text_val = getattr(part, 'text', None)
+                                        thought_val = getattr(part, "thought", None)
+                                        text_val = getattr(part, "text", None)
                                         if thought_val is not None or chunks_count < 3:
-                                            logging.info("🔍 Chunk#%s Part: thought=%s, text=%r", chunks_count, thought_val, text_val[:50] if text_val else None)
+                                            logging.info(
+                                                "🔍 Chunk#%s Part: thought=%s, text=%r",
+                                                chunks_count,
+                                                thought_val,
+                                                text_val[:50] if text_val else None,
+                                            )
 
                                         # Re-engineered extraction for Gemini 3.0 Thinking
                                         thought_text = ""
@@ -709,23 +870,33 @@ IMPORTANT: If user asks you to remember something, respond with the information 
 
                                         # Check if this part is marked as a "thought" (internal reasoning)
                                         # In google-genai SDK, part.thought is True for thinking parts
-                                        thought_flag = getattr(part, 'thought', None)
+                                        thought_flag = getattr(part, "thought", None)
 
                                         if thought_flag is True:
                                             # This is a thought part - the content is in part.text
                                             is_thought_part = True
-                                            if hasattr(part, 'text') and part.text:
+                                            if hasattr(part, "text") and part.text:
                                                 thought_text = part.text
-                                                logging.info("💭 Found thought part: %s chars", len(thought_text))
+                                                logging.info(
+                                                    "💭 Found thought part: %s chars",
+                                                    len(thought_text),
+                                                )
                                         elif thought_flag and isinstance(thought_flag, str):
                                             # Some SDKs might put the thought text directly in the attribute
                                             is_thought_part = True
                                             thought_text = thought_flag
-                                            logging.info("💭 Found thought string: %s chars", len(thought_text))
+                                            logging.info(
+                                                "💭 Found thought string: %s chars",
+                                                len(thought_text),
+                                            )
 
                                         if thought_text:
                                             chunk_thinking += thought_text
-                                        elif not is_thought_part and hasattr(part, "text") and part.text:
+                                        elif (
+                                            not is_thought_part
+                                            and hasattr(part, "text")
+                                            and part.text
+                                        ):
                                             # Only add to chunk_text if it's NOT a thought part
                                             chunk_text += part.text
                     elif hasattr(chunk, "text") and chunk.text:
@@ -735,33 +906,41 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                     if chunk_thinking:
                         if not is_thinking:
                             is_thinking = True
-                            await ws.send_json({
-                                "type": "thinking_start",
-                                "conversation_id": conversation_id,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "thinking_start",
+                                    "conversation_id": conversation_id,
+                                }
+                            )
                         thinking_content += chunk_thinking
-                        await ws.send_json({
-                            "type": "thinking_chunk",
-                            "content": chunk_thinking,
-                            "conversation_id": conversation_id,
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "thinking_chunk",
+                                "content": chunk_thinking,
+                                "conversation_id": conversation_id,
+                            }
+                        )
 
                     # Send response content
                     if chunk_text:
                         if is_thinking:
                             is_thinking = False
-                            await ws.send_json({
-                                "type": "thinking_end",
-                                "conversation_id": conversation_id,
-                                "full_thinking": thinking_content,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "thinking_end",
+                                    "conversation_id": conversation_id,
+                                    "full_thinking": thinking_content,
+                                }
+                            )
                         full_response += chunk_text
                         chunks_count += 1
-                        await ws.send_json({
-                            "type": "chunk",
-                            "content": chunk_text,
-                            "conversation_id": conversation_id,
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "chunk",
+                                "content": chunk_text,
+                                "conversation_id": conversation_id,
+                            }
+                        )
 
             await asyncio.wait_for(_consume_stream(), timeout=self.STREAM_TIMEOUT)
 
@@ -770,52 +949,62 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                 try:
                     db = Database()
                     await db.save_dashboard_message(
-                        conversation_id, "assistant", full_response,
+                        conversation_id,
+                        "assistant",
+                        full_response,
                         thinking=thinking_content if thinking_content else None,
-                        mode=mode_str
+                        mode=mode_str,
                     )
 
                     # Auto-set title from first user message
                     conv = await db.get_dashboard_conversation(conversation_id)
-                    if conv and (not conv.get('title') or conv.get('title') == 'New Conversation'):
+                    if conv and (not conv.get("title") or conv.get("title") == "New Conversation"):
                         title = content[:40].strip()
                         if title:
                             await db.update_dashboard_conversation(conversation_id, title=title)
-                            await ws.send_json({
-                                "type": "title_updated",
-                                "conversation_id": conversation_id,
-                                "title": title,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "title_updated",
+                                    "conversation_id": conversation_id,
+                                    "title": title,
+                                }
+                            )
                             logging.info("📝 Set title from user message: %s", title)
 
                 except Exception as e:
                     logging.warning("Failed to save assistant message: %s", e)
 
-            await ws.send_json({
-                "type": "stream_end",
-                "conversation_id": conversation_id,
-                "full_response": full_response,
-                "chunks_count": chunks_count,
-            })
+            await ws.send_json(
+                {
+                    "type": "stream_end",
+                    "conversation_id": conversation_id,
+                    "full_response": full_response,
+                    "chunks_count": chunks_count,
+                }
+            )
 
         except asyncio.TimeoutError:
             logging.error("❌ Streaming timeout after %ss", self.STREAM_TIMEOUT)
             try:
-                await ws.send_json({
-                    "type": "error",
-                    "message": "Response timed out. Please try again.",
-                    "conversation_id": conversation_id,
-                })
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "Response timed out. Please try again.",
+                        "conversation_id": conversation_id,
+                    }
+                )
             except Exception:
                 pass
         except Exception as e:
             logging.error("❌ Streaming error: %s", e)
             try:
-                await ws.send_json({
-                    "type": "error",
-                    "message": "An internal error occurred while processing your request.",
-                    "conversation_id": conversation_id,
-                })
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "An internal error occurred while processing your request.",
+                        "conversation_id": conversation_id,
+                    }
+                )
             except Exception:
                 pass  # WebSocket may already be closed
 
@@ -828,10 +1017,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             conversations = await db.get_dashboard_conversations()
-            await ws.send_json({
-                "type": "conversations_list",
-                "conversations": conversations,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversations_list",
+                    "conversations": conversations,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -858,20 +1049,21 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                 return
 
             preset = DASHBOARD_ROLE_PRESETS.get(
-                conversation.get("role_preset", "general"),
-                DASHBOARD_ROLE_PRESETS["general"]
+                conversation.get("role_preset", "general"), DASHBOARD_ROLE_PRESETS["general"]
             )
 
-            await ws.send_json({
-                "type": "conversation_loaded",
-                "conversation": {
-                    **conversation,
-                    "role_name": preset["name"],
-                    "role_emoji": preset["emoji"],
-                    "role_color": preset["color"],
-                },
-                "messages": messages,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversation_loaded",
+                    "conversation": {
+                        **conversation,
+                        "role_name": preset["name"],
+                        "role_emoji": preset["emoji"],
+                        "role_color": preset["color"],
+                    },
+                    "messages": messages,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -887,10 +1079,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             await db.delete_dashboard_conversation(conversation_id)
-            await ws.send_json({
-                "type": "conversation_deleted",
-                "id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversation_deleted",
+                    "id": conversation_id,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -910,11 +1104,13 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             db = Database()
             result = await db.update_dashboard_conversation_star(conversation_id, starred)
             logging.info("Star update result: %s", result)
-            await ws.send_json({
-                "type": "conversation_starred",
-                "id": conversation_id,
-                "starred": starred,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversation_starred",
+                    "id": conversation_id,
+                    "starred": starred,
+                }
+            )
             logging.info("Sent conversation_starred response")
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
@@ -922,8 +1118,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
 
     async def handle_rename_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Rename a conversation."""
+        import re as _re
+
         conversation_id = data.get("id")
         new_title = data.get("title", "").strip()
+        # Sanitize: strip control characters and limit length
+        new_title = _re.sub(r"[\x00-\x1f\x7f]", "", new_title)[:200]
 
         if not conversation_id or not new_title or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot rename"})
@@ -932,11 +1132,13 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             await db.rename_dashboard_conversation(conversation_id, new_title)
-            await ws.send_json({
-                "type": "conversation_renamed",
-                "id": conversation_id,
-                "title": new_title,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversation_renamed",
+                    "id": conversation_id,
+                    "title": new_title,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -953,12 +1155,14 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             export_data = await db.export_dashboard_conversation(conversation_id, export_format)
-            await ws.send_json({
-                "type": "conversation_exported",
-                "id": conversation_id,
-                "format": export_format,
-                "data": export_data,
-            })
+            await ws.send_json(
+                {
+                    "type": "conversation_exported",
+                    "id": conversation_id,
+                    "format": export_format,
+                    "data": export_data,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -972,6 +1176,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         content = data.get("content", "").strip()
         category = data.get("category", "general")
 
+        if len(content) > 10000:
+            await ws.send_json(
+                {"type": "error", "message": "Memory content too long (max 10,000 characters)"}
+            )
+            return
+
         if not content or not DB_AVAILABLE:
             await ws.send_json({"type": "error", "message": "Cannot save memory"})
             return
@@ -979,12 +1189,14 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             memory_id = await db.save_dashboard_memory(content, category)
-            await ws.send_json({
-                "type": "memory_saved",
-                "id": memory_id,
-                "content": content,
-                "category": category,
-            })
+            await ws.send_json(
+                {
+                    "type": "memory_saved",
+                    "id": memory_id,
+                    "content": content,
+                    "category": category,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -1000,10 +1212,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             memories = await db.get_dashboard_memories(category)
-            await ws.send_json({
-                "type": "memories",
-                "memories": memories,
-            })
+            await ws.send_json(
+                {
+                    "type": "memories",
+                    "memories": memories,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -1019,10 +1233,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             await db.delete_dashboard_memory(memory_id)
-            await ws.send_json({
-                "type": "memory_deleted",
-                "id": memory_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "memory_deleted",
+                    "id": memory_id,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -1040,10 +1256,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         try:
             db = Database()
             profile = await db.get_dashboard_user_profile()
-            await ws.send_json({
-                "type": "profile",
-                "profile": profile or {},
-            })
+            await ws.send_json(
+                {
+                    "type": "profile",
+                    "profile": profile or {},
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})
@@ -1064,10 +1282,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                 preferences=profile_data.get("preferences"),
                 # Note: is_creator is NOT accepted from client input for security
             )
-            await ws.send_json({
-                "type": "profile_saved",
-                "profile": profile_data,
-            })
+            await ws.send_json(
+                {
+                    "type": "profile_saved",
+                    "profile": profile_data,
+                }
+            )
         except Exception as e:
             logging.error("WebSocket handler error: %s", e)
             await ws.send_json({"type": "error", "message": "An internal error occurred"})

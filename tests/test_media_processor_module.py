@@ -20,6 +20,7 @@ class TestLoadCachedImageBytes:
     def test_load_cached_image_bytes_function_exists(self):
         """Test load_cached_image_bytes function exists."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert callable(load_cached_image_bytes)
 
 
@@ -31,7 +32,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (100, 100), color='red')
+        img = Image.new("RGB", (100, 100), color="red")
 
         result = pil_to_inline_data(img)
 
@@ -45,7 +46,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (50, 50), color='blue')
+        img = Image.new("RGB", (50, 50), color="blue")
 
         result = pil_to_inline_data(img)
 
@@ -59,7 +60,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create RGBA image
-        img = Image.new('RGBA', (100, 100), color=(255, 0, 0, 128))
+        img = Image.new("RGBA", (100, 100), color=(255, 0, 0, 128))
 
         result = pil_to_inline_data(img)
 
@@ -74,9 +75,9 @@ class TestIsAnimatedGif:
         from cogs.ai_core.media_processor import is_animated_gif
 
         # Create static GIF
-        img = Image.new('P', (10, 10), color=0)
+        img = Image.new("P", (10, 10), color=0)
         buffer = io.BytesIO()
-        img.save(buffer, format='GIF')
+        img.save(buffer, format="GIF")
 
         result = is_animated_gif(buffer.getvalue())
 
@@ -97,21 +98,25 @@ class TestModuleImports:
     def test_import_media_processor(self):
         """Test media_processor module can be imported."""
         from cogs.ai_core import media_processor
+
         assert media_processor is not None
 
     def test_import_load_cached_image_bytes(self):
         """Test load_cached_image_bytes can be imported."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert load_cached_image_bytes is not None
 
     def test_import_pil_to_inline_data(self):
         """Test pil_to_inline_data can be imported."""
         from cogs.ai_core.media_processor import pil_to_inline_data
+
         assert pil_to_inline_data is not None
 
     def test_import_is_animated_gif(self):
         """Test is_animated_gif can be imported."""
         from cogs.ai_core.media_processor import is_animated_gif
+
         assert is_animated_gif is not None
 
 
@@ -131,6 +136,7 @@ class TestServerCharacters:
     def test_server_characters_imported(self):
         """Test SERVER_CHARACTER_NAMES is imported in media_processor."""
         from cogs.ai_core.media_processor import SERVER_CHARACTER_NAMES
+
         assert SERVER_CHARACTER_NAMES is not None
 
 
@@ -142,7 +148,7 @@ class TestImageConversion:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Very small image
-        img = Image.new('RGB', (1, 1), color='white')
+        img = Image.new("RGB", (1, 1), color="white")
 
         result = pil_to_inline_data(img)
 
@@ -154,7 +160,7 @@ class TestImageConversion:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Larger image
-        img = Image.new('RGB', (500, 500), color='green')
+        img = Image.new("RGB", (500, 500), color="green")
 
         result = pil_to_inline_data(img)
 
@@ -170,9 +176,9 @@ class TestStaticGifDetection:
         from cogs.ai_core.media_processor import is_animated_gif
 
         # Create PNG and convert to bytes
-        img = Image.new('RGB', (10, 10), color='red')
+        img = Image.new("RGB", (10, 10), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         # Should return False (not animated)
         result = is_animated_gif(buffer.getvalue())

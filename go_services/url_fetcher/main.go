@@ -213,7 +213,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 		}
 		result.Error = errMsg
 		result.FetchTimeMs = time.Since(start).Milliseconds()
-		log.Printf("⚠️ SSRF blocked: %s", url)
+		log.Printf("⚠️ SSRF blocked: %q", url)
 		return result
 	}
 
@@ -227,7 +227,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		result.Error = fmt.Sprintf("invalid URL: %v", err)
+		log.Printf("Invalid URL %q: %v", url, err)
+		result.Error = "invalid URL"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -240,7 +241,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Execute request
 	resp, err := f.client.Do(req)
 	if err != nil {
-		result.Error = fmt.Sprintf("fetch error: %v", err)
+		log.Printf("Fetch error for %q: %v", url, err)
+		result.Error = "fetch error"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -261,7 +263,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Read raw body first to avoid consuming bytes on charset detection failure
 	rawBody, err := io.ReadAll(limitedReader)
 	if err != nil {
-		result.Error = fmt.Sprintf("read error: %v", err)
+		log.Printf("Read error for %q: %v", url, err)
+		result.Error = "read error"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}

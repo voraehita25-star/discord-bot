@@ -95,7 +95,9 @@ class TestCmdCreateVoice:
 
         with patch("discord.utils.get", return_value=mock_category):
             with patch("cogs.ai_core.commands.server_commands.AUDIT_AVAILABLE", False):
-                await cmd_create_voice(mock_guild, mock_origin, "test-voice", ["test-voice", "Voice Channels"])
+                await cmd_create_voice(
+                    mock_guild, mock_origin, "test-voice", ["test-voice", "Voice Channels"]
+                )
 
         mock_guild.create_voice_channel.assert_called()
 
@@ -105,7 +107,9 @@ class TestCmdCreateVoice:
         from cogs.ai_core.commands.server_commands import cmd_create_voice
 
         mock_guild = MagicMock(spec=discord.Guild)
-        mock_guild.create_voice_channel = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "No permission"))
+        mock_guild.create_voice_channel = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(), "No permission")
+        )
         mock_guild.categories = []
 
         mock_origin = MagicMock(spec=discord.TextChannel)
@@ -172,7 +176,9 @@ class TestCmdCreateCategory:
         from cogs.ai_core.commands.server_commands import cmd_create_category
 
         mock_guild = MagicMock(spec=discord.Guild)
-        mock_guild.create_category = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "No permission"))
+        mock_guild.create_category = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(), "No permission")
+        )
 
         mock_origin = MagicMock(spec=discord.TextChannel)
         mock_origin.send = AsyncMock()
@@ -375,7 +381,9 @@ class TestCmdCreateRole:
         from cogs.ai_core.commands.server_commands import cmd_create_role
 
         mock_guild = MagicMock(spec=discord.Guild)
-        mock_guild.create_role = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "No permission"))
+        mock_guild.create_role = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(), "No permission")
+        )
 
         mock_origin = MagicMock(spec=discord.TextChannel)
         mock_origin.send = AsyncMock()
@@ -519,7 +527,9 @@ class TestCmdAddRole:
         mock_origin.send = AsyncMock()
 
         with patch("discord.utils.get", side_effect=[mock_role, mock_member]):
-            with patch("cogs.ai_core.commands.server_commands.find_member", return_value=mock_member):
+            with patch(
+                "cogs.ai_core.commands.server_commands.find_member", return_value=mock_member
+            ):
                 await cmd_add_role(mock_guild, mock_origin, "", ["TestUser", "TestRole"])
 
         mock_member.add_roles.assert_called_once_with(mock_role)
@@ -573,7 +583,9 @@ class TestCmdAddRole:
         mock_origin.send = AsyncMock()
 
         with patch("discord.utils.get", side_effect=[mock_role, mock_member]):
-            with patch("cogs.ai_core.commands.server_commands.find_member", return_value=mock_member):
+            with patch(
+                "cogs.ai_core.commands.server_commands.find_member", return_value=mock_member
+            ):
                 await cmd_add_role(mock_guild, mock_origin, "", ["TestUser", "AdminRole"])
 
         # Should show error about position
@@ -624,7 +636,9 @@ class TestCmdRemoveRole:
         mock_origin.send = AsyncMock()
 
         with patch("discord.utils.get", side_effect=[mock_role, mock_member]):
-            with patch("cogs.ai_core.commands.server_commands.find_member", return_value=mock_member):
+            with patch(
+                "cogs.ai_core.commands.server_commands.find_member", return_value=mock_member
+            ):
                 await cmd_remove_role(mock_guild, mock_origin, "", ["TestUser", "TestRole"])
 
         mock_member.remove_roles.assert_called_once()
@@ -654,8 +668,13 @@ class TestCmdSetChannelPerm:
         mock_origin = MagicMock(spec=discord.TextChannel)
         mock_origin.send = AsyncMock()
 
-        await cmd_set_channel_perm(mock_guild, mock_origin, "", ["channel", "role", "perm", "invalid"])
-        assert "true" in str(mock_origin.send.call_args).lower() or "false" in str(mock_origin.send.call_args).lower()
+        await cmd_set_channel_perm(
+            mock_guild, mock_origin, "", ["channel", "role", "perm", "invalid"]
+        )
+        assert (
+            "true" in str(mock_origin.send.call_args).lower()
+            or "false" in str(mock_origin.send.call_args).lower()
+        )
 
     @pytest.mark.asyncio
     async def test_set_channel_perm_channel_not_found(self):
@@ -669,7 +688,9 @@ class TestCmdSetChannelPerm:
         mock_origin.send = AsyncMock()
 
         with patch("discord.utils.get", return_value=None):
-            await cmd_set_channel_perm(mock_guild, mock_origin, "", ["nonexistent", "role", "view_channel", "true"])
+            await cmd_set_channel_perm(
+                mock_guild, mock_origin, "", ["nonexistent", "role", "view_channel", "true"]
+            )
 
         assert "ไม่พบช่อง" in str(mock_origin.send.call_args)
 

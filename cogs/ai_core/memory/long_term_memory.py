@@ -560,6 +560,7 @@ class LongTermMemory:
                     fact.is_user_defined,
                 ),
             )
+            await conn.commit()
             return cursor.lastrowid
 
     async def _update_fact_confirmation(self, fact: Fact) -> None:

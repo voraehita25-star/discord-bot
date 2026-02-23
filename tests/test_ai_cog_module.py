@@ -14,8 +14,8 @@ class TestAICogInit:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager'):
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
+        with patch("cogs.ai_core.ai_cog.ChatManager"):
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
                 cog = AI(mock_bot)
 
                 assert cog.bot == mock_bot
@@ -27,9 +27,9 @@ class TestAICogInit:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager') as mock_cm:
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
-                cog = AI(mock_bot)
+        with patch("cogs.ai_core.ai_cog.ChatManager") as mock_cm:
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
+                AI(mock_bot)
 
                 mock_cm.assert_called_once_with(mock_bot)
 
@@ -44,10 +44,10 @@ class TestAICogLoadUnload:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager') as mock_cm:
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
-                with patch('cogs.ai_core.ai_cog.start_webhook_cache_cleanup'):
-                    with patch('cogs.ai_core.ai_cog.rag_system'):
+        with patch("cogs.ai_core.ai_cog.ChatManager") as mock_cm:
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
+                with patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"):
+                    with patch("cogs.ai_core.ai_cog.rag_system"):
                         mock_cm_instance = MagicMock()
                         mock_cm_instance.cleanup_inactive_sessions = AsyncMock()
                         mock_cm.return_value = mock_cm_instance
@@ -64,14 +64,14 @@ class TestAICogLoadUnload:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager') as mock_cm:
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
-                with patch('cogs.ai_core.ai_cog.stop_webhook_cache_cleanup'):
+        with patch("cogs.ai_core.ai_cog.ChatManager") as mock_cm:
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
+                with patch("cogs.ai_core.ai_cog.stop_webhook_cache_cleanup"):
                     mock_rag = MagicMock()
                     mock_rag.stop_periodic_save = AsyncMock()
                     mock_rag.force_save_index = AsyncMock()
 
-                    with patch('cogs.ai_core.ai_cog.rag_system', mock_rag):
+                    with patch("cogs.ai_core.ai_cog.rag_system", mock_rag):
                         mock_cm_instance = MagicMock()
                         mock_cm_instance.save_all_sessions = AsyncMock()
                         mock_cm.return_value = mock_cm_instance
@@ -95,11 +95,11 @@ class TestChatCommand:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager'):
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
+        with patch("cogs.ai_core.ai_cog.ChatManager"):
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
                 cog = AI(mock_bot)
 
-                assert hasattr(cog, 'chat_command')
+                assert hasattr(cog, "chat_command")
 
     @pytest.mark.asyncio
     async def test_chat_command_error_handler(self):
@@ -112,15 +112,13 @@ class TestChatCommand:
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager'):
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
+        with patch("cogs.ai_core.ai_cog.ChatManager"):
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
                 cog = AI(mock_bot)
 
                 # Create a cooldown error
                 error = commands.CommandOnCooldown(
-                    commands.Cooldown(1, 3),
-                    2.5,
-                    commands.BucketType.user
+                    commands.Cooldown(1, 3), 2.5, commands.BucketType.user
                 )
 
                 await cog.chat_command_error(mock_ctx, error)
@@ -140,11 +138,11 @@ class TestOwnerCommands:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.ai_cog.ChatManager'):
-            with patch('cogs.ai_core.ai_cog.rate_limiter'):
+        with patch("cogs.ai_core.ai_cog.ChatManager"):
+            with patch("cogs.ai_core.ai_cog.rate_limiter"):
                 cog = AI(mock_bot)
 
-                assert hasattr(cog, 'reset_ai')
+                assert hasattr(cog, "reset_ai")
 
 
 class TestFeatureFlags:
@@ -176,7 +174,7 @@ class TestConstants:
         """Test OWNER_ID is defined in cog."""
         from cogs.ai_core.ai_cog import AI
 
-        assert hasattr(AI, 'OWNER_ID')
+        assert hasattr(AI, "OWNER_ID")
 
 
 class TestModuleImports:
@@ -185,6 +183,7 @@ class TestModuleImports:
     def test_import_ai_cog(self):
         """Test importing AI cog."""
         from cogs.ai_core.ai_cog import AI
+
         assert AI is not None
 
     def test_import_constants(self):
@@ -199,6 +198,7 @@ class TestModuleImports:
     def test_import_chat_manager_class(self):
         """Test ChatManager is imported."""
         from cogs.ai_core.ai_cog import ChatManager
+
         assert ChatManager is not None
 
     def test_import_storage_functions(self):

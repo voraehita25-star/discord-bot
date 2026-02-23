@@ -124,31 +124,37 @@ class TestFeatureAvailability:
     def test_url_fetcher_availability_flag(self):
         """Test URL_FETCHER_AVAILABLE is defined."""
         from cogs.ai_core.logic import URL_FETCHER_AVAILABLE
+
         assert isinstance(URL_FETCHER_AVAILABLE, bool)
 
     def test_guardrails_availability_flag(self):
         """Test GUARDRAILS_AVAILABLE is defined."""
         from cogs.ai_core.logic import GUARDRAILS_AVAILABLE
+
         assert isinstance(GUARDRAILS_AVAILABLE, bool)
 
     def test_cache_availability_flag(self):
         """Test CACHE_AVAILABLE is defined."""
         from cogs.ai_core.logic import CACHE_AVAILABLE
+
         assert isinstance(CACHE_AVAILABLE, bool)
 
     def test_circuit_breaker_availability_flag(self):
         """Test CIRCUIT_BREAKER_AVAILABLE is defined."""
         from cogs.ai_core.logic import CIRCUIT_BREAKER_AVAILABLE
+
         assert isinstance(CIRCUIT_BREAKER_AVAILABLE, bool)
 
     def test_token_tracker_availability_flag(self):
         """Test TOKEN_TRACKER_AVAILABLE is defined."""
         from cogs.ai_core.logic import TOKEN_TRACKER_AVAILABLE
+
         assert isinstance(TOKEN_TRACKER_AVAILABLE, bool)
 
     def test_fallback_availability_flag(self):
         """Test FALLBACK_AVAILABLE is defined."""
         from cogs.ai_core.logic import FALLBACK_AVAILABLE
+
         assert isinstance(FALLBACK_AVAILABLE, bool)
 
 
@@ -161,7 +167,7 @@ class TestChatManagerInit:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             assert manager.bot == mock_bot
@@ -175,7 +181,7 @@ class TestChatManagerInit:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             assert manager._message_queue is not None
@@ -186,7 +192,7 @@ class TestChatManagerInit:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             assert manager._performance is not None
@@ -197,7 +203,7 @@ class TestChatManagerInit:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             assert manager._deduplicator is not None
@@ -212,7 +218,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             stats = manager.get_performance_stats()
@@ -225,7 +231,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             # Should not raise
@@ -237,7 +243,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             result = manager.cleanup_pending_requests()
@@ -251,11 +257,13 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             # Test parsing voice command - actual behavior depends on voice module
-            action, channel_id = manager.parse_voice_command("join voice channel 123456789012345678")
+            action, channel_id = manager.parse_voice_command(
+                "join voice channel 123456789012345678"
+            )
 
             # Result depends on voice module implementation
             assert action is None or isinstance(action, str)
@@ -266,7 +274,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             result = manager._process_response_text("Hello world", None, "")
@@ -279,7 +287,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             result = manager._process_response_text('> "Hello"', None, "")
@@ -292,7 +300,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             result = manager._process_response_text("Hello", None, "🔍 ")
@@ -305,7 +313,7 @@ class TestChatManagerMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
             # Non-GIF data should return False
@@ -323,7 +331,7 @@ class TestSetupAI:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.logic.GEMINI_API_KEY', ""):
+        with patch("cogs.ai_core.logic.GEMINI_API_KEY", ""):
             manager = ChatManager(mock_bot)
 
             assert manager.client is None
@@ -335,8 +343,8 @@ class TestSetupAI:
         mock_bot = MagicMock()
         mock_client = MagicMock()
 
-        with patch('cogs.ai_core.logic.GEMINI_API_KEY', "test-key"):
-            with patch('cogs.ai_core.logic.genai.Client', return_value=mock_client):
+        with patch("cogs.ai_core.logic.GEMINI_API_KEY", "test-key"):
+            with patch("cogs.ai_core.logic.genai.Client", return_value=mock_client):
                 manager = ChatManager(mock_bot)
 
                 assert manager.client == mock_client
@@ -352,10 +360,10 @@ class TestAsyncMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
-            with patch('cogs.ai_core.logic.voice_join', new_callable=AsyncMock) as mock_join:
+            with patch("cogs.ai_core.logic.voice_join", new_callable=AsyncMock) as mock_join:
                 mock_join.return_value = (True, "Joined")
 
                 success, msg = await manager.join_voice_channel(123)
@@ -370,10 +378,10 @@ class TestAsyncMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
 
-            with patch('cogs.ai_core.logic.voice_leave', new_callable=AsyncMock) as mock_leave:
+            with patch("cogs.ai_core.logic.voice_leave", new_callable=AsyncMock) as mock_leave:
                 mock_leave.return_value = (True, "Left")
 
                 success, msg = await manager.leave_voice_channel(123)
@@ -388,12 +396,14 @@ class TestAsyncMethods:
 
         mock_bot = MagicMock()
 
-        with patch.object(ChatManager, 'setup_ai'):
+        with patch.object(ChatManager, "setup_ai"):
             manager = ChatManager(mock_bot)
             manager.client = MagicMock()
             manager.target_model = "test-model"
 
-            with patch('cogs.ai_core.logic.detect_search_intent', new_callable=AsyncMock) as mock_detect:
+            with patch(
+                "cogs.ai_core.logic.detect_search_intent", new_callable=AsyncMock
+            ) as mock_detect:
                 mock_detect.return_value = True
 
                 result = await manager._detect_search_intent("what is the weather?")
@@ -407,6 +417,7 @@ class TestModuleImports:
     def test_import_chat_manager(self):
         """Test importing ChatManager."""
         from cogs.ai_core.logic import ChatManager
+
         assert ChatManager is not None
 
     def test_import_constants(self):

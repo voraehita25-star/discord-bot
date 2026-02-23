@@ -3,10 +3,12 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use sysinfo::System;
 use chrono::{DateTime, Local};
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,10 +64,11 @@ impl BotManager {
 
     fn stop_dev_watcher(&self) {
         if let Some(pid) = self.get_dev_watcher_pid() {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/F", "/T"]);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            let _ = cmd.output();
             let _ = fs::remove_file(self.dev_watcher_pid_file());
         }
     }
@@ -344,11 +347,12 @@ impl BotManager {
 
         let bot_script = self.base_path.join("bot.py");
         
-        let child = Command::new(&self.python_cmd)
-            .arg(&bot_script)
-            .current_dir(&self.base_path)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+        let mut cmd = Command::new(&self.python_cmd);
+        cmd.arg(&bot_script);
+        cmd.current_dir(&self.base_path);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let child = cmd.spawn()
             .map_err(|e| format!("Failed to start bot: {}", e))?;
 
         // Get the spawned process ID
@@ -393,11 +397,12 @@ impl BotManager {
         let dev_watcher = self.base_path.join("scripts").join("dev_watcher.py");
         
         // Dev mode: run dev_watcher.py hidden with CREATE_NO_WINDOW
-        let child = Command::new(&self.python_cmd)
-            .arg(&dev_watcher)
-            .current_dir(&self.base_path)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+        let mut cmd = Command::new(&self.python_cmd);
+        cmd.arg(&dev_watcher);
+        cmd.current_dir(&self.base_path);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let child = cmd.spawn()
             .map_err(|e| format!("Failed to start dev watcher: {}", e))?;
 
         // Save dev_watcher PID for later cleanup
@@ -429,10 +434,11 @@ impl BotManager {
         self.stop_dev_watcher();
 
         // Try graceful shutdown first (taskkill without /F sends WM_CLOSE)
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string()]);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.output();
 
         // Wait up to 5 seconds for graceful exit
         let mut exited = false;
@@ -447,10 +453,11 @@ impl BotManager {
 
         // Force kill if still running
         if !exited {
-            Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/F", "/T"]);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            cmd.output()
                 .map_err(|e| format!("Failed to stop bot: {}", e))?;
         }
 

@@ -3,8 +3,6 @@ Tests for cogs.music.queue module.
 """
 
 
-
-
 class TestQueueManagerInit:
     """Tests for QueueManager initialization."""
 

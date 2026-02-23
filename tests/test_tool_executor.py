@@ -72,7 +72,7 @@ class TestExecuteToolCall:
         tool_call.name = "remember"
         tool_call.args = {"content": "Remember this important fact"}
 
-        with patch('cogs.ai_core.tools.tool_executor.rag_system') as mock_rag:
+        with patch("cogs.ai_core.tools.tool_executor.rag_system") as mock_rag:
             mock_rag.add_memory = AsyncMock()
             result = await execute_tool_call(bot, channel, user, tool_call)
 
@@ -220,10 +220,10 @@ class TestSendAsWebhook:
         mock_webhook = MagicMock()
         mock_webhook.send = AsyncMock(return_value=MagicMock())
 
-        with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
+        with patch("cogs.ai_core.tools.tool_executor.get_cached_webhook") as mock_get:
             mock_get.return_value = mock_webhook
 
-            result = await send_as_webhook(bot, channel, "TestChar", "Hello!")
+            await send_as_webhook(bot, channel, "TestChar", "Hello!")
 
         mock_webhook.send.assert_called_once()
 
@@ -245,7 +245,7 @@ class TestSendAsWebhook:
         mock_webhook = MagicMock()
         mock_webhook.send = AsyncMock(return_value=MagicMock())
 
-        with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
+        with patch("cogs.ai_core.tools.tool_executor.get_cached_webhook") as mock_get:
             mock_get.return_value = mock_webhook
 
             long_message = "A" * 3000  # Over 2000 limit
@@ -632,4 +632,3 @@ class TestExecuteToolCallMoreFunctions:
             result = await execute_tool_call(bot, channel, user, tool_call)
 
         assert "Error executing" in result
-

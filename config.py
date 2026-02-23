@@ -20,6 +20,7 @@ def _safe_int_env(key: str, default: int) -> int:
         return default
     except (ValueError, TypeError):
         import logging
+
         logging.warning("Invalid integer value for %s, using default: %d", key, default)
         return default
 
@@ -32,13 +33,17 @@ class BotSettings:
     discord_token: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", ""), repr=False)
 
     # Gemini AI
-    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False)
+    gemini_api_key: str | None = field(
+        default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False
+    )
     gemini_model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
     )
 
     # Spotify
-    spotipy_client_id: str | None = field(default_factory=lambda: os.getenv("SPOTIPY_CLIENT_ID"), repr=False)
+    spotipy_client_id: str | None = field(
+        default_factory=lambda: os.getenv("SPOTIPY_CLIENT_ID"), repr=False
+    )
     spotipy_client_secret: str | None = field(
         default_factory=lambda: os.getenv("SPOTIPY_CLIENT_SECRET"), repr=False
     )
@@ -123,7 +128,7 @@ class BotSettings:
 
 class FeatureFlags:
     """Registry tracking which optional features loaded successfully.
-    
+
     Exposed via the health API for debugging.
     """
 

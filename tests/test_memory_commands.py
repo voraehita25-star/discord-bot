@@ -26,7 +26,7 @@ class TestMemoryCommandsCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = MemoryCommands(mock_bot)
 
-        assert hasattr(cog, 'remember_fact')
+        assert hasattr(cog, "remember_fact")
 
     def test_cog_has_forget_command(self):
         """Test cog has forget command."""
@@ -35,7 +35,7 @@ class TestMemoryCommandsCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = MemoryCommands(mock_bot)
 
-        assert hasattr(cog, 'forget_fact')
+        assert hasattr(cog, "forget_fact")
 
     def test_cog_has_memories_command(self):
         """Test cog has memories command."""
@@ -44,7 +44,7 @@ class TestMemoryCommandsCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = MemoryCommands(mock_bot)
 
-        assert hasattr(cog, 'view_memories')
+        assert hasattr(cog, "view_memories")
 
     def test_cog_has_consolidate_command(self):
         """Test cog has consolidate command."""
@@ -53,7 +53,7 @@ class TestMemoryCommandsCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = MemoryCommands(mock_bot)
 
-        assert hasattr(cog, 'force_consolidate')
+        assert hasattr(cog, "force_consolidate")
 
     def test_cog_has_memory_stats_command(self):
         """Test cog has memory_stats command."""
@@ -62,7 +62,7 @@ class TestMemoryCommandsCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = MemoryCommands(mock_bot)
 
-        assert hasattr(cog, 'memory_stats')
+        assert hasattr(cog, "memory_stats")
 
 
 class TestRememberCommand:

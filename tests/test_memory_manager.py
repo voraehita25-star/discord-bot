@@ -78,9 +78,7 @@ class TestTTLCache:
         def on_evict(key, value):
             evicted.append((key, value))
 
-        cache: TTLCache[str, str] = TTLCache(
-            ttl=60, max_size=2, name="test", on_evict=on_evict
-        )
+        cache: TTLCache[str, str] = TTLCache(ttl=60, max_size=2, name="test", on_evict=on_evict)
 
         cache.set("key1", "value1")
         cache.set("key2", "value2")
@@ -128,6 +126,7 @@ class TestTTLCache:
         assert removed == 2
         assert len(cache) == 0
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_get_stats(self):
         """Test statistics collection."""
         from utils.reliability.memory_manager import TTLCache

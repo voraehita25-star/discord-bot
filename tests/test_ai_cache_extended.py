@@ -174,7 +174,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'get')
+        assert hasattr(cache, "get")
 
     def test_cache_has_set_method(self):
         """Test AICache has set method."""
@@ -182,7 +182,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'set')
+        assert hasattr(cache, "set")
 
     def test_cache_has_invalidate_method(self):
         """Test AICache has invalidate method."""
@@ -190,7 +190,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'invalidate') or hasattr(cache, 'invalidate_pattern')
+        assert hasattr(cache, "invalidate") or hasattr(cache, "invalidate_pattern")
 
     def test_cache_has_get_stats_method(self):
         """Test AICache has get_stats method."""
@@ -198,7 +198,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'get_stats')
+        assert hasattr(cache, "get_stats")
 
 
 class TestAICacheSetAndGet:
@@ -211,7 +211,7 @@ class TestAICacheSetAndGet:
         cache = AICache()
         cache.set("test message", "Hello!")
 
-        result = cache.get("test message")
+        cache.get("test message")
 
         # Note: result may be None due to internal normalization
         # This test just verifies the operations don't raise errors
@@ -225,7 +225,7 @@ class TestAICacheSetAndGet:
         cache.set("greeting bye", "Bye!")
 
         # Invalidate and check stats
-        if hasattr(cache, 'invalidate_pattern'):
+        if hasattr(cache, "invalidate_pattern"):
             cache.invalidate_pattern("greeting")
 
         # After invalidation, check stats still work
@@ -252,7 +252,7 @@ class TestAICacheStats:
         cache = AICache()
         stats = cache.get_stats()
 
-        assert hasattr(stats, 'hit_rate')
+        assert hasattr(stats, "hit_rate")
 
 
 class TestNumpyAvailable:

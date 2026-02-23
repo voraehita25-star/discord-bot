@@ -183,7 +183,7 @@ class TestFetchEmojiImages:
             mock_session_instance.get.return_value = mock_context
             mock_session.return_value.__aenter__.return_value = mock_session_instance
 
-            result = await fetch_emoji_images(emojis)
+            await fetch_emoji_images(emojis)
 
             # Should only try to fetch 5 emojis
             assert mock_session_instance.get.call_count == 5

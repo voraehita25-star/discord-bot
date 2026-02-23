@@ -4,8 +4,6 @@ Uses the global metrics instance to avoid duplicated timeseries errors.
 """
 
 
-
-
 class TestBotMetricsInit:
     """Tests for BotMetrics initialization."""
 

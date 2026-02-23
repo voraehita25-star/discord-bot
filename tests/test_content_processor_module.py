@@ -21,6 +21,7 @@ class TestLoadCachedImageBytes:
     def test_load_cached_image_bytes_function_exists(self):
         """Test load_cached_image_bytes function exists."""
         from cogs.ai_core.content_processor import load_cached_image_bytes
+
         assert callable(load_cached_image_bytes)
 
 
@@ -32,7 +33,7 @@ class TestPilToInlineData:
         from cogs.ai_core.content_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (100, 100), color='red')
+        img = Image.new("RGB", (100, 100), color="red")
 
         result = pil_to_inline_data(img)
 
@@ -48,7 +49,7 @@ class TestPilToInlineData:
         from cogs.ai_core.content_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (50, 50), color='blue')
+        img = Image.new("RGB", (50, 50), color="blue")
 
         result = pil_to_inline_data(img)
 
@@ -62,7 +63,7 @@ class TestPilToInlineData:
         from cogs.ai_core.content_processor import pil_to_inline_data
 
         # Create RGBA image
-        img = Image.new('RGBA', (100, 100), color=(255, 0, 0, 128))
+        img = Image.new("RGBA", (100, 100), color=(255, 0, 0, 128))
 
         result = pil_to_inline_data(img)
 
@@ -87,9 +88,9 @@ class TestPrepareUserAvatar:
         mock_avatar.with_size.return_value = mock_avatar
 
         # Create valid PNG bytes
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
 
         mock_user.display_avatar = mock_avatar
@@ -97,9 +98,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": []}  # Empty history
         seen_users = {}
 
-        result = await prepare_user_avatar(
-            mock_user, "Hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "Hello", chat_data, 123, seen_users)
 
         assert result is not None
         assert isinstance(result, Image.Image)
@@ -119,9 +118,9 @@ class TestPrepareUserAvatar:
         mock_avatar.with_size.return_value = mock_avatar
 
         # Create valid PNG bytes
-        img = Image.new('RGB', (256, 256), color='green')
+        img = Image.new("RGB", (256, 256), color="green")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
 
         mock_user.display_avatar = mock_avatar
@@ -149,9 +148,7 @@ class TestPrepareUserAvatar:
         seen_users = {123: {"12345_TestUser"}}  # Already seen
 
         # No keyword trigger
-        result = await prepare_user_avatar(
-            mock_user, "Hello there!", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "Hello there!", chat_data, 123, seen_users)
 
         assert result is None
 
@@ -228,26 +225,31 @@ class TestModuleImports:
     def test_import_content_processor(self):
         """Test content_processor module can be imported."""
         from cogs.ai_core import content_processor
+
         assert content_processor is not None
 
     def test_import_load_cached_image_bytes(self):
         """Test load_cached_image_bytes can be imported."""
         from cogs.ai_core.content_processor import load_cached_image_bytes
+
         assert load_cached_image_bytes is not None
 
     def test_import_pil_to_inline_data(self):
         """Test pil_to_inline_data can be imported."""
         from cogs.ai_core.content_processor import pil_to_inline_data
+
         assert pil_to_inline_data is not None
 
     def test_import_prepare_user_avatar(self):
         """Test prepare_user_avatar can be imported."""
         from cogs.ai_core.content_processor import prepare_user_avatar
+
         assert prepare_user_avatar is not None
 
     def test_import_process_attachments(self):
         """Test process_attachments can be imported."""
         from cogs.ai_core.content_processor import process_attachments
+
         assert process_attachments is not None
 
 
@@ -267,5 +269,6 @@ class TestServerCharacters:
     def test_import_server_characters(self):
         """Test SERVER_CHARACTERS can be imported."""
         from cogs.ai_core.data.roleplay_data import SERVER_CHARACTERS
+
         assert SERVER_CHARACTERS is not None
         assert isinstance(SERVER_CHARACTERS, list)

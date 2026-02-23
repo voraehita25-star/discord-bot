@@ -129,7 +129,7 @@ class AICache:
             key_parts.append(intent)
 
         key_string = "|".join(key_parts)
-        return hashlib.md5(key_string.encode()).hexdigest()
+        return hashlib.sha256(key_string.encode()).hexdigest()[:32]
 
     def _evict_lru(self) -> None:
         """Evict least recently used entries if cache is full."""
@@ -497,7 +497,7 @@ class ContextHasher:
             text = parts[0][:50] if parts and isinstance(parts[0], str) else ""
             summary.append(f"{role}:{text}")
 
-        return hashlib.md5("|".join(summary).encode()).hexdigest()[:16]
+        return hashlib.sha256("|".join(summary).encode()).hexdigest()[:16]
 
 
 def _load_resource_config() -> dict:
@@ -514,6 +514,7 @@ def _load_resource_config() -> dict:
 
 
 # ==================== L2 Persistent Cache ====================
+
 
 class L2SqliteCache:
     """
@@ -581,7 +582,9 @@ class L2SqliteCache:
             except Exception as e:
                 logging.debug("L2 store failed: %s", e)
 
-    def load_recent(self, limit: int = 1000, max_age: float = 86400) -> list[tuple[str, CacheEntry]]:
+    def load_recent(
+        self, limit: int = 1000, max_age: float = 86400
+    ) -> list[tuple[str, CacheEntry]]:
         """Load recent entries for L1 warm-up."""
         if self._conn is None:
             return []
@@ -672,6 +675,7 @@ _original_set = AICache.set
 def _patched_set(self: AICache, *args: Any, **kwargs: Any) -> None:
     _original_set(self, *args, **kwargs)
     # Persist the just-added entry
+    # Args mapping: args[0]=message, args[1]=response, args[2]=context_hash, args[3]=intent
     message = args[0] if args else kwargs.get("message", "")
     context_hash = args[2] if len(args) > 2 else kwargs.get("context_hash")
     intent = args[3] if len(args) > 3 else kwargs.get("intent")

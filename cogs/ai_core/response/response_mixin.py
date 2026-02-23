@@ -23,17 +23,42 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 
 # Keywords for history requests
 HISTORY_KEYWORDS = [
-    "ประวัติ", "history", "ดู", "อ่าน", "ข้อความ",
-    "แชท", "chat", "memory", "ความจำ", "channel",
-    "ช่อง", "log", "ดึง", "โชว์", "show",
+    "ประวัติ",
+    "history",
+    "ดู",
+    "อ่าน",
+    "ข้อความ",
+    "แชท",
+    "chat",
+    "memory",
+    "ความจำ",
+    "channel",
+    "ช่อง",
+    "log",
+    "ดึง",
+    "โชว์",
+    "show",
 ]
 
 # Keywords for channel list requests
 LIST_KEYWORDS = [
-    "มีช่องไหน", "channel ไหน", "ช่องไหนบ้าง", "มี channel",
-    "รายการ", "list", "ทั้งหมด", "all channel", "ดูรายการ",
-    "มีประวัติ", "มี history", "ความจำมี", "memory มี",
-    "ช่องที่มี", "channel ที่มี", "ดู channel", "โชว์ channel",
+    "มีช่องไหน",
+    "channel ไหน",
+    "ช่องไหนบ้าง",
+    "มี channel",
+    "รายการ",
+    "list",
+    "ทั้งหมด",
+    "all channel",
+    "ดูรายการ",
+    "มีประวัติ",
+    "มี history",
+    "ความจำมี",
+    "memory มี",
+    "ช่องที่มี",
+    "channel ที่มี",
+    "ดู channel",
+    "โชว์ channel",
 ]
 
 

@@ -4,8 +4,6 @@ Tests imports, constants, and configuration.
 """
 
 
-
-
 class TestAiCogImports:
     """Tests for ai_cog module imports."""
 

@@ -35,6 +35,7 @@ except ImportError:
 # PIL fallback
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False

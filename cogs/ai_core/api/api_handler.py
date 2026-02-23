@@ -90,6 +90,9 @@ def build_api_config(
 
     config_params = {
         "system_instruction": system_instruction,
+        # NOTE: BLOCK_NONE is intentional — application-level guardrails
+        # (OutputGuardrails, input validation) handle content filtering instead
+        # of relying on API-level safety filters. Do not change.
         "safety_settings": [
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
@@ -105,7 +108,9 @@ def build_api_config(
         logging.info("🔍 Google Search: ENABLED (search requested)")
     elif (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         # Use Thinking mode for deep reasoning
-        config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=THINKING_BUDGET_DEFAULT)
+        config_params["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=THINKING_BUDGET_DEFAULT
+        )
         logging.info("🧠 Thinking Mode: ENABLED (budget: %d)", THINKING_BUDGET_DEFAULT)
     else:
         # Default: Google Search for non-RP modes
@@ -162,7 +167,7 @@ Reply ONE word: SEARCH or NO_SEARCH"""
 
         return needs_search
 
-    except (ValueError, TypeError) as e:
+    except Exception as e:
         logging.error("🔎 Search intent detection FAILED: %s", e)
         return False  # Default to no search on error
 

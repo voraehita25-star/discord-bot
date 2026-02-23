@@ -194,15 +194,10 @@ class TestSaveHistory:
         mock_bot = MagicMock()
         mock_bot.get_channel.return_value = None
 
-        chat_data = {
-            "history": [
-                {"role": "user", "parts": ["Hello"]}
-            ],
-            "thinking_enabled": True
-        }
+        chat_data = {"history": [{"role": "user", "parts": ["Hello"]}], "thinking_enabled": True}
 
         if DATABASE_AVAILABLE:
-            with patch('cogs.ai_core.storage.db') as mock_db:
+            with patch("cogs.ai_core.storage.db") as mock_db:
                 mock_db.get_ai_history = AsyncMock(return_value=[])
                 mock_db.save_ai_messages_batch = AsyncMock()
                 mock_db.get_ai_history_count = AsyncMock(return_value=1)
@@ -253,10 +248,10 @@ class TestLoadHistory:
         _history_cache[88888] = (old_time, [{"role": "user", "parts": ["old"]}])
 
         if DATABASE_AVAILABLE:
-            with patch('cogs.ai_core.storage.db') as mock_db:
-                mock_db.get_ai_history = AsyncMock(return_value=[
-                    {"role": "user", "content": "new message"}
-                ])
+            with patch("cogs.ai_core.storage.db") as mock_db:
+                mock_db.get_ai_history = AsyncMock(
+                    return_value=[{"role": "user", "content": "new message"}]
+                )
 
                 result = await load_history(mock_bot, 88888)
 
@@ -377,7 +372,7 @@ class TestJsonFunctions:
         """Test json_loads with list input."""
         from cogs.ai_core.storage import json_loads
 
-        data = '[1, 2, 3]'
+        data = "[1, 2, 3]"
         result = json_loads(data)
 
         assert result == [1, 2, 3]
@@ -435,7 +430,7 @@ class TestCacheOperations:
         assert isinstance(stored, tuple)
         assert len(stored) == 2
         assert isinstance(stored[0], float)  # timestamp
-        assert isinstance(stored[1], list)   # data
+        assert isinstance(stored[1], list)  # data
 
         # Cleanup
         _history_cache.pop(55555, None)
@@ -478,10 +473,10 @@ class TestSaveHistoryDb:
 
         new_entries = [
             {"role": "user", "parts": ["Hello"], "timestamp": "2024-01-01T00:00:00"},
-            {"role": "model", "parts": ["Hi there!"], "timestamp": "2024-01-01T00:00:01"}
+            {"role": "model", "parts": ["Hi there!"], "timestamp": "2024-01-01T00:00:01"},
         ]
 
-        with patch('cogs.ai_core.storage.db') as mock_db:
+        with patch("cogs.ai_core.storage.db") as mock_db:
             mock_db.save_ai_messages_batch = AsyncMock()
             mock_db.get_ai_history_count = AsyncMock(return_value=2)
             mock_db.save_ai_metadata = AsyncMock()
@@ -491,7 +486,7 @@ class TestSaveHistoryDb:
                 channel_id=12345,
                 chat_data={"history": [], "thinking_enabled": True},
                 limit=100,
-                new_entries=new_entries
+                new_entries=new_entries,
             )
 
             mock_db.save_ai_messages_batch.assert_called_once()
@@ -511,7 +506,7 @@ class TestLoadHistoryJson:
         mock_bot = MagicMock()
         mock_bot.loop.run_in_executor = AsyncMock(return_value=None)
 
-        with patch('cogs.ai_core.storage.DATA_DIR') as mock_dir:
+        with patch("cogs.ai_core.storage.DATA_DIR") as mock_dir:
             mock_path = MagicMock()
             mock_path.exists.return_value = False
             mock_dir.__truediv__ = MagicMock(return_value=mock_path)
@@ -534,7 +529,7 @@ class TestLoadMetadataJson:
 
         mock_bot = MagicMock()
 
-        with patch('cogs.ai_core.storage.CONFIG_DIR') as mock_dir:
+        with patch("cogs.ai_core.storage.CONFIG_DIR") as mock_dir:
             mock_path = MagicMock()
             mock_path.exists.return_value = False
             mock_dir.__truediv__ = MagicMock(return_value=mock_path)

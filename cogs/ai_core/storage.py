@@ -22,6 +22,7 @@ try:
         # use standard json if those are needed
         if kwargs.get("indent") or kwargs.get("ensure_ascii") is False:
             import json
+
             return json.dumps(obj, **kwargs)
         return orjson.dumps(obj).decode("utf-8")
 
@@ -76,7 +77,9 @@ import threading
 
 _history_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[int, tuple[float, dict[str, Any]]] = {}
-_cache_lock = threading.RLock()  # Reentrant lock for thread-safe cache operations (supports nested locking)
+_cache_lock = (
+    threading.RLock()
+)  # Reentrant lock for thread-safe cache operations (supports nested locking)
 CACHE_TTL = 900  # 15 minutes (was 5 min) - keep data in RAM longer
 MAX_CACHE_SIZE = 2000  # Maximum channels to cache (was 1000)
 
@@ -248,17 +251,36 @@ async def _save_history_db(
                 # NOTE: This string comparison relies on ISO 8601 format (e.g. "2024-01-15T12:00:00Z")
                 # which sorts lexicographically. Non-ISO timestamps will produce incorrect results.
                 new_messages = [
-                    m for m in history
+                    m
+                    for m in history
                     if isinstance(m.get("timestamp", ""), str)
                     and isinstance(last_db_ts, str)
                     and m.get("timestamp", "") > last_db_ts
                 ]
-            # Dangerous fallback, but better than nothing
-            # If DB exists but we can't sync, we might duplicate or lose data.
-            # Assuming history > db_history in size is a proxy (old buggy behavior but safer
-            # than duplicating all)
+            # Dangerous fallback: length-based heuristic when timestamps can't sync.
+            # Log explicitly so we can detect and investigate these cases.
             elif len(history) > len(db_history):
-                new_messages = history[len(db_history) :]
+                # Verify first message content matches as a sanity check
+                if (
+                    db_history
+                    and history
+                    and history[0].get("parts") == db_history[0].get("parts", [db_history[0].get("content", "")])
+                ):
+                    new_messages = history[len(db_history):]
+                    logging.warning(
+                        "⚠️ History sync used length-based fallback for channel (db=%d, mem=%d, new=%d). "
+                        "This may indicate timestamp issues.",
+                        len(db_history),
+                        len(history),
+                        len(new_messages),
+                    )
+                else:
+                    logging.warning(
+                        "⚠️ History sync: length heuristic rejected — first messages don't match "
+                        "(db=%d, mem=%d). Skipping to prevent data corruption.",
+                        len(db_history),
+                        len(history),
+                    )
 
     # Process new messages
     if new_messages:
@@ -292,16 +314,24 @@ async def _save_history_db(
                 continue
 
             # Create content hash for duplicate detection (use first 500 chars + role)
-            content_hash = f"{role}:{content[:HASH_LENGTH]}"
+            content_hash = f"{role}:{timestamp}:{content[:HASH_LENGTH]}"
 
             # Skip if this exact content was just in DB (immediate duplicate)
-            if last_db_content and content[:HASH_LENGTH] == last_db_content and role == db_history[-1].get("role"):
-                logging.warning("⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50])
+            if (
+                last_db_content
+                and content[:HASH_LENGTH] == last_db_content
+                and role == db_history[-1].get("role")
+            ):
+                logging.warning(
+                    "⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50]
+                )
                 continue
 
             # Skip if we've already seen this content in current batch
             if content_hash in seen_content_hashes:
-                logging.warning("⚠️ Skipping duplicate message (already in batch): %s...", content[:50])
+                logging.warning(
+                    "⚠️ Skipping duplicate message (already in batch): %s...", content[:50]
+                )
                 continue
 
             seen_content_hashes.add(content_hash)
@@ -360,6 +390,10 @@ async def _save_history_json(
             if actual_keep_end > 0:
                 history = history[:keep_start] + history[-actual_keep_end:]
                 chat_data["history"] = history
+            else:
+                # Fallback: simple tail truncation when smart pruning can't work
+                history = history[-limit:]
+                chat_data["history"] = history
 
     # Write to file
     def _write():
@@ -394,7 +428,9 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
         if channel_id in _history_cache:
             cached_time, cached_data = _history_cache[channel_id]
             if now - cached_time < CACHE_TTL:
-                logging.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
+                logging.debug(
+                    "📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data)
+                )
                 # Use deep copy to prevent mutation of cached nested objects
                 return copy.deepcopy(cached_data)
 
@@ -482,7 +518,7 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
             cached_time, cached_data = _metadata_cache[channel_id]
             if now - cached_time < CACHE_TTL:
                 logging.debug("📋 Cache hit for metadata channel %s", channel_id)
-                return cached_data.copy()
+                return copy.deepcopy(cached_data)
 
     if DATABASE_AVAILABLE:
         metadata = await db.get_ai_metadata(channel_id)
@@ -580,14 +616,16 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             timestamp = item.get("timestamp")
 
             if content:
-                batch_messages.append({
-                    "channel_id": target_channel_id,
-                    "role": role,
-                    "content": content,
-                    "message_id": message_id,
-                    "timestamp": timestamp,
-                    "user_id": None,
-                })
+                batch_messages.append(
+                    {
+                        "channel_id": target_channel_id,
+                        "role": role,
+                        "content": content,
+                        "message_id": message_id,
+                        "timestamp": timestamp,
+                        "user_id": None,
+                    }
+                )
 
         copied = 0
         if batch_messages:

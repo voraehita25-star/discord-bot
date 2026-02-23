@@ -11,31 +11,37 @@ class TestFactCategoryEnum:
     def test_fact_category_identity(self):
         """Test IDENTITY category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.IDENTITY.value == "identity"
 
     def test_fact_category_preference(self):
         """Test PREFERENCE category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.PREFERENCE.value == "preference"
 
     def test_fact_category_personal(self):
         """Test PERSONAL category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.PERSONAL.value == "personal"
 
     def test_fact_category_relationship(self):
         """Test RELATIONSHIP category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.RELATIONSHIP.value == "relationship"
 
     def test_fact_category_skill(self):
         """Test SKILL category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.SKILL.value == "skill"
 
     def test_fact_category_custom(self):
         """Test CUSTOM category value."""
         from cogs.ai_core.memory.long_term_memory import FactCategory
+
         assert FactCategory.CUSTOM.value == "custom"
 
 
@@ -45,21 +51,25 @@ class TestImportanceLevelEnum:
     def test_importance_low(self):
         """Test LOW importance value."""
         from cogs.ai_core.memory.long_term_memory import ImportanceLevel
+
         assert ImportanceLevel.LOW.value == 1
 
     def test_importance_medium(self):
         """Test MEDIUM importance value."""
         from cogs.ai_core.memory.long_term_memory import ImportanceLevel
+
         assert ImportanceLevel.MEDIUM.value == 2
 
     def test_importance_high(self):
         """Test HIGH importance value."""
         from cogs.ai_core.memory.long_term_memory import ImportanceLevel
+
         assert ImportanceLevel.HIGH.value == 3
 
     def test_importance_critical(self):
         """Test CRITICAL importance value."""
         from cogs.ai_core.memory.long_term_memory import ImportanceLevel
+
         assert ImportanceLevel.CRITICAL.value == 4
 
 
@@ -126,7 +136,7 @@ class TestFactDataclass:
             "confidence": 1.0,
             "source_message": None,
             "is_active": True,
-            "is_user_defined": False
+            "is_user_defined": False,
         }
 
         fact = Fact.from_dict(data)
@@ -152,7 +162,7 @@ class TestFactDataclass:
             "confidence": 1.0,
             "source_message": None,
             "is_active": True,
-            "is_user_defined": False
+            "is_user_defined": False,
         }
 
         fact = Fact.from_dict(data)
@@ -275,7 +285,7 @@ class TestFactWithAllFields:
             confidence=0.95,
             source_message="I'm John",
             is_active=True,
-            is_user_defined=True
+            is_user_defined=True,
         )
 
         assert fact.id == 1

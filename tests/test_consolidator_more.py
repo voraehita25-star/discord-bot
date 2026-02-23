@@ -143,7 +143,7 @@ class TestInitializeMethod:
         else:
             # When genai is available, it would try to use the API
             # We just check the return type
-            with patch('cogs.ai_core.memory.consolidator.genai'):
+            with patch("cogs.ai_core.memory.consolidator.genai"):
                 result = consolidator.initialize("test_api_key")
                 assert isinstance(result, bool)
 

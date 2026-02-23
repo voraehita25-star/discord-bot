@@ -38,10 +38,10 @@ class ShutdownPhase(Enum):
 class Priority(Enum):
     """Cleanup callback priority levels."""
 
-    CRITICAL = 0    # Run first (e.g., save state)
-    HIGH = 10       # Important (e.g., flush queues)
-    NORMAL = 50     # Standard cleanup
-    LOW = 90        # Can be skipped if timeout
+    CRITICAL = 0  # Run first (e.g., save state)
+    HIGH = 10  # Important (e.g., flush queues)
+    NORMAL = 50  # Standard cleanup
+    LOW = 90  # Can be skipped if timeout
     BACKGROUND = 100  # Background tasks
 
 
@@ -185,7 +185,9 @@ class ShutdownManager:
 
         self.logger.debug(
             "Registered cleanup handler: %s (priority: %s, timeout: %.1fs)",
-            name, priority.name, timeout
+            name,
+            priority.name,
+            timeout,
         )
 
     def unregister(self, name: str) -> bool:
@@ -205,16 +207,12 @@ class ShutdownManager:
             self.logger.info("🔄 Running cleanup: %s", handler.name)
 
             if handler.is_async:
-                await asyncio.wait_for(
-                    handler.callback(),
-                    timeout=handler.timeout
-                )
+                await asyncio.wait_for(handler.callback(), timeout=handler.timeout)
             else:
                 # Run sync callback in executor
                 loop = asyncio.get_running_loop()
                 await asyncio.wait_for(
-                    loop.run_in_executor(None, handler.callback),
-                    timeout=handler.timeout
+                    loop.run_in_executor(None, handler.callback), timeout=handler.timeout
                 )
 
             self.logger.info("✅ Cleanup complete: %s", handler.name)
@@ -279,10 +277,7 @@ class ShutdownManager:
 
         for phase, priorities in phases:
             self._state.phase = phase
-            phase_handlers = [
-                h for h in self._handlers
-                if h.priority in priorities
-            ]
+            phase_handlers = [h for h in self._handlers if h.priority in priorities]
 
             if not phase_handlers:
                 continue
@@ -291,10 +286,7 @@ class ShutdownManager:
 
             for handler in phase_handlers:
                 if remaining_time <= 0:
-                    self.logger.warning(
-                        "⏱️ Timeout reached, skipping: %s",
-                        handler.name
-                    )
+                    self.logger.warning("⏱️ Timeout reached, skipping: %s", handler.name)
                     self._state.handlers_skipped += 1
                     continue
 
@@ -348,7 +340,7 @@ class ShutdownManager:
 
     def _atexit_handler(self) -> None:
         """Handler for atexit - run sync cleanups silently.
-        
+
         Note: During interpreter shutdown, stdout/stderr may be closed.
         We suppress logging here to avoid ValueError on closed streams.
         """
@@ -394,9 +386,7 @@ class ShutdownManager:
             loop.add_signal_handler(
                 sig,
                 lambda s=sig: self._signal_tasks.append(
-                    asyncio.create_task(
-                        self.shutdown(signal.Signals(s).name)
-                    )
+                    asyncio.create_task(self.shutdown(signal.Signals(s).name))
                 ),
             )
 
@@ -457,6 +447,7 @@ def on_shutdown(
         async def cleanup_cache():
             await cache.flush()
     """
+
     def decorator(func: Callable) -> Callable:
         shutdown_manager.register(
             name=func.__name__,
@@ -466,4 +457,5 @@ def on_shutdown(
             required=required,
         )
         return func
+
     return decorator

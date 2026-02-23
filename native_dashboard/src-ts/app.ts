@@ -47,7 +47,7 @@ const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
 
 class ErrorLogger {
     private static instance: ErrorLogger;
-    private errorQueue: Array<{type: string; message: string; stack?: string}> = [];
+    private errorQueue: Array<{ type: string; message: string; stack?: string }> = [];
     private isProcessing = false;
     private maxQueueSize = 100; // Prevent unbounded growth
 
@@ -102,9 +102,9 @@ class ErrorLogger {
 
     private async processQueue(): Promise<void> {
         if (this.isProcessing || this.errorQueue.length === 0) return;
-        
+
         this.isProcessing = true;
-        
+
         while (this.errorQueue.length > 0) {
             const error = this.errorQueue.shift();
             if (error) {
@@ -119,7 +119,7 @@ class ErrorLogger {
                 }
             }
         }
-        
+
         this.isProcessing = false;
     }
 
@@ -217,12 +217,12 @@ class DataCache {
     get<T>(key: string): T | null {
         const entry = this.cache.get(key);
         if (!entry) return null;
-        
+
         if (Date.now() - entry.timestamp > entry.ttl) {
             this.cache.delete(key);
             return null;
         }
-        
+
         return entry.data as T;
     }
 
@@ -304,8 +304,8 @@ class MemoryManager {
         if (!container) return;
 
         // Filter by category if needed
-        const filteredMemories = this.currentCategory === 'all' 
-            ? memories 
+        const filteredMemories = this.currentCategory === 'all'
+            ? memories
             : memories.filter(m => m.category === this.currentCategory);
 
         if (filteredMemories.length === 0) {
@@ -379,11 +379,11 @@ class MemoryManager {
             btn.addEventListener('click', (e) => {
                 const category = (e.target as HTMLElement).dataset.category || 'all';
                 this.currentCategory = category;
-                
+
                 // Update active state
                 document.querySelectorAll('.memory-category-btn').forEach(b => b.classList.remove('active'));
                 (e.target as HTMLElement).classList.add('active');
-                
+
                 // Re-render with filter
                 this.renderMemories(this.memories);
             });
@@ -402,7 +402,7 @@ class MemoryManager {
         document.getElementById('memory-modal-save')?.addEventListener('click', () => {
             const content = (document.getElementById('memory-content') as HTMLTextAreaElement)?.value?.trim();
             const category = (document.getElementById('memory-category') as HTMLSelectElement)?.value || 'general';
-            
+
             if (content) {
                 this.saveMemory(content, category);
             } else {
@@ -502,7 +502,7 @@ class ChatManager {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }
-        
+
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
             console.warn('Max reconnect attempts reached');
             return;
@@ -662,23 +662,23 @@ class ChatManager {
 
             case 'pong':
                 break;
-                
+
             // Memory handlers
             case 'memories':
                 memoryManager.renderMemories(data.memories as Memory[]);
                 break;
-                
+
             case 'memory_saved':
                 showToast('Memory saved!', { type: 'success' });
                 memoryManager.loadMemories();
                 memoryManager.closeModal();
                 break;
-                
+
             case 'memory_deleted':
                 showToast('Memory deleted', { type: 'success' });
                 memoryManager.loadMemories();
                 break;
-                
+
             case 'profile':
                 // Profile loaded - populate settings form
                 {
@@ -687,7 +687,7 @@ class ChatManager {
                     const bioInput = document.getElementById('user-bio-input') as HTMLTextAreaElement;
                     const prefsInput = document.getElementById('user-preferences-input') as HTMLTextAreaElement;
                     const creatorToggle = document.getElementById('creator-toggle') as HTMLInputElement;
-                    
+
                     if (nameInput && profile.display_name) nameInput.value = profile.display_name;
                     if (bioInput && profile.bio) bioInput.value = profile.bio;
                     if (prefsInput && profile.preferences) prefsInput.value = profile.preferences;
@@ -698,7 +698,7 @@ class ChatManager {
                     }
                 }
                 break;
-                
+
             case 'profile_saved':
                 showToast('Profile saved! AI will remember you.', { type: 'success' });
                 break;
@@ -733,7 +733,7 @@ class ChatManager {
     deleteConversation(id: string): void {
         // Prevent double-click issues
         if (this.isStreaming) return;
-        
+
         // Show custom delete confirmation modal
         this.pendingDeleteId = id;
         const modal = document.getElementById('delete-confirm-modal');
@@ -760,10 +760,10 @@ class ChatManager {
 
     renameConversation(id: string): void {
         if (this.isStreaming) return;
-        
+
         const conv = this.conversations.find(c => c.id === id);
         this.pendingRenameId = id;
-        
+
         const modal = document.getElementById('rename-modal');
         const input = document.getElementById('rename-input') as HTMLInputElement;
         if (modal && input) {
@@ -777,7 +777,7 @@ class ChatManager {
     confirmRename(): void {
         const input = document.getElementById('rename-input') as HTMLInputElement;
         const newTitle = input?.value?.trim();
-        
+
         if (this.pendingRenameId && newTitle) {
             this.send({ type: 'rename_conversation', id: this.pendingRenameId, title: newTitle });
             this.pendingRenameId = null;
@@ -815,9 +815,9 @@ class ChatManager {
         const historyToSend = this.messages.slice(-20);
 
         // Add to local messages for display (include images)
-        this.messages.push({ 
-            role: 'user', 
-            content, 
+        this.messages.push({
+            role: 'user',
+            content,
             created_at: new Date().toISOString(),
             images: this.attachedImages.length > 0 ? [...this.attachedImages] : undefined
         });
@@ -833,7 +833,7 @@ class ChatManager {
         const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
         const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
         const userName = settings.userName || 'User';
-        
+
         this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
@@ -847,10 +847,48 @@ class ChatManager {
             images: this.attachedImages,
             user_name: userName
         });
-        
+
         // Clear attached images after sending
         this.attachedImages = [];
         this.renderAttachedImages();
+    }
+
+    sendEditMessage(msgIndex: number, newContent: string): void {
+        if (this.isStreaming || !this.currentConversation) return;
+
+        // Truncate history to before the edited message
+        const historyToSend = this.messages.slice(0, msgIndex);
+
+        // Truncate local messages array (it will remove this message and all after)
+        this.messages = this.messages.slice(0, msgIndex);
+
+        // Add the new edited message to local state
+        this.messages.push({
+            role: 'user',
+            content: newContent,
+            created_at: new Date().toISOString()
+        });
+
+        this.renderMessages();
+
+        const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
+        const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
+        const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
+        const userName = settings.userName || 'User';
+
+        this.send({
+            type: 'edit_message',
+            conversation_id: this.currentConversation.id,
+            message_index: msgIndex,
+            content: newContent,
+            role_preset: this.currentConversation.role_preset,
+            thinking_enabled: thinkingToggle?.checked || false,
+            history: historyToSend,
+            use_search: searchToggle?.checked ?? true,
+            unrestricted_mode: unrestrictedToggle?.checked || false,
+            images: [],
+            user_name: userName
+        });
     }
 
     appendStreamingMessage(mode: string = ''): void {
@@ -862,10 +900,10 @@ class ChatManager {
         const aiName = this.currentConversation?.role_name || 'AI';
         const timeStr = this.formatTime(new Date().toISOString());
         const modeHtml = mode ? `<span class="message-mode">${escapeHtml(mode)}</span>` : '';
-        const avatarHtml = settings.aiAvatar 
+        const avatarHtml = settings.aiAvatar
             ? `<img src="${escapeHtml(settings.aiAvatar)}" alt="ai" class="user-avatar-img">`
             : (this.currentConversation?.role_emoji || '🤖');
-        
+
         msgDiv.innerHTML = `
             <div class="message-avatar">${avatarHtml}</div>
             <div class="message-wrapper">
@@ -909,11 +947,11 @@ class ChatManager {
     finalizeThinking(fullThinking: string): void {
         // Store for later use in finalizeStreamingMessage
         this.currentThinking = fullThinking;
-        
+
         const thinkingContainer = document.querySelector('#streaming-message .thinking-container') as HTMLElement;
         const thinkingHeader = document.querySelector('#streaming-message .thinking-header') as HTMLElement;
         const thinkingContent = document.querySelector('#streaming-message .thinking-content') as HTMLElement;
-        
+
         if (thinkingHeader) {
             thinkingHeader.textContent = '💭 Thought Process';
             thinkingHeader.classList.add('collapsible', 'collapsed');  // Start collapsed
@@ -955,7 +993,7 @@ class ChatManager {
                 actionsDiv.className = 'message-actions';
                 actionsDiv.innerHTML = `<button class="copy-message-btn" data-content="${escapeHtml(fullResponse).replace(/"/g, '&quot;')}" title="Copy message">📋 Copy</button>`;
                 wrapper.appendChild(actionsDiv);
-                
+
                 // Add click event
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
                     const btn = e.target as HTMLElement;
@@ -963,7 +1001,7 @@ class ChatManager {
                     const textarea = document.createElement('textarea');
                     textarea.innerHTML = contentAttr;
                     const decodedContent = textarea.value;
-                    
+
                     try {
                         await navigator.clipboard.writeText(decodedContent);
                         btn.textContent = '✅ Copied';
@@ -1012,7 +1050,7 @@ class ChatManager {
             const preset = this.presets[conv.role_preset] || {};
             const isActive = this.currentConversation?.id === conv.id;
             const starClass = conv.is_starred ? 'starred' : '';
-            const avatarHtml = settings.aiAvatar 
+            const avatarHtml = settings.aiAvatar
                 ? `<img class="conv-avatar" src="${escapeHtml(settings.aiAvatar)}" alt="AI">`
                 : `<span class="conv-emoji">${escapeHtml(preset.emoji || '💬')}</span>`;
 
@@ -1028,7 +1066,7 @@ class ChatManager {
                 </div>
             `;
         }).join('');
-        
+
         // Use event delegation instead of inline onclick (fixes XSS risk)
         container.querySelectorAll('.conversation-item[data-id]').forEach(item => {
             item.addEventListener('click', () => {
@@ -1045,7 +1083,7 @@ class ChatManager {
         if (this.messages.length === 0) {
             const emoji = this.currentConversation?.role_emoji || '🤖';
             const name = this.currentConversation?.role_name || 'AI';
-            const welcomeAvatarHtml = settings.aiAvatar 
+            const welcomeAvatarHtml = settings.aiAvatar
                 ? `<img src="${escapeHtml(settings.aiAvatar)}" alt="AI" class="welcome-avatar">`
                 : `<div class="welcome-emoji">${emoji}</div>`;
             container.innerHTML = `
@@ -1063,16 +1101,16 @@ class ChatManager {
         const userName = settings.userName || 'You';
         const userAvatar = settings.userAvatar;
         const aiAvatar = settings.aiAvatar;
-        
-        container.innerHTML = this.messages.map(msg => {
+
+        container.innerHTML = this.messages.map((msg, idx) => {
             const isUser = msg.role === 'user';
             const displayName = isUser ? userName : aiName;
             const timeStr = this.formatTime(msg.created_at);
-            
+
             // Both user and AI can have custom avatar images
             let avatarHtml: string;
             if (isUser) {
-                avatarHtml = userAvatar 
+                avatarHtml = userAvatar
                     ? `<img src="${escapeHtml(userAvatar)}" alt="avatar" class="user-avatar-img">`
                     : '👤';
             } else {
@@ -1084,7 +1122,7 @@ class ChatManager {
             // Render attached images for user messages (use data attribute to avoid XSS)
             let imagesHtml = '';
             if (msg.images && msg.images.length > 0) {
-                imagesHtml = `<div class="message-images">${msg.images.map((img, idx) => 
+                imagesHtml = `<div class="message-images">${msg.images.map((img, idx) =>
                     `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`
                 ).join('')}</div>`;
             }
@@ -1103,13 +1141,18 @@ class ChatManager {
             }
 
             // Mode badge for AI messages
-            const modeHtml = (!isUser && msg.mode) 
-                ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>` 
+            const modeHtml = (!isUser && msg.mode)
+                ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>`
                 : '';
 
             // Copy button for AI messages (at bottom)
-            const copyBtnHtml = !isUser 
+            const copyBtnHtml = !isUser
                 ? `<div class="message-actions"><button class="copy-message-btn" data-content="${escapeHtml(msg.content).replace(/"/g, '&quot;')}" title="Copy message">📋 Copy</button></div>`
+                : '';
+
+            // Edit button for user messages
+            const editBtnHtml = isUser
+                ? `<div class="message-actions"><button class="edit-message-btn" data-idx="${idx}" data-content="${escapeHtml(msg.content).replace(/"/g, '&quot;')}" title="Edit message">✏️ Edit</button></div>`
                 : '';
 
             return `
@@ -1125,13 +1168,14 @@ class ChatManager {
                         ${imagesHtml}
                         <div class="message-content">${this.formatMessage(msg.content)}</div>
                         ${copyBtnHtml}
+                        ${editBtnHtml}
                     </div>
                 </div>
             `;
         }).join('');
 
         this.scrollToBottom();
-        
+
         // Setup event delegation for image clicks (avoid inline onclick XSS risk)
         container.querySelectorAll('.message-image[data-img-idx]').forEach(img => {
             img.addEventListener('click', () => {
@@ -1171,7 +1215,7 @@ class ChatManager {
                 const textarea = document.createElement('textarea');
                 textarea.innerHTML = content;
                 const decodedContent = textarea.value;
-                
+
                 try {
                     await navigator.clipboard.writeText(decodedContent);
                     const originalText = btn.textContent;
@@ -1183,13 +1227,71 @@ class ChatManager {
                 }
             });
         });
+
+        // Setup edit button clicks
+        container.querySelectorAll('.edit-message-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt((btn as HTMLElement).getAttribute('data-idx') || '0');
+                const contentAttr = (btn as HTMLElement).getAttribute('data-content') || '';
+
+                // Decode HTML entities
+                const textareaT = document.createElement('textarea');
+                textareaT.innerHTML = contentAttr;
+                const decodedContent = textareaT.value;
+
+                const wrapper = btn.closest('.message-wrapper');
+                if (wrapper) {
+                    const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
+                    const actionsDiv = wrapper.querySelector('.message-actions') as HTMLElement;
+
+                    if (contentDiv) contentDiv.style.display = 'none';
+                    if (actionsDiv) actionsDiv.style.display = 'none';
+
+                    const editUi = document.createElement('div');
+                    editUi.className = 'edit-message-ui';
+                    editUi.innerHTML = `
+                        <textarea class="edit-textarea"></textarea>
+                        <div class="edit-actions" style="margin-top: 8px; display: flex; gap: 8px;">
+                            <button class="btn-save-edit" style="background: var(--primary); color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Save & Regenerate</button>
+                            <button class="btn-cancel-edit" style="background: var(--surface-light); color: var(--text-primary); border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; cursor: pointer;">Cancel</button>
+                        </div>
+                    `;
+                    wrapper.appendChild(editUi);
+
+                    const textarea = editUi.querySelector('.edit-textarea') as HTMLTextAreaElement;
+                    textarea.value = decodedContent;
+                    textarea.style.width = '100%';
+                    textarea.style.minHeight = '60px';
+                    textarea.style.background = 'var(--bg-primary)';
+                    textarea.style.color = 'var(--text-primary)';
+                    textarea.style.border = '1px solid var(--border)';
+                    textarea.style.borderRadius = '4px';
+                    textarea.style.padding = '8px';
+                    textarea.style.resize = 'vertical';
+                    textarea.style.outline = 'none';
+                    textarea.style.fontFamily = 'inherit';
+
+                    editUi.querySelector('.btn-cancel-edit')?.addEventListener('click', () => {
+                        editUi.remove();
+                        if (contentDiv) contentDiv.style.display = 'block';
+                        if (actionsDiv) actionsDiv.style.display = 'flex';
+                    });
+
+                    editUi.querySelector('.btn-save-edit')?.addEventListener('click', () => {
+                        const newContent = textarea.value.trim();
+                        if (!newContent) return;
+                        this.sendEditMessage(idx, newContent);
+                    });
+                }
+            });
+        });
     }
 
     formatMessage(content: string): string {
         // Extract LaTeX blocks BEFORE HTML escaping so KaTeX gets raw math notation
         const latexBlocks: string[] = [];
-        const blockPlaceholder = '\x00BLOCK_LATEX_';
-        const inlinePlaceholder = '\x00INLINE_LATEX_';
+        const blockPlaceholder = '\uE000BLOCK_LATEX_';
+        const inlinePlaceholder = '\uE000INLINE_LATEX_';
 
         // Extract block LaTeX ($$...$$)
         let processed = content.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
@@ -1203,7 +1305,7 @@ class ChatManager {
             } catch {
                 latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
             }
-            return `${blockPlaceholder}${idx}\x00`;
+            return `${blockPlaceholder}${idx}\uE000`;
         });
 
         // Extract inline LaTeX ($...$)
@@ -1218,23 +1320,23 @@ class ChatManager {
             } catch {
                 latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
             }
-            return `${inlinePlaceholder}${idx}\x00`;
+            return `${inlinePlaceholder}${idx}\uE000`;
         });
 
         // Now HTML-escape the rest (placeholders will be escaped but we restore them below)
         let html = escapeHtml(processed);
 
         // Restore LaTeX blocks from placeholders
-        html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => {
+        html = html.replace(/\uE000(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\uE000/g, (_match, idx) => {
             return latexBlocks[parseInt(idx)] || '';
         });
-        
+
         // Extract code blocks into placeholders BEFORE converting \n to <br>
         const codeBlocks: string[] = [];
         const codePlaceholder = '\x01CODE_BLOCK_';
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
             const idx = codeBlocks.length;
-            codeBlocks.push(`<pre><code class="language-${lang}">${code}</code></pre>`);
+            codeBlocks.push(`<pre><code class="language-${escapeHtml(lang)}">${code}</code></pre>`);
             return `${codePlaceholder}${idx}\x01`;
         });
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -1245,7 +1347,7 @@ class ChatManager {
         // Merge consecutive blockquotes
         html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
         html = html.replace(/\n/g, '<br>');
-        
+
         // Restore code blocks (newlines preserved inside <pre>)
         html = html.replace(/\x01CODE_BLOCK_(\d+)\x01/g, (_match, idx) => {
             return codeBlocks[parseInt(idx)] || '';
@@ -1306,22 +1408,22 @@ class ChatManager {
             // JavaScript's Date constructor treats strings without Z suffix as local time,
             // which is the desired behavior for our stored timestamps
             const date = new Date(dateStr);
-            
+
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
-            
-            const timeStr = date.toLocaleTimeString('th-TH', { 
-                hour: '2-digit', 
+
+            const timeStr = date.toLocaleTimeString('th-TH', {
+                hour: '2-digit',
                 minute: '2-digit',
                 hour12: false
             });
-            
+
             if (isToday) {
                 return timeStr;
             } else {
-                const dateFormatted = date.toLocaleDateString('th-TH', { 
-                    day: 'numeric', 
-                    month: 'short' 
+                const dateFormatted = date.toLocaleDateString('th-TH', {
+                    day: 'numeric',
+                    month: 'short'
                 });
                 return `${dateFormatted} ${timeStr}`;
             }
@@ -1466,10 +1568,10 @@ class ChatManager {
         });
 
         document.getElementById('btn-send')?.addEventListener('click', () => this.sendMessage());
-        
+
         // Setup image upload
         this.setupImageUpload();
-        
+
         document.getElementById('btn-star-chat')?.addEventListener('click', () => {
             if (this.currentConversation) {
                 this.starConversation(this.currentConversation.id, !this.currentConversation.is_starred);
@@ -1608,20 +1710,20 @@ function initKeyboardShortcuts(): void {
                 switchPage(pages[index]);
             }
         }
-        
+
         // Ctrl+R to refresh
         if (e.ctrlKey && e.key === 'r') {
             e.preventDefault();
             loadAllData();
             showToast('Refreshed!', { type: 'info', duration: 1500 });
         }
-        
+
         // Ctrl+T to toggle theme
         if (e.ctrlKey && e.key === 't') {
             e.preventDefault();
             toggleTheme();
         }
-        
+
         // Ctrl+Enter to send message (in chat)
         if (e.ctrlKey && e.key === 'Enter' && currentPage === 'chat') {
             e.preventDefault();
@@ -1665,7 +1767,7 @@ function showToast(message: string, options: ToastOptions = { type: 'info' }): v
 
     const toast = document.createElement('div');
     toast.className = `toast toast-${options.type}`;
-    
+
     const icons: Record<string, string> = {
         success: '✅',
         error: '❌',
@@ -1704,7 +1806,7 @@ function showToast(message: string, options: ToastOptions = { type: 'info' }): v
 
 function initTheme(): void {
     applyTheme(settings.theme);
-    
+
     // Add theme toggle button listeners (sidebar + settings page)
     document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
     document.getElementById('theme-toggle-settings')?.addEventListener('click', toggleTheme);
@@ -1719,7 +1821,7 @@ function toggleTheme(): void {
 
 function applyTheme(theme: 'dark' | 'light'): void {
     document.documentElement.setAttribute('data-theme', theme);
-    
+
     const themeIcon = document.getElementById('theme-icon');
     if (themeIcon) {
         themeIcon.textContent = theme === 'dark' ? '🌙' : '☀️';
@@ -1779,7 +1881,7 @@ function saveSettings(): void {
 function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
     settings[key] = value;
     saveSettings();
-    
+
     // Apply changes
     if (key === 'refreshInterval') {
         restartRefreshLoop();
@@ -1802,7 +1904,7 @@ function addChartDataPoint(history: ChartDataPoint[], value: number): void {
         timestamp: Date.now(),
         value
     });
-    
+
     while (history.length > MAX_CHART_POINTS) {
         history.shift();
     }
@@ -1817,7 +1919,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    
+
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
@@ -1880,7 +1982,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     data.forEach((point, i) => {
         const x = padding + (width - padding * 2) * (i / (data.length - 1));
         const y = height - padding - ((point.value - minVal) / (maxVal - minVal)) * (height - padding * 2);
-        
+
         if (i === 0) {
             ctx.moveTo(x, y);
         } else {
@@ -2024,14 +2126,14 @@ function initNavigation(): void {
     document.getElementById('btn-refresh-logs')?.addEventListener('click', loadLogs);
     document.getElementById('btn-clear-history')?.addEventListener('click', clearHistory);
     document.getElementById('btn-delete-selected')?.addEventListener('click', deleteSelectedChannels);
-    
+
     // Settings handlers
     document.getElementById('refresh-interval')?.addEventListener('change', (e) => {
         const value = parseInt((e.target as HTMLSelectElement).value);
         updateSetting('refreshInterval', value);
         showToast(`Refresh interval: ${value / 1000}s`, { type: 'info' });
     });
-    
+
     document.getElementById('notifications-toggle')?.addEventListener('change', (e) => {
         updateSetting('notifications', (e.target as HTMLInputElement).checked);
     });
@@ -2041,40 +2143,40 @@ function initNavigation(): void {
         const value = (e.target as HTMLInputElement).value.trim();
         updateSetting('userName', value || 'You');
     });
-    
+
     // Save profile to AI button
     document.getElementById('btn-save-profile')?.addEventListener('click', () => {
         saveProfileToAI();
     });
-    
+
     // Avatar upload handlers
     document.getElementById('btn-change-avatar')?.addEventListener('click', () => {
         document.getElementById('avatar-input')?.click();
     });
-    
+
     document.getElementById('avatar-input')?.addEventListener('change', (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) handleAvatarUpload(file, 'user');
     });
-    
+
     document.getElementById('btn-remove-avatar')?.addEventListener('click', () => {
         removeAvatar('user');
     });
-    
+
     // AI Avatar upload handlers
     document.getElementById('btn-change-ai-avatar')?.addEventListener('click', () => {
         document.getElementById('ai-avatar-input')?.click();
     });
-    
+
     document.getElementById('ai-avatar-input')?.addEventListener('change', (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) handleAvatarUpload(file, 'ai');
     });
-    
+
     document.getElementById('btn-remove-ai-avatar')?.addEventListener('click', () => {
         removeAvatar('ai');
     });
-    
+
     // Creator toggle handler
     document.getElementById('creator-toggle')?.addEventListener('change', (e) => {
         settings.isCreator = (e.target as HTMLInputElement).checked;
@@ -2193,7 +2295,7 @@ function updateStatusBadge(status: BotStatus): void {
         badge.classList.toggle('online', status.is_running);
         statusText.textContent = status.is_running ? 'Online' : 'Offline';
     }
-    
+
     // Update AI Chat overlay based on bot running status
     const chatOverlay = document.getElementById('chat-not-running-overlay');
     if (chatOverlay) {
@@ -2343,7 +2445,7 @@ async function loadLogs(): Promise<void> {
 
         // Use DocumentFragment for better performance
         const fragment = document.createDocumentFragment();
-        
+
         logs.forEach((line: string) => {
             let level = 'info';
             if (line.includes('ERROR')) level = 'error';
@@ -2402,7 +2504,7 @@ function clearLogs(): void {
     const container = document.getElementById('log-content');
     if (container) container.innerHTML = '';
     lastLogCount = 0;
-    
+
     // Also clear the actual log file
     invoke('clear_logs').then(result => {
         showToast(String(result), { type: 'success', duration: 1500 });
@@ -2418,7 +2520,7 @@ function clearLogs(): void {
 async function loadDbStats(): Promise<void> {
     try {
         const stats = await invoke<DbStats>('get_db_stats');
-        
+
         batchDOMUpdate([
             () => {
                 const dbMessages = document.getElementById('db-messages');
@@ -2585,7 +2687,7 @@ function loadSettingsUI(): void {
     if (refreshSelect) {
         refreshSelect.value = settings.refreshInterval.toString();
     }
-    
+
     const notificationsToggle = document.getElementById('notifications-toggle') as HTMLInputElement | null;
     if (notificationsToggle) {
         notificationsToggle.checked = settings.notifications;
@@ -2595,12 +2697,12 @@ function loadSettingsUI(): void {
     if (userNameInput) {
         userNameInput.value = settings.userName === 'You' ? '' : settings.userName;
     }
-    
+
     // Load AI avatar preview
     const aiAvatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement | null;
     const aiAvatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement | null;
     const aiRemoveBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement | null;
-    
+
     if (settings.aiAvatar) {
         if (aiAvatarImage) {
             aiAvatarImage.src = settings.aiAvatar;
@@ -2616,12 +2718,12 @@ function loadSettingsUI(): void {
         if (aiAvatarPlaceholder) aiAvatarPlaceholder.style.display = 'flex';
         if (aiRemoveBtn) aiRemoveBtn.style.display = 'none';
     }
-    
+
     // Load user avatar preview
     const avatarImage = document.getElementById('avatar-image') as HTMLImageElement | null;
     const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement | null;
     const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement | null;
-    
+
     if (settings.userAvatar) {
         if (avatarImage) {
             avatarImage.src = settings.userAvatar;
@@ -2637,13 +2739,13 @@ function loadSettingsUI(): void {
         if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
         if (removeBtn) removeBtn.style.display = 'none';
     }
-    
+
     // Load creator checkbox
     const creatorCheckbox = document.getElementById('creator-toggle') as HTMLInputElement | null;
     if (creatorCheckbox) {
         creatorCheckbox.checked = settings.isCreator;
     }
-    
+
     // Load profile from server
     if (chatManager?.connected) {
         chatManager.send({ type: 'get_profile' });
@@ -2658,14 +2760,14 @@ function handleAvatarUpload(file: File, target: 'user' | 'ai' = 'user'): void {
         showToast('Please select an image file', { type: 'error' });
         return;
     }
-    
+
     if (file.size > 5 * 1024 * 1024) { // 5MB limit for cropping
         showToast('Image must be less than 5MB', { type: 'error' });
         return;
     }
-    
+
     currentAvatarTarget = target;
-    
+
     const reader = new FileReader();
     reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
@@ -2704,34 +2806,34 @@ function openAvatarCropModal(imageUrl: string): void {
         imgWidth: 0,
         imgHeight: 0
     };
-    
+
     const modal = document.getElementById('avatar-crop-modal');
     const cropImage = document.getElementById('crop-image') as HTMLImageElement;
     const zoomSlider = document.getElementById('crop-zoom') as HTMLInputElement;
-    
+
     if (!modal || !cropImage || !zoomSlider) return;
-    
+
     // Load image to get dimensions
     cropImage.onload = () => {
         const cropArea = document.getElementById('crop-area');
         if (!cropArea) return;
-        
+
         const areaSize = 280;
         const scale = Math.max(areaSize / cropImage.naturalWidth, areaSize / cropImage.naturalHeight);
         cropState.imgWidth = cropImage.naturalWidth * scale;
         cropState.imgHeight = cropImage.naturalHeight * scale;
-        
+
         // Center the image
         cropState.offsetX = (areaSize - cropState.imgWidth) / 2;
         cropState.offsetY = (areaSize - cropState.imgHeight) / 2;
-        
+
         updateCropPreview();
     };
-    
+
     cropImage.src = imageUrl;
     zoomSlider.value = '100';
     modal.style.display = 'flex';
-    
+
     // Setup event listeners
     setupCropEventListeners();
 }
@@ -2743,18 +2845,18 @@ function setupCropEventListeners(): void {
     const cancelBtn = document.getElementById('btn-crop-cancel');
     const closeBtn = document.getElementById('avatar-crop-close');
     const modal = document.getElementById('avatar-crop-modal');
-    
+
     if (!cropArea || !zoomSlider || !saveBtn || !cancelBtn || !closeBtn || !modal) return;
-    
+
     // Remove old listeners by cloning
     const newCropArea = cropArea.cloneNode(true) as HTMLElement;
     cropArea.parentNode?.replaceChild(newCropArea, cropArea);
-    
+
     // Create bound functions for proper cleanup
     boundOnDrag = onDrag;
     boundOnDragTouch = onDragTouch;
     boundEndDrag = endDrag;
-    
+
     // Mouse/touch drag
     newCropArea.addEventListener('mousedown', startDrag);
     newCropArea.addEventListener('touchstart', startDragTouch, { passive: false });
@@ -2762,19 +2864,19 @@ function setupCropEventListeners(): void {
     document.addEventListener('touchmove', boundOnDragTouch, { passive: false });
     document.addEventListener('mouseup', boundEndDrag);
     document.addEventListener('touchend', boundEndDrag);
-    
+
     // Zoom
     zoomSlider.oninput = () => {
         cropState.zoom = parseInt(zoomSlider.value);
         updateCropPreview();
     };
-    
+
     // Save
     saveBtn.onclick = () => {
         saveCroppedAvatar();
         closeCropModal();
     };
-    
+
     // Cancel/Close
     cancelBtn.onclick = closeCropModal;
     closeBtn.onclick = closeCropModal;
@@ -2820,11 +2922,11 @@ function endDrag(): void {
 function updateCropPreview(): void {
     const cropImage = document.getElementById('crop-image') as HTMLImageElement;
     if (!cropImage) return;
-    
+
     const scale = cropState.zoom / 100;
     const width = cropState.imgWidth * scale;
     const height = cropState.imgHeight * scale;
-    
+
     cropImage.style.width = `${width}px`;
     cropImage.style.height = `${height}px`;
     cropImage.style.left = `${cropState.offsetX}px`;
@@ -2834,7 +2936,7 @@ function updateCropPreview(): void {
 function saveCroppedAvatar(): void {
     const cropImage = document.getElementById('crop-image') as HTMLImageElement;
     if (!cropImage) return;
-    
+
     // Create canvas to crop the circular area
     const canvas = document.createElement('canvas');
     const size = 200; // Output size
@@ -2842,69 +2944,69 @@ function saveCroppedAvatar(): void {
     canvas.height = size;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    
+
     // Calculate crop area (center of crop-area is 140,140 and circle is 200x200)
     const areaCenter = 140;
     const circleRadius = 100;
-    
+
     const scale = cropState.zoom / 100;
     const imgWidth = cropState.imgWidth * scale;
     const imgHeight = cropState.imgHeight * scale;
-    
+
     // Calculate source position relative to image
     const srcX = (areaCenter - circleRadius - cropState.offsetX) / scale * (cropImage.naturalWidth / cropState.imgWidth);
     const srcY = (areaCenter - circleRadius - cropState.offsetY) / scale * (cropImage.naturalHeight / cropState.imgHeight);
     const srcSize = (circleRadius * 2) / scale * (cropImage.naturalWidth / cropState.imgWidth);
-    
+
     // Draw circular clip
     ctx.beginPath();
     ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-    
+
     // Draw image
     ctx.drawImage(cropImage, srcX, srcY, srcSize, srcSize, 0, 0, size, size);
-    
+
     // Get data URL
     const croppedDataUrl = canvas.toDataURL('image/png');
-    
+
     // Save to appropriate setting based on target
     if (currentAvatarTarget === 'ai') {
         settings.aiAvatar = croppedDataUrl;
         saveSettings();
-        
+
         // Update AI avatar preview
         const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
         const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
         const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
-        
+
         if (avatarImage) {
             avatarImage.src = croppedDataUrl;
             avatarImage.classList.add('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.style.display = 'none';
         if (removeBtn) removeBtn.style.display = 'inline-block';
-        
+
         showToast('AI Avatar updated! 🤖', { type: 'success' });
     } else {
         settings.userAvatar = croppedDataUrl;
         saveSettings();
-        
+
         // Update user avatar preview
         const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
         const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
         const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
-        
+
         if (avatarImage) {
             avatarImage.src = croppedDataUrl;
             avatarImage.classList.add('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.style.display = 'none';
         if (removeBtn) removeBtn.style.display = 'inline-block';
-        
+
         showToast('Avatar updated! 🎉', { type: 'success' });
     }
-    
+
     // Refresh chat to show new avatar
     if (chatManager) {
         chatManager.renderMessages();
@@ -2914,7 +3016,7 @@ function saveCroppedAvatar(): void {
 function closeCropModal(): void {
     const modal = document.getElementById('avatar-crop-modal');
     if (modal) modal.style.display = 'none';
-    
+
     // Clean up listeners using stored bound functions
     if (boundOnDrag) {
         document.removeEventListener('mousemove', boundOnDrag);
@@ -2935,37 +3037,37 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
     if (target === 'ai') {
         settings.aiAvatar = '';
         saveSettings();
-        
+
         const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
         const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
         const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
-        
+
         if (avatarImage) {
             avatarImage.src = '';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
         if (removeBtn) removeBtn.style.display = 'none';
-        
+
         showToast('AI Avatar removed', { type: 'info' });
     } else {
         settings.userAvatar = '';
         saveSettings();
-        
+
         const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
         const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
         const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
-        
+
         if (avatarImage) {
             avatarImage.src = '';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.style.display = 'flex';
         if (removeBtn) removeBtn.style.display = 'none';
-        
+
         showToast('Avatar removed', { type: 'info' });
     }
-    
+
     // Refresh chat
     if (chatManager) {
         chatManager.renderMessages();
@@ -2977,13 +3079,13 @@ function saveProfileToAI(): void {
     const bio = (document.getElementById('user-bio-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const preferences = (document.getElementById('user-preferences-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const isCreator = (document.getElementById('creator-toggle') as HTMLInputElement)?.checked || false;
-    
+
     if (chatManager?.connected) {
-        chatManager.send({ 
-            type: 'save_profile', 
+        chatManager.send({
+            type: 'save_profile',
             profile: { display_name: displayName, bio, preferences, is_creator: isCreator }
         });
-        
+
         // Also update local settings
         settings.userName = displayName;
         settings.isCreator = isCreator;
@@ -2999,7 +3101,7 @@ function saveProfileToAI(): void {
 
 async function openFolder(type: string): Promise<void> {
     let path: string;
-    
+
     try {
         if (type === 'logs') {
             path = await invoke<string>('get_logs_path');

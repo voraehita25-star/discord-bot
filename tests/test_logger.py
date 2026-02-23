@@ -22,7 +22,7 @@ class TestEmojiMap:
         """Test all EMOJI_MAP values are ASCII strings."""
         from utils.monitoring.logger import EMOJI_MAP
 
-        for emoji, ascii_text in EMOJI_MAP.items():
+        for _emoji, ascii_text in EMOJI_MAP.items():
             assert isinstance(ascii_text, str)
             # Check ASCII-safe
             assert ascii_text.encode("ascii", "strict")
@@ -100,7 +100,7 @@ class TestSmartLogFormatter:
             lineno=1,
             msg="Debug message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -118,7 +118,7 @@ class TestSmartLogFormatter:
             lineno=1,
             msg="Info message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -136,7 +136,7 @@ class TestSmartLogFormatter:
             lineno=1,
             msg="Warning message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -154,7 +154,7 @@ class TestSmartLogFormatter:
             lineno=1,
             msg="Error message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -172,7 +172,7 @@ class TestSmartLogFormatter:
             lineno=1,
             msg="Critical message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -196,7 +196,7 @@ class TestJSONLogFormatter:
             lineno=10,
             msg="Test message",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -221,7 +221,7 @@ class TestJSONLogFormatter:
             lineno=1,
             msg="Test",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
 
         result = formatter.format(record)
@@ -244,7 +244,7 @@ class TestJSONLogFormatter:
             lineno=5,
             msg="Test",
             args=(),
-            exc_info=None
+            exc_info=None,
         )
         record.module = "test_module"
         record.funcName = "test_function"
@@ -318,7 +318,7 @@ class TestCleanupCache:
             mock_temp.iterdir.return_value = list(temp_dir.iterdir())
 
             # Each file needs suffix attribute
-            for f in temp_dir.iterdir():
+            for _f in temp_dir.iterdir():
                 pass  # Files are real, no need to mock suffix
 
     def test_cleanup_handles_permission_error(self):

@@ -42,9 +42,10 @@ jobs:
         bandit -c pyproject.toml -r cogs/ utils/ -ll --quiet
 
     - name: Run dependency audit
+      continue-on-error: true
       run: |
         pip install pip-audit
-        pip-audit --strict --desc || true
+        pip-audit --strict --desc
 
     - name: Run tests with coverage
       env:
@@ -52,7 +53,7 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         CREATOR_ID: "123456789"
       run: |
-        python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term
+        python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term --cov-fail-under=75
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.11'

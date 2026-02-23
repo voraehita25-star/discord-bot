@@ -154,7 +154,7 @@ class TestFactDataclass:
             channel_id=789012,
             category=FactCategory.IDENTITY.value,
             content="User name is John",
-            importance=ImportanceLevel.HIGH.value
+            importance=ImportanceLevel.HIGH.value,
         )
 
         assert fact.id == 1
@@ -193,11 +193,7 @@ class TestFactToDict:
             return
 
         now = datetime.now()
-        fact = Fact(
-            user_id=123,
-            first_mentioned=now,
-            last_confirmed=now
-        )
+        fact = Fact(user_id=123, first_mentioned=now, last_confirmed=now)
 
         result = fact.to_dict()
 
@@ -229,7 +225,7 @@ class TestFactFromDict:
             "confidence": 1.0,
             "source_message": None,
             "is_active": True,
-            "is_user_defined": False
+            "is_user_defined": False,
         }
 
         fact = Fact.from_dict(data)

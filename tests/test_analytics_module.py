@@ -38,7 +38,7 @@ class TestInteractionLog:
             output_length=200,
             response_time_ms=500.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert log.user_id == 123
@@ -62,7 +62,7 @@ class TestInteractionLog:
             output_length=100,
             response_time_ms=200.0,
             intent="question",
-            model="gemini"
+            model="gemini",
         )
 
         assert log.tool_calls == 0
@@ -83,7 +83,7 @@ class TestInteractionLog:
             response_time_ms=1000.0,
             intent="unknown",
             model="gemini",
-            error="API rate limited"
+            error="API rate limited",
         )
 
         assert log.error == "API rate limited"
@@ -107,7 +107,7 @@ class TestAnalyticsSummary:
             error_rate=0.05,
             interactions_per_hour=10.5,
             total_input_tokens=5000,
-            total_output_tokens=10000
+            total_output_tokens=10000,
         )
 
         assert summary.total_interactions == 100
@@ -148,7 +148,7 @@ class TestResponseQuality:
             user_reaction="👍",
             guardrail_triggered=True,
             response_length=500,
-            factors={"retry_penalty": -0.2}
+            factors={"retry_penalty": -0.2},
         )
 
         assert quality.score == 0.7
@@ -172,8 +172,8 @@ class TestAIAnalyticsInit:
         analytics = AIAnalytics()
 
         assert analytics is not None
-        assert hasattr(analytics, 'logger')
-        assert hasattr(analytics, '_stats')
+        assert hasattr(analytics, "logger")
+        assert hasattr(analytics, "_stats")
 
     def test_init_stats_structure(self):
         """Test initial stats structure."""
@@ -222,7 +222,7 @@ class TestLogInteraction:
             output_text="Hi there!",
             response_time_ms=250.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert analytics._stats["total_interactions"] == 1
@@ -244,7 +244,7 @@ class TestLogInteraction:
             response_time_ms=10.0,
             intent="greeting",
             model="gemini",
-            cache_hit=True
+            cache_hit=True,
         )
 
         assert analytics._stats["cache_hits"] == 1
@@ -264,7 +264,7 @@ class TestLogInteraction:
             response_time_ms=5000.0,
             intent="unknown",
             model="gemini",
-            error="Rate limited"
+            error="Rate limited",
         )
 
         assert analytics._stats["errors"] == 1
@@ -280,10 +280,10 @@ class TestLogInteraction:
             channel_id=456,
             guild_id=789,
             input_text="Hello World",  # 11 chars
-            output_text="Hi there!",     # 9 chars
+            output_text="Hi there!",  # 9 chars
             response_time_ms=100.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert analytics._stats["total_input_chars"] == 11
@@ -307,7 +307,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         assert quality.score == 1.0
@@ -323,7 +323,7 @@ class TestCalculateQualityScore:
             retry_count=2,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.2 for 2 retries
@@ -341,7 +341,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=True,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.2 for edit
@@ -359,7 +359,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction="👍",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # Clamped to 1.0 even with +0.1 bonus
@@ -377,7 +377,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction="👎",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.3 for negative reaction
@@ -395,7 +395,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=True
+            guardrail_triggered=True,
         )
 
         # -0.2 for guardrail
@@ -413,7 +413,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.1 for short response
@@ -428,10 +428,10 @@ class TestCalculateQualityScore:
 
         quality = analytics.calculate_quality_score(
             response="Bad",  # short
-            retry_count=3,   # max penalty -0.3
+            retry_count=3,  # max penalty -0.3
             was_edited=True,  # -0.2
             user_reaction="👎",  # -0.3
-            guardrail_triggered=True  # -0.2
+            guardrail_triggered=True,  # -0.2
         )
 
         # Total penalties exceed 1.0, should be clamped to 0.0
@@ -538,21 +538,36 @@ class TestIntentCounts:
         analytics = AIAnalytics()
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Hi", output_text="Hello",
-            response_time_ms=100.0, intent="greeting", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Hi",
+            output_text="Hello",
+            response_time_ms=100.0,
+            intent="greeting",
+            model="gemini",
         )
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="What's 2+2?", output_text="4",
-            response_time_ms=150.0, intent="question", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="What's 2+2?",
+            output_text="4",
+            response_time_ms=150.0,
+            intent="question",
+            model="gemini",
         )
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Hello again", output_text="Hi again!",
-            response_time_ms=120.0, intent="greeting", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Hello again",
+            output_text="Hi again!",
+            response_time_ms=120.0,
+            intent="greeting",
+            model="gemini",
         )
 
         assert analytics._stats["intent_counts"]["greeting"] == 2
@@ -573,9 +588,14 @@ class TestHourlyCounts:
         analytics = AIAnalytics()
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Test", output_text="Response",
-            response_time_ms=100.0, intent="test", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Test",
+            output_text="Response",
+            response_time_ms=100.0,
+            intent="test",
+            model="gemini",
         )
 
         # Should have at least one hourly entry
@@ -599,7 +619,7 @@ class TestConfusionReaction:
             retry_count=0,
             was_edited=False,
             user_reaction="❓",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.1 for confusion reaction

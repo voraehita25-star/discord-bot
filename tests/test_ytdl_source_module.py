@@ -56,7 +56,7 @@ class TestGetCookieOpts:
         """Test get_cookie_opts when no cookies.txt exists."""
         from utils.media.ytdl_source import get_cookie_opts
 
-        with patch('pathlib.Path.exists', return_value=False):
+        with patch("pathlib.Path.exists", return_value=False):
             result = get_cookie_opts()
 
         assert result == {}
@@ -65,7 +65,7 @@ class TestGetCookieOpts:
         """Test get_cookie_opts when cookies.txt exists."""
         from utils.media.ytdl_source import get_cookie_opts
 
-        with patch('pathlib.Path.exists', return_value=True):
+        with patch("pathlib.Path.exists", return_value=True):
             result = get_cookie_opts()
 
         assert "cookiefile" in result
@@ -79,7 +79,7 @@ class TestGetYtdlWithCookies:
         """Test get_ytdl_with_cookies returns dict."""
         from utils.media.ytdl_source import get_ytdl_with_cookies
 
-        with patch('pathlib.Path.exists', return_value=False):
+        with patch("pathlib.Path.exists", return_value=False):
             result = get_ytdl_with_cookies()
 
         assert isinstance(result, dict)
@@ -88,7 +88,7 @@ class TestGetYtdlWithCookies:
         """Test get_ytdl_with_cookies removes postprocessors."""
         from utils.media.ytdl_source import get_ytdl_with_cookies
 
-        with patch('pathlib.Path.exists', return_value=False):
+        with patch("pathlib.Path.exists", return_value=False):
             result = get_ytdl_with_cookies()
 
         assert "postprocessors" not in result
@@ -142,7 +142,7 @@ class TestYTDLSource:
         """Test YTDLSource has from_url method."""
         from utils.media.ytdl_source import YTDLSource
 
-        assert hasattr(YTDLSource, 'from_url')
+        assert hasattr(YTDLSource, "from_url")
 
 
 class TestModuleImports:

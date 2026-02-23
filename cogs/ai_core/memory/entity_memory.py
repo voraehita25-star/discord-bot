@@ -324,9 +324,11 @@ class EntityMemoryManager:
             async with db_manager.get_connection() as conn:
                 sql = """
                     SELECT * FROM entity_memories
-                    WHERE (name LIKE ? OR facts LIKE ?)
+                    WHERE (name LIKE ? ESCAPE '\' OR facts LIKE ? ESCAPE '\')
                 """
-                params = [f"%{query}%", f"%{query}%"]
+                # Escape LIKE wildcards in user input to prevent injection
+                escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                params = [f"%{escaped_query}%", f"%{escaped_query}%"]
 
                 if entity_type:
                     sql += " AND entity_type = ?"

@@ -147,16 +147,19 @@ class TestModuleImports:
     def test_import_ai_context(self):
         """Test AIContext can be imported."""
         from cogs.ai_core.core.context_builder import AIContext
+
         assert AIContext is not None
 
     def test_import_context_builder(self):
         """Test ContextBuilder can be imported."""
         from cogs.ai_core.core.context_builder import ContextBuilder
+
         assert ContextBuilder is not None
 
     def test_import_context_builder_singleton(self):
         """Test context_builder singleton can be imported."""
         from cogs.ai_core.core.context_builder import context_builder
+
         assert context_builder is not None
 
 
@@ -222,5 +225,5 @@ class TestContextBuilderWithMocks:
 
         builder = ContextBuilder()
 
-        assert hasattr(builder, 'build_context')
+        assert hasattr(builder, "build_context")
         assert callable(builder.build_context)

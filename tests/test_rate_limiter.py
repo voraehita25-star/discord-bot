@@ -446,7 +446,9 @@ class TestAdaptiveMultipliers:
         # HALF_OPEN should be reduced
         assert RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"] < 1.0
         # OPEN should be minimal
-        assert RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        assert (
+            RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        )
 
 
 class TestRateLimitBucketAdaptive:

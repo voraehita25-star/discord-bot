@@ -72,7 +72,7 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(side_effect=ValueError("API Error"))
 
-        result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "test")
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "test")
 
         assert result is False
 
@@ -87,7 +87,9 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "What is today's weather?")
+        result = await detect_search_intent(
+            mock_client, "gemini-3.1-pro-preview", "What is today's weather?"
+        )
 
         assert result is True
 
@@ -102,7 +104,7 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(mock_client, "gemini-3-pro-preview", "Hello!")
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "Hello!")
 
         assert result is False
 
@@ -113,21 +115,25 @@ class TestModuleImports:
     def test_import_build_api_config(self):
         """Test build_api_config can be imported."""
         from cogs.ai_core.api.api_handler import build_api_config
+
         assert build_api_config is not None
 
     def test_import_call_gemini_api(self):
         """Test call_gemini_api can be imported."""
         from cogs.ai_core.api.api_handler import call_gemini_api
+
         assert call_gemini_api is not None
 
     def test_import_call_gemini_api_streaming(self):
         """Test call_gemini_api_streaming can be imported."""
         from cogs.ai_core.api.api_handler import call_gemini_api_streaming
+
         assert call_gemini_api_streaming is not None
 
     def test_import_detect_search_intent(self):
         """Test detect_search_intent can be imported."""
         from cogs.ai_core.api.api_handler import detect_search_intent
+
         assert detect_search_intent is not None
 
 
@@ -181,18 +187,21 @@ class TestFaustData:
     def test_import_faust_instruction(self):
         """Test FAUST_INSTRUCTION can be imported."""
         from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
+
         assert FAUST_INSTRUCTION is not None
         assert isinstance(FAUST_INSTRUCTION, str)
 
     def test_import_faust_dm_instruction(self):
         """Test FAUST_DM_INSTRUCTION can be imported."""
         from cogs.ai_core.data.faust_data import FAUST_DM_INSTRUCTION
+
         assert FAUST_DM_INSTRUCTION is not None
         assert isinstance(FAUST_DM_INSTRUCTION, str)
 
     def test_import_escalation_framings(self):
         """Test ESCALATION_FRAMINGS can be imported."""
         from cogs.ai_core.data.faust_data import ESCALATION_FRAMINGS
+
         assert ESCALATION_FRAMINGS is not None
 
 
@@ -202,6 +211,7 @@ class TestRoleplayData:
     def test_import_roleplay_assistant_instruction(self):
         """Test ROLEPLAY_ASSISTANT_INSTRUCTION can be imported."""
         from cogs.ai_core.data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
+
         assert ROLEPLAY_ASSISTANT_INSTRUCTION is not None
         assert isinstance(ROLEPLAY_ASSISTANT_INSTRUCTION, str)
 

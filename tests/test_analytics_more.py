@@ -19,7 +19,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["total_interactions"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -39,7 +39,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["total_response_time_ms"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -59,7 +59,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["cache_hits"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -80,7 +80,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["errors"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -102,7 +102,7 @@ class TestAIAnalyticsLogInteraction:
         initial_input = analytics._stats["total_input_chars"]
         initial_output = analytics._stats["total_output_chars"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -186,7 +186,7 @@ class TestAIAnalyticsIntentCounts:
 
         analytics = AIAnalytics()
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -213,7 +213,7 @@ class TestAIAnalyticsHourlyCounts:
         analytics = AIAnalytics()
         hour_key = datetime.now().strftime("%Y-%m-%d-%H")
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -237,7 +237,7 @@ class TestAIAnalyticsNoCacheHit:
         analytics = AIAnalytics()
         initial = analytics._stats["cache_hits"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -262,7 +262,7 @@ class TestAIAnalyticsNoError:
         analytics = AIAnalytics()
         initial = analytics._stats["errors"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,

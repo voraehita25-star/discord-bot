@@ -1,7 +1,6 @@
 """Tests for sanitization module."""
 
 
-
 class TestSanitizeChannelName:
     """Tests for sanitize_channel_name function."""
 

@@ -89,9 +89,7 @@ class CharacterStateTracker:
             if len(self._states) >= self.MAX_CHANNELS:
                 # Remove oldest channel by oldest access time (LRU)
                 # Filter out channels with empty states to avoid min() on empty sequence
-                channels_with_states = [
-                    cid for cid in self._states.keys() if self._states[cid]
-                ]
+                channels_with_states = [cid for cid in self._states if self._states[cid]]
                 if channels_with_states:
                     oldest_channel = min(
                         channels_with_states,

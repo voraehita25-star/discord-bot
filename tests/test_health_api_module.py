@@ -15,11 +15,12 @@ class TestHealthApiConstants:
 
     def test_health_api_port_default(self):
         """Test default health API port."""
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             # Force reimport with cleared env
             import importlib
 
             import utils.monitoring.health_api as health_api_module
+
             importlib.reload(health_api_module)
 
             # Default should be 8080
@@ -27,10 +28,11 @@ class TestHealthApiConstants:
 
     def test_health_api_host_default(self):
         """Test default health API host."""
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             import importlib
 
             import utils.monitoring.health_api as health_api_module
+
             importlib.reload(health_api_module)
 
             # Default should be 127.0.0.1 (localhost only for security)
@@ -109,6 +111,7 @@ class TestBotHealthDataUpdateFromBot:
         mock_bot.is_ready.return_value = False
 
         import time
+
         time.sleep(0.01)
         health.update_from_bot(mock_bot)
 
@@ -256,7 +259,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 10.5
             mock_proc.return_value.memory_info.return_value.rss = 100 * 1024 * 1024
             mock_proc.return_value.num_threads.return_value = 4
@@ -271,7 +274,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -287,7 +290,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -308,7 +311,7 @@ class TestBotHealthDataToDict:
         health.command_count = 50
         health.error_count = 5
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -326,7 +329,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 25.5
             mock_proc.return_value.memory_info.return_value.rss = 512 * 1024 * 1024
             mock_proc.return_value.num_threads.return_value = 8
@@ -425,7 +428,7 @@ class TestBotHealthDataGetAiPerformanceStats:
         mock_ai_cog = MagicMock()
         mock_ai_cog.chat_manager.get_performance_stats.return_value = {
             "total_requests": 100,
-            "avg_response_time": 1.5
+            "avg_response_time": 1.5,
         }
         mock_bot.cogs = {"AI": mock_ai_cog}
         health.bot = mock_bot
@@ -521,7 +524,7 @@ class TestHealthyStatus:
         health = BotHealthData()
         health.is_ready = False
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -537,7 +540,7 @@ class TestHealthyStatus:
         health = BotHealthData()
         health.is_ready = True
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -559,7 +562,7 @@ class TestTimestamp:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -576,7 +579,7 @@ class TestTimestamp:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -600,7 +603,7 @@ class TestHeartbeat:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -618,7 +621,7 @@ class TestHeartbeat:
         health = BotHealthData()
         health.last_heartbeat = datetime.datetime.now() - timedelta(seconds=30)
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1

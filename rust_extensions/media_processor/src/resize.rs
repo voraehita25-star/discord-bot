@@ -30,6 +30,13 @@ pub fn resize_image(
         return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
     }
 
+    const MAX_ALLOWED_DIMENSION: u32 = 16384;
+    if max_width > MAX_ALLOWED_DIMENSION || max_height > MAX_ALLOWED_DIMENSION {
+        return Err(MediaError::Encode(format!(
+            "Dimensions too large: {}x{} (max {})", max_width, max_height, MAX_ALLOWED_DIMENSION
+        )));
+    }
+
     // Clamp JPEG quality to valid range (1-100)
     let jpeg_quality = jpeg_quality.max(1).min(100);
 
@@ -39,6 +46,13 @@ pub fn resize_image(
     // Guard against degenerate/corrupt images with zero dimensions
     if orig_w == 0 || orig_h == 0 {
         return Err(MediaError::Encode("Image has zero dimensions".to_string()));
+    }
+
+    const MAX_PIXELS: u64 = 100_000_000;
+    if (orig_w as u64) * (orig_h as u64) > MAX_PIXELS {
+        return Err(MediaError::Encode(format!(
+            "Image too large: {}x{} pixels (max {})", orig_w, orig_h, MAX_PIXELS
+        )));
     }
 
     // Calculate new dimensions

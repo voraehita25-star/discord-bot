@@ -29,7 +29,7 @@ class TestAuditLogger:
 
         logger = AuditLogger()
 
-        assert hasattr(logger, 'log_action')
+        assert hasattr(logger, "log_action")
         assert callable(logger.log_action)
 
     @pytest.mark.asyncio
@@ -39,7 +39,7 @@ class TestAuditLogger:
 
         logger = AuditLogger()
 
-        assert hasattr(logger, 'get_recent_actions')
+        assert hasattr(logger, "get_recent_actions")
         assert callable(logger.get_recent_actions)
 
 
@@ -53,7 +53,7 @@ class TestLogAction:
 
         logger = AuditLogger()
 
-        with patch('utils.monitoring.audit_log.DB_AVAILABLE', False):
+        with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             result = await logger.log_action(
                 user_id=12345,
                 action="test_action",
@@ -69,7 +69,7 @@ class TestLogAction:
 
         logger = AuditLogger()
 
-        with patch('utils.monitoring.audit_log.DB_AVAILABLE', False):
+        with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             result = await logger.log_action(
                 user_id=12345,
                 action="test_action",
@@ -92,7 +92,7 @@ class TestGetRecentActions:
 
         logger = AuditLogger()
 
-        with patch('utils.monitoring.audit_log.DB_AVAILABLE', False):
+        with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             result = await logger.get_recent_actions(guild_id=12345)
 
         assert result == []
@@ -131,6 +131,7 @@ class TestAuditLogSingleton:
         """Test audit_log singleton exists."""
         try:
             from utils.monitoring.audit_log import audit_log
+
             assert audit_log is not None
         except ImportError:
             # Some modules may not export singleton
@@ -152,8 +153,8 @@ class TestAuditLoggerMethods:
 
         # Check required parameters
         params = sig.parameters
-        assert 'user_id' in params
-        assert 'action' in params
+        assert "user_id" in params
+        assert "action" in params
 
     @pytest.mark.asyncio
     async def test_get_recent_actions_signature(self):
@@ -166,4 +167,4 @@ class TestAuditLoggerMethods:
         sig = inspect.signature(logger.get_recent_actions)
 
         params = sig.parameters
-        assert 'guild_id' in params
+        assert "guild_id" in params

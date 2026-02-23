@@ -5,8 +5,6 @@ Comprehensive tests for PromptManager and related functions.
 """
 
 
-
-
 class TestPromptManagerInit:
     """Tests for PromptManager initialization."""
 

@@ -30,9 +30,9 @@ class TestMemoryCommandsCog:
         cog = MemoryCommands(mock_bot)
 
         # Check command methods exist
-        assert hasattr(cog, 'remember_fact')
-        assert hasattr(cog, 'forget_fact')
-        assert hasattr(cog, 'view_memories')
+        assert hasattr(cog, "remember_fact")
+        assert hasattr(cog, "forget_fact")
+        assert hasattr(cog, "view_memories")
 
 
 class TestRememberCommand:
@@ -159,7 +159,7 @@ class TestViewMemoriesCommand:
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = MemoryCommands(mock_bot)
+        MemoryCommands(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -204,7 +204,7 @@ class TestConsolidateCommand:
         cog = MemoryCommands(mock_bot)
 
         # Check if consolidate command exists
-        if hasattr(cog, 'consolidate_memory'):
+        if hasattr(cog, "consolidate_memory"):
             assert callable(cog.consolidate_memory)
 
 
@@ -217,7 +217,7 @@ class TestMemoryCommandsValidation:
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = MemoryCommands(mock_bot)
+        MemoryCommands(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -227,7 +227,6 @@ class TestMemoryCommandsValidation:
         mock_ctx.channel.id = 456
 
         # Should handle special characters
-        fact = "I like 🍕 pizza!"
         # Function should process without crashing
 
     @pytest.mark.asyncio
@@ -236,7 +235,7 @@ class TestMemoryCommandsValidation:
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = MemoryCommands(mock_bot)
+        MemoryCommands(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -246,7 +245,6 @@ class TestMemoryCommandsValidation:
         mock_ctx.channel.id = 456
 
         # Thai text
-        fact = "ผมชื่อ ทดสอบ และชอบกินส้มตำ"
         # Function should process Thai text
 
     @pytest.mark.asyncio
@@ -255,7 +253,7 @@ class TestMemoryCommandsValidation:
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = MemoryCommands(mock_bot)
+        MemoryCommands(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -265,7 +263,6 @@ class TestMemoryCommandsValidation:
         mock_ctx.channel.id = 456
 
         # Exactly 500 characters should be allowed
-        fact = "a" * 500
         # Should not trigger length error
 
     @pytest.mark.asyncio
@@ -274,7 +271,7 @@ class TestMemoryCommandsValidation:
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = MemoryCommands(mock_bot)
+        MemoryCommands(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -282,7 +279,6 @@ class TestMemoryCommandsValidation:
         mock_ctx.author.id = 123
 
         # Should handle special characters
-        query = "allergic to 🥜 peanuts"
         # Function should process without crashing
 
 
@@ -307,8 +303,8 @@ class TestMemoryCommandsHelpers:
         cog = MemoryCommands(mock_bot)
 
         # view_memories should have aliases
-        view_cmd = getattr(cog, 'view_memories', None)
-        if view_cmd and hasattr(view_cmd, 'aliases'):
+        view_cmd = getattr(cog, "view_memories", None)
+        if view_cmd and hasattr(view_cmd, "aliases"):
             # Check aliases exist (mymemory, facts)
             pass
 

@@ -1,6 +1,5 @@
 """Unit tests for Music Queue Manager."""
 
-
 from cogs.music.queue import QueueManager
 
 

@@ -35,6 +35,7 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
         # Minimal fallback inline Colors class
@@ -239,9 +240,10 @@ def box_header(text, width=BOX_WIDTH):
 
 def clear_screen():
     """Clear terminal screen"""
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
         shell=False,
+        check=False,
     )
 
 
@@ -512,7 +514,7 @@ def print_status():
 
 def stop_process_list(pids, name="process", graceful_timeout=5):
     """Validates and kills list of pids with graceful shutdown.
-    
+
     Args:
         pids: List of process IDs to stop
         name: Name for logging
@@ -527,12 +529,17 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
             # On Windows, SIGINT doesn't work well, so we use terminate
             if sys.platform != "win32":
                 import signal
+
                 try:
                     proc.send_signal(signal.SIGINT)
-                    print(f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}")
+                    print(
+                        f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}"
+                    )
                     try:
                         proc.wait(timeout=graceful_timeout)
-                        print(f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}")
+                        print(
+                            f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}"
+                        )
                         count += 1
                         continue
                     except psutil.TimeoutExpired:
@@ -587,13 +594,18 @@ def _launch_script(path, name, hidden=False):
         return False
 
     try:
-        path_str = str(path_obj.resolve())
+        resolved = path_obj.resolve()
+        # Security: validate script is within the project directory
+        if not str(resolved).startswith(str(PROJECT_ROOT.resolve())):
+            print(f"{Colors.RED}Security: script outside project directory: {path}{Colors.RESET}")
+            return False
+        path_str = str(resolved)
         if hidden:
             subprocess.Popen(["wscript", path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
         elif sys.platform == "win32":
             os.startfile(path_str)
         else:
-            subprocess.Popen([path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
+            subprocess.Popen(["bash", path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
         return True
     except (OSError, subprocess.SubprocessError) as e:
         print(f"{Colors.RED}Failed to start {name}: {e}{Colors.RESET}")
@@ -612,7 +624,7 @@ def start_bot(mode="production"):
     print(f"{Colors.GREEN}Starting bot in {mode.capitalize()} Mode...{Colors.RESET}")
 
     if mode == "dev":
-        if _launch_script(scripts / "start_dev_mode.bat", "Dev mode"):
+        if _launch_script(scripts / "dev.bat", "Dev mode"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
@@ -622,7 +634,7 @@ def start_bot(mode="production"):
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
     else:
-        if _launch_script(scripts / "start_bot.bat", "Production"):
+        if _launch_script(scripts / "start.bat", "Production"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True

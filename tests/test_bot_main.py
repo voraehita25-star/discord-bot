@@ -62,7 +62,9 @@ class TestValidateToken:
 
         # A properly formatted token (long enough, 3 parts) - at least 50 chars
         # Using fake test token that doesn't trigger secret scanning
-        result = validate_token("XXXXXXXXXXXXXXXXXXXXXXXXXX.XXXXXX.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        result = validate_token(
+            "XXXXXXXXXXXXXXXXXXXXXXXXXX.XXXXXX.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        )
 
         assert result is True
 
@@ -201,7 +203,7 @@ class TestAsyncFunctions:
         from bot import bot, graceful_shutdown
 
         # Mock the bot
-        with patch.object(bot, 'is_closed', return_value=True):
+        with patch.object(bot, "is_closed", return_value=True):
             # Should not raise
             await graceful_shutdown(None)
 
@@ -212,26 +214,31 @@ class TestModuleImports:
     def test_import_musicbot(self):
         """Test importing MusicBot."""
         from bot import MusicBot
+
         assert MusicBot is not None
 
     def test_import_create_bot(self):
         """Test importing create_bot."""
         from bot import create_bot
+
         assert create_bot is not None
 
     def test_import_validate_token(self):
         """Test importing validate_token."""
         from bot import validate_token
+
         assert validate_token is not None
 
     def test_import_graceful_shutdown(self):
         """Test importing graceful_shutdown."""
         from bot import graceful_shutdown
+
         assert graceful_shutdown is not None
 
     def test_import_bot_instance(self):
         """Test importing bot instance."""
         from bot import bot
+
         assert bot is not None
 
 
@@ -242,5 +249,5 @@ class TestGlobalBotInstance:
         """Test bot has start_time attribute."""
         from bot import bot
 
-        assert hasattr(bot, 'start_time')
+        assert hasattr(bot, "start_time")
         assert isinstance(bot.start_time, float)

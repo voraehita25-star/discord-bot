@@ -42,7 +42,7 @@ class TestInitSentry:
             with patch.dict("os.environ", {}, clear=True):
                 with patch.object(sentry_integration, "os") as mock_os:
                     mock_os.getenv.return_value = None
-                    result = sentry_integration.init_sentry(dsn=None)
+                    sentry_integration.init_sentry(dsn=None)
                     # Should return False since no DSN
         finally:
             sentry_integration.SENTRY_AVAILABLE = original
@@ -94,7 +94,7 @@ class TestCaptureException:
             mock_scope.return_value.__exit__ = MagicMock(return_value=False)
 
             with patch("sentry_sdk.capture_exception", return_value="event-id"):
-                result = sentry_integration.capture_exception(
+                sentry_integration.capture_exception(
                     ValueError("test"),
                     context={"key": "value"},
                     user_id=123,

@@ -1,7 +1,6 @@
 """Tests for localization module."""
 
 
-
 class TestLanguageEnum:
     """Tests for Language enum."""
 

@@ -49,7 +49,7 @@ class TestSelfHealerInit:
 
         healer = SelfHealer()
 
-        assert hasattr(healer, 'logger')
+        assert hasattr(healer, "logger")
         assert isinstance(healer.logger, logging.Logger)
 
 
@@ -144,7 +144,7 @@ class TestFindAllBotProcesses:
 
         healer = SelfHealer()
 
-        with patch('psutil.process_iter', return_value=[]):
+        with patch("psutil.process_iter", return_value=[]):
             result = healer.find_all_bot_processes()
 
         assert isinstance(result, list)
@@ -163,7 +163,7 @@ class TestFindAllDevWatchers:
 
         healer = SelfHealer()
 
-        with patch('psutil.process_iter', return_value=[]):
+        with patch("psutil.process_iter", return_value=[]):
             result = healer.find_all_dev_watchers()
 
         assert isinstance(result, list)

@@ -14,6 +14,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -118,6 +119,11 @@ class RateLimiter:
         self._cleanup_task: asyncio.Task | None = None
         self._adaptive_enabled = True
 
+        # Persistent ban list: user_id -> expiry_timestamp (None = permanent)
+        self._ban_list: dict[int, float | None] = {}
+        self._ban_file = Path("data/ban_list.json")
+        self._load_ban_list()
+
         # Default configurations
         self._setup_defaults()
 
@@ -206,6 +212,88 @@ class RateLimiter:
     def add_config(self, name: str, config: RateLimitConfig) -> None:
         """Add or update a rate limit configuration."""
         self._configs[name] = config
+
+    # ==================== Ban List Methods ====================
+
+    def _load_ban_list(self) -> None:
+        """Load ban list from persistent JSON file."""
+        import json as _json
+
+        if self._ban_file.exists():
+            try:
+                data = _json.loads(self._ban_file.read_text(encoding="utf-8"))
+                # Convert string keys back to int (JSON doesn't support int keys)
+                self._ban_list = {int(k): v for k, v in data.items()}
+                # Prune expired bans
+                now = time.time()
+                expired = [uid for uid, exp in self._ban_list.items() if exp is not None and exp < now]
+                for uid in expired:
+                    del self._ban_list[uid]
+                if expired:
+                    self._save_ban_list()
+                if self._ban_list:
+                    logging.info("🚫 Loaded %d bans from %s", len(self._ban_list), self._ban_file)
+            except Exception as e:
+                logging.warning("Failed to load ban list: %s", e)
+                self._ban_list = {}
+
+    def _save_ban_list(self) -> None:
+        """Save ban list to persistent JSON file."""
+        import json as _json
+
+        try:
+            self._ban_file.parent.mkdir(parents=True, exist_ok=True)
+            # Convert int keys to strings for JSON
+            data = {str(k): v for k, v in self._ban_list.items()}
+            self._ban_file.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            logging.error("Failed to save ban list: %s", e)
+
+    def ban_user(self, user_id: int, duration: float | None = None) -> None:
+        """Ban a user from using rate-limited features.
+
+        Args:
+            user_id: Discord user ID to ban
+            duration: Ban duration in seconds (None = permanent)
+        """
+        expiry = time.time() + duration if duration else None
+        self._ban_list[user_id] = expiry
+        self._save_ban_list()
+        if duration:
+            logging.info("🚫 Banned user %d for %.0f seconds", user_id, duration)
+        else:
+            logging.info("🚫 Permanently banned user %d", user_id)
+
+    def unban_user(self, user_id: int) -> bool:
+        """Unban a user. Returns True if user was previously banned."""
+        if user_id in self._ban_list:
+            del self._ban_list[user_id]
+            self._save_ban_list()
+            logging.info("✅ Unbanned user %d", user_id)
+            return True
+        return False
+
+    def is_banned(self, user_id: int) -> bool:
+        """Check if a user is currently banned."""
+        if user_id not in self._ban_list:
+            return False
+        expiry = self._ban_list[user_id]
+        if expiry is not None and time.time() >= expiry:
+            # Ban expired, auto-remove
+            del self._ban_list[user_id]
+            self._save_ban_list()
+            return False
+        return True
+
+    def get_ban_list(self) -> dict[int, float | None]:
+        """Get current ban list (pruning expired bans)."""
+        now = time.time()
+        expired = [uid for uid, exp in self._ban_list.items() if exp is not None and exp < now]
+        for uid in expired:
+            del self._ban_list[uid]
+        if expired:
+            self._save_ban_list()
+        return dict(self._ban_list)
 
     def _get_bucket_key(
         self,
@@ -301,6 +389,10 @@ class RateLimiter:
         if config_name not in self._configs:
             # No config = no limit
             return True, 0.0, None
+
+        # Check ban list before rate limiting
+        if user_id and self.is_banned(user_id):
+            return False, 0.0, "🚫 You are currently restricted from this action."
 
         config = self._configs[config_name]
         key = self._get_bucket_key(config_name, config, user_id, channel_id, guild_id)

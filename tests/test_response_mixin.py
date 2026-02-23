@@ -232,7 +232,7 @@ class TestResponseMixinAsync:
         """Test _get_chat_history_index with no history."""
         mixin = self.create_mixin_instance()
 
-        with patch('cogs.ai_core.response.response_mixin.get_all_channels_summary') as mock_get:
+        with patch("cogs.ai_core.response.response_mixin.get_all_channels_summary") as mock_get:
             mock_get.return_value = []
 
             result = await mixin._get_chat_history_index()
@@ -250,10 +250,8 @@ class TestResponseMixinAsync:
         mock_channel.guild.name = "Test Guild"
         mixin.bot.get_channel.return_value = mock_channel
 
-        with patch('cogs.ai_core.response.response_mixin.get_all_channels_summary') as mock_get:
-            mock_get.return_value = [
-                {"channel_id": 123456789, "message_count": 10}
-            ]
+        with patch("cogs.ai_core.response.response_mixin.get_all_channels_summary") as mock_get:
+            mock_get.return_value = [{"channel_id": 123456789, "message_count": 10}]
 
             result = await mixin._get_chat_history_index()
 
@@ -265,7 +263,7 @@ class TestResponseMixinAsync:
         """Test _get_requested_history when channel not found."""
         mixin = self.create_mixin_instance()
 
-        with patch('cogs.ai_core.response.response_mixin.get_channel_history_preview') as mock_get:
+        with patch("cogs.ai_core.response.response_mixin.get_channel_history_preview") as mock_get:
             mock_get.return_value = None
 
             result = await mixin._get_requested_history(123456789)
@@ -283,7 +281,7 @@ class TestResponseMixinAsync:
         mock_channel.guild.name = "Test Guild"
         mixin.bot.get_channel.return_value = mock_channel
 
-        with patch('cogs.ai_core.response.response_mixin.get_channel_history_preview') as mock_get:
+        with patch("cogs.ai_core.response.response_mixin.get_channel_history_preview") as mock_get:
             mock_get.return_value = [
                 {"role": "user", "content": "Hello"},
                 {"role": "model", "content": "Hi there!"},
@@ -300,7 +298,7 @@ class TestResponseMixinAsync:
         """Test _get_requested_history handles errors."""
         mixin = self.create_mixin_instance()
 
-        with patch('cogs.ai_core.response.response_mixin.get_channel_history_preview') as mock_get:
+        with patch("cogs.ai_core.response.response_mixin.get_channel_history_preview") as mock_get:
             mock_get.side_effect = OSError("Database error")
 
             result = await mixin._get_requested_history(123456789)

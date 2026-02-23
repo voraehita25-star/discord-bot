@@ -38,7 +38,11 @@ RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src 
 
 # Copy real Rust source and rebuild
 COPY rust_extensions/ ./rust_extensions/
-RUN cd rust_extensions && cargo build --release 2>&1 || echo "WARNING: Rust extensions failed to build — they will be unavailable at runtime"
+RUN cd rust_extensions && cargo build --release 2>&1; \
+    RUST_EXIT=$?; \
+    if [ $RUST_EXIT -ne 0 ]; then \
+        echo "⚠️ RUST BUILD FAILED (exit $RUST_EXIT) — Rust extensions will be unavailable at runtime"; \
+    fi
 
 # Stage only the needed .so files for minimal COPY into production
 RUN mkdir -p /out-rust && (cp /build/rust_extensions/target/release/lib*.so /out-rust/ 2>/dev/null && echo "Rust libs staged" || echo "WARNING: No Rust .so files found")

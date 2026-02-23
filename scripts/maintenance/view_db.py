@@ -31,7 +31,7 @@ def main() -> None:
     # We still validate and bracket-escape as defense-in-depth.
     summary: dict[str, int] = {}
     for table in tables:
-        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table):
             print(f"Skipping table with invalid name: {table}")
             continue
         cursor.execute(f"SELECT * FROM [{table}]")  # nosec: validated + bracket-escaped

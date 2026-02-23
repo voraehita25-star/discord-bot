@@ -24,7 +24,7 @@ class TestMemoryResultDataclass:
             score=0.85,
             memory_id=123,
             source="semantic",
-            age_days=14.5
+            age_days=14.5,
         )
 
         assert result.content == "Test memory content"
@@ -41,12 +41,7 @@ class TestMemoryResultDataclass:
             pytest.skip("rag module not available")
             return
 
-        result = MemoryResult(
-            content="test",
-            score=0.5,
-            memory_id=1,
-            source="keyword"
-        )
+        result = MemoryResult(content="test", score=0.5, memory_id=1, source="keyword")
 
         assert result.age_days == 0
 
@@ -79,10 +74,7 @@ class TestMemoryMetadataDataclass:
 
         current = time.time()
         meta = MemoryMetadata(
-            memory_id=200,
-            access_count=10,
-            last_accessed=current,
-            boost_score=2.0
+            memory_id=200, access_count=10, last_accessed=current, boost_score=2.0
         )
 
         assert meta.access_count == 10
@@ -203,9 +195,7 @@ class TestMemorySourceTypes:
             pytest.skip("rag module not available")
             return
 
-        result = MemoryResult(
-            content="test", score=0.9, memory_id=1, source="semantic"
-        )
+        result = MemoryResult(content="test", score=0.9, memory_id=1, source="semantic")
         assert result.source == "semantic"
 
     def test_keyword_source(self):
@@ -216,9 +206,7 @@ class TestMemorySourceTypes:
             pytest.skip("rag module not available")
             return
 
-        result = MemoryResult(
-            content="test", score=0.8, memory_id=2, source="keyword"
-        )
+        result = MemoryResult(content="test", score=0.8, memory_id=2, source="keyword")
         assert result.source == "keyword"
 
     def test_hybrid_source(self):
@@ -229,7 +217,5 @@ class TestMemorySourceTypes:
             pytest.skip("rag module not available")
             return
 
-        result = MemoryResult(
-            content="test", score=0.85, memory_id=3, source="hybrid"
-        )
+        result = MemoryResult(content="test", score=0.85, memory_id=3, source="hybrid")
         assert result.source == "hybrid"

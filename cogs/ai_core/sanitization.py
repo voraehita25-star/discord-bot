@@ -69,7 +69,7 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
 
     # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>) from AI output
     content = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", content)  # Role mentions
-    content = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", content)   # User mentions
+    content = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", content)  # User mentions
 
     # Limit length
     if len(content) > max_length:

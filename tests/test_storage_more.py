@@ -44,7 +44,7 @@ class TestCacheCleanup:
         fresh_time = time.time()
         _history_cache[88888] = (fresh_time, [{"test": "data"}])
 
-        result = _cleanup_expired_cache()
+        _cleanup_expired_cache()
 
         # The fresh entry should still be there
         assert 88888 in _history_cache

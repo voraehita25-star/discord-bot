@@ -189,7 +189,13 @@ class ConversationSummarizer:
         )
 
         # Save to database
-        await self._save_summary(result)
+        summary_id = await self._save_summary(result)
+
+        if summary_id is None:
+            self.logger.error(
+                "Failed to save summary for channel %d — aborting consolidation", channel_id
+            )
+            return None
 
         # Delete consolidated messages (keep summary instead)
         message_ids = [row["id"] for row in rows]
@@ -414,24 +420,31 @@ class ConversationSummarizer:
                     summary.channel_id,
                     summary.user_id,
                     summary.summary,
-                    json.dumps(summary.key_topics, ensure_ascii=False) if summary.key_topics else "[]",
-                    json.dumps(summary.key_decisions, ensure_ascii=False) if summary.key_decisions else "[]",
+                    json.dumps(summary.key_topics, ensure_ascii=False)
+                    if summary.key_topics
+                    else "[]",
+                    json.dumps(summary.key_decisions, ensure_ascii=False)
+                    if summary.key_decisions
+                    else "[]",
                     summary.start_time.isoformat() if summary.start_time else None,
                     summary.end_time.isoformat() if summary.end_time else None,
                     summary.message_count,
                 ),
             )
+            await conn.commit()
             return cursor.lastrowid
 
     async def _delete_consolidated_messages(self, message_ids: list[int]) -> None:
-        """Delete messages that have been consolidated."""
+        """Delete messages that have been consolidated (batched to avoid SQL variable limit)."""
         if not DB_AVAILABLE or db is None or not message_ids:
             return
 
-        placeholders = ",".join("?" * len(message_ids))
-
+        BATCH_SIZE = 500
         async with db.get_connection() as conn:
-            await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", message_ids)
+            for i in range(0, len(message_ids), BATCH_SIZE):
+                batch = message_ids[i : i + BATCH_SIZE]
+                placeholders = ",".join("?" * len(batch))
+                await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch)
             await conn.commit()
 
 

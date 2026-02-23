@@ -246,7 +246,7 @@ class TestLoadHistory:
         mock_bot.loop.run_in_executor = AsyncMock(return_value=[])
 
         with patch("cogs.ai_core.storage.DATABASE_AVAILABLE", False):
-            result = await load_history(mock_bot, 88888)
+            await load_history(mock_bot, 88888)
 
         # Cleanup
         _history_cache.clear()
@@ -289,9 +289,7 @@ class TestSaveHistoryDB:
             mock_db.get_ai_history_count = AsyncMock(return_value=5)
             mock_db.save_ai_metadata = AsyncMock()
 
-            new_entries = [
-                {"role": "user", "parts": ["hello"], "timestamp": "2024-01-01"}
-            ]
+            new_entries = [{"role": "user", "parts": ["hello"], "timestamp": "2024-01-01"}]
             await _save_history_db(12345, {"history": []}, 100, new_entries)
 
             mock_db.save_ai_messages_batch.assert_called_once()
@@ -339,13 +337,14 @@ class TestDeleteHistory:
         """Test delete from database."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.delete_ai_history = AsyncMock(return_value=True)
 
             result = await storage.delete_history(12345)
-            assert result == True
+            assert result
             mock_db.delete_ai_history.assert_called_once_with(12345)
 
     @pytest.mark.asyncio
@@ -357,9 +356,10 @@ class TestDeleteHistory:
         storage._history_cache[channel_id] = (time.time(), [])
         storage._metadata_cache[channel_id] = (time.time(), {})
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.delete_ai_history = AsyncMock(return_value=True)
 
             await storage.delete_history(channel_id)
@@ -376,9 +376,10 @@ class TestUpdateMessageId:
         """Test update message ID."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.update_message_id = AsyncMock()
 
             await storage.update_message_id(12345, 67890)
@@ -393,12 +394,11 @@ class TestCopyHistory:
         """Test copy history success."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
-            mock_db.get_ai_history = AsyncMock(
-                return_value=[{"role": "user", "content": "msg1"}]
-            )
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_ai_history = AsyncMock(return_value=[{"role": "user", "content": "msg1"}])
             mock_db.save_ai_messages_batch = AsyncMock(return_value=1)
 
             result = await storage.copy_history(111, 222)
@@ -418,9 +418,10 @@ class TestCopyHistory:
         """Test copy when source empty."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_ai_history = AsyncMock(return_value=[])
 
             result = await storage.copy_history(111, 222)
@@ -435,9 +436,11 @@ class TestMoveHistory:
         """Test move history success."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "copy_history", new_callable=AsyncMock
-        ) as mock_copy, patch.object(storage, "db") as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "copy_history", new_callable=AsyncMock) as mock_copy,
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_copy.return_value = 5
             mock_db.delete_ai_history = AsyncMock()
 
@@ -463,9 +466,10 @@ class TestGetAllChannelIds:
         """Test get all channel IDs."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_all_ai_channel_ids = AsyncMock(return_value=[1, 2, 3])
 
             result = await storage.get_all_channel_ids()
@@ -489,9 +493,10 @@ class TestGetAllChannelsSummary:
         """Test get channels summary."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_all_ai_channel_ids = AsyncMock(return_value=[1, 2])
             mock_db.get_ai_history_count = AsyncMock(side_effect=[10, 20])
 
@@ -518,9 +523,10 @@ class TestGetChannelHistoryPreview:
         """Test get history preview."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_ai_history = AsyncMock(
                 return_value=[
                     {"role": "user", "content": "hello world"},
@@ -537,9 +543,10 @@ class TestGetChannelHistoryPreview:
         """Test preview truncates long content."""
         from cogs.ai_core import storage
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             long_content = "x" * 200
             mock_db.get_ai_history = AsyncMock(
                 return_value=[{"role": "user", "content": long_content}]
@@ -588,13 +595,14 @@ class TestLoadMetadata:
 
         storage._metadata_cache.pop(channel_id, None)
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_ai_metadata = AsyncMock(return_value={"thinking_enabled": False})
 
             result = await storage.load_metadata(bot, channel_id)
-            assert result["thinking_enabled"] == False
+            assert not result["thinking_enabled"]
 
 
 class TestGetMessageByLocalId:
@@ -623,9 +631,10 @@ class TestGetMessageByLocalId:
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock()
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_connection.return_value = mock_conn
 
             result = await storage.get_message_by_local_id(12345, 1)
@@ -652,16 +661,15 @@ class TestGetLastModelMessage:
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchone = AsyncMock(
-            return_value=("model", "response", 222, "2024-01-01", 5)
-        )
+        mock_cursor.fetchone = AsyncMock(return_value=("model", "response", 222, "2024-01-01", 5))
         mock_conn.execute = AsyncMock(return_value=mock_cursor)
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock()
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_connection.return_value = mock_conn
 
             result = await storage.get_last_model_message(12345)
@@ -682,9 +690,10 @@ class TestLoadHistoryFromDB:
 
         storage._history_cache.pop(channel_id, None)
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "db"
-        ) as mock_db:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
             mock_db.get_ai_history = AsyncMock(
                 return_value=[
                     {"role": "user", "content": "hello"},
@@ -717,9 +726,10 @@ class TestSaveHistoryFull:
 
         chat_data = {"history": [{"role": "user", "parts": ["test"]}]}
 
-        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-            storage, "_save_history_db", new_callable=AsyncMock
-        ) as mock_save:
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "_save_history_db", new_callable=AsyncMock) as mock_save,
+        ):
             await storage.save_history(bot, 12345, chat_data)
 
             # Should be called with main guild limit
@@ -741,9 +751,10 @@ class TestSaveHistoryFull:
 
             chat_data = {"history": [{"role": "user", "parts": ["test"]}]}
 
-            with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-                storage, "_save_history_db", new_callable=AsyncMock
-            ) as mock_save:
+            with (
+                patch.object(storage, "DATABASE_AVAILABLE", True),
+                patch.object(storage, "_save_history_db", new_callable=AsyncMock) as mock_save,
+            ):
                 await storage.save_history(bot, 12345, chat_data)
 
                 # Should be called with RP guild limit
@@ -756,9 +767,10 @@ class TestSaveHistoryFull:
 
             chat_data = {"history": [{"role": "user", "parts": ["test"]}]}
 
-            with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
-                storage, "_save_history_db", new_callable=AsyncMock
-            ) as mock_save:
+            with (
+                patch.object(storage, "DATABASE_AVAILABLE", True),
+                patch.object(storage, "_save_history_db", new_callable=AsyncMock) as mock_save,
+            ):
                 await storage.save_history(bot, 12345, chat_data)
                 mock_save.assert_called_once()
 

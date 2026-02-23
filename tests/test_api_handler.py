@@ -91,11 +91,7 @@ class TestDetectSearchIntent:
 
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(
-            mock_client,
-            "gemini-3-pro-preview",
-            "Tell me a joke"
-        )
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "Tell me a joke")
 
         assert isinstance(result, bool)
 
@@ -111,9 +107,7 @@ class TestDetectSearchIntent:
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
         result = await detect_search_intent(
-            mock_client,
-            "gemini-3-pro-preview",
-            "What is the latest news?"
+            mock_client, "gemini-3.1-pro-preview", "What is the latest news?"
         )
 
         assert result is True
@@ -129,11 +123,7 @@ class TestDetectSearchIntent:
 
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(
-            mock_client,
-            "gemini-3-pro-preview",
-            "Tell me a story"
-        )
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "Tell me a story")
 
         assert result is False
 
@@ -145,11 +135,7 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(side_effect=ValueError("API Error"))
 
-        result = await detect_search_intent(
-            mock_client,
-            "gemini-3-pro-preview",
-            "Test message"
-        )
+        result = await detect_search_intent(mock_client, "gemini-3.1-pro-preview", "Test message")
 
         assert result is False
 

@@ -97,7 +97,7 @@ class Music(commands.Cog):
     class _DictProxy:
         """Proxy that maps dict[guild_id] access to MusicGuildState fields."""
 
-        def __init__(self, cog: "Music", attr: str) -> None:
+        def __init__(self, cog: Music, attr: str) -> None:
             self._cog = cog
             self._attr = attr
 
@@ -135,10 +135,15 @@ class Music(commands.Cog):
                     gs.queue = collections.deque()
                 else:
                     _defaults = {
-                        "current_track": None, "pause_start": None,
-                        "auto_disconnect_task": None, "last_text_channel": None,
-                        "loop": False, "fixing": False, "mode_247": False,
-                        "volume": 0.5, "play_retries": 0,
+                        "current_track": None,
+                        "pause_start": None,
+                        "auto_disconnect_task": None,
+                        "last_text_channel": None,
+                        "loop": False,
+                        "fixing": False,
+                        "mode_247": False,
+                        "volume": 0.5,
+                        "play_retries": 0,
                     }
                     default_val = _defaults.get(self._attr)
                     setattr(gs, self._attr, default_val)
@@ -167,10 +172,15 @@ class Music(commands.Cog):
         def clear(self):
             # Only clear this specific attribute across all guilds, not all state
             _defaults = {
-                "current_track": None, "pause_start": None,
-                "auto_disconnect_task": None, "last_text_channel": None,
-                "loop": False, "fixing": False, "mode_247": False,
-                "volume": 0.5, "play_retries": 0,
+                "current_track": None,
+                "pause_start": None,
+                "auto_disconnect_task": None,
+                "last_text_channel": None,
+                "loop": False,
+                "fixing": False,
+                "mode_247": False,
+                "volume": 0.5,
+                "play_retries": 0,
             }
             default_val = _defaults.get(self._attr)
             for gs in self._cog._guild_states.values():
@@ -319,7 +329,7 @@ class Music(commands.Cog):
         await asyncio.to_thread(self._save_queue_json_sync, guild_id)
 
     def _save_queue_json_sync(self, guild_id: int) -> None:
-        """Synchronous JSON save implementation."""
+        """Synchronous JSON save implementation with atomic write."""
         queue = self.queues.get(guild_id, [])
         if not queue:
             filepath = Path(f"data/queue_{guild_id}.json")
@@ -337,7 +347,9 @@ class Music(commands.Cog):
 
         try:
             filepath = Path(f"data/queue_{guild_id}.json")
-            filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path = filepath.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(filepath)  # Atomic rename
         except OSError as e:
             logging.error("Failed to save queue for guild %s: %s", guild_id, e)
 
@@ -363,7 +375,8 @@ class Music(commands.Cog):
             return False
 
         try:
-            data = json.loads(filepath.read_text(encoding="utf-8"))
+            raw = await asyncio.to_thread(filepath.read_text, encoding="utf-8")
+            data = json.loads(raw)
 
             queue = data.get("queue", [])
             if queue:
@@ -706,7 +719,9 @@ class Music(commands.Cog):
                 try:
                     async with ctx.typing():
                         # Use Download Mode (stream=False)
-                        player = await YTDLSource.from_url(url, loop=asyncio.get_running_loop(), stream=False)
+                        player = await YTDLSource.from_url(
+                            url, loop=asyncio.get_running_loop(), stream=False
+                        )
 
                         # Apply stored volume to new track
                         player.volume = self.volumes.get(guild_id, 0.5)
@@ -841,7 +856,9 @@ class Music(commands.Cog):
                 # Only update global presence if bot has no other active voice clients
                 if len(self.bot.voice_clients) <= 1:
                     await self.bot.change_presence(
-                        activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
+                        activity=discord.Activity(
+                            type=discord.ActivityType.listening, name="คำสั่งเพลง"
+                        )
                     )
         finally:
             # Always release the lock
@@ -952,6 +969,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="fix", aliases=["f", "reconnect"])
+    @commands.guild_only()
     async def fix(self, ctx):
         """แก้ไขอาการกระตุกโดยการเชื่อมต่อใหม่และเล่นต่อจากเดิม."""
         if not ctx.voice_client or (
@@ -1061,7 +1079,9 @@ class Music(commands.Cog):
 
         except (discord.DiscordException, OSError) as e:
             error_embed = discord.Embed(
-                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง", color=Colors.ERROR
+                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ",
+                description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง",
+                color=Colors.ERROR,
             )
             await fix_msg.edit(embed=error_embed)
             logging.error("Fix failed: %s", e)
@@ -1246,7 +1266,9 @@ class Music(commands.Cog):
                         return
                 except (discord.DiscordException, OSError) as e:
                     embed = discord.Embed(
-                        title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่", color=Colors.ERROR
+                        title=f"{Emojis.CROSS} Error",
+                        description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่",
+                        color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
                     logging.error("Search error: %s", e)
@@ -1567,7 +1589,9 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if not ctx.voice_client or (not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()):
+        if not ctx.voice_client or (
+            not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()
+        ):
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Nothing is playing", color=Colors.ERROR
             )
@@ -1687,7 +1711,7 @@ class Music(commands.Cog):
             self.fixing[guild_id] = False
             logging.error("Seek failed: %s", e)
             embed = discord.Embed(
-                description=f"{Emojis.CROSS} Seek failed: {e}",
+                description=f"{Emojis.CROSS} Seek failed (internal error)",
                 color=Colors.ERROR,
             )
             await ctx.send(embed=embed)

@@ -37,6 +37,7 @@ class TestWebhookMessageSending:
     """Tests for sending messages via webhooks."""
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_send_via_webhook_success(self):
         """Test successful message sending via webhook."""
         mock_webhook = MagicMock()

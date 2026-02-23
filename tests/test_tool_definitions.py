@@ -1,7 +1,6 @@
 """Tests for tool_definitions module."""
 
 
-
 class TestGetToolDefinitions:
     """Tests for get_tool_definitions function."""
 

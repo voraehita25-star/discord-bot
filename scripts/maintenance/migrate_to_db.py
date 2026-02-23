@@ -86,12 +86,14 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
 
             # Convert parts to string (handle both str and dict formats)
             if isinstance(parts, list):
+
                 def _extract_text(part):
                     if isinstance(part, str):
                         return part
                     if isinstance(part, dict) and "text" in part:
                         return part["text"]
                     return str(part)
+
                 content = "\n".join(_extract_text(p) for p in parts if p)
             else:
                 content = str(parts)

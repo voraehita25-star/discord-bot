@@ -1,7 +1,6 @@
 """Tests for fast_json module."""
 
 
-
 class TestJsonLoads:
     """Tests for json_loads function."""
 
@@ -25,7 +24,7 @@ class TestJsonLoads:
         """Test json_loads with array."""
         from utils.fast_json import json_loads
 
-        result = json_loads('[1, 2, 3]')
+        result = json_loads("[1, 2, 3]")
 
         assert result == [1, 2, 3]
 

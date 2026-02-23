@@ -107,7 +107,7 @@ _MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
 
 def _cleanup_old_backoff_states() -> None:
     """Remove old backoff states to prevent memory leak.
-    
+
     Cleanup is triggered either when:
     1. State count exceeds MAX_BACKOFF_STATES
     2. Called periodically from _get_backoff_state
@@ -120,12 +120,17 @@ def _cleanup_old_backoff_states() -> None:
     # 2. Older than 2x TTL regardless of failure count (very old)
     # 3. Have very high failure counts but are old (likely abandoned services)
     keys_to_remove = [
-        key for key, state in _backoff_states.items()
-        if (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures == 0)
+        key
+        for key, state in _backoff_states.items()
+        if (
+            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures == 0
+        )
         or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL * 2)
-        or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures > 100)  # Likely abandoned
+        or (
+            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures > 100
+        )  # Likely abandoned
     ]
     for key in keys_to_remove:
         _backoff_states.pop(key, None)
@@ -162,7 +167,7 @@ async def _get_backoff_state_async(key: str) -> BackoffState:
 
 def _reset_backoff_state(key: str) -> None:
     """Reset backoff state after success.
-    
+
     Note: This is called from async context via retry_async success path.
     Thread-safe via _backoff_states_lock.
     """
@@ -203,7 +208,7 @@ def calculate_delay_sync(
     Returns:
         Delay in seconds before next retry
     """
-    base_exp_delay = config.base_delay * (config.exponential_base ** attempt)
+    base_exp_delay = config.base_delay * (config.exponential_base**attempt)
     cap = config.max_delay
 
     if config.jitter_strategy == JitterStrategy.NONE:
@@ -409,7 +414,9 @@ async def retry_async(
 
     if last_error is not None:
         raise last_error
-    raise RuntimeError(f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})")
+    raise RuntimeError(
+        f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})"
+    )
 
 
 def with_retry(

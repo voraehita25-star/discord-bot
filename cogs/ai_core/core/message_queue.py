@@ -330,14 +330,35 @@ class MessageQueue:
             Number of stale locks detected (not released)
         """
         now = time.time()
+        force_release_threshold = max_age * 2  # Force-release after 2x max_age (e.g., 600s)
         stale = [cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age]
+        released = 0
         for channel_id in stale:
-            # Only log warning - do not force-release as the task may still be running
-            logging.warning(
-                "🔒 Lock for channel %s has been held for >%ss (may be slow processing)",
-                channel_id,
-                max_age,
-            )
+            age = now - self._lock_times[channel_id]
+            if age > force_release_threshold:
+                # Force-release: lock held far too long, likely orphaned
+                lock = self.processing_locks.get(channel_id)
+                if lock and lock.locked():
+                    try:
+                        lock.release()
+                        released += 1
+                        logging.error(
+                            "🔓 FORCE-RELEASED stale lock for channel %s (held for %.0fs > %.0fs threshold)",
+                            channel_id,
+                            age,
+                            force_release_threshold,
+                        )
+                    except RuntimeError:
+                        pass  # Lock was not held (race condition)
+                # Clean up tracking
+                self._lock_times.pop(channel_id, None)
+            else:
+                # Only log warning for locks approaching threshold
+                logging.warning(
+                    "🔒 Lock for channel %s has been held for >%ss (may be slow processing)",
+                    channel_id,
+                    max_age,
+                )
         return len(stale)
 
     def cleanup_unused_locks(self, inactive_threshold: float = 3600.0) -> int:

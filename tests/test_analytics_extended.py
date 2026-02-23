@@ -27,7 +27,7 @@ class TestInteractionLog:
             output_length=200,
             response_time_ms=150.5,
             intent="question",
-            model="gemini-1.5-flash"
+            model="gemini-3.1-pro-preview",
         )
 
         assert log.user_id == 123
@@ -37,7 +37,7 @@ class TestInteractionLog:
         assert log.output_length == 200
         assert log.response_time_ms == 150.5
         assert log.intent == "question"
-        assert log.model == "gemini-1.5-flash"
+        assert log.model == "gemini-3.1-pro-preview"
 
     def test_interaction_log_defaults(self):
         """Test InteractionLog default values."""
@@ -55,7 +55,7 @@ class TestInteractionLog:
             output_length=100,
             response_time_ms=100.0,
             intent="chat",
-            model="test"
+            model="test",
         )
 
         assert log.tool_calls == 0
@@ -80,7 +80,7 @@ class TestInteractionLog:
             response_time_ms=500.0,
             intent="chat",
             model="test",
-            error="Timeout error"
+            error="Timeout error",
         )
 
         assert log.error == "Timeout error"
@@ -105,7 +105,7 @@ class TestAnalyticsSummary:
             error_rate=0.02,
             interactions_per_hour=50.0,
             total_input_tokens=10000,
-            total_output_tokens=20000
+            total_output_tokens=20000,
         )
 
         assert summary.total_interactions == 1000
@@ -150,7 +150,7 @@ class TestResponseQuality:
             user_reaction="👍",
             guardrail_triggered=False,
             response_length=500,
-            factors={"relevance": 0.95, "fluency": 0.85}
+            factors={"relevance": 0.95, "fluency": 0.85},
         )
 
         assert quality.score == 0.9
@@ -172,9 +172,9 @@ class TestAIAnalyticsInit:
 
         analytics = AIAnalytics()
 
-        assert hasattr(analytics, 'logger')
-        assert hasattr(analytics, '_stats')
-        assert hasattr(analytics, '_start_time')
+        assert hasattr(analytics, "logger")
+        assert hasattr(analytics, "_stats")
+        assert hasattr(analytics, "_start_time")
 
     def test_ai_analytics_initial_stats(self):
         """Test AIAnalytics initial stats are zero."""
@@ -247,9 +247,14 @@ class TestInteractionLogTimestamp:
 
         before = datetime.now()
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test"
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
         )
         after = datetime.now()
 
@@ -265,10 +270,15 @@ class TestInteractionLogTimestamp:
 
         custom_time = datetime(2024, 1, 1, 12, 0, 0)
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test",
-            timestamp=custom_time
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
+            timestamp=custom_time,
         )
 
         assert log.timestamp == custom_time
@@ -319,7 +329,7 @@ class TestAnalyticsSummaryTopIntents:
             error_rate=0.01,
             interactions_per_hour=10.0,
             total_input_tokens=1000,
-            total_output_tokens=2000
+            total_output_tokens=2000,
         )
 
         assert isinstance(summary.top_intents, list)

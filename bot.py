@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import hashlib
 import logging
 import os
@@ -16,8 +17,6 @@ import sys
 import time
 import traceback
 from pathlib import Path
-
-import contextlib
 
 import discord
 import psutil
@@ -75,6 +74,7 @@ except ImportError:
 # Import Sentry
 try:
     from utils.monitoring.sentry_integration import capture_exception, init_sentry
+
     SENTRY_AVAILABLE = True
 except ImportError:
     SENTRY_AVAILABLE = False
@@ -124,11 +124,15 @@ if PID_FILE.exists():
     except (ValueError, OSError):
         _old_pid = None
 
+
 # Write current PID only when running as main script
 # (not on import from tests/scripts)
 def _write_pid_file() -> None:
     """Write PID file for process tracking."""
-    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as e:
+        logging.warning("Failed to write PID file: %s", e)
 
 
 def smart_startup_check() -> bool:
@@ -233,6 +237,7 @@ atexit.register(remove_pid)
 
 # Use config as single source of truth for token
 from config import settings as _config_settings
+
 TOKEN = _config_settings.discord_token or os.getenv("DISCORD_TOKEN")
 
 
@@ -248,9 +253,7 @@ class MusicBot(commands.AutoShardedBot):
         if sys.platform != "win32":
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(
-                    sig, lambda s=sig: self._schedule_shutdown(s)
-                )
+                loop.add_signal_handler(sig, lambda s=sig: self._schedule_shutdown(s))
             logging.info("🛡️ Signal handlers registered for graceful shutdown")
 
         # Load Cogs
@@ -334,7 +337,7 @@ class MusicBot(commands.AutoShardedBot):
         perf_status = []
         # Check for orjson
         try:
-            import orjson
+            import orjson  # noqa: F401
 
             perf_status.append("orjson")
         except ImportError:
@@ -399,8 +402,9 @@ class MusicBot(commands.AutoShardedBot):
 
         # Handle bad arguments
         if isinstance(error, commands.BadArgument):
+            safe_msg = str(error)[:200]
             await ctx.send(
-                f"❌ **รูปแบบไม่ถูกต้อง**\nรายละเอียด: {error}\n💡 *ตรวจสอบค่าที่ใส่และลองใหม่อีกครั้ง*"
+                f"❌ **รูปแบบไม่ถูกต้อง**\nรายละเอียด: {safe_msg}\n💡 *ตรวจสอบค่าที่ใส่และลองใหม่อีกครั้ง*"
             )
             return
 
@@ -440,7 +444,9 @@ class MusicBot(commands.AutoShardedBot):
                 f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
             )
         except discord.HTTPException:
-            logging.warning("Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id)
+            logging.warning(
+                "Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id
+            )
 
     async def on_message(self, message: discord.Message) -> None:
         """Track messages for metrics."""
@@ -500,15 +506,15 @@ async def health_check(ctx):
     import platform  # pylint: disable=import-outside-toplevel
 
     # Calculate uptime
-    uptime_seconds = time.time() - bot.start_time if hasattr(bot, "start_time") else 0
+    uptime_seconds = time.time() - ctx.bot.start_time if hasattr(ctx.bot, "start_time") else 0
     hours, remainder = divmod(int(uptime_seconds), 3600)
     minutes, seconds = divmod(remainder, 60)
     uptime_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
 
     embed = discord.Embed(title="🏥 Bot Health Check", color=0x00FF00)
-    embed.add_field(name="🏓 Latency", value=f"{bot.latency * 1000:.0f}ms", inline=True)
-    embed.add_field(name="🌐 Guilds", value=str(len(bot.guilds)), inline=True)
-    embed.add_field(name="🎤 Voice", value=str(len(bot.voice_clients)), inline=True)
+    embed.add_field(name="🏓 Latency", value=f"{ctx.bot.latency * 1000:.0f}ms", inline=True)
+    embed.add_field(name="🌐 Guilds", value=str(len(ctx.bot.guilds)), inline=True)
+    embed.add_field(name="🎤 Voice", value=str(len(ctx.bot.voice_clients)), inline=True)
     embed.add_field(name="⏱️ Uptime", value=uptime_str, inline=True)
     embed.add_field(name="🐍 Python", value=platform.python_version(), inline=True)
     embed.add_field(name="📦 Discord.py", value=discord.__version__, inline=True)
@@ -551,7 +557,7 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
             logging.error("Error stopping Dashboard WebSocket server: %s", e)
 
     # Cancel health task if running
-    if hasattr(bot, '_health_task') and bot._health_task and not bot._health_task.done():
+    if hasattr(bot, "_health_task") and bot._health_task and not bot._health_task.done():
         bot._health_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await bot._health_task

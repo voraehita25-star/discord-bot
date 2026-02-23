@@ -290,7 +290,7 @@ class MemoryConsolidator:
 
         # Fallback 1: Try to find JSON object in response
         try:
-            match = re.search(r"\{[\s\S]*\}", response_text)
+            match = re.search(r"\{[\s\S]*?\}", response_text)
             if match:
                 result = json.loads(match.group())
                 if isinstance(result, dict):
@@ -304,7 +304,7 @@ class MemoryConsolidator:
 
         # Fallback 2: Try to find JSON array in response
         try:
-            match = re.search(r"\[[\s\S]*\]", response_text)
+            match = re.search(r"\[[\s\S]*?\]", response_text)
             if match:
                 result = json.loads(match.group())
                 if isinstance(result, list):

@@ -69,9 +69,7 @@ async def fetch_emoji_images(
         for emoji in emojis[:5]:  # Limit to 5 emojis to avoid overload
             img = None
             try:
-                async with s.get(
-                    emoji["url"], timeout=aiohttp.ClientTimeout(total=3)
-                ) as resp:
+                async with s.get(emoji["url"], timeout=aiohttp.ClientTimeout(total=3)) as resp:
                     if resp.status == 200:
                         data = await resp.read()
                         img = Image.open(io.BytesIO(data))

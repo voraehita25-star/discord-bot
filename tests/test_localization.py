@@ -3,8 +3,6 @@ Tests for utils.localization module.
 """
 
 
-
-
 class TestLocalizationModule:
     """Tests for localization module."""
 
