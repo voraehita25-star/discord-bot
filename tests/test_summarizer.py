@@ -6,7 +6,7 @@ Tests summarization logic and history compression.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -97,14 +97,14 @@ class TestSummarizerInit:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        
+
         assert summarizer.model is not None
         # Client may or may not be initialized depending on API key
 
     def test_init_model_from_env(self):
         """Test model is configurable."""
         from cogs.ai_core.memory.summarizer import SUMMARIZATION_MODEL
-        
+
         # Model should be set
         assert SUMMARIZATION_MODEL is not None
 
@@ -117,9 +117,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "user", "parts": ["Hello world"]}
-        ]
+        history = [{"role": "user", "parts": ["Hello world"]}]
 
         result = summarizer._history_to_text(history)
 
@@ -130,9 +128,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "user", "parts": [{"text": "Hello world"}]}
-        ]
+        history = [{"role": "user", "parts": [{"text": "Hello world"}]}]
 
         result = summarizer._history_to_text(history)
 
@@ -144,9 +140,7 @@ class TestHistoryToText:
 
         summarizer = ConversationSummarizer()
         long_text = "A" * 1000
-        history = [
-            {"role": "user", "parts": [long_text]}
-        ]
+        history = [{"role": "user", "parts": [long_text]}]
 
         result = summarizer._history_to_text(history)
 
@@ -159,9 +153,7 @@ class TestHistoryToText:
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
 
         summarizer = ConversationSummarizer()
-        history = [
-            {"role": "model", "parts": ["Response"]}
-        ]
+        history = [{"role": "model", "parts": ["Response"]}]
 
         result = summarizer._history_to_text(history)
 
@@ -263,7 +255,7 @@ class TestCompressHistory:
 
         summarizer = ConversationSummarizer()
         summarizer.client = None  # No client = summarization fails
-        
+
         history = [{"role": "user", "parts": ["msg"]}] * 50
 
         result = await summarizer.compress_history(history, keep_recent=10)

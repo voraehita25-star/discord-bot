@@ -27,7 +27,7 @@ class TestWebhookCache:
 
     def test_webhook_cache_initialization(self):
         """Test that webhook cache is properly initialized."""
-        from cogs.ai_core.webhook_cache import _webhook_cache
+        from cogs.ai_core.response.webhook_cache import _webhook_cache
 
         # Cache should be a dictionary
         assert isinstance(_webhook_cache, dict)
@@ -37,6 +37,7 @@ class TestWebhookMessageSending:
     """Tests for sending messages via webhooks."""
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_send_via_webhook_success(self):
         """Test successful message sending via webhook."""
         mock_webhook = MagicMock()
@@ -70,7 +71,7 @@ class TestWebhookCacheInternals:
 
     def test_get_cached_webhook_returns_none_for_empty_cache(self):
         """Test that get_cached_webhook returns None when cache is empty."""
-        from cogs.ai_core.webhook_cache import _webhook_cache, get_cached_webhook
+        from cogs.ai_core.response.webhook_cache import _webhook_cache, get_cached_webhook
 
         # Clear cache
         _webhook_cache.clear()
@@ -80,7 +81,7 @@ class TestWebhookCacheInternals:
 
     def test_set_and_get_cached_webhook(self):
         """Test storing and retrieving webhooks from cache."""
-        from cogs.ai_core.webhook_cache import (
+        from cogs.ai_core.response.webhook_cache import (
             _webhook_cache,
             get_cached_webhook,
             set_cached_webhook,
@@ -104,7 +105,7 @@ class TestWebhookCacheInternals:
 
     def test_invalidate_webhook_cache(self):
         """Test invalidating webhook cache for a channel."""
-        from cogs.ai_core.webhook_cache import (
+        from cogs.ai_core.response.webhook_cache import (
             _webhook_cache,
             invalidate_webhook_cache,
             set_cached_webhook,

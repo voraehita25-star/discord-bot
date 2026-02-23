@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 
 class TestPerformanceStats:
     """Tests for PerformanceStats class."""
@@ -157,7 +155,7 @@ class TestCorePerformanceTracker:
         from cogs.ai_core.core.performance import PerformanceTracker
 
         tracker = PerformanceTracker()
-        
+
         assert "rag_search" in tracker._metrics
         assert "api_call" in tracker._metrics
         assert "streaming" in tracker._metrics
@@ -172,7 +170,7 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.5)
-        
+
         assert len(tracker._metrics["api_call"]) == 1
         assert tracker._metrics["api_call"][0] == 0.5
 
@@ -182,9 +180,9 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         tracker.record_timing("custom_step", 1.0)
-        
+
         assert "custom_step" in tracker._metrics
-        assert tracker._metrics["custom_step"] == [1.0]
+        assert list(tracker._metrics["custom_step"]) == [1.0]
 
     def test_record_timing_respects_max_samples(self):
         """Test recording respects max samples limit."""
@@ -192,11 +190,11 @@ class TestCorePerformanceTracker:
         from cogs.ai_core.data.constants import PERFORMANCE_SAMPLES_MAX
 
         tracker = PerformanceTracker()
-        
+
         # Add more than max samples
         for i in range(PERFORMANCE_SAMPLES_MAX + 10):
             tracker.record_timing("api_call", float(i))
-        
+
         assert len(tracker._metrics["api_call"]) == PERFORMANCE_SAMPLES_MAX
 
     def test_get_stats_empty(self):
@@ -205,7 +203,7 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         stats = tracker.get_stats()
-        
+
         assert stats["api_call"]["count"] == 0
         assert stats["api_call"]["avg_ms"] == 0
 
@@ -217,9 +215,9 @@ class TestCorePerformanceTracker:
         tracker.record_timing("api_call", 0.1)
         tracker.record_timing("api_call", 0.2)
         tracker.record_timing("api_call", 0.3)
-        
+
         stats = tracker.get_stats()
-        
+
         assert stats["api_call"]["count"] == 3
         assert stats["api_call"]["avg_ms"] == 200.0  # (100+200+300)/3 = 200
         assert stats["api_call"]["min_ms"] == 100.0
@@ -232,9 +230,9 @@ class TestCorePerformanceTracker:
         tracker = PerformanceTracker()
         tracker.record_timing("streaming", 0.5)
         tracker.record_timing("streaming", 1.0)
-        
+
         stats = tracker.get_step_stats("streaming")
-        
+
         assert stats["count"] == 2
         assert stats["avg_ms"] == 750.0  # (500+1000)/2 = 750
 
@@ -244,7 +242,7 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         stats = tracker.get_step_stats("nonexistent")
-        
+
         assert stats["count"] == 0
         assert stats["avg_ms"] == 0
 
@@ -255,11 +253,11 @@ class TestCorePerformanceTracker:
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.1)
         tracker.record_timing("streaming", 0.2)
-        
+
         tracker.clear_metrics()
-        
-        assert tracker._metrics["api_call"] == []
-        assert tracker._metrics["streaming"] == []
+
+        assert len(tracker._metrics["api_call"]) == 0
+        assert len(tracker._metrics["streaming"]) == 0
 
     def test_clear_metrics_specific_step(self):
         """Test clearing specific step metrics."""
@@ -268,11 +266,11 @@ class TestCorePerformanceTracker:
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.1)
         tracker.record_timing("streaming", 0.2)
-        
+
         tracker.clear_metrics("api_call")
-        
-        assert tracker._metrics["api_call"] == []
-        assert tracker._metrics["streaming"] == [0.2]
+
+        assert len(tracker._metrics["api_call"]) == 0
+        assert list(tracker._metrics["streaming"]) == [0.2]
 
     def test_get_summary_with_data(self):
         """Test get_summary with recorded data."""
@@ -280,9 +278,9 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         tracker.record_timing("api_call", 0.1)
-        
+
         summary = tracker.get_summary()
-        
+
         assert "📊 Performance Summary:" in summary
         assert "api_call" in summary
 
@@ -292,7 +290,7 @@ class TestCorePerformanceTracker:
 
         tracker = PerformanceTracker()
         summary = tracker.get_summary()
-        
+
         assert "No performance data available" in summary
 
 
@@ -312,7 +310,7 @@ class TestRequestDeduplicator:
 
         dedup = RequestDeduplicator()
         result = dedup.is_duplicate("new_key")
-        
+
         assert result is False
 
     def test_is_duplicate_true(self):
@@ -321,9 +319,9 @@ class TestRequestDeduplicator:
 
         dedup = RequestDeduplicator()
         dedup.add_request("existing_key")
-        
+
         result = dedup.is_duplicate("existing_key")
-        
+
         assert result is True
 
     def test_add_request(self):
@@ -332,7 +330,7 @@ class TestRequestDeduplicator:
 
         dedup = RequestDeduplicator()
         dedup.add_request("test_key")
-        
+
         assert "test_key" in dedup._pending_requests
 
     def test_remove_request(self):
@@ -342,7 +340,7 @@ class TestRequestDeduplicator:
         dedup = RequestDeduplicator()
         dedup.add_request("test_key")
         dedup.remove_request("test_key")
-        
+
         assert "test_key" not in dedup._pending_requests
 
     def test_remove_request_nonexistent(self):
@@ -355,15 +353,16 @@ class TestRequestDeduplicator:
     def test_cleanup_removes_old_requests(self):
         """Test cleanup removes old requests."""
         import time
+
         from cogs.ai_core.core.performance import RequestDeduplicator
 
         dedup = RequestDeduplicator()
         # Manually set old timestamp
         dedup._pending_requests["old_key"] = time.time() - 120  # 2 minutes ago
         dedup._pending_requests["new_key"] = time.time()
-        
+
         cleaned = dedup.cleanup(max_age=60.0)
-        
+
         assert cleaned == 1
         assert "old_key" not in dedup._pending_requests
         assert "new_key" in dedup._pending_requests
@@ -375,7 +374,7 @@ class TestRequestDeduplicator:
         dedup = RequestDeduplicator()
         dedup.add_request("key1")
         dedup.add_request("key2")
-        
+
         assert dedup.get_pending_count() == 2
 
     def test_generate_key(self):
@@ -383,7 +382,7 @@ class TestRequestDeduplicator:
         from cogs.ai_core.core.performance import RequestDeduplicator
 
         key = RequestDeduplicator.generate_key(123, 456, "Hello world")
-        
+
         assert "123" in key
         assert "456" in key
         assert ":" in key
@@ -393,7 +392,7 @@ class TestRequestDeduplicator:
         from cogs.ai_core.core.performance import RequestDeduplicator
 
         key = RequestDeduplicator.generate_key(123, 456, "")
-        
+
         assert isinstance(key, str)
         assert "123" in key
 
@@ -404,7 +403,7 @@ class TestRequestDeduplicator:
         long_msg = "A" * 200
         key1 = RequestDeduplicator.generate_key(123, 456, long_msg)
         key2 = RequestDeduplicator.generate_key(123, 456, long_msg[:100])
-        
+
         # Should produce same key since only first 100 chars used
         assert key1 == key2
 

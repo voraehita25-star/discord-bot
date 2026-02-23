@@ -3,9 +3,9 @@ Extended tests for AI Analytics module.
 Tests dataclasses and AIAnalytics class.
 """
 
+from datetime import datetime
+
 import pytest
-from datetime import datetime, timedelta
-from dataclasses import asdict
 
 
 class TestInteractionLog:
@@ -18,7 +18,7 @@ class TestInteractionLog:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         log = InteractionLog(
             user_id=123,
             channel_id=456,
@@ -27,9 +27,9 @@ class TestInteractionLog:
             output_length=200,
             response_time_ms=150.5,
             intent="question",
-            model="gemini-1.5-flash"
+            model="gemini-3.1-pro-preview",
         )
-        
+
         assert log.user_id == 123
         assert log.channel_id == 456
         assert log.guild_id == 789
@@ -37,8 +37,8 @@ class TestInteractionLog:
         assert log.output_length == 200
         assert log.response_time_ms == 150.5
         assert log.intent == "question"
-        assert log.model == "gemini-1.5-flash"
-        
+        assert log.model == "gemini-3.1-pro-preview"
+
     def test_interaction_log_defaults(self):
         """Test InteractionLog default values."""
         try:
@@ -46,7 +46,7 @@ class TestInteractionLog:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         log = InteractionLog(
             user_id=1,
             channel_id=2,
@@ -55,14 +55,14 @@ class TestInteractionLog:
             output_length=100,
             response_time_ms=100.0,
             intent="chat",
-            model="test"
+            model="test",
         )
-        
+
         assert log.tool_calls == 0
         assert log.cache_hit is False
         assert log.error is None
         assert isinstance(log.timestamp, datetime)
-        
+
     def test_interaction_log_with_error(self):
         """Test InteractionLog with error."""
         try:
@@ -70,7 +70,7 @@ class TestInteractionLog:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         log = InteractionLog(
             user_id=1,
             channel_id=2,
@@ -80,9 +80,9 @@ class TestInteractionLog:
             response_time_ms=500.0,
             intent="chat",
             model="test",
-            error="Timeout error"
+            error="Timeout error",
         )
-        
+
         assert log.error == "Timeout error"
 
 
@@ -96,7 +96,7 @@ class TestAnalyticsSummary:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         summary = AnalyticsSummary(
             total_interactions=1000,
             avg_response_time_ms=150.0,
@@ -105,9 +105,9 @@ class TestAnalyticsSummary:
             error_rate=0.02,
             interactions_per_hour=50.0,
             total_input_tokens=10000,
-            total_output_tokens=20000
+            total_output_tokens=20000,
         )
-        
+
         assert summary.total_interactions == 1000
         assert summary.avg_response_time_ms == 150.0
         assert summary.cache_hit_rate == 0.25
@@ -124,9 +124,9 @@ class TestResponseQuality:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         quality = ResponseQuality(score=0.8)
-        
+
         assert quality.score == 0.8
         assert quality.retry_count == 0
         assert quality.was_edited is False
@@ -134,7 +134,7 @@ class TestResponseQuality:
         assert quality.guardrail_triggered is False
         assert quality.response_length == 0
         assert quality.factors == {}
-        
+
     def test_response_quality_with_values(self):
         """Test ResponseQuality with custom values."""
         try:
@@ -142,7 +142,7 @@ class TestResponseQuality:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         quality = ResponseQuality(
             score=0.9,
             retry_count=1,
@@ -150,9 +150,9 @@ class TestResponseQuality:
             user_reaction="👍",
             guardrail_triggered=False,
             response_length=500,
-            factors={"relevance": 0.95, "fluency": 0.85}
+            factors={"relevance": 0.95, "fluency": 0.85},
         )
-        
+
         assert quality.score == 0.9
         assert quality.retry_count == 1
         assert quality.user_reaction == "👍"
@@ -169,13 +169,13 @@ class TestAIAnalyticsInit:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         analytics = AIAnalytics()
-        
-        assert hasattr(analytics, 'logger')
-        assert hasattr(analytics, '_stats')
-        assert hasattr(analytics, '_start_time')
-        
+
+        assert hasattr(analytics, "logger")
+        assert hasattr(analytics, "_stats")
+        assert hasattr(analytics, "_start_time")
+
     def test_ai_analytics_initial_stats(self):
         """Test AIAnalytics initial stats are zero."""
         try:
@@ -183,9 +183,9 @@ class TestAIAnalyticsInit:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         analytics = AIAnalytics()
-        
+
         assert analytics._stats["total_interactions"] == 0
         assert analytics._stats["total_response_time_ms"] == 0
         assert analytics._stats["cache_hits"] == 0
@@ -202,7 +202,7 @@ class TestAIAnalyticsConstants:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         assert AIAnalytics.CHARS_PER_TOKEN == 4
 
 
@@ -216,7 +216,7 @@ class TestDatabaseAvailable:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         assert isinstance(DB_AVAILABLE, bool)
 
 
@@ -230,7 +230,7 @@ class TestModuleDocstring:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         assert analytics.__doc__ is not None
 
 
@@ -244,17 +244,22 @@ class TestInteractionLogTimestamp:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         before = datetime.now()
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test"
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
         )
         after = datetime.now()
-        
+
         assert before <= log.timestamp <= after
-        
+
     def test_timestamp_custom(self):
         """Test timestamp can be set manually."""
         try:
@@ -262,15 +267,20 @@ class TestInteractionLogTimestamp:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         custom_time = datetime(2024, 1, 1, 12, 0, 0)
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test",
-            timestamp=custom_time
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
+            timestamp=custom_time,
         )
-        
+
         assert log.timestamp == custom_time
 
 
@@ -284,10 +294,10 @@ class TestResponseQualityReactions:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         quality = ResponseQuality(score=0.9, user_reaction="👍")
         assert quality.user_reaction == "👍"
-        
+
     def test_reaction_thumbs_down(self):
         """Test thumbs down reaction."""
         try:
@@ -295,7 +305,7 @@ class TestResponseQualityReactions:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         quality = ResponseQuality(score=0.5, user_reaction="👎")
         assert quality.user_reaction == "👎"
 
@@ -310,7 +320,7 @@ class TestAnalyticsSummaryTopIntents:
         except ImportError:
             pytest.skip("analytics not available")
             return
-            
+
         summary = AnalyticsSummary(
             total_interactions=100,
             avg_response_time_ms=100.0,
@@ -319,9 +329,9 @@ class TestAnalyticsSummaryTopIntents:
             error_rate=0.01,
             interactions_per_hour=10.0,
             total_input_tokens=1000,
-            total_output_tokens=2000
+            total_output_tokens=2000,
         )
-        
+
         assert isinstance(summary.top_intents, list)
         assert len(summary.top_intents) == 3
         assert summary.top_intents[0] == ("chat", 50)

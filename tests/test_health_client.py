@@ -4,8 +4,6 @@ Tests for utils/monitoring/health_client.py
 Comprehensive tests for HealthAPIClient and helper functions.
 """
 
-import asyncio
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -127,6 +125,7 @@ class TestHealthAPIClientCheckService:
     async def test_check_service_returns_cached(self):
         """Test cached result is returned."""
         import time as _time
+
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
@@ -141,6 +140,7 @@ class TestHealthAPIClientCheckService:
     async def test_check_service_cached_false(self):
         """Test cached False is returned."""
         import time as _time
+
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
@@ -192,8 +192,9 @@ class TestHealthAPIClientGetHealth:
     @pytest.mark.asyncio
     async def test_get_health_exception(self):
         """Test get_health handles exception."""
-        from utils.monitoring.health_client import HealthAPIClient
         import aiohttp
+
+        from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
         client._service_available = True
@@ -309,9 +310,7 @@ class TestHealthAPIClientPushMethods:
 
         await client.push_counter("requests", 1, endpoint="/api")
 
-        client._push_metric.assert_called_once_with(
-            "counter", "requests", 1, {"endpoint": "/api"}
-        )
+        client._push_metric.assert_called_once_with("counter", "requests", 1, {"endpoint": "/api"})
 
     @pytest.mark.asyncio
     async def test_push_histogram(self):
@@ -323,9 +322,7 @@ class TestHealthAPIClientPushMethods:
 
         await client.push_histogram("latency", 0.5, method="GET")
 
-        client._push_metric.assert_called_once_with(
-            "histogram", "latency", 0.5, {"method": "GET"}
-        )
+        client._push_metric.assert_called_once_with("histogram", "latency", 0.5, {"method": "GET"})
 
     @pytest.mark.asyncio
     async def test_push_gauge(self):
@@ -337,9 +334,7 @@ class TestHealthAPIClientPushMethods:
 
         await client.push_gauge("queue_size", 10, queue="main")
 
-        client._push_metric.assert_called_once_with(
-            "gauge", "queue_size", 10, {"queue": "main"}
-        )
+        client._push_metric.assert_called_once_with("gauge", "queue_size", 10, {"queue": "main"})
 
 
 class TestHealthAPIClientPushMetric:
@@ -492,9 +487,7 @@ class TestHelperFunctions:
 
             await push_ai_response_time(1.5)
 
-            mock_client.push_histogram.assert_called_once_with(
-                "ai_response_time", 1.5
-            )
+            mock_client.push_histogram.assert_called_once_with("ai_response_time", 1.5)
 
     @pytest.mark.asyncio
     async def test_push_rate_limit_hit(self):
@@ -507,9 +500,7 @@ class TestHelperFunctions:
 
             await push_rate_limit_hit("user")
 
-            mock_client.push_counter.assert_called_once_with(
-                "rate_limit", 1, type="user"
-            )
+            mock_client.push_counter.assert_called_once_with("rate_limit", 1, type="user")
 
     @pytest.mark.asyncio
     async def test_push_cache_metric_hit(self):
@@ -522,9 +513,7 @@ class TestHelperFunctions:
 
             await push_cache_metric(hit=True)
 
-            mock_client.push_counter.assert_called_once_with(
-                "cache", 1, result="hit"
-            )
+            mock_client.push_counter.assert_called_once_with("cache", 1, result="hit")
 
     @pytest.mark.asyncio
     async def test_push_cache_metric_miss(self):
@@ -537,9 +526,7 @@ class TestHelperFunctions:
 
             await push_cache_metric(hit=False)
 
-            mock_client.push_counter.assert_called_once_with(
-                "cache", 1, result="miss"
-            )
+            mock_client.push_counter.assert_called_once_with("cache", 1, result="miss")
 
     @pytest.mark.asyncio
     async def test_push_token_usage(self):
@@ -565,9 +552,7 @@ class TestHelperFunctions:
 
             await set_circuit_breaker_state("api", 2)
 
-            mock_client.push_gauge.assert_called_once_with(
-                "circuit_breaker", 2, service="api"
-            )
+            mock_client.push_gauge.assert_called_once_with("circuit_breaker", 2, service="api")
 
     @pytest.mark.asyncio
     async def test_get_health_status(self):

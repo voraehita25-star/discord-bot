@@ -10,7 +10,6 @@ import base64
 import importlib
 import io
 import logging
-from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,7 @@ except ImportError:
 # PIL fallback
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False

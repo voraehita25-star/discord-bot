@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,6 +32,84 @@ const (
 	requestTimeout     = 30 * time.Second
 	workerCount        = 10
 )
+
+// privateNetworks is a list of private/internal IP ranges for SSRF protection.
+// Initialized once to avoid repeated parsing.
+var privateNetworks []*net.IPNet
+
+func init() {
+	ranges := []string{
+		"127.0.0.0/8",            // Loopback
+		"10.0.0.0/8",             // Private Class A
+		"172.16.0.0/12",          // Private Class B
+		"192.168.0.0/16",         // Private Class C
+		"169.254.0.0/16",         // Link-local
+		"0.0.0.0/8",              // Current network
+		"100.64.0.0/10",          // Shared address space
+		"255.255.255.255/32",     // Broadcast
+		"::1/128",                // IPv6 loopback
+		"fc00::/7",               // IPv6 unique local
+		"fe80::/10",              // IPv6 link-local
+		"::ffff:127.0.0.0/104",   // IPv4-mapped loopback
+		"::ffff:10.0.0.0/104",    // IPv4-mapped private A
+		"::ffff:172.16.0.0/108",  // IPv4-mapped private B
+		"::ffff:192.168.0.0/112", // IPv4-mapped private C
+		"::ffff:169.254.0.0/112", // IPv4-mapped link-local
+		"::ffff:0.0.0.0/104",     // IPv4-mapped current network
+	}
+	for _, cidr := range ranges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			privateNetworks = append(privateNetworks, network)
+		}
+	}
+}
+
+// isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
+func isPrivateIP(ip net.IP) bool {
+	for _, network := range privateNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateURL checks if a URL resolves to a private/internal IP (SSRF protection)
+func isPrivateURL(rawURL string) (bool, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true, fmt.Errorf("invalid URL: %v", err)
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return true, fmt.Errorf("empty hostname")
+	}
+
+	// Block known dangerous hostnames
+	dangerousHosts := []string{
+		"metadata.google.internal",
+		"metadata.internal",
+	}
+	for _, h := range dangerousHosts {
+		if strings.EqualFold(hostname, h) {
+			return true, nil
+		}
+	}
+
+	// Resolve hostname to IP and check
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		// Block on DNS resolution failure for safety
+		return true, fmt.Errorf("DNS resolution failed: %v", err)
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // FetchRequest represents a URL fetch request
 type FetchRequest struct {
@@ -62,15 +143,56 @@ type Fetcher struct {
 	limiter *rate.Limiter
 }
 
-// NewFetcher creates a new Fetcher
+// ssrfSafeDialContext returns a DialContext function that checks resolved IPs
+// against private ranges at connect time, preventing DNS rebinding attacks.
+func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: invalid address %q: %v", addr, err)
+		}
+
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: DNS resolution failed for %q: %v", host, err)
+		}
+
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("SSRF blocked: DNS returned no IPs for %q", host)
+		}
+
+		for _, ip := range ips {
+			if isPrivateIP(ip) {
+				return nil, fmt.Errorf("SSRF blocked: %q resolves to private IP %s", host, ip)
+			}
+		}
+
+		// Dial using the first resolved IP directly to prevent DNS rebinding
+		// (a second DNS lookup could return a different, private IP)
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	}
+}
+
+// NewFetcher creates a new Fetcher with SSRF-safe transport
 func NewFetcher() *Fetcher {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext:         ssrfSafeDialContext(dialer),
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
 	return &Fetcher{
 		client: &http.Client{
-			Timeout: requestTimeout,
+			Timeout:   requestTimeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
+				// Redirect target IP is validated by ssrfSafeDialContext
+				// so no additional check needed here.
 				return nil
 			},
 		},
@@ -83,6 +205,18 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	start := time.Now()
 	result := FetchResult{URL: url}
 
+	// SSRF Protection: Block private/internal IPs
+	if isPrivate, err := isPrivateURL(url); isPrivate {
+		errMsg := "SSRF blocked: URL resolves to private/internal address"
+		if err != nil {
+			errMsg = fmt.Sprintf("SSRF blocked: %v", err)
+		}
+		result.Error = errMsg
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		log.Printf("⚠️ SSRF blocked: %q", url)
+		return result
+	}
+
 	// Wait for rate limiter
 	if err := f.limiter.Wait(ctx); err != nil {
 		result.Error = "rate limited"
@@ -93,7 +227,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		result.Error = fmt.Sprintf("invalid URL: %v", err)
+		log.Printf("Invalid URL %q: %v", url, err)
+		result.Error = "invalid URL"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -106,7 +241,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Execute request
 	resp, err := f.client.Do(req)
 	if err != nil {
-		result.Error = fmt.Sprintf("fetch error: %v", err)
+		log.Printf("Fetch error for %q: %v", url, err)
+		result.Error = "fetch error"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -124,18 +260,22 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	// Limit body size
 	limitedReader := io.LimitReader(resp.Body, maxContentLength)
 
-	// Handle charset
-	utf8Reader, err := charset.NewReader(limitedReader, result.ContentType)
+	// Read raw body first to avoid consuming bytes on charset detection failure
+	rawBody, err := io.ReadAll(limitedReader)
 	if err != nil {
-		utf8Reader = limitedReader
-	}
-
-	// Read body
-	body, err := io.ReadAll(utf8Reader)
-	if err != nil {
-		result.Error = fmt.Sprintf("read error: %v", err)
+		log.Printf("Read error for %q: %v", url, err)
+		result.Error = "read error"
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
+	}
+
+	// Handle charset conversion
+	body := rawBody
+	utf8Reader, err := charset.NewReader(bytes.NewReader(rawBody), result.ContentType)
+	if err == nil {
+		if converted, err := io.ReadAll(utf8Reader); err == nil {
+			body = converted
+		}
 	}
 
 	// Extract content
@@ -201,7 +341,9 @@ func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
 		case <-done:
 			timer.Stop()
 		case <-timer.C:
-			// Timeout waiting for in-flight requests
+			// Timeout waiting for in-flight requests, still must wait for
+			// goroutines to finish writing before we read Results (avoid data race)
+			<-done
 		}
 	case <-done:
 		// All requests completed
@@ -402,9 +544,9 @@ func main() {
 		json.NewEncoder(w).Encode(response)
 	})
 
-	// Server
+	// Server — bind to localhost to prevent unauthenticated external access
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         "127.0.0.1:" + port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,

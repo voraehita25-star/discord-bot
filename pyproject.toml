@@ -71,7 +71,7 @@ ignore = [
     "B008",    # function call in default arg (needed for FastAPI)
     # Design choice ignores (intentional patterns)
     "PLC0415", # import outside top level (lazy imports for performance)
-    "F401",    # unused import (re-exports in __init__.py)
+    # F401 handled via per-file-ignores for __init__.py only
     "ARG001",  # unused function argument (interface compatibility)
     "ARG002",  # unused method argument (interface compatibility)
     "ARG005",  # unused lambda argument (callback signatures)
@@ -84,7 +84,7 @@ ignore = [
     "SIM102",  # collapsible-if (nested ifs often more readable)
     "SIM105",  # suppressible-exception (explicit try-except preferred)
     "SIM117",  # multiple-with-statements (line length control)
-    "RUF006",  # asyncio-dangling-task (managed externally)
+    # RUF006 removed — dangling tasks now properly tracked in bot.py
     "RUF059",  # unused-unpacked-variable (tuple unpacking patterns)
 ]
 

@@ -6,6 +6,7 @@ Handles execution of Gemini AI function calls and server commands.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from ..commands.server_commands import (
     cmd_set_channel_perm,
     cmd_set_role_perm,
 )
+from ..data.constants import MAX_CHANNEL_NAME_LENGTH
 from ..data.roleplay_data import SERVER_AVATARS
 from ..memory.rag import rag_system
 from ..response.webhook_cache import (
@@ -37,7 +39,39 @@ from ..response.webhook_cache import (
     invalidate_webhook_cache,
     set_cached_webhook,
 )
-from ..data.constants import MAX_CHANNEL_NAME_LENGTH
+
+
+def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
+    """Split a message into chunks without breaking mid-line or mid-Unicode.
+
+    Args:
+        text: Message text to split
+        limit: Maximum chunk size
+
+    Returns:
+        List of message chunks
+    """
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Try to split at newline
+        split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            # Try to split at space
+            split_at = text.rfind(" ", 0, limit)
+        if split_at == -1:
+            # Hard split at limit, but ensure we don't break a surrogate pair
+            split_at = limit
+            # Back up if we're in the middle of a surrogate pair
+            while (
+                split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff"
+            ):
+                split_at -= 1
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 
 async def execute_tool_call(
@@ -63,13 +97,15 @@ async def execute_tool_call(
     guild = origin_channel.guild
 
     # Input validation helper
-    def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
+    def validate_name(
+        name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH
+    ) -> tuple[bool, str]:
         """Validate channel/category name from AI input.
-        
+
         Args:
             name: The name to validate
             max_length: Maximum allowed length (default: MAX_CHANNEL_NAME_LENGTH)
-            
+
         Returns:
             Tuple of (is_valid, cleaned_name_or_error_message)
         """
@@ -91,18 +127,14 @@ async def execute_tool_call(
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(
-                guild, origin_channel, result, [None, args.get("category")]
-            )
+            await cmd_create_text(guild, origin_channel, result, [None, args.get("category")])
             return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_voice(
-                guild, origin_channel, result, [None, args.get("category")]
-            )
+            await cmd_create_voice(guild, origin_channel, result, [None, args.get("category")])
             return f"Requested creation of voice channel '{result}'"
 
         elif fname == "create_category":
@@ -280,6 +312,17 @@ async def send_as_webhook(bot, channel, name, message):
         The sent message object, or None if failed
     """
     try:
+        # Sanitize dangerous mentions FIRST (before any send path)
+        message = re.sub(r"@everyone", "@\u200beveryone", message, flags=re.IGNORECASE)
+        message = re.sub(r"@here", "@\u200bhere", message, flags=re.IGNORECASE)
+        message = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
+        message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
+
+        # Guard against DM channels (no guild/webhooks)
+        if not hasattr(channel, "guild") or channel.guild is None:
+            await channel.send(f"**{name}**: {message}")
+            return None
+
         # Check bot permissions first
         if not channel.permissions_for(channel.guild.me).manage_webhooks:
             await channel.send(f"**{name}**: {message}")
@@ -297,10 +340,9 @@ async def send_as_webhook(bot, channel, name, message):
                 sent_message = None
                 limit = 2000
                 if len(message) > limit:
-                    for i in range(0, len(message), limit):
-                        sent_message = await webhook.send(
-                            content=message[i : i + limit], username=name, wait=True
-                        )
+                    chunks = _safe_split_message(message, limit)
+                    for chunk in chunks:
+                        sent_message = await webhook.send(content=chunk, username=name, wait=True)
                 else:
                     sent_message = await webhook.send(content=message, username=name, wait=True)
                 logging.debug("🎭 AI spoke as %s (cached webhook)", name)
@@ -333,7 +375,7 @@ async def send_as_webhook(bot, channel, name, message):
                 # Security: Validate path is within expected directory to prevent path traversal
                 base_dir = Path.cwd().resolve()
                 full_path = (base_dir / img_path).resolve()
-                
+
                 # Ensure the resolved path is still within the base directory
                 if not str(full_path).startswith(str(base_dir)):
                     logging.error("Path traversal attempt blocked: %s", img_path)
@@ -377,17 +419,17 @@ async def send_as_webhook(bot, channel, name, message):
 
         # 3. Send Message and cache webhook
         if webhook:
-            # Cache the webhook for future use
-            set_cached_webhook(channel_id, webhook_name, webhook)
+            # Only cache if the webhook name actually matches (don't cache reused webhooks)
+            if webhook.name == webhook_name:
+                set_cached_webhook(channel_id, webhook_name, webhook)
 
             sent_message = None
-            # Send message (truncate if too long)
+            # Send message (split safely if too long)
             limit = 2000
             if len(message) > limit:
-                for i in range(0, len(message), limit):
-                    sent_message = await webhook.send(
-                        content=message[i : i + limit], username=name, wait=True
-                    )
+                chunks = _safe_split_message(message, limit)
+                for chunk in chunks:
+                    sent_message = await webhook.send(content=chunk, username=name, wait=True)
             else:
                 sent_message = await webhook.send(content=message, username=name, wait=True)
             logging.info("🎭 AI spoke as %s", name)

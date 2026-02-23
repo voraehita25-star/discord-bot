@@ -98,9 +98,7 @@ class AIDebug(commands.Cog):
 
             stats = rag_system.get_stats()
             index_status = (
-                f"✅ {stats['index_size']} vectors"
-                if stats['index_built']
-                else "❌ Not built"
+                f"✅ {stats['index_size']} vectors" if stats["index_built"] else "❌ Not built"
             )
             rag_info = (
                 f"FAISS: {'✅' if stats['faiss_available'] else '❌'}\n"
@@ -229,8 +227,8 @@ class AIDebug(commands.Cog):
         embed = discord.Embed(title="🔍 AI Request Trace", color=discord.Color.blue())
 
         # Basic info
-        thinking = '✅' if chat_data.get('thinking_enabled') else '❌'
-        streaming = '✅' if chat_data.get('streaming_enabled') else '❌'
+        thinking = "✅" if chat_data.get("thinking_enabled") else "❌"
+        streaming = "✅" if chat_data.get("streaming_enabled") else "❌"
         embed.add_field(
             name="📝 Session Info",
             value=(
@@ -251,8 +249,8 @@ class AIDebug(commands.Cog):
             embed.add_field(name="⏱️ Timing", value=f"```\n{timing_info}```", inline=True)
 
             # Tokens
-            input_tokens = last_trace.get('input_tokens', 'N/A')
-            output_tokens = last_trace.get('output_tokens', 'N/A')
+            input_tokens = last_trace.get("input_tokens", "N/A")
+            output_tokens = last_trace.get("output_tokens", "N/A")
             embed.add_field(
                 name="🔢 Tokens",
                 value=f"```\nInput: {input_tokens}\nOutput: {output_tokens}```",
@@ -358,7 +356,7 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.cache.token_tracker import token_tracker
 
-            stats = token_tracker.get_global_stats()
+            stats = await token_tracker.get_global_stats()
 
             embed = discord.Embed(title="💰 Token Usage Tracker", color=discord.Color.gold())
 

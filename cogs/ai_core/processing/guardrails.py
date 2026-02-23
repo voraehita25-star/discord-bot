@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import stat
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,11 @@ def _save_unrestricted_channels(channels_snapshot: list[int] | None = None) -> b
             encoding="utf-8",
         )
         temp_file.replace(_UNRESTRICTED_FILE)  # Atomic on most filesystems
+        # Restrict file permissions to owner only (read/write)
+        try:
+            _UNRESTRICTED_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass  # Best-effort on Windows
         return True
     except (OSError, TypeError, ValueError) as e:
         logging.error("Failed to save unrestricted channels: %s", e)
@@ -73,7 +79,11 @@ unrestricted_channels = _load_unrestricted_channels()
 
 
 def is_unrestricted(channel_id: int) -> bool:
-    """Check if a channel is in unrestricted mode (thread-safe)."""
+    """Check if a channel is in unrestricted mode.
+
+    Returns True if the channel has been explicitly set to unrestricted mode
+    via the !unrestricted command. Otherwise, normal guardrails apply.
+    """
     with _unrestricted_lock:
         return channel_id in unrestricted_channels
 

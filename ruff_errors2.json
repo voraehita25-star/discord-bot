@@ -1,0 +1,289 @@
+[
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 26,
+      "row": 340
+    },
+    "filename": "C:\\Users\\ME\\BOT\\bot.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 340
+    },
+    "message": "`orjson` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 340,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 51,
+      "row": 159
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 45,
+      "row": 159
+    },
+    "message": "`.processing.intent_detector.Intent` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 159,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 66,
+      "row": 159
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 53,
+      "row": 159
+    },
+    "message": "`.processing.intent_detector.detect_intent` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 159,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 46,
+      "row": 166
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 34,
+      "row": 166
+    },
+    "message": "`.cache.analytics.get_ai_stats` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 166,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 66,
+      "row": 166
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 48,
+      "row": 166
+    },
+    "message": "`.cache.analytics.log_ai_interaction` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 166,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 41,
+      "row": 173
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 33,
+      "row": 173
+    },
+    "message": "`.cache.ai_cache.ai_cache` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 173,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 57,
+      "row": 173
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 43,
+      "row": 173
+    },
+    "message": "`.cache.ai_cache.context_hasher` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 173,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 56,
+      "row": 180
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\logic.py",
+    "fix": null,
+    "location": {
+      "column": 41,
+      "row": 180
+    },
+    "message": "`.memory.history_manager.history_manager` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+    "noqa_row": 180,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 10,
+      "row": 10
+    },
+    "filename": "C:\\Users\\ME\\BOT\\cogs\\ai_core\\processing\\guardrails.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 11
+          },
+          "location": {
+            "column": 1,
+            "row": 10
+          }
+        }
+      ],
+      "message": "Remove unused import: `os`"
+    },
+    "location": {
+      "column": 8,
+      "row": 10
+    },
+    "message": "`os` imported but unused",
+    "noqa_row": 10,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 10,
+      "row": 2
+    },
+    "filename": "C:\\Users\\ME\\BOT\\scripts\\maintenance\\dump_schema.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 3
+          },
+          "location": {
+            "column": 1,
+            "row": 2
+          }
+        }
+      ],
+      "message": "Remove unused import: `os`"
+    },
+    "location": {
+      "column": 8,
+      "row": 2
+    },
+    "message": "`os` imported but unused",
+    "noqa_row": 2,
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 16,
+      "row": 7
+    },
+    "filename": "C:\\Users\\ME\\BOT\\scripts\\maintenance\\dump_schema.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 7
+    },
+    "message": "Undefined name `Path`",
+    "noqa_row": 7,
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 9,
+      "row": 40
+    },
+    "filename": "C:\\Users\\ME\\BOT\\scripts\\maintenance\\dump_schema.py",
+    "fix": null,
+    "location": {
+      "column": 5,
+      "row": 40
+    },
+    "message": "Undefined name `Path`",
+    "noqa_row": 40,
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 23,
+      "row": 47
+    },
+    "filename": "C:\\Users\\ME\\BOT\\scripts\\maintenance\\dump_schema.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 47
+    },
+    "message": "Undefined name `Path`",
+    "noqa_row": 47,
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "PTH118",
+    "end_location": {
+      "column": 32,
+      "row": 323
+    },
+    "filename": "C:\\Users\\ME\\BOT\\tests\\test_rag_rust.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 323
+    },
+    "message": "`os.path.join()` should be replaced by `Path` with `/` operator",
+    "noqa_row": 323,
+    "url": "https://docs.astral.sh/ruff/rules/os-path-join"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 24,
+      "row": 344
+    },
+    "filename": "C:\\Users\\ME\\BOT\\tests\\test_rag_rust.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 344
+    },
+    "message": "Undefined name `Path`",
+    "noqa_row": 344,
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  }
+]

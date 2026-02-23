@@ -3,35 +3,41 @@
 # Production deployment with volume mounts and restart policies
 # =============================================================================
 
-version: '3.8'
-
 services:
   bot:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: discord-bot
     restart: unless-stopped
 
     # Environment configuration
     env_file:
-      - .env
+      - ../.env
 
     environment:
       # Override these in .env or here
       - TZ=Asia/Bangkok
       - PYTHONUNBUFFERED=1
 
+    # Read-only root filesystem for security hardening
+    read_only: true
+
+    # Writable tmpfs mounts for runtime data
+    tmpfs:
+      - /tmp:size=256M
+      - /app/__pycache__:size=64M
+
     # Volume mounts for persistence
     volumes:
       # Persist data directory (database, cache)
-      - ./data:/app/data
+      - ../data:/app/data
       # Persist logs
-      - ./logs:/app/logs
+      - ../logs:/app/logs
       # Persist temporary files (optional)
-      - ./temp:/app/temp
-      # Mount cookies.txt if using YouTube authentication
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ../temp:/app/temp
+      # Mount cookies.txt if using YouTube authentication (file must exist)
+      # - ../cookies.txt:/app/cookies.txt:ro
 
     # Health check (uses bot's health API)
     healthcheck:
@@ -41,15 +47,11 @@ services:
       retries: 3
       start_period: 60s
 
-    # Resource limits (optional - adjust based on your server)
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '0.5'
-          memory: 1G
+    # Resource limits
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2.0
+    mem_reservation: 1g
 
     # Logging configuration
     logging:

@@ -7,9 +7,9 @@
     <title>디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
     <!-- KaTeX for LaTeX math rendering -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
 </head>
 
 <body>
@@ -438,7 +438,13 @@
                 </div>
 
                 <div class="data-section">
-                    <h2>Recent Channels</h2>
+                    <div class="data-section-header">
+                        <h2>Recent Channels</h2>
+                        <div class="selection-controls" id="channel-selection-controls" style="display:none">
+                            <span class="selection-count" id="channel-selection-count">0 selected</span>
+                            <button class="btn btn-sm btn-danger" id="btn-delete-selected">🗑️ Delete Selected</button>
+                        </div>
+                    </div>
                     <div class="data-list" id="channels-list"></div>
                 </div>
 
@@ -605,9 +611,9 @@
 
                 <div class="settings-card">
                     <h2>📁 Paths</h2>
-                    <p><strong>Bot Script:</strong> C:\Users\ME\BOT\bot.py</p>
-                    <p><strong>Log File:</strong> C:\Users\ME\BOT\logs\bot.log</p>
-                    <p><strong>Database:</strong> C:\Users\ME\BOT\data\bot_database.db</p>
+                    <p><strong>Bot Script:</strong> <span id="info-bot-script">bot.py</span></p>
+                    <p><strong>Log File:</strong> <span id="info-log-file">logs/bot.log</span></p>
+                    <p><strong>Database:</strong> <span id="info-database">data/bot_database.db</span></p>
                 </div>
             </section>
         </main>

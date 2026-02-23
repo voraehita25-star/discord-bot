@@ -76,13 +76,15 @@ def start_webhook_cache_cleanup(bot) -> None:
     """
     global _webhook_cache_cleanup_task  # pylint: disable=global-statement
     # Check if event loop is available and running
-    if not hasattr(bot, 'loop') or bot.loop is None or bot.loop.is_closed():
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         logging.warning("🧹 Cannot start webhook cleanup: event loop not ready")
         return
     # Use lock for thread-safe task creation
     with _webhook_task_lock:
         if _webhook_cache_cleanup_task is None or _webhook_cache_cleanup_task.done():
-            _webhook_cache_cleanup_task = bot.loop.create_task(_cleanup_expired_webhook_cache())
+            _webhook_cache_cleanup_task = loop.create_task(_cleanup_expired_webhook_cache())
             logging.info("🧹 Started webhook cache cleanup task")
 
 

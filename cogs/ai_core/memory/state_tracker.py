@@ -89,9 +89,7 @@ class CharacterStateTracker:
             if len(self._states) >= self.MAX_CHANNELS:
                 # Remove oldest channel by oldest access time (LRU)
                 # Filter out channels with empty states to avoid min() on empty sequence
-                channels_with_states = [
-                    cid for cid in self._states.keys() if self._states[cid]
-                ]
+                channels_with_states = [cid for cid in self._states if self._states[cid]]
                 if channels_with_states:
                     oldest_channel = min(
                         channels_with_states,
@@ -102,12 +100,11 @@ class CharacterStateTracker:
                     )
                     self._states.pop(oldest_channel, None)
                     self._last_scene.pop(oldest_channel, None)
-                else:
-                    # All channels are empty, clear one arbitrarily
-                    if self._states:
-                        oldest_channel = next(iter(self._states))
-                        self._states.pop(oldest_channel, None)
-                        self._last_scene.pop(oldest_channel, None)
+                # All channels are empty, clear one arbitrarily
+                elif self._states:
+                    oldest_channel = next(iter(self._states))
+                    self._states.pop(oldest_channel, None)
+                    self._last_scene.pop(oldest_channel, None)
             self._states[channel_id] = {}
 
         existing = self._states[channel_id].get(character_name)

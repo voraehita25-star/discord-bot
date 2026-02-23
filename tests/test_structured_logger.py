@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -107,6 +106,7 @@ class TestStructuredFormatter:
             raise ValueError("Test error")
         except ValueError:
             import sys
+
             exc_info = sys.exc_info()
 
         record = logging.LogRecord(
@@ -346,6 +346,7 @@ class TestTimedDecorator:
             return "result"
 
         import asyncio
+
         result = await my_async_func()
 
         assert result == "result"
@@ -420,7 +421,6 @@ class TestCorrelationId:
         """Test setting correlation ID."""
         from utils.monitoring.structured_logger import (
             _log_context,
-            get_correlation_id,
             set_correlation_id,
         )
 

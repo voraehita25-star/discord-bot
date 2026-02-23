@@ -1,0 +1,252 @@
+
+--- data/bot_database.db ---
+Table: ai_metadata
+CREATE TABLE ai_metadata (
+                    channel_id INTEGER PRIMARY KEY,
+                    thinking_enabled BOOLEAN DEFAULT 1,
+                    system_instruction TEXT,
+                    last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: guild_settings
+CREATE TABLE guild_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    prefix TEXT DEFAULT '!',
+                    ai_enabled BOOLEAN DEFAULT 1,
+                    music_enabled BOOLEAN DEFAULT 1,
+                    auto_disconnect_delay INTEGER DEFAULT 180,
+                    mode_247 BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: user_stats
+CREATE TABLE user_stats (
+                    user_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    messages_count INTEGER DEFAULT 0,
+                    commands_count INTEGER DEFAULT 0,
+                    ai_interactions INTEGER DEFAULT 0,
+                    music_requests INTEGER DEFAULT 0,
+                    last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+
+Table: music_queue
+CREATE TABLE music_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    title TEXT,
+                    added_by INTEGER,
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: sqlite_sequence
+CREATE TABLE sqlite_sequence(name,seq)
+
+Table: error_logs
+CREATE TABLE error_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT,
+                    traceback TEXT,
+                    guild_id INTEGER,
+                    channel_id INTEGER,
+                    user_id INTEGER,
+                    command TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: ai_long_term_memory
+CREATE TABLE ai_long_term_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER,
+                    content TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: ai_history
+CREATE TABLE "ai_history" (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                message_id INTEGER,
+                timestamp TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            , local_id INTEGER, user_id INTEGER)
+
+Table: audit_log
+CREATE TABLE audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_type TEXT NOT NULL,
+                    guild_id INTEGER,
+                    user_id INTEGER,
+                    target_id INTEGER,
+                    details TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: ai_analytics
+CREATE TABLE ai_analytics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    guild_id INTEGER,
+                    input_length INTEGER,
+                    output_length INTEGER,
+                    response_time_ms REAL,
+                    intent TEXT,
+                    model TEXT DEFAULT 'gemini',
+                    tool_calls INTEGER DEFAULT 0,
+                    cache_hit BOOLEAN DEFAULT 0,
+                    error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: entity_memories
+CREATE TABLE entity_memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        facts TEXT NOT NULL,
+        channel_id INTEGER,
+        guild_id INTEGER,
+        confidence REAL DEFAULT 1.0,
+        source TEXT DEFAULT 'user',
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        access_count INTEGER DEFAULT 0,
+        UNIQUE(name, channel_id, guild_id)
+    )
+
+Table: knowledge_entries
+CREATE TABLE knowledge_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        category TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        content TEXT NOT NULL,
+        games TEXT DEFAULT '[]',
+        tags TEXT DEFAULT '[]',
+        is_spoiler BOOLEAN DEFAULT 0,
+        confidence REAL DEFAULT 1.0,
+        source TEXT DEFAULT 'official',
+        embedding BLOB,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+
+Table: token_usage
+CREATE TABLE token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    guild_id INTEGER,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    model TEXT DEFAULT 'gemini-3-pro-preview',
+                    cached BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: dashboard_conversations
+CREATE TABLE dashboard_conversations (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    role_preset TEXT NOT NULL DEFAULT 'general',
+                    system_instruction TEXT,
+                    thinking_enabled BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_starred BOOLEAN DEFAULT 0
+                )
+
+Table: dashboard_messages
+CREATE TABLE dashboard_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, thinking TEXT, mode TEXT,
+                    FOREIGN KEY (conversation_id) REFERENCES dashboard_conversations(id) ON DELETE CASCADE
+                )
+
+Table: dashboard_user_profile
+CREATE TABLE dashboard_user_profile (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    display_name TEXT DEFAULT 'User',
+                    bio TEXT,
+                    preferences TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                , is_creator INTEGER DEFAULT 0)
+
+Table: dashboard_memories
+CREATE TABLE dashboard_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    category TEXT DEFAULT 'general',
+                    importance INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: schema_version
+CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY,
+            filename TEXT NOT NULL,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            checksum TEXT
+        )
+
+Table: user_facts
+CREATE TABLE user_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER,
+                    category TEXT DEFAULT 'general',
+                    content TEXT NOT NULL,
+                    importance INTEGER DEFAULT 1,
+                    first_mentioned DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_confirmed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    mention_count INTEGER DEFAULT 1,
+                    confidence REAL DEFAULT 1.0,
+                    source_message TEXT,
+                    is_active BOOLEAN DEFAULT 1,
+                    is_user_defined BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+Table: conversation_summaries
+CREATE TABLE conversation_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    summary TEXT NOT NULL,
+                    key_topics TEXT DEFAULT '[]',
+                    key_decisions TEXT DEFAULT '[]',
+                    start_time TEXT,
+                    end_time TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+
+
+--- data/ai_cache_l2.db ---
+Table: cache_entries
+CREATE TABLE cache_entries (
+                    key       TEXT PRIMARY KEY,
+                    response  TEXT NOT NULL,
+                    intent    TEXT DEFAULT '',
+                    norm_msg  TEXT DEFAULT '',
+                    ctx_hash  TEXT DEFAULT '',
+                    created   REAL NOT NULL,
+                    hits      INTEGER DEFAULT 0
+                )
+

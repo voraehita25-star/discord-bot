@@ -23,6 +23,25 @@ impl VectorIndex {
 
     /// Add an entry to the index
     pub fn add(&mut self, id: &str, text: &str) -> usize {
+        // If this ID already exists, update keywords for the new text
+        if let Some(&existing_idx) = self.id_to_idx.get(id) {
+            // Remove old keyword associations for this index
+            for indices in self.keyword_index.values_mut() {
+                indices.retain(|&i| i != existing_idx);
+            }
+            // Re-index with new text
+            for word in text.split_whitespace() {
+                let word_lower = word.to_lowercase();
+                if word_lower.len() >= 3 {
+                    self.keyword_index
+                        .entry(word_lower)
+                        .or_default()
+                        .push(existing_idx);
+                }
+            }
+            return existing_idx;
+        }
+
         let idx = self.idx_to_id.len();
         self.idx_to_id.push(id.to_string());
         self.id_to_idx.insert(id.to_string(), idx);
@@ -33,7 +52,7 @@ impl VectorIndex {
             if word_lower.len() >= 3 {
                 self.keyword_index
                     .entry(word_lower)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(idx);
             }
         }
@@ -68,11 +87,21 @@ impl VectorIndex {
             .map(|s| s.as_str())
     }
 
-    /// Search by keyword
+    /// Search by keyword (filters out stale/removed entries)
     pub fn search_keyword(&self, keyword: &str) -> Vec<usize> {
         self.keyword_index
             .get(&keyword.to_lowercase())
-            .cloned()
+            .map(|indices| {
+                indices.iter()
+                    .copied()
+                    .filter(|&idx| {
+                        // Filter out removed entries (marked as empty string)
+                        self.idx_to_id.get(idx)
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

@@ -2,9 +2,9 @@
 Tests for utils.monitoring.audit_log module.
 """
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-import json
 
 
 class TestAuditLogConstants:
@@ -13,7 +13,7 @@ class TestAuditLogConstants:
     def test_db_available_flag(self):
         """Test DB_AVAILABLE flag exists."""
         from utils.monitoring.audit_log import DB_AVAILABLE
-        
+
         assert isinstance(DB_AVAILABLE, bool)
 
 
@@ -23,24 +23,24 @@ class TestAuditLoggerInit:
     def test_create_audit_logger(self):
         """Test creating AuditLogger instance."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         logger = AuditLogger()
         assert logger is not None
 
     def test_audit_logger_has_log_action(self):
         """Test AuditLogger has log_action method."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         logger = AuditLogger()
-        assert hasattr(logger, 'log_action')
+        assert hasattr(logger, "log_action")
         assert callable(logger.log_action)
 
     def test_audit_logger_has_get_recent_actions(self):
         """Test AuditLogger has get_recent_actions method."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         logger = AuditLogger()
-        assert hasattr(logger, 'get_recent_actions')
+        assert hasattr(logger, "get_recent_actions")
         assert callable(logger.get_recent_actions)
 
 
@@ -51,14 +51,11 @@ class TestLogAction:
     async def test_log_action_without_db(self):
         """Test logging action when DB not available."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
-            result = await logger.log_action(
-                user_id=123,
-                action="test_action"
-            )
-            
+            result = await logger.log_action(user_id=123, action="test_action")
+
             # Should still return True (logs to console)
             assert result is True
 
@@ -66,7 +63,7 @@ class TestLogAction:
     async def test_log_action_with_all_params(self):
         """Test logging action with all parameters."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
             result = await logger.log_action(
@@ -75,9 +72,9 @@ class TestLogAction:
                 guild_id=456,
                 target_type="channel",
                 target_id=789,
-                details='{"name": "test-channel"}'
+                details='{"name": "test-channel"}',
             )
-            
+
             assert result is True
 
 
@@ -88,22 +85,22 @@ class TestGetRecentActions:
     async def test_get_recent_actions_without_db(self):
         """Test getting actions when DB not available."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
             result = await logger.get_recent_actions(guild_id=123)
-            
+
             assert result == []
 
     @pytest.mark.asyncio
     async def test_get_recent_actions_with_limit(self):
         """Test getting actions with custom limit."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
             result = await logger.get_recent_actions(guild_id=123, limit=10)
-            
+
             assert result == []
 
 
@@ -114,11 +111,11 @@ class TestGetUserActions:
     async def test_get_user_actions_without_db(self):
         """Test getting user actions when DB not available."""
         from utils.monitoring.audit_log import AuditLogger
-        
+
         with patch("utils.monitoring.audit_log.DB_AVAILABLE", False):
             logger = AuditLogger()
-            
-            if hasattr(logger, 'get_user_actions'):
+
+            if hasattr(logger, "get_user_actions"):
                 result = await logger.get_user_actions(user_id=123)
                 assert result == []
 
@@ -134,7 +131,7 @@ class TestGlobalAuditInstance:
 
     def test_global_audit_is_logger(self):
         """Test global audit is AuditLogger."""
-        from utils.monitoring.audit_log import audit, AuditLogger
+        from utils.monitoring.audit_log import AuditLogger, audit
 
         assert isinstance(audit, AuditLogger)
 
@@ -254,4 +251,3 @@ class TestLogActionDetailsHandling:
             )
 
             assert result is True
-

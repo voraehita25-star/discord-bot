@@ -3,7 +3,6 @@ Bot Manager Script
 CLI tool to manage the Discord bot processes.
 """
 
-import contextlib
 import datetime
 import os
 import re
@@ -36,9 +35,38 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
-        from shared.colors_fallback import Colors
+        # Minimal fallback inline Colors class
+        class Colors:  # type: ignore[no-redef]
+            RESET = "\033[0m"
+            RED = "\033[31m"
+            GREEN = "\033[32m"
+            YELLOW = "\033[33m"
+            BLUE = "\033[34m"
+            CYAN = "\033[36m"
+            WHITE = "\033[37m"
+            MAGENTA = "\033[35m"
+            BOLD = "\033[1m"
+            DIM = "\033[2m"
+            White = "\033[37m"
+            Magenta = "\033[35m"
+            BG_RED = "\033[41m"
+            BG_GREEN = "\033[42m"
+            BG_BLUE = "\033[44m"
+            GRAY = "\033[90m"
+            BRIGHT_RED = "\033[91m"
+            BRIGHT_GREEN = "\033[92m"
+            BRIGHT_YELLOW = "\033[93m"
+            BRIGHT_BLUE = "\033[94m"
+            BRIGHT_MAGENTA = "\033[95m"
+            BRIGHT_CYAN = "\033[96m"
+            Red = RED
+            Green = GREEN
+            Yellow = YELLOW
+            Blue = BLUE
+            Cyan = CYAN
 
 
 # Constants
@@ -212,7 +240,11 @@ def box_header(text, width=BOX_WIDTH):
 
 def clear_screen():
     """Clear terminal screen"""
-    os.system("cls" if sys.platform == "win32" else "clear")
+    subprocess.run(
+        ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
+        shell=False,
+        check=False,
+    )
 
 
 def print_banner():
@@ -482,7 +514,7 @@ def print_status():
 
 def stop_process_list(pids, name="process", graceful_timeout=5):
     """Validates and kills list of pids with graceful shutdown.
-    
+
     Args:
         pids: List of process IDs to stop
         name: Name for logging
@@ -492,24 +524,29 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
     for pid in pids:
         try:
             proc = psutil.Process(pid)
-            
+
             # Try SIGINT first (graceful) - allows cleanup handlers to run
             # On Windows, SIGINT doesn't work well, so we use terminate
             if sys.platform != "win32":
                 import signal
+
                 try:
                     proc.send_signal(signal.SIGINT)
-                    print(f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}")
+                    print(
+                        f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}"
+                    )
                     try:
                         proc.wait(timeout=graceful_timeout)
-                        print(f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}")
+                        print(
+                            f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}"
+                        )
                         count += 1
                         continue
                     except psutil.TimeoutExpired:
                         pass  # Fall through to terminate
                 except (OSError, psutil.NoSuchProcess):
                     pass  # Process may have already exited
-            
+
             # Graceful shutdown with SIGTERM
             proc.terminate()
             print(f"{Colors.YELLOW}  Terminating {name} (PID: {pid})...{Colors.RESET}")
@@ -542,10 +579,7 @@ def auto_stop_existing_bot(status):
     stop_process_list(status["dev_watcher_pids"], "dev_watcher")
     stop_process_list(status["all_pids"], "bot")
 
-    pid_path = Path(PID_FILE)
-    if pid_path.exists():
-        with contextlib.suppress(OSError):
-            pid_path.unlink()
+    Path(PID_FILE).unlink(missing_ok=True)
 
     print(f"{Colors.GREEN}[OK] Stopped all instances!{Colors.RESET}")
     time.sleep(1)
@@ -560,13 +594,18 @@ def _launch_script(path, name, hidden=False):
         return False
 
     try:
-        path_str = str(path_obj.resolve())
+        resolved = path_obj.resolve()
+        # Security: validate script is within the project directory
+        if not str(resolved).startswith(str(PROJECT_ROOT.resolve())):
+            print(f"{Colors.RED}Security: script outside project directory: {path}{Colors.RESET}")
+            return False
+        path_str = str(resolved)
         if hidden:
             subprocess.Popen(["wscript", path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
         elif sys.platform == "win32":
             os.startfile(path_str)
         else:
-            subprocess.Popen([path_str], shell=True, cwd=str(PROJECT_ROOT.resolve()))
+            subprocess.Popen(["bash", path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
         return True
     except (OSError, subprocess.SubprocessError) as e:
         print(f"{Colors.RED}Failed to start {name}: {e}{Colors.RESET}")
@@ -585,7 +624,7 @@ def start_bot(mode="production"):
     print(f"{Colors.GREEN}Starting bot in {mode.capitalize()} Mode...{Colors.RESET}")
 
     if mode == "dev":
-        if _launch_script(scripts / "start_dev_mode.bat", "Dev mode"):
+        if _launch_script(scripts / "dev.bat", "Dev mode"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
@@ -595,7 +634,7 @@ def start_bot(mode="production"):
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
     else:
-        if _launch_script(scripts / "start_bot.bat", "Production"):
+        if _launch_script(scripts / "start.bat", "Production"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
@@ -618,10 +657,7 @@ def stop_bot():
     stopped += stop_process_list(status["dev_watcher_pids"], "dev_watcher")
     stopped += stop_process_list(status["all_pids"], "bot")
 
-    pid_path = Path(PID_FILE)
-    if pid_path.exists():
-        with contextlib.suppress(OSError):
-            pid_path.unlink()
+    Path(PID_FILE).unlink(missing_ok=True)
 
     if stopped > 0:
         print(f"{Colors.GREEN}[OK] Stopped {stopped} process(es){Colors.RESET}")

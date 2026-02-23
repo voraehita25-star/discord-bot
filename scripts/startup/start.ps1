@@ -91,11 +91,14 @@ while ($true) {
         break
     }
     
-    # Handle crash
-    $RestartCount++
-    
+    # Handle restart logic
     if ($ExitCode -ne 0) {
+        # Only count crashes (non-zero exit code) toward restart limit
+        $RestartCount++
         Save-CrashReport -ExitCode $ExitCode -ErrorMessage "Unexpected exit" -Runtime $Runtime | Out-Null
+    } else {
+        # Clean exit — don't count as crash, just restart if configured
+        Write-Log "Bot exited cleanly (code 0)" -Level INFO
     }
     
     if ($RestartCount -ge $MaxRestarts) {
@@ -108,7 +111,11 @@ while ($true) {
     # Countdown
     Write-Host ""
     Write-BoxTop
-    Write-BoxLine -Text "$($C.Red)[!]$($C.Reset) Bot crashed (Exit: $ExitCode) - Restart #$RestartCount" -Align "Left"
+    if ($ExitCode -ne 0) {
+        Write-BoxLine -Text "$($C.Red)[!]$($C.Reset) Bot crashed (Exit: $ExitCode) - Restart #$RestartCount" -Align "Left"
+    } else {
+        Write-BoxLine -Text "$($C.Yellow)[*]$($C.Reset) Bot exited cleanly (Exit: 0) - Restarting..." -Align "Left"
+    }
     Write-BoxLine -Text "$($C.Yellow)[*]$($C.Reset) Restarting in $RestartDelay seconds... (Ctrl+C to cancel)" -Align "Left"
     Write-BoxBottom
     

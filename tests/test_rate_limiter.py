@@ -256,23 +256,26 @@ class TestChannelLimits:
         assert isinstance(result, int)
         assert result > 0
 
-    def test_set_channel_limit(self, limiter):
+    @pytest.mark.asyncio
+    async def test_set_channel_limit(self, limiter):
         """Test setting custom channel limit."""
-        limiter.set_channel_limit(123456, 50)
+        await limiter.set_channel_limit(123456, 50)
 
         result = limiter.get_channel_limit(123456)
         assert result == 50
 
-    def test_set_channel_limit_creates_config(self, limiter):
+    @pytest.mark.asyncio
+    async def test_set_channel_limit_creates_config(self, limiter):
         """Test set_channel_limit creates config if not exists."""
-        limiter.set_channel_limit(777777, 30)
+        await limiter.set_channel_limit(777777, 30)
 
         assert "channel_custom" in limiter._configs
 
-    def test_set_channel_limit_updates_existing(self, limiter):
+    @pytest.mark.asyncio
+    async def test_set_channel_limit_updates_existing(self, limiter):
         """Test updating existing channel limit."""
-        limiter.set_channel_limit(888888, 20)
-        limiter.set_channel_limit(888888, 40)
+        await limiter.set_channel_limit(888888, 20)
+        await limiter.set_channel_limit(888888, 40)
 
         result = limiter.get_channel_limit(888888)
         assert result == 40
@@ -443,7 +446,9 @@ class TestAdaptiveMultipliers:
         # HALF_OPEN should be reduced
         assert RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"] < 1.0
         # OPEN should be minimal
-        assert RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        assert (
+            RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        )
 
 
 class TestRateLimitBucketAdaptive:

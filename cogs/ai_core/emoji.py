@@ -9,6 +9,7 @@ import io
 import logging
 import re
 
+import aiohttp
 from PIL import Image
 
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
@@ -52,7 +53,7 @@ def extract_discord_emojis(text: str) -> list[dict]:
 
 
 async def fetch_emoji_images(
-    emojis: list[dict], session: "aiohttp.ClientSession | None" = None
+    emojis: list[dict], session: aiohttp.ClientSession | None = None
 ) -> list[tuple[str, Image.Image]]:
     """Fetch emoji images from Discord CDN.
 
@@ -62,17 +63,13 @@ async def fetch_emoji_images(
 
     Returns list of (name, PIL.Image) tuples.
     """
-    import aiohttp
-
     results = []
 
     async def _fetch_with_session(s: aiohttp.ClientSession) -> None:
         for emoji in emojis[:5]:  # Limit to 5 emojis to avoid overload
             img = None
             try:
-                async with s.get(
-                    emoji["url"], timeout=aiohttp.ClientTimeout(total=3)
-                ) as resp:
+                async with s.get(emoji["url"], timeout=aiohttp.ClientTimeout(total=3)) as resp:
                     if resp.status == 200:
                         data = await resp.read()
                         img = Image.open(io.BytesIO(data))

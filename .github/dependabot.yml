@@ -32,3 +32,36 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "ci"
+
+  # Go modules
+  - package-ecosystem: "gomod"
+    directory: "/go_services"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "deps"
+
+  # Rust crates
+  - package-ecosystem: "cargo"
+    directory: "/rust_extensions"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps"
+
+  # Docker base images
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps"

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install system dependencies for discord.py voice and ffmpeg
 RUN apt-get update && apt-get install -y \
@@ -10,21 +10,20 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash botuser
+
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY --chown=botuser:botuser requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY --chown=botuser:botuser . .
 
 # Create necessary directories
-RUN mkdir -p data temp logs
-
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash botuser && \
-    chown -R botuser:botuser /app
+RUN mkdir -p data temp logs && chown -R botuser:botuser data temp logs
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

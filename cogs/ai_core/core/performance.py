@@ -5,6 +5,8 @@ Handles performance tracking and statistics for AI processing steps.
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import logging
 import threading
 import time
@@ -22,14 +24,14 @@ class PerformanceTracker:
     def __init__(self) -> None:
         """Initialize the performance tracker."""
         self._lock = threading.Lock()
-        self._metrics: dict[str, list[float]] = {
-            "rag_search": [],
-            "api_call": [],
-            "streaming": [],
-            "post_process": [],
-            "total": [],
-            "context_build": [],
-            "response_send": [],
+        self._metrics: dict[str, collections.deque[float]] = {
+            "rag_search": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "api_call": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "streaming": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "post_process": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "total": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "context_build": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
+            "response_send": collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX),
         }
 
     def record_timing(self, step: str, duration: float) -> None:
@@ -49,14 +51,9 @@ class PerformanceTracker:
                         step,
                     )
                     return
-                self._metrics[step] = []
+                self._metrics[step] = collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX)
 
-            metrics_list = self._metrics[step]
-
-            # Keep only last PERFORMANCE_SAMPLES_MAX samples per step
-            if len(metrics_list) >= PERFORMANCE_SAMPLES_MAX:
-                metrics_list.pop(0)
-            metrics_list.append(duration)
+            self._metrics[step].append(duration)
 
     def get_stats(self) -> dict[str, Any]:
         """Get performance statistics for all processing steps.
@@ -107,9 +104,9 @@ class PerformanceTracker:
         with self._lock:
             if step is None:
                 for key in self._metrics:
-                    self._metrics[key] = []
+                    self._metrics[key] = collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX)
             elif step in self._metrics:
-                self._metrics[step] = []
+                self._metrics[step] = collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX)
 
     def get_summary(self) -> str:
         """Get a human-readable summary of performance metrics.
@@ -224,15 +221,15 @@ class RequestDeduplicator:
             # Find content after the status block
             status_end = content.rfind("\n\n")
             if status_end != -1:
-                content = content[status_end + 2:]
+                content = content[status_end + 2 :]
 
         # Strip command prefix (!chat, !c, etc.)
         content = content.lstrip()
         if content.startswith(("!chat ", "!c ", "!ถาม ")):
             content = content.split(" ", 1)[-1] if " " in content else ""
 
-        # Use more characters for better uniqueness (100 instead of 50)
-        msg_hash = hash(content[:100] if content else "")
+        # Use hashlib for deterministic hashing across Python restarts
+        msg_hash = hashlib.sha256((content[:100] if content else "").encode()).hexdigest()[:16]
         return f"{channel_id}:{user_id}:{msg_hash}"
 
 

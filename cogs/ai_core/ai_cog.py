@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import discord
 from discord.ext import commands
@@ -110,11 +110,12 @@ class AI(commands.Cog):
         self.chat_manager: ChatManager = ChatManager(bot)
         self.cleanup_task: asyncio.Task | None = None
         self._pending_request_cleanup_task: asyncio.Task | None = None
-        # Rate limiter handles cooldowns now
-        rate_limiter.start_cleanup_task()  # Start cleanup for old rate limit buckets
+        # Rate limiter cleanup will be started in cog_load()
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded - safe place for async initialization."""
+        # Start rate limiter cleanup (requires running event loop)
+        rate_limiter.start_cleanup_task()
         self.cleanup_task = asyncio.create_task(self.chat_manager.cleanup_inactive_sessions())
         # Start webhook cache cleanup task
         start_webhook_cache_cleanup(self.bot)
@@ -154,10 +155,10 @@ class AI(commands.Cog):
 
         # Flush pending database exports to prevent "Task was destroyed" warning
         try:
-            from utils.database.database import Database
+            from utils.database import db
 
-            db = Database()
-            await db.flush_pending_exports()
+            if db is not None:
+                await db.flush_pending_exports()
         except Exception as e:
             logging.warning("Failed to flush pending exports: %s", e)
 
@@ -240,7 +241,7 @@ class AI(commands.Cog):
                 return
 
         if not message:
-            if ctx.message.reference:
+            if ctx.message.reference and ctx.message.reference.message_id is not None:
                 # Handle reply to a message as input
                 try:
                     ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
@@ -252,7 +253,8 @@ class AI(commands.Cog):
                     await ctx.send("❌ ไม่มีสิทธิ์อ่านข้อความที่ Reply")
                     return
                 except discord.HTTPException as e:
-                    await ctx.send(f"❌ เกิดข้อผิดพลาดในการอ่านข้อความ: {e}")
+                    logging.error("Failed to fetch reply message: %s", e)
+                    await ctx.send("❌ เกิดข้อผิดพลาดในการอ่านข้อความ")
                     return
             elif ctx.message.attachments:
                 # Allow empty message with attachments (images)
@@ -312,20 +314,52 @@ class AI(commands.Cog):
         # Invalidate webhook cache for deleted channel
         invalidate_webhook_cache_on_channel_delete(channel.id)
 
-        # Clean up chat manager data for this channel
-        if channel.id in self.chat_manager.chats:
-            del self.chat_manager.chats[channel.id]
-        if channel.id in self.chat_manager.seen_users:
-            del self.chat_manager.seen_users[channel.id]
+        # Clean up chat manager data for this channel under the processing lock if one exists
+        lock = self.chat_manager.processing_locks.get(channel.id)
+        if lock:
+            async with lock:
+                self.chat_manager.chats.pop(channel.id, None)
+                self.chat_manager.seen_users.pop(channel.id, None)
+        else:
+            self.chat_manager.chats.pop(channel.id, None)
+            self.chat_manager.seen_users.pop(channel.id, None)
+        # Clean up all remaining per-channel state to prevent memory leaks
+        self.chat_manager.last_accessed.pop(channel.id, None)
+        self.chat_manager.processing_locks.pop(channel.id, None)
+        self.chat_manager.streaming_enabled.pop(channel.id, None)
+        self.chat_manager.current_typing_msg.pop(channel.id, None)
+        self.chat_manager._message_queue.pending_messages.pop(channel.id, None)
+        self.chat_manager._message_queue.cancel_flags.pop(channel.id, None)
 
     @commands.Cog.listener()
     async def on_message(self, message):
         """Handle incoming messages for AI responses."""
-        # 1. Handle Webhooks (Tupperbox)
+        # 1. Handle Webhooks (Tupperbox only)
         if message.webhook_id:
             # Skip DMs (webhooks shouldn't come from DMs, but safety check)
             if not message.guild:
                 return
+
+            # Validate webhook identity - only allow known proxy bots (Tupperbox, PluralKit)
+            # Reject webhooks from unknown sources to prevent abuse
+            ALLOWED_WEBHOOK_NAMES = {"Tupperbox", "PluralKit"}
+            getattr(message.author, "name", "")
+            is_known_proxy = False
+            try:
+                # Fetch the actual webhook to verify it belongs to a known bot
+                webhooks = await message.channel.webhooks()
+                for wh in webhooks:
+                    if wh.id == message.webhook_id:
+                        # Check if webhook was created by a known proxy bot
+                        if wh.user and wh.user.bot and wh.user.name in ALLOWED_WEBHOOK_NAMES:
+                            is_known_proxy = True
+                        break
+            except (discord.Forbidden, discord.HTTPException):
+                # If we can't verify, reject for safety
+                pass
+
+            if not is_known_proxy:
+                return  # Reject unverified webhooks
 
             # Restriction Logic
             allowed = False
@@ -406,7 +440,13 @@ class AI(commands.Cog):
             # Convert command_prefix to tuple for startswith (handles both str and list)
             prefix = self.bot.command_prefix
             if callable(prefix):
-                prefix_tuple = ("!",)  # Default if callable
+                try:
+                    result = prefix(self.bot, message)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    prefix_tuple = tuple(result) if isinstance(result, (list, tuple)) else (result,)
+                except Exception:
+                    prefix_tuple = ("!",)  # Fallback if callable fails
             elif isinstance(prefix, str):
                 prefix_tuple = (prefix,)
             else:
@@ -501,12 +541,15 @@ class AI(commands.Cog):
         # Check if mentioned or in allowed channel (if configured)
         is_mentioned = self.bot.user in message.mentions
         is_reply = False
-        if message.reference:
+        if message.reference and message.reference.message_id is not None:
             try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                # Use cached resolved message first to avoid unnecessary API calls
+                ref_msg = message.reference.resolved
+                if ref_msg is None:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
                 if ref_msg.author == self.bot.user:
                     is_reply = True
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, TypeError):
                 pass
 
         # Logic: Respond if Mentioned OR Reply
@@ -519,7 +562,13 @@ class AI(commands.Cog):
         # Convert command_prefix to tuple for startswith (handles both str and list)
         prefix = self.bot.command_prefix
         if callable(prefix):
-            prefix_tuple = ("!",)  # Default if callable
+            try:
+                result = prefix(self.bot, message)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                prefix_tuple = tuple(result) if isinstance(result, (list, tuple)) else (result,)
+            except Exception:
+                prefix_tuple = ("!",)  # Fallback if callable fails
         elif isinstance(prefix, str):
             prefix_tuple = (prefix,)
         else:
@@ -545,8 +594,9 @@ class AI(commands.Cog):
             )
 
     @commands.command(name="thinking", aliases=["think"])
+    @commands.has_permissions(manage_guild=True)
     async def toggle_thinking_cmd(self, ctx, mode: str | None = None):
-        """Toggle AI Thinking Mode (on/off)."""
+        """Toggle AI Thinking Mode (on/off). Requires Manage Server permission."""
         # Determine target channel (support RP redirection)
         target_channel_id = ctx.channel.id
         if ctx.guild and ctx.guild.id == GUILD_ID_RP:
@@ -584,8 +634,9 @@ class AI(commands.Cog):
             await ctx.send("❌ ไม่สามารถตั้งค่าได้ (Session not found)")
 
     @commands.command(name="streaming", aliases=["stream"])
+    @commands.has_permissions(manage_guild=True)
     async def toggle_streaming_cmd(self, ctx, mode: str | None = None):
-        """Toggle AI Streaming Mode (on/off).
+        """Toggle AI Streaming Mode (on/off). Requires Manage Server permission.
 
         When enabled, AI responses stream in real-time as they are generated.
         This provides a more responsive experience but disables thinking mode.
@@ -765,8 +816,8 @@ class AI(commands.Cog):
                 await status_msg.edit(content="❌ ไม่พบประวัติแชทใน channel ต้นทาง")
 
         except Exception as e:
-            logging.error("Failed to link memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to link memory: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     @commands.command(name="resend", aliases=["rs", "resendmsg"])
     async def resend_last_message(self, ctx: commands.Context, local_id: int | None = None) -> None:
@@ -864,8 +915,8 @@ class AI(commands.Cog):
             await status_msg.edit(content="✅ ส่งข้อความใหม่สำเร็จ!")
 
         except Exception as e:
-            logging.error("Failed to resend message: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to resend message: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     @commands.hybrid_command(name="move_memory", aliases=["mm", "movemem"])
     async def move_memory_cmd(
@@ -992,8 +1043,8 @@ class AI(commands.Cog):
                 await status_msg.edit(content="❌ ไม่พบประวัติแชทใน channel ต้นทาง")
 
         except Exception as e:
-            logging.error("Failed to move memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            logging.error("Failed to move memory: %s", e, exc_info=True)
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการดำเนินการ")
 
     # ==================== Advanced Admin Commands ====================
 
@@ -1134,10 +1185,13 @@ class AI(commands.Cog):
             import json
             from datetime import datetime
 
-            from utils.database.database import Database
+            from utils.database import db as shared_db
 
-            db = Database()
-            logs = await db.get_audit_logs(days=days)
+            if shared_db is None:
+                await ctx.send("❌ Database not available")
+                return
+
+            logs = await shared_db.get_audit_logs(days=days)
 
             if not logs:
                 await ctx.send(f"📭 No audit logs found in the last {days} days")
@@ -1147,24 +1201,26 @@ class AI(commands.Cog):
             filename = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             filepath = Path("temp") / filename
 
-            filepath.write_text(
-                json.dumps(logs, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
+            try:
+                filepath.write_text(
+                    json.dumps(logs, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
 
-            await ctx.send(
-                f"📤 Exported {len(logs)} audit entries from last {days} days",
-                file=discord.File(str(filepath), filename=filename),
-            )
-
-            # Cleanup
-            filepath.unlink()
+                await ctx.send(
+                    f"📤 Exported {len(logs)} audit entries from last {days} days",
+                    file=discord.File(str(filepath), filename=filename),
+                )
+            finally:
+                # Always cleanup temp file
+                if filepath.exists():
+                    filepath.unlink()
 
         except ImportError:
             await ctx.send("❌ Audit logging not available")
         except Exception as e:
             logging.error("Failed to export audit logs: %s", e)
-            await ctx.send(f"❌ Failed to export: {e}")
+            await ctx.send("❌ Failed to export audit logs")
 
     @commands.command(name="auto_summarize")
     @commands.is_owner()
@@ -1252,7 +1308,7 @@ class AI(commands.Cog):
                 await ctx.send(f"🚦 Channel rate limit: {current} requests/minute")
             else:
                 # Set new limit
-                rate_limiter.set_channel_limit(channel_id, limit)
+                await rate_limiter.set_channel_limit(channel_id, limit)
                 await ctx.send(f"✅ Channel rate limit set to: {limit} requests/minute")
 
         except (ImportError, AttributeError):

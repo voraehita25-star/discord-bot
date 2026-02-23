@@ -183,7 +183,8 @@ class MessageQueue:
         Returns:
             True if there are pending messages
         """
-        return bool(self.pending_messages.get(channel_id))
+        with self._queue_lock:
+            return bool(self.pending_messages.get(channel_id))
 
     def get_pending_count(self, channel_id: int) -> int:
         """Get the number of pending messages for a channel.
@@ -194,7 +195,8 @@ class MessageQueue:
         Returns:
             Number of pending messages
         """
-        return len(self.pending_messages.get(channel_id, []))
+        with self._queue_lock:
+            return len(self.pending_messages.get(channel_id, []))
 
     def pop_pending_messages(self, channel_id: int) -> list[PendingMessage]:
         """Get and clear pending messages for a channel.
@@ -205,10 +207,11 @@ class MessageQueue:
         Returns:
             List of pending messages
         """
-        pending = self.pending_messages.get(channel_id, [])
-        self.pending_messages[channel_id] = []
-        self.cancel_flags[channel_id] = False
-        return pending
+        with self._queue_lock:
+            pending = self.pending_messages.get(channel_id, [])
+            self.pending_messages[channel_id] = []
+            self.cancel_flags[channel_id] = False
+            return pending
 
     def merge_pending_messages(self, channel_id: int) -> tuple[PendingMessage | None, str]:
         """Merge pending messages into a single message.
@@ -256,11 +259,33 @@ class MessageQueue:
         self.cleanup_stale_locks()
 
         lock = await self.get_lock(channel_id)
+
+        # Use shield + done_callback pattern to avoid the known
+        # asyncio.wait_for(lock.acquire()) deadlock (CPython #42130).
+        _timed_out = False
+
+        async def _acquire_lock():
+            await lock.acquire()
+            return True
+
+        _acquire_task = asyncio.create_task(_acquire_lock())
+
+        def _release_if_timed_out(task: asyncio.Task) -> None:
+            """Release the lock if we already gave up waiting."""
+            if _timed_out and not task.cancelled() and task.exception() is None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+        _acquire_task.add_done_callback(_release_if_timed_out)
+
         try:
-            await asyncio.wait_for(lock.acquire(), timeout=timeout)
+            await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=timeout)
             self._lock_times[channel_id] = time.time()
             return True
         except asyncio.TimeoutError:
+            _timed_out = True
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)",
                 channel_id,
@@ -305,14 +330,35 @@ class MessageQueue:
             Number of stale locks detected (not released)
         """
         now = time.time()
+        force_release_threshold = max_age * 2  # Force-release after 2x max_age (e.g., 600s)
         stale = [cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age]
+        released = 0
         for channel_id in stale:
-            # Only log warning - do not force-release as the task may still be running
-            logging.warning(
-                "🔒 Lock for channel %s has been held for >%ss (may be slow processing)",
-                channel_id,
-                max_age,
-            )
+            age = now - self._lock_times[channel_id]
+            if age > force_release_threshold:
+                # Force-release: lock held far too long, likely orphaned
+                lock = self.processing_locks.get(channel_id)
+                if lock and lock.locked():
+                    try:
+                        lock.release()
+                        released += 1
+                        logging.error(
+                            "🔓 FORCE-RELEASED stale lock for channel %s (held for %.0fs > %.0fs threshold)",
+                            channel_id,
+                            age,
+                            force_release_threshold,
+                        )
+                    except RuntimeError:
+                        pass  # Lock was not held (race condition)
+                # Clean up tracking
+                self._lock_times.pop(channel_id, None)
+            else:
+                # Only log warning for locks approaching threshold
+                logging.warning(
+                    "🔒 Lock for channel %s has been held for >%ss (may be slow processing)",
+                    channel_id,
+                    max_age,
+                )
         return len(stale)
 
     def cleanup_unused_locks(self, inactive_threshold: float = 3600.0) -> int:

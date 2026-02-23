@@ -25,8 +25,35 @@ pub fn resize_image(
     mode: ResizeMode,
     jpeg_quality: u8,
 ) -> Result<ImageData, MediaError> {
+    // Validate dimensions to prevent panic in image crate
+    if max_width == 0 || max_height == 0 {
+        return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
+    }
+
+    const MAX_ALLOWED_DIMENSION: u32 = 16384;
+    if max_width > MAX_ALLOWED_DIMENSION || max_height > MAX_ALLOWED_DIMENSION {
+        return Err(MediaError::Encode(format!(
+            "Dimensions too large: {}x{} (max {})", max_width, max_height, MAX_ALLOWED_DIMENSION
+        )));
+    }
+
+    // Clamp JPEG quality to valid range (1-100)
+    let jpeg_quality = jpeg_quality.clamp(1, 100);
+
     let img = image::load_from_memory(data)?;
     let (orig_w, orig_h) = img.dimensions();
+
+    // Guard against degenerate/corrupt images with zero dimensions
+    if orig_w == 0 || orig_h == 0 {
+        return Err(MediaError::Encode("Image has zero dimensions".to_string()));
+    }
+
+    const MAX_PIXELS: u64 = 100_000_000;
+    if (orig_w as u64) * (orig_h as u64) > MAX_PIXELS {
+        return Err(MediaError::Encode(format!(
+            "Image too large: {}x{} pixels (max {})", orig_w, orig_h, MAX_PIXELS
+        )));
+    }
 
     // Calculate new dimensions
     let (new_w, new_h) = match mode {
@@ -35,8 +62,8 @@ pub fn resize_image(
         ResizeMode::Stretch => (max_width, max_height),
     };
 
-    // Skip if already smaller
-    if new_w >= orig_w && new_h >= orig_h {
+    // Skip if already smaller (only for Fit mode — Fill/Stretch must reach requested dimensions)
+    if matches!(mode, ResizeMode::Fit) && new_w >= orig_w && new_h >= orig_h {
         return Ok(ImageData {
             data: data.to_vec(),
             width: orig_w,
@@ -54,8 +81,8 @@ pub fn resize_image(
                 new_w as f64 / orig_w as f64,
                 new_h as f64 / orig_h as f64,
             );
-            let scaled_w = (orig_w as f64 * scale).ceil() as u32;
-            let scaled_h = (orig_h as f64 * scale).ceil() as u32;
+            let scaled_w = (orig_w as f64 * scale).ceil().min(u32::MAX as f64) as u32;
+            let scaled_h = (orig_h as f64 * scale).ceil().min(u32::MAX as f64) as u32;
             
             let scaled = img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
             
@@ -120,7 +147,7 @@ fn calculate_fit_dimensions(orig_w: u32, orig_h: u32, max_w: u32, max_h: u32) ->
     if ratio >= 1.0 {
         (orig_w, orig_h)
     } else {
-        ((orig_w as f64 * ratio).round() as u32, (orig_h as f64 * ratio).round() as u32)
+        (((orig_w as f64 * ratio).round() as u32).max(1), ((orig_h as f64 * ratio).round() as u32).max(1))
     }
 }
 

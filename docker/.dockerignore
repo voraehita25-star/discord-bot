@@ -65,3 +65,11 @@ tools/
 *.temp
 Thumbs.db
 .DS_Store
+
+# Large build artifacts (not needed in Python-only Docker image)
+native_dashboard/
+rust_extensions/target/
+go_services/health_api/health_api
+go_services/url_fetcher/url_fetcher
+.github/
+assets/icons/

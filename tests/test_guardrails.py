@@ -188,11 +188,7 @@ class TestGuardrailResult:
         """Test creating GuardrailResult."""
         from cogs.ai_core.processing.guardrails import GuardrailResult
 
-        result = GuardrailResult(
-            is_valid=True,
-            sanitized_content="Hello world",
-            warnings=[]
-        )
+        result = GuardrailResult(is_valid=True, sanitized_content="Hello world", warnings=[])
         assert result.is_valid is True
         assert result.sanitized_content == "Hello world"
         assert result.warnings == []
@@ -205,7 +201,7 @@ class TestGuardrailResult:
             is_valid=False,
             sanitized_content="",
             warnings=["Warning"],
-            blocked_reason="Sensitive content"
+            blocked_reason="Sensitive content",
         )
         assert result.is_valid is False
         assert result.blocked_reason == "Sensitive content"
@@ -495,10 +491,7 @@ class TestInputValidationResult:
         from cogs.ai_core.processing.guardrails import InputValidationResult
 
         result = InputValidationResult(
-            is_valid=True,
-            sanitized_input="Hello",
-            risk_score=0.0,
-            flags=[]
+            is_valid=True, sanitized_input="Hello", risk_score=0.0, flags=[]
         )
         assert result.is_valid is True
         assert result.sanitized_input == "Hello"
@@ -513,7 +506,7 @@ class TestInputValidationResult:
             sanitized_input="",
             risk_score=0.9,
             flags=["injection:jailbreak"],
-            blocked_reason="Risk too high"
+            blocked_reason="Risk too high",
         )
         assert result.is_valid is False
         assert result.blocked_reason == "Risk too high"
@@ -541,8 +534,8 @@ class TestValidateFunctions:
     def test_validate_response_for_channel_unrestricted(self):
         """Test validate_response_for_channel with unrestricted mode."""
         from cogs.ai_core.processing.guardrails import (
+            set_unrestricted,
             validate_response_for_channel,
-            set_unrestricted
         )
 
         channel_id = 888777666555
@@ -558,14 +551,13 @@ class TestValidateFunctions:
             set_unrestricted(channel_id, False)
 
     def test_validate_response_for_channel_normal(self):
-        """Test validate_response_for_channel without unrestricted mode."""
+        """Test validate_response_for_channel in normal (restricted) mode."""
         from cogs.ai_core.processing.guardrails import validate_response_for_channel
 
         channel_id = 111222333444
-        is_valid, sanitized, warnings = validate_response_for_channel(
-            "Normal response", channel_id
-        )
+        is_valid, sanitized, warnings = validate_response_for_channel("Normal response", channel_id)
         assert is_valid is True
+        # Channel is not unrestricted, so normal validation applies
         assert "unrestricted_mode" not in warnings
 
 
@@ -573,20 +565,18 @@ class TestUnrestrictedChannels:
     """Tests for unrestricted channel management."""
 
     def test_is_unrestricted_default(self):
-        """Test is_unrestricted returns False by default."""
+        """Test is_unrestricted returns False for channels not explicitly set."""
         from cogs.ai_core.processing.guardrails import is_unrestricted
 
         result = is_unrestricted(987654321098)
         assert result is False
 
     def test_set_and_check_unrestricted(self):
-        """Test setting and checking unrestricted mode."""
-        from cogs.ai_core.processing.guardrails import (
-            is_unrestricted,
-            set_unrestricted
-        )
+        """Test set_unrestricted toggles unrestricted mode per channel."""
+        from cogs.ai_core.processing.guardrails import is_unrestricted, set_unrestricted
 
         channel_id = 555666777888
+        # Default is not unrestricted
         assert is_unrestricted(channel_id) is False
 
         set_unrestricted(channel_id, True)

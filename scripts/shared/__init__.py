@@ -2,6 +2,6 @@
 Shared utilities for scripts.
 """
 
-from .colors_fallback import Colors, COLORS_FROM_UTILS
+from .colors_fallback import COLORS_FROM_UTILS, Colors
 
-__all__ = ["Colors", "COLORS_FROM_UTILS"]
+__all__ = ["COLORS_FROM_UTILS", "Colors"]

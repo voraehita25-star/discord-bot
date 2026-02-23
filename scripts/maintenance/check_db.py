@@ -19,4 +19,5 @@ async def check():
             print(f"{r['channel_id']} | {r['min_id']:6} | {r['max_id']:6} | {r['count']}")
 
 
-asyncio.run(check())
+if __name__ == "__main__":
+    asyncio.run(check())

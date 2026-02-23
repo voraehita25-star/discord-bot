@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** February 7, 2026
+> **Last Updated:** February 17, 2026
 > **Version:** 3.3.10
 > **Python Version:** 3.10+
 > **Framework:** discord.py 2.x
-> **Total Files:** 251 Python files | 126 Test files | 3,157 Tests
+> **Total Files:** 251 Python files | 126 Test files | 3,203 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅
 
 ---
 
@@ -795,6 +795,16 @@ async def mycommand(self, ctx):
 9. **Permission Checks:** Music commands require `connect` and `speak` permissions in target channel
 10. **Memory Bounds:** Rate limiter (10k buckets), message queue (5k channels), state tracker have eviction limits
 11. **Specific Exceptions:** All `except Exception` blocks replaced with specific exception types for better debugging
+12. **SSRF Protection:** Go services bind to `127.0.0.1` by default and url_fetcher uses `ssrfSafeDialContext` to block DNS rebinding attacks with full IPv6 coverage
+13. **Permission Allowlists:** AI server commands validate against `_SAFE_PERMISSIONS` / `_DANGEROUS_PERMISSIONS` frozensets — administrator, manage_guild, ban_members etc. are blocked
+14. **Dashboard Auth:** WebSocket dashboard requires `DASHBOARD_WS_TOKEN` env var for authentication; unrestricted mode gated behind `DASHBOARD_ALLOW_UNRESTRICTED`
+15. **Lock Safety:** `asyncio.shield()` used for lock acquisition to avoid known CPython deadlock (#42130); `ShutdownManager` defers Event/Lock creation to correct event loop
+16. **Mention Sanitization:** Both `sanitization.py` and webhook `send_as_webhook()` sanitize role mentions (`<@&ID>`) and user mentions (`<@ID>`) with zero-width space
+17. **Atomic Persistence:** RAG engine uses temp-file+rename for atomic saves; VectorStorage flushes mmap after every push
+18. **Cache Key Hashing:** `ai_cache.py` uses SHA-256 (not MD5) for cache key generation to avoid collision risk
+19. **Tool Rate Limit:** Tool execution limited to 5 calls per message to prevent abuse
+20. **Stale Lock Recovery:** Message queue force-releases locks held >600s with ERROR-level logging
+21. **LIKE Injection:** Entity memory search escapes `%`, `_`, `\` in LIKE queries
 
 ---
 
@@ -940,6 +950,68 @@ async def mycommand(self, ctx):
 | RuntimeWarning: coroutine `_cleanup_expired_webhook_cache` never awaited | Added `coroutine_arg.close()` after assertions | `test_webhook_cache.py` |
 | Duplicate `escapeHtml` class method in dashboard | Removed duplicate, unified to standalone `escapeHtml()` | `app.ts` |
 
+### Phase 11 - Security Hardening & Reliability Fixes (February 10, 2026)
+
+**Security Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| SSRF via DNS rebinding in url_fetcher | Added `ssrfSafeDialContext()` that checks resolved IPs at connect time | `url_fetcher/main.go` |
+| Missing IPv6 SSRF coverage | Pre-parsed `privateNetworks` with IPv4-mapped IPv6 ranges in `init()` | `url_fetcher/main.go` |
+| Go services exposed on all interfaces | Bound to `127.0.0.1` (configurable via `HEALTH_API_HOST` env) | `health_api/main.go`, `url_fetcher/main.go` |
+| No auth on WebSocket dashboard | Added `DASHBOARD_WS_TOKEN` env var authentication | `ws_dashboard.py` |
+| Origin check bypass via subdomain | Fixed to check prefix + delimiter (`:` or `/`) | `ws_dashboard.py` |
+| Unrestricted mode exposed without gate | Gated behind `DASHBOARD_ALLOW_UNRESTRICTED` env var | `ws_dashboard.py` |
+| AI can set dangerous permissions | Added `_SAFE_PERMISSIONS` / `_DANGEROUS_PERMISSIONS` allowlists | `server_commands.py` |
+| Webhook mention injection | Added `re.sub()` for role/user mention sanitization | `tool_executor.py` |
+| Path traversal in conversation export | Added regex validation `^[a-zA-Z0-9_-]+$` on `conversation_id` | `database.py` |
+| Prometheus cardinality explosion | Added `allowedMetricNames`, `allowedLabelValues`, `safeLabel()` | `health_api/main.go` |
+
+**Reliability Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `asyncio.wait_for(lock.acquire())` deadlock (CPython #42130) | Use `asyncio.shield()` for safe lock acquisition | `logic.py` |
+| GC deadlock in WeakRefCache | Changed `threading.Lock()` to `threading.RLock()` | `memory_manager.py` |
+| Sync `_get_backoff_state()` called in async `retry_async()` | Changed to `await _get_backoff_state_async()` | `error_recovery.py` |
+| `asyncio.Event()`/`Lock()` bound to wrong event loop at import | Lazy creation via `_get_shutdown_event()` / `_get_lock()` getters | `shutdown_manager.py` |
+| Mmap data loss on crash | Added `mmap.flush()` after every `push()` | `storage.rs` |
+| Non-atomic JSON save in RAG engine | Atomic write via temp file + rename with cleanup | `lib.rs` |
+| Music queue lost on cog reload | Save all queues before clearing in `cog_unload` | `cog.py` |
+| Cross-guild retry state leak | Per-guild retry tracking (`_play_next_retries_{guild_id}`) | `cog.py` |
+
+**Correctness Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `CancelledError` conflated with message interrupts | New `_NewMessageInterrupt` exception class | `logic.py` |
+| Naive `datetime.now()` in history | Changed to `datetime.now(datetime.timezone.utc)` | `logic.py` |
+| O(n²) shuffle on deque | Convert to list, shuffle, extend back — O(n) | `queue.py` |
+| Keywords not updated on re-add | Remove old keyword associations, re-index new text | `index.rs` |
+| Skip-if-smaller applied to Fill/Stretch modes | Restrict check to `Fit` mode only via `matches!()` | `resize.rs` |
+| GIF frame detection via GCE only (optional per spec) | Count Image Descriptor (0x2C) blocks instead | `gif.rs` |
+| Stale entries accumulate on load | `entries.clear()` before loading from file | `lib.rs` |
+| Channel eviction leaks MessageQueue data | Clean up `pending_messages` and `cancel_flags` | `logic.py` |
+| Global export debounce drops concurrent exports | Per-channel `_export_pending_keys` set | `database.py` |
+| Unbounded response body in url_fetcher | `MAX_RESPONSE_SIZE = 5MB` with `content.read()` | `url_fetcher.py` |
+| `ensure_ascii` default mismatch between orjson/stdlib | Aligned both to `False` | `fast_json.py` |
+| Redundant `import re` in sanitization | Removed (already imported at top) | `sanitization.py` |
+
+### Phase 12 - Security Audit Remediation (February 17, 2026)
+
+| Issue | Fix | File |
+|-------|-----|------|
+| WS dashboard no auth when token not set | Auto-generate token with `secrets.token_urlsafe(32)` | `ws_dashboard.py` |
+| `setattr` permission fallthrough via `hasattr` | Strict whitelist gate, removed `hasattr` condition | `server_commands.py` |
+| `unrestricted_channels.json` world-readable | `os.chmod(S_IRUSR \| S_IWUSR)` after atomic write | `guardrails.py` |
+| LIKE wildcard injection in entity search | Escape `%`, `_`, `\` + `ESCAPE '\'` clause | `entity_memory.py` |
+| MD5 for cache key (collision risk) | `hashlib.sha256` (2 locations) | `ai_cache.py` |
+| No tool execution rate limit | `MAX_TOOL_CALLS_PER_MESSAGE = 5` with break | `logic.py` |
+| `conversation_id` not validated in WS | `uuid.UUID()` format validation | `ws_dashboard.py` |
+| Stale locks never force-released | Force-release after 600s with ERROR logging | `message_queue.py` |
+| Gemini `BLOCK_NONE` (intentional) | Added code comments documenting design choice | `api_handler.py`, `ws_dashboard.py` |
+| Escalation Framings (intentional) | Added code comments documenting design choice | `faust_data.py` |
+
 ---
 
 ## 📚 Further Reading
@@ -950,4 +1022,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: February 7, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,157 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*
+*Documentation last updated: February 17, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security audit remediation: WS auth, permission allowlists, LIKE escape, SHA-256 cache, tool rate limit, stale lock recovery | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,203 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*

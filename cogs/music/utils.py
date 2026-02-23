@@ -59,7 +59,7 @@ def format_duration(seconds: int | float | None) -> str:
     Returns:
         Formatted duration string (e.g., "3:45" or "1:23:45").
     """
-    if not seconds:
+    if seconds is None:
         return "00:00"
     seconds = int(seconds)
     hours = seconds // 3600

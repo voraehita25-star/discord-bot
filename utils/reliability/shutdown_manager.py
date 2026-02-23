@@ -38,10 +38,10 @@ class ShutdownPhase(Enum):
 class Priority(Enum):
     """Cleanup callback priority levels."""
 
-    CRITICAL = 0    # Run first (e.g., save state)
-    HIGH = 10       # Important (e.g., flush queues)
-    NORMAL = 50     # Standard cleanup
-    LOW = 90        # Can be skipped if timeout
+    CRITICAL = 0  # Run first (e.g., save state)
+    HIGH = 10  # Important (e.g., flush queues)
+    NORMAL = 50  # Standard cleanup
+    LOW = 90  # Can be skipped if timeout
     BACKGROUND = 100  # Background tasks
 
 
@@ -118,14 +118,28 @@ class ShutdownManager:
 
         self._handlers: list[CleanupHandler] = []
         self._state = ShutdownState()
-        self._shutdown_event = asyncio.Event()
-        self._lock = asyncio.Lock()
+        # Defer Event creation to avoid binding to the wrong event loop at import time.
+        # asyncio.Event() created here may be associated with no loop or a different loop.
+        self._shutdown_event: asyncio.Event | None = None
+        self._lock: asyncio.Lock | None = None
         self._pending_shutdown_task: asyncio.Task[ShutdownState] | None = None
 
         self.logger = logging.getLogger("ShutdownManager")
 
         # Register atexit handler for sync cleanup
         atexit.register(self._atexit_handler)
+
+    def _get_shutdown_event(self) -> asyncio.Event:
+        """Lazily create the shutdown event in the correct event loop."""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        return self._shutdown_event
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Lazily create the lock in the correct event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def state(self) -> ShutdownState:
@@ -171,7 +185,9 @@ class ShutdownManager:
 
         self.logger.debug(
             "Registered cleanup handler: %s (priority: %s, timeout: %.1fs)",
-            name, priority.name, timeout
+            name,
+            priority.name,
+            timeout,
         )
 
     def unregister(self, name: str) -> bool:
@@ -191,16 +207,12 @@ class ShutdownManager:
             self.logger.info("🔄 Running cleanup: %s", handler.name)
 
             if handler.is_async:
-                await asyncio.wait_for(
-                    handler.callback(),
-                    timeout=handler.timeout
-                )
+                await asyncio.wait_for(handler.callback(), timeout=handler.timeout)
             else:
                 # Run sync callback in executor
                 loop = asyncio.get_running_loop()
                 await asyncio.wait_for(
-                    loop.run_in_executor(None, handler.callback),
-                    timeout=handler.timeout
+                    loop.run_in_executor(None, handler.callback), timeout=handler.timeout
                 )
 
             self.logger.info("✅ Cleanup complete: %s", handler.name)
@@ -239,7 +251,7 @@ class ShutdownManager:
         Returns:
             Final shutdown state
         """
-        async with self._lock:
+        async with self._get_lock():
             if self._state.phase != ShutdownPhase.RUNNING:
                 self.logger.warning("Shutdown already in progress")
                 return self._state
@@ -265,10 +277,7 @@ class ShutdownManager:
 
         for phase, priorities in phases:
             self._state.phase = phase
-            phase_handlers = [
-                h for h in self._handlers
-                if h.priority in priorities
-            ]
+            phase_handlers = [h for h in self._handlers if h.priority in priorities]
 
             if not phase_handlers:
                 continue
@@ -277,10 +286,7 @@ class ShutdownManager:
 
             for handler in phase_handlers:
                 if remaining_time <= 0:
-                    self.logger.warning(
-                        "⏱️ Timeout reached, skipping: %s",
-                        handler.name
-                    )
+                    self.logger.warning("⏱️ Timeout reached, skipping: %s", handler.name)
                     self._state.handlers_skipped += 1
                     continue
 
@@ -303,7 +309,7 @@ class ShutdownManager:
         self._state.completed_at = time.time()
 
         # Set shutdown event
-        self._shutdown_event.set()
+        self._get_shutdown_event().set()
 
         # Log summary
         duration = self._state.duration_seconds or 0
@@ -334,7 +340,7 @@ class ShutdownManager:
 
     def _atexit_handler(self) -> None:
         """Handler for atexit - run sync cleanups silently.
-        
+
         Note: During interpreter shutdown, stdout/stderr may be closed.
         We suppress logging here to avoid ValueError on closed streams.
         """
@@ -373,12 +379,15 @@ class ShutdownManager:
             # Windows doesn't support loop.add_signal_handler
             return
 
+        # Store task references to prevent GC collection
+        self._signal_tasks: list[asyncio.Task] = []
+
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(
                 sig,
-                lambda s=sig: asyncio.create_task(
-                    self.shutdown(signal.Signals(s).name)
-                )
+                lambda s=sig: self._signal_tasks.append(
+                    asyncio.create_task(self.shutdown(signal.Signals(s).name))
+                ),
             )
 
         self.logger.info("🛡️ Async signal handlers registered: SIGTERM, SIGINT")
@@ -398,7 +407,7 @@ class ShutdownManager:
 
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown to complete."""
-        await self._shutdown_event.wait()
+        await self._get_shutdown_event().wait()
 
     def get_status(self) -> dict[str, Any]:
         """Get current shutdown manager status."""
@@ -438,6 +447,7 @@ def on_shutdown(
         async def cleanup_cache():
             await cache.flush()
     """
+
     def decorator(func: Callable) -> Callable:
         shutdown_manager.register(
             name=func.__name__,
@@ -447,4 +457,5 @@ def on_shutdown(
             required=required,
         )
         return func
+
     return decorator

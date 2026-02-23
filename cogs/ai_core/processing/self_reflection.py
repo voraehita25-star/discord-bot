@@ -75,9 +75,14 @@ class SelfReflector:
 
     # Patterns that might indicate hallucination or uncertainty
     HALLUCINATION_PATTERNS = [
+        # English patterns
         r"\b(I think|I believe|probably|maybe|possibly|might be|could be)\b",
         r"\b(I\'m not sure|I don\'t know for certain|I can\'t recall)\b",
         r"\b(allegedly|supposedly|reportedly)\b",
+        # Thai patterns (Thai has no word boundaries, so no \b)
+        r"(คิดว่า|เชื่อว่า|น่าจะ|อาจจะ|บางที|เป็นไปได้ว่า)",
+        r"(ไม่แน่ใจ|ไม่ค่อยแน่ใจ|จำไม่ได้|ไม่ทราบแน่ชัด)",
+        r"(มีรายงานว่า|ตามข่าว|ว่ากันว่า)",
     ]
 
     # Patterns that indicate incomplete responses

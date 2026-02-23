@@ -71,17 +71,19 @@ class FeedbackStats:
 
     @property
     def satisfaction_rate(self) -> float:
-        """Calculate satisfaction rate (positive / total)."""
-        if self.total_feedback == 0:
+        """Calculate satisfaction rate (positive / sentiment total, excluding LENGTH feedback)."""
+        sentiment_total = self.positive_count + self.negative_count + self.neutral_count
+        if sentiment_total == 0:
             return 0
-        return self.positive_count / self.total_feedback
+        return self.positive_count / sentiment_total
 
     @property
     def negative_rate(self) -> float:
         """Calculate negative rate."""
-        if self.total_feedback == 0:
+        sentiment_total = self.positive_count + self.negative_count + self.neutral_count
+        if sentiment_total == 0:
             return 0
-        return self.negative_count / self.total_feedback
+        return self.negative_count / sentiment_total
 
 
 class FeedbackCollector:
@@ -160,7 +162,7 @@ class FeedbackCollector:
 
             # Cleanup old entries to prevent memory growth
             if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
-                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
+                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES :]
 
             # Take snapshot of callbacks to avoid race condition
             callbacks_snapshot = list(self._callbacks)

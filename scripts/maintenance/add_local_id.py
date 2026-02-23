@@ -19,6 +19,11 @@ BACKUP_DIR = Path("data/backups")
 async def add_local_id_column():
     """Add local_id column to ai_history and populate with per-channel sequential IDs."""
 
+    # Verify database exists before proceeding
+    if not Path(DB_PATH).exists():
+        print(f"[ERROR] Database not found: {DB_PATH}")
+        return
+
     # Create backup
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backup_name = f"bot_before_localid_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "bot_database.db"
-OUTPUT_DIR = Path(__file__).parent.parent / "data" / "db_export"
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "bot_database.db"
+OUTPUT_DIR = Path(__file__).parent.parent.parent / "data" / "db_export"
 
 
 def main() -> None:
@@ -26,11 +27,14 @@ def main() -> None:
     tables: list[str] = [row[0] for row in cursor.fetchall()]
 
     # Export each table to JSON
-    # SECURITY NOTE: table names come from sqlite_master (trusted source),
-    # so f-string interpolation is safe here. Do NOT use with user input.
+    # SECURITY NOTE: table names come from sqlite_master (trusted source).
+    # We still validate and bracket-escape as defense-in-depth.
     summary: dict[str, int] = {}
     for table in tables:
-        cursor.execute(f"SELECT * FROM {table}")  # nosec: table from sqlite_master
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table):
+            print(f"Skipping table with invalid name: {table}")
+            continue
+        cursor.execute(f"SELECT * FROM [{table}]")  # nosec: validated + bracket-escaped
         rows = cursor.fetchall()
 
         # Convert to list of dicts

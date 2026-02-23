@@ -6,6 +6,7 @@ Extracts and fetches content from URLs in user messages for AI context.
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import logging
 import re
@@ -13,6 +14,7 @@ import socket
 from typing import TYPE_CHECKING
 
 import aiohttp
+import yarl
 from bs4 import BeautifulSoup
 
 if TYPE_CHECKING:
@@ -33,6 +35,9 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 # Balanced between context and preventing Gemini silent blocks
 MAX_CONTENT_LENGTH = 4500
 
+# Maximum response body size (bytes) to prevent memory exhaustion
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
+
 # Request timeout in seconds (from centralized constants)
 REQUEST_TIMEOUT = HTTP_REQUEST_TIMEOUT
 
@@ -48,34 +53,41 @@ GITHUB_DOMAINS = ("github.com", "raw.githubusercontent.com")
 
 # Blocked private/internal IP ranges for SSRF protection
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
-    ipaddress.ip_network("10.0.0.0/8"),         # Private Class A
-    ipaddress.ip_network("172.16.0.0/12"),      # Private Class B
-    ipaddress.ip_network("192.168.0.0/16"),     # Private Class C
-    ipaddress.ip_network("169.254.0.0/16"),     # Link-local
-    ipaddress.ip_network("0.0.0.0/8"),          # Current network
-    ipaddress.ip_network("::1/128"),            # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),           # IPv6 unique local
-    ipaddress.ip_network("fe80::/10"),          # IPv6 link-local
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # Private Class A
+    ipaddress.ip_network("172.16.0.0/12"),  # Private Class B
+    ipaddress.ip_network("192.168.0.0/16"),  # Private Class C
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local
+    ipaddress.ip_network("0.0.0.0/8"),  # Current network
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
 ]
 
 
-def _is_private_url(url: str) -> bool:
+async def _is_private_url(url: str) -> bool:
     """Check if a URL resolves to a private/internal IP address (SSRF protection)."""
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
             return True
 
-        # Resolve hostname to IP
+        # Resolve hostname to IP - use executor to avoid blocking the event loop
         try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            loop = asyncio.get_running_loop()
+            addr_info = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+                ),
+            )
         except socket.gaierror:
-            return False  # Can't resolve, let the HTTP client handle it
+            return True  # Block on DNS resolution failure for safety
 
-        for family, _, _, _, sockaddr in addr_info:
+        for _family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
             try:
                 ip = ipaddress.ip_address(ip_str)
@@ -137,7 +149,7 @@ async def fetch_url_content(
     close_session = False
     try:
         # SSRF protection: block private/internal IPs
-        if _is_private_url(url):
+        if await _is_private_url(url):
             logger.warning("Blocked SSRF attempt to private URL: %s", url)
             return url, None
 
@@ -157,6 +169,13 @@ async def fetch_url_content(
                 # GitHub API for repo info
                 api_url = url.replace("github.com", "api.github.com/repos")
                 api_url = api_url.rstrip("/")
+
+                # Re-check SSRF on transformed URL
+                if await _is_private_url(api_url):
+                    logger.warning(
+                        "Blocked SSRF attempt on transformed GitHub API URL: %s", api_url
+                    )
+                    return url, None
 
                 try:
                     async with session.get(
@@ -195,30 +214,54 @@ Default Branch: {data.get("default_branch", "main")}
                 except Exception as e:
                     logger.debug("GitHub API failed for %s: %s", url, e)
 
-        # Standard webpage fetch
+        # Standard webpage fetch — disable auto-redirects and check each target for SSRF
         async with session.get(
             url,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=True,
-            max_redirects=5,
+            allow_redirects=False,
         ) as response:
-            if response.status != 200:
-                logger.warning("URL fetch failed: %s (status %d)", url, response.status)
+            # Manually follow redirects with SSRF check on each target
+            final_response = response
+            redirect_count = 0
+            while final_response.status in (301, 302, 303, 307, 308) and redirect_count < 5:
+                redirect_url = final_response.headers.get("Location")
+                if not redirect_url:
+                    break
+                # Resolve relative URLs
+                redirect_url = str(final_response.url.join(yarl.URL(redirect_url)))
+                if await _is_private_url(redirect_url):
+                    logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
+                    return url, None
+                redirect_count += 1
+                # Release the previous redirect response to avoid connection leak
+                if final_response is not response:
+                    final_response.release()
+                final_response = await session.get(
+                    redirect_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                    allow_redirects=False,
+                )
+
+            if final_response.status != 200:
+                logger.warning("URL fetch failed: %s (status %d)", url, final_response.status)
                 return url, None
 
-            content_type = response.headers.get("Content-Type", "")
+            content_type = final_response.headers.get("Content-Type", "")
 
             # Only process HTML/text content
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return url, f"[Non-text content: {content_type}]"
 
-            # Handle encoding with fallback
+            # Handle encoding with fallback, size-limited to prevent memory exhaustion
             try:
-                html = await response.text(encoding=None)  # Let aiohttp detect encoding
-            except UnicodeDecodeError:
+                raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
+                encoding = final_response.get_encoding()
+                html = raw_bytes.decode(encoding or "utf-8")
+            except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values
-                html = await response.text(encoding='latin-1', errors='replace')
+                html = raw_bytes.decode("latin-1", errors="replace")
 
             # Parse HTML
             soup = BeautifulSoup(html, "lxml")

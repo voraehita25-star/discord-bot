@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import gc
 import logging
 import sys
 import threading
@@ -28,6 +27,9 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
+
+# Sentinel object to distinguish "not in cache" from a cached None value
+_CACHE_MISS = object()
 
 
 @dataclass
@@ -118,20 +120,23 @@ class TTLCache(Generic[K, V]):
         """Estimate memory size of value."""
         return sys.getsizeof(value)
 
-    def get(self, key: K) -> V | None:
-        """Get value from cache, returns None if not found or expired."""
+    def get(self, key: K, default=None):
+        """Get value from cache, returns default if not found or expired.
+
+        Pass default=_CACHE_MISS to distinguish a cached None from a miss.
+        """
         with self._lock:
             entry = self._cache.get(key)
 
             if entry is None:
                 self._misses += 1
-                return None
+                return default
 
             if self._is_expired(entry):
                 self._cache.pop(key, None)
                 self._expired += 1
                 self._misses += 1
-                return None
+                return default
 
             # Update access time and move to end (most recently used)
             entry.last_accessed = time.time()
@@ -185,8 +190,7 @@ class TTLCache(Generic[K, V]):
         with self._lock:
             now = time.time()
             expired_keys = [
-                key for key, entry in self._cache.items()
-                if now - entry.created_at > self.ttl
+                key for key, entry in self._cache.items() if now - entry.created_at > self.ttl
             ]
 
             for key in expired_keys:
@@ -249,7 +253,9 @@ class WeakRefCache(Generic[K, V]):
     def __init__(self, name: str = "weak_cache"):
         self.name = name
         self._cache: dict[K, weakref.ref[V]] = {}
-        self._lock = threading.Lock()
+        # Use RLock (reentrant) because GC callbacks may fire while we hold the lock
+        # (e.g., allocating a new weakref in set() triggers GC, which runs on_collected)
+        self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
         self._collected = 0
@@ -257,11 +263,16 @@ class WeakRefCache(Generic[K, V]):
 
     def _make_callback(self, key: K) -> Callable[[weakref.ref[V]], None]:
         """Create callback for when weak ref is collected."""
+
         def on_collected(ref: weakref.ref[V]) -> None:
             with self._lock:
-                self._cache.pop(key, None)
-                self._collected += 1
+                # Only remove if the stored ref is the same one being collected,
+                # to prevent stale callbacks from deleting newer entries
+                if self._cache.get(key) is ref:
+                    del self._cache[key]
+                    self._collected += 1
             self.logger.debug("Object collected for key: %s", key)
+
         return on_collected
 
     def get(self, key: K) -> V | None:
@@ -315,10 +326,7 @@ class WeakRefCache(Generic[K, V]):
     def cleanup(self) -> int:
         """Remove dead references. Returns count removed."""
         with self._lock:
-            dead_keys = [
-                key for key, ref in self._cache.items()
-                if ref() is None
-            ]
+            dead_keys = [key for key, ref in self._cache.items() if ref() is None]
 
             for key in dead_keys:
                 self._cache.pop(key, None)
@@ -397,6 +405,7 @@ class MemoryMonitor:
         """Get current process memory usage in MB."""
         try:
             import psutil
+
             process = psutil.Process()
             return process.memory_info().rss / 1024 / 1024
         except ImportError:
@@ -419,6 +428,7 @@ class MemoryMonitor:
             # gc.collect() can take 100-500ms, so we don't run it inline
             # Instead, we schedule it as a background task
             import gc
+
             gc.collect(generation=0)  # Fast collection of youngest generation only
 
         return results
@@ -426,11 +436,12 @@ class MemoryMonitor:
     async def _run_cleanups_async(self, aggressive: bool = False) -> dict[str, int]:
         """Async version of cleanup that handles gc.collect properly."""
         results = self._run_cleanups(aggressive=False)  # Run sync cleanups
-        
+
         if aggressive:
             # Run full gc.collect in executor to avoid blocking event loop
             import gc
-            loop = asyncio.get_event_loop()
+
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, gc.collect)
 
         return results
@@ -446,7 +457,8 @@ class MemoryMonitor:
                 if memory_mb >= self.critical_mb:
                     self.logger.warning(
                         "🚨 CRITICAL memory usage: %.1f MB (threshold: %.1f MB)",
-                        memory_mb, self.critical_mb
+                        memory_mb,
+                        self.critical_mb,
                     )
                     # Use async cleanup for aggressive mode to avoid blocking
                     results = await self._run_cleanups_async(aggressive=True)
@@ -454,13 +466,16 @@ class MemoryMonitor:
                     new_memory = self.get_memory_mb()
                     self.logger.info(
                         "🧹 Aggressive cleanup: removed %d items, memory: %.1f → %.1f MB",
-                        total_cleaned, memory_mb, new_memory
+                        total_cleaned,
+                        memory_mb,
+                        new_memory,
                     )
 
                 elif memory_mb >= self.warning_mb:
                     self.logger.info(
                         "⚠️ High memory usage: %.1f MB (threshold: %.1f MB)",
-                        memory_mb, self.warning_mb
+                        memory_mb,
+                        self.warning_mb,
                     )
                     results = self._run_cleanups(aggressive=False)
                     total_cleaned = sum(v for v in results.values() if v > 0)
@@ -481,7 +496,8 @@ class MemoryMonitor:
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         self.logger.info(
             "🧠 Memory monitor started (warning: %.0f MB, critical: %.0f MB)",
-            self.warning_mb, self.critical_mb
+            self.warning_mb,
+            self.critical_mb,
         )
 
     def stop(self) -> None:
@@ -539,15 +555,15 @@ def cached_with_ttl(
             else:
                 key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
 
-            # Check cache
-            cached = cache.get(key)
-            if cached is not None:
+            # Check cache (use sentinel to distinguish cached None from miss)
+            cached = cache.get(key, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
                 return cached
 
             # Call function
             result = await func(*args, **kwargs)
 
-            # Cache result
+            # Cache result (including None to prevent stampede)
             cache.set(key, result)
             return result
 
@@ -558,8 +574,8 @@ def cached_with_ttl(
             else:
                 key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
 
-            cached = cache.get(key)
-            if cached is not None:
+            cached = cache.get(key, _CACHE_MISS)
+            if cached is not _CACHE_MISS:
                 return cached
 
             result = func(*args, **kwargs)
@@ -568,6 +584,7 @@ def cached_with_ttl(
 
         # Choose wrapper based on function type
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             async_wrapper.cache = cache  # type: ignore
             async_wrapper.cache_clear = cache.clear  # type: ignore

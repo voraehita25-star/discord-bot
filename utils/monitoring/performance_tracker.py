@@ -46,38 +46,42 @@ class PerformanceStats:
     @property
     def p50(self) -> float:
         """50th percentile (median)."""
-        if not self.recent_times:
-            return 0.0
-        sorted_times = sorted(self.recent_times)
+        with self._lock:
+            if not self.recent_times:
+                return 0.0
+            sorted_times = sorted(self.recent_times)
         return sorted_times[len(sorted_times) // 2]
 
     @property
     def p95(self) -> float:
         """95th percentile."""
-        if not self.recent_times:
-            return 0.0
-        sorted_times = sorted(self.recent_times)
+        with self._lock:
+            if not self.recent_times:
+                return 0.0
+            sorted_times = sorted(self.recent_times)
         idx = int(len(sorted_times) * 0.95)
         return sorted_times[min(idx, len(sorted_times) - 1)]
 
     @property
     def p99(self) -> float:
         """99th percentile."""
-        if not self.recent_times:
-            return 0.0
-        sorted_times = sorted(self.recent_times)
+        with self._lock:
+            if not self.recent_times:
+                return 0.0
+            sorted_times = sorted(self.recent_times)
         idx = int(len(sorted_times) * 0.99)
         return sorted_times[min(idx, len(sorted_times) - 1)]
 
     @property
     def stddev(self) -> float:
         """Standard deviation."""
-        if len(self.recent_times) < 2:
-            return 0.0
-        try:
-            return statistics.stdev(self.recent_times)
-        except statistics.StatisticsError:
-            return 0.0
+        with self._lock:
+            if len(self.recent_times) < 2:
+                return 0.0
+            try:
+                return statistics.stdev(self.recent_times)
+            except statistics.StatisticsError:
+                return 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Export stats as dictionary."""
@@ -135,6 +139,9 @@ class PerformanceTracker:
         # Also track hourly stats
         hour_key = datetime.now().strftime("%Y-%m-%d-%H")
         self._hourly_stats[operation][hour_key].record(duration)
+
+        # Bridge to Prometheus
+        record_to_prometheus(operation, duration)
 
         self.logger.debug("%s: %.2fms", operation, duration * 1000)
         return duration
@@ -217,6 +224,7 @@ class PerformanceTracker:
         Args:
             interval: Cleanup interval in seconds (default: 1 hour)
         """
+
         async def _cleanup_loop():
             while True:
                 try:
@@ -260,6 +268,46 @@ class PerformanceTracker:
 
 # Global performance tracker instance
 perf_tracker = PerformanceTracker()
+
+# ==================== Prometheus Bridge ====================
+# Bridge Python performance stats to prometheus_client histograms
+try:
+    from prometheus_client import CollectorRegistry, Histogram, generate_latest
+
+    _prom_registry = CollectorRegistry()
+    _prom_histograms: dict[str, Histogram] = {}
+
+    def _get_or_create_histogram(operation: str) -> Histogram:
+        """Get or create a Prometheus histogram for an operation."""
+        if operation not in _prom_histograms:
+            safe_name = operation.replace(".", "_").replace("-", "_").replace(" ", "_").lower()
+            _prom_histograms[operation] = Histogram(
+                f"bot_{safe_name}_duration_seconds",
+                f"Duration of {operation} in seconds",
+                registry=_prom_registry,
+                buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+            )
+        return _prom_histograms[operation]
+
+    def record_to_prometheus(operation: str, duration: float) -> None:
+        """Record a timing to both the internal tracker and Prometheus."""
+        histogram = _get_or_create_histogram(operation)
+        histogram.observe(duration)
+
+    def get_prometheus_metrics() -> str:
+        """Generate Prometheus-compatible metrics text."""
+        return generate_latest(_prom_registry).decode("utf-8")
+
+    PROMETHEUS_BRIDGE_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_BRIDGE_AVAILABLE = False
+
+    def record_to_prometheus(operation: str, duration: float) -> None:
+        """No-op when prometheus_client is not installed."""
+        pass
+
+    def get_prometheus_metrics() -> str:
+        return ""
 
 
 def track_performance(operation: str):

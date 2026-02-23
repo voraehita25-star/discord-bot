@@ -4,6 +4,7 @@ Tests for cogs/music/views.py
 Comprehensive tests for MusicControlView.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -278,14 +279,21 @@ class TestStopButton:
 
     @pytest.mark.asyncio
     async def test_stop_button_clears_queue(self):
-        """Test stop clears queue."""
+        """Test stop clears queue via guild state."""
         with patch("discord.ui.View.__init__", return_value=None):
+            from collections import deque
+
             from cogs.music.views import MusicControlView
 
+            # Create a mock guild state matching MusicGuildState
+            mock_gs = MagicMock()
+            mock_gs.queue = deque(["song1", "song2"])
+            mock_gs.loop = True
+            mock_gs.current_track = "current"
+            mock_gs.play_lock = asyncio.Lock()
+
             mock_cog = MagicMock()
-            mock_cog.queues = {12345: ["song1", "song2"]}
-            mock_cog.loops = {12345: True}
-            mock_cog.current_track = {12345: "current"}
+            mock_cog._gs.return_value = mock_gs
 
             view = MusicControlView(cog=mock_cog, guild_id=12345)
             view.stop = MagicMock()  # Mock the View.stop method
@@ -301,9 +309,9 @@ class TestStopButton:
 
             await view.stop_button(mock_interaction, mock_button)
 
-            assert len(mock_cog.queues[12345]) == 0
-            assert mock_cog.loops[12345] is False
-            assert 12345 not in mock_cog.current_track
+            assert len(mock_gs.queue) == 0
+            assert mock_gs.loop is False
+            assert mock_gs.current_track is None
             mock_voice_client.stop.assert_called_once()
 
     @pytest.mark.asyncio

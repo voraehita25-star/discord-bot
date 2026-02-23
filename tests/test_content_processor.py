@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import base64
 import io
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from PIL import Image
@@ -103,9 +102,7 @@ class TestIsAnimatedGif:
             Image.new("RGB", (10, 10), color="blue"),
         ]
         buffer = io.BytesIO()
-        frames[0].save(
-            buffer, format="GIF", save_all=True, append_images=frames[1:], duration=100
-        )
+        frames[0].save(buffer, format="GIF", save_all=True, append_images=frames[1:], duration=100)
         buffer.seek(0)
 
         result = is_animated_gif(buffer.getvalue())
@@ -177,9 +174,7 @@ class TestProcessAttachments:
         """Test processing None attachments."""
         from cogs.ai_core.content_processor import process_attachments
 
-        image_parts, video_parts, text_parts = await process_attachments(
-            None, "TestUser"
-        )
+        image_parts, video_parts, text_parts = await process_attachments(None, "TestUser")
 
         assert image_parts == []
         assert video_parts == []
@@ -190,9 +185,7 @@ class TestProcessAttachments:
         """Test processing empty attachment list."""
         from cogs.ai_core.content_processor import process_attachments
 
-        image_parts, video_parts, text_parts = await process_attachments(
-            [], "TestUser"
-        )
+        image_parts, video_parts, text_parts = await process_attachments([], "TestUser")
 
         assert image_parts == []
         assert video_parts == []
@@ -207,6 +200,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
+        mock_attachment.size = 11
         mock_attachment.read = AsyncMock(return_value=b"Hello World")
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -225,7 +219,8 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "test.txt"
-        mock_attachment.read = AsyncMock(return_value="สวัสดี".encode('utf-8'))
+        mock_attachment.size = 100
+        mock_attachment.read = AsyncMock(return_value="สวัสดี".encode())
 
         image_parts, video_parts, text_parts = await process_attachments(
             [mock_attachment], "TestUser"
@@ -245,7 +240,8 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "large.txt"
-        mock_attachment.read = AsyncMock(return_value=large_content.encode('utf-8'))
+        mock_attachment.size = 20000
+        mock_attachment.read = AsyncMock(return_value=large_content.encode("utf-8"))
 
         image_parts, video_parts, text_parts = await process_attachments(
             [mock_attachment], "TestUser"
@@ -262,6 +258,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = None  # No MIME type
         mock_attachment.filename = "script.py"
+        mock_attachment.size = 14
         mock_attachment.read = AsyncMock(return_value=b"print('hello')")
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -279,6 +276,7 @@ class TestProcessAttachments:
         mock_attachment = MagicMock()
         mock_attachment.content_type = "application/json"
         mock_attachment.filename = "data.json"
+        mock_attachment.size = 16
         mock_attachment.read = AsyncMock(return_value=b'{"key": "value"}')
 
         image_parts, video_parts, text_parts = await process_attachments(
@@ -313,9 +311,9 @@ class TestPrepareUserAvatar:
         mock_user.id = 123456789
 
         # Create mock avatar
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         mock_avatar = MagicMock()
         mock_avatar.with_format = MagicMock(return_value=mock_avatar)
@@ -326,13 +324,7 @@ class TestPrepareUserAvatar:
         chat_data = {}  # No history key
         seen_users = {}
 
-        await prepare_user_avatar(
-            mock_user,
-            "Hello",
-            chat_data,
-            12345,
-            seen_users
-        )
+        await prepare_user_avatar(mock_user, "Hello", chat_data, 12345, seen_users)
 
         # Channel should be initialized in seen_users
         assert 12345 in seen_users
@@ -348,9 +340,9 @@ class TestPrepareUserAvatar:
         mock_user.id = 123456789
 
         # Create mock avatar
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         mock_avatar = MagicMock()
         mock_avatar.with_format = MagicMock(return_value=mock_avatar)
@@ -363,11 +355,7 @@ class TestPrepareUserAvatar:
 
         # Use keyword "appearance" to trigger avatar
         result = await prepare_user_avatar(
-            mock_user,
-            "What does my face look like?",
-            chat_data,
-            12345,
-            seen_users
+            mock_user, "What does my face look like?", chat_data, 12345, seen_users
         )
 
         # Should return an image due to keyword "face"

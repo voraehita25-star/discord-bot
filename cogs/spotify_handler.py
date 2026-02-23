@@ -45,6 +45,7 @@ class SpotifyHandler:
     MAX_RETRIES: int = 3
     RETRY_DELAY: int = 2  # seconds
     MAX_PLAYLIST_TRACKS: int = 500  # Limit to prevent memory issues with huge playlists
+    MAX_ALBUM_TRACKS: int = 200  # Limit to prevent memory issues with huge albums
     RATE_LIMIT_DELAY: float = 0.1  # Delay between pagination requests to avoid rate limits
 
     def __init__(self, bot: Bot) -> None:
@@ -77,11 +78,11 @@ class SpotifyHandler:
 
         Call this when the Music cog unloads to release resources.
         """
-        if self.sp and hasattr(self.sp, '_session'):
+        if self.sp and hasattr(self.sp, "_session"):
             try:
                 self.sp._session.close()
             except Exception:
-                pass
+                logging.debug("Failed to close Spotify session during cleanup")
         self.sp = None
         logging.debug("🧹 Spotify handler cleaned up")
 
@@ -109,7 +110,7 @@ class SpotifyHandler:
         for attempt in range(self.MAX_RETRIES):
             try:
                 # Use functools.partial to avoid closure capturing mutable variables
-                result = await self.bot.loop.run_in_executor(
+                result = await asyncio.get_running_loop().run_in_executor(
                     None, functools.partial(func, *captured_args, **captured_kwargs)
                 )
                 # Record success for circuit breaker
@@ -144,6 +145,12 @@ class SpotifyHandler:
                     if attempt >= 1:
                         logging.info("🔄 Recreating Spotify client...")
                         self._setup_client()
+                        if self.sp is None:
+                            logging.error("Failed to recreate Spotify client")
+                            raise ConnectionError("Spotify client recreation failed") from e
+                        # Re-bind func to the new client if it was a bound method
+                        if hasattr(func, "__self__") and isinstance(func.__self__, spotipy.Spotify):
+                            func = getattr(self.sp, func.__name__)
                 else:
                     logging.error("Spotify connection failed after %d attempts", self.MAX_RETRIES)
                     raise
@@ -255,10 +262,12 @@ class SpotifyHandler:
         )
         msg = await ctx.send(embed=loading_embed)
 
-        # Capture self.sp to avoid repeated None checks in nested function
-        sp = self.sp
-
         def get_all_playlist_tracks(url):
+            # Use self.sp directly (not a captured local) so retries
+            # after client recreation use the fresh client instance
+            sp = self.sp
+            if sp is None:
+                return []
             results = sp.playlist_tracks(url)
             tracks = results.get("items", []) if results else []
             # Limit total tracks to prevent memory issues
@@ -269,6 +278,9 @@ class SpotifyHandler:
                 import time
 
                 time.sleep(self.RATE_LIMIT_DELAY)
+                sp = self.sp
+                if sp is None:
+                    break
                 results = sp.next(results)
                 if results and results.get("items"):
                     tracks.extend(results["items"])
@@ -362,12 +374,13 @@ class SpotifyHandler:
         items = results.get("items", [])
 
         # Paginate to get all tracks (album_tracks returns max 50 per page)
-        sp = self.sp
-        while results and results.get("next"):
+        while results and results.get("next") and len(items) < self.MAX_ALBUM_TRACKS:
             await asyncio.sleep(self.RATE_LIMIT_DELAY)
-            results = await self._api_call_with_retry(sp.next, results)
+            results = await self._api_call_with_retry(self.sp.next, results)
             if results and results.get("items"):
                 items.extend(results["items"])
+
+        items = items[: self.MAX_ALBUM_TRACKS]  # Ensure limit
 
         if not items:
             embed = discord.Embed(description=f"{Emojis.CROSS} Album นี้ไม่มีเพลง", color=Colors.ERROR)

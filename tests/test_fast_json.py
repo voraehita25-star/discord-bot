@@ -1,7 +1,5 @@
 """Unit tests for Fast JSON utility module."""
 
-import pytest
-
 from utils.fast_json import (
     is_orjson_enabled,
     json_dumps,

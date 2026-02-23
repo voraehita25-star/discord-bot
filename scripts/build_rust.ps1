@@ -47,21 +47,26 @@ try {
     # Determine library extension
     $LibExt = if ($IsWindows -or $env:OS -match "Windows") { ".pyd" } else { ".so" }
     $DllExt = if ($IsWindows -or $env:OS -match "Windows") { ".dll" } else { ".so" }
+    $LibPrefix = if ($IsWindows -or $env:OS -match "Windows") { "" } else { "lib" }
 
     # Copy RAG Engine
-    $RagSource = Join-Path $SourceDir "rag_engine$DllExt"
+    $RagSource = Join-Path $SourceDir "${LibPrefix}rag_engine$DllExt"
     $RagDest = Join-Path $PSScriptRoot "..\cogs\ai_core\memory\rag_engine$LibExt"
     if (Test-Path $RagSource) {
         Copy-Item $RagSource $RagDest -Force
         Write-Host "✅ Copied rag_engine to $RagDest" -ForegroundColor Green
+    } else {
+        Write-Host "⚠️ rag_engine not found at $RagSource" -ForegroundColor Yellow
     }
 
     # Copy Media Processor
-    $MediaSource = Join-Path $SourceDir "media_processor$DllExt"
+    $MediaSource = Join-Path $SourceDir "${LibPrefix}media_processor$DllExt"
     $MediaDest = Join-Path $PSScriptRoot "..\utils\media\media_processor$LibExt"
     if (Test-Path $MediaSource) {
         Copy-Item $MediaSource $MediaDest -Force
         Write-Host "✅ Copied media_processor to $MediaDest" -ForegroundColor Green
+    } else {
+        Write-Host "⚠️ media_processor not found at $MediaSource" -ForegroundColor Yellow
     }
 
     Write-Host ""

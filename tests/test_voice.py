@@ -4,7 +4,7 @@ Tests for cogs/ai_core/voice.py
 Comprehensive tests for voice channel management.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

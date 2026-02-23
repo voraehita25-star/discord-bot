@@ -293,6 +293,7 @@ class LongTermMemory:
                 CREATE INDEX IF NOT EXISTS idx_user_facts_category
                 ON user_facts(user_id, category)
             """)
+            await conn.commit()
 
         self.logger.info("📚 Long-term memory schema initialized")
 
@@ -559,6 +560,7 @@ class LongTermMemory:
                     fact.is_user_defined,
                 ),
             )
+            await conn.commit()
             return cursor.lastrowid
 
     async def _update_fact_confirmation(self, fact: Fact) -> None:

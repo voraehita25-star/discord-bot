@@ -9,22 +9,21 @@ from .api_handler import (
     detect_search_intent,
 )
 from .ws_dashboard import (
+    DASHBOARD_ROLE_PRESETS,
     DashboardWebSocketServer,
     get_dashboard_ws_server,
     start_dashboard_ws_server,
     stop_dashboard_ws_server,
-    DASHBOARD_ROLE_PRESETS,
 )
 
 __all__ = [
+    "DASHBOARD_ROLE_PRESETS",
+    "DashboardWebSocketServer",
     "build_api_config",
     "call_gemini_api",
     "call_gemini_api_streaming",
     "detect_search_intent",
-    # Dashboard WebSocket
-    "DashboardWebSocketServer",
     "get_dashboard_ws_server",
     "start_dashboard_ws_server",
     "stop_dashboard_ws_server",
-    "DASHBOARD_ROLE_PRESETS",
 ]

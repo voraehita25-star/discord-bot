@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
+import hashlib
 import logging
 import os
 import shutil
@@ -15,18 +17,6 @@ import sys
 import time
 import traceback
 from pathlib import Path
-
-# ==================== Performance: Faster Event Loop ====================
-# uvloop provides 2-4x faster async operations on Unix systems
-try:
-    import uvloop  # type: ignore[import-not-found]
-
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    _UVLOOP_ENABLED = True
-except ImportError:
-    _UVLOOP_ENABLED = False  # Windows or uvloop not installed
-
-import contextlib
 
 import discord
 import psutil
@@ -81,23 +71,10 @@ except ImportError:
     METRICS_AVAILABLE = False
     metrics = None
 
-# Fix Windows console encoding for Unicode characters
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except AttributeError:
-        # Python < 3.7 fallback
-        pass
-
-# Initialize Logging
-setup_smart_logging()
-
-# Initialize Sentry Error Tracking
+# Import Sentry
 try:
     from utils.monitoring.sentry_integration import capture_exception, init_sentry
 
-    init_sentry(environment="production")
     SENTRY_AVAILABLE = True
 except ImportError:
     SENTRY_AVAILABLE = False
@@ -113,6 +90,27 @@ except ImportError:
     SelfHealer = None  # type: ignore
     logging.warning("Self-Healer not available - using basic duplicate detection")
 
+# ==================== Feature Flags Registry ====================
+from config import feature_flags
+
+feature_flags.register("health_api", HEALTH_API_AVAILABLE)
+feature_flags.register("dashboard_ws", DASHBOARD_WS_AVAILABLE)
+feature_flags.register("metrics", METRICS_AVAILABLE)
+feature_flags.register("sentry", SENTRY_AVAILABLE)
+feature_flags.register("self_healer", SELF_HEALER_AVAILABLE)
+
+# Fix Windows console encoding for Unicode characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except AttributeError:
+        # Python < 3.7 fallback
+        pass
+
+# Initialize Logging
+setup_smart_logging()
+
 # PID file path
 PID_FILE = Path("bot.pid")
 
@@ -126,9 +124,15 @@ if PID_FILE.exists():
     except (ValueError, OSError):
         _old_pid = None
 
-# Write current PID immediately on startup
-# This allows dashboard to detect bot is starting
-PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+
+# Write current PID only when running as main script
+# (not on import from tests/scripts)
+def _write_pid_file() -> None:
+    """Write PID file for process tracking."""
+    try:
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as e:
+        logging.warning("Failed to write PID file: %s", e)
 
 
 def smart_startup_check() -> bool:
@@ -196,8 +200,8 @@ def basic_startup_check() -> bool:
     return True
 
 
-# Run smart startup check
-smart_startup_check()
+# NOTE: smart_startup_check() is called in __main__ block only,
+# to avoid running side effects (killing processes) on import.
 
 # Ensure temp directory exists
 temp_dir = Path("temp")
@@ -231,7 +235,10 @@ def remove_pid() -> None:
 
 atexit.register(remove_pid)
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+# Use config as single source of truth for token
+from config import settings as _config_settings
+
+TOKEN = _config_settings.discord_token or os.getenv("DISCORD_TOKEN")
 
 
 # Setup Discord Bot
@@ -246,9 +253,7 @@ class MusicBot(commands.AutoShardedBot):
         if sys.platform != "win32":
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(
-                    sig, lambda s=sig: asyncio.create_task(graceful_shutdown(s))
-                )
+                loop.add_signal_handler(sig, lambda s=sig: self._schedule_shutdown(s))
             logging.info("🛡️ Signal handlers registered for graceful shutdown")
 
         # Load Cogs
@@ -303,6 +308,20 @@ class MusicBot(commands.AutoShardedBot):
     # Track background tasks and initialization state
     _health_task: asyncio.Task | None = None
     _metrics_started: bool = False
+    _shutdown_task: asyncio.Task | None = None
+
+    def _schedule_shutdown(self, sig) -> None:
+        """Schedule graceful shutdown, keeping a reference to prevent GC."""
+        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig))
+
+    @staticmethod
+    def _on_health_task_done(task: asyncio.Task) -> None:
+        """Callback when health loop task completes unexpectedly."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logging.error("Health loop task failed: %s", exc)
 
     async def on_ready(self) -> None:
         """Called when bot is ready and connected to Discord"""
@@ -316,11 +335,9 @@ class MusicBot(commands.AutoShardedBot):
 
         # Log performance optimizations status
         perf_status = []
-        if _UVLOOP_ENABLED:
-            perf_status.append("uvloop")
         # Check for orjson
         try:
-            import orjson
+            import orjson  # noqa: F401
 
             perf_status.append("orjson")
         except ImportError:
@@ -333,6 +350,7 @@ class MusicBot(commands.AutoShardedBot):
             health_data.update_from_bot(self)  # type: ignore[union-attr]
             if self._health_task is None or self._health_task.done():
                 self._health_task = asyncio.create_task(update_health_loop(self, interval=10.0))  # type: ignore[arg-type]
+                self._health_task.add_done_callback(self._on_health_task_done)
 
         # Initialize metrics (only once, guard against repeated on_ready)
         if METRICS_AVAILABLE and metrics:
@@ -384,8 +402,9 @@ class MusicBot(commands.AutoShardedBot):
 
         # Handle bad arguments
         if isinstance(error, commands.BadArgument):
+            safe_msg = str(error)[:200]
             await ctx.send(
-                f"❌ **รูปแบบไม่ถูกต้อง**\nรายละเอียด: {error}\n💡 *ตรวจสอบค่าที่ใส่และลองใหม่อีกครั้ง*"
+                f"❌ **รูปแบบไม่ถูกต้อง**\nรายละเอียด: {safe_msg}\n💡 *ตรวจสอบค่าที่ใส่และลองใหม่อีกครั้ง*"
             )
             return
 
@@ -414,15 +433,20 @@ class MusicBot(commands.AutoShardedBot):
                     "channel": str(ctx.channel),
                     "message": ctx.message.content[:200] if ctx.message else None,
                 },
-                user_id=ctx.author.id,
+                user_id=ctx.author.id if ctx.author else None,
                 guild_id=ctx.guild.id if ctx.guild else None,
             )
 
-        # Send generic error message with reference
-        error_id = hex(hash(str(error)) & 0xFFFFFF)[2:].upper()
-        await ctx.send(
-            f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
-        )
+        # Send generic error message with unique reference
+        error_id = hashlib.sha256(f"{error}{time.time()}".encode()).hexdigest()[:6].upper()
+        try:
+            await ctx.send(
+                f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
+            )
+        except discord.HTTPException:
+            logging.warning(
+                "Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id
+            )
 
     async def on_message(self, message: discord.Message) -> None:
         """Track messages for metrics."""
@@ -482,15 +506,15 @@ async def health_check(ctx):
     import platform  # pylint: disable=import-outside-toplevel
 
     # Calculate uptime
-    uptime_seconds = time.time() - bot.start_time if hasattr(bot, "start_time") else 0
+    uptime_seconds = time.time() - ctx.bot.start_time if hasattr(ctx.bot, "start_time") else 0
     hours, remainder = divmod(int(uptime_seconds), 3600)
     minutes, seconds = divmod(remainder, 60)
     uptime_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
 
     embed = discord.Embed(title="🏥 Bot Health Check", color=0x00FF00)
-    embed.add_field(name="🏓 Latency", value=f"{bot.latency * 1000:.0f}ms", inline=True)
-    embed.add_field(name="🌐 Guilds", value=str(len(bot.guilds)), inline=True)
-    embed.add_field(name="🎤 Voice", value=str(len(bot.voice_clients)), inline=True)
+    embed.add_field(name="🏓 Latency", value=f"{ctx.bot.latency * 1000:.0f}ms", inline=True)
+    embed.add_field(name="🌐 Guilds", value=str(len(ctx.bot.guilds)), inline=True)
+    embed.add_field(name="🎤 Voice", value=str(len(ctx.bot.voice_clients)), inline=True)
     embed.add_field(name="⏱️ Uptime", value=uptime_str, inline=True)
     embed.add_field(name="🐍 Python", value=platform.python_version(), inline=True)
     embed.add_field(name="📦 Discord.py", value=discord.__version__, inline=True)
@@ -514,7 +538,7 @@ def validate_token(token: str | None) -> bool:
     if len(parts) != 3:
         return False
     # Basic length check (tokens are usually 59+ chars)
-    return not len(token) < 50
+    return len(token) >= 50
 
 
 async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
@@ -532,6 +556,13 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
         except Exception as e:
             logging.error("Error stopping Dashboard WebSocket server: %s", e)
 
+    # Cancel health task if running
+    if hasattr(bot, "_health_task") and bot._health_task and not bot._health_task.done():
+        bot._health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await bot._health_task
+        logging.info("🛑 Health loop task cancelled")
+
     # Flush pending database exports before closing
     try:
         from utils.database import db
@@ -540,7 +571,7 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
             await db.flush_pending_exports()
     except ImportError:
         pass  # Database module not available
-    except OSError as e:
+    except Exception as e:
         logging.error("Error flushing database exports: %s", e)
 
     # Close bot connection
@@ -578,6 +609,12 @@ def run_bot_with_confirmation() -> None:
         except KeyboardInterrupt:
             if confirm_shutdown():
                 logging.info("🛑 Bot stopped by user (Ctrl+C)")
+                # Run graceful shutdown on Windows (signal handlers are Unix-only)
+                if sys.platform == "win32":
+                    try:
+                        asyncio.run(graceful_shutdown())
+                    except Exception as e:
+                        logging.error("Error during Windows shutdown: %s", e)
                 break
             else:
                 logging.info("✅ Resuming bot operation...")
@@ -592,12 +629,37 @@ def run_bot_with_confirmation() -> None:
 
 
 if __name__ == "__main__":
+    # Run startup checks only when executed directly (not on import)
+    smart_startup_check()
+
+    # Validate required secrets
+    from config import settings as _startup_settings
+
+    # Initialize Sentry (deferred from import time to avoid polluting prod tracking)
+    if SENTRY_AVAILABLE and init_sentry is not None:
+        _sentry_env = os.getenv("SENTRY_ENVIRONMENT", "production")
+        init_sentry(environment=_sentry_env)
+
+    secret_errors = _startup_settings.validate_required_secrets()
+    if secret_errors:
+        for err in secret_errors:
+            logging.warning("⚠️ %s", err)
+
+    # Log feature flags summary
+    logging.info("📋 Feature Status:\n%s", feature_flags.summary())
+    # Register additional runtime features
+    feature_flags.register("ffmpeg", os.environ.get("FFMPEG_MISSING") != "1")
+    feature_flags.register("spotify", bool(_startup_settings.spotipy_client_id))
+
     if not validate_token(TOKEN):
         logging.critical("❌ Error: DISCORD_TOKEN is invalid or not set in .env")
         logging.critical(
             "❌ Token should be in format: XXXXXX.XXXXXX.XXXXXX (3 parts separated by dots)"
         )
         sys.exit(1)
+
+    # Write PID file for dashboard process tracking
+    _write_pid_file()
 
     # Start Health API server
     if HEALTH_API_AVAILABLE and start_health_api is not None:

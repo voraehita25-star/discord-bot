@@ -43,16 +43,37 @@ impl VectorStorage {
 
     /// Create or open a memory-mapped file
     pub fn open<P: AsRef<Path>>(path: P, dimension: usize, capacity: usize) -> Result<Self, RagError> {
-        let vector_size = dimension * std::mem::size_of::<f32>();
-        let file_size = Self::HEADER_SIZE + capacity * vector_size;
+        if dimension > u32::MAX as usize {
+            return Err(RagError::Serialization(format!(
+                "Dimension {} exceeds maximum of {}", dimension, u32::MAX
+            )));
+        }
+
+        let vector_size = dimension.checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| RagError::Serialization("Dimension overflow in vector size calculation".to_string()))?;
+        let file_size = Self::HEADER_SIZE
+            .checked_add(
+                capacity.checked_mul(vector_size)
+                    .ok_or_else(|| RagError::Serialization("Capacity overflow in file size calculation".to_string()))?
+            )
+            .ok_or_else(|| RagError::Serialization("File size overflow".to_string()))?;
 
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path.as_ref())?;
 
-        file.set_len(file_size as u64)?;
+        // Check existing file: only grow, never truncate existing data
+        let existing_len = file.metadata()?.len();
+        if existing_len > 0 && (file_size as u64) < existing_len {
+            // File already exists and is larger than requested capacity.
+            // Use the existing file size to avoid truncating stored vectors.
+            // Do NOT call set_len here.
+        } else {
+            file.set_len(file_size as u64)?;
+        }
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
@@ -73,21 +94,35 @@ impl VectorStorage {
             mmap.flush()?;
         }
 
-        // Read header to get count
-        let header: StorageHeader = *bytemuck::from_bytes(&mmap[..Self::HEADER_SIZE]);
-        
-        if header.dimension as usize != dimension {
+        // Read header to get count (use pod_read_unaligned to avoid UB with packed struct)
+        let header: StorageHeader = bytemuck::pod_read_unaligned(&mmap[..Self::HEADER_SIZE]);
+
+        // Validate version (copy packed field to local to avoid unaligned access)
+        let hdr_version = header.version;
+        if hdr_version != Self::VERSION {
+            return Err(RagError::Serialization(format!(
+                "Unsupported storage version: expected {}, got {}",
+                Self::VERSION, hdr_version
+            )));
+        }
+
+        let hdr_dimension = header.dimension as usize;
+        if hdr_dimension != dimension {
             return Err(RagError::DimensionMismatch {
                 expected: dimension,
-                got: header.dimension as usize,
+                got: hdr_dimension,
             });
         }
+
+        // Use the larger of requested capacity or existing count
+        let hdr_count = header.count as usize;
+        let effective_capacity = capacity.max(hdr_count);
 
         Ok(Self {
             mmap: Some(mmap),
             dimension,
-            capacity,
-            count: header.count as usize,
+            capacity: effective_capacity,
+            count: hdr_count,
         })
     }
 
@@ -108,16 +143,28 @@ impl VectorStorage {
         
         if let Some(ref mut mmap) = self.mmap {
             let vector_size = self.dimension * std::mem::size_of::<f32>();
-            let offset = Self::HEADER_SIZE + idx * vector_size;
+            let offset = Self::HEADER_SIZE.checked_add(
+                idx.checked_mul(vector_size)
+                    .ok_or_else(|| RagError::Serialization("Index overflow in push".to_string()))?
+            ).ok_or_else(|| RagError::Serialization("Offset overflow in push".to_string()))?;
             let bytes: &[u8] = bytemuck::cast_slice(vector);
             mmap[offset..offset + vector_size].copy_from_slice(bytes);
             
-            // Update count in header
+            // Update count in header via full header struct rewrite
             self.count += 1;
-            let count_offset = 12; // After magic + version + dimension
-            mmap[count_offset..count_offset + 8].copy_from_slice(&(self.count as u64).to_le_bytes());
+            let header = StorageHeader {
+                magic: Self::MAGIC,
+                version: Self::VERSION,
+                dimension: self.dimension as u32,
+                count: self.count as u64,
+                reserved: [0; 48],
+            };
+            mmap[..Self::HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&header));
+            
+            // Flush to ensure data is persisted to disk
+            mmap.flush()?;
         } else {
-            self.count += 1;
+            return Err(RagError::Serialization("Cannot push vectors without file backing (in-memory mode not supported)".to_string()));
         }
 
         Ok(idx)
@@ -161,5 +208,13 @@ impl VectorStorage {
             mmap.flush()?;
         }
         Ok(())
+    }
+}
+
+impl Drop for VectorStorage {
+    fn drop(&mut self) {
+        if let Some(ref mut mmap) = self.mmap {
+            let _ = mmap.flush();
+        }
     }
 }

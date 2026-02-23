@@ -26,10 +26,27 @@ if TYPE_CHECKING:
 # Configuration
 HEALTH_API_PORT = int(os.getenv("HEALTH_API_PORT", "8080"))
 HEALTH_API_HOST = os.getenv("HEALTH_API_HOST", "127.0.0.1")
+HEALTH_API_TOKEN = os.getenv(
+    "HEALTH_API_TOKEN", ""
+)  # Optional Bearer token for sensitive endpoints
 
 # Health check thresholds (configurable via env vars)
 HEARTBEAT_MAX_AGE_SECONDS = int(os.getenv("HEALTH_HEARTBEAT_MAX_AGE", "60"))
 MAX_LATENCY_MS = int(os.getenv("HEALTH_MAX_LATENCY_MS", "5000"))
+
+# External service URLs to health-check
+GO_HEALTH_API_URL = os.getenv("GO_HEALTH_API_URL", "http://127.0.0.1:8082/health")
+GO_URL_FETCHER_URL = os.getenv("GO_URL_FETCHER_URL", "http://127.0.0.1:8081/health")
+
+# Endpoints that require authentication (when HEALTH_API_TOKEN is set)
+_PROTECTED_ENDPOINTS = {
+    "/",
+    "/metrics",
+    "/health/deep",
+    "/health/json",
+    "/ai/stats",
+    "/ai/stats/json",
+}
 
 
 class BotHealthData:
@@ -49,6 +66,10 @@ class BotHealthData:
         self.guild_count: int = 0
         self.user_count: int = 0
         self.cogs_loaded: list[str] = []
+        # External service health status
+        self.service_health: dict[str, dict[str, Any]] = {}
+        # Feature flags (populated from config.feature_flags)
+        self.feature_flags: dict[str, bool] = {}
 
     def update_from_bot(self, bot: Bot) -> None:
         """Update health data from bot instance (thread-safe)."""
@@ -144,6 +165,8 @@ class BotHealthData:
                 "last": last_heartbeat.isoformat(),
                 "age_seconds": int((datetime.now() - last_heartbeat).total_seconds()),
             },
+            "services": self.service_health,
+            "features": self.feature_flags,
         }
 
     def is_healthy(self) -> bool:
@@ -168,12 +191,17 @@ class BotHealthData:
         return not latency_ms > MAX_LATENCY_MS
 
     def get_ai_performance_stats(self) -> dict:
-        """Get AI performance statistics from chat manager."""
+        """Get AI performance statistics from chat manager.
+
+        Thread-safe: uses _data_lock since this may be called from the
+        HTTP server thread while the event loop thread mutates bot state.
+        """
         try:
-            if self.bot and hasattr(self.bot, "cogs"):
-                ai_cog = self.bot.cogs.get("AI")
-                if ai_cog and hasattr(ai_cog, "chat_manager"):
-                    return ai_cog.chat_manager.get_performance_stats()
+            with self._data_lock:
+                if self.bot and hasattr(self.bot, "cogs"):
+                    ai_cog = self.bot.cogs.get("AI")
+                    if ai_cog and hasattr(ai_cog, "chat_manager"):
+                        return ai_cog.chat_manager.get_performance_stats()
         except Exception as e:
             logging.debug("Failed to get AI performance stats: %s", e)
         return {"error": "AI cog not available or no stats collected"}
@@ -206,13 +234,13 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(text.encode())
 
-    def _send_html_response(self, html: str, status: int = 200) -> None:
+    def _send_html_response(self, html_content: str, status: int = 200) -> None:
         """Send HTML response."""
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(html_content.encode("utf-8"))
 
     def _get_anime_theme_css(self) -> str:
         """Get shared anime theme CSS with sakura petals."""
@@ -478,11 +506,21 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         path = self.path.split("?")[0]  # Remove query string
 
+        # Check authentication for protected endpoints
+        if HEALTH_API_TOKEN and path in _PROTECTED_ENDPOINTS:
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header != f"Bearer {HEALTH_API_TOKEN}":
+                self._send_json_response(
+                    {"error": "Unauthorized", "message": "Valid Bearer token required"},
+                    401,
+                )
+                return
+
         if path == "/health":
             # Full health check (HTML dashboard)
             data = health_data.to_dict()
-            html = self._generate_health_html(data)
-            self._send_html_response(html)
+            health_html = self._generate_health_html(data)
+            self._send_html_response(health_html)
 
         elif path in {"/", "/health/json"}:
             # Full health check (JSON)
@@ -537,8 +575,8 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 "guilds": health_data.guild_count,
                 "latency_ms": round(health_data.latency_ms, 2),
             }
-            html = self._generate_stats_html(data)
-            self._send_html_response(html)
+            stats_html = self._generate_stats_html(data)
+            self._send_html_response(stats_html)
 
         elif path == "/stats/json":
             # Quick stats (JSON)
@@ -556,8 +594,8 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         elif path == "/ai/stats":
             # AI performance dashboard (HTML UI)
             ai_stats = health_data.get_ai_performance_stats()
-            html = self._generate_ai_stats_html(ai_stats)
-            self._send_html_response(html)
+            ai_html = self._generate_ai_stats_html(ai_stats)
+            self._send_html_response(ai_html)
 
         elif path == "/ai/stats/json":
             # AI performance stats (raw JSON)
@@ -762,23 +800,102 @@ def stop_health_api() -> None:
 
 
 async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
-    """Background task to update health data periodically."""
-    while True:
+    """Background task to update health data periodically.
+
+    Also checks external service health and sends alerts on failures.
+    """
+    import aiohttp
+
+    # Track consecutive failures for alerting
+    _service_failures: dict[str, int] = {}
+
+    # Import alert manager (optional)
+    try:
+        from utils.monitoring.alerting import alert_manager
+
+        alerting_available = True
+    except ImportError:
+        alerting_available = False
+
+    # Import feature flags
+    try:
+        from config import feature_flags as _ff
+
+        health_data.feature_flags = _ff.get_all()
+    except ImportError:
+        pass
+
+    async def check_service(session: aiohttp.ClientSession, name: str, url: str) -> None:
+        """Check a single external service health."""
         try:
-            health_data.update_from_bot(bot)
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logging.error("Error updating health data: %s", e)
-            await asyncio.sleep(interval)
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                healthy = resp.status == 200
+                health_data.service_health[name] = {
+                    "status": "healthy" if healthy else "unhealthy",
+                    "status_code": resp.status,
+                    "last_check": datetime.now().isoformat(),
+                }
+                if healthy:
+                    _service_failures[name] = 0
+                else:
+                    _service_failures[name] = _service_failures.get(name, 0) + 1
+        except Exception:
+            _service_failures[name] = _service_failures.get(name, 0) + 1
+            health_data.service_health[name] = {
+                "status": "unreachable",
+                "last_check": datetime.now().isoformat(),
+            }
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                health_data.update_from_bot(bot)
+
+                # Update feature flags
+                try:
+                    from config import feature_flags as _ff
+
+                    health_data.feature_flags = _ff.get_all()
+                except ImportError:
+                    pass
+
+                # Check external Go services
+                services = {
+                    "go_health_api": GO_HEALTH_API_URL,
+                    "go_url_fetcher": GO_URL_FETCHER_URL,
+                }
+                for svc_name, svc_url in services.items():
+                    await check_service(session, svc_name, svc_url)
+
+                    # Alert on consecutive failures
+                    if alerting_available and _service_failures.get(svc_name, 0) >= 3:
+                        await alert_manager.alert_health_check_failed(
+                            svc_name, _service_failures[svc_name]
+                        )
+
+                # Check memory threshold and alert
+                if alerting_available:
+                    try:
+                        mem_mb = psutil.Process().memory_info().rss / 1024 / 1024
+                        threshold = float(os.getenv("ALERT_MEMORY_THRESHOLD_MB", "2048"))
+                        if mem_mb > threshold:
+                            await alert_manager.alert_memory_threshold(mem_mb, threshold)
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error("Error updating health data: %s", e)
+                await asyncio.sleep(interval)
 
 
 def setup_health_hooks(bot: Bot) -> None:
     """Setup event hooks to track bot health metrics."""
 
-    @bot.event
-    async def on_ready():
+    @bot.listen("on_ready")
+    async def health_on_ready():
         health_data.is_ready = True
         health_data.update_from_bot(bot)
 

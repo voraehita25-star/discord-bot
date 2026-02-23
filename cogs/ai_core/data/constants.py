@@ -31,7 +31,7 @@ CREATOR_ID = _safe_int_env("CREATOR_ID")
 
 # API Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 
 # Default model name (use this constant instead of hardcoding)
 DEFAULT_MODEL = GEMINI_MODEL

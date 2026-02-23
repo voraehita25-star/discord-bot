@@ -16,12 +16,12 @@ from typing import Any, cast
 from google import genai
 from google.genai import types
 
+from ..data.constants import THINKING_BUDGET_DEFAULT
 from ..data.faust_data import (
     ESCALATION_FRAMINGS,
     FAUST_DM_INSTRUCTION,
     FAUST_INSTRUCTION,
 )
-from ..data.constants import THINKING_BUDGET_DEFAULT
 from ..data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
 
 # Import circuit breaker for API protection
@@ -90,6 +90,9 @@ def build_api_config(
 
     config_params = {
         "system_instruction": system_instruction,
+        # NOTE: BLOCK_NONE is intentional — application-level guardrails
+        # (OutputGuardrails, input validation) handle content filtering instead
+        # of relying on API-level safety filters. Do not change.
         "safety_settings": [
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
@@ -105,7 +108,9 @@ def build_api_config(
         logging.info("🔍 Google Search: ENABLED (search requested)")
     elif (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         # Use Thinking mode for deep reasoning
-        config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=THINKING_BUDGET_DEFAULT)
+        config_params["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=THINKING_BUDGET_DEFAULT
+        )
         logging.info("🧠 Thinking Mode: ENABLED (budget: %d)", THINKING_BUDGET_DEFAULT)
     else:
         # Default: Google Search for non-RP modes
@@ -162,7 +167,7 @@ Reply ONE word: SEARCH or NO_SEARCH"""
 
         return needs_search
 
-    except (ValueError, TypeError) as e:
+    except Exception as e:
         logging.error("🔎 Search intent detection FAILED: %s", e)
         return False  # Default to no search on error
 
@@ -210,8 +215,8 @@ async def call_gemini_api_streaming(
         # Send initial placeholder
         placeholder_msg = await send_channel.send("💭 กำลังคิด...")
 
-        # Remove thinking_config for streaming
-        streaming_config = config_params.copy()
+        # Remove thinking_config for streaming (deep copy to avoid mutating nested objects)
+        streaming_config = copy.deepcopy(config_params)
         if "thinking_config" in streaming_config:
             streaming_config.pop("thinking_config")
             logging.info("🌊 Streaming mode: Disabled thinking for real-time updates")
@@ -493,7 +498,7 @@ async def call_gemini_api(
                     model_text = temp_text
                     break
 
-            if is_silent_block(temp_text):
+            if not refusal_count and is_silent_block(temp_text):
                 logging.warning(
                     "⚠️ Silent block detected (attempt %s). AI response: %s",
                     attempt + 1,
@@ -556,13 +561,17 @@ async def call_gemini_api(
                     parts_list = last_message.get("parts", [])
                     for part in parts_list if parts_list else []:
                         if isinstance(part, dict) and "text" in part:
-                            if framing not in part["text"]:
-                                part["text"] = part["text"] + framing
-                                logging.warning(
-                                    "🔓 Escalation Tier %d (%s): Injecting stronger framing",
-                                    tier_index,
-                                    tier_name,
-                                )
+                            # Remove any previous escalation framings before adding new one
+                            # to prevent accumulation across retries
+                            for prev_framing in ESCALATION_FRAMINGS:
+                                if prev_framing and prev_framing in part["text"]:
+                                    part["text"] = part["text"].replace(prev_framing, "")
+                            part["text"] = part["text"] + framing
+                            logging.warning(
+                                "🔓 Escalation Tier %d (%s): Injecting stronger framing",
+                                tier_index,
+                                tier_name,
+                            )
                             break
 
         if attempt < max_retries - 1:

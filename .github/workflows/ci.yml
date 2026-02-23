@@ -7,17 +7,20 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  # ============================================================
+  # Python Tests & Linting
+  # ============================================================
+  python-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12']
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
@@ -33,18 +36,106 @@ jobs:
         pip install ruff
         ruff check .
 
+    - name: Run security scan (bandit)
+      run: |
+        pip install bandit[toml]
+        bandit -c pyproject.toml -r cogs/ utils/ -ll --quiet
+
+    - name: Run dependency audit
+      continue-on-error: true
+      run: |
+        pip install pip-audit
+        pip-audit --strict --desc
+
     - name: Run tests with coverage
       env:
         DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         CREATOR_ID: "123456789"
       run: |
-        python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term
+        python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term --cov-fail-under=75
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.11'
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v4
       with:
         files: ./coverage.xml
         fail_ci_if_error: false
         verbose: true
+
+  # ============================================================
+  # Go Tests & Linting
+  # ============================================================
+  go-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go_services
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+        cache-dependency-path: go_services/go.sum
+
+    - name: Run Go tests
+      run: go test ./... -v -race -count=1
+
+    - name: Run Go linter
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: latest
+        working-directory: go_services
+
+    - name: Run Go vulnerability check
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./... || true
+
+  # ============================================================
+  # Rust Tests & Linting
+  # ============================================================
+  rust-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust_extensions/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('rust_extensions/Cargo.lock') }}
+
+    - name: Run Rust tests (extensions)
+      working-directory: rust_extensions
+      run: cargo test --all --verbose
+
+    - name: Run Clippy (extensions)
+      working-directory: rust_extensions
+      run: cargo clippy --all -- -D warnings
+
+  # ============================================================
+  # Docker Build Smoke Test
+  # ============================================================
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: docker build -f docker/Dockerfile -t discord-bot:test .
+
+    - name: Verify Docker image
+      run: docker run --rm discord-bot:test python -c "import discord; print('OK')"

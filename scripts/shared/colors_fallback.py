@@ -17,7 +17,7 @@ except ImportError:
 
     class Colors:
         """Fallback ANSI Color Codes for terminal output.
-        
+
         This class is used when the main utils.media.colors module
         is not available (e.g., running scripts standalone).
         """
@@ -45,4 +45,4 @@ except ImportError:
         BRIGHT_CYAN: str = "\033[96m"
 
 
-__all__ = ["Colors", "COLORS_FROM_UTILS"]
+__all__ = ["COLORS_FROM_UTILS", "Colors"]

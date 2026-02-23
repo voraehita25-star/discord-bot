@@ -1,7 +1,5 @@
 """Unit tests for Music Queue Manager."""
 
-import pytest
-
 from cogs.music.queue import QueueManager
 
 
@@ -162,8 +160,6 @@ class TestQueuePersistence:
 
     def test_save_queue_json_fallback(self):
         """Test JSON save as fallback when database not available."""
-        import tempfile
-        from pathlib import Path
 
         self.manager.add_to_queue(self.guild_id, {"title": "Test Song"})
         self.manager.set_volume(self.guild_id, 0.8)

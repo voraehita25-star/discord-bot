@@ -3,10 +3,12 @@ Tests for cogs/ai_core/response/webhook_cache.py
 
 Comprehensive tests for webhook caching functionality.
 """
+
 import asyncio
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 import time
+from unittest.mock import MagicMock
+
+import pytest
 
 
 class TestGetCachedWebhook:
@@ -14,9 +16,10 @@ class TestGetCachedWebhook:
 
     def test_get_no_cache(self):
         """Test getting from empty cache."""
-        from cogs.ai_core.response.webhook_cache import get_cached_webhook
         # Clear cache first
         from cogs.ai_core.response import webhook_cache
+        from cogs.ai_core.response.webhook_cache import get_cached_webhook
+
         webhook_cache._webhook_cache.clear()
         webhook_cache._webhook_cache_time.clear()
 
@@ -194,24 +197,31 @@ class TestStartStopCleanupTask:
     """Tests for start/stop cleanup task functions."""
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_start_cleanup_task(self):
+    @pytest.mark.asyncio
+    async def test_start_cleanup_task(self):
         """Test starting cleanup task."""
         from cogs.ai_core.response import webhook_cache
 
         mock_bot = MagicMock()
-        mock_bot.loop.is_closed.return_value = False
-        mock_task = MagicMock()
-        mock_bot.loop.create_task.return_value = mock_task
 
         webhook_cache._webhook_cache_cleanup_task = None
         webhook_cache.start_webhook_cache_cleanup(mock_bot)
 
-        mock_bot.loop.create_task.assert_called_once()
-        assert webhook_cache._webhook_cache_cleanup_task is mock_task
+        # The function now uses asyncio.get_running_loop() internally
+        # so it should create the task when called inside an async context
+        assert webhook_cache._webhook_cache_cleanup_task is not None
 
-        # Close the unawaited coroutine to prevent RuntimeWarning during GC
-        coroutine_arg = mock_bot.loop.create_task.call_args[0][0]
-        coroutine_arg.close()
+        # Cancel the task to clean up
+        if (
+            webhook_cache._webhook_cache_cleanup_task
+            and not webhook_cache._webhook_cache_cleanup_task.done()
+        ):
+            webhook_cache._webhook_cache_cleanup_task.cancel()
+            try:
+                await webhook_cache._webhook_cache_cleanup_task
+            except asyncio.CancelledError:
+                pass
+        webhook_cache._webhook_cache_cleanup_task = None
 
     def test_start_cleanup_task_already_running(self):
         """Test start doesn't create new task if already running."""
@@ -234,7 +244,7 @@ class TestStartStopCleanupTask:
         # Create a real async task that we can cancel
         async def dummy_task():
             await asyncio.sleep(100)
-        
+
         real_task = asyncio.create_task(dummy_task())
         webhook_cache._webhook_cache_cleanup_task = real_task
         webhook_cache._webhook_cache[12345] = {"Bot": MagicMock()}

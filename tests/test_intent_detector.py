@@ -4,8 +4,6 @@ Tests for cogs/ai_core/processing/intent_detector.py
 Comprehensive tests for IntentDetector and related classes.
 """
 
-import pytest
-
 
 class TestIntentEnum:
     """Tests for Intent enum."""
@@ -263,9 +261,7 @@ class TestIntentDetectorHelpers:
 
         detector = IntentDetector()
         # Use a longer complex message that doesn't start with greeting
-        result = detector.is_simple_greeting(
-            "นี่คือคำถามที่ยาวมากเกี่ยวกับหัวข้อที่ซับซ้อนซึ่งต้องการคำตอบที่ละเอียด"
-        )
+        result = detector.is_simple_greeting("นี่คือคำถามที่ยาวมากเกี่ยวกับหัวข้อที่ซับซ้อนซึ่งต้องการคำตอบที่ละเอียด")
 
         assert result is False
 
@@ -414,7 +410,7 @@ class TestIntentPatterns:
         """Test patterns are tuples."""
         from cogs.ai_core.processing.intent_detector import IntentDetector
 
-        for intent, patterns in IntentDetector.INTENT_PATTERNS.items():
+        for _intent, patterns in IntentDetector.INTENT_PATTERNS.items():
             for pattern_tuple in patterns:
                 assert len(pattern_tuple) == 3
                 assert isinstance(pattern_tuple[0], str)  # regex string

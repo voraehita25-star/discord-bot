@@ -40,12 +40,29 @@ ENV/
 native_dashboard/target/
 rust_extensions/target/
 
+# Dashboard executables (build artifacts)
+*.exe
+
 # Node modules
 native_dashboard/node_modules/
 
 # TypeScript compiled output (regenerated from src-ts/)
 native_dashboard/ui/app.js
 native_dashboard/ui/app.js.map
+native_dashboard/ui/app.test.js
+native_dashboard/ui/app.test.js.map
+native_dashboard/ui/faust_avatar.js
+native_dashboard/ui/faust_avatar.js.map
+
+# Duplicate base64 data (source of truth is ui/assets/)
+native_dashboard/faust_base64.txt
+
+# Go compiled binaries
+go_services/*.exe
+
+# Test & coverage
+.coverage
+htmlcov/
 
 # Logs
 *.log
@@ -55,6 +72,8 @@ logs/
 temp/
 *.tmp
 *.temp
+tmpclaude-*
+nul
 
 # OS
 .DS_Store

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,7 +22,9 @@ import (
 )
 
 const (
-	defaultPort = "8082"
+	defaultPort    = "8082"
+	maxServices    = 100
+	maxLabelLength = 64
 )
 
 // Metrics
@@ -143,6 +147,10 @@ func NewHealthService(version string) *HealthService {
 func (h *HealthService) SetServiceStatus(name string, healthy bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// Only allow update for existing keys or insert if under cap
+	if _, exists := h.services[name]; !exists && len(h.services) >= maxServices {
+		return // Silently reject to prevent unbounded map growth
+	}
 	h.services[name] = healthy
 }
 
@@ -190,10 +198,81 @@ func collectSystemMetrics() {
 	goroutineCount.Set(float64(runtime.NumGoroutine()))
 }
 
+// sanitizeLabel truncates and cleans a Prometheus label value to prevent
+// cardinality explosion from arbitrary user-supplied values.
+func sanitizeLabel(value string) string {
+	if len(value) > maxLabelLength {
+		value = value[:maxLabelLength]
+	}
+	return value
+}
+
+// allowedMetricNames restricts which metric names are accepted via push endpoints.
+var allowedMetricNames = map[string]bool{
+	"requests": true, "rate_limit": true, "cache": true, "tokens": true,
+	"request_duration": true, "ai_response_time": true,
+	"active_connections": true, "circuit_breaker": true, "errors": true,
+}
+
+// allowedLabelValues restricts label values to a known set to prevent cardinality explosion.
+var allowedLabelValues = map[string]map[string]bool{
+	"status":   {"success": true, "error": true, "timeout": true},
+	"result":   {"hit": true, "miss": true},
+	"type":     {"input": true, "output": true, "user": true, "channel": true, "guild": true},
+	"endpoint": {"ai": true, "music": true, "spotify": true, "health": true, "dashboard": true, "command": true, "api": true},
+	"service":  {"gemini": true, "spotify": true, "database": true, "health": true, "url_fetcher": true},
+}
+
+// safeLabel returns value only if it's in the allowed set for that label key,
+// otherwise returns "other".
+func safeLabel(key, value string) string {
+	if allowed, ok := allowedLabelValues[key]; ok {
+		sanitized := sanitizeLabel(value)
+		if allowed[sanitized] {
+			return sanitized
+		}
+		return "other"
+	}
+	return sanitizeLabel(value)
+}
+
+// bearerAuthMiddleware returns a middleware that checks for a valid Bearer token.
+// If HEALTH_API_TOKEN is not set, auth is skipped (backward compatible).
+func bearerAuthMiddleware(token string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				http.Error(w, "Unauthorized: missing Bearer token", http.StatusUnauthorized)
+				return
+			}
+
+			provided := strings.TrimPrefix(auth, "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+				http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func main() {
-	port := os.Getenv("HEALTH_API_PORT")
+	port := os.Getenv("GO_HEALTH_API_PORT")
 	if port == "" {
 		port = defaultPort
+	}
+
+	// Default to localhost binding for security (prevent unauthenticated external access)
+	bindHost := os.Getenv("HEALTH_API_HOST")
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
 	}
 
 	version := os.Getenv("BOT_VERSION")
@@ -207,6 +286,12 @@ func main() {
 	healthService.SetServiceStatus("bot", true)
 	healthService.SetServiceStatus("database", true)
 	healthService.SetServiceStatus("gemini_api", true)
+
+	// Auth token for mutating endpoints (optional — skip if unset)
+	apiToken := os.Getenv("HEALTH_API_TOKEN")
+	if apiToken != "" {
+		log.Println("🔑 Health API token authentication enabled")
+	}
 
 	r := chi.NewRouter()
 
@@ -227,13 +312,17 @@ func main() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 
-		json.NewEncoder(w).Encode(status)
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Failed to encode health status: %v", err)
+		}
 	})
 
 	// Simple liveness probe
 	r.Get("/health/live", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("Failed to write liveness response: %v", err)
+		}
 	})
 
 	// Readiness probe
@@ -241,15 +330,19 @@ func main() {
 		status := healthService.GetStatus()
 		if status.Status == "healthy" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("READY"))
+			if _, err := w.Write([]byte("READY")); err != nil {
+				log.Printf("Failed to write readiness response: %v", err)
+			}
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("NOT READY"))
+			if _, err := w.Write([]byte("NOT READY")); err != nil {
+				log.Printf("Failed to write readiness response: %v", err)
+			}
 		}
 	})
 
-	// Update service status (called from Python)
-	r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
+	// Update service status (called from Python) — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
 
@@ -273,8 +366,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Push metrics (called from Python)
-	r.Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
+	// Push metrics (called from Python) — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
 
@@ -284,27 +377,38 @@ func main() {
 			return
 		}
 
+		// Validate metric name against allowlist
+		if !allowedMetricNames[payload.Name] {
+			http.Error(w, "unknown metric name", http.StatusBadRequest)
+			return
+		}
+
 		switch payload.Type {
 		case "counter":
+			// Prometheus Counter.Add() panics on negative values
+			if payload.Value < 0 {
+				http.Error(w, "counter value must be non-negative", http.StatusBadRequest)
+				return
+			}
 			switch payload.Name {
 			case "requests":
-				status := "success"
-				if s, ok := payload.Labels["status"]; ok {
-					status = s
+				status := safeLabel("status", payload.Labels["status"])
+				if status == "other" {
+					status = "success"
 				}
-				endpoint := payload.Labels["endpoint"]
+				endpoint := safeLabel("endpoint", payload.Labels["endpoint"])
 				requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
 			case "rate_limit":
-				rateLimitHits.WithLabelValues(payload.Labels["type"]).Add(payload.Value)
+				rateLimitHits.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 			case "cache":
-				cacheHits.WithLabelValues(payload.Labels["result"]).Add(payload.Value)
+				cacheHits.WithLabelValues(safeLabel("result", payload.Labels["result"])).Add(payload.Value)
 			case "tokens":
-				tokensUsed.WithLabelValues(payload.Labels["type"]).Add(payload.Value)
+				tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 			}
 		case "histogram":
 			switch payload.Name {
 			case "request_duration":
-				requestDuration.WithLabelValues(payload.Labels["endpoint"]).Observe(payload.Value)
+				requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
 			case "ai_response_time":
 				aiResponseTime.Observe(payload.Value)
 			}
@@ -313,15 +417,18 @@ func main() {
 			case "active_connections":
 				activeConnections.Set(payload.Value)
 			case "circuit_breaker":
-				circuitBreakerState.WithLabelValues(payload.Labels["service"]).Set(payload.Value)
+				circuitBreakerState.WithLabelValues(safeLabel("service", payload.Labels["service"])).Set(payload.Value)
 			}
+		default:
+			http.Error(w, "unknown metric type", http.StatusBadRequest)
+			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Batch push metrics
-	r.Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
+	// Batch push metrics — protected by auth
+	r.With(bearerAuthMiddleware(apiToken)).Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size to 1MB to prevent abuse
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -339,30 +446,38 @@ func main() {
 
 		processed := 0
 		for _, p := range payloads {
+			// Skip unknown metric names
+			if !allowedMetricNames[p.Name] {
+				continue
+			}
 			switch p.Type {
 			case "counter":
+				// Skip negative counter values to prevent Prometheus panic
+				if p.Value < 0 {
+					continue
+				}
 				switch p.Name {
 				case "requests":
-					status := "success"
-					if s, ok := p.Labels["status"]; ok {
-						status = s
+					status := safeLabel("status", p.Labels["status"])
+					if status == "other" {
+						status = "success"
 					}
-					requestsTotal.WithLabelValues(p.Labels["endpoint"], status).Add(p.Value)
+					requestsTotal.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"]), status).Add(p.Value)
 					processed++
 				case "rate_limit":
-					rateLimitHits.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					rateLimitHits.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
 					processed++
 				case "cache":
-					cacheHits.WithLabelValues(p.Labels["result"]).Add(p.Value)
+					cacheHits.WithLabelValues(safeLabel("result", p.Labels["result"])).Add(p.Value)
 					processed++
 				case "tokens":
-					tokensUsed.WithLabelValues(p.Labels["type"]).Add(p.Value)
+					tokensUsed.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
 					processed++
 				}
 			case "histogram":
 				switch p.Name {
 				case "request_duration":
-					requestDuration.WithLabelValues(p.Labels["endpoint"]).Observe(p.Value)
+					requestDuration.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"])).Observe(p.Value)
 					processed++
 				case "ai_response_time":
 					aiResponseTime.Observe(p.Value)
@@ -374,14 +489,17 @@ func main() {
 					activeConnections.Set(p.Value)
 					processed++
 				case "circuit_breaker":
-					circuitBreakerState.WithLabelValues(p.Labels["service"]).Set(p.Value)
+					circuitBreakerState.WithLabelValues(safeLabel("service", p.Labels["service"])).Set(p.Value)
 					processed++
 				}
+				// Unknown metric types in batch are silently skipped (consistent with batch semantics)
 			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]int{"processed": processed})
+		if err := json.NewEncoder(w).Encode(map[string]int{"processed": processed}); err != nil {
+			log.Printf("Failed to encode batch response: %v", err)
+		}
 	})
 
 	// Stats summary
@@ -389,7 +507,9 @@ func main() {
 		collectSystemMetrics()
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Failed to encode stats response: %v", err)
+		}
 	})
 
 	// Create context for metrics collector goroutine
@@ -412,7 +532,7 @@ func main() {
 
 	// Server
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         bindHost + ":" + port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -434,8 +554,8 @@ func main() {
 		server.Shutdown(ctx)
 	}()
 
-	log.Printf("Health API service starting on :%s", port)
-	log.Printf("Metrics available at http://localhost:%s/metrics", port)
+	log.Printf("Health API service starting on %s:%s", bindHost, port)
+	log.Printf("Metrics available at http://%s:%s/metrics", bindHost, port)
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)

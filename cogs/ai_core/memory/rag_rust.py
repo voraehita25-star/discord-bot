@@ -83,9 +83,11 @@ class RagEngineWrapper:
         if self._use_rust:
             rust_entries = [
                 MemoryEntry(
-                    e["id"], e["text"], e["embedding"],
+                    e["id"],
+                    e["text"],
+                    e["embedding"],
                     e.get("timestamp", time.time()),
-                    e.get("importance", 1.0)
+                    e.get("importance", 1.0),
                 )
                 for e in entries
             ]
@@ -93,8 +95,7 @@ class RagEngineWrapper:
         else:
             for e in entries:
                 self.add(
-                    e["id"], e["text"], e["embedding"],
-                    e.get("timestamp"), e.get("importance", 1.0)
+                    e["id"], e["text"], e["embedding"], e.get("timestamp"), e.get("importance", 1.0)
                 )
             return len(entries)
 
@@ -142,12 +143,14 @@ class RagEngineWrapper:
                 score = base_score * entry["importance"]
 
             if score >= self.similarity_threshold:
-                results.append({
-                    "id": entry["id"],
-                    "text": entry["text"],
-                    "score": score,
-                    "timestamp": entry["timestamp"],
-                })
+                results.append(
+                    {
+                        "id": entry["id"],
+                        "text": entry["text"],
+                        "score": score,
+                        "timestamp": entry["timestamp"],
+                    }
+                )
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
@@ -157,7 +160,7 @@ class RagEngineWrapper:
         """Compute cosine similarity between two vectors."""
         if len(a) != len(b):
             raise ValueError(f"Vector dimension mismatch: {len(a)} vs {len(b)}")
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
         norm_a = sum(x * x for x in a) ** 0.5
         norm_b = sum(x * x for x in b) ** 0.5
 

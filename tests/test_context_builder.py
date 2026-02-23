@@ -4,8 +4,9 @@ Tests for cogs/ai_core/context_builder.py and cogs/ai_core/core/context_builder.
 Comprehensive tests for AIContext and ContextBuilder classes.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
 class TestAIContextDataclass:
@@ -13,7 +14,7 @@ class TestAIContextDataclass:
 
     def test_aicontext_defaults(self):
         """Test AIContext default values."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
 
@@ -29,7 +30,7 @@ class TestAIContextDataclass:
 
     def test_aicontext_with_values(self):
         """Test AIContext with custom values."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(
             avatar_name="TestAvatar",
@@ -45,21 +46,21 @@ class TestAIContextDataclass:
 
     def test_has_avatar_property_true(self):
         """Test has_avatar returns True when avatar is set."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(avatar_name="TestAvatar")
         assert ctx.has_avatar is True
 
     def test_has_avatar_property_false(self):
         """Test has_avatar returns False when no avatar."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
         assert ctx.has_avatar is False
 
     def test_build_system_context_empty(self):
         """Test build_system_context with empty context."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext()
         result = ctx.build_system_context()
@@ -67,7 +68,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_with_instructions(self):
         """Test build_system_context with instructions."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(instructions="Follow these rules")
         result = ctx.build_system_context()
@@ -77,7 +78,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_with_rag(self):
         """Test build_system_context with RAG context."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(rag_context="Knowledge about topic")
         result = ctx.build_system_context()
@@ -87,7 +88,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_with_entity_memory(self):
         """Test build_system_context with entity memory."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(entity_memory="User likes cats")
         result = ctx.build_system_context()
@@ -97,7 +98,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_with_state_tracker(self):
         """Test build_system_context with state tracker."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(state_tracker="Current topic: Python")
         result = ctx.build_system_context()
@@ -107,7 +108,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_with_url_content(self):
         """Test build_system_context with URL content."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(url_content="Webpage content here")
         result = ctx.build_system_context()
@@ -117,7 +118,7 @@ class TestAIContextDataclass:
 
     def test_build_system_context_all_parts(self):
         """Test build_system_context with all parts."""
-        from cogs.ai_core.context_builder import AIContext
+        from cogs.ai_core.core.context_builder import AIContext
 
         ctx = AIContext(
             instructions="Be helpful",
@@ -140,7 +141,7 @@ class TestContextBuilderInit:
 
     def test_init_with_defaults(self):
         """Test init with default None values."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
 
@@ -151,7 +152,7 @@ class TestContextBuilderInit:
 
     def test_init_with_managers(self):
         """Test init with manager objects."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_memory = MagicMock()
         mock_entity = MagicMock()
@@ -177,7 +178,7 @@ class TestContextBuilderBuildContext:
     @pytest.mark.asyncio
     async def test_build_context_empty(self):
         """Test build_context with no managers."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         result = await builder.build_context(
@@ -194,7 +195,7 @@ class TestContextBuilderBuildContext:
     @pytest.mark.asyncio
     async def test_build_context_no_include_flags(self):
         """Test build_context with include flags disabled."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder(
             memory_manager=MagicMock(),
@@ -221,7 +222,7 @@ class TestContextBuilderGetRAGContext:
     @pytest.mark.asyncio
     async def test_get_rag_context_no_manager(self):
         """Test _get_rag_context with no memory manager."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         result = await builder._get_rag_context(12345, "test query")
@@ -231,7 +232,7 @@ class TestContextBuilderGetRAGContext:
     @pytest.mark.asyncio
     async def test_get_rag_context_with_semantic_search(self):
         """Test _get_rag_context with semantic_search."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_memory = MagicMock()
         mock_memory.semantic_search = AsyncMock(
@@ -247,7 +248,7 @@ class TestContextBuilderGetRAGContext:
     @pytest.mark.asyncio
     async def test_get_rag_context_empty_results(self):
         """Test _get_rag_context with no results."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_memory = MagicMock()
         mock_memory.semantic_search = AsyncMock(return_value=[])
@@ -260,7 +261,7 @@ class TestContextBuilderGetRAGContext:
     @pytest.mark.asyncio
     async def test_get_rag_context_handles_exception(self):
         """Test _get_rag_context handles exceptions."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_memory = MagicMock()
         mock_memory.semantic_search = AsyncMock(side_effect=Exception("Test error"))
@@ -277,7 +278,7 @@ class TestContextBuilderGetEntityMemory:
     @pytest.mark.asyncio
     async def test_get_entity_memory_no_manager(self):
         """Test _get_entity_memory with no entity memory manager."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         result = await builder._get_entity_memory(12345, 67890, "test")
@@ -287,7 +288,7 @@ class TestContextBuilderGetEntityMemory:
     @pytest.mark.asyncio
     async def test_get_entity_memory_with_entities(self):
         """Test _get_entity_memory with entities."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_entity = MagicMock()
         mock_entity.get_relevant = AsyncMock(
@@ -310,7 +311,7 @@ class TestContextBuilderGetStateTracker:
     @pytest.mark.asyncio
     async def test_get_state_tracker_no_manager(self):
         """Test _get_state_tracker with no state tracker manager."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         result = await builder._get_state_tracker(12345)
@@ -320,7 +321,7 @@ class TestContextBuilderGetStateTracker:
     @pytest.mark.asyncio
     async def test_get_state_tracker_with_state(self):
         """Test _get_state_tracker with state."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_state = MagicMock()
         mock_state.get_state = AsyncMock(return_value={"topic": "AI", "mood": "friendly"})
@@ -337,7 +338,7 @@ class TestContextBuilderGetAvatarContext:
     @pytest.mark.asyncio
     async def test_get_avatar_context_no_manager(self):
         """Test _get_avatar_context with no avatar manager."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         builder = ContextBuilder()
         result = await builder._get_avatar_context(12345, MagicMock())
@@ -347,7 +348,7 @@ class TestContextBuilderGetAvatarContext:
     @pytest.mark.asyncio
     async def test_get_avatar_context_with_avatar(self):
         """Test _get_avatar_context with avatar."""
-        from cogs.ai_core.context_builder import ContextBuilder
+        from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_avatar = MagicMock()
         mock_avatar.get_avatar = AsyncMock(
@@ -369,13 +370,13 @@ class TestGlobalInstance:
 
     def test_global_instance_exists(self):
         """Test global context_builder instance exists."""
-        from cogs.ai_core.context_builder import context_builder
+        from cogs.ai_core.core.context_builder import context_builder
 
         assert context_builder is not None
 
     def test_global_instance_is_context_builder(self):
         """Test global instance is ContextBuilder."""
-        from cogs.ai_core.context_builder import ContextBuilder, context_builder
+        from cogs.ai_core.core.context_builder import ContextBuilder, context_builder
 
         assert isinstance(context_builder, ContextBuilder)
 
@@ -385,7 +386,7 @@ class TestModuleImports:
 
     def test_backward_compat_imports(self):
         """Test backward compatibility imports."""
-        from cogs.ai_core.context_builder import (
+        from cogs.ai_core.core.context_builder import (
             AIContext,
             ContextBuilder,
             context_builder,

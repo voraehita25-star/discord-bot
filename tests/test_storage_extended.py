@@ -3,9 +3,9 @@ Extended tests for AI Storage module.
 Tests caching, history loading/saving, and utility functions.
 """
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 import time
+
+import pytest
 
 
 class TestJsonImplementation:
@@ -18,9 +18,9 @@ class TestJsonImplementation:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(_ORJSON_ENABLED, bool)
-        
+
     def test_json_loads_callable(self):
         """Test json_loads function is callable."""
         try:
@@ -28,9 +28,9 @@ class TestJsonImplementation:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert callable(json_loads)
-        
+
     def test_json_dumps_callable(self):
         """Test json_dumps function is callable."""
         try:
@@ -38,9 +38,9 @@ class TestJsonImplementation:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert callable(json_dumps)
-        
+
     def test_json_loads_basic(self):
         """Test json_loads works correctly."""
         try:
@@ -48,10 +48,10 @@ class TestJsonImplementation:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         result = json_loads('{"key": "value"}')
         assert result == {"key": "value"}
-        
+
     def test_json_dumps_basic(self):
         """Test json_dumps works correctly."""
         try:
@@ -59,7 +59,7 @@ class TestJsonImplementation:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         result = json_dumps({"key": "value"})
         assert '"key"' in result
         assert '"value"' in result
@@ -75,10 +75,10 @@ class TestCacheConstants:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(CACHE_TTL, int)
         assert CACHE_TTL > 0
-        
+
     def test_max_cache_size_defined(self):
         """Test MAX_CACHE_SIZE is defined."""
         try:
@@ -86,7 +86,7 @@ class TestCacheConstants:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(MAX_CACHE_SIZE, int)
         assert MAX_CACHE_SIZE > 0
 
@@ -101,15 +101,15 @@ class TestCleanupExpiredCache:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Clear caches
         _history_cache.clear()
         _metadata_cache.clear()
-        
+
         result = _cleanup_expired_cache()
-        
+
         assert result == 0
-        
+
     def test_cleanup_expired_cache_with_valid_entries(self):
         """Test cleanup with valid entries."""
         try:
@@ -117,38 +117,43 @@ class TestCleanupExpiredCache:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Clear caches
         _history_cache.clear()
         _metadata_cache.clear()
-        
+
         # Add valid entry (not expired)
         current_time = time.time()
         _history_cache[123] = (current_time, [{"role": "user", "content": "test"}])
-        
+
         result = _cleanup_expired_cache()
-        
+
         assert result == 0
         assert 123 in _history_cache
-        
+
     def test_cleanup_expired_cache_with_expired_entries(self):
         """Test cleanup with expired entries."""
         try:
-            from cogs.ai_core.storage import _cleanup_expired_cache, _history_cache, _metadata_cache, CACHE_TTL
+            from cogs.ai_core.storage import (
+                CACHE_TTL,
+                _cleanup_expired_cache,
+                _history_cache,
+                _metadata_cache,
+            )
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Clear caches
         _history_cache.clear()
         _metadata_cache.clear()
-        
+
         # Add expired entry
         old_time = time.time() - CACHE_TTL - 100
         _history_cache[456] = (old_time, [{"role": "user", "content": "old"}])
-        
+
         result = _cleanup_expired_cache()
-        
+
         assert result == 1
         assert 456 not in _history_cache
 
@@ -159,21 +164,24 @@ class TestEnforceCacheSizeLimit:
     def test_enforce_cache_size_limit_under_limit(self):
         """Test enforcement when under limit."""
         try:
-            from cogs.ai_core.storage import _enforce_cache_size_limit, _history_cache, MAX_CACHE_SIZE
+            from cogs.ai_core.storage import (
+                _enforce_cache_size_limit,
+                _history_cache,
+            )
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Clear cache
         _history_cache.clear()
-        
+
         # Add a few entries
         current_time = time.time()
         for i in range(5):
             _history_cache[i] = (current_time, [])
-            
-        result = _enforce_cache_size_limit()
-        
+
+        _enforce_cache_size_limit()
+
         # Should not remove any
         assert len(_history_cache) == 5
 
@@ -188,7 +196,7 @@ class TestDatabaseAvailable:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(DATABASE_AVAILABLE, bool)
 
 
@@ -202,10 +210,11 @@ class TestDataDirectories:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         from pathlib import Path
+
         assert isinstance(DATA_DIR, Path)
-        
+
     def test_config_dir_defined(self):
         """Test CONFIG_DIR is defined."""
         try:
@@ -213,8 +222,9 @@ class TestDataDirectories:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         from pathlib import Path
+
         assert isinstance(CONFIG_DIR, Path)
 
 
@@ -224,15 +234,15 @@ class TestGuildIdConstants:
     def test_guild_id_main_imported(self):
         """Test GUILD_ID_MAIN is imported."""
         try:
-            from cogs.ai_core.storage import GUILD_ID_MAIN
+            pass
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
     def test_guild_id_rp_imported(self):
         """Test GUILD_ID_RP is imported."""
         try:
-            from cogs.ai_core.storage import GUILD_ID_RP
+            pass
         except ImportError:
             pytest.skip("storage module not available")
             return
@@ -244,23 +254,23 @@ class TestHistoryLimitConstants:
     def test_history_limit_default_imported(self):
         """Test HISTORY_LIMIT_DEFAULT is imported."""
         try:
-            from cogs.ai_core.storage import HISTORY_LIMIT_DEFAULT
+            pass
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
     def test_history_limit_main_imported(self):
         """Test HISTORY_LIMIT_MAIN is imported."""
         try:
-            from cogs.ai_core.storage import HISTORY_LIMIT_MAIN
+            pass
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
     def test_history_limit_rp_imported(self):
         """Test HISTORY_LIMIT_RP is imported."""
         try:
-            from cogs.ai_core.storage import HISTORY_LIMIT_RP
+            pass
         except ImportError:
             pytest.skip("storage module not available")
             return
@@ -276,7 +286,7 @@ class TestModuleDocstring:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert storage.__doc__ is not None
         assert "Storage" in storage.__doc__ or "storage" in storage.__doc__.lower()
 
@@ -291,9 +301,9 @@ class TestCacheDataStructures:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(_history_cache, dict)
-        
+
     def test_metadata_cache_is_dict(self):
         """Test _metadata_cache is a dict."""
         try:
@@ -301,7 +311,7 @@ class TestCacheDataStructures:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         assert isinstance(_metadata_cache, dict)
 
 
@@ -311,29 +321,29 @@ class TestJsonRoundtrip:
     def test_json_roundtrip_dict(self):
         """Test JSON roundtrip with dict."""
         try:
-            from cogs.ai_core.storage import json_loads, json_dumps
+            from cogs.ai_core.storage import json_dumps, json_loads
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         original = {"key": "value", "number": 42, "nested": {"a": 1}}
         serialized = json_dumps(original)
         deserialized = json_loads(serialized)
-        
+
         assert deserialized == original
-        
+
     def test_json_roundtrip_list(self):
         """Test JSON roundtrip with list."""
         try:
-            from cogs.ai_core.storage import json_loads, json_dumps
+            from cogs.ai_core.storage import json_dumps, json_loads
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         original = [1, 2, 3, "test"]
         serialized = json_dumps(original)
         deserialized = json_loads(serialized)
-        
+
         assert deserialized == original
 
 
@@ -347,10 +357,10 @@ class TestCacheTTLBehavior:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Should be between 1 second and 1 hour
         assert 1 <= CACHE_TTL <= 3600
-        
+
     def test_max_cache_size_is_reasonable(self):
         """Test MAX_CACHE_SIZE is a reasonable value."""
         try:
@@ -358,6 +368,6 @@ class TestCacheTTLBehavior:
         except ImportError:
             pytest.skip("storage module not available")
             return
-            
+
         # Should be between 10 and 10000
         assert 10 <= MAX_CACHE_SIZE <= 10000

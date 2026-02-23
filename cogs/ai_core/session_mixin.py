@@ -34,6 +34,9 @@ class SessionMixin:
     - cancel_flags: dict[int, bool]
     - streaming_enabled: dict[int, bool]
     - current_typing_msg: dict[int, Any] - channel_id -> typing message
+
+    This mixin requires the following methods to be defined on the consuming class:
+    - _enforce_channel_limit() -> None: Enforce max active channel limit
     """
 
     bot: Bot
@@ -46,6 +49,10 @@ class SessionMixin:
     cancel_flags: dict[int, bool]
     streaming_enabled: dict[int, bool]
     current_typing_msg: dict[int, Any]
+
+    async def _enforce_channel_limit(self) -> None:
+        """Enforce max active channel limit. Must be implemented by the consuming class."""
+        raise NotImplementedError("Consuming class must implement _enforce_channel_limit")
 
     async def get_chat_session(
         self, channel_id: int, guild_id: int | None = None
@@ -102,23 +109,31 @@ class SessionMixin:
                 self.chats[channel_id]["thinking_enabled"] = True
 
         # UNRESTRICTED MODE INJECTION — only for channels explicitly marked unrestricted
+        # Also REMOVES the instruction when unrestricted mode is disabled
         try:
             from .processing.guardrails import is_unrestricted
+
+            current_instruction = self.chats[channel_id].get("system_instruction", "")
             if is_unrestricted(channel_id):
-                current_instruction = self.chats[channel_id].get("system_instruction", "")
                 if "[CREATIVE WRITING MODE - PRIVATE SESSION]" not in current_instruction:
                     logging.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
                     self.chats[channel_id]["system_instruction"] = (
                         UNRESTRICTED_MODE_INSTRUCTION + current_instruction
                     )
+            # Remove unrestricted instruction if it was previously injected
+            elif "[CREATIVE WRITING MODE - PRIVATE SESSION]" in current_instruction:
+                logging.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
+                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
+                    UNRESTRICTED_MODE_INSTRUCTION, ""
+                )
         except ImportError:
             pass  # Guardrails not available, skip unrestricted injection
 
         # Update Last Accessed Time
         self.last_accessed[channel_id] = time.time()
-        
+
         # Enforce channel limit to prevent unbounded memory growth
-        self._enforce_channel_limit()
+        await self._enforce_channel_limit()
 
         return self.chats[channel_id]
 
@@ -147,22 +162,29 @@ class SessionMixin:
                     if channel_id in self.chats:
                         # Save before unloading
                         await save_history(self.bot, channel_id, self.chats[channel_id])
-                        del self.chats[channel_id]
-                        del self.last_accessed[channel_id]
-
-                        # Clean up related data structures
-                        self.seen_users.pop(channel_id, None)
-                        self.processing_locks.pop(channel_id, None)
-                        self.pending_messages.pop(channel_id, None)
-                        self.cancel_flags.pop(channel_id, None)
-                        self.streaming_enabled.pop(channel_id, None)
-                        self.current_typing_msg.pop(channel_id, None)
+                        # Re-check after await: channel may have been re-accessed
+                        if (
+                            channel_id in self.last_accessed
+                            and time.time() - self.last_accessed[channel_id] > timeout
+                        ):
+                            # Atomically remove all related state for this channel
+                            self.chats.pop(channel_id, None)
+                            self.last_accessed.pop(channel_id, None)
+                            self.seen_users.pop(channel_id, None)
+                            self.processing_locks.pop(channel_id, None)
+                            self.pending_messages.pop(channel_id, None)
+                            self.cancel_flags.pop(channel_id, None)
+                            self.streaming_enabled.pop(channel_id, None)
+                            self.current_typing_msg.pop(channel_id, None)
+                        else:
+                            # Channel was re-accessed during save, skip cleanup
+                            continue
 
                         logging.info(
                             "Unloaded inactive AI session for channel %s from RAM.", channel_id
                         )
 
-            except OSError as e:
+            except Exception as e:
                 logging.error("Error in cleanup task: %s", e)
 
             await asyncio.sleep(600)  # Check every 10 minutes

@@ -42,9 +42,7 @@ class URLFetcherClient:
         self._service_check_time: float = 0
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.timeout)
-        )
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
         await self._check_service()
         return self
 
@@ -55,7 +53,7 @@ class URLFetcherClient:
     async def _check_service(self) -> bool:
         """Check if Go service is available (with cache expiration)."""
         import time
-        
+
         # Check if cache is still valid
         now = time.time()
         if self._service_available is not None:
@@ -69,7 +67,9 @@ class URLFetcherClient:
             return False
 
         try:
-            async with self._session.get(f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+            async with self._session.get(
+                f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)
+            ) as resp:
                 self._service_available = resp.status == 200
                 self._service_check_time = now
                 if self._service_available:
@@ -96,10 +96,7 @@ class URLFetcherClient:
     async def _fetch_via_service(self, url: str) -> dict[str, Any]:
         """Fetch via Go service."""
         try:
-            async with self._session.get(
-                f"{self.base_url}/fetch",
-                params={"url": url}
-            ) as resp:
+            async with self._session.get(f"{self.base_url}/fetch", params={"url": url}) as resp:
                 return await resp.json()
         except Exception as e:
             return {"url": url, "error": str(e)}
@@ -113,13 +110,36 @@ class URLFetcherClient:
         start = time.time()
         result = {"url": url}
 
+        # SSRF Protection: Block private/internal IPs
+        try:
+            from utils.web.url_fetcher import _is_private_url
+
+            if await _is_private_url(url):
+                result["error"] = "SSRF blocked: URL resolves to private/internal address"
+                result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                return result
+        except ImportError:
+            # url_fetcher not available — apply basic SSRF protection
+            import ipaddress
+            from urllib.parse import urlparse
+
+            try:
+                hostname = urlparse(url).hostname or ""
+                addr = ipaddress.ip_address(hostname)
+                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+                    result["error"] = "SSRF blocked: URL points to private/internal address"
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
+            except ValueError:
+                pass  # hostname is not an IP literal, allow (DNS resolution check unavailable)
+
         try:
             async with self._session.get(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                }
+                },
             ) as resp:
                 result["status_code"] = resp.status
                 result["content_type"] = resp.headers.get("Content-Type", "")
@@ -127,7 +147,10 @@ class URLFetcherClient:
                 if resp.status != 200:
                     result["error"] = f"HTTP {resp.status}"
                 else:
-                    text = await resp.text()
+                    # Limit response size to 5MB to prevent memory exhaustion
+                    MAX_RESPONSE_SIZE = 5 * 1024 * 1024
+                    raw_bytes = await resp.content.read(MAX_RESPONSE_SIZE)
+                    text = raw_bytes.decode("utf-8", errors="replace")
 
                     if "text/html" in result["content_type"]:
                         soup = BeautifulSoup(text, "html.parser")
@@ -168,17 +191,16 @@ class URLFetcherClient:
             return await self._fetch_batch_via_service(urls, timeout)
         return await self._fetch_batch_fallback(urls)
 
-    async def _fetch_batch_via_service(self, urls: list[str], timeout: int | None) -> dict[str, Any]:
+    async def _fetch_batch_via_service(
+        self, urls: list[str], timeout: int | None
+    ) -> dict[str, Any]:
         """Batch fetch via Go service."""
         try:
             payload = {"urls": urls}
             if timeout:
                 payload["timeout"] = timeout
 
-            async with self._session.post(
-                f"{self.base_url}/fetch/batch",
-                json=payload
-            ) as resp:
+            async with self._session.post(f"{self.base_url}/fetch/batch", json=payload) as resp:
                 return await resp.json()
         except Exception as e:
             return {
@@ -203,7 +225,7 @@ class URLFetcherClient:
         error_count = 0
 
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 processed.append({"url": urls[i], "error": str(result)})
                 error_count += 1
             else:

@@ -5,6 +5,7 @@ Intelligent trimming and management of chat history.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import re
 from dataclasses import dataclass
@@ -112,7 +113,7 @@ class HistoryManager:
         """
         if not history:
             return 0
-            
+
         total_tokens = 0
 
         for msg in history:
@@ -137,23 +138,23 @@ class HistoryManager:
     def _estimate_tokens_fallback(self, content: str) -> int:
         """
         Smart fallback token estimation for mixed Thai/English text.
-        
+
         Thai characters and other Unicode typically tokenize differently than ASCII:
         - ASCII/English: ~4 characters per token
         - Thai/Unicode: ~2-3 characters per token (more conservative)
         """
         if not content:
             return 0
-        
+
         # Count ASCII vs non-ASCII characters
         ascii_count = sum(1 for c in content if ord(c) < 128)
         non_ascii_count = len(content) - ascii_count
-        
+
         # Estimate tokens for each type
         # ASCII: 4 chars/token, Non-ASCII (Thai etc): 2.5 chars/token
         ascii_tokens = ascii_count / 4
         non_ascii_tokens = non_ascii_count / 2.5
-        
+
         return max(1, int(ascii_tokens + non_ascii_tokens))
 
     def estimate_message_tokens(self, message: dict[str, Any]) -> int:
@@ -324,7 +325,7 @@ class HistoryManager:
         max_messages = max_messages or self.max_history
 
         if len(history) <= max_messages:
-            return history
+            return list(history)
 
         # Simple approach: keep first few + last many
         keep_start = max_messages // 10
@@ -372,34 +373,47 @@ class HistoryManager:
         # Always protect the most recent messages
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
+        # Pre-compute importance scores and build a min-heap for O(n log n) trimming
+        trim_end = (
+            len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        )
+        if trim_end > 0:
+            # Build heap of (importance, original_index) for trimmable messages
+            importance_heap = [
+                (self._calculate_importance(msg)[0], i)
+                for i, msg in enumerate(working_history[:trim_end])
+            ]
+            heapq.heapify(importance_heap)
+        else:
+            importance_heap = []
+
+        removed_indices: set[int] = set()
+
         while running_total > target_tokens:
-            if len(working_history) <= protected_count + 1:
+            if len(working_history) - len(removed_indices) <= protected_count + 1:
                 self.logger.warning("Cannot trim further without losing recent context")
                 break
 
-            # Find lowest importance message (excluding protected recent ones)
-            trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
+            # Pop lowest importance from heap, skip already-removed indices
+            while importance_heap:
+                importance, remove_idx = heapq.heappop(importance_heap)
+                if remove_idx not in removed_indices:
+                    break
+            else:
+                break  # Heap exhausted
 
-            if trim_end <= 0:
-                break
-
-            # Score all trimmable messages
-            scored = [(i, self._calculate_importance(msg)[0]) for i, msg in enumerate(working_history[:trim_end])]
-
-            # Remove lowest importance message
-            scored.sort(key=lambda x: x[1])
-            remove_idx = scored[0][0]
-
-            removed_tokens = message_tokens.pop(remove_idx)
-            working_history.pop(remove_idx)
-            running_total -= removed_tokens
+            removed_indices.add(remove_idx)
+            running_total -= message_tokens[remove_idx]
 
             self.logger.debug(
                 "Removed message at %d (importance: %.2f, tokens: %d)",
                 remove_idx,
-                scored[0][1],
-                removed_tokens,
+                importance,
+                message_tokens[remove_idx],
             )
+
+        # Build result excluding removed indices
+        working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
 
         final_tokens = running_total
         self.logger.info(

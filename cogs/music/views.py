@@ -10,7 +10,6 @@ are suppressed because discord.py's type stubs don't fully reflect runtime behav
 
 from __future__ import annotations
 
-import collections
 from typing import TYPE_CHECKING, cast
 
 import discord
@@ -87,13 +86,16 @@ class MusicControlView(discord.ui.View):
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Stop playback and clear queue."""
-        self.cog.queues[self.guild_id] = collections.deque()
-        self.cog.loops[self.guild_id] = False
-        self.cog.current_track.pop(self.guild_id, None)
+        # Use the guild state's play_lock to prevent race with the playback loop
+        gs = self.cog._gs(self.guild_id)
+        async with gs.play_lock:
+            gs.queue.clear()
+            gs.loop = False
+            gs.current_track = None
 
-        if interaction.guild and interaction.guild.voice_client:
-            voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
-            voice_client.stop()
+            if interaction.guild and interaction.guild.voice_client:
+                voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
+                voice_client.stop()
 
         await interaction.response.send_message("⏹️ หยุดเล่นและล้างคิวแล้ว", ephemeral=True)
         self.stop()  # Stop the view

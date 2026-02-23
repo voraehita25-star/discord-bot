@@ -21,6 +21,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,9 +186,38 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
-        from shared.colors_fallback import Colors
+        # Minimal fallback inline Colors class
+        class Colors:  # type: ignore[no-redef]
+            RESET = "\033[0m"
+            RED = "\033[31m"
+            GREEN = "\033[32m"
+            YELLOW = "\033[33m"
+            BLUE = "\033[34m"
+            CYAN = "\033[36m"
+            WHITE = "\033[37m"
+            MAGENTA = "\033[35m"
+            BOLD = "\033[1m"
+            DIM = "\033[2m"
+            White = "\033[37m"
+            Magenta = "\033[35m"
+            BG_RED = "\033[41m"
+            BG_GREEN = "\033[42m"
+            BG_BLUE = "\033[44m"
+            GRAY = "\033[90m"
+            BRIGHT_RED = "\033[91m"
+            BRIGHT_GREEN = "\033[92m"
+            BRIGHT_YELLOW = "\033[93m"
+            BRIGHT_BLUE = "\033[94m"
+            BRIGHT_MAGENTA = "\033[95m"
+            BRIGHT_CYAN = "\033[96m"
+            Red = RED
+            Green = GREEN
+            Yellow = YELLOW
+            Blue = BLUE
+            Cyan = CYAN
 
 
 # =============================================================================
@@ -279,14 +309,10 @@ def check_and_stop_existing_bot() -> None:
             print(f"{Colors.GREEN}  [OK] Old instance stopped!{Colors.RESET}")
             time.sleep(1)
 
-            pid_path = Path(PID_FILE)
-            if pid_path.exists():
-                pid_path.unlink()
+            Path(PID_FILE).unlink(missing_ok=True)
 
         except psutil.NoSuchProcess:
-            pid_path = Path(PID_FILE)
-            if pid_path.exists():
-                pid_path.unlink()
+            Path(PID_FILE).unlink(missing_ok=True)
         except Exception as e:
             print(f"{Colors.RED}  [X] Failed to stop: {e}{Colors.RESET}")
             sys.exit(1)
@@ -296,7 +322,11 @@ def check_and_stop_existing_bot() -> None:
 
 def clear_screen() -> None:
     """Clear terminal screen."""
-    os.system("cls" if sys.platform == "win32" else "clear")
+    subprocess.run(
+        ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
+        shell=False,
+        check=False,
+    )
 
 
 def print_banner() -> None:
@@ -397,12 +427,18 @@ if WATCHDOG_AVAILABLE:
             self.last_event_time = 0.0
             self.file_hashes: dict[str, str] = {}
             self.consecutive_crashes = 0
+            self._lock = threading.Lock()  # Protect shared state between threads
 
             # Start bot
             self.start_bot("Initial start")
 
         def start_bot(self, reason: str = "File change") -> bool:
             """Start or restart the bot process."""
+            with self._lock:
+                return self._start_bot_unlocked(reason)
+
+        def _start_bot_unlocked(self, reason: str = "File change") -> bool:
+            """Internal start_bot implementation (caller must hold _lock)."""
             # Debounce
             current_time = time.time()
             if current_time - self.last_event_time < self.config.debounce_seconds:
@@ -426,10 +462,7 @@ if WATCHDOG_AVAILABLE:
                         self.process.kill()
 
             # Clean up PID file
-            pid_path = Path(PID_FILE)
-            if pid_path.exists():
-                with contextlib.suppress(OSError):
-                    pid_path.unlink()
+            Path(PID_FILE).unlink(missing_ok=True)
 
             # Update stats
             self.stats.restart_count += 1
@@ -497,44 +530,49 @@ if WATCHDOG_AVAILABLE:
 
         def check_for_crash(self) -> bool:
             """Check if bot has crashed and handle auto-retry."""
-            if not self.process:
+            with self._lock:
+                if not self.process:
+                    return False
+
+                return_code = self.process.poll()
+                if return_code is not None:
+                    # Bot has exited
+                    if return_code != 0:
+                        self.stats.crash_count += 1
+                        self.consecutive_crashes += 1
+                        self.logger.warning("Bot crashed with code %d", return_code)
+
+                        print()
+                        print_status(
+                            f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]"
+                        )
+
+                        # Auto-retry if enabled
+                        if self.config.auto_retry_on_crash:
+                            if self.consecutive_crashes <= self.config.max_crash_retries:
+                                print_status(
+                                    f"Auto-retry in {self.config.crash_retry_delay}s "
+                                    f"({self.consecutive_crashes}/{self.config.max_crash_retries})",
+                                    Colors.YELLOW,
+                                    "[RETRY]",
+                                )
+                                time.sleep(self.config.crash_retry_delay)
+                                self._start_bot_unlocked("Auto-retry after crash")
+                            else:
+                                print_status(
+                                    f"Max retries ({self.config.max_crash_retries}) exceeded!",
+                                    Colors.RED,
+                                    "[STOP]",
+                                )
+                                print_status(
+                                    "Fix the error and save a file to restart",
+                                    Colors.YELLOW,
+                                    "  └─",
+                                )
+
+                        return True
+
                 return False
-
-            return_code = self.process.poll()
-            if return_code is not None:
-                # Bot has exited
-                if return_code != 0:
-                    self.stats.crash_count += 1
-                    self.consecutive_crashes += 1
-                    self.logger.warning("Bot crashed with code %d", return_code)
-
-                    print()
-                    print_status(f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]")
-
-                    # Auto-retry if enabled
-                    if self.config.auto_retry_on_crash:
-                        if self.consecutive_crashes <= self.config.max_crash_retries:
-                            print_status(
-                                f"Auto-retry in {self.config.crash_retry_delay}s "
-                                f"({self.consecutive_crashes}/{self.config.max_crash_retries})",
-                                Colors.YELLOW,
-                                "[RETRY]",
-                            )
-                            time.sleep(self.config.crash_retry_delay)
-                            self.start_bot("Auto-retry after crash")
-                        else:
-                            print_status(
-                                f"Max retries ({self.config.max_crash_retries}) exceeded!",
-                                Colors.RED,
-                                "[STOP]",
-                            )
-                            print_status(
-                                "Fix the error and save a file to restart", Colors.YELLOW, "  └─"
-                            )
-
-                    return True
-
-            return False
 
         def on_modified(self, event):
             self._handle_change(event)
@@ -774,10 +812,7 @@ def main():
     observer.join()
 
     # Clean up
-    pid_path = Path(PID_FILE)
-    if pid_path.exists():
-        with contextlib.suppress(OSError):
-            pid_path.unlink()
+    Path(PID_FILE).unlink(missing_ok=True)
 
     # Print session summary
     stats = event_handler.stats

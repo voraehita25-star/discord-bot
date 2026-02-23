@@ -19,7 +19,7 @@
             }
         ],
         "security": {
-            "csp": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 http://localhost:8080 http://127.0.0.1:8080 http://localhost:9090 http://127.0.0.1:9090"
+            "csp": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/katex@0.16.9/; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/katex@0.16.9/; img-src 'self' data: blob:; font-src 'self' https://cdn.jsdelivr.net/npm/katex@0.16.9/; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765"
         }
     },
     "bundle": {

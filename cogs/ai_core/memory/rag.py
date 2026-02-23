@@ -18,7 +18,14 @@ from pathlib import Path
 import numpy as np
 from google import genai
 
-from utils.database import db
+try:
+    from utils.database import db
+
+    _DB_AVAILABLE = True
+except ImportError:
+    db = None
+    _DB_AVAILABLE = False
+    logging.warning("Database not available for RAG module")
 
 from ..data.constants import GEMINI_API_KEY
 
@@ -136,7 +143,7 @@ class FAISSIndex:
 
     def search(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Search for k nearest neighbors. Returns list of (id, similarity).
-        
+
         Note: This is a synchronous method. For async contexts, use search_async().
         """
         # Normalize query first (outside lock for performance)
@@ -198,7 +205,7 @@ class FAISSIndex:
         1. Write to temp files
         2. Write completion marker
         3. Rename to final paths
-        
+
         This prevents inconsistent state if crash occurs between writes.
         """
         if not self._initialized or not FAISS_AVAILABLE:
@@ -212,33 +219,34 @@ class FAISSIndex:
             temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
             transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
 
-            # Create transaction marker
-            transaction_marker.write_text(str(time.time()), encoding="utf-8")
+            with self._lock:
+                # Create transaction marker
+                transaction_marker.write_text(str(time.time()), encoding="utf-8")
 
-            # Write to temp files first
-            faiss.write_index(self.index, str(temp_index))
-            np.save(str(temp_id_map), np.array(self.id_map))
+                # Write to temp files first
+                faiss.write_index(self.index, str(temp_index))
+                np.save(str(temp_id_map), np.array(self.id_map))
 
-            # Both files written successfully - now rename atomically
-            # Backup old files first (if they exist)
-            backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
-            backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
-            
-            if FAISS_INDEX_FILE.exists():
-                FAISS_INDEX_FILE.replace(backup_index)
-            if FAISS_ID_MAP_FILE.exists():
-                FAISS_ID_MAP_FILE.replace(backup_id_map)
+                # Both files written successfully - now rename atomically
+                # Backup old files first (if they exist)
+                backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+                backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
 
-            # Rename temp to final
-            temp_index.replace(FAISS_INDEX_FILE)
-            temp_id_map.replace(FAISS_ID_MAP_FILE)
+                if FAISS_INDEX_FILE.exists():
+                    FAISS_INDEX_FILE.replace(backup_index)
+                if FAISS_ID_MAP_FILE.exists():
+                    FAISS_ID_MAP_FILE.replace(backup_id_map)
 
-            # Remove transaction marker and backups on success
-            transaction_marker.unlink(missing_ok=True)
-            backup_index.unlink(missing_ok=True)
-            backup_id_map.unlink(missing_ok=True)
+                # Rename temp to final
+                temp_index.replace(FAISS_INDEX_FILE)
+                temp_id_map.replace(FAISS_ID_MAP_FILE)
 
-            logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
+                # Remove transaction marker and backups on success
+                transaction_marker.unlink(missing_ok=True)
+                backup_index.unlink(missing_ok=True)
+                backup_id_map.unlink(missing_ok=True)
+
+                logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
             return True
         except Exception as e:
             logging.error("Failed to save FAISS index: %s", e)
@@ -259,6 +267,18 @@ class FAISSIndex:
         """Load FAISS index from disk."""
         if not FAISS_AVAILABLE:
             return False
+
+        # Recovery: check for backup files from interrupted save
+        backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+        backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+        if not FAISS_INDEX_FILE.exists() and backup_index.exists():
+            logging.warning("🔄 Recovering FAISS index from backup (interrupted save detected)")
+            try:
+                backup_index.replace(FAISS_INDEX_FILE)
+                if backup_id_map.exists():
+                    backup_id_map.replace(FAISS_ID_MAP_FILE)
+            except OSError as e:
+                logging.error("Failed to recover FAISS backup: %s", e)
 
         if not FAISS_INDEX_FILE.exists() or not FAISS_ID_MAP_FILE.exists():
             return False
@@ -296,7 +316,6 @@ class MemorySystem:
         self._memories_cache: dict[int, dict] = {}  # id -> memory dict
 
         # Debounced save state
-        self._save_pending = False
         self._save_task: asyncio.Task | None = None
         self._periodic_save_task: asyncio.Task | None = None
 
@@ -389,7 +408,7 @@ class MemorySystem:
 
     async def _ensure_index(self, channel_id: int | None = None) -> None:
         """Build FAISS index from database if not already built.
-        
+
         Uses lock to prevent race conditions from concurrent calls.
         """
         if not FAISS_AVAILABLE or self._index_built:
@@ -408,16 +427,20 @@ class MemorySystem:
                     self._index_built = True
                     # Load memories cache from DB
                     # Load ALL memories (not just one channel) since FAISS index is global
-                    all_memories = await db.get_all_rag_memories(None)
-                    for mem in all_memories:
-                        mem_id = mem.get("id")
-                        if mem_id:
-                            self._memories_cache[mem_id] = mem
-                    self._evict_cache_if_needed()
+                    if _DB_AVAILABLE and db is not None:
+                        all_memories = await db.get_all_rag_memories(None)
+                        for mem in all_memories:
+                            mem_id = mem.get("id")
+                            if mem_id:
+                                self._memories_cache[mem_id] = mem
+                        self._evict_cache_if_needed()
                     return
 
             # Build from database (slow path)
             # Load ALL memories (not just one channel) since FAISS index is global
+            if not _DB_AVAILABLE or db is None:
+                return
+
             all_memories = await db.get_all_rag_memories(None)
             if not all_memories:
                 return
@@ -448,24 +471,18 @@ class MemorySystem:
 
     def _schedule_index_save(self, delay: float = 30.0) -> None:
         """Schedule a debounced save of FAISS index (non-blocking)."""
-        if self._save_pending:
-            return  # Already scheduled
-
-        self._save_pending = True
+        # Cancel any existing save task before creating a new one
+        if self._save_task and not self._save_task.done():
+            self._save_task.cancel()
 
         async def do_save():
             try:
                 await asyncio.sleep(delay)
-                self._save_pending = False
                 if self._faiss_index and self._index_built:
                     self._faiss_index.save_to_disk()
             except asyncio.CancelledError:
-                self._save_pending = False
                 raise  # Re-raise to properly handle cancellation
 
-        # Cancel any existing save task before creating a new one
-        if self._save_task and not self._save_task.done():
-            self._save_task.cancel()
         self._save_task = asyncio.create_task(do_save())
 
     def start_periodic_save(self, interval: float = 300.0) -> None:
@@ -515,6 +532,10 @@ class MemorySystem:
 
     async def add_memory(self, content: str, channel_id: int | None = None) -> bool:
         """Add a text chunk to long-term memory."""
+        if not _DB_AVAILABLE or db is None:
+            logging.warning("Database not available for RAG add_memory")
+            return False
+
         embedding = await self.generate_embedding(content)
         if embedding is None:
             return False
@@ -529,9 +550,13 @@ class MemorySystem:
         # Add to FAISS index if available (with lock to prevent race conditions)
         async with self._index_lock:
             if FAISS_AVAILABLE and self._faiss_index and self._index_built:
-                self._faiss_index.add_single(embedding, result if isinstance(result, int) else -1)
-                # Schedule debounced save instead of saving immediately (performance)
-                self._schedule_index_save()
+                memory_id = result if isinstance(result, int) and result > 0 else None
+                if memory_id is not None:
+                    self._faiss_index.add_single(embedding, memory_id)
+                    # Schedule debounced save instead of saving immediately (performance)
+                    self._schedule_index_save()
+                else:
+                    logging.warning("⚠️ RAG memory saved to DB but got invalid ID: %s", result)
 
         logging.info("🧠 Saved RAG memory: %s...", content[:30])
         return True
@@ -682,14 +707,20 @@ class MemorySystem:
         Returns:
             List of MemoryResult objects
         """
+        if not _DB_AVAILABLE or db is None:
+            return []
+
         # Get all memories for keyword search
         all_memories = await db.get_all_rag_memories(channel_id)
         if not all_memories:
             return []
 
-        # Update cache
-        for mem in all_memories:
-            self._memories_cache[mem.get("id", -1)] = mem
+        # Update cache (batch with size limit to prevent memory spike)
+        MAX_CACHE_BATCH = 2000
+        for mem in all_memories[:MAX_CACHE_BATCH]:
+            mem_id = mem.get("id")
+            if mem_id is not None:
+                self._memories_cache[mem_id] = mem
         self._evict_cache_if_needed()
 
         # Semantic search
@@ -745,6 +776,7 @@ class MemorySystem:
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     from datetime import timezone as _tz
+
                     now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(_tz.utc)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):
@@ -778,10 +810,10 @@ class MemorySystem:
         results = await self.hybrid_search(query, limit, channel_id)
         return [r.content for r in results if r.score > 0.1]
 
-    async def _linear_search_raw(
+    def _linear_search_raw_sync(
         self, query_vec: np.ndarray, limit: int, memories: list[dict]
     ) -> list[tuple[int, float]]:
-        """Linear scan search returning (id, similarity) pairs."""
+        """Linear scan search returning (id, similarity) pairs (sync, runs in thread)."""
         scored = []
 
         for mem in memories:
@@ -803,10 +835,19 @@ class MemorySystem:
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:limit]
 
+    async def _linear_search_raw(
+        self, query_vec: np.ndarray, limit: int, memories: list[dict]
+    ) -> list[tuple[int, float]]:
+        """Linear scan search returning (id, similarity) pairs."""
+        return await asyncio.to_thread(self._linear_search_raw_sync, query_vec, limit, memories)
+
     async def _linear_search(
         self, query_vec: np.ndarray, limit: int, channel_id: int | None
     ) -> list[str]:
         """Fallback linear scan search (legacy method)."""
+        if not _DB_AVAILABLE or db is None:
+            return []
+
         all_memories = await db.get_all_rag_memories(channel_id)
 
         if not all_memories:

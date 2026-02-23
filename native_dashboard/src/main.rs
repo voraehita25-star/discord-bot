@@ -38,9 +38,9 @@ fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
         Ok(mut manager) => Ok(manager.get_status()),
         Err(_) => {
             // Lock is held by start/stop/restart — return busy status
-            // so the UI doesn't freeze waiting for the mutex
+            // with is_running: true so the UI shows a spinner instead of "stopped"
             Ok(BotStatus {
-                is_running: false,
+                is_running: true,
                 pid: None,
                 uptime: "...".to_string(),
                 memory_mb: 0.0,
@@ -162,7 +162,35 @@ fn clear_history(state: State<AppState>) -> Result<i32, String> {
 }
 
 #[tauri::command]
-fn open_folder(path: String) -> Result<(), String> {
+fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    app.dialog()
+        .message(&message)
+        .title("Confirm")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Yes".into(), "No".into()))
+        .blocking_show()
+}
+
+#[tauri::command]
+fn delete_channels_history(state: State<AppState>, channel_ids: Vec<String>) -> Result<i32, String> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    if channel_ids.len() > 100 {
+        return Err("Too many channels (max 100)".to_string());
+    }
+    // Parse string IDs to i64 (avoids JavaScript Number precision loss for Discord Snowflake IDs)
+    let parsed_ids: Vec<i64> = channel_ids
+        .iter()
+        .map(|id| id.parse::<i64>().map_err(|e| format!("Invalid channel ID '{}': {}", id, e)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let db = lock_db_service!(state)?;
+    db.delete_channels_history(&parsed_ids)
+}
+
+#[tauri::command]
+fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     let path_obj = std::path::Path::new(&path);
     if !path_obj.exists() {
         return Err(format!("Path does not exist: {}", path));
@@ -175,6 +203,14 @@ fn open_folder(path: String) -> Result<(), String> {
     // Only allow opening directories (not arbitrary files)
     if !canonical.is_dir() {
         return Err("Path is not a directory".to_string());
+    }
+
+    // Security: restrict to known subdirectories of the bot base path
+    let manager = lock_bot_manager!(state)?;
+    let base_path = manager.base_path().canonicalize()
+        .map_err(|e| format!("Failed to resolve base path: {}", e))?;
+    if !canonical.starts_with(&base_path) {
+        return Err("Access denied: path is outside the bot directory".to_string());
     }
     
     std::process::Command::new("explorer")
@@ -189,8 +225,8 @@ fn open_folder(path: String) -> Result<(), String> {
 fn log_frontend_error(state: State<AppState>, error_type: String, message: String, stack: Option<String>) -> Result<String, String> {
     use std::io::Write;
     
-    // Sanitize inputs to prevent log injection (strip newlines from type)
-    let error_type = error_type.replace('\n', " ").replace('\r', " ");
+    // Sanitize inputs to prevent log injection (strip newlines from type, limit length)
+    let error_type = error_type.replace('\n', " ").replace('\r', " ").chars().take(256).collect::<String>();
     let message = message.chars().take(4096).collect::<String>(); // Limit message size
     
     let manager = lock_bot_manager!(state)?;
@@ -203,7 +239,9 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     }
     
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let stack_trace = stack.unwrap_or_else(|| "No stack trace".to_string());
+    let stack_trace = stack
+        .unwrap_or_else(|| "No stack trace".to_string())
+        .chars().take(16384).collect::<String>(); // Limit stack trace size
     
     let log_entry = format!(
         "\n[{}] {}\nMessage: {}\nStack: {}\n{}",
@@ -239,8 +277,8 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
             let entries: Vec<&str> = content.split("=".repeat(80).as_str()).collect();
             Ok(entries.iter()
                 .rev()
-                .take(count)
                 .filter(|s| !s.trim().is_empty())
+                .take(count)
                 .map(|s| s.trim().to_string())
                 .collect())
         }
@@ -259,6 +297,28 @@ fn clear_dashboard_errors(state: State<AppState>) -> Result<String, String> {
     }
     
     Ok("Dashboard errors cleared".to_string())
+}
+
+#[tauri::command]
+fn get_ws_token(state: State<AppState>) -> Result<String, String> {
+    let manager = lock_bot_manager!(state)?;
+    let env_path = manager.base_path().join(".env");
+    if !env_path.exists() {
+        return Ok(String::new());
+    }
+    let content = std::fs::read_to_string(&env_path)
+        .map_err(|e| format!("Failed to read .env: {}", e))?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("DASHBOARD_WS_TOKEN=") {
+            // Strip surrounding quotes (dotenv convention) and whitespace
+            let val = val.trim().trim_matches('"').trim_matches('\'');
+            if !val.is_empty() {
+                return Ok(val.to_string());
+            }
+        }
+    }
+    Ok(String::new())
 }
 
 fn main() {
@@ -280,12 +340,18 @@ fn main() {
                     .and_then(|p| p.parent().map(|p| p.to_path_buf())) // target/
                     .and_then(|p| p.parent().map(|p| p.to_path_buf())) // native_dashboard/
                     .and_then(|p| p.parent().map(|p| p.to_path_buf())) // BOT/
-                    .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Users\ME\BOT"))
+                    .unwrap_or_else(|| {
+                        eprintln!("WARNING: Could not determine bot base path, using current directory");
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    })
             } else {
                 // Production: executable is in BOT folder
                 exe_path
                     .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                    .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Users\ME\BOT"))
+                    .unwrap_or_else(|| {
+                        eprintln!("WARNING: Could not determine bot base path, using current directory");
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    })
             }
         });
 
@@ -357,26 +423,24 @@ fn main() {
                 let window_clone = window.clone();
                 let app_handle = window.app_handle().clone();
                 
-                // Use confirm dialog - OK = quit, Cancel = hide to tray  
-                tauri::async_runtime::spawn(async move {
-                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
-                    
-                    let confirmed = app_handle
-                        .dialog()
-                        .message("กด Yes เพื่อปิดโปรแกรม หรือ No เพื่อซ่อนไปที่ System Tray")
-                        .title("ปิดโปรแกรม")
-                        .kind(MessageDialogKind::Info)
-                        .buttons(MessageDialogButtons::YesNo)
-                        .blocking_show();
-                    
-                    if confirmed {
-                        // User clicked Yes - quit the app
-                        app_handle.exit(0);
-                    } else {
-                        // User clicked No - hide to tray
-                        let _ = window_clone.hide();
-                    }
-                });
+                // Use non-blocking callback-based dialog to avoid starving the async runtime
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
+                
+                app_handle
+                    .dialog()
+                    .message("กด Yes เพื่อปิดโปรแกรม หรือ No เพื่อซ่อนไปที่ System Tray")
+                    .title("ปิดโปรแกรม")
+                    .kind(MessageDialogKind::Info)
+                    .buttons(MessageDialogButtons::YesNo)
+                    .show(move |confirmed| {
+                        if confirmed {
+                            // User clicked Yes - quit the app
+                            app_handle.exit(0);
+                        } else {
+                            // User clicked No - hide to tray
+                            let _ = window_clone.hide();
+                        }
+                    });
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -394,10 +458,13 @@ fn main() {
             get_recent_channels,
             get_top_users,
             clear_history,
+            show_confirm_dialog,
+            delete_channels_history,
             open_folder,
             log_frontend_error,
             get_dashboard_errors,
-            clear_dashboard_errors
+            clear_dashboard_errors,
+            get_ws_token
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| eprintln!("Error while running tauri application: {}", e));

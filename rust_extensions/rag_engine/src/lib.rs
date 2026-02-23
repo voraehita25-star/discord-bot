@@ -145,7 +145,8 @@ impl RagEngine {
                 
                 // Apply time decay if factor > 0
                 let final_score = if time_decay_factor > 0.0 {
-                    let age_hours = (current_time - entry.timestamp) / 3600.0;
+                    // Clamp age to >= 0 to prevent score inflation for future timestamps
+                    let age_hours = ((current_time - entry.timestamp) / 3600.0).max(0.0);
                     let decay = (-time_decay_factor * age_hours).exp() as f32;
                     base_score * decay * entry.importance
                 } else {
@@ -203,7 +204,7 @@ impl RagEngine {
         Ok(cosine_similarity(&a, &b))
     }
 
-    /// Save to JSON file
+    /// Save to JSON file (atomic write via temp file + rename)
     fn save(&self, path: &str) -> PyResult<()> {
         let entries = self.entries.read();
         let data: Vec<_> = entries.values().map(|e| {
@@ -219,13 +220,21 @@ impl RagEngine {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         
-        std::fs::write(path, json)
+        // Atomic write: write to temp file, then rename
+        let temp_path = format!("{}.tmp", path);
+        std::fs::write(&temp_path, &json)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        std::fs::rename(&temp_path, path)
+            .map_err(|e| {
+                // Clean up temp file on rename failure
+                let _ = std::fs::remove_file(&temp_path);
+                PyValueError::new_err(e.to_string())
+            })?;
         
         Ok(())
     }
 
-    /// Load from JSON file
+    /// Load from JSON file (replaces all existing entries)
     fn load(&self, path: &str) -> PyResult<usize> {
         let data = std::fs::read_to_string(path)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -234,6 +243,8 @@ impl RagEngine {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         let mut entries = self.entries.write();
+        // Clear existing entries to prevent stale data accumulation
+        entries.clear();
         let mut loaded = 0;
 
         for item in entries_data {

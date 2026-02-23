@@ -67,6 +67,9 @@ python bot.py
 | `SPOTIFY_CLIENT_ID` | ❌ | Spotify API client ID |
 | `SPOTIFY_CLIENT_SECRET` | ❌ | Spotify API secret |
 | `SENTRY_DSN` | ❌ | Sentry error tracking |
+| `DASHBOARD_WS_TOKEN` | ❌ | Auth token for WebSocket dashboard |
+| `DASHBOARD_ALLOW_UNRESTRICTED` | ❌ | Enable unrestricted mode in dashboard (`1`/`true`) |
+| `HEALTH_API_HOST` | ❌ | Bind address for Health API (default: `127.0.0.1`) |
 
 ## 📂 Project Structure
 
@@ -102,7 +105,7 @@ discord-bot/
 │   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
 │   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (3,157 tests)
+├── tests/              # Test suite (3,203 tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -141,9 +144,12 @@ The bot includes built-in monitoring capabilities:
 - **Performance Metrics** - Response times with percentiles
 - **Structured Logging** - JSON-formatted logs for ELK/monitoring
 - **Sentry Integration** - Error tracking (optional)
-- **Go Health Service** - Prometheus-compatible metrics (optional)
+- **Go Health Service** - Prometheus-compatible metrics (localhost-only by default)
 - **Memory Management** - TTL caches, WeakRef caching, memory monitoring
 - **Graceful Shutdown** - Coordinated cleanup with signal handling
+- **SSRF Protection** - DNS rebinding protection with IPv6 coverage in Go services
+- **Permission Allowlists** - AI server commands restricted to safe permissions only
+- **Mention Sanitization** - Webhook/tool messages sanitize role & user mentions
 
 ## 🦀 Native Extensions (Optional)
 
@@ -262,4 +268,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,157 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 7, 2026
+**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,203 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 17, 2026

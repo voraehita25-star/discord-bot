@@ -5,6 +5,7 @@ Provides automatic failure detection and recovery for external API calls.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -53,6 +54,8 @@ class CircuitBreaker:
     _half_open_calls: int = field(default=0, init=False)
     # Thread-safe lock for state transitions
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    # Async-safe lock for coroutine callers
+    _async_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     @property
     def state(self) -> CircuitState:
@@ -174,6 +177,21 @@ class CircuitBreaker:
             self._success_count = 0
             self._last_failure_time = None
         logging.info("⚡ Circuit Breaker [%s]: Manually reset", self.name)
+
+    async def async_can_execute(self) -> bool:
+        """Async-safe version of can_execute for coroutine callers."""
+        async with self._async_lock:
+            return self.can_execute()
+
+    async def async_record_success(self) -> None:
+        """Async-safe version of record_success."""
+        async with self._async_lock:
+            self.record_success()
+
+    async def async_record_failure(self) -> None:
+        """Async-safe version of record_failure."""
+        async with self._async_lock:
+            self.record_failure()
 
 
 class CircuitBreakerOpenError(Exception):

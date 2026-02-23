@@ -10,10 +10,7 @@ When prometheus_client is not installed, enabled-path tests use MagicMock
 to simulate Counter/Gauge/Histogram objects instead of skipping.
 """
 
-from unittest.mock import MagicMock, patch
-
-import pytest
-
+from unittest.mock import MagicMock
 
 # ==================== TestPrometheusAvailable ====================
 
@@ -139,7 +136,7 @@ class TestBotMetricsIncrementMessages:
 
     def test_increment_messages_enabled(self):
         """Test increment_messages when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_messages = getattr(metrics, "messages_total", None)
@@ -182,7 +179,7 @@ class TestBotMetricsIncrementCommands:
 
     def test_increment_commands_success(self):
         """Test increment_commands with success."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_commands = getattr(metrics, "commands_total", None)
@@ -191,9 +188,7 @@ class TestBotMetricsIncrementCommands:
             metrics.increment_commands("play", success=True)
 
             if not PROMETHEUS_AVAILABLE:
-                metrics.commands_total.labels.assert_called_with(
-                    command="play", status="success"
-                )
+                metrics.commands_total.labels.assert_called_with(command="play", status="success")
         finally:
             metrics.enabled = original_enabled
             if not PROMETHEUS_AVAILABLE:
@@ -204,7 +199,7 @@ class TestBotMetricsIncrementCommands:
 
     def test_increment_commands_error(self):
         """Test increment_commands with error."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_commands = getattr(metrics, "commands_total", None)
@@ -213,9 +208,7 @@ class TestBotMetricsIncrementCommands:
             metrics.increment_commands("play", success=False)
 
             if not PROMETHEUS_AVAILABLE:
-                metrics.commands_total.labels.assert_called_with(
-                    command="play", status="error"
-                )
+                metrics.commands_total.labels.assert_called_with(command="play", status="error")
         finally:
             metrics.enabled = original_enabled
             if not PROMETHEUS_AVAILABLE:
@@ -245,7 +238,7 @@ class TestBotMetricsIncrementAiRequests:
 
     def test_increment_ai_requests_success(self):
         """Test increment_ai_requests with success status."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_ai = getattr(metrics, "ai_requests_total", None)
@@ -265,7 +258,7 @@ class TestBotMetricsIncrementAiRequests:
 
     def test_increment_ai_requests_error(self):
         """Test increment_ai_requests with error status."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_ai = getattr(metrics, "ai_requests_total", None)
@@ -304,7 +297,7 @@ class TestBotMetricsIncrementSongs:
 
     def test_increment_songs_youtube(self):
         """Test increment_songs with youtube source."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_songs = getattr(metrics, "songs_played_total", None)
@@ -324,7 +317,7 @@ class TestBotMetricsIncrementSongs:
 
     def test_increment_songs_spotify(self):
         """Test increment_songs with spotify source."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_songs = getattr(metrics, "songs_played_total", None)
@@ -363,7 +356,7 @@ class TestBotMetricsSetGuilds:
 
     def test_set_guilds_enabled(self):
         """Test set_guilds when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_guilds = getattr(metrics, "guilds_count", None)
@@ -402,7 +395,7 @@ class TestBotMetricsSetVoiceClients:
 
     def test_set_voice_clients_enabled(self):
         """Test set_voice_clients when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_vc = getattr(metrics, "voice_clients_count", None)
@@ -441,7 +434,7 @@ class TestBotMetricsSetQueueSize:
 
     def test_set_queue_size_enabled(self):
         """Test set_queue_size when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_qs = getattr(metrics, "queue_size", None)
@@ -480,7 +473,7 @@ class TestBotMetricsSetMemory:
 
     def test_set_memory_enabled(self):
         """Test set_memory when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_mem = getattr(metrics, "memory_bytes", None)
@@ -519,7 +512,7 @@ class TestBotMetricsObserveCommandLatency:
 
     def test_observe_command_latency_enabled(self):
         """Test observe_command_latency when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_lat = getattr(metrics, "command_latency", None)
@@ -559,7 +552,7 @@ class TestBotMetricsObserveAiResponseTime:
 
     def test_observe_ai_response_time_enabled(self):
         """Test observe_ai_response_time when enabled."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_rt = getattr(metrics, "ai_response_time", None)
@@ -592,7 +585,7 @@ class TestGlobalMetrics:
 
     def test_global_metrics_is_bot_metrics(self):
         """Test global metrics is BotMetrics instance."""
-        from utils.monitoring.metrics import metrics, BotMetrics
+        from utils.monitoring.metrics import BotMetrics, metrics
 
         assert isinstance(metrics, BotMetrics)
 
@@ -665,7 +658,7 @@ class TestMetricsCounterTypes:
 
     def test_message_types(self):
         """Test message type labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_msg = getattr(metrics, "messages_total", None)
@@ -687,7 +680,7 @@ class TestMetricsCounterTypes:
 
     def test_command_status_labels(self):
         """Test command status labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_cmd = getattr(metrics, "commands_total", None)
@@ -709,7 +702,7 @@ class TestMetricsCounterTypes:
 
     def test_ai_status_labels(self):
         """Test AI status labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_ai = getattr(metrics, "ai_requests_total", None)
@@ -731,7 +724,7 @@ class TestMetricsCounterTypes:
 
     def test_song_source_labels(self):
         """Test song source labels."""
-        from utils.monitoring.metrics import metrics, PROMETHEUS_AVAILABLE
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
 
         original_enabled = metrics.enabled
         original_songs = getattr(metrics, "songs_played_total", None)
