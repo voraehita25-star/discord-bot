@@ -172,7 +172,8 @@ async def handle_chat_message(
     contents.append(types.Content(role="user", parts=current_parts))
 
     # Build config with realtime datetime and context
-    now = datetime.now(tz=timezone.utc)
+    from zoneinfo import ZoneInfo
+    now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
     # Build unrestricted mode injection if enabled
