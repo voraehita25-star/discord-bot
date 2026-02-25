@@ -29,6 +29,17 @@ repos:
       - id: debug-statements
       - id: check-ast
 
+  # Fast pytest before commit (skip slow tests)
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast)
+        entry: python -m pytest tests/ -x -q --override-ini=addopts= -m "not slow" -p no:warnings --tb=line
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
   # Security checks
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.8

@@ -3,7 +3,7 @@
 
 [project]
 name = "discord-bot"
-version = "3.3.10"
+version = "3.3.11"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
 requires-python = ">=3.10"
 
@@ -35,7 +35,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 100
 exclude = [
     ".venv",
@@ -108,7 +108,7 @@ exclude_dirs = ["tests", "native_dashboard", ".venv"]
 skips = ["B101"]  # assert used in tests
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true

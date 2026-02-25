@@ -10,28 +10,23 @@ import copy  # For deep copy of cached data
 
 # ==================== Performance: Faster JSON ====================
 # orjson is ~10x faster than standard json for parsing and dumping
-try:
-    import orjson
+# Listed as required dependency in requirements.txt
+import json
 
-    def json_loads(data):
-        return orjson.loads(data)
+import orjson
 
-    def json_dumps(obj, **kwargs):
-        # orjson returns bytes, decode to str for compatibility
-        # Note: orjson does not support ensure_ascii/indent kwargs;
-        # use standard json if those are needed
-        if kwargs.get("indent") or kwargs.get("ensure_ascii") is False:
-            import json
-            return json.dumps(obj, **kwargs)
-        return orjson.dumps(obj).decode("utf-8")
 
-    _ORJSON_ENABLED = True
-except ImportError:
-    import json
+def json_loads(data):
+    return orjson.loads(data)
 
-    json_loads = json.loads
-    json_dumps = json.dumps
-    _ORJSON_ENABLED = False
+
+def json_dumps(obj, **kwargs):
+    # orjson returns bytes, decode to str for compatibility
+    # Note: orjson does not support ensure_ascii/indent kwargs;
+    # use standard json if those are needed
+    if kwargs.get("indent") or kwargs.get("ensure_ascii") is False:
+        return json.dumps(obj, **kwargs)
+    return orjson.dumps(obj).decode("utf-8")
 
 import asyncio
 import logging

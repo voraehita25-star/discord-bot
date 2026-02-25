@@ -44,7 +44,7 @@ RUN cd rust_extensions && cargo build --release 2>&1 || { echo "ERROR: Rust exte
 RUN mkdir -p /out-rust && (cp /build/rust_extensions/target/release/lib*.so /out-rust/ 2>/dev/null && echo "Rust libs staged" || echo "WARNING: No Rust .so files found")
 
 # ======================== Stage 3: Python Builder ========================
-FROM python:3.12-slim AS py-builder
+FROM python:3.12.8-slim AS py-builder
 
 WORKDIR /app
 
@@ -55,7 +55,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # ======================== Stage 4: Production ========================
-FROM python:3.12-slim
+FROM python:3.12.8-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

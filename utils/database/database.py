@@ -71,6 +71,9 @@ class Database:
         self._export_pending_keys: set[str] = set()
         self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
         self._export_lock = asyncio.Lock()  # Lock for export scheduling
+        # Write serialization lock — SQLite WAL allows concurrent reads but only
+        # one writer at a time. This lock prevents SQLITE_BUSY on concurrent writes.
+        self._write_lock: asyncio.Lock | None = None
         logging.info("💾 Async Database manager created: %s (pool=32, WAL mode)", self.db_path)
 
     def _get_pool_semaphore(self) -> asyncio.Semaphore:
@@ -84,6 +87,12 @@ class Database:
         if self._conn_pool is None:
             self._conn_pool = asyncio.Queue(maxsize=10)  # More pooled connections for reuse
         return self._conn_pool
+
+    def _get_write_lock(self) -> asyncio.Lock:
+        """Lazily create the write lock to avoid event loop binding issues."""
+        if self._write_lock is None:
+            self._write_lock = asyncio.Lock()
+        return self._write_lock
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""

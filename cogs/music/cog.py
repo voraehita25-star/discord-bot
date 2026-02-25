@@ -109,7 +109,16 @@ class Music(commands.Cog):
             setattr(self._cog._gs(guild_id), self._attr, value)
 
         def __contains__(self, guild_id: int) -> bool:
-            return guild_id in self._cog._guild_states
+            # Check if the guild has state AND the specific attribute is not None
+            # This prevents false positives where guild has state but the
+            # specific field (e.g. auto_disconnect_task) is None
+            if guild_id not in self._cog._guild_states:
+                return False
+            val = getattr(self._cog._guild_states[guild_id], self._attr)
+            # For queue (deque), check if non-empty; for others, check not None
+            if self._attr == "queue":
+                return len(val) > 0
+            return val is not None
 
         def __len__(self) -> int:
             return len(self._cog._guild_states)

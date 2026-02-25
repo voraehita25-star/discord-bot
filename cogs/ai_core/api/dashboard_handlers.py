@@ -39,7 +39,7 @@ async def handle_list_conversations(ws: WebSocketResponse) -> None:
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to list conversations"})
 
 
 async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -47,11 +47,11 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
     conversation_id = data.get("id")
 
     if not conversation_id:
-        await ws.send_json({"type": "error", "message": "Missing conversation ID"})
+        await ws.send_json({"type": "error", "code": "MISSING_ID", "message": "Missing conversation ID"})
         return
 
     if not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Database not available"})
+        await ws.send_json({"type": "error", "code": "DB_UNAVAILABLE", "message": "Database not available"})
         return
 
     try:
@@ -60,7 +60,7 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         messages = await db.get_dashboard_messages(conversation_id)
 
         if not conversation:
-            await ws.send_json({"type": "error", "message": "Conversation not found"})
+            await ws.send_json({"type": "error", "code": "CONV_NOT_FOUND", "message": "Conversation not found"})
             return
 
         preset = DASHBOARD_ROLE_PRESETS.get(
@@ -80,7 +80,7 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to load conversation"})
 
 
 async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -88,7 +88,7 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
     conversation_id = data.get("id")
 
     if not conversation_id or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot delete"})
+        await ws.send_json({"type": "error", "code": "CANNOT_DELETE", "message": "Cannot delete: missing ID or DB unavailable"})
         return
 
     try:
@@ -100,7 +100,7 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to delete conversation"})
 
 
 async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -111,7 +111,7 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
     logging.info("Star conversation request: id=%s, starred=%s", conversation_id, starred)
 
     if not conversation_id or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot update"})
+        await ws.send_json({"type": "error", "code": "CANNOT_UPDATE", "message": "Cannot update: missing ID or DB unavailable"})
         return
 
     try:
@@ -126,7 +126,7 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         logging.info("Sent conversation_starred response")
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to star conversation"})
 
 
 async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -135,7 +135,7 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
     new_title = data.get("title", "").strip()
 
     if not conversation_id or not new_title or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot rename"})
+        await ws.send_json({"type": "error", "code": "CANNOT_RENAME", "message": "Cannot rename: missing ID, title, or DB unavailable"})
         return
 
     try:
@@ -148,7 +148,7 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to rename conversation"})
 
 
 async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -157,7 +157,7 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
     export_format = data.get("format", "json")
 
     if not conversation_id or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot export"})
+        await ws.send_json({"type": "error", "code": "CANNOT_EXPORT", "message": "Cannot export: missing ID or DB unavailable"})
         return
 
     try:
@@ -171,7 +171,7 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to export conversation"})
 
 
 # ============================================================================
@@ -184,7 +184,7 @@ async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> Non
     category = data.get("category", "general")
 
     if not content or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot save memory"})
+        await ws.send_json({"type": "error", "code": "CANNOT_SAVE_MEMORY", "message": "Cannot save: empty content or DB unavailable"})
         return
 
     try:
@@ -198,7 +198,7 @@ async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> Non
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to save memory"})
 
 
 async def handle_get_memories(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -218,7 +218,7 @@ async def handle_get_memories(ws: WebSocketResponse, data: dict[str, Any]) -> No
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to get memories"})
 
 
 async def handle_delete_memory(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -226,7 +226,7 @@ async def handle_delete_memory(ws: WebSocketResponse, data: dict[str, Any]) -> N
     memory_id = data.get("id")
 
     if not memory_id or not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot delete memory"})
+        await ws.send_json({"type": "error", "code": "CANNOT_DELETE_MEMORY", "message": "Cannot delete: missing ID or DB unavailable"})
         return
 
     try:
@@ -238,7 +238,7 @@ async def handle_delete_memory(ws: WebSocketResponse, data: dict[str, Any]) -> N
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to delete memory"})
 
 
 # ============================================================================
@@ -260,7 +260,7 @@ async def handle_get_profile(ws: WebSocketResponse) -> None:
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to get profile"})
 
 
 async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -268,7 +268,7 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
     profile_data = data.get("profile", {})
 
     if not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Cannot save profile"})
+        await ws.send_json({"type": "error", "code": "DB_UNAVAILABLE", "message": "Cannot save profile: DB unavailable"})
         return
 
     try:
@@ -285,4 +285,4 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         })
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
-        await ws.send_json({"type": "error", "message": "An internal error occurred"})
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to save profile"})

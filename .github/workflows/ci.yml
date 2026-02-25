@@ -46,6 +46,9 @@ jobs:
         pip install pip-audit
         pip-audit --strict --desc || true
 
+    - name: Clear stale bytecode
+      run: find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
     - name: Run tests with coverage
       env:
         DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"

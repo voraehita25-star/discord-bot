@@ -784,16 +784,6 @@ class TestSaveHistoryFull:
 class TestJsonImplementation:
     """Tests for JSON implementation selection."""
 
-    def test_orjson_enabled_defined(self):
-        """Test _ORJSON_ENABLED is defined."""
-        try:
-            from cogs.ai_core.storage import _ORJSON_ENABLED
-        except ImportError:
-            pytest.skip("storage module not available")
-            return
-
-        assert isinstance(_ORJSON_ENABLED, bool)
-
     def test_json_loads_callable(self):
         """Test json_loads function is callable."""
         try:
@@ -1138,13 +1128,7 @@ class TestCacheTTLBehavior:
 # ======================================================================
 
 class TestOrjsonAvailability:
-    """Test orjson availability flag."""
-
-    def test_orjson_enabled_flag_exists(self):
-        """Test _ORJSON_ENABLED flag exists."""
-        from cogs.ai_core.storage import _ORJSON_ENABLED
-
-        assert isinstance(_ORJSON_ENABLED, bool)
+    """Test orjson functions exist."""
 
     def test_json_loads_exists(self):
         """Test json_loads function exists."""
@@ -1812,16 +1796,6 @@ class TestCacheConstants:
 
         assert MAX_CACHE_SIZE is not None
         assert MAX_CACHE_SIZE > 0
-
-
-class TestOrjsonStatus:
-    """Tests for orjson availability."""
-
-    def test_orjson_enabled_is_bool(self):
-        """Test _ORJSON_ENABLED is boolean."""
-        from cogs.ai_core.storage import _ORJSON_ENABLED
-
-        assert isinstance(_ORJSON_ENABLED, bool)
 
 
 class TestJsonFunctions:
