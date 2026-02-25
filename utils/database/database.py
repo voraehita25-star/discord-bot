@@ -531,10 +531,27 @@ class Database:
             self._schema_initialized = True
             logging.info("💾 Database schema initialized (async)")
 
-            # Run versioned migrations
+            # Run versioned migrations (with auto-backup)
             try:
-                from utils.database.migrations import run_migrations
-                await run_migrations(conn)
+                from utils.database.migrations import run_migrations, get_current_version, discover_migrations
+                current_ver = await get_current_version(conn)
+                pending = [(v, p) for v, p in discover_migrations() if v > current_ver]
+                if pending:
+                    # Auto-backup before applying migrations
+                    backup_dir = DB_DIR / "backups"
+                    backup_dir.mkdir(exist_ok=True)
+                    backup_name = f"bot_database_v{current_ver}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                    backup_path = backup_dir / backup_name
+                    import shutil
+                    shutil.copy2(self.db_path, backup_path)
+                    logging.info("💾 DB backup created before migration: %s", backup_name)
+                    # Keep only last 5 backups
+                    backups = sorted(backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime)
+                    for old_backup in backups[:-5]:
+                        old_backup.unlink(missing_ok=True)
+                applied = await run_migrations(conn)
+                if applied:
+                    logging.info("📦 %d migration(s) applied successfully", applied)
             except Exception as e:
                 logging.warning("Migration system error (non-fatal): %s", e)
 

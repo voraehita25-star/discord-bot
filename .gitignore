@@ -96,6 +96,7 @@ data_backup_*/
 chat_history/
 history_*.json
 data/db_export/
+data/backups/
 
 # Assets (keep in repo)
 # assets/ directory is tracked
