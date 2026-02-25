@@ -410,6 +410,389 @@ class TestFindLauncherProcesses:
         assert isinstance(result, list)
 
 
+class TestAutoHeal:
+    """Tests for auto_heal method."""
+
+    def test_auto_heal_healthy_system(self):
+        """Test auto_heal returns success when no issues."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    result = healer.auto_heal()
+
+        assert result["success"] is True
+        assert "healthy" in result["summary"].lower()
+        assert len(result["actions"]) == 0
+
+    def test_auto_heal_cleans_stale_pid(self):
+        """Test auto_heal cleans stale PID file."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=99999):
+                    with patch.object(healer, "clean_pid_file", return_value=True):
+                        result = healer.auto_heal()
+
+        assert result["success"] is True
+        assert any(a["action"] == "CLEAN_PID_FILE" for a in result["actions"])
+
+    def test_auto_heal_kills_duplicate_bots(self):
+        """Test auto_heal kills duplicate bots."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [
+            {"pid": 1001, "cmdline": "python bot.py", "create_time": time.time()},
+            {"pid": 1002, "cmdline": "python bot.py", "create_time": time.time() + 1},
+        ]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    with patch.object(healer, "kill_duplicate_bots", return_value=1):
+                        result = healer.auto_heal()
+
+        assert any(a["action"] == "KILL_DUPLICATE_BOTS" for a in result["actions"])
+
+    def test_auto_heal_aggressive_kills_all(self):
+        """Test aggressive auto_heal kills all bots."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [
+            {"pid": 1001, "cmdline": "python bot.py", "create_time": time.time()},
+            {"pid": 1002, "cmdline": "python bot.py", "create_time": time.time() + 1},
+        ]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    with patch.object(healer, "kill_all_bots", return_value=2):
+                        result = healer.auto_heal(aggressive=True)
+
+        assert any(a["action"] == "KILL_DUPLICATE_BOTS" for a in result["actions"])
+
+
+class TestEnsureSingleInstance:
+    """Tests for ensure_single_instance method."""
+
+    def test_no_other_instances(self):
+        """Test returns True when no other instances."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            can_proceed, msg = healer.ensure_single_instance()
+
+        assert can_proceed is True
+        assert "no other" in msg.lower()
+
+    def test_kills_existing_when_allowed(self):
+        """Test kills existing instances when kill_existing=True."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        other_bot = [{"pid": 9999, "cmdline": "python bot.py", "create_time": time.time()}]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=other_bot):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "kill_process", return_value=True):
+                    with patch.object(healer, "clean_pid_file", return_value=True):
+                        with patch("time.sleep"):
+                            can_proceed, msg = healer.ensure_single_instance(kill_existing=True)
+
+        assert can_proceed is True
+        assert "stopped" in msg.lower()
+
+    def test_aborts_when_not_killing(self):
+        """Test aborts when kill_existing=False and instance exists."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        other_bot = [{"pid": 9999, "cmdline": "python bot.py", "create_time": time.time()}]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=other_bot):
+            can_proceed, msg = healer.ensure_single_instance(kill_existing=False)
+
+        assert can_proceed is False
+        assert "already running" in msg.lower()
+
+
+class TestGetStatusReport:
+    """Tests for get_status_report method."""
+
+    def test_status_report_no_bots(self):
+        """Test status report when no bots running."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    report = healer.get_status_report()
+
+        assert "not running" in report.lower()
+        assert "No issues" in report or "no issues" in report.lower()
+
+    def test_status_report_with_bots(self):
+        """Test status report with bots running."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [{"pid": 1234, "cmdline": "python bot.py", "create_time": time.time()}]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    report = healer.get_status_report()
+
+        assert "1234" in report
+
+
+class TestKillAllBots:
+    """Tests for kill_all_bots method."""
+
+    def test_kill_all_no_bots(self):
+        """Test kill_all_bots when no bots running."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_launcher_processes", return_value=[]):
+                with patch.object(healer, "clean_pid_file", return_value=True):
+                    result = healer.kill_all_bots()
+
+        assert result == 0
+
+    def test_kill_all_with_bots(self):
+        """Test kill_all_bots kills bot processes."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [
+            {"pid": 5001, "cmdline": "python bot.py", "create_time": time.time()},
+            {"pid": 5002, "cmdline": "python bot.py", "create_time": time.time() + 1},
+        ]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+            with patch.object(healer, "find_launcher_processes", return_value=[]):
+                with patch.object(healer, "kill_process", return_value=True):
+                    with patch.object(healer, "clean_pid_file", return_value=True):
+                        result = healer.kill_all_bots()
+
+        assert result == 2
+
+
+class TestKillAllWatchers:
+    """Tests for kill_all_watchers method."""
+
+    def test_kill_all_no_watchers(self):
+        """Test kill_all_watchers when none running."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+
+        with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+            result = healer.kill_all_watchers()
+
+        assert result == 0
+
+
+class TestConvenienceFunctions:
+    """Tests for module-level convenience functions."""
+
+    def test_quick_heal(self):
+        """Test quick_heal function."""
+        from utils.reliability.self_healer import quick_heal
+
+        with patch("utils.reliability.self_healer.SelfHealer") as MockHealer:
+            mock_instance = MagicMock()
+            mock_instance.auto_heal.return_value = {"success": True, "summary": "OK"}
+            MockHealer.return_value = mock_instance
+
+            result = quick_heal("test")
+
+        assert result["success"] is True
+
+    def test_ensure_single_bot(self):
+        """Test ensure_single_bot function."""
+        from utils.reliability.self_healer import ensure_single_bot
+
+        with patch("utils.reliability.self_healer.SelfHealer") as MockHealer:
+            mock_instance = MagicMock()
+            mock_instance.ensure_single_instance.return_value = (True, "OK")
+            MockHealer.return_value = mock_instance
+
+            can_proceed, msg = ensure_single_bot("test")
+
+        assert can_proceed is True
+
+    def test_get_system_status(self):
+        """Test get_system_status function."""
+        from utils.reliability.self_healer import get_system_status
+
+        with patch("utils.reliability.self_healer.SelfHealer") as MockHealer:
+            mock_instance = MagicMock()
+            mock_instance.get_status_report.return_value = "Status OK"
+            MockHealer.return_value = mock_instance
+
+            result = get_system_status("test")
+
+        assert result == "Status OK"
+
+    def test_kill_everything(self):
+        """Test kill_everything function."""
+        from utils.reliability.self_healer import kill_everything
+
+        with patch("utils.reliability.self_healer.SelfHealer") as MockHealer:
+            mock_instance = MagicMock()
+            mock_instance.kill_all_bots.return_value = 2
+            mock_instance.kill_all_watchers.return_value = 1
+            MockHealer.return_value = mock_instance
+
+            result = kill_everything("test")
+
+        assert result["bots_killed"] == 2
+        assert result["watchers_killed"] == 1
+        assert result["success"] is True
+
+
+class TestDiagnoseEdgeCases:
+    """Tests for diagnose edge cases."""
+
+    def test_diagnose_duplicate_watchers_from_watcher(self):
+        """Test detects duplicate watchers when called from dev_watcher."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer(caller_script="dev_watcher.py")
+        mock_watchers = [
+            {"pid": 3001, "cmdline": "python dev_watcher.py", "create_time": time.time()},
+            {"pid": 3002, "cmdline": "python dev_watcher.py", "create_time": time.time() + 1},
+        ]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=mock_watchers):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    result = healer.diagnose()
+
+        assert any(i["type"] == "DUPLICATE_WATCHERS" for i in result["issues"])
+
+    def test_diagnose_duplicate_watchers_ignored_from_bot(self):
+        """Test duplicate watchers NOT detected when called from bot.py."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer(caller_script="bot.py")
+        mock_watchers = [
+            {"pid": 3001, "cmdline": "python dev_watcher.py", "create_time": time.time()},
+            {"pid": 3002, "cmdline": "python dev_watcher.py", "create_time": time.time() + 1},
+        ]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=mock_watchers):
+                with patch.object(healer, "get_pid_from_file", return_value=None):
+                    result = healer.diagnose()
+
+        assert not any(i["type"] == "DUPLICATE_WATCHERS" for i in result["issues"])
+
+    def test_diagnose_stale_pid_with_running_bot(self):
+        """Test detects stale PID when file points to wrong process."""
+        import time
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [{"pid": 1001, "cmdline": "python bot.py", "create_time": time.time()}]
+
+        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                with patch.object(healer, "get_pid_from_file", return_value=9999):
+                    result = healer.diagnose()
+
+        assert any(i["type"] == "STALE_PID_FILE" for i in result["issues"])
+        assert result["pid_file_valid"] is False
+
+
+class TestKillProcess:
+    """Additional tests for kill_process method."""
+
+    def test_kill_process_success(self):
+        """Test successful process termination."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_proc = MagicMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = MagicMock()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            result = healer.kill_process(1234)
+
+        assert result is True
+        mock_proc.terminate.assert_called_once()
+
+    def test_kill_process_force(self):
+        """Test forced process kill."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_proc = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            result = healer.kill_process(1234, force=True)
+
+        assert result is True
+        mock_proc.kill.assert_called_once()
+
+    def test_kill_process_timeout_then_force(self):
+        """Test process kill when terminate times out."""
+        import psutil
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_proc = MagicMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = MagicMock(side_effect=[psutil.TimeoutExpired(5), None])
+        mock_proc.kill = MagicMock()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            result = healer.kill_process(1234)
+
+        assert result is True
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+
+    def test_kill_process_os_error(self):
+        """Test kill process with OS error."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_proc = MagicMock()
+        mock_proc.terminate = MagicMock(side_effect=OSError("Permission denied"))
+
+        with patch("psutil.Process", return_value=mock_proc):
+            result = healer.kill_process(1234)
+
+        assert result is False
+
+
 class TestConstants:
     """Tests for module constants."""
 
