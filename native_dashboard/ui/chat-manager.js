@@ -302,6 +302,7 @@ export class ChatManager {
                 this.isStreaming = false;
                 this.finalizeStreamingMessage(data.full_response);
                 this.setInputEnabled(true);
+                this.listConversations(); // Refresh sidebar message count
                 break;
             case 'title_updated':
                 {
