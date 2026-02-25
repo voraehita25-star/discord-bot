@@ -528,6 +528,12 @@ function switchPage(page: string): void {
         if (!chatManager.connected) {
             chatManager.connect();
         }
+        // Ensure correct container visibility based on current state
+        if (chatManager.currentConversation) {
+            chatManager.showChatContainer();
+        } else {
+            chatManager.hideChatContainer();
+        }
     }
 }
 
