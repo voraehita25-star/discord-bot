@@ -362,6 +362,25 @@ class Database:
                 )
             """)
 
+            # Knowledge Entries Table (structured knowledge for RAG)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    games TEXT DEFAULT '[]',
+                    tags TEXT DEFAULT '[]',
+                    is_spoiler BOOLEAN DEFAULT 0,
+                    confidence REAL DEFAULT 1.0,
+                    source TEXT DEFAULT 'official',
+                    embedding BLOB,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Audit Log Table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
