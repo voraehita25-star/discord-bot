@@ -1,45 +1,52 @@
 # Testing Guide
 
-> Last Updated: February 26, 2026 | Total: 3,203 Tests | 126 Test Files | All passing ✅ | 0 skipped ✅ | 2 warnings (harmless mock RuntimeWarning)
+> Last Updated: February 26, 2026 | Total: 3,007 Tests | 82 Test Files | All passing ✅ | 0 skipped ✅ | 3 warnings (harmless mock RuntimeWarning)
 
 This document explains how to run tests for the Discord Bot project.
 
 ## Quick Start
 
+```powershell
+# Recommended: use the test runner script (prevents pipe-related hangs)
+.\scripts\run_tests.ps1              # Run all tests (~15s)
+.\scripts\run_tests.ps1 -Fast        # Skip slow tests (~8.5s)
+.\scripts\run_tests.ps1 database     # Run tests matching "database"
+.\scripts\run_tests.ps1 -File test_ai_core.py
+.\scripts\run_tests.ps1 -File test_database.py -TestName test_pool
+.\scripts\run_tests.ps1 -Coverage    # With coverage report
+```
+
 ```bash
-# Run all tests
-python -m pytest
-
-# Run with verbose output
-python -m pytest -v
-
-# Run specific test file
+# Or use pytest directly
+python -m pytest tests/ -v
 python -m pytest tests/test_database.py
-
-# Run specific test class
-python -m pytest tests/test_database.py::TestRateLimiter
-
-# Run specific test method
-python -m pytest tests/test_database.py::TestRateLimiter::test_token_consumption
-
-# Collect tests only (verify)
+python -m pytest tests/test_database.py::TestDatabaseInit::test_pool_semaphore_created
 python -m pytest tests/ --collect-only -q
 ```
 
-## Test Structure (126 Files, 3,203 Tests)
+> **⚠️ Note:** If tests hang, kill stale Python processes first:
+> ```powershell
+> Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+> ```
+
+## Test Structure (82 Files, 3,007 Tests)
 
 ```
 tests/
 ├── __init__.py              # Package init
-├── conftest.py              # Shared fixtures
-├── test_*.py                # 126 test files covering all modules
-│   ├── AI Core              # 25+ test files
-│   ├── Music                # 10+ test files
-│   ├── Database             # 5+ test files
-│   ├── Reliability          # 15+ test files
-│   ├── Monitoring           # 10+ test files
-│   └── Utilities            # 50+ test files
+├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
+├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
+├── test_*.py                # 82 consolidated test files
+│   ├── AI Core              # ~20 test files (ai_cache, ai_cog, logic, storage, etc.)
+│   ├── Music                # ~5 test files (music_cog, music_queue, spotify, ytdl)
+│   ├── Database             # 1 test file (consolidated from 3)
+│   ├── Reliability          # ~8 test files (circuit_breaker, rate_limiter, etc.)
+│   ├── Monitoring           # ~5 test files (health_api, metrics, feedback, etc.)
+│   └── Utilities            # ~20 test files (fast_json, localization, url_fetcher, etc.)
 ```
+
+> Tests were consolidated from 129 → 82 files by merging `_extended`, `_more`, `_module`
+> variants into their base files and parametrizing boilerplate tests.
 
 ## Test Categories
 

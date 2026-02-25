@@ -326,12 +326,6 @@ class TestStateTrackerUpdateFromResponse:
 class TestGlobalStateTracker:
     """Tests for global state_tracker instance."""
 
-    def test_global_instance_exists(self):
-        """Test global state_tracker exists."""
-        from cogs.ai_core.memory.state_tracker import state_tracker
-
-        assert state_tracker is not None
-
     def test_global_instance_is_tracker(self):
         """Test global state_tracker is CharacterStateTracker."""
         from cogs.ai_core.memory.state_tracker import CharacterStateTracker, state_tracker

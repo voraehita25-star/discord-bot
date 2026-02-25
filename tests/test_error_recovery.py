@@ -210,12 +210,6 @@ class TestServiceHealthMonitor:
 class TestServiceMonitorSingleton:
     """Tests for service_monitor singleton."""
 
-    def test_singleton_exists(self):
-        """Test that service_monitor singleton is accessible."""
-        from utils.reliability.error_recovery import service_monitor
-
-        assert service_monitor is not None
-
     def test_singleton_has_methods(self):
         """Test singleton has required methods."""
         from utils.reliability.error_recovery import service_monitor

@@ -454,7 +454,7 @@ class Music(commands.Cog):
                 humans = [m for m in vc.channel.members if not m.bot]
                 if len(humans) == 0:
                     # Start auto-disconnect countdown
-                    if guild_id not in self.auto_disconnect_tasks:
+                    if self.auto_disconnect_tasks.get(guild_id) is None:
                         self.auto_disconnect_tasks[guild_id] = asyncio.create_task(
                             self._auto_disconnect(guild_id, vc)
                         )
@@ -577,9 +577,7 @@ class Music(commands.Cog):
         """
         if not ctx.guild:
             raise commands.NoPrivateMessage("This command can only be used in a server.")
-        if ctx.guild.id not in self.queues:
-            self.queues[ctx.guild.id] = collections.deque()
-        return self.queues[ctx.guild.id]
+        return self._gs(ctx.guild.id).queue
 
     async def play_next(self, ctx: Context) -> None:
         """Play the next track in the queue."""
@@ -935,10 +933,10 @@ class Music(commands.Cog):
 
         if ctx.voice_client.is_paused():
             # Calculate paused duration
-            if ctx.guild.id in self.pause_start:
+            if self.pause_start.get(ctx.guild.id) is not None:
                 paused_duration = time.time() - self.pause_start[ctx.guild.id]
                 # Shift start time forward
-                if ctx.guild.id in self.current_track:
+                if self.current_track.get(ctx.guild.id) is not None:
                     self.current_track[ctx.guild.id]["start_time"] += paused_duration
                 self.pause_start.pop(ctx.guild.id, None)
 
@@ -988,7 +986,7 @@ class Music(commands.Cog):
         start_time = track_info.get("start_time", 0)
         elapsed = 0
         if start_time > 0:
-            if ctx.voice_client.is_paused() and guild_id in self.pause_start:
+            if ctx.voice_client.is_paused() and self.pause_start.get(guild_id) is not None:
                 # If paused, elapsed is time until pause
                 elapsed = self.pause_start[guild_id] - start_time
             else:
@@ -1740,7 +1738,7 @@ class Music(commands.Cog):
         start_time = track_info.get("start_time", time.time())
         duration = track_info.get("data", {}).get("duration", 0)
 
-        if ctx.voice_client.is_paused() and guild_id in self.pause_start:
+        if ctx.voice_client.is_paused() and self.pause_start.get(guild_id) is not None:
             # If paused, use time when paused
             elapsed = self.pause_start[guild_id] - start_time
         else:

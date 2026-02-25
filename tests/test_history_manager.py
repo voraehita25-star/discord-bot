@@ -429,12 +429,6 @@ class TestExtractUserFacts:
 class TestGlobalInstance:
     """Tests for global history_manager instance."""
 
-    def test_global_instance_exists(self):
-        """Test global instance is available."""
-        from cogs.ai_core.memory.history_manager import history_manager
-
-        assert history_manager is not None
-
     def test_smart_trim_history_function(self):
         """Test smart_trim_history convenience function."""
         from cogs.ai_core.memory.history_manager import smart_trim_history

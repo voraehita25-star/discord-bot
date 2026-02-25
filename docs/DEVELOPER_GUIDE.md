@@ -4,9 +4,9 @@
 > **Version:** 3.3.10
 > **Python Version:** 3.10+
 > **Framework:** discord.py 2.x
-> **Total Files:** 251 Python files | 126 Test files | 3,203 Tests
+> **Total Files:** 251 Python files | 82 Test files | 3,007 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 2 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 3 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅
 
 ---
 
@@ -191,9 +191,10 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (3,203 tests in 126 files)
+├── tests/                    # 🧪 Test Suite (3,007 tests in 82 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
+│   ├── test_boilerplate.py   # Parametrized structural tests
 │   ├── test_ai_core.py       # AI core tests
 │   ├── test_ai_integration.py # AI integration tests
 │   ├── test_circuit_breaker.py
@@ -1003,4 +1004,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: February 26, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,203 tests (0 skipped, 2 harmless warnings) | CI/CD with Codecov & Dependabot*
+*Documentation last updated: February 26, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,007 tests (0 skipped, 3 harmless warnings) | CI/CD with Codecov & Dependabot*

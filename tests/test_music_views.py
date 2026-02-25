@@ -492,12 +492,6 @@ class TestMusicControlViewClass:
 class TestModuleImports:
     """Tests for module imports."""
 
-    def test_module_imports(self):
-        """Test module can be imported."""
-        import cogs.music.views
-
-        assert cogs.music.views is not None
-
     def test_import_music_control_view(self):
         """Test MusicControlView can be imported."""
         from cogs.music.views import MusicControlView

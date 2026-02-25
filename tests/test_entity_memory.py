@@ -220,12 +220,6 @@ class TestEntityMemoryManagerMocked:
 class TestGlobalEntityMemory:
     """Tests for global entity_memory instance."""
 
-    def test_global_instance_exists(self):
-        """Test global entity_memory exists."""
-        from cogs.ai_core.memory.entity_memory import entity_memory
-
-        assert entity_memory is not None
-
     def test_global_instance_is_manager(self):
         """Test global entity_memory is EntityMemoryManager."""
         from cogs.ai_core.memory.entity_memory import EntityMemoryManager, entity_memory

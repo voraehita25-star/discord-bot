@@ -476,12 +476,6 @@ class TestPatternChannelId:
 class TestModuleImports:
     """Tests for module imports."""
 
-    def test_module_imports(self):
-        """Test module can be imported."""
-        import cogs.ai_core.voice
-
-        assert cogs.ai_core.voice is not None
-
     def test_import_functions(self):
         """Test functions can be imported."""
         from cogs.ai_core.voice import (

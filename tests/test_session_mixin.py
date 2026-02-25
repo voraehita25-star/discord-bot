@@ -442,12 +442,6 @@ class TestSessionMixinClass:
 class TestModuleImports:
     """Tests for module imports."""
 
-    def test_module_imports(self):
-        """Test module can be imported."""
-        import cogs.ai_core.session_mixin
-
-        assert cogs.ai_core.session_mixin is not None
-
     def test_import_session_mixin(self):
         """Test SessionMixin can be imported."""
         from cogs.ai_core.session_mixin import SessionMixin

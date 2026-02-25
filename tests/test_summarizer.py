@@ -69,12 +69,6 @@ class TestConversationSummarizer:
 class TestSummarizerSingleton:
     """Tests for summarizer singleton instance."""
 
-    def test_singleton_exists(self):
-        """Test that summarizer singleton is accessible."""
-        from cogs.ai_core.memory.summarizer import summarizer
-
-        assert summarizer is not None
-
     def test_singleton_is_correct_type(self):
         """Test that singleton is ConversationSummarizer instance."""
         from cogs.ai_core.memory.summarizer import ConversationSummarizer, summarizer

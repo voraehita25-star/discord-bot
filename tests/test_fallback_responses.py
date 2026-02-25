@@ -249,12 +249,6 @@ class TestFallbackSystem:
 class TestGlobalFallbackSystem:
     """Tests for global fallback_system instance."""
 
-    def test_global_instance_exists(self):
-        """Test that global fallback_system instance exists."""
-        from cogs.ai_core.fallback_responses import fallback_system
-
-        assert fallback_system is not None
-
     def test_global_instance_is_fallback_system(self):
         """Test that global instance is FallbackSystem."""
         from cogs.ai_core.fallback_responses import FallbackSystem, fallback_system

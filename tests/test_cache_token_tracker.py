@@ -544,12 +544,6 @@ class TestTokenTracker:
 class TestGlobalInstance:
     """Tests for global token_tracker instance."""
 
-    def test_global_instance_exists(self):
-        """Test global token_tracker instance exists."""
-        from cogs.ai_core.cache.token_tracker import token_tracker
-
-        assert token_tracker is not None
-
     def test_global_instance_is_tracker(self):
         """Test global instance is TokenTracker."""
         from cogs.ai_core.cache.token_tracker import TokenTracker, token_tracker

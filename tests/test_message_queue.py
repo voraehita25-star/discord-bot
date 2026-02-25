@@ -388,12 +388,6 @@ class TestMessageQueueCleanup:
 class TestGlobalMessageQueue:
     """Tests for global message_queue instance."""
 
-    def test_global_instance_exists(self):
-        """Test global message_queue exists."""
-        from cogs.ai_core.core.message_queue import message_queue
-
-        assert message_queue is not None
-
     def test_global_instance_is_queue(self):
         """Test global message_queue is MessageQueue."""
         from cogs.ai_core.core.message_queue import MessageQueue, message_queue

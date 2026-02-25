@@ -424,12 +424,6 @@ class TestIntentPatterns:
 class TestModuleImports:
     """Tests for module imports."""
 
-    def test_module_imports(self):
-        """Test module can be imported."""
-        import cogs.ai_core.processing.intent_detector
-
-        assert cogs.ai_core.processing.intent_detector is not None
-
     def test_import_classes(self):
         """Test classes can be imported."""
         from cogs.ai_core.processing.intent_detector import (

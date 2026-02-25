@@ -423,12 +423,6 @@ class TestTemplatesDir:
 class TestModuleImports:
     """Tests for module imports."""
 
-    def test_module_imports(self):
-        """Test module can be imported."""
-        import cogs.ai_core.processing.prompt_manager
-
-        assert cogs.ai_core.processing.prompt_manager is not None
-
     def test_import_classes_and_functions(self):
         """Test classes and functions can be imported."""
         from cogs.ai_core.processing.prompt_manager import (

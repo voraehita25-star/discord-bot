@@ -133,12 +133,6 @@ class TestPerformanceTracker:
 class TestPerformanceTrackerSingleton:
     """Tests for perf_tracker singleton."""
 
-    def test_singleton_exists(self):
-        """Test that perf_tracker singleton is accessible."""
-        from utils.monitoring.performance_tracker import perf_tracker
-
-        assert perf_tracker is not None
-
     def test_singleton_has_measure(self):
         """Test singleton has measure method."""
         from utils.monitoring.performance_tracker import perf_tracker

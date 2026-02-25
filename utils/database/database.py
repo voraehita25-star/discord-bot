@@ -907,8 +907,11 @@ class Database:
             if limit:
                 cursor = await conn.execute(
                     """SELECT id, role, content, message_id, timestamp
-                       FROM ai_history WHERE channel_id = ?
-                       ORDER BY id ASC LIMIT ?""",
+                       FROM (
+                           SELECT id, role, content, message_id, timestamp
+                           FROM ai_history WHERE channel_id = ?
+                           ORDER BY id DESC LIMIT ?
+                       ) sub ORDER BY id ASC""",
                     (channel_id, limit),
                 )
             else:

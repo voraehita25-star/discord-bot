@@ -34,4 +34,4 @@ DROP TABLE user_facts;
 ALTER TABLE user_facts_new RENAME TO user_facts;
 
 CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_facts(user_id, is_active);
-CREATE INDEX IF NOT EXISTS idx_user_facts_category ON user_facts(user_id, category)
+CREATE INDEX IF NOT EXISTS idx_user_facts_category ON user_facts(user_id, category);

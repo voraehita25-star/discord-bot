@@ -261,12 +261,6 @@ class TestFeedbackCollector:
 class TestFeedbackCollectorSingleton:
     """Tests for feedback_collector singleton."""
 
-    def test_singleton_exists(self):
-        """Test feedback_collector singleton exists."""
-        from utils.monitoring.feedback import feedback_collector
-
-        assert feedback_collector is not None
-
     def test_singleton_is_collector(self):
         """Test singleton is FeedbackCollector instance."""
         from utils.monitoring.feedback import FeedbackCollector, feedback_collector

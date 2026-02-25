@@ -242,12 +242,6 @@ class TestTokenTrackerGetTopUsers:
 class TestTokenTrackerSingleton:
     """Tests for token_tracker singleton."""
 
-    def test_singleton_exists(self):
-        """Test token_tracker singleton exists."""
-        from utils.monitoring.token_tracker import token_tracker
-
-        assert token_tracker is not None
-
     def test_singleton_is_token_tracker(self):
         """Test singleton is TokenTracker instance."""
         from utils.monitoring.token_tracker import TokenTracker, token_tracker

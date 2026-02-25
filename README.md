@@ -108,21 +108,23 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Test suite (3,203 tests)
+├── tests/              # Test suite (3,007 tests, 82 files)
 └── scripts/            # Build & maintenance scripts
 ```
 
 ## 🧪 Testing
 
-```bash
-# Run all tests
+```powershell
+# Recommended: use the test runner script (no hanging, clean output)
+.\scripts\run_tests.ps1              # Run all tests
+.\scripts\run_tests.ps1 -Fast        # Skip slow tests (~8.5s)
+.\scripts\run_tests.ps1 database     # Run tests matching "database"
+.\scripts\run_tests.ps1 -File test_ai_core.py
+.\scripts\run_tests.ps1 -Coverage    # With coverage report
+
+# Or use pytest directly
 python -m pytest tests/ -v
-
-# Run with coverage
-python -m pytest tests/ --cov=. --cov-report=html
-
-# Run specific test file
-python -m pytest tests/test_ai_core.py -v
+python -m pytest tests/ --cov=cogs --cov=utils --cov-report=html
 ```
 
 ## 🛠️ Development
@@ -272,4 +274,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,203 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 26, 2026
+**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,007 passing ✅ (82 files) | **Native Extensions:** Rust + Go | **Last Update:** February 26, 2026
