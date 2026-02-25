@@ -43,9 +43,9 @@ ytdl_opts_hq = {
     # Performance optimizations
     "retries": 5,  # Reduced from 10 (faster fail)
     "fragment_retries": 5,  # Reduced from 10
-    "concurrent_fragment_downloads": 5,  # Increased from 3 (more parallel)
+    "concurrent_fragment_downloads": 8,  # 8 threads for R7 9800X3D
     "socket_timeout": 10,  # Faster timeout
-    "buffersize": 1024 * 1024,  # 1MB buffer
+    "buffersize": 4 * 1024 * 1024,  # 4MB buffer (DDR5 can handle it)
     "geo_bypass": True,
     "geo_bypass_country": "US",
     # Use Android client to bypass 403 errors
@@ -183,6 +183,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url: str | None = data.get("url")
         self.filename: str | None = filename
 
+    # Maximum time for yt-dlp operations before giving up (seconds)
+    YTDL_TIMEOUT = 60
+
     @classmethod
     async def from_url(
         cls, url: str, *, loop: asyncio.AbstractEventLoop | None = None, stream: bool = False
@@ -194,22 +197,28 @@ class YTDLSource(discord.PCMVolumeTransformer):
         try:
             logging.info("⬇️ Downloading: %s (Mode: HQ)", url)
             ytdl_hq = get_ytdl_hq()
-            data = await loop.run_in_executor(
-                None, lambda: ytdl_hq.extract_info(url, download=not stream)
+            data = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: ytdl_hq.extract_info(url, download=not stream)
+                ),
+                timeout=cls.YTDL_TIMEOUT,
             )
             ytdl_obj = ytdl_hq
-        except yt_dlp.DownloadError as e:
+        except (yt_dlp.DownloadError, asyncio.TimeoutError) as e:
             logging.warning("⚠️ HQ Download failed: %s. Switching to Fallback Mode...", e)
 
             # Attempt 2: Fallback (No cookies, safer format)
             try:
                 logging.info("⬇️ Downloading: %s (Mode: Fallback)", url)
                 ytdl_fallback = get_ytdl_fallback()
-                data = await loop.run_in_executor(
-                    None, lambda: ytdl_fallback.extract_info(url, download=not stream)
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda: ytdl_fallback.extract_info(url, download=not stream)
+                    ),
+                    timeout=cls.YTDL_TIMEOUT,
                 )
                 ytdl_obj = ytdl_fallback
-            except yt_dlp.DownloadError as e2:
+            except (yt_dlp.DownloadError, asyncio.TimeoutError) as e2:
                 logging.error("❌ All download attempts failed: %s", e2)
                 raise e2  # Give up
 
@@ -259,13 +268,19 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         try:
             ytdl_hq = get_ytdl_hq()
-            data = await loop.run_in_executor(
-                None, lambda: ytdl_hq.extract_info(query, download=False)
+            data = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: ytdl_hq.extract_info(query, download=False)
+                ),
+                timeout=cls.YTDL_TIMEOUT,
             )
-        except yt_dlp.DownloadError:
+        except (yt_dlp.DownloadError, asyncio.TimeoutError):
             ytdl_fallback = get_ytdl_fallback()
-            data = await loop.run_in_executor(
-                None, lambda: ytdl_fallback.extract_info(query, download=False)
+            data = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: ytdl_fallback.extract_info(query, download=False)
+                ),
+                timeout=cls.YTDL_TIMEOUT,
             )
 
         if data is None:

@@ -433,20 +433,21 @@ class ChatManager {
     private pingInterval: number | null = null;  // Track ping interval for cleanup
     private reconnectTimeout: number | null = null;  // Track reconnect timeout
 
+    private wsToken: string | null = null;
+
     connect(): void {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             return;
         }
 
         try {
-            // Get WS token from Rust backend, then connect with authentication
+            // Get WS token from Rust backend for post-connect authentication
             invoke<string>('get_ws_token').then(token => {
-                const wsUrl = token
-                    ? `ws://127.0.0.1:8765/ws?token=${encodeURIComponent(token)}`
-                    : 'ws://127.0.0.1:8765/ws';
-                this._connectWithUrl(wsUrl);
+                this.wsToken = token || null;
+                // Connect WITHOUT token in URL to avoid leaking via logs/proxies
+                this._connectWithUrl('ws://127.0.0.1:8765/ws');
             }).catch(() => {
-                // Fallback: connect without token (will work if DASHBOARD_WS_TOKEN is not set)
+                this.wsToken = null;
                 this._connectWithUrl('ws://127.0.0.1:8765/ws');
             });
         } catch (e) {
@@ -461,6 +462,10 @@ class ChatManager {
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
+                // Send token as first message for authentication (not in URL)
+                if (this.wsToken) {
+                    this.ws?.send(JSON.stringify({ type: 'auth', token: this.wsToken }));
+                }
                 this.connected = true;
                 this.reconnectAttempts = 0;
                 this.updateConnectionStatus(true);
@@ -1339,7 +1344,18 @@ class ChatManager {
     }
 
     // Image attachment methods
+    private static readonly MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+    private static readonly MAX_ATTACHED_IMAGES = 5;
+
     attachImage(file: File): void {
+        if (file.size > ChatManager.MAX_IMAGE_SIZE) {
+            showToast(`Image too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.`, { type: 'warning' });
+            return;
+        }
+        if (this.attachedImages.length >= ChatManager.MAX_ATTACHED_IMAGES) {
+            showToast(`Maximum ${ChatManager.MAX_ATTACHED_IMAGES} images allowed.`, { type: 'warning' });
+            return;
+        }
         const reader = new FileReader();
         reader.onload = (e) => {
             const base64 = e.target?.result as string;
@@ -1837,8 +1853,9 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     }
 
     const values = data.map(d => d.value);
-    const minVal = Math.min(...values) * 0.9;
-    const maxVal = Math.max(...values) * 1.1 || 1;
+    // Use reduce instead of spread to prevent stack overflow with large arrays
+    const minVal = values.reduce((a, b) => Math.min(a, b), Infinity) * 0.9;
+    const maxVal = values.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1 || 1;
 
     // Draw grid
     ctx.strokeStyle = 'rgba(168, 85, 247, 0.15)';

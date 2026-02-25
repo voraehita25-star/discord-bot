@@ -31,7 +31,7 @@ CREATOR_ID = _safe_int_env("CREATOR_ID")
 
 # API Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 
 # Default model name (use this constant instead of hardcoding)
 DEFAULT_MODEL = GEMINI_MODEL
@@ -45,7 +45,7 @@ HISTORY_LIMIT_MAIN = 8000  # Token limit for main server (higher traffic)
 HISTORY_LIMIT_RP = 30000  # Token limit for roleplay server (critical for continuity)
 
 # Processing timeouts (in seconds)
-LOCK_TIMEOUT = 120.0  # Max wait time for lock acquisition
+LOCK_TIMEOUT = 30.0  # Max wait time for lock acquisition (API timeout handles the actual call)
 API_TIMEOUT = 120.0  # Max wait time for Gemini API response
 STREAMING_TIMEOUT_INITIAL = 30.0  # Initial chunk timeout
 STREAMING_TIMEOUT_CHUNK = 10.0  # Subsequent chunk timeout

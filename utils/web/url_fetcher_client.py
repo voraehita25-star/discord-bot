@@ -121,19 +121,32 @@ class URLFetcherClient:
                 result["fetch_time_ms"] = int((time.time() - start) * 1000)
                 return result
         except ImportError:
-            # url_fetcher not available — apply basic SSRF protection
+            # url_fetcher not available — apply basic SSRF protection with DNS resolution
+            import asyncio as _asyncio
             import ipaddress
             from urllib.parse import urlparse
 
             try:
                 hostname = urlparse(url).hostname or ""
-                addr = ipaddress.ip_address(hostname)
-                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
-                    result["error"] = "SSRF blocked: URL points to private/internal address"
-                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
-                    return result
-            except ValueError:
-                pass  # hostname is not an IP literal, allow (DNS resolution check unavailable)
+                # Resolve hostname to IP addresses for proper SSRF protection
+                # Use non-blocking async DNS resolution instead of socket.getaddrinfo
+                loop = _asyncio.get_running_loop()
+                addr_infos = await loop.getaddrinfo(hostname, None, type=0)
+                for _family, _, _, _, sockaddr in addr_infos:
+                    ip_str = sockaddr[0]
+                    try:
+                        addr = ipaddress.ip_address(ip_str)
+                        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+                            result["error"] = "SSRF blocked: URL resolves to private/internal address"
+                            result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                            return result
+                    except ValueError:
+                        continue
+            except (OSError, Exception):
+                # DNS resolution failed — block for safety
+                result["error"] = "SSRF blocked: DNS resolution failed"
+                result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                return result
 
         try:
             async with self._session.get(

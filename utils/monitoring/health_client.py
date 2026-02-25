@@ -38,12 +38,25 @@ class HealthAPIClient:
         self._service_available: bool | None = None
         self._last_service_check: float = 0
         self._metrics_buffer: list[dict] = []
-        self._buffer_lock = asyncio.Lock()
-        self._connect_lock = asyncio.Lock()
+        # Lazily initialized to avoid event loop binding issues
+        self._buffer_lock: asyncio.Lock | None = None
+        self._connect_lock: asyncio.Lock | None = None
+
+    def _get_buffer_lock(self) -> asyncio.Lock:
+        """Lazily create buffer lock to avoid event loop binding issues."""
+        if self._buffer_lock is None:
+            self._buffer_lock = asyncio.Lock()
+        return self._buffer_lock
+
+    def _get_connect_lock(self) -> asyncio.Lock:
+        """Lazily create connect lock to avoid event loop binding issues."""
+        if self._connect_lock is None:
+            self._connect_lock = asyncio.Lock()
+        return self._connect_lock
 
     async def connect(self):
         """Initialize the client session."""
-        async with self._connect_lock:
+        async with self._get_connect_lock():
             if self._session is not None:
                 return  # Already connected
 
@@ -157,7 +170,7 @@ class HealthAPIClient:
             "labels": labels,
         }
 
-        async with self._buffer_lock:
+        async with self._get_buffer_lock():
             self._metrics_buffer.append(metric)
 
             # Auto-flush if buffer is large
@@ -166,7 +179,7 @@ class HealthAPIClient:
 
     async def _flush_buffer(self):
         """Flush metrics buffer to service."""
-        async with self._buffer_lock:
+        async with self._get_buffer_lock():
             await self._flush_buffer_locked()
 
     async def _flush_buffer_locked(self):

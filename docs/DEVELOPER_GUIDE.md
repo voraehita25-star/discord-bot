@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** February 10, 2026
+> **Last Updated:** February 26, 2026
 > **Version:** 3.3.10
 > **Python Version:** 3.10+
 > **Framework:** discord.py 2.x
-> **Total Files:** 251 Python files | 126 Test files | 3,157 Tests
+> **Total Files:** 251 Python files | 126 Test files | 3,203 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 0 warnings ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 2 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅
 
 ---
 
@@ -191,7 +191,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (3,157 tests in 126 files)
+├── tests/                    # 🧪 Test Suite (3,203 tests in 126 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_ai_core.py       # AI core tests
@@ -378,7 +378,7 @@ GUILD_ID_RP=123456789
 
 # Gemini API
 GEMINI_API_KEY=your_api_key
-GEMINI_MODEL=gemini-3-pro-preview
+GEMINI_MODEL=gemini-3.1-pro-preview
 
 # Spotify (Optional)
 SPOTIPY_CLIENT_ID=your_client_id
@@ -1003,4 +1003,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: February 10, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,157 tests (0 skipped, 0 warnings) | CI/CD with Codecov & Dependabot*
+*Documentation last updated: February 26, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,203 tests (0 skipped, 2 harmless warnings) | CI/CD with Codecov & Dependabot*

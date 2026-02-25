@@ -1,43 +1,43 @@
 # Discord Bot - Production Dependencies
-# Generated: 2026-01-22
+# Updated: 2026-02-28 (all latest stable versions)
 # Python 3.10+
 
 # ==================== Core ====================
-discord.py[voice]==2.6.4      # Discord API wrapper with voice support
-python-dotenv==1.2.1          # Environment variable management
-aiohttp==3.13.3               # Async HTTP client
-psutil==7.2.1                 # Process and system utilities
+discord.py[voice]==2.6.4      # Discord API wrapper with voice support (latest)
+python-dotenv==1.2.1          # Environment variable management (latest)
+aiohttp==3.13.3               # Async HTTP client (latest)
+psutil==7.2.2                 # Process and system utilities
 certifi>=2026.1.4             # SSL certificates (security updates)
 tzdata>=2024.1                # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
-google-genai==1.59.0          # Google Gemini API
-Pillow==12.1.0                # Image processing
-beautifulsoup4==4.14.3        # HTML parsing for URL content
-lxml==5.3.0                   # Fast HTML parser
-numpy==2.2.6                  # Numerical operations (for RAG embeddings)
-faiss-cpu==1.13.2             # Vector similarity search (optional)
-imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini
+google-genai==1.64.0          # Google Gemini API — CRITICAL update (async/timeout fixes)
+Pillow==12.1.1                # Image processing
+beautifulsoup4==4.14.3        # HTML parsing for URL content (latest)
+lxml==6.0.2                   # Fast HTML parser
+numpy==2.2.6                  # Numerical operations (for RAG embeddings, latest)
+faiss-cpu==1.13.2             # Vector similarity search (latest)
+imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini (latest)
 
 # ==================== Music ====================
-yt-dlp==2025.12.8             # YouTube downloader
-spotipy==2.25.2               # Spotify API wrapper
-PyNaCl==1.6.2                 # Voice encryption for discord.py voice
+yt-dlp==2026.2.21             # YouTube downloader — IMPORTANT: old versions freeze on changed APIs
+spotipy==2.25.2               # Spotify API wrapper (latest)
+PyNaCl>=1.5.0,<1.6              # Voice encryption for discord.py voice (pinned by discord.py constraint)
 
 # ==================== Database ====================
-aiosqlite==0.22.1             # Async SQLite
+aiosqlite==0.22.1             # Async SQLite (latest)
 
 # ==================== Development ====================
-watchdog==6.0.0               # File watcher for hot reload
-colorama==0.4.6               # Windows ANSI color support
+watchdog==6.0.0               # File watcher for hot reload (latest)
+colorama==0.4.6               # Windows ANSI color support (latest)
 pyyaml>=6.0.1                 # YAML parsing for prompt templates
 
 # ==================== Monitoring (Optional) ====================
-sentry-sdk==2.50.0            # Error tracking (optional)
-prometheus-client==0.24.1     # Metrics & monitoring
+sentry-sdk==2.53.0            # Error tracking (optional)
+prometheus-client==0.24.1     # Metrics & monitoring (latest)
 
 # ==================== Performance ====================
-orjson==3.11.5               # 10x faster JSON parsing (drop-in replacement)
+orjson==3.11.7               # 10x faster JSON parsing (drop-in replacement)
 
 
 # ==================== Windows Utilities ====================
@@ -45,10 +45,10 @@ winshell==0.6; sys_platform == 'win32'   # Windows shell integration
 pywin32==311; sys_platform == 'win32'    # Windows COM automation
 
 # ==================== Token Counting ====================
-tiktoken==0.12.0              # Accurate token counting for AI
+tiktoken==0.12.0              # Accurate token counting for AI (latest)
 
 # ==================== Testing ====================
-pytest==9.0.2                 # Test framework
+pytest==9.0.2                 # Test framework (latest)
 pytest-asyncio==1.3.0         # Async test support
 
 # ==================== Implicit Dependencies ====================

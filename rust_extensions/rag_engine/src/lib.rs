@@ -120,9 +120,7 @@ impl RagEngine {
 
     /// Search for similar entries (parallel SIMD-optimized)
     #[pyo3(signature = (query_embedding, top_k=5, time_decay_factor=0.0))]
-    fn search(&self, query_embedding: Vec<f32>, top_k: usize, time_decay_factor: f64) -> PyResult<Vec<SearchResult>> {
-        use rayon::prelude::*;
-        
+    fn search(&self, py: Python<'_>, query_embedding: Vec<f32>, top_k: usize, time_decay_factor: f64) -> PyResult<Vec<SearchResult>> {
         if query_embedding.len() != self.dimension {
             return Err(PyValueError::new_err(format!(
                 "Query dimension mismatch: expected {}, got {}",
@@ -131,43 +129,54 @@ impl RagEngine {
             )));
         }
 
-        let entries = self.entries.read();
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
+        // Clone data under read lock so we can release GIL during computation
+        let entries_snapshot: Vec<_> = {
+            let entries = self.entries.read();
+            entries.values().cloned().collect()
+        };
+        let similarity_threshold = self.similarity_threshold;
 
-        // Parallel similarity computation
-        let mut results: Vec<SearchResult> = entries
-            .par_iter()
-            .map(|(_, entry)| {
-                let base_score = cosine_similarity(&query_embedding, &entry.embedding);
-                
-                // Apply time decay if factor > 0
-                let final_score = if time_decay_factor > 0.0 {
-                    // Clamp age to >= 0 to prevent score inflation for future timestamps
-                    let age_hours = ((current_time - entry.timestamp) / 3600.0).max(0.0);
-                    let decay = (-time_decay_factor * age_hours).exp() as f32;
-                    base_score * decay * entry.importance
-                } else {
-                    base_score * entry.importance
-                };
+        // Release GIL during CPU-intensive parallel computation
+        py.allow_threads(|| {
+            use rayon::prelude::*;
 
-                SearchResult {
-                    id: entry.id.clone(),
-                    text: entry.text.clone(),
-                    score: final_score,
-                    timestamp: entry.timestamp,
-                }
-            })
-            .filter(|r| r.score >= self.similarity_threshold)
-            .collect();
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
 
-        // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(top_k);
+            // Parallel similarity computation
+            let mut results: Vec<SearchResult> = entries_snapshot
+                .par_iter()
+                .map(|entry| {
+                    let base_score = cosine_similarity(&query_embedding, &entry.embedding);
+                    
+                    // Apply time decay if factor > 0
+                    let final_score = if time_decay_factor > 0.0 {
+                        // Clamp age to >= 0 to prevent score inflation for future timestamps
+                        let age_hours = ((current_time - entry.timestamp) / 3600.0).max(0.0);
+                        let decay = (-time_decay_factor * age_hours).exp() as f32;
+                        base_score * decay * entry.importance
+                    } else {
+                        base_score * entry.importance
+                    };
 
-        Ok(results)
+                    SearchResult {
+                        id: entry.id.clone(),
+                        text: entry.text.clone(),
+                        score: final_score,
+                        timestamp: entry.timestamp,
+                    }
+                })
+                .filter(|r| r.score >= similarity_threshold)
+                .collect();
+
+            // Sort by score descending
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            results.truncate(top_k);
+
+            Ok(results)
+        })
     }
 
     /// Get entry count
@@ -224,12 +233,21 @@ impl RagEngine {
         let temp_path = format!("{}.tmp", path);
         std::fs::write(&temp_path, &json)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        std::fs::rename(&temp_path, path)
-            .map_err(|e| {
-                // Clean up temp file on rename failure
-                let _ = std::fs::remove_file(&temp_path);
-                PyValueError::new_err(e.to_string())
-            })?;
+        
+        // rename may fail on Windows if file is locked; fall back to copy+delete
+        if let Err(rename_err) = std::fs::rename(&temp_path, path) {
+            match std::fs::copy(&temp_path, path) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                }
+                Err(copy_err) => {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(PyValueError::new_err(format!(
+                        "rename failed: {}, copy fallback failed: {}", rename_err, copy_err
+                    )));
+                }
+            }
+        }
         
         Ok(())
     }
@@ -242,12 +260,11 @@ impl RagEngine {
         let entries_data: Vec<serde_json::Value> = serde_json::from_str(&data)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let mut entries = self.entries.write();
-        // Clear existing entries to prevent stale data accumulation
-        entries.clear();
+        // Build new entries in a temporary map first to avoid data loss on bad files
+        let mut new_entries = HashMap::new();
         let mut loaded = 0;
 
-        for item in entries_data {
+        for item in &entries_data {
             if let (Some(id), Some(text), Some(embedding), Some(timestamp), Some(importance)) = (
                 item["id"].as_str(),
                 item["text"].as_str(),
@@ -260,7 +277,7 @@ impl RagEngine {
                     .collect();
                 
                 if emb.len() == self.dimension {
-                    entries.insert(id.to_string(), MemoryEntry {
+                    new_entries.insert(id.to_string(), MemoryEntry {
                         id: id.to_string(),
                         text: text.to_string(),
                         embedding: emb,
@@ -271,6 +288,18 @@ impl RagEngine {
                 }
             }
         }
+
+        // Only replace existing data if we loaded at least some entries,
+        // or if the source file was intentionally empty
+        if new_entries.is_empty() && !entries_data.is_empty() {
+            return Err(PyValueError::new_err(
+                "No entries matched the expected dimension; refusing to replace existing data"
+            ));
+        }
+
+        // Swap in the new entries atomically
+        let mut entries = self.entries.write();
+        *entries = new_entries;
 
         Ok(loaded)
     }

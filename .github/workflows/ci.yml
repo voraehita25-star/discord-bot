@@ -48,8 +48,8 @@ jobs:
 
     - name: Run tests with coverage
       env:
-        DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
+        GEMINI_API_KEY: "test-gemini-key-not-real"
         CREATOR_ID: "123456789"
       run: |
         python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term

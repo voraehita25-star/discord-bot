@@ -231,6 +231,9 @@ Default Branch: {data.get("default_branch", "main")}
                     logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
                     return url, None
                 redirect_count += 1
+                # Close previous redirect response to avoid resource leak
+                if final_response is not response:
+                    final_response.close()
                 final_response = await session.get(
                     redirect_url,
                     headers=headers,
@@ -247,6 +250,12 @@ Default Branch: {data.get("default_branch", "main")}
             # Only process HTML/text content
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return url, f"[Non-text content: {content_type}]"
+
+            # Early rejection if Content-Length exceeds limit (avoids wasting bandwidth)
+            content_length = final_response.headers.get("Content-Length")
+            if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_SIZE:
+                logger.warning("URL content too large: %s (%s bytes)", url, content_length)
+                return url, f"[Content too large: {content_length} bytes]"
 
             # Handle encoding with fallback, size-limited to prevent memory exhaustion
             try:

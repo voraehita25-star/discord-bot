@@ -211,7 +211,8 @@ class EntityMemoryManager:
                 existing_row = await check_cursor.fetchone()
 
                 if existing_row:
-                    # UPDATE existing entity
+                    # UPDATE existing entity (no access_count increment here;
+                    # get_entity already incremented it when called before add_entity)
                     existing_id = existing_row[0]
                     await conn.execute(
                         """
@@ -219,8 +220,7 @@ class EntityMemoryManager:
                             facts = ?,
                             confidence = ?,
                             source = ?,
-                            updated_at = ?,
-                            access_count = access_count + 1
+                            updated_at = ?
                         WHERE id = ?
                         """,
                         (facts_json, confidence, source, now, existing_id),
@@ -324,9 +324,11 @@ class EntityMemoryManager:
             async with db_manager.get_connection() as conn:
                 sql = """
                     SELECT * FROM entity_memories
-                    WHERE (name LIKE ? OR facts LIKE ?)
+                    WHERE (name LIKE ? ESCAPE '\' OR facts LIKE ? ESCAPE '\')
                 """
-                params = [f"%{query}%", f"%{query}%"]
+                # Escape LIKE-special characters to prevent query manipulation
+                escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                params = [f"%{escaped_query}%", f"%{escaped_query}%"]
 
                 if entity_type:
                     sql += " AND entity_type = ?"

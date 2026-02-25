@@ -1,3 +1,7 @@
+// This module is Windows-only (the dashboard targets Windows + WebView2 exclusively)
+#[cfg(not(target_os = "windows"))]
+compile_error!("bot_manager.rs requires Windows (uses CommandExt, taskkill, etc.)");
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

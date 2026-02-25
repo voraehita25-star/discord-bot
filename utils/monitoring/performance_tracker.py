@@ -41,7 +41,8 @@ class PerformanceStats:
     @property
     def avg_time(self) -> float:
         """Average response time."""
-        return self.total_time / max(1, self.count)
+        with self._lock:
+            return self.total_time / max(1, self.count)
 
     @property
     def p50(self) -> float:

@@ -61,23 +61,34 @@ class Database:
         self._export_delay = 3  # seconds
         # Track multiple export tasks to prevent task destruction warnings
         self._export_tasks: set[asyncio.Task] = set()
-        # Connection pool semaphore - reduced for better SQLite compatibility with WAL mode
-        # SQLite doesn't handle high concurrent writes well, 20 is a good balance
-        self._pool_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent connections (was 50)
+        # Connection pool semaphore - lazily initialized to avoid event loop binding issues
+        # 32 connections for 8-core/16-thread CPU (2 per thread)
+        self._pool_semaphore: asyncio.Semaphore | None = None
         self._connection_count = 0
         # Persistent connection pool for reuse (avoids open/close overhead)
-        self._conn_pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=5)
+        self._conn_pool: asyncio.Queue | None = None
         self._pool_initialized = False
+        self._export_pending_keys: set[str] = set()
         self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
         self._export_lock = asyncio.Lock()  # Lock for export scheduling
-        logging.info("💾 Async Database manager created: %s (pool=20, WAL mode)", self.db_path)
+        logging.info("💾 Async Database manager created: %s (pool=32, WAL mode)", self.db_path)
+
+    def _get_pool_semaphore(self) -> asyncio.Semaphore:
+        """Lazily create the pool semaphore to avoid event loop binding issues."""
+        if self._pool_semaphore is None:
+            self._pool_semaphore = asyncio.Semaphore(32)  # 32 for R7 9800X3D (16T x 2)
+        return self._pool_semaphore
+
+    def _get_conn_pool(self) -> asyncio.Queue:
+        """Lazily create the connection pool queue to avoid event loop binding issues."""
+        if self._conn_pool is None:
+            self._conn_pool = asyncio.Queue(maxsize=10)  # More pooled connections for reuse
+        return self._conn_pool
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""
         # Use a per-channel pending key to avoid dropping exports for different channels
         pending_key = f"channel_{channel_id}" if channel_id else "__global__"
-        if not hasattr(self, "_export_pending_keys"):
-            self._export_pending_keys: set[str] = set()
 
         if pending_key in self._export_pending_keys:
             return
@@ -150,8 +161,7 @@ class Database:
         """Export a single dashboard conversation to JSON file."""
         try:
             # Validate conversation_id to prevent path traversal
-            import re as _re
-            if not _re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+            if not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
                 logging.warning("Invalid conversation_id rejected: %s", conversation_id[:50])
                 return
 
@@ -259,6 +269,14 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_ai_history_timestamp
                 ON ai_history(channel_id, timestamp DESC)
             """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_history_local_id
+                ON ai_history(channel_id, local_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_history_user_id
+                ON ai_history(user_id)
+            """)
 
             # AI Session Metadata Table
             await conn.execute("""
@@ -356,6 +374,14 @@ class Database:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_created
+                ON audit_log(created_at)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_log_guild
+                ON audit_log(guild_id)
+            """)
 
             # AI Analytics Table
             await conn.execute("""
@@ -393,7 +419,7 @@ class Database:
                     guild_id INTEGER,
                     input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
-                    model TEXT DEFAULT 'gemini-3-pro-preview',
+                    model TEXT DEFAULT 'gemini-3.1-pro-preview',
                     cached BOOLEAN DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -521,13 +547,13 @@ class Database:
         When the pool is empty, a new connection is created on the fly.
         """
         # Acquire semaphore slot (limits concurrent connections)
-        async with self._pool_semaphore:
+        async with self._get_pool_semaphore():
             conn = None
             from_pool = False
             
             # Try to get a connection from the pool
             try:
-                conn = self._conn_pool.get_nowait()
+                conn = self._get_conn_pool().get_nowait()
                 from_pool = True
                 # Validate the pooled connection is still alive
                 try:
@@ -558,14 +584,14 @@ class Database:
             try:
                 yield conn
                 await conn.commit()
-            except (aiosqlite.Error, asyncio.CancelledError):
+            except BaseException:
                 with contextlib.suppress(Exception):
                     await conn.rollback()
                 raise
             finally:
                 # Return connection to pool instead of closing
                 try:
-                    self._conn_pool.put_nowait(conn)
+                    self._get_conn_pool().put_nowait(conn)
                 except asyncio.QueueFull:
                     # Pool is full, close this connection
                     await conn.close()
@@ -623,9 +649,10 @@ class Database:
 
         # Drain and close all pooled connections to prevent stale connections
         drained = 0
-        while not self._conn_pool.empty():
+        pool = self._get_conn_pool()
+        while not pool.empty():
             try:
-                old_conn = self._conn_pool.get_nowait()
+                old_conn = pool.get_nowait()
                 try:
                     await old_conn.close()
                 except Exception:
@@ -638,16 +665,20 @@ class Database:
             logging.info("Drained %d stale connections from pool", drained)
             self._connection_count = max(0, self._connection_count - drained)
 
-        # Reset the semaphore safely.
-        # Creating a new semaphore is simpler and more reliable than drain/refill.
-        # Existing waiters on the old semaphore will get an error, but this only
-        # runs during reinitialization after failures, so that's acceptable.
-        try:
-            self._pool_semaphore = asyncio.Semaphore(20)
-            logging.info("Reset pool semaphore to 20 slots")
-        except Exception as e:
-            logging.warning("Failed to reset semaphore: %s", e)
-            self._pool_semaphore = asyncio.Semaphore(20)
+        # Replace the connection pool queue (safe since we just drained it)
+        self._conn_pool = asyncio.Queue(maxsize=10)
+
+        # Reset the semaphore safely by creating a new one.
+        # This only runs during recovery after failures, so creating a new
+        # semaphore is acceptable. Active waiters on the old semaphore
+        # will see the old one — we don't replace it if connections are active.
+        if self._connection_count == 0:
+            self._pool_semaphore = asyncio.Semaphore(32)
+            logging.info("Reset pool semaphore to 32 slots")
+        else:
+            logging.warning(
+                "Skipping semaphore reset: %d connections still active", self._connection_count
+            )
 
         # Re-ensure schema on next connection
         self._schema_initialized = False
@@ -682,7 +713,7 @@ class Database:
         for attempt in range(max_retries):
             conn = None
             try:
-                await self._pool_semaphore.acquire()
+                await self._get_pool_semaphore().acquire()
                 self._connection_count += 1
                 try:
                     conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
@@ -700,7 +731,7 @@ class Database:
                         await conn.close()
                         conn = None
                     self._connection_count -= 1
-                    self._pool_semaphore.release()
+                    self._get_pool_semaphore().release()
                     raise
 
                 # Connection established successfully - break out of retry loop
@@ -739,7 +770,7 @@ class Database:
             if conn is not None:
                 await conn.close()
             self._connection_count -= 1
-            self._pool_semaphore.release()
+            self._get_pool_semaphore().release()
 
     # ==================== RAG Operations ====================
 
@@ -1302,19 +1333,18 @@ class Database:
             return True
 
     async def rename_dashboard_conversation(self, conversation_id: str, title: str) -> bool:
-        """Rename a dashboard conversation."""
+        """Rename a dashboard conversation. Returns True if a row was actually updated."""
         async with self.get_connection() as conn:
-            await conn.execute(
+            cursor = await conn.execute(
                 "UPDATE dashboard_conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (title, conversation_id),
             )
-            return True
+            return cursor.rowcount > 0
 
     async def delete_dashboard_conversation(self, conversation_id: str) -> bool:
         """Delete a dashboard conversation and all its messages."""
         # Security: Validate conversation_id to prevent path traversal
-        import re as _re
-        if not _re.match(r'^[a-zA-Z0-9_-]+$', conversation_id):
+        if not re.match(r'^[a-zA-Z0-9_-]+$', conversation_id):
             logging.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
             return False
 
@@ -1452,7 +1482,12 @@ class Database:
                     "messages": messages,
                 }
 
-                output_file = dashboard_export_dir / f"{conv_id}.json"
+                # Sanitize conv_id to prevent path traversal
+                safe_id = str(conv_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+                output_file = (dashboard_export_dir / f"{safe_id}.json").resolve()
+                if not str(output_file).startswith(str(dashboard_export_dir.resolve())):
+                    logging.warning("Skipping suspicious conv_id: %s", conv_id)
+                    continue
                 output_file.write_text(
                     json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
                     encoding="utf-8",
@@ -1511,10 +1546,10 @@ class Database:
             ]
 
     async def delete_dashboard_memory(self, memory_id: int) -> bool:
-        """Delete a specific memory."""
+        """Delete a specific memory. Returns True if a row was actually deleted."""
         async with self.get_connection() as conn:
-            await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
-            return True
+            cursor = await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
+            return cursor.rowcount > 0
 
     async def get_dashboard_user_profile(self) -> dict[str, Any] | None:
         """Get dashboard user profile."""

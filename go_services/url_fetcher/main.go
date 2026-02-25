@@ -177,10 +177,15 @@ func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 func NewFetcher() *Fetcher {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
-		DialContext:         ssrfSafeDialContext(dialer),
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		DialContext:           ssrfSafeDialContext(dialer),
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       50,
+		IdleConnTimeout:       120 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		WriteBufferSize:       64 * 1024, // 64KB
+		ReadBufferSize:        64 * 1024, // 64KB
 	}
 
 	return &Fetcher{
@@ -196,7 +201,7 @@ func NewFetcher() *Fetcher {
 				return nil
 			},
 		},
-		limiter: rate.NewLimiter(rate.Limit(20), 50), // 20 requests/sec, burst 50
+		limiter: rate.NewLimiter(rate.Limit(50), 100), // 50 requests/sec, burst 100 (R7 9800X3D)
 	}
 }
 
@@ -250,6 +255,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	result.ContentType = resp.Header.Get("Content-Type")
 
 	if resp.StatusCode != http.StatusOK {
+		// Drain body to allow TCP connection reuse
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
@@ -492,7 +499,9 @@ func main() {
 
 		result := fetcher.Fetch(r.Context(), url)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			log.Printf("Failed to encode fetch response: %v", err)
+		}
 	})
 
 	// Batch URL fetch
@@ -538,16 +547,19 @@ func main() {
 
 		response := fetcher.FetchBatch(ctx, req.URLs)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to encode batch response: %v", err)
+		}
 	})
 
 	// Server — bind to localhost to prevent unauthenticated external access
 	server := &http.Server{
-		Addr:         "127.0.0.1:" + port,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              "127.0.0.1:" + port,
+		Handler:           r,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown

@@ -361,7 +361,7 @@ class TestAICacheGenerateKey:
         key = cache._generate_key("test message")
 
         assert isinstance(key, str)
-        assert len(key) == 32  # MD5 hex digest
+        assert len(key) == 64  # SHA256 hex digest
 
     def test_generate_key_with_context(self):
         """Test _generate_key with context hash."""

@@ -155,59 +155,64 @@ class TokenTracker:
 
     def get_user_stats(self, user_id: int) -> UserTokenStats | None:
         """Get token stats for a specific user."""
-        return self._user_stats.get(user_id)
+        with self._lock:
+            return self._user_stats.get(user_id)
 
     def get_top_users(self, limit: int = 10) -> list[tuple[int, UserTokenStats]]:
         """Get top users by total token usage."""
-        sorted_users = sorted(
-            self._user_stats.items(), key=lambda x: x[1].total_tokens, reverse=True
-        )
-        return sorted_users[:limit]
+        with self._lock:
+            sorted_users = sorted(
+                self._user_stats.items(), key=lambda x: x[1].total_tokens, reverse=True
+            )
+            return sorted_users[:limit]
 
     def get_channel_stats(self, channel_id: int) -> TokenUsage:
         """Get token stats for a channel."""
-        return self._channel_usage.get(channel_id, TokenUsage())
+        with self._lock:
+            return self._channel_usage.get(channel_id, TokenUsage())
 
     def get_global_stats(self) -> dict[str, Any]:
         """Get global token usage statistics."""
-        return {
-            "total_input_tokens": self._global_usage.input_tokens,
-            "total_output_tokens": self._global_usage.output_tokens,
-            "total_tokens": self._global_usage.total_tokens,
-            "total_requests": self._global_usage.request_count,
-            "unique_users": len(self._user_stats),
-            "avg_tokens_per_request": (
-                self._global_usage.total_tokens / max(1, self._global_usage.request_count)
-            ),
-        }
+        with self._lock:
+            return {
+                "total_input_tokens": self._global_usage.input_tokens,
+                "total_output_tokens": self._global_usage.output_tokens,
+                "total_tokens": self._global_usage.total_tokens,
+                "total_requests": self._global_usage.request_count,
+                "unique_users": len(self._user_stats),
+                "avg_tokens_per_request": (
+                    self._global_usage.total_tokens / max(1, self._global_usage.request_count)
+                ),
+            }
 
     def get_daily_summary(self, days: int = 7) -> list[dict[str, Any]]:
         """Get daily token usage summary."""
-        summaries = []
+        with self._lock:
+            summaries = []
 
-        for i in range(days):
-            date = datetime.now() - timedelta(days=i)
-            day_key = date.strftime("%Y-%m-%d")
+            for i in range(days):
+                date = datetime.now() - timedelta(days=i)
+                day_key = date.strftime("%Y-%m-%d")
 
-            daily_total = TokenUsage()
-            for stats in self._user_stats.values():
-                if day_key in stats.daily_usage:
-                    usage = stats.daily_usage[day_key]
-                    daily_total.input_tokens += usage.input_tokens
-                    daily_total.output_tokens += usage.output_tokens
-                    daily_total.request_count += usage.request_count
+                daily_total = TokenUsage()
+                for stats in self._user_stats.values():
+                    if day_key in stats.daily_usage:
+                        usage = stats.daily_usage[day_key]
+                        daily_total.input_tokens += usage.input_tokens
+                        daily_total.output_tokens += usage.output_tokens
+                        daily_total.request_count += usage.request_count
 
-            summaries.append(
-                {
-                    "date": day_key,
-                    "input_tokens": daily_total.input_tokens,
-                    "output_tokens": daily_total.output_tokens,
-                    "total_tokens": daily_total.total_tokens,
-                    "requests": daily_total.request_count,
-                }
-            )
+                summaries.append(
+                    {
+                        "date": day_key,
+                        "input_tokens": daily_total.input_tokens,
+                        "output_tokens": daily_total.output_tokens,
+                        "total_tokens": daily_total.total_tokens,
+                        "requests": daily_total.request_count,
+                    }
+                )
 
-        return summaries
+            return summaries
 
     def _evict_least_recently_used_users(self, count: int = 100) -> None:
         """Remove least recently used users to free memory."""

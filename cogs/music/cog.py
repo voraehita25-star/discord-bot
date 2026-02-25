@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import discord
+import yt_dlp
 from discord.ext import commands
 
 from cogs.ai_core.data.constants import CREATOR_ID
@@ -108,10 +109,7 @@ class Music(commands.Cog):
             setattr(self._cog._gs(guild_id), self._attr, value)
 
         def __contains__(self, guild_id: int) -> bool:
-            if guild_id not in self._cog._guild_states:
-                return False
-            val = getattr(self._cog._guild_states[guild_id], self._attr)
-            return val is not None
+            return guild_id in self._cog._guild_states
 
         def __len__(self) -> int:
             return len(self._cog._guild_states)
@@ -337,9 +335,16 @@ class Music(commands.Cog):
 
         try:
             filepath = Path(f"data/queue_{guild_id}.json")
-            filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path = filepath.with_suffix(".json.tmp")
+            temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.replace(filepath)  # Atomic on POSIX; near-atomic on Windows
         except OSError as e:
             logging.error("Failed to save queue for guild %s: %s", guild_id, e)
+            # Clean up temp file if rename failed
+            with contextlib.suppress(OSError):
+                temp_path = Path(f"data/queue_{guild_id}.json.tmp")
+                if temp_path.exists():
+                    temp_path.unlink()
 
     async def load_queue(self, guild_id: int) -> bool:
         """Load queue from database. Returns True if queue was loaded."""
@@ -363,7 +368,12 @@ class Music(commands.Cog):
             return False
 
         try:
-            data = json.loads(filepath.read_text(encoding="utf-8"))
+            # Use run_in_executor to avoid blocking the event loop on file I/O
+            import asyncio as _asyncio
+            raw = await _asyncio.get_running_loop().run_in_executor(
+                None, filepath.read_text, "utf-8"
+            )
+            data = json.loads(raw)
 
             queue = data.get("queue", [])
             if queue:
@@ -952,6 +962,7 @@ class Music(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="fix", aliases=["f", "reconnect"])
+    @commands.guild_only()
     async def fix(self, ctx):
         """แก้ไขอาการกระตุกโดยการเชื่อมต่อใหม่และเล่นต่อจากเดิม."""
         if not ctx.voice_client or (
@@ -1244,7 +1255,7 @@ class Music(commands.Cog):
                         )
                         await ctx.send(embed=embed)
                         return
-                except (discord.DiscordException, OSError) as e:
+                except (discord.DiscordException, OSError, yt_dlp.DownloadError) as e:
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่", color=Colors.ERROR
                     )
@@ -1439,6 +1450,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="247", aliases=["24/7", "stay", "nonstop"])
+    @commands.guild_only()
     @commands.has_permissions(manage_channels=True)
     async def mode_247_toggle(self, ctx):
         """เปิด/ปิดโหมด 24/7 - Bot อยู่ในห้องตลอดเวลา."""
@@ -1966,12 +1978,6 @@ class Music(commands.Cog):
         logging.info("🧹 Startup Cleanup: Removed %s files (%s bytes)", count, size)
 
         logging.info("ℹ️  %s is Online.", self.bot.user)
-        await self.bot.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.listening, name="Private Music Server 🔒"
-            ),
-            status=discord.Status.dnd,
-        )
 
 
 async def setup(bot):

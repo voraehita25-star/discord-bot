@@ -352,14 +352,20 @@ async def _save_history_json(
             if keep_end % 2 != 0:
                 keep_end -= 1
 
-            if keep_end > len(history) - keep_start:
-                keep_end = len(history) - keep_start
-                keep_end = max(keep_end, 0)
+            # Guard against keep_end <= 0 (e.g. limit=7 -> keep_end=0 after odd fix)
+            if keep_end <= 0:
+                history = history[-limit:]
+            else:
+                if keep_end > len(history) - keep_start:
+                    keep_end = len(history) - keep_start
+                    keep_end = max(keep_end, 0)
 
-            actual_keep_end = min(keep_end, len(history) - keep_start)
-            if actual_keep_end > 0:
-                history = history[:keep_start] + history[-actual_keep_end:]
-                chat_data["history"] = history
+                actual_keep_end = min(keep_end, len(history) - keep_start)
+                if actual_keep_end > 0:
+                    history = history[:keep_start] + history[-actual_keep_end:]
+                    chat_data["history"] = history
+                else:
+                    history = history[-limit:]
 
     # Write to file
     def _write():

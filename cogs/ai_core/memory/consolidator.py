@@ -288,7 +288,7 @@ class MemoryConsolidator:
         except (json.JSONDecodeError, ValueError) as e:
             logging.debug("JSON parse failed, trying fallback: %s", e)
 
-        # Fallback 1: Try to find JSON object in response
+        # Fallback 1: Try to find JSON object in response (greedy to handle nested braces)
         try:
             match = re.search(r"\{[\s\S]*\}", response_text)
             if match:
@@ -302,7 +302,7 @@ class MemoryConsolidator:
         except (json.JSONDecodeError, ValueError) as fallback_error:
             logging.debug("JSON object fallback failed: %s", fallback_error)
 
-        # Fallback 2: Try to find JSON array in response
+        # Fallback 2: Try to find JSON array in response (greedy to handle nested arrays)
         try:
             match = re.search(r"\[[\s\S]*\]", response_text)
             if match:

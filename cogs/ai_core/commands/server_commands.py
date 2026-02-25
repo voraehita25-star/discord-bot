@@ -473,14 +473,14 @@ async def cmd_set_channel_perm(
         if perm_name == "read_messages":
             perm_name = "view_channel"
 
-        # Security: Only allow safe permissions
+        # Security: Only allow permissions in the safe allowlist
         if perm_name in _DANGEROUS_PERMISSIONS:
             await origin_channel.send(
                 f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
                 f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
             )
             return
-        if perm_name not in _SAFE_PERMISSIONS and hasattr(overwrite, perm_name):
+        if perm_name not in _SAFE_PERMISSIONS:
             await origin_channel.send(
                 f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
             )
@@ -537,14 +537,14 @@ async def cmd_set_role_perm(
 
     perms = role.permissions
 
-    # Security: Only allow safe permissions
+    # Security: Only allow permissions in the safe allowlist
     if perm_name in _DANGEROUS_PERMISSIONS:
         await origin_channel.send(
             f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
             f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
         )
         return
-    if perm_name not in _SAFE_PERMISSIONS and hasattr(perms, perm_name):
+    if perm_name not in _SAFE_PERMISSIONS:
         await origin_channel.send(
             f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
         )

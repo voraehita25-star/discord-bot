@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -229,9 +230,9 @@ func safeLabel(key, value string) string {
 		if allowed[sanitized] {
 			return sanitized
 		}
-		return "other"
 	}
-	return sanitizeLabel(value)
+	// Unknown key or value not in allowed set — return "other" to prevent label cardinality explosion
+	return "other"
 }
 
 func main() {
@@ -371,6 +372,11 @@ func main() {
 				tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 			}
 		case "histogram":
+			// Reject NaN/Infinity values that would corrupt metrics
+			if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
+				http.Error(w, "metric value must be finite", http.StatusBadRequest)
+				return
+			}
 			switch payload.Name {
 			case "request_duration":
 				requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
@@ -440,6 +446,10 @@ func main() {
 					processed++
 				}
 			case "histogram":
+				// Skip NaN/Infinity values to prevent Prometheus histogram corruption
+				if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+					continue
+				}
 				switch p.Name {
 				case "request_duration":
 					requestDuration.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"])).Observe(p.Value)
@@ -497,11 +507,12 @@ func main() {
 
 	// Server
 	server := &http.Server{
-		Addr:         bindHost + ":" + port,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bindHost + ":" + port,
+		Handler:           r,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown

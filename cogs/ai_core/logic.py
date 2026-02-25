@@ -443,7 +443,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         try:
             # Initialize new Google GenAI Client
             self.client = genai.Client(api_key=GEMINI_API_KEY)
-            # Use gemini-3-pro-preview for premium AI with thinking
+            # Use gemini-3.1-pro-preview for premium AI with thinking
             self.target_model = GEMINI_MODEL
             logging.info("Gemini AI Initialized (Model: %s)", self.target_model)
         except (ValueError, OSError) as e:
@@ -1360,11 +1360,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # Save again to persist ID
                                 await update_message_id(context_channel.id, sent_message.id)
 
-                except (_NewMessageInterrupt, asyncio.CancelledError):
-                    # _NewMessageInterrupt: expected when a new message arrives
-                    # CancelledError: must re-raise to allow proper task cancellation
-                    logging.info("🔄 Processing interrupted, will handle pending messages")
-                    # Re-raise CancelledError to propagate cancellation properly
+                except _NewMessageInterrupt:
+                    # Expected when a new message arrives — allow pending message processing
+                    logging.info("🔄 Processing interrupted by new message, will handle pending")
+                except asyncio.CancelledError:
+                    # Must re-raise to allow proper task cancellation
+                    logging.info("🔄 Processing cancelled")
                     raise
                 except (discord.HTTPException, ValueError, TypeError) as e:
                     error_msg = str(e)

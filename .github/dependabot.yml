@@ -65,3 +65,14 @@ updates:
       - "docker"
     commit-message:
       prefix: "deps"
+
+  # npm (Tauri dashboard)
+  - package-ecosystem: "npm"
+    directory: "/native_dashboard"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "deps"

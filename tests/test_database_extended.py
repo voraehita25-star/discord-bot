@@ -60,8 +60,8 @@ class TestDatabaseInit:
 
         db = Database()
         assert (
-            db._pool_semaphore._value == 20
-        )  # Max 20 concurrent connections (optimized for SQLite WAL mode)
+            db._pool_semaphore._value == 32
+        )  # 32 concurrent connections (tuned for R7 9800X3D 16T)
 
     def test_db_path_is_string(self):
         """Test that db_path is a string."""

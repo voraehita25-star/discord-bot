@@ -126,6 +126,9 @@ class IntentDetector:
                 (re.compile(pattern, re.IGNORECASE | re.MULTILINE), sub_cat, conf)
                 for pattern, sub_cat, conf in patterns
             ]
+        self._pronoun_pattern = re.compile(
+            r"\b(?:มัน|นั่น|นี่|เขา|เธอ|พวกเขา|it|that|this|they|them|he|she)\b", re.IGNORECASE
+        )
 
     def detect(self, message: str) -> IntentResult:
         """
@@ -207,10 +210,7 @@ class IntentDetector:
             return True
 
         # Check for pronouns that reference previous context
-        pronoun_pattern = re.compile(
-            r"\b(?:มัน|นั่น|นี่|เขา|เธอ|พวกเขา|it|that|this|they|them|he|she)\b", re.IGNORECASE
-        )
-        return bool(pronoun_pattern.search(message))
+        return bool(self._pronoun_pattern.search(message))
 
     def get_prompt_modifier(self, intent: Intent) -> str:
         """

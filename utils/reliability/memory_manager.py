@@ -592,8 +592,12 @@ def cached_with_ttl(
     return decorator
 
 
-# Global memory monitor instance
-memory_monitor = MemoryMonitor()
+# Global memory monitor instance — tuned for 32GB DDR5 system
+memory_monitor = MemoryMonitor(
+    warning_mb=8192.0,    # 8 GB — start light cleanup
+    critical_mb=16384.0,  # 16 GB — aggressive gc.collect + eviction
+    check_interval=30.0,  # Check every 30s (fast CPU can handle it)
+)
 
 
 # Convenience function to get all cache stats

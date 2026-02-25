@@ -75,6 +75,26 @@ impl MediaProcessor {
     fn load<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         
+        // Check dimensions before full decode to prevent decompression bombs
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| PyValueError::new_err(format!("Failed to detect image format: {}", e)))?;
+        match reader.into_dimensions() {
+            Ok((w, h)) => {
+                if (w as u64) * (h as u64) > 100_000_000 {
+                    return Err(PyValueError::new_err(format!(
+                        "Image too large: {}x{} exceeds 100MP limit", w, h
+                    )));
+                }
+            }
+            Err(e) => {
+                // If we can't read dimensions, reject the image as a safety precaution
+                return Err(PyValueError::new_err(format!(
+                    "Cannot determine image dimensions (possible decompression bomb): {}", e
+                )));
+            }
+        }
+
         let img = image::load_from_memory(bytes)
             .map_err(|e| PyValueError::new_err(format!("Failed to load image: {}", e)))?;
         
@@ -160,8 +180,8 @@ impl MediaProcessor {
         Ok(PyBytes::new_bound(py, &bytes))
     }
 
-    /// Batch resize multiple images (parallel)
-    fn batch_resize<'py>(&self, _py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
+    /// Batch resize multiple images (parallel, releases GIL)
+    fn batch_resize<'py>(&self, py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
         use rayon::prelude::*;
         
         let bytes_list: Vec<Vec<u8>> = images.iter()
@@ -170,10 +190,13 @@ impl MediaProcessor {
         
         let quality = self.jpeg_quality;
         
-        let results: Result<Vec<ImageData>, _> = bytes_list
-            .par_iter()
-            .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
-            .collect();
+        // Release the GIL during CPU-intensive parallel processing
+        let results = py.allow_threads(|| {
+            bytes_list
+                .par_iter()
+                .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
+                .collect::<Result<Vec<ImageData>, _>>()
+        });
         
         results.map_err(|e| PyValueError::new_err(e.to_string()))
     }
@@ -187,7 +210,7 @@ impl MediaProcessor {
 
 /// Detect image format from magic bytes
 fn detect_format(data: &[u8]) -> Option<&'static str> {
-    if data.len() < 8 {
+    if data.len() < 4 {
         return None;
     }
     

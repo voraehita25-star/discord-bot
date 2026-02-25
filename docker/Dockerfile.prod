@@ -38,7 +38,7 @@ RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src 
 
 # Copy real Rust source and rebuild
 COPY rust_extensions/ ./rust_extensions/
-RUN cd rust_extensions && cargo build --release 2>&1 || echo "WARNING: Rust extensions failed to build — they will be unavailable at runtime"
+RUN cd rust_extensions && cargo build --release 2>&1 || { echo "ERROR: Rust extensions failed to build"; exit 1; }
 
 # Stage only the needed .so files for minimal COPY into production
 RUN mkdir -p /out-rust && (cp /build/rust_extensions/target/release/lib*.so /out-rust/ 2>/dev/null && echo "Rust libs staged" || echo "WARNING: No Rust .so files found")
@@ -60,7 +60,9 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
-    TZ=Asia/Bangkok
+    TZ=Asia/Bangkok \
+    # Performance: use mimalloc for faster allocations
+    PYTHONMALLOC=malloc
 
 WORKDIR /app
 

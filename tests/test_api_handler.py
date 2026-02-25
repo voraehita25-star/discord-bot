@@ -93,7 +93,7 @@ class TestDetectSearchIntent:
 
         result = await detect_search_intent(
             mock_client,
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
             "Tell me a joke"
         )
 
@@ -112,7 +112,7 @@ class TestDetectSearchIntent:
 
         result = await detect_search_intent(
             mock_client,
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
             "What is the latest news?"
         )
 
@@ -131,7 +131,7 @@ class TestDetectSearchIntent:
 
         result = await detect_search_intent(
             mock_client,
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
             "Tell me a story"
         )
 
@@ -147,7 +147,7 @@ class TestDetectSearchIntent:
 
         result = await detect_search_intent(
             mock_client,
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
             "Test message"
         )
 

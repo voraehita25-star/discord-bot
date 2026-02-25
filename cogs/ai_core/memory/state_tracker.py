@@ -261,10 +261,12 @@ class CharacterStateTracker:
 
         # Remove old states
         for channel_id in list(self._states.keys()):
-            states = self._states[channel_id]
+            states = self._states.get(channel_id)
+            if states is None:
+                continue
             # Check if all states are old
             if all(s.updated_at < cutoff for s in states.values()):
-                del self._states[channel_id]
+                self._states.pop(channel_id, None)
                 self._last_scene.pop(channel_id, None)
                 removed += 1
 
@@ -279,7 +281,7 @@ class CharacterStateTracker:
             )
             excess = len(self._states) - max_channels
             for channel_id in sorted_channels[:excess]:
-                del self._states[channel_id]
+                self._states.pop(channel_id, None)
                 self._last_scene.pop(channel_id, None)
                 removed += 1
 

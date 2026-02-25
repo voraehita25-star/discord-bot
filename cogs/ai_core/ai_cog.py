@@ -105,6 +105,11 @@ class AI(commands.Cog):
     # Owner ID for special commands (loaded from environment)
     OWNER_ID = CREATOR_ID
 
+    # Cache for verified webhook IDs to avoid repeated API calls
+    # Maps webhook_id -> (is_known_proxy: bool, expires_at: float)
+    _webhook_verify_cache: dict[int, tuple[bool, float]] = {}
+    _WEBHOOK_CACHE_TTL = 300.0  # 5 minutes
+
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
         self.chat_manager: ChatManager = ChatManager(bot)
@@ -340,18 +345,30 @@ class AI(commands.Cog):
             ALLOWED_WEBHOOK_NAMES = {"Tupperbox", "PluralKit"}
             webhook_name = getattr(message.author, "name", "")
             is_known_proxy = False
-            try:
-                # Fetch the actual webhook to verify it belongs to a known bot
-                webhooks = await message.channel.webhooks()
-                for wh in webhooks:
-                    if wh.id == message.webhook_id:
-                        # Check if webhook was created by a known proxy bot
-                        if wh.user and wh.user.bot:
-                            is_known_proxy = True
-                        break
-            except (discord.Forbidden, discord.HTTPException):
-                # If we can't verify, reject for safety
-                pass
+
+            # Check cache first to avoid rate-limited webhook API calls
+            import time as _time
+            cached = self._webhook_verify_cache.get(message.webhook_id)
+            if cached and cached[1] > _time.time():
+                is_known_proxy = cached[0]
+            else:
+                try:
+                    # Fetch the actual webhook to verify it belongs to a known bot
+                    webhooks = await message.channel.webhooks()
+                    for wh in webhooks:
+                        if wh.id == message.webhook_id:
+                            # Check if webhook was created by a known proxy bot
+                            if wh.user and wh.user.bot and wh.user.name in ALLOWED_WEBHOOK_NAMES:
+                                is_known_proxy = True
+                            break
+                except (discord.Forbidden, discord.HTTPException):
+                    # If we can't verify, reject for safety
+                    pass
+                # Cache the result
+                self._webhook_verify_cache[message.webhook_id] = (
+                    is_known_proxy,
+                    _time.time() + self._WEBHOOK_CACHE_TTL,
+                )
 
             if not is_known_proxy:
                 return  # Reject unverified webhooks
@@ -812,7 +829,7 @@ class AI(commands.Cog):
 
         except Exception as e:
             logging.error("Failed to link memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการเชื่อมต่อ memory")
 
     @commands.command(name="resend", aliases=["rs", "resendmsg"])
     async def resend_last_message(self, ctx: commands.Context, local_id: int | None = None) -> None:
@@ -911,7 +928,7 @@ class AI(commands.Cog):
 
         except Exception as e:
             logging.error("Failed to resend message: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการส่งข้อความใหม่")
 
     @commands.hybrid_command(name="move_memory", aliases=["mm", "movemem"])
     async def move_memory_cmd(
@@ -1039,7 +1056,7 @@ class AI(commands.Cog):
 
         except Exception as e:
             logging.error("Failed to move memory: %s", e)
-            await status_msg.edit(content=f"❌ เกิดข้อผิดพลาด: {e}")
+            await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการย้าย memory")
 
     # ==================== Advanced Admin Commands ====================
 
@@ -1069,7 +1086,7 @@ class AI(commands.Cog):
             logging.info("🔄 Config reloaded by owner")
         except Exception as e:
             logging.error("Failed to reload config: %s", e)
-            await ctx.send(f"❌ Failed to reload config: {e}")
+            await ctx.send("❌ Failed to reload config — check logs for details")
 
     @commands.command(name="dashboard", aliases=["stats"])
     @commands.is_owner()
@@ -1418,5 +1435,13 @@ class AI(commands.Cog):
 
 
 async def setup(bot: Bot) -> None:
-    """Setup function to add the AI cog to the bot."""
+    """Setup function to add the AI cog and sub-cogs to the bot."""
     await bot.add_cog(AI(bot))
+
+    # Load sub-cogs (debug & memory commands)
+    from .commands.debug_commands import AIDebug
+    from .commands.memory_commands import MemoryCommands
+
+    await bot.add_cog(AIDebug(bot))
+    await bot.add_cog(MemoryCommands(bot))
+    logging.info("✅ Loaded AI sub-cogs: AIDebug, MemoryCommands")

@@ -297,10 +297,10 @@ class ResponseSender:
                     last_message_id = msg.id if msg else None
                 except asyncio.TimeoutError:
                     logging.warning("Webhook send timeout for chunk %d", i + 1)
-                    # Continue with direct send for remaining chunks (skip timed-out chunk
-                    # as it may have been partially delivered)
+                    # Retry timed-out chunk + remaining chunks via direct send
+                    # (webhook timeout doesn't guarantee delivery failed)
                     return await self._send_remaining_direct(
-                        channel, chunks[i + 1:], reference, allowed_mentions, i + 1
+                        channel, chunks[i:], reference, allowed_mentions, i
                     )
 
             elapsed = time.time() - start_time

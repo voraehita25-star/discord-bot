@@ -210,56 +210,57 @@ class FAISSIndex:
         if not self._initialized or not FAISS_AVAILABLE:
             return False
 
-        try:
-            FAISS_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            try:
+                FAISS_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-            # Atomic write pattern: write to temp, then rename
-            temp_index = FAISS_INDEX_FILE.with_suffix(".tmp")
-            temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
-            transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
+                # Atomic write pattern: write to temp, then rename
+                temp_index = FAISS_INDEX_FILE.with_suffix(".tmp")
+                temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
+                transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
 
-            # Create transaction marker
-            transaction_marker.write_text(str(time.time()), encoding="utf-8")
+                # Create transaction marker
+                transaction_marker.write_text(str(time.time()), encoding="utf-8")
 
-            # Write to temp files first
-            faiss.write_index(self.index, str(temp_index))
-            np.save(str(temp_id_map), np.array(self.id_map))
+                # Write to temp files first
+                faiss.write_index(self.index, str(temp_index))
+                np.save(str(temp_id_map), np.array(self.id_map))
 
-            # Both files written successfully - now rename atomically
-            # Backup old files first (if they exist)
-            backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
-            backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+                # Both files written successfully - now rename atomically
+                # Backup old files first (if they exist)
+                backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
+                backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
 
-            if FAISS_INDEX_FILE.exists():
-                FAISS_INDEX_FILE.replace(backup_index)
-            if FAISS_ID_MAP_FILE.exists():
-                FAISS_ID_MAP_FILE.replace(backup_id_map)
+                if FAISS_INDEX_FILE.exists():
+                    FAISS_INDEX_FILE.replace(backup_index)
+                if FAISS_ID_MAP_FILE.exists():
+                    FAISS_ID_MAP_FILE.replace(backup_id_map)
 
-            # Rename temp to final
-            temp_index.replace(FAISS_INDEX_FILE)
-            temp_id_map.replace(FAISS_ID_MAP_FILE)
+                # Rename temp to final
+                temp_index.replace(FAISS_INDEX_FILE)
+                temp_id_map.replace(FAISS_ID_MAP_FILE)
 
-            # Remove transaction marker and backups on success
-            transaction_marker.unlink(missing_ok=True)
-            backup_index.unlink(missing_ok=True)
-            backup_id_map.unlink(missing_ok=True)
+                # Remove transaction marker and backups on success
+                transaction_marker.unlink(missing_ok=True)
+                backup_index.unlink(missing_ok=True)
+                backup_id_map.unlink(missing_ok=True)
 
-            logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
-            return True
-        except Exception as e:
-            logging.error("Failed to save FAISS index: %s", e)
-            # Clean up temp files on failure
-            for temp_file in [
-                FAISS_INDEX_FILE.with_suffix(".tmp"),
-                FAISS_ID_MAP_FILE.with_suffix(".tmp.npy"),
-                FAISS_INDEX_DIR / ".save_in_progress",
-            ]:
-                try:
-                    if temp_file.exists():
-                        temp_file.unlink()
-                except Exception as cleanup_error:
-                    logging.debug("Failed to cleanup temp file %s: %s", temp_file, cleanup_error)
-            return False
+                logging.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
+                return True
+            except Exception as e:
+                logging.error("Failed to save FAISS index: %s", e)
+                # Clean up temp files on failure
+                for temp_file in [
+                    FAISS_INDEX_FILE.with_suffix(".tmp"),
+                    FAISS_ID_MAP_FILE.with_suffix(".tmp.npy"),
+                    FAISS_INDEX_DIR / ".save_in_progress",
+                ]:
+                    try:
+                        if temp_file.exists():
+                            temp_file.unlink()
+                    except Exception as cleanup_error:
+                        logging.debug("Failed to cleanup temp file %s: %s", temp_file, cleanup_error)
+                return False
 
     def load_from_disk(self) -> bool:
         """Load FAISS index from disk."""

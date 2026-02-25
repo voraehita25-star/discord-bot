@@ -7,7 +7,7 @@ services:
   bot:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.prod
     container_name: discord-bot
     restart: unless-stopped
 
@@ -19,14 +19,19 @@ services:
       # Override these in .env or here
       - TZ=Asia/Bangkok
       - PYTHONUNBUFFERED=1
+      # Performance tuning for R7 9800X3D + 32GB DDR5
+      - GOMAXPROCS=14
+      - UV_THREADPOOL_SIZE=16
+      - MALLOC_ARENA_MAX=4
+      - ALERT_MEMORY_THRESHOLD_MB=24576
 
     # Read-only root filesystem for security hardening
     read_only: true
 
-    # Writable tmpfs mounts for runtime data
+    # Writable tmpfs mounts for runtime data (sized for 32GB RAM)
     tmpfs:
-      - /tmp:size=256M
-      - /app/__pycache__:size=64M
+      - /tmp:size=2G
+      - /app/__pycache__:size=256M
 
     # Volume mounts for persistence
     volumes:
@@ -47,11 +52,13 @@ services:
       retries: 3
       start_period: 60s
 
-    # Resource limits
-    mem_limit: 4g
-    memswap_limit: 4g
-    cpus: 2.0
-    mem_reservation: 1g
+    # Resource limits — tuned for R7 9800X3D (8C/16T) + 32GB DDR5
+    mem_limit: 28g
+    memswap_limit: 28g
+    cpus: 14.0
+    mem_reservation: 4g
+    # Shared memory for IPC (useful for multi-process)
+    shm_size: 512m
 
     # Logging configuration
     logging:

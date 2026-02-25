@@ -88,6 +88,7 @@ class TestInteractionCheck:
             view = MusicControlView(cog=mock_cog, guild_id=12345)
 
             mock_interaction = MagicMock()
+            mock_interaction.user = MagicMock(spec=discord.Member)
             mock_interaction.user.voice = MagicMock()
             mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
             mock_interaction.guild.voice_client = None  # Bot not in voice

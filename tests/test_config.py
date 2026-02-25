@@ -65,7 +65,7 @@ class TestBotSettings:
 
             assert settings.discord_token == ""
             assert settings.gemini_api_key is None
-            assert settings.gemini_model == "gemini-3-pro-preview"
+            assert settings.gemini_model == "gemini-3.1-pro-preview"
             assert settings.auto_disconnect_delay == 180
             assert settings.default_volume == 0.5
             assert settings.max_queue_size == 500
@@ -81,7 +81,7 @@ class TestBotSettings:
         test_env = {
             "DISCORD_TOKEN": "test_token_123",
             "GEMINI_API_KEY": "test_gemini_key",
-            "GEMINI_MODEL": "gemini-3-pro-preview",
+            "GEMINI_MODEL": "gemini-3.1-pro-preview",
             "GUILD_ID_MAIN": "123456789",
             "CREATOR_ID": "987654321",
         }
@@ -91,7 +91,7 @@ class TestBotSettings:
 
             assert settings.discord_token == "test_token_123"
             assert settings.gemini_api_key == "test_gemini_key"
-            assert settings.gemini_model == "gemini-3-pro-preview"
+            assert settings.gemini_model == "gemini-3.1-pro-preview"
             assert settings.guild_id_main == 123456789
             assert settings.creator_id == 987654321
 

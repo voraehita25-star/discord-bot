@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: February 10, 2026 | Total: 3,157 Tests | 126 Test Files | All passing ✅ | 0 skipped ✅ | 0 warnings ✅
+> Last Updated: February 26, 2026 | Total: 3,203 Tests | 126 Test Files | All passing ✅ | 0 skipped ✅ | 2 warnings (harmless mock RuntimeWarning)
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -26,7 +26,7 @@ python -m pytest tests/test_database.py::TestRateLimiter::test_token_consumption
 python -m pytest tests/ --collect-only -q
 ```
 
-## Test Structure (126 Files, 3,157 Tests)
+## Test Structure (126 Files, 3,203 Tests)
 
 ```
 tests/

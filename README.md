@@ -12,7 +12,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 
 | Feature | Description |
 |---------|-------------|
-| 🤖 **AI Chat** | Gemini 3 Pro powered conversations with context memory |
+| 🤖 **AI Chat** | Gemini 3.1 Pro powered conversations with context memory |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
 | 🔗 **URL Reading** | Auto-fetch and summarize web pages & GitHub repos |
@@ -105,7 +105,10 @@ discord-bot/
 │   ├── url_fetcher/    # Concurrent URL fetching (port 8081)
 │   └── health_api/     # Prometheus metrics (port 8082)
 ├── native_dashboard/   # Tauri desktop app
-├── tests/              # Test suite (3,157 tests)
+├── docs/               # Documentation
+│   ├── reviews/        # Code review reports
+│   └── release-notes/  # Version release notes
+├── tests/              # Test suite (3,203 tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -155,7 +158,7 @@ The bot includes built-in monitoring capabilities:
 
 High-performance extensions for CPU/IO-intensive operations. **Fully optional** - bot works without them using Python fallbacks.
 
-> **Build Status:** ✅ Rust extensions pre-built (January 20, 2026)  
+> **Build Status:** ✅ Rust extensions pre-built (February 26, 2026)  
 > **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ### Rust Extensions
@@ -196,8 +199,9 @@ A Tauri-based desktop application for managing the bot with Korean UI support.
 - 📈 Real-time Performance Charts
 - 🌙 Dark/Light Theme Toggle
 - 🌸 Sakura Petal Animation
-- ⌨️ Keyboard Shortcuts (Ctrl+1-4, Ctrl+R, Ctrl+T)
-- 🧪 26 Unit Tests
+- 💬 AI Chat with WebSocket streaming
+- 🧠 Long-term Memory management
+- ⌨️ Keyboard Shortcuts (Ctrl+1-6, Ctrl+R, Ctrl+T)
 
 ### Quick Start
 ```bash
@@ -244,7 +248,7 @@ Create `assets/RP/` and `assets/RP/AVATARS/` folders with character images for R
 
 ## 📖 Documentation
 
-See **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)** for detailed documentation including:
+See **[DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)** for detailed documentation including:
 - Architecture overview
 - AI system design
 - Memory system internals
@@ -268,4 +272,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,157 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 10, 2026
+**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,203 passing ✅ | **Native Extensions:** Rust + Go | **Last Update:** February 26, 2026

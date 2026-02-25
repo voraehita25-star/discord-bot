@@ -30,8 +30,11 @@ class MusicControlView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Check if user is in the same voice channel as the bot."""
-        # Cast user to Member for voice attribute access
-        member = cast(discord.Member, interaction.user)
+        # Verify user is a guild Member (not a DM User)
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ ใช้ได้เฉพาะในเซิร์ฟเวอร์", ephemeral=True)
+            return False
+        member = interaction.user
         if not member.voice:
             await interaction.response.send_message("❌ คุณต้องอยู่ในห้องเสียงก่อน", ephemeral=True)
             return False

@@ -129,7 +129,7 @@ class AICache:
             key_parts.append(intent)
 
         key_string = "|".join(key_parts)
-        return hashlib.md5(key_string.encode()).hexdigest()
+        return hashlib.sha256(key_string.encode()).hexdigest()
 
     def _evict_lru(self) -> None:
         """Evict least recently used entries if cache is full."""
@@ -497,7 +497,7 @@ class ContextHasher:
             text = parts[0][:50] if parts and isinstance(parts[0], str) else ""
             summary.append(f"{role}:{text}")
 
-        return hashlib.md5("|".join(summary).encode()).hexdigest()[:16]
+        return hashlib.sha256("|".join(summary).encode()).hexdigest()[:16]
 
 
 def _load_resource_config() -> dict:
@@ -586,27 +586,28 @@ class L2SqliteCache:
         if self._conn is None:
             return []
         cutoff = time.time() - max_age
-        try:
-            rows = self._conn.execute(
-                "SELECT key, response, intent, norm_msg, ctx_hash, created, hits "
-                "FROM cache_entries WHERE created > ? ORDER BY hits DESC, created DESC LIMIT ?",
-                (cutoff, limit),
-            ).fetchall()
-            entries = []
-            for key, response, intent, norm_msg, ctx_hash, created, hits in rows:
-                entry = CacheEntry(
-                    response=response,
-                    created_at=created,
-                    context_hash=ctx_hash,
-                    intent=intent,
-                    normalized_message=norm_msg,
-                    hits=hits,
-                )
-                entries.append((key, entry))
-            return entries
-        except Exception as e:
-            logging.warning("L2 load failed: %s", e)
-            return []
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT key, response, intent, norm_msg, ctx_hash, created, hits "
+                    "FROM cache_entries WHERE created > ? ORDER BY hits DESC, created DESC LIMIT ?",
+                    (cutoff, limit),
+                ).fetchall()
+                entries = []
+                for key, response, intent, norm_msg, ctx_hash, created, hits in rows:
+                    entry = CacheEntry(
+                        response=response,
+                        created_at=created,
+                        context_hash=ctx_hash,
+                        intent=intent,
+                        normalized_message=norm_msg,
+                        hits=hits,
+                    )
+                    entries.append((key, entry))
+                return entries
+            except Exception as e:
+                logging.warning("L2 load failed: %s", e)
+                return []
 
     def _evict_excess(self) -> None:
         """Remove oldest entries if over MAX_ENTRIES."""
@@ -652,17 +653,25 @@ _l2_cache = L2SqliteCache()
 try:
     _warm_entries = _l2_cache.load_recent(limit=500)
     if _warm_entries:
-        for _key, _entry in _warm_entries:
-            if _key not in ai_cache.cache:
-                ai_cache.cache[_key] = _entry
+        with ai_cache._cache_lock:
+            for _key, _entry in _warm_entries:
+                if _key not in ai_cache.cache:
+                    ai_cache.cache[_key] = _entry
         logging.info("L2 cache: warmed L1 with %d entries", len(_warm_entries))
 except Exception as _e:
     logging.warning("L2 warm-up failed (non-fatal): %s", _e)
 
 
 def _persist_to_l2(key: str, entry: CacheEntry) -> None:
-    """Background persist a new entry to L2."""
-    _l2_cache.store(key, entry)
+    """Background persist a new entry to L2 (non-blocking via thread pool)."""
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _l2_cache.store, key, entry)
+    except RuntimeError:
+        # No running event loop — fall back to synchronous
+        _l2_cache.store(key, entry)
 
 
 # Monkey-patch AICache.set to also persist to L2

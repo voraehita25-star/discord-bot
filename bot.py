@@ -90,6 +90,16 @@ except ImportError:
     SelfHealer = None  # type: ignore
     logging.warning("Self-Healer not available - using basic duplicate detection")
 
+# Import Memory Monitor (tuned for 32GB DDR5)
+try:
+    from utils.reliability.memory_manager import memory_monitor
+
+    MEMORY_MONITOR_AVAILABLE = True
+except ImportError:
+    MEMORY_MONITOR_AVAILABLE = False
+    memory_monitor = None  # type: ignore
+    logging.warning("Memory Monitor not available")
+
 # ==================== Feature Flags Registry ====================
 from config import feature_flags
 
@@ -244,6 +254,14 @@ class MusicBot(commands.AutoShardedBot):
     start_time: float = 0.0
 
     async def setup_hook(self) -> None:
+        # Optimize thread pool for R7 9800X3D (8C/16T)
+        import concurrent.futures
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="bot-worker")
+        )
+        logging.info("⚡ ThreadPoolExecutor set to 16 workers for R7 9800X3D")
+
         # Setup signal handlers for graceful shutdown (Unix only)
         if sys.platform != "win32":
             loop = asyncio.get_running_loop()
@@ -359,6 +377,11 @@ class MusicBot(commands.AutoShardedBot):
                     logging.info("📊 Prometheus metrics available at http://localhost:9090")
                 self._metrics_started = True
 
+        # Start Memory Monitor (tuned for 32GB DDR5: warn 8GB, critical 16GB)
+        if MEMORY_MONITOR_AVAILABLE and memory_monitor is not None:
+            memory_monitor.start()
+            logging.info("🧠 Memory monitor activated (warning: 8GB, critical: 16GB)")
+
     async def on_command_error(self, ctx, error):  # pylint: disable=arguments-differ
         """Global error handler for all commands with Thai messages."""
         # Ignore command not found errors
@@ -410,9 +433,11 @@ class MusicBot(commands.AutoShardedBot):
             return
 
         # Log other errors
-        logging.error("Command error in %s: %s", ctx.command, error)
+        error_id = hashlib.sha256(f"{error}{time.time()}".encode()).hexdigest()[:6].upper()
+        logging.error("Command error in %s (Error ID: %s): %s", ctx.command, error_id, error)
         logging.error(
-            "Full traceback: %s",
+            "Full traceback (Error ID: %s): %s",
+            error_id,
             "".join(traceback.format_exception(type(error), error, error.__traceback__)),
         )
 
@@ -420,27 +445,54 @@ class MusicBot(commands.AutoShardedBot):
         if METRICS_AVAILABLE and metrics:
             metrics.increment_commands(str(ctx.command), success=False)
 
-        # Send to Sentry
+        # Send to Sentry (without message content to prevent PII leak)
         if SENTRY_AVAILABLE and capture_exception:
             capture_exception(
                 error,
                 context={
                     "command": str(ctx.command),
                     "channel": str(ctx.channel),
-                    "message": ctx.message.content[:200] if ctx.message else None,
+                    "error_id": error_id,
                 },
                 user_id=ctx.author.id if ctx.author else None,
                 guild_id=ctx.guild.id if ctx.guild else None,
             )
 
         # Send generic error message with unique reference
-        error_id = hashlib.sha256(f"{error}{time.time()}".encode()).hexdigest()[:6].upper()
         try:
             await ctx.send(
                 f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
             )
         except discord.HTTPException:
             logging.warning("Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id)
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError) -> None:
+        """Global error handler for slash (app) commands with Thai messages."""
+        error_id = hashlib.sha256(f"{error}{time.time()}".encode()).hexdigest()[:6].upper()
+        logging.error("App command error in %s (Error ID: %s): %s", interaction.command, error_id, error)
+
+        # Determine the response method (followup if already responded/deferred)
+        async def respond(content: str) -> None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(content, ephemeral=True)
+                else:
+                    await interaction.response.send_message(content, ephemeral=True)
+            except discord.HTTPException:
+                logging.warning("Could not send app command error to interaction (Error ID: %s)", error_id)
+
+        original = getattr(error, "original", error)
+
+        if isinstance(original, discord.app_commands.MissingPermissions):
+            missing = ", ".join(original.missing_permissions)
+            await respond(f"❌ **ไม่มีสิทธิ์**\nคุณต้องมีสิทธิ์ `{missing}` เพื่อใช้คำสั่งนี้")
+        elif isinstance(original, discord.app_commands.BotMissingPermissions):
+            missing = ", ".join(original.missing_permissions)
+            await respond(f"❌ **บอทไม่มีสิทธิ์เพียงพอ**\nกรุณาให้สิทธิ์ `{missing}` แก่บอท")
+        elif isinstance(original, discord.app_commands.CommandOnCooldown):
+            await respond(f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที")
+        else:
+            await respond(f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง\n🔖 Error ID: `{error_id}`")
 
     async def on_message(self, message: discord.Message) -> None:
         """Track messages for metrics."""

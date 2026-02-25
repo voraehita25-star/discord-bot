@@ -83,7 +83,7 @@ class TestTokenUsageDataclass:
             channel_id=456,
         )
 
-        assert usage.model == "gemini-3-pro-preview"
+        assert usage.model == "gemini-3.1-pro-preview"
 
     def test_token_usage_cached_default(self):
         """Test default cached value."""

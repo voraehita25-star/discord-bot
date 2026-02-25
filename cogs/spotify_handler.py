@@ -367,11 +367,14 @@ class SpotifyHandler:
         items = results.get("items", [])
 
         # Paginate to get all tracks (album_tracks returns max 50 per page)
-        while results and results.get("next"):
+        while results and results.get("next") and len(items) < self.MAX_PLAYLIST_TRACKS:
             await asyncio.sleep(self.RATE_LIMIT_DELAY)
             results = await self._api_call_with_retry(self.sp.next, results)
             if results and results.get("items"):
                 items.extend(results["items"])
+
+        # Apply cap to prevent memory issues with huge albums
+        items = items[:self.MAX_PLAYLIST_TRACKS]
 
         if not items:
             embed = discord.Embed(description=f"{Emojis.CROSS} Album นี้ไม่มีเพลง", color=Colors.ERROR)

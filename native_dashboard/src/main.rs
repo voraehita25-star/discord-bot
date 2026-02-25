@@ -270,6 +270,13 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
     if !error_log_path.exists() {
         return Ok(vec!["No errors logged yet.".to_string()]);
     }
+
+    // Cap file read to 10 MB to prevent OOM on huge log files
+    let metadata = std::fs::metadata(&error_log_path)
+        .map_err(|e| format!("Failed to read error log metadata: {}", e))?;
+    if metadata.len() > 10 * 1024 * 1024 {
+        return Err("Error log too large (>10 MB). Please clear it first.".to_string());
+    }
     
     match std::fs::read_to_string(&error_log_path) {
         Ok(content) => {
@@ -467,5 +474,8 @@ fn main() {
             get_ws_token
         ])
         .run(tauri::generate_context!())
-        .unwrap_or_else(|e| eprintln!("Error while running tauri application: {}", e));
+        .unwrap_or_else(|e| {
+            eprintln!("Error while running tauri application: {}", e);
+            std::process::exit(1);
+        });
 }

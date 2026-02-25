@@ -132,7 +132,7 @@ class TestProcessingTimeouts:
     def test_lock_timeout(self):
         """Test LOCK_TIMEOUT is defined."""
         from cogs.ai_core.data.constants import LOCK_TIMEOUT
-        assert LOCK_TIMEOUT == 120.0
+        assert LOCK_TIMEOUT == 30.0
 
     def test_api_timeout(self):
         """Test API_TIMEOUT is defined."""

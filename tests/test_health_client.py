@@ -49,11 +49,12 @@ class TestHealthAPIClientInit:
         assert client._metrics_buffer == []
 
     def test_init_buffer_lock_exists(self):
-        """Test buffer lock is created."""
+        """Test buffer lock is lazily created on first access."""
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
-        assert client._buffer_lock is not None
+        # Buffer lock is lazily initialized; access via accessor
+        assert client._get_buffer_lock() is not None
 
 
 class TestHealthAPIClientConnect:

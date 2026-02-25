@@ -34,7 +34,7 @@ class BotSettings:
     # Gemini AI
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False)
     gemini_model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
     )
 
     # Spotify
@@ -78,10 +78,10 @@ class BotSettings:
     ai_history_limit_rp: int = 20000  # 20k for roleplay (critical for continuity)
     ai_session_timeout: int = 3600  # 1 hour
 
-    # Paths
-    data_dir: str = "data"
-    temp_dir: str = "temp"
-    logs_dir: str = "logs"
+    # Paths — anchored to project root to avoid CWD dependency
+    data_dir: str = field(default_factory=lambda: str(Path(__file__).parent / "data"))
+    temp_dir: str = field(default_factory=lambda: str(Path(__file__).parent / "temp"))
+    logs_dir: str = field(default_factory=lambda: str(Path(__file__).parent / "logs"))
 
     def __post_init__(self):
         """Validate settings and ensure directories exist."""

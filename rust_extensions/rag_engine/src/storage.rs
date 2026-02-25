@@ -141,7 +141,15 @@ impl VectorStorage {
                     .ok_or_else(|| RagError::Serialization("Index overflow in push".to_string()))?
             ).ok_or_else(|| RagError::Serialization("Offset overflow in push".to_string()))?;
             let bytes: &[u8] = bytemuck::cast_slice(vector);
-            mmap[offset..offset + vector_size].copy_from_slice(bytes);
+            let end = offset.checked_add(vector_size)
+                .ok_or_else(|| RagError::Serialization("End offset overflow in push".to_string()))?;
+            if end > mmap.len() {
+                return Err(RagError::Serialization(format!(
+                    "Write exceeds mmap bounds: offset {} + size {} > mmap len {}",
+                    offset, vector_size, mmap.len()
+                )));
+            }
+            mmap[offset..end].copy_from_slice(bytes);
             
             // Update count in header via full header struct rewrite
             self.count += 1;

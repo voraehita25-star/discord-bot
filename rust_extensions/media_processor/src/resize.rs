@@ -17,6 +17,11 @@ pub enum ResizeMode {
     Stretch,
 }
 
+/// Maximum allowed dimension for resize operations (prevents DoS via extreme allocations)
+const MAX_ALLOWED_DIMENSION: u32 = 16384;
+/// Maximum allowed pixel count to prevent decompression bombs
+const MAX_PIXEL_COUNT: u64 = 100_000_000; // 100 megapixels
+
 /// Resize an image
 pub fn resize_image(
     data: &[u8],
@@ -30,8 +35,34 @@ pub fn resize_image(
         return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
     }
 
+    // Clamp dimensions to safe maximum to prevent extreme memory allocation
+    let max_width = max_width.min(MAX_ALLOWED_DIMENSION);
+    let max_height = max_height.min(MAX_ALLOWED_DIMENSION);
+
     // Clamp JPEG quality to valid range (1-100)
     let jpeg_quality = jpeg_quality.max(1).min(100);
+
+    // Check image dimensions BEFORE full decode to prevent decompression bombs
+    let reader = image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|e| MediaError::Encode(format!("Failed to detect image format: {}", e)))?;
+    match reader.into_dimensions() {
+        Ok((w, h)) => {
+            if (w as u64) * (h as u64) > MAX_PIXEL_COUNT {
+                return Err(MediaError::Encode(format!(
+                    "Image too large: {}x{} ({} MP, max {} MP)",
+                    w, h,
+                    (w as u64 * h as u64) / 1_000_000,
+                    MAX_PIXEL_COUNT / 1_000_000
+                )));
+            }
+        }
+        Err(e) => {
+            return Err(MediaError::Encode(format!(
+                "Cannot determine image dimensions (possible decompression bomb): {}", e
+            )));
+        }
+    }
 
     let img = image::load_from_memory(data)?;
     let (orig_w, orig_h) = img.dimensions();

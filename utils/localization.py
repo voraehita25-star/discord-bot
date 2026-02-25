@@ -192,8 +192,8 @@ def get_message(key: str, lang: Language = DEFAULT_LANGUAGE, **kwargs) -> str:
     if kwargs:
         try:
             message = message.format(**kwargs)
-        except KeyError as e:
-            logging.warning("Missing format key %s for message '%s'", e, key)
+        except (KeyError, IndexError, ValueError) as e:
+            logging.warning("Format error %s for message '%s': %s", type(e).__name__, key, e)
             # Return partially formatted or raw message rather than silently failing
 
     return message

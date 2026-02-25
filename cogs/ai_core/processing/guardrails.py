@@ -78,7 +78,8 @@ def is_unrestricted(channel_id: int) -> bool:
     Returns True if the channel has been explicitly set to unrestricted mode
     via the !unrestricted command. Otherwise, normal guardrails apply.
     """
-    return channel_id in unrestricted_channels
+    with _unrestricted_lock:
+        return channel_id in unrestricted_channels
 
 
 def set_unrestricted(channel_id: int, enabled: bool) -> bool:
@@ -523,9 +524,14 @@ def validate_response_for_channel(response: str, channel_id: int) -> tuple[bool,
     """
     # Always apply sensitive pattern redaction even in unrestricted mode
     if is_unrestricted(channel_id):
-        result = guardrails.validate(response)
-        # Only apply SENSITIVE_PATTERNS, bypass other content checks
-        return True, result.sanitized_content, ["unrestricted_mode"]
+        sanitized = response
+        warnings_list: list[str] = ["unrestricted_mode"]
+        # Only apply sensitive pattern redaction, skip repetition/length/format checks
+        for pattern, pattern_name in guardrails._compiled_sensitive:
+            if pattern.search(sanitized):
+                sanitized = pattern.sub("[REDACTED]", sanitized)
+                warnings_list.append(f"Redacted: {pattern_name}")
+        return True, sanitized, warnings_list
 
     # Normal validation
     result = guardrails.validate(response)

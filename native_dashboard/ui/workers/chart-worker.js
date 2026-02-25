@@ -30,8 +30,8 @@ function calculateChartData(params) {
     }
     
     const values = data.map(d => d.value);
-    const minVal = Math.min(...values) * 0.9;
-    const maxVal = Math.max(...values) * 1.1 || 1;
+    const minVal = values.reduce((a, b) => Math.min(a, b), Infinity) * 0.9;
+    const maxVal = values.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1 || 1;
     
     // Pre-calculate all points
     const points = data.map((point, i) => ({
@@ -65,8 +65,8 @@ function calculateStats(values) {
     
     const sum = values.reduce((a, b) => a + b, 0);
     const avg = sum / values.length;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    const min = values.reduce((a, b) => Math.min(a, b), Infinity);
+    const max = values.reduce((a, b) => Math.max(a, b), -Infinity);
     
     // Standard deviation
     const squareDiffs = values.map(value => Math.pow(value - avg, 2));

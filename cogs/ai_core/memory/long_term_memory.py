@@ -485,21 +485,25 @@ class LongTermMemory:
         if not facts:
             return ""
 
-        # Decay confidence for old facts
+        # Decay confidence for old facts (use local variable to avoid mutating cached objects)
         now = datetime.now()
+        scored_facts = []
         for fact in facts:
             if fact.last_confirmed:
                 days_old = (now - fact.last_confirmed).days
-                fact.confidence = fact.decay_confidence(days_old)
+                decayed_confidence = fact.decay_confidence(days_old)
+            else:
+                decayed_confidence = fact.confidence
+            scored_facts.append((fact, decayed_confidence))
 
-        # Sort by importance and confidence
-        facts.sort(key=lambda f: (f.importance, f.confidence), reverse=True)
-        facts = facts[:limit]
+        # Sort by importance and decayed confidence
+        scored_facts.sort(key=lambda pair: (pair[0].importance, pair[1]), reverse=True)
+        scored_facts = scored_facts[:limit]
 
         # Format for context
         lines = ["สิ่งที่รู้เกี่ยวกับผู้ใช้นี้:"]
-        for fact in facts:
-            confidence_marker = "✓" if fact.confidence > 0.7 else "?"
+        for fact, decayed_conf in scored_facts:
+            confidence_marker = "✓" if decayed_conf > 0.7 else "?"
             lines.append(f"- {fact.content} {confidence_marker}")
 
         return "\n".join(lines)
@@ -509,8 +513,15 @@ class LongTermMemory:
         facts = await self.get_user_facts(user_id)
         content_lower = content.lower()
 
+        # Skip matching for very short content to avoid false positives
+        if len(content_lower.strip()) < 5:
+            return None
+
         for fact in facts:
             fact_lower = fact.content.lower()
+            # Skip very short facts to avoid overly broad matches
+            if len(fact_lower.strip()) < 5:
+                continue
             # Simple substring matching
             if content_lower in fact_lower or fact_lower in content_lower:
                 return fact
@@ -560,6 +571,7 @@ class LongTermMemory:
                     fact.is_user_defined,
                 ),
             )
+            await conn.commit()
             return cursor.lastrowid
 
     async def _update_fact_confirmation(self, fact: Fact) -> None:

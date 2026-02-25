@@ -400,7 +400,7 @@ async def process_attachments(
 
     for attachment in attachments:
         # Skip attachments that are too large to prevent memory issues
-        if attachment.size and attachment.size > MAX_ATTACHMENT_SIZE:
+        if attachment.size is not None and attachment.size > MAX_ATTACHMENT_SIZE:
             logging.warning(
                 "Skipping attachment '%s' (%d bytes) — exceeds %d byte limit",
                 attachment.filename,

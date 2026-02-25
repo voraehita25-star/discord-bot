@@ -189,11 +189,17 @@ class ConversationSummarizer:
         )
 
         # Save to database
-        await self._save_summary(result)
+        summary_id = await self._save_summary(result)
 
-        # Delete consolidated messages (keep summary instead)
-        message_ids = [row["id"] for row in rows]
-        await self._delete_consolidated_messages(message_ids)
+        # Only delete original messages if summary was successfully saved
+        if summary_id is not None:
+            message_ids = [row["id"] for row in rows]
+            await self._delete_consolidated_messages(message_ids)
+        else:
+            self.logger.warning(
+                "⚠️ Summary save failed for channel %d — keeping original messages",
+                channel_id,
+            )
 
         self.logger.info("📦 Consolidated %d messages for channel %d", len(rows), channel_id)
 
@@ -421,6 +427,7 @@ class ConversationSummarizer:
                     summary.message_count,
                 ),
             )
+            await conn.commit()
             return cursor.lastrowid
 
     async def _delete_consolidated_messages(self, message_ids: list[int]) -> None:
@@ -428,10 +435,13 @@ class ConversationSummarizer:
         if not DB_AVAILABLE or db is None or not message_ids:
             return
 
-        placeholders = ",".join("?" * len(message_ids))
-
+        # Batch into chunks of 900 to avoid SQLite variable limit (default 999)
+        batch_size = 900
         async with db.get_connection() as conn:
-            await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", message_ids)
+            for i in range(0, len(message_ids), batch_size):
+                batch = message_ids[i : i + batch_size]
+                placeholders = ",".join("?" * len(batch))
+                await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch)
             await conn.commit()
 
 

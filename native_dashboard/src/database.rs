@@ -77,7 +77,10 @@ impl DatabaseService {
         }
         
         // Try to take the cached connection
-        let mut cache = self.conn_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut cache = self.conn_cache.lock().unwrap_or_else(|poisoned| {
+            eprintln!("WARNING: Database connection cache mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
         if let Some(conn) = cache.take() {
             // Verify connection is still valid
             if conn.execute("SELECT 1", []).is_ok() {

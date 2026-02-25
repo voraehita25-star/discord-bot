@@ -372,6 +372,12 @@ class ContextBuilder:
             contents = []
             for url in urls[:3]:  # Limit to 3 URLs
                 try:
+                    # Validate URL scheme to prevent SSRF
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url)
+                    if parsed.scheme not in ("http", "https"):
+                        logging.warning("Blocked non-HTTP URL scheme: %s", url)
+                        continue
                     content = await fetch_url(url)
                     if content:
                         # Truncate if too long

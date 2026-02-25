@@ -208,6 +208,7 @@ class AIAnalytics:
                     kwargs["error"],
                 ),
             )
+            await conn.commit()
 
     def calculate_quality_score(
         self,

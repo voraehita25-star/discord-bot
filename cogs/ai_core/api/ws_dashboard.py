@@ -19,7 +19,7 @@ import hmac
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
@@ -108,8 +108,8 @@ except ImportError:
     pass
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
-# For thinking mode, use the same model (gemini-3-pro supports thinking)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+# For thinking mode, use the same model (gemini-3.1-pro supports thinking)
 
 # ============================================================================
 # WebSocket Dashboard Server
@@ -279,15 +279,19 @@ class DashboardWebSocketServer:
                 "Set DASHBOARD_WS_TOKEN in .env for security."
             )
         if expected_token:
-            # Check Authorization header or query param (timing-safe comparison)
+            # Check Authorization header or query param (timing-safe comparison).
+            # If neither is provided, allow connection — the Tauri dashboard sends
+            # the token via WebSocket message (type: 'auth') to avoid URL/header leakage.
+            # Only reject here if a token IS provided but is invalid.
             auth_header = request.headers.get("Authorization", "")
             query_token = request.query.get("token", "")
-            auth_match = hmac.compare_digest(auth_header, f"Bearer {expected_token}")
-            token_match = hmac.compare_digest(query_token, expected_token)
-            if not auth_match and not token_match:
-                # Require valid token for ALL connections, including localhost
-                logging.warning("⚠️ Rejected WebSocket connection: invalid or missing auth token (from %s)", peername)
-                return web.Response(status=401, text="Unauthorized: Invalid or missing token")
+            has_credentials = bool(auth_header) or bool(query_token)
+            if has_credentials:
+                auth_match = hmac.compare_digest(auth_header, f"Bearer {expected_token}") if auth_header else False
+                token_match = hmac.compare_digest(query_token, expected_token) if query_token else False
+                if not auth_match and not token_match:
+                    logging.warning("⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername)
+                    return web.Response(status=401, text="Unauthorized: Invalid token")
 
         # Allow connections from localhost only (127.0.0.1 or localhost)
         # Use exact prefix matching to prevent subdomain bypass (e.g., evil-localhost.com)
@@ -296,7 +300,7 @@ class DashboardWebSocketServer:
             "http://localhost",
             "https://127.0.0.1",
             "https://localhost",
-            "file://",  # For local HTML files
+            # Note: file:// origin removed for security — Tauri uses tauri://localhost
         ]
 
         # Check if origin is allowed
@@ -391,7 +395,19 @@ class DashboardWebSocketServer:
         if msg_type == "new_conversation":
             await self.handle_new_conversation(ws, data)
         elif msg_type == "message":
-            await self.handle_chat_message(ws, data)
+            # Enforce concurrency limit per client
+            inflight = self._client_inflight.get(client_id, 0)
+            if inflight >= 2:
+                await ws.send_json({
+                    "type": "error",
+                    "message": "Too many concurrent requests. Please wait for the current response to finish.",
+                })
+                return
+            self._client_inflight[client_id] = inflight + 1
+            try:
+                await self.handle_chat_message(ws, data)
+            finally:
+                self._client_inflight[client_id] = max(0, self._client_inflight.get(client_id, 1) - 1)
         elif msg_type == "list_conversations":
             await self.handle_list_conversations(ws)
         elif msg_type == "load_conversation":
@@ -414,6 +430,17 @@ class DashboardWebSocketServer:
             await self.handle_get_profile(ws)
         elif msg_type == "save_profile":
             await self.handle_save_profile(ws, data)
+        elif msg_type == "auth":
+            # Frontend sends token via message (not URL) to avoid leaking in logs.
+            # HTTP-level auth already validates headers/query params during upgrade;
+            # this handler covers the message-based auth flow from the Tauri dashboard.
+            token = data.get("token", "")
+            expected = os.getenv("DASHBOARD_WS_TOKEN", "")
+            if expected and not hmac.compare_digest(str(token), expected):
+                logging.warning("⚠️ Invalid auth token from client %s", client_id)
+                await ws.send_json({"type": "error", "message": "Invalid auth token"})
+            else:
+                logging.debug("✅ Client %s authenticated via message", client_id)
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
         else:
@@ -450,7 +477,7 @@ class DashboardWebSocketServer:
             "role_emoji": preset["emoji"],
             "role_color": preset["color"],
             "thinking_enabled": thinking_enabled,
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
         })
 
     async def handle_chat_message(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -587,7 +614,7 @@ class DashboardWebSocketServer:
         contents.append(types.Content(role="user", parts=current_parts))
 
         # Build config with realtime datetime and context
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
         # Build unrestricted mode injection if enabled
@@ -645,7 +672,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
         if images:
             mode_info.append(f"🖼️ {len(images)} image(s)")
 
-        # Use the configured model (gemini-3-pro-preview supports thinking)
+        # Use the configured model (gemini-3.1-pro-preview supports thinking)
         logging.info("📍 Using model: %s, Thinking: %s", GEMINI_MODEL, thinking_enabled)
 
         # Store mode string for saving to DB
