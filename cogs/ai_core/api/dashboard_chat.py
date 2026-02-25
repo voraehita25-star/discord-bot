@@ -230,8 +230,12 @@ IMPORTANT: If user asks you to remember something, respond with the information 
     # Use the configured model (gemini-3.1-pro-preview supports thinking)
     logging.info("📍 Using model: %s, Thinking: %s", GEMINI_MODEL, thinking_enabled)
 
+    # Build model display name (e.g. "gemini-3.1-pro-preview" -> "Gemini 3.1 Pro")
+    _model_display = GEMINI_MODEL.replace("gemini-", "Gemini ").replace("-preview", "").replace("-", " ").title()
+    mode_info.insert(0, f"🤖 {_model_display}")
+
     # Store mode string for saving to DB
-    mode_str = " • ".join(mode_info) if mode_info else "💬 Standard"
+    mode_str = " • ".join(mode_info)
 
     # Stream response
     try:
