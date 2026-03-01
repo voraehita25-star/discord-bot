@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12.8-slim
 
 # Install system dependencies for discord.py voice and ffmpeg
 RUN apt-get update && apt-get install -y \

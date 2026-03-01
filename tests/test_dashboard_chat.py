@@ -5,10 +5,10 @@ streaming with mock Gemini, thinking mode, DB save, timeout/error handling.
 """
 
 from __future__ import annotations
-import os
 
 import asyncio
 import base64
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

@@ -706,10 +706,7 @@ export class ChatManager {
                     <span class="message-time">${timeStr}</span>
                     ${modeHtml}
                 </div>
-                <div class="thinking-container" style="display: none;">
-                    <div class="thinking-header">\uD83D\uDCAD Thinking...</div>
-                    <div class="thinking-content"></div>
-                </div>
+                
                 <div class="message-content">
                     <span class="streaming-text"></span>
                     <span class="typing-cursor">\u258B</span>

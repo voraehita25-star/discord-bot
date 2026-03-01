@@ -394,6 +394,10 @@ export class ChatManager {
                 showToast(data.message, { type: 'error' });
                 this.isStreaming = false;
                 this.setInputEnabled(true);
+                // Clean up stuck streaming message on error
+                const stuckErrorMsg = document.getElementById('streaming-message');
+                if (stuckErrorMsg)
+                    stuckErrorMsg.remove();
                 break;
             case 'pong':
                 break;
@@ -1317,6 +1321,12 @@ export class ChatManager {
             this.thinkingEnabled = e.target.checked;
         });
         document.getElementById('btn-send')?.addEventListener('click', () => this.sendMessage());
+        document.getElementById('thinking-toggle')?.addEventListener('change', (e) => {
+            if (this.currentConversation) {
+                this.currentConversation.thinking_enabled = e.target.checked;
+                // Optional: send to backend to persist
+            }
+        });
         // Setup image upload
         this.setupImageUpload();
         document.getElementById('btn-star-chat')?.addEventListener('click', () => {

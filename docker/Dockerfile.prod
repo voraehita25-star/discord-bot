@@ -61,7 +61,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
     TZ=Asia/Bangkok \
-    # Performance: use mimalloc for faster allocations
+    # Performance: use system malloc (avoids Python pymalloc overhead in containers)
     PYTHONMALLOC=malloc
 
 WORKDIR /app
