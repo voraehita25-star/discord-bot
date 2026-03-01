@@ -792,28 +792,28 @@ def stop_health_api() -> None:
 
 async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
     """Background task to update health data periodically.
-    
+
     Also checks external service health and sends alerts on failures.
     """
     import aiohttp
-    
+
     # Track consecutive failures for alerting
     _service_failures: dict[str, int] = {}
-    
+
     # Import alert manager (optional)
     try:
         from utils.monitoring.alerting import alert_manager
         alerting_available = True
     except ImportError:
         alerting_available = False
-    
+
     # Import feature flags
     try:
         from config import feature_flags as _ff
         health_data.feature_flags = _ff.get_all()
     except ImportError:
         pass
-    
+
     async def check_service(session: aiohttp.ClientSession, name: str, url: str) -> None:
         """Check a single external service health."""
         try:
@@ -834,19 +834,19 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                 "status": "unreachable",
                 "last_check": datetime.now().isoformat(),
             }
-    
+
     async with aiohttp.ClientSession() as session:
         while True:
             try:
                 health_data.update_from_bot(bot)
-                
+
                 # Update feature flags
                 try:
                     from config import feature_flags as _ff
                     health_data.feature_flags = _ff.get_all()
                 except ImportError:
                     pass
-                
+
                 # Check external Go services
                 services = {
                     "go_health_api": GO_HEALTH_API_URL,
@@ -854,13 +854,13 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                 }
                 for svc_name, svc_url in services.items():
                     await check_service(session, svc_name, svc_url)
-                    
+
                     # Alert on consecutive failures
                     if alerting_available and _service_failures.get(svc_name, 0) >= 3:
                         await alert_manager.alert_health_check_failed(
                             svc_name, _service_failures[svc_name]
                         )
-                
+
                 # Check memory threshold and alert
                 if alerting_available:
                     try:
@@ -870,7 +870,7 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                             await alert_manager.alert_memory_threshold(mem_mb, threshold)
                     except Exception:
                         pass
-                
+
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 break

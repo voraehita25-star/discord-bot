@@ -6,12 +6,12 @@ Provides async SQLite database connection using aiosqlite.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import threading
-import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -225,7 +225,7 @@ class Database:
             if hasattr(self, '_export_pending_keys'):
                 self._export_pending_keys.clear()
             self._dashboard_export_pending.clear()
-        
+
         # Always export on shutdown for data safety
         try:
             await self.export_to_json()
@@ -561,7 +561,11 @@ class Database:
 
             # Run versioned migrations (with auto-backup)
             try:
-                from utils.database.migrations import run_migrations, get_current_version, discover_migrations
+                from utils.database.migrations import (
+                    discover_migrations,
+                    get_current_version,
+                    run_migrations,
+                )
                 current_ver = await get_current_version(conn)
                 pending = [(v, p) for v, p in discover_migrations() if v > current_ver]
                 if pending:
@@ -584,9 +588,22 @@ class Database:
                 logging.warning("Migration system error (non-fatal): %s", e)
 
     @asynccontextmanager
+    async def get_write_connection(self):
+        """Get a write-serialized database connection.
+
+        Wraps ``get_connection()`` with the write lock so that only one
+        writer is active at a time.  Use this for INSERT/UPDATE/DELETE
+        operations that are called from concurrent tasks (e.g. message
+        saving) to avoid SQLITE_BUSY under WAL mode.
+        """
+        async with self._get_write_lock():
+            async with self.get_connection() as conn:
+                yield conn
+
+    @asynccontextmanager
     async def get_connection(self):
         """Get an async database connection from the persistent pool.
-        
+
         Connections are reused across requests to avoid the overhead of
         opening/closing a new aiosqlite connection for each query.
         When the pool is empty, a new connection is created on the fly.
@@ -594,12 +611,10 @@ class Database:
         # Acquire semaphore slot (limits concurrent connections)
         async with self._get_pool_semaphore():
             conn = None
-            from_pool = False
-            
+
             # Try to get a connection from the pool
             try:
                 conn = self._get_conn_pool().get_nowait()
-                from_pool = True
                 # Validate the pooled connection is still alive
                 try:
                     await conn.execute("SELECT 1")
@@ -609,11 +624,11 @@ class Database:
                         await conn.close()
                     except Exception:
                         pass
+                    self._connection_count -= 1  # Fix: decrement counter for closed stale connection
                     conn = None
-                    from_pool = False
             except asyncio.QueueEmpty:
                 pass
-            
+
             # Create a new connection if needed
             if conn is None:
                 self._connection_count += 1
@@ -823,7 +838,7 @@ class Database:
         self, content: str, embedding_bytes: bytes, channel_id: int | None = None
     ) -> int:
         """Save a new memory with vector embedding."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 "INSERT INTO ai_long_term_memory (channel_id, content, embedding) VALUES (?, ?, ?)",
                 (channel_id, content, embedding_bytes),
@@ -858,7 +873,7 @@ class Database:
         user_id: int | None = None,
     ) -> int:
         """Save a single AI message to history."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             ts = timestamp or datetime.now().isoformat()
 
             # Atomic local_id generation + insert in a single statement
@@ -889,7 +904,7 @@ class Database:
                     by_channel[ch] = []
                 by_channel[ch].append(msg)
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             for channel_id, channel_messages in by_channel.items():
                 # Use atomic subquery for local_id to prevent race condition
                 # when concurrent calls target the same channel_id
@@ -945,7 +960,7 @@ class Database:
 
     async def delete_ai_history(self, channel_id: int) -> int:
         """Delete all AI history for a channel."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 "DELETE FROM ai_history WHERE channel_id = ?", (channel_id,)
             )
@@ -964,7 +979,7 @@ class Database:
 
     async def prune_ai_history(self, channel_id: int, keep_count: int) -> int:
         """Prune old messages, keeping only the most recent keep_count messages."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             # Delete older messages, keeping the most recent ones
             cursor = await conn.execute(
                 """DELETE FROM ai_history
@@ -983,7 +998,7 @@ class Database:
 
     async def update_message_id(self, channel_id: int, message_id: int) -> bool:
         """Update the message_id for the last model response."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 """UPDATE ai_history SET message_id = ?
                    WHERE id = (SELECT MAX(id) FROM ai_history
@@ -1022,7 +1037,7 @@ class Database:
         self, channel_id: int, thinking_enabled: bool = True, system_instruction: str | None = None
     ) -> None:
         """Save or update AI session metadata."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             await conn.execute(
                 """INSERT INTO ai_metadata (channel_id, thinking_enabled, system_instruction, updated_at)
                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -1035,7 +1050,7 @@ class Database:
 
     async def update_last_accessed(self, channel_id: int) -> None:
         """Update last accessed time for a channel."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             await conn.execute(
                 """INSERT INTO ai_metadata (channel_id, last_accessed)
                    VALUES (?, CURRENT_TIMESTAMP)
@@ -1081,7 +1096,7 @@ class Database:
         if not safe_settings:
             return
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             columns = ["guild_id", *list(safe_settings.keys())]
             values = [guild_id, *list(safe_settings.values())]
             placeholders = ",".join(["?" for _ in values])
@@ -1105,7 +1120,7 @@ class Database:
         if stat_name not in valid_stats:
             return
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             await conn.execute(
                 f"""INSERT INTO user_stats (user_id, guild_id, {stat_name}, last_active)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -1144,7 +1159,7 @@ class Database:
         command: str | None = None,
     ) -> int:
         """Log an error to the database."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO error_logs
                    (error_type, error_message, traceback, guild_id, channel_id, user_id, command)
@@ -1159,7 +1174,7 @@ class Database:
     async def save_music_queue(self, guild_id: int, queue: list[dict]) -> bool:
         """Save music queue to database."""
         try:
-            async with self.get_connection() as conn:
+            async with self.get_write_connection() as conn:
                 # Clear existing queue
                 await conn.execute("DELETE FROM music_queue WHERE guild_id = ?", (guild_id,))
 
@@ -1193,7 +1208,7 @@ class Database:
     async def clear_music_queue(self, guild_id: int) -> bool:
         """Clear music queue from database."""
         try:
-            async with self.get_connection() as conn:
+            async with self.get_write_connection() as conn:
                 await conn.execute("DELETE FROM music_queue WHERE guild_id = ?", (guild_id,))
                 return True
         except Exception as e:
@@ -1274,14 +1289,13 @@ class Database:
             ID of the created audit log entry
         """
         try:
-            async with self.get_connection() as conn:
+            async with self.get_write_connection() as conn:
                 cursor = await conn.execute(
                     """INSERT INTO audit_log
                        (action_type, guild_id, user_id, target_id, details)
                        VALUES (?, ?, ?, ?, ?)""",
                     (action_type, guild_id, user_id, target_id, details),
                 )
-                # Note: get_connection() auto-commits on success, no explicit commit needed
                 rowid = cursor.lastrowid
                 return int(rowid) if rowid is not None else 0
         except Exception as e:
@@ -1299,7 +1313,7 @@ class Database:
         system_instruction: str | None = None,
     ) -> str:
         """Create a new dashboard conversation."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             await conn.execute(
                 """INSERT INTO dashboard_conversations
                    (id, title, role_preset, system_instruction, thinking_enabled)
@@ -1355,7 +1369,7 @@ class Database:
         if not safe_updates:
             return False
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             # Defense-in-depth: validate column names are simple identifiers
             # even though they're already filtered by allowed_columns
             for col in safe_updates:
@@ -1373,7 +1387,7 @@ class Database:
 
     async def update_dashboard_conversation_star(self, conversation_id: str, starred: bool) -> bool:
         """Update the starred status of a conversation."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             await conn.execute(
                 "UPDATE dashboard_conversations SET is_starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (1 if starred else 0, conversation_id),
@@ -1382,7 +1396,7 @@ class Database:
 
     async def rename_dashboard_conversation(self, conversation_id: str, title: str) -> bool:
         """Rename a dashboard conversation. Returns True if a row was actually updated."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 "UPDATE dashboard_conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (title, conversation_id),
@@ -1396,7 +1410,7 @@ class Database:
             logging.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
             return False
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             # Messages will be deleted automatically due to ON DELETE CASCADE
             await conn.execute(
                 "DELETE FROM dashboard_conversations WHERE id = ?",
@@ -1428,7 +1442,7 @@ class Database:
 
         local_now = datetime.now().isoformat()
 
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -1471,6 +1485,59 @@ class Database:
                 )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def update_dashboard_message(self, message_id: int, content: str) -> bool:
+        """Update a dashboard message's content. Returns True if updated."""
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE dashboard_messages SET content = ? WHERE id = ?",
+                (content, message_id),
+            )
+            if cursor.rowcount > 0:
+                # Update conversation's updated_at
+                row = await (await conn.execute(
+                    "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                    (message_id,),
+                )).fetchone()
+                if row:
+                    from datetime import datetime
+                    await conn.execute(
+                        "UPDATE dashboard_conversations SET updated_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), row[0]),
+                    )
+            return cursor.rowcount > 0
+
+    async def delete_dashboard_message(self, message_id: int) -> str | None:
+        """Delete a single dashboard message. Returns the conversation_id if deleted."""
+        async with self.get_write_connection() as conn:
+            # Get conversation_id before deleting
+            row = await (await conn.execute(
+                "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                (message_id,),
+            )).fetchone()
+            if not row:
+                return None
+            conv_id = row[0]
+            await conn.execute("DELETE FROM dashboard_messages WHERE id = ?", (message_id,))
+            # Update conversation's updated_at
+            from datetime import datetime
+            await conn.execute(
+                "UPDATE dashboard_conversations SET updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), conv_id),
+            )
+            return conv_id
+
+    async def delete_dashboard_messages_after(
+        self, conversation_id: str, after_message_id: int
+    ) -> int:
+        """Delete all messages in a conversation after a given message ID.
+        Returns the number of messages deleted."""
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM dashboard_messages WHERE conversation_id = ? AND id > ?",
+                (conversation_id, after_message_id),
+            )
+            return cursor.rowcount
 
     async def export_dashboard_conversation(
         self, conversation_id: str, export_format: str = "json"
@@ -1551,7 +1618,7 @@ class Database:
         self, content: str, category: str = "general", importance: int = 1
     ) -> int:
         """Save a memory to dashboard long-term storage."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 "INSERT INTO dashboard_memories (content, category, importance) VALUES (?, ?, ?)",
                 (content, category, importance),
@@ -1595,7 +1662,7 @@ class Database:
 
     async def delete_dashboard_memory(self, memory_id: int) -> bool:
         """Delete a specific memory. Returns True if a row was actually deleted."""
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             cursor = await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
             return cursor.rowcount > 0
 
@@ -1623,11 +1690,11 @@ class Database:
         is_creator: bool | None = None,
     ) -> None:
         """Save or update dashboard user profile.
-        
+
         When is_creator is None (default), the existing value is preserved.
         Pass True/False explicitly only when you intend to change it.
         """
-        async with self.get_connection() as conn:
+        async with self.get_write_connection() as conn:
             if is_creator is not None:
                 await conn.execute(
                     """INSERT INTO dashboard_user_profile (id, display_name, bio, preferences, is_creator)

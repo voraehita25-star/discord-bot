@@ -182,7 +182,7 @@ class TokenTracker:
             return
 
         try:
-            async with db.get_connection() as conn:
+            async with db.get_write_connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO token_usage

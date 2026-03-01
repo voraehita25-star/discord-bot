@@ -348,7 +348,7 @@ class ShutdownManager:
 
     def _atexit_handler(self) -> None:
         """Handler for atexit - run sync cleanups silently.
-        
+
         Note: During interpreter shutdown, stdout/stderr may be closed.
         We suppress logging here to avoid ValueError on closed streams.
         """

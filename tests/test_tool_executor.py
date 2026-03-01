@@ -223,7 +223,7 @@ class TestSendAsWebhook:
         with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
             mock_get.return_value = mock_webhook
 
-            result = await send_as_webhook(bot, channel, "TestChar", "Hello!")
+            await send_as_webhook(bot, channel, "TestChar", "Hello!")
 
         mock_webhook.send.assert_called_once()
 

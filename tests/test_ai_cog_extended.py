@@ -7,7 +7,9 @@ Tests imports, constants, and configuration.
 
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
 
 class TestAiCogImports:
     """Tests for ai_cog module imports."""
@@ -271,7 +273,7 @@ class TestAICogInit:
 
         with patch('cogs.ai_core.ai_cog.ChatManager') as mock_cm:
             with patch('cogs.ai_core.ai_cog.rate_limiter'):
-                cog = AI(mock_bot)
+                AI(mock_bot)
 
                 mock_cm.assert_called_once_with(mock_bot)
 

@@ -408,7 +408,7 @@ class ConversationSummarizer:
         if not DB_AVAILABLE or db is None:
             return None
 
-        async with db.get_connection() as conn:
+        async with db.get_write_connection() as conn:
             cursor = await conn.execute(
                 """
                 INSERT INTO conversation_summaries
@@ -437,12 +437,11 @@ class ConversationSummarizer:
 
         # Batch into chunks of 900 to avoid SQLite variable limit (default 999)
         batch_size = 900
-        async with db.get_connection() as conn:
+        async with db.get_write_connection() as conn:
             for i in range(0, len(message_ids), batch_size):
                 batch = message_ids[i : i + batch_size]
                 placeholders = ",".join("?" * len(batch))
                 await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch)
-            await conn.commit()
 
 
 # Global instance

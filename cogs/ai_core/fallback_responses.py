@@ -21,7 +21,7 @@ except ImportError:
 
 # Try to import circuit breaker to check API status
 try:
-    from utils.reliability.circuit_breaker import gemini_circuit, CircuitState
+    from utils.reliability.circuit_breaker import CircuitState, gemini_circuit
 
     CIRCUIT_BREAKER_AVAILABLE = True
 except ImportError:

@@ -1,11 +1,10 @@
 """Unit tests for Spotify Handler module."""
 
-from unittest.mock import MagicMock, patch
-
-
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
 
 class TestSpotifyHandler:
     """Tests for SpotifyHandler class."""

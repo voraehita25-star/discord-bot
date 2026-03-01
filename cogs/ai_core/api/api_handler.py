@@ -232,7 +232,7 @@ async def call_gemini_api_streaming(
                 ),
                 timeout=initial_chunk_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logging.warning("⚠️ Streaming init timeout, falling back")
             if placeholder_msg:
                 await placeholder_msg.delete()
@@ -323,7 +323,7 @@ async def call_gemini_api_streaming(
         )
         return model_text, search_indicator, function_calls
 
-    except asyncio.TimeoutError as e:
+    except TimeoutError as e:
         # chunks_received is always defined at this point (line 220)
         logging.warning("⚠️ Streaming timeout after %d chunks: %s", chunks_received, e)
         if placeholder_msg:
@@ -414,7 +414,7 @@ async def call_gemini_api(
                     ),
                     timeout=api_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logging.error(
                     "⏱️ Gemini API timeout after %.0fs (attempt %d)", api_timeout, attempt + 1
                 )
@@ -510,7 +510,7 @@ async def call_gemini_api(
                 refusal_count,
             )
 
-        except (ValueError, TypeError, OSError, asyncio.TimeoutError) as api_error:
+        except (TimeoutError, ValueError, TypeError, OSError) as api_error:
             error_str = str(api_error).lower()
             logging.warning("⚠️ Attempt %s/%s Failed: %s", attempt + 1, max_retries, api_error)
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:

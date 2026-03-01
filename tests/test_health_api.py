@@ -6,14 +6,12 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
-import threading
 from datetime import datetime, timedelta
-from http.server import HTTPServer
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
 
 class TestHealthApiConstants:
     """Tests for health API constants."""
@@ -1044,9 +1042,10 @@ class TestHealthAPIServer:
         assert srv.running is False
 
     def test_start_port_in_use(self):
-        from utils.monitoring.health_api import HealthAPIServer
         # Bind a port first
         import socket
+
+        from utils.monitoring.health_api import HealthAPIServer
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -1136,7 +1135,7 @@ class TestUpdateHealthLoop:
     @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_loop_updates_bot_data(self):
-        from utils.monitoring.health_api import update_health_loop, health_data
+        from utils.monitoring.health_api import update_health_loop
 
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
@@ -1216,7 +1215,7 @@ class TestSetupHealthHooks:
     @pytest.mark.asyncio
     async def test_on_ready_callback(self):
         """Test the on_ready listener callback updates health_data."""
-        from utils.monitoring.health_api import setup_health_hooks, health_data
+        from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
@@ -1244,7 +1243,7 @@ class TestSetupHealthHooks:
     @pytest.mark.asyncio
     async def test_on_message_callback(self):
         """Test the on_message listener increments message count."""
-        from utils.monitoring.health_api import setup_health_hooks, health_data
+        from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
         del mock_bot._health_on_message_set
@@ -1267,7 +1266,7 @@ class TestSetupHealthHooks:
     @pytest.mark.asyncio
     async def test_on_command_callback(self):
         """Test the on_command listener increments command count."""
-        from utils.monitoring.health_api import setup_health_hooks, health_data
+        from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
         del mock_bot._health_on_message_set
@@ -1290,7 +1289,7 @@ class TestSetupHealthHooks:
     @pytest.mark.asyncio
     async def test_on_command_error_callback(self):
         """Test the on_command_error listener increments error count."""
-        from utils.monitoring.health_api import setup_health_hooks, health_data
+        from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
         del mock_bot._health_on_message_set
@@ -1320,7 +1319,7 @@ class TestServiceHealthChecks:
     @pytest.mark.asyncio
     async def test_loop_service_healthy(self):
         """Test loop marks service as healthy when HTTP 200."""
-        from utils.monitoring.health_api import update_health_loop, health_data
+        from utils.monitoring.health_api import health_data, update_health_loop
 
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
@@ -1365,7 +1364,7 @@ class TestServiceHealthChecks:
     @pytest.mark.asyncio
     async def test_loop_service_unhealthy(self):
         """Test loop marks service as unhealthy when HTTP 500."""
-        from utils.monitoring.health_api import update_health_loop, health_data
+        from utils.monitoring.health_api import health_data, update_health_loop
 
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
@@ -1414,7 +1413,6 @@ class TestDeepHealthCheckEdge:
 
     def test_deep_check_db_exception(self):
         """Test database check exception path (lines 687-689)."""
-        from utils.monitoring.health_api import HealthRequestHandler
         h = _make_handler("/health/deep")
         with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
              patch("pathlib.Path.exists", side_effect=PermissionError("no access")):
@@ -1424,7 +1422,6 @@ class TestDeepHealthCheckEdge:
 
     def test_deep_check_filesystem_error(self):
         """Test filesystem check exception path (lines 712-713)."""
-        from utils.monitoring.health_api import HealthRequestHandler
         h = _make_handler("/health/deep")
         with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
              patch("pathlib.Path.mkdir", side_effect=PermissionError("read-only")):

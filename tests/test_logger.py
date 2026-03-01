@@ -22,7 +22,7 @@ class TestEmojiMap:
         """Test all EMOJI_MAP values are ASCII strings."""
         from utils.monitoring.logger import EMOJI_MAP
 
-        for emoji, ascii_text in EMOJI_MAP.items():
+        for _emoji, ascii_text in EMOJI_MAP.items():
             assert isinstance(ascii_text, str)
             # Check ASCII-safe
             assert ascii_text.encode("ascii", "strict")
@@ -318,7 +318,7 @@ class TestCleanupCache:
             mock_temp.iterdir.return_value = list(temp_dir.iterdir())
 
             # Each file needs suffix attribute
-            for f in temp_dir.iterdir():
+            for _f in temp_dir.iterdir():
                 pass  # Files are real, no need to mock suffix
 
     def test_cleanup_handles_permission_error(self):

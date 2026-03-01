@@ -103,7 +103,7 @@ class HealthAPIClient:
                 if self._service_available:
                     logger.info("✅ Go Health API service available")
                 return self._service_available
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except (TimeoutError, aiohttp.ClientError):
             self._service_available = False
             self._last_service_check = now
             logger.warning("⚠️ Go Health API not available, metrics disabled")
@@ -117,7 +117,7 @@ class HealthAPIClient:
         try:
             async with self._session.get(f"{self.base_url}/health") as resp:
                 return await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
             return {"status": "error", "error": str(e)}
 
     async def is_ready(self) -> bool:
@@ -242,7 +242,7 @@ async def get_health_client() -> HealthAPIClient:
 
 async def close_health_client() -> None:
     """Close and cleanup the global health client.
-    
+
     Should be called during bot shutdown to properly close connections
     and flush any pending metrics.
     """

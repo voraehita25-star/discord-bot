@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-
 class TestBuildApiConfig:
     """Tests for build_api_config function."""
 
@@ -383,7 +382,7 @@ class TestBuildApiConfig:
         chat_data = {"system_instruction": "Test"}
         # Not setting thinking_enabled, should default to True
 
-        result = build_api_config(chat_data)
+        build_api_config(chat_data)
 
         # Default behavior depends on mode
 
@@ -1130,7 +1129,7 @@ class TestFallbackFunctions:
         from cogs.ai_core.api.api_handler import detect_refusal
 
         # Test it works
-        result = detect_refusal("any response")
+        detect_refusal("any response")
         # Should be tuple or single value depending on import
 
     def test_is_silent_block_fallback(self):
@@ -1138,5 +1137,5 @@ class TestFallbackFunctions:
         from cogs.ai_core.api.api_handler import is_silent_block
 
         # Test it works
-        result = is_silent_block("any response", 50)
+        is_silent_block("any response", 50)
         # Should return False when guardrails unavailable

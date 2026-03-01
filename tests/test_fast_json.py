@@ -2,7 +2,6 @@
 
 
 from utils.fast_json import (
-
     is_orjson_enabled,
     json_dumps,
     json_dumps_bytes,

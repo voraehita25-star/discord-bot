@@ -186,7 +186,7 @@ class AIAnalytics:
 
     async def _save_to_db(self, **kwargs) -> None:
         """Save interaction to database."""
-        async with db.get_connection() as conn:
+        async with db.get_write_connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO ai_analytics

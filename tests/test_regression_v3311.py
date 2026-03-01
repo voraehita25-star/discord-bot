@@ -5,11 +5,9 @@ Ensures these specific bugs don't reoccur.
 from __future__ import annotations
 
 import asyncio
-import collections
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ============================================================================
 # Bug #1: get_ai_history with limit returned OLDEST instead of NEWEST

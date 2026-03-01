@@ -4,8 +4,8 @@ Tests for cogs.ai_core.memory.long_term_memory module.
 
 from datetime import datetime
 
-
 import pytest
+
 
 class TestFactCategoryEnum:
     """Tests for FactCategory enum."""

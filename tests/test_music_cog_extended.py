@@ -3,13 +3,11 @@ Extended tests for Music Cog module.
 Tests imports, constants, and configuration.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
 
-
-from unittest.mock import AsyncMock, MagicMock, patch
 
 class TestMusicCogImports:
     """Tests for music cog module imports."""

@@ -311,7 +311,7 @@ class TestIntentFallbacks:
         """Test that all responses are strings."""
         from cogs.ai_core.fallback_responses import INTENT_FALLBACKS
 
-        for intent, responses in INTENT_FALLBACKS.items():
+        for _intent, responses in INTENT_FALLBACKS.items():
             for response in responses:
                 assert isinstance(response, str)
 
@@ -331,6 +331,6 @@ class TestReasonFallbacks:
         """Test that all responses are strings."""
         from cogs.ai_core.fallback_responses import REASON_FALLBACKS
 
-        for reason, responses in REASON_FALLBACKS.items():
+        for _reason, responses in REASON_FALLBACKS.items():
             for response in responses:
                 assert isinstance(response, str)

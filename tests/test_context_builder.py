@@ -9,8 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-from unittest.mock import MagicMock
-
 class TestAIContextDataclass:
     """Tests for AIContext dataclass."""
 
@@ -590,7 +588,7 @@ class TestContextBuilder:
         ])
 
         builder = ContextBuilder(memory_manager=mock_memory)
-        ctx = await builder.build_context(
+        await builder.build_context(
             channel_id=123,
             user_id=456,
             message="Test query",
@@ -627,7 +625,7 @@ class TestContextBuilder:
         mock_entity.get_entity = AsyncMock(return_value=None)
 
         builder = ContextBuilder(entity_memory=mock_entity)
-        ctx = await builder.build_context(
+        await builder.build_context(
             channel_id=123,
             user_id=456,
             message="Tell me about John",
@@ -645,7 +643,7 @@ class TestContextBuilder:
         mock_state.get_state = AsyncMock(return_value={"topic": "coding"})
 
         builder = ContextBuilder(state_tracker=mock_state)
-        ctx = await builder.build_context(
+        await builder.build_context(
             channel_id=123,
             user_id=456,
             message="Continue",
@@ -668,7 +666,7 @@ class TestContextBuilder:
         mock_guild = MagicMock()
 
         builder = ContextBuilder(avatar_manager=mock_avatar)
-        ctx = await builder.build_context(
+        await builder.build_context(
             channel_id=123,
             user_id=456,
             message="Hello",
@@ -727,7 +725,7 @@ class TestContextBuilderPrivateMethods:
         """Test _get_rag_context without memory manager."""
         from cogs.ai_core.core.context_builder import ContextBuilder
 
-        builder = ContextBuilder()
+        ContextBuilder()
         # Method should handle None manager
 
     @pytest.mark.asyncio
@@ -735,7 +733,7 @@ class TestContextBuilderPrivateMethods:
         """Test _get_entity_memory without entity memory manager."""
         from cogs.ai_core.core.context_builder import ContextBuilder
 
-        builder = ContextBuilder()
+        ContextBuilder()
         # Method should handle None manager
 
     @pytest.mark.asyncio
@@ -743,7 +741,7 @@ class TestContextBuilderPrivateMethods:
         """Test _get_state_tracker without state tracker."""
         from cogs.ai_core.core.context_builder import ContextBuilder
 
-        builder = ContextBuilder()
+        ContextBuilder()
         # Method should handle None manager
 
 

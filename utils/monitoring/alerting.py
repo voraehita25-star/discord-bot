@@ -10,7 +10,6 @@ Sends alerts to a configured Discord webhook or channel when:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time
@@ -63,14 +62,14 @@ class AlertManager:
         fields: list[dict[str, str]] | None = None,
     ) -> bool:
         """Send an alert to Discord webhook.
-        
+
         Args:
             title: Alert title
             description: Alert description
             alert_type: Category for cooldown grouping
             severity: One of 'info', 'warning', 'critical'
             fields: Optional embed fields
-            
+
         Returns:
             True if alert was sent, False if skipped (cooldown) or failed
         """

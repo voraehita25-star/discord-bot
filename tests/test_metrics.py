@@ -5,6 +5,7 @@ Uses the global metrics instance to avoid duplicated timeseries errors.
 
 from unittest.mock import MagicMock
 
+
 class TestBotMetricsInit:
     """Tests for BotMetrics initialization."""
 

@@ -2,15 +2,14 @@
 Tests for utils.reliability.self_healer module.
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
-import logging
-from unittest.mock import patch
 import pytest
+
 
 class TestSelfHealerInit:
     """Tests for SelfHealer initialization."""
@@ -450,6 +449,7 @@ class TestAutoHeal:
     def test_auto_heal_kills_duplicate_bots(self):
         """Test auto_heal kills duplicate bots."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -469,6 +469,7 @@ class TestAutoHeal:
     def test_auto_heal_aggressive_kills_all(self):
         """Test aggressive auto_heal kills all bots."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -504,6 +505,7 @@ class TestEnsureSingleInstance:
     def test_kills_existing_when_allowed(self):
         """Test kills existing instances when kill_existing=True."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -522,6 +524,7 @@ class TestEnsureSingleInstance:
     def test_aborts_when_not_killing(self):
         """Test aborts when kill_existing=False and instance exists."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -554,6 +557,7 @@ class TestGetStatusReport:
     def test_status_report_with_bots(self):
         """Test status report with bots running."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -586,6 +590,7 @@ class TestKillAllBots:
     def test_kill_all_with_bots(self):
         """Test kill_all_bots kills bot processes."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -683,6 +688,7 @@ class TestDiagnoseEdgeCases:
     def test_diagnose_duplicate_watchers_from_watcher(self):
         """Test detects duplicate watchers when called from dev_watcher."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer(caller_script="dev_watcher.py")
@@ -701,6 +707,7 @@ class TestDiagnoseEdgeCases:
     def test_diagnose_duplicate_watchers_ignored_from_bot(self):
         """Test duplicate watchers NOT detected when called from bot.py."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer(caller_script="bot.py")
@@ -719,6 +726,7 @@ class TestDiagnoseEdgeCases:
     def test_diagnose_stale_pid_with_running_bot(self):
         """Test detects stale PID when file points to wrong process."""
         import time
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()
@@ -768,6 +776,7 @@ class TestKillProcess:
     def test_kill_process_timeout_then_force(self):
         """Test process kill when terminate times out."""
         import psutil
+
         from utils.reliability.self_healer import SelfHealer
 
         healer = SelfHealer()

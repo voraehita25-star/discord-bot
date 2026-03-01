@@ -10,6 +10,7 @@ These are pure schema tests — no live server required.
 from __future__ import annotations
 
 import json
+
 import pytest
 
 # ============================================================================

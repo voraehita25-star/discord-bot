@@ -185,7 +185,7 @@ class EntityMemoryManager:
             now = time.time()
             facts_json = json.dumps(facts.to_dict(), ensure_ascii=False)
 
-            async with db_manager.get_connection() as conn:
+            async with db_manager.get_write_connection() as conn:
                 # Explicit check for existing entity to handle NULL values
                 # in UNIQUE constraint (SQLite treats NULLs as distinct)
                 if channel_id is None and guild_id is None:
@@ -401,14 +401,28 @@ class EntityMemoryManager:
             return False
 
         try:
-            async with db_manager.get_connection() as conn:
-                await conn.execute(
-                    """
-                    DELETE FROM entity_memories
-                    WHERE name = ? AND channel_id IS ? AND guild_id IS ?
-                    """,
-                    (name, channel_id, guild_id),
-                )
+            async with db_manager.get_write_connection() as conn:
+                # Use explicit NULL checks consistent with add_entity
+                if channel_id is None and guild_id is None:
+                    await conn.execute(
+                        "DELETE FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id IS NULL",
+                        (name,),
+                    )
+                elif channel_id is None:
+                    await conn.execute(
+                        "DELETE FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id = ?",
+                        (name, guild_id),
+                    )
+                elif guild_id is None:
+                    await conn.execute(
+                        "DELETE FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id IS NULL",
+                        (name, channel_id),
+                    )
+                else:
+                    await conn.execute(
+                        "DELETE FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id = ?",
+                        (name, channel_id, guild_id),
+                    )
                 await conn.commit()
 
             logging.info("🗑️ Deleted entity: %s", name)

@@ -66,7 +66,7 @@ class AuditLogger:
                     # If details is not valid JSON, wrap it
                     full_details = json.dumps({"original": details, "target_type": target_type})
 
-            async with db.get_connection() as conn:
+            async with db.get_write_connection() as conn:
                 await conn.execute(
                     """
                     INSERT INTO audit_log (guild_id, user_id, action_type, target_id, details)

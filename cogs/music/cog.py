@@ -98,7 +98,7 @@ class Music(commands.Cog):
     class _DictProxy:
         """Proxy that maps dict[guild_id] access to MusicGuildState fields."""
 
-        def __init__(self, cog: "Music", attr: str) -> None:
+        def __init__(self, cog: Music, attr: str) -> None:
             self._cog = cog
             self._attr = attr
 
@@ -146,6 +146,7 @@ class Music(commands.Cog):
                         "auto_disconnect_task": None, "last_text_channel": None,
                         "loop": False, "fixing": False, "mode_247": False,
                         "volume": 0.5, "play_retries": 0,
+                        "play_lock": asyncio.Lock(),
                     }
                     default_val = _defaults.get(self._attr)
                     setattr(gs, self._attr, default_val)
@@ -178,12 +179,15 @@ class Music(commands.Cog):
                 "auto_disconnect_task": None, "last_text_channel": None,
                 "loop": False, "fixing": False, "mode_247": False,
                 "volume": 0.5, "play_retries": 0,
+                "play_lock": None,  # Sentinel; each guild gets a fresh Lock below
             }
             default_val = _defaults.get(self._attr)
             for gs in self._cog._guild_states.values():
                 # For queue, use .clear() on the deque instead of replacing
                 if self._attr == "queue":
                     gs.queue.clear()
+                elif self._attr == "play_lock":
+                    gs.play_lock = asyncio.Lock()
                 else:
                     setattr(gs, self._attr, default_val)
 
@@ -626,7 +630,7 @@ class Music(commands.Cog):
             if not acquired:
                 logging.debug("play_next lock acquisition failed for guild %s", guild_id)
                 return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _timed_out = True
             # Another task is processing - skip this call
             logging.debug("play_next already in progress for guild %s", guild_id)

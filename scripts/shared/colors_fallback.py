@@ -17,7 +17,7 @@ except ImportError:
 
     class Colors:
         """Fallback ANSI Color Codes for terminal output.
-        
+
         This class is used when the main utils.media.colors module
         is not available (e.g., running scripts standalone).
         """

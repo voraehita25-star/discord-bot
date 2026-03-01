@@ -25,17 +25,10 @@ from .api import build_api_config, call_gemini_api
 from .cache.ai_cache import AICache, ai_cache
 from .cache.analytics import AIAnalytics, ai_analytics
 from .commands import DebugCommands, MemoryCommands, ServerCommands
+from .core import PERFORMANCE_SAMPLES_MAX
 
 # Modular components (direct imports from subfolders)
 from .core.context_builder import AIContext, ContextBuilder, context_builder
-from .core import PERFORMANCE_SAMPLES_MAX
-from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
-from .data import FAUST_INSTRUCTION
-from .data import ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
-from .memory.conversation_branch import branch_manager
-from .memory.history_manager import HistoryManager
-from .memory.rag import rag_system
-from .memory.summarizer import summarizer
 from .core.message_queue import MessageQueue, PendingMessage, message_queue
 from .core.performance import (
     PerformanceTracker,
@@ -43,6 +36,12 @@ from .core.performance import (
     performance_tracker,
     request_deduplicator,
 )
+from .data import FAUST_INSTRUCTION, ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
+from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
+from .memory.conversation_branch import branch_manager
+from .memory.history_manager import HistoryManager
+from .memory.rag import rag_system
+from .memory.summarizer import summarizer
 from .processing.prompt_manager import prompt_manager
 
 # Optional processing modules — gracefully degrade if dependencies are missing

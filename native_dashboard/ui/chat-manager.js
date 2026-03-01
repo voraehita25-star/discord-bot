@@ -352,6 +352,42 @@ export class ChatManager {
                     showToast('Conversation renamed', { type: 'success' });
                 }
                 break;
+            case 'message_edited':
+                {
+                    const editedId = data.message_id;
+                    const editedContent = data.content;
+                    const shouldRegenerate = data.regenerate;
+                    // Update local message
+                    const editedMsg = this.messages.find(m => m.id === editedId);
+                    if (editedMsg)
+                        editedMsg.content = editedContent;
+                    if (shouldRegenerate && editedMsg) {
+                        // Remove all messages after the edited one
+                        const editedIdx = this.messages.indexOf(editedMsg);
+                        this.messages = this.messages.slice(0, editedIdx + 1);
+                        this.renderMessages();
+                        // Re-send the edited message to get a new AI response
+                        this.regenerateAfterEdit(editedMsg);
+                    }
+                    else {
+                        this.renderMessages();
+                        showToast('Message edited', { type: 'success' });
+                    }
+                }
+                break;
+            case 'message_deleted':
+                {
+                    const deletedId = data.message_id;
+                    const deletedPairId = data.pair_message_id;
+                    this.messages = this.messages.filter(m => m.id !== deletedId && m.id !== deletedPairId);
+                    this.renderMessages();
+                    this.listConversations();
+                    showToast('Message deleted', { type: 'success' });
+                }
+                break;
+            case 'status':
+                // Informational status message (e.g., "retrying...")
+                break;
             case 'error':
                 console.error('Server error:', data.message);
                 errorLogger.log('AI_SERVER_ERROR', data.message, JSON.stringify(data));
@@ -492,7 +528,11 @@ export class ChatManager {
             return;
         }
         // Get history BEFORE adding new message (backend will add it)
-        const historyToSend = this.messages.slice(-20);
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        const historyToSend = this.messages.slice(-20).map(m => ({
+            role: m.role,
+            content: m.content,
+        }));
         // Add to local messages for display (include images)
         this.messages.push({
             role: 'user',
@@ -608,14 +648,18 @@ export class ChatManager {
             if (content) {
                 content.innerHTML = this.formatMessage(fullResponse);
             }
-            // Add copy button at the bottom
+            // Add action buttons (copy, edit, delete) at the bottom
             const wrapper = streamingMsg.querySelector('.message-wrapper');
             if (wrapper && !wrapper.querySelector('.message-actions')) {
                 const actionsDiv = document.createElement('div');
                 actionsDiv.className = 'message-actions';
-                actionsDiv.innerHTML = `<button class="copy-message-btn" data-content="${escapeHtml(fullResponse).replace(/"/g, '&quot;')}" title="Copy message">\uD83D\uDCCB Copy</button>`;
+                const msgIdx = this.messages.length; // Will be pushed below
+                actionsDiv.innerHTML = `
+                    <button class="copy-message-btn" data-content="${escapeHtml(fullResponse).replace(/"/g, '&quot;')}" title="Copy">\uD83D\uDCCB Copy</button>
+                    <button class="edit-message-btn" data-msg-idx="${msgIdx}" title="Edit">\u270F\uFE0F Edit</button>
+                    <button class="delete-message-btn" data-msg-idx="${msgIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
+                `;
                 wrapper.appendChild(actionsDiv);
-                // Add click event
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
                     const btn = e.target;
                     const contentAttr = btn.getAttribute('data-content') || '';
@@ -630,6 +674,14 @@ export class ChatManager {
                     catch (err) {
                         console.error('Failed to copy:', err);
                     }
+                });
+                actionsDiv.querySelector('.edit-message-btn')?.addEventListener('click', () => {
+                    this.startEditMessage(msgIdx);
+                });
+                actionsDiv.querySelector('.delete-message-btn')?.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog('Delete this message?');
+                    if (confirmed)
+                        this.deleteMessage(msgIdx);
                 });
             }
         }
@@ -752,10 +804,12 @@ export class ChatManager {
             const modeHtml = (!isUser && msg.mode)
                 ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>`
                 : '';
-            // Copy button for AI messages (at bottom)
-            const copyBtnHtml = !isUser
-                ? `<div class="message-actions"><button class="copy-message-btn" data-content="${escapeHtml(msg.content).replace(/"/g, '&quot;')}" title="Copy message">\uD83D\uDCCB Copy</button></div>`
-                : '';
+            // Action buttons for all messages
+            const msgId = msg.id != null ? msg.id : '';
+            const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content).replace(/"/g, '&quot;')}" title="Copy">\uD83D\uDCCB Copy</button>`;
+            const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${this.messages.indexOf(msg)}" title="Edit">\u270F\uFE0F Edit</button>`;
+            const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${this.messages.indexOf(msg)}" data-role="${msg.role}" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>`;
+            const actionsHtml = `<div class="message-actions">${copyBtn}${editBtn}${deleteBtn}</div>`;
             return `
                 <div class="chat-message ${msg.role}">
                     <div class="message-avatar">${avatarHtml}</div>
@@ -768,7 +822,7 @@ export class ChatManager {
                         ${thinkingHtml}
                         ${imagesHtml}
                         <div class="message-content">${this.formatMessage(msg.content)}</div>
-                        ${copyBtnHtml}
+                        ${actionsHtml}
                     </div>
                 </div>
             `;
@@ -808,7 +862,6 @@ export class ChatManager {
         container.querySelectorAll('.copy-message-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const content = btn.getAttribute('data-content') || '';
-                // Decode HTML entities back to original text
                 const textarea = document.createElement('textarea');
                 textarea.innerHTML = content;
                 const decodedContent = textarea.value;
@@ -821,6 +874,25 @@ export class ChatManager {
                 catch (err) {
                     console.error('Failed to copy:', err);
                     showToast('Failed to copy message', { type: 'error' });
+                }
+            });
+        });
+        // Setup edit button clicks
+        container.querySelectorAll('.edit-message-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.msgIdx || '-1');
+                if (idx >= 0)
+                    this.startEditMessage(idx);
+            });
+        });
+        // Setup delete button clicks
+        container.querySelectorAll('.delete-message-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const idx = parseInt(btn.dataset.msgIdx || '-1');
+                if (idx >= 0) {
+                    const confirmed = await showConfirmDialog('Delete this message?');
+                    if (confirmed)
+                        this.deleteMessage(idx);
                 }
             });
         });
@@ -1034,12 +1106,172 @@ export class ChatManager {
             fileInput.value = '';
         });
     }
+    // ========================================================================
+    // Message Edit / Delete
+    // ========================================================================
+    startEditMessage(msgIdx) {
+        if (this.isStreaming)
+            return;
+        const msg = this.messages[msgIdx];
+        if (!msg)
+            return;
+        // Find the message element in DOM
+        const container = document.getElementById('chat-messages');
+        if (!container)
+            return;
+        const msgElements = container.querySelectorAll('.chat-message');
+        const msgEl = msgElements[msgIdx];
+        if (!msgEl)
+            return;
+        const contentEl = msgEl.querySelector('.message-content');
+        const actionsEl = msgEl.querySelector('.message-actions');
+        if (!contentEl)
+            return;
+        // Replace content with textarea
+        const originalContent = msg.content;
+        contentEl.innerHTML = `
+            <textarea class="edit-textarea">${escapeHtml(originalContent)}</textarea>
+            <div class="edit-actions">
+                <button class="edit-save-btn">Save</button>
+                <button class="edit-save-regen-btn" style="${msg.role === 'user' ? '' : 'display:none'}">Save &amp; Regenerate</button>
+                <button class="edit-cancel-btn">Cancel</button>
+            </div>
+        `;
+        if (actionsEl)
+            actionsEl.style.display = 'none';
+        const textarea = contentEl.querySelector('.edit-textarea');
+        if (textarea) {
+            textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            // Auto-resize
+            textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+        }
+        // Save button (edit only, no regenerate)
+        contentEl.querySelector('.edit-save-btn')?.addEventListener('click', () => {
+            const newContent = contentEl.querySelector('.edit-textarea')?.value?.trim();
+            if (newContent && newContent !== originalContent) {
+                this.saveEdit(msgIdx, newContent, false);
+            }
+            else {
+                this.cancelEdit(msgIdx, originalContent);
+            }
+        });
+        // Save & Regenerate button (edit + regenerate AI response)
+        contentEl.querySelector('.edit-save-regen-btn')?.addEventListener('click', () => {
+            const newContent = contentEl.querySelector('.edit-textarea')?.value?.trim();
+            if (newContent) {
+                this.saveEdit(msgIdx, newContent, true);
+            }
+        });
+        // Cancel button
+        contentEl.querySelector('.edit-cancel-btn')?.addEventListener('click', () => {
+            this.cancelEdit(msgIdx, originalContent);
+        });
+        // Escape key to cancel
+        textarea?.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.cancelEdit(msgIdx, originalContent);
+            }
+        });
+    }
+    saveEdit(msgIdx, newContent, regenerate) {
+        const msg = this.messages[msgIdx];
+        if (!msg)
+            return;
+        this.send({
+            type: 'edit_message',
+            message_id: msg.id,
+            content: newContent,
+            conversation_id: this.currentConversation?.id,
+            regenerate,
+        });
+    }
+    cancelEdit(msgIdx, originalContent) {
+        // Re-render the single message back to normal
+        const container = document.getElementById('chat-messages');
+        if (!container)
+            return;
+        const msgElements = container.querySelectorAll('.chat-message');
+        const msgEl = msgElements[msgIdx];
+        if (!msgEl)
+            return;
+        const contentEl = msgEl.querySelector('.message-content');
+        const actionsEl = msgEl.querySelector('.message-actions');
+        if (contentEl)
+            contentEl.innerHTML = this.formatMessage(originalContent);
+        if (actionsEl)
+            actionsEl.style.display = '';
+    }
+    deleteMessage(msgIdx) {
+        if (this.isStreaming)
+            return;
+        const msg = this.messages[msgIdx];
+        if (!msg || msg.id == null)
+            return;
+        const isUser = msg.role === 'user';
+        // For user messages, also delete the paired AI response (next message)
+        let pairId;
+        let deletePair = false;
+        if (isUser && msgIdx + 1 < this.messages.length) {
+            const nextMsg = this.messages[msgIdx + 1];
+            if (nextMsg.role === 'assistant' && nextMsg.id != null) {
+                pairId = nextMsg.id;
+                deletePair = true;
+            }
+        }
+        // For AI messages, also delete the paired user message (previous message)
+        if (!isUser && msgIdx - 1 >= 0) {
+            const prevMsg = this.messages[msgIdx - 1];
+            if (prevMsg.role === 'user' && prevMsg.id != null) {
+                pairId = prevMsg.id;
+                deletePair = true;
+            }
+        }
+        this.send({
+            type: 'delete_message',
+            message_id: msg.id,
+            delete_pair: deletePair,
+            pair_message_id: pairId,
+        });
+    }
+    regenerateAfterEdit(editedMsg) {
+        if (!this.currentConversation)
+            return;
+        // Build history from messages before the edited message
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        const editedIdx = this.messages.indexOf(editedMsg);
+        const historyToSend = this.messages.slice(0, editedIdx).map(m => ({
+            role: m.role,
+            content: m.content,
+        }));
+        const thinkingToggle = document.getElementById('thinking-toggle');
+        const searchToggle = document.getElementById('chat-use-search');
+        const unrestrictedToggle = document.getElementById('chat-unrestricted');
+        const userName = settings.userName || 'User';
+        this.send({
+            type: 'message',
+            conversation_id: this.currentConversation.id,
+            content: editedMsg.content,
+            role_preset: this.currentConversation.role_preset,
+            thinking_enabled: thinkingToggle?.checked || false,
+            history: historyToSend,
+            use_search: searchToggle?.checked ?? true,
+            unrestricted_mode: unrestrictedToggle?.checked || false,
+            images: [],
+            user_name: userName,
+            is_regeneration: true, // Skip duplicate user message save in backend
+        });
+    }
     showNewChatModal() {
         const modal = document.getElementById('new-chat-modal');
         if (modal) {
             modal.classList.add('active');
             this.selectedRole = 'general';
             this.thinkingEnabled = false;
+            // Reset modal thinking checkbox to match (prevents stale checked state)
+            const modalThinking = document.getElementById('modal-thinking');
+            if (modalThinking)
+                modalThinking.checked = false;
             this.updateRoleSelection();
         }
     }

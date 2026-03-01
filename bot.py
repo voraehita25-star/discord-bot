@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import hashlib
 import logging
 import os
@@ -16,8 +17,6 @@ import sys
 import time
 import traceback
 from pathlib import Path
-
-import contextlib
 
 import discord
 import psutil
@@ -243,6 +242,7 @@ atexit.register(remove_pid)
 
 # Use config as single source of truth for token
 from config import settings as _config_settings
+
 TOKEN = _config_settings.discord_token or os.getenv("DISCORD_TOKEN")
 
 

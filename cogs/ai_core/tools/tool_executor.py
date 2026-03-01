@@ -97,11 +97,11 @@ async def execute_tool_call(
     # Input validation helper
     def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
         """Validate channel/category name from AI input.
-        
+
         Args:
             name: The name to validate
             max_length: Maximum allowed length (default: MAX_CHANNEL_NAME_LENGTH)
-            
+
         Returns:
             Tuple of (is_valid, cleaned_name_or_error_message)
         """

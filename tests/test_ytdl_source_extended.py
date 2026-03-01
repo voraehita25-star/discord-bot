@@ -8,6 +8,7 @@ Tests configuration and constants.
 
 from unittest.mock import patch
 
+
 class TestYtdlOptsHq:
     """Tests for ytdl_opts_hq configuration."""
 

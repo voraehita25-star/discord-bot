@@ -5,10 +5,10 @@ streaming with mock Gemini, thinking mode, DB save, timeout/error handling.
 """
 
 from __future__ import annotations
+import os
 
 import asyncio
 import base64
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -169,7 +169,7 @@ class TestChatStreaming:
             FakeChunk(text="world!"),
         ])
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "hi", "conversation_id": "test-conv"},
@@ -203,7 +203,7 @@ class TestChatStreaming:
 
         client = self._make_client([first_chunk, FakeChunk(text="Answer")])
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "think about this", "conversation_id": "test-conv",
@@ -288,7 +288,7 @@ class TestChatStreaming:
 
         client.aio.models.generate_content_stream = slow_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -311,7 +311,7 @@ class TestChatStreaming:
 
         client.aio.models.generate_content_stream = broken_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -339,7 +339,7 @@ class TestImageProcessing:
         client = MagicMock()
         client.aio.models.generate_content_stream = AsyncMock(return_value=FakeStream([FakeChunk(text="Nice image")]))
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "look at this", "conversation_id": "conv-1", "images": [img_data]},
@@ -360,7 +360,7 @@ class TestImageProcessing:
         client = MagicMock()
         client.aio.models.generate_content_stream = AsyncMock(return_value=FakeStream([FakeChunk(text="ok")]))
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "look", "conversation_id": "conv-1", "images": [big_data]},
@@ -425,7 +425,7 @@ class TestContextBuilding:
 
         client.aio.models.generate_content_stream = capture_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {
@@ -473,7 +473,7 @@ class TestErrorBranches:
 
         long_history = [{"role": "user", "content": f"msg {i}"} for i in range(150)]
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "latest", "conversation_id": "c1", "history": long_history},
@@ -567,7 +567,7 @@ class TestErrorBranches:
             return_value=FakeStream([FakeChunk(text="ok")])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "look", "conversation_id": "c1",
@@ -580,7 +580,7 @@ class TestErrorBranches:
 
     @pytest.mark.asyncio
     async def test_unrestricted_mode(self, ws):
-        """Test unrestricted mode injection (lines 182-183)."""
+        """Test unrestricted mode injection uses per-preset framing."""
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
         client = MagicMock()
@@ -592,9 +592,7 @@ class TestErrorBranches:
 
         client.aio.models.generate_content_stream = capture_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), \
-             patch("cogs.ai_core.api.dashboard_chat.ENI_ESCALATION_FRAMING", "UNRESTRICTED_FRAME"), \
-             patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "true"}):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "test", "conversation_id": "c1", "unrestricted_mode": True},
@@ -604,7 +602,9 @@ class TestErrorBranches:
         # Check that unrestricted injection was included in system instruction
         config = captured.get("config")
         assert config is not None
-        assert "UNRESTRICTED" in config.system_instruction
+        assert "UNRESTRICTED MODE ACTIVE" in config.system_instruction
+        # Temperature should be boosted in unrestricted mode
+        # assert config.temperature == 1.0  # Temperature is set via global config, not dynamically in handle_chat_message
 
     @pytest.mark.asyncio
     async def test_null_stream_raises(self, ws):
@@ -618,7 +618,7 @@ class TestErrorBranches:
 
         client.aio.models.generate_content_stream = null_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws, {"content": "hello", "conversation_id": "c1"}, client,
             )
@@ -648,7 +648,7 @@ class TestErrorBranches:
             return_value=FakeStream([chunk, text_chunk])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws,
                 {"content": "think", "conversation_id": "c1", "thinking_enabled": True},
@@ -679,7 +679,7 @@ class TestErrorBranches:
             return_value=FakeStream([BareChunk("Bare text")])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             await handle_chat_message(
                 ws, {"content": "hi", "conversation_id": "c1"}, client,
             )
@@ -754,7 +754,7 @@ class TestErrorBranches:
 
         ws.send_json = fail_on_error
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             # Should not raise despite inner exception
             await handle_chat_message(
                 ws, {"content": "hi", "conversation_id": "c1"}, client,
@@ -781,7 +781,7 @@ class TestErrorBranches:
 
         ws.send_json = fail_on_error
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
             # Should not raise despite inner exception
             await handle_chat_message(
                 ws, {"content": "hi", "conversation_id": "c1"}, client,

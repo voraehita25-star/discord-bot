@@ -7,7 +7,9 @@ Tests constants, imports, and configuration.
 
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
 
 class TestLogicModuleImports:
     """Tests for logic module imports."""

@@ -321,9 +321,10 @@ def check_and_stop_existing_bot() -> None:
 
 def clear_screen() -> None:
     """Clear terminal screen."""
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
         shell=False,
+        check=False,
     )
 
 

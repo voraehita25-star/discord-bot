@@ -154,7 +154,6 @@ GAME_SEARCH_KEYWORDS = [
     "lobotomy corp",
     # Search indicators
     "wiki",
-    "stats",
     "price",
     "cost",
     "damage",

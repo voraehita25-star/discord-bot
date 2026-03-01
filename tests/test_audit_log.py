@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 
-
 class TestAuditLogConstants:
     """Tests for audit log constants."""
 

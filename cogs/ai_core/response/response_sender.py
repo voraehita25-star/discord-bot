@@ -116,12 +116,7 @@ class ResponseSender:
                 allowed_mentions,
             )
 
-        except (
-            discord.HTTPException,
-            discord.Forbidden,
-            discord.NotFound,
-            asyncio.TimeoutError,
-        ) as e:
+        except (TimeoutError, discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
             logging.error("Send response error: %s", e)
             return SendResult(success=False, error=str(e))
 
@@ -295,7 +290,7 @@ class ResponseSender:
                         timeout=WEBHOOK_SEND_TIMEOUT,
                     )
                     last_message_id = msg.id if msg else None
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logging.warning("Webhook send timeout for chunk %d", i + 1)
                     # Retry timed-out chunk + remaining chunks via direct send
                     # (webhook timeout doesn't guarantee delivery failed)

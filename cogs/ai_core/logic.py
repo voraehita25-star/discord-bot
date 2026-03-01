@@ -43,6 +43,10 @@ from .api.api_handler import (
     call_gemini_api_streaming,
     detect_search_intent,
 )
+from .core.message_queue import MessageQueue
+
+# Import new modular components (v3.3.6 - direct subfolder imports)
+from .core.performance import PerformanceTracker, RequestDeduplicator
 
 # Import extracted modules
 from .data.constants import (
@@ -71,10 +75,6 @@ from .memory.entity_memory import entity_memory
 from .memory.rag import rag_system
 from .memory.state_tracker import state_tracker
 from .memory.summarizer import summarizer
-from .core.message_queue import MessageQueue
-
-# Import new modular components (v3.3.6 - direct subfolder imports)
-from .core.performance import PerformanceTracker, RequestDeduplicator
 from .response.response_mixin import ResponseMixin
 from .response.response_sender import ResponseSender
 from .session_mixin import SessionMixin
@@ -155,28 +155,28 @@ except ImportError:
 
 
 try:
-    from .processing.intent_detector import Intent, detect_intent
+    from .processing.intent_detector import Intent, detect_intent  # noqa: F401  # noqa: F401
 
     INTENT_DETECTOR_AVAILABLE = True
 except ImportError:
     INTENT_DETECTOR_AVAILABLE = False
 
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction
+    from .cache.analytics import get_ai_stats, log_ai_interaction  # noqa: F401  # noqa: F401
 
     ANALYTICS_AVAILABLE = True
 except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher
+    from .cache.ai_cache import ai_cache, context_hasher  # noqa: F401  # noqa: F401
 
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 try:
-    from .memory.history_manager import history_manager
+    from .memory.history_manager import history_manager  # noqa: F401  # noqa: F401
 
     HISTORY_MANAGER_AVAILABLE = True
 except ImportError:
@@ -747,7 +747,7 @@ class ChatManager(SessionMixin, ResponseMixin):
             lock_acquired = await asyncio.wait_for(
                 asyncio.shield(_acquire_task), timeout=LOCK_TIMEOUT
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _timed_out = True
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
@@ -825,7 +825,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             for emoji_name, emoji_img in emoji_images:
                                 content_parts.append(f"[Custom Emoji: {emoji_name}]")
                                 content_parts.append(emoji_img)
-                        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                        except (TimeoutError, aiohttp.ClientError, OSError) as e:
                             logging.debug("Failed to fetch emoji images: %s", e)
 
                     # Convert Discord custom emojis to readable format in text
@@ -845,12 +845,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 url_context = format_url_content_for_context(fetched)
                                 if url_context:
                                     logging.info("🔗 Fetched content from %d URL(s)", len(fetched))
-                        except (
-                            aiohttp.ClientError,
-                            asyncio.TimeoutError,
-                            ValueError,
-                            OSError,
-                        ) as e:
+                        except (TimeoutError, aiohttp.ClientError, ValueError, OSError) as e:
                             logging.debug("URL fetching failed: %s", e)
 
                     # --- RAG: Retrieve Relevant Memories ---
@@ -1028,7 +1023,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     len(chat_data.get("history", [])),
                                     len(compressed),
                                 )
-                        except (ValueError, TypeError, KeyError, asyncio.TimeoutError) as e:
+                        except (TimeoutError, ValueError, TypeError, KeyError) as e:
                             logging.warning("Auto-summarize failed: %s", e)
 
                     # Use only recent history if too long (constant in data/constants.py)
@@ -1067,7 +1062,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_item = {
                             "role": "user",
@@ -1145,7 +1140,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_entries = []
                         user_item = {
@@ -1180,7 +1175,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Include text file contents in saved history
                     if text_parts:
                         user_msg_text += "\n\n" + "\n".join(text_parts)
-                    current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                     new_entries = []
 

@@ -3,11 +3,11 @@ Tests for cogs.ai_core.memory.rag module.
 """
 
 import time
-
-
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import numpy as np
 import pytest
+
 
 class TestRAGConstants:
     """Tests for RAG module constants."""
@@ -482,7 +482,7 @@ class TestMemorySystem:
             stats = system.get_stats()
 
             assert stats["faiss_available"] is not None
-            assert stats["index_built"] == False
+            assert not stats["index_built"]
             assert stats["memories_cached"] == 0
 
     def test_calculate_time_decay_now(self):

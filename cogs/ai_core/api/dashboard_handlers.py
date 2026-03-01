@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
-from .dashboard_config import DB_AVAILABLE, DASHBOARD_ROLE_PRESETS
+from .dashboard_config import DASHBOARD_ROLE_PRESETS, DB_AVAILABLE
+
 
 # Lazy import Database to avoid circular imports
 def _get_db():
@@ -172,6 +173,80 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
     except Exception as e:
         logging.error("WebSocket handler error: %s", e)
         await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to export conversation"})
+
+
+# ============================================================================
+# Message edit/delete handlers
+# ============================================================================
+
+async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Edit a message's content. If regenerate=True for user messages, deletes all subsequent messages."""
+    message_id = data.get("message_id")
+    content = data.get("content", "").strip()
+    regenerate = data.get("regenerate", False)
+    conversation_id = data.get("conversation_id")
+
+    if not message_id or not content or not DB_AVAILABLE:
+        await ws.send_json({"type": "error", "code": "CANNOT_EDIT", "message": "Cannot edit: missing data or DB unavailable"})
+        return
+
+    try:
+        db = _get_db()
+        updated = await db.update_dashboard_message(int(message_id), content)
+        if not updated:
+            await ws.send_json({"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"})
+            return
+
+        deleted_count = 0
+        if regenerate and conversation_id:
+            deleted_count = await db.delete_dashboard_messages_after(conversation_id, int(message_id))
+
+        await ws.send_json({
+            "type": "message_edited",
+            "message_id": message_id,
+            "content": content,
+            "conversation_id": conversation_id,
+            "regenerate": regenerate,
+            "deleted_after": deleted_count,
+        })
+    except Exception as e:
+        logging.error("WebSocket handler error: %s", e)
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to edit message"})
+
+
+async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Delete a message. If delete_pair=True, also deletes the paired response (next message)."""
+    message_id = data.get("message_id")
+    delete_pair = data.get("delete_pair", False)
+    pair_message_id = data.get("pair_message_id")
+
+    if not message_id or not DB_AVAILABLE:
+        await ws.send_json({"type": "error", "code": "CANNOT_DELETE", "message": "Cannot delete: missing ID or DB unavailable"})
+        return
+
+    try:
+        db = _get_db()
+        conv_id = await db.delete_dashboard_message(int(message_id))
+        if not conv_id:
+            await ws.send_json({"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"})
+            return
+
+        # Delete paired message if requested
+        deleted_pair_id = None
+        if delete_pair and pair_message_id:
+            pair_conv_id = await db.delete_dashboard_message(int(pair_message_id))
+            if pair_conv_id:
+                deleted_pair_id = pair_message_id
+
+        await ws.send_json({
+            "type": "message_deleted",
+            "message_id": message_id,
+            "pair_message_id": deleted_pair_id,
+            "conversation_id": conv_id,
+        })
+    except Exception as e:
+        logging.error("WebSocket handler error: %s", e)
+        await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to delete message"})
 
 
 # ============================================================================

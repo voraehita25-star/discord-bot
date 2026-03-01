@@ -204,7 +204,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 timeout=cls.YTDL_TIMEOUT,
             )
             ytdl_obj = ytdl_hq
-        except (yt_dlp.DownloadError, asyncio.TimeoutError) as e:
+        except (TimeoutError, yt_dlp.DownloadError) as e:
             logging.warning("⚠️ HQ Download failed: %s. Switching to Fallback Mode...", e)
 
             # Attempt 2: Fallback (No cookies, safer format)
@@ -218,7 +218,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     timeout=cls.YTDL_TIMEOUT,
                 )
                 ytdl_obj = ytdl_fallback
-            except (yt_dlp.DownloadError, asyncio.TimeoutError) as e2:
+            except (TimeoutError, yt_dlp.DownloadError) as e2:
                 logging.error("❌ All download attempts failed: %s", e2)
                 raise e2  # Give up
 
@@ -274,7 +274,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 ),
                 timeout=cls.YTDL_TIMEOUT,
             )
-        except (yt_dlp.DownloadError, asyncio.TimeoutError):
+        except (TimeoutError, yt_dlp.DownloadError):
             ytdl_fallback = get_ytdl_fallback()
             data = await asyncio.wait_for(
                 loop.run_in_executor(

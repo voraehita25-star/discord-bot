@@ -53,7 +53,7 @@ except ImportError:
 @pytest.fixture(autouse=True)
 def _reset_guardrails_state():
     """Reset module-level mutable state in guardrails to prevent test pollution.
-    
+
     The guardrails module has a module-level `unrestricted_channels` set that
     persists across tests. Tests that call set_unrestricted() can leak state
     into subsequent tests, causing spurious failures.

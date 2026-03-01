@@ -6,7 +6,6 @@ import pytest
 from discord.ext import commands
 
 
-
 class TestAIDebugCog:
     """Tests for AIDebug cog initialization."""
 
@@ -542,13 +541,12 @@ class TestAICacheClearCommand:
             return
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
+        AIDebug(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
 
         # Simulate ImportError by having get_cog work but cache import fail
-        original_callback = cog.ai_cache_clear.callback
 
         # Call with mocked import to raise ImportError
         with patch('builtins.__import__', side_effect=ImportError):
@@ -654,7 +652,7 @@ class TestAIStatsCommand:
             return
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
+        AIDebug(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -674,7 +672,7 @@ class TestAITokensCommand:
             return
 
         mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
+        AIDebug(mock_bot)
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()

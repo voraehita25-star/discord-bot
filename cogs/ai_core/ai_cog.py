@@ -343,7 +343,7 @@ class AI(commands.Cog):
             # Validate webhook identity - only allow known proxy bots (Tupperbox, PluralKit)
             # Reject webhooks from unknown sources to prevent abuse
             ALLOWED_WEBHOOK_NAMES = {"Tupperbox", "PluralKit"}
-            webhook_name = getattr(message.author, "name", "")
+            getattr(message.author, "name", "")
             is_known_proxy = False
 
             # Check cache first to avoid rate-limited webhook API calls
@@ -795,7 +795,7 @@ class AI(commands.Cog):
 
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await ctx.send("⏰ หมดเวลา - ยกเลิกการดำเนินการ")
             return
 
@@ -1018,7 +1018,7 @@ class AI(commands.Cog):
 
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await ctx.send("⏰ หมดเวลา - ยกเลิกการดำเนินการ")
             return
 

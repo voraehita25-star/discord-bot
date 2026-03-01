@@ -394,11 +394,10 @@ class LongTermMemory:
         similar = await self._find_similar_fact(user_id, content_query)
         if similar and similar.id:
             if DB_AVAILABLE and db is not None:
-                async with db.get_connection() as conn:
+                async with db.get_write_connection() as conn:
                     await conn.execute(
                         "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
                     )
-                    await conn.commit()
 
             # Remove from cache
             if user_id in self._cache:
@@ -547,7 +546,7 @@ class LongTermMemory:
                 self._cache[fact.user_id].append(fact)
                 return fact.id
 
-        async with db.get_connection() as conn:
+        async with db.get_write_connection() as conn:
             cursor = await conn.execute(
                 """
                 INSERT INTO user_facts
@@ -582,7 +581,7 @@ class LongTermMemory:
         fact.confidence = 1.0  # Reset confidence on confirmation
 
         if DB_AVAILABLE and db is not None and fact.id:
-            async with db.get_connection() as conn:
+            async with db.get_write_connection() as conn:
                 await conn.execute(
                     """
                     UPDATE user_facts
@@ -591,7 +590,6 @@ class LongTermMemory:
                 """,
                     (now.isoformat(), fact.id),
                 )
-                await conn.commit()
 
     async def deduplicate_facts(self, user_id: int) -> int:
         """
@@ -613,11 +611,10 @@ class LongTermMemory:
             if content_key in seen_contents:
                 # Mark duplicate as inactive
                 if fact.id and DB_AVAILABLE and db is not None:
-                    async with db.get_connection() as conn:
+                    async with db.get_write_connection() as conn:
                         await conn.execute(
                             "UPDATE user_facts SET is_active = 0 WHERE id = ?", (fact.id,)
                         )
-                        await conn.commit()
                 removed += 1
             else:
                 seen_contents[content_key] = fact.id

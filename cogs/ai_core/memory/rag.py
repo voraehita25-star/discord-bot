@@ -26,6 +26,8 @@ except ImportError:
     _DB_AVAILABLE = False
     logging.warning("Database not available for RAG module")
 
+from datetime import timezone
+
 from ..data.constants import GEMINI_API_KEY
 
 # Index persistence path
@@ -142,7 +144,7 @@ class FAISSIndex:
 
     def search(self, query_vector: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Search for k nearest neighbors. Returns list of (id, similarity).
-        
+
         Note: This is a synchronous method. For async contexts, use search_async().
         """
         # Normalize query first (outside lock for performance)
@@ -204,7 +206,7 @@ class FAISSIndex:
         1. Write to temp files
         2. Write completion marker
         3. Rename to final paths
-        
+
         This prevents inconsistent state if crash occurs between writes.
         """
         if not self._initialized or not FAISS_AVAILABLE:
@@ -407,7 +409,7 @@ class MemorySystem:
 
     async def _ensure_index(self, channel_id: int | None = None) -> None:
         """Build FAISS index from database if not already built.
-        
+
         Uses lock to prevent race conditions from concurrent calls.
         """
         if not FAISS_AVAILABLE or self._index_built:
@@ -566,10 +568,10 @@ class MemorySystem:
         Returns value between 0 and 1, where 1 is most recent.
         """
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-            # Always use UTC for consistent comparison, avoiding timezone issues
+            # Always use timezone.utc for consistent comparison, avoiding timezone issues
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
@@ -772,8 +774,7 @@ class MemorySystem:
                     from datetime import datetime
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    from datetime import timezone as _tz
-                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(_tz.utc)
+                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(timezone.utc)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):
                     pass  # Invalid or missing datetime format

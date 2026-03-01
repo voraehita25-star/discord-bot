@@ -35,7 +35,7 @@ impl VectorIndex {
                 if word_lower.len() >= 3 {
                     self.keyword_index
                         .entry(word_lower)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(existing_idx);
                 }
             }
@@ -52,7 +52,7 @@ impl VectorIndex {
             if word_lower.len() >= 3 {
                 self.keyword_index
                     .entry(word_lower)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(idx);
             }
         }

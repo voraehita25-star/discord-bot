@@ -3,15 +3,13 @@ Extended tests for Media Processor module.
 Tests image processing, avatar handling, and attachment processing.
 """
 
+import base64
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-
-import base64
 from PIL import Image
-from unittest.mock import patch
+
 
 class TestLoadCachedImageBytes:
     """Tests for load_cached_image_bytes function."""

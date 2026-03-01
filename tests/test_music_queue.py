@@ -4,7 +4,6 @@
 from cogs.music.queue import QueueManager
 
 
-
 class TestQueueManager:
     """Tests for QueueManager class."""
 

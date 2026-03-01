@@ -154,7 +154,7 @@ class TestBotSettings:
         temp_dir = str(tmp_path / "temp")
         logs_dir = str(tmp_path / "logs")
 
-        settings = BotSettings(
+        BotSettings(
             data_dir=data_dir,
             temp_dir=temp_dir,
             logs_dir=logs_dir,

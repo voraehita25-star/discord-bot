@@ -5,7 +5,6 @@ Tests for cogs.ai_core.cache.ai_cache module.
 import time
 
 
-
 class TestCacheEntryDataclass:
     """Tests for CacheEntry dataclass."""
 
@@ -210,7 +209,7 @@ class TestAICacheStats:
         cache.set("key1 longer message", "value1 longer response content")
 
         # Hit (must use same message)
-        result = cache.get("key1 longer message")
+        cache.get("key1 longer message")
 
         # Miss - use nonexistent key
         cache.get("nonexistent key here")
@@ -232,7 +231,7 @@ class TestAICacheClear:
         cache.set("key1 longer message", "value1 longer response content")
         cache.set("key2 longer message", "value2 longer response content")
 
-        count = cache.invalidate()
+        cache.invalidate()
 
         assert cache.get("key1 longer message") is None
         assert cache.get("key2 longer message") is None
@@ -245,7 +244,7 @@ class TestAICacheClear:
         cache.set("test message here", "test response content here")
 
         # Initially not expired
-        stats = cache.get_stats()
+        cache.get_stats()
         # Entry may or may not be stored depending on internal logic
 
         # cleanup_expired returns count of removed entries
@@ -678,7 +677,7 @@ class TestAICacheSetAndGet:
         cache = AICache()
         cache.set("test message", "Hello!")
 
-        result = cache.get("test message")
+        cache.get("test message")
 
         # Note: result may be None due to internal normalization
         # This test just verifies the operations don't raise errors

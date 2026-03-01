@@ -146,7 +146,7 @@ class SpotifyHandler:
                         self._setup_client()
                         if self.sp is None:
                             logging.error("Failed to recreate Spotify client")
-                            raise ConnectionError("Spotify client recreation failed")
+                            raise ConnectionError("Spotify client recreation failed") from None
                         # Re-bind func to the new client if it was a bound method
                         if hasattr(func, '__self__') and isinstance(func.__self__, spotipy.Spotify):
                             func = getattr(self.sp, func.__name__)

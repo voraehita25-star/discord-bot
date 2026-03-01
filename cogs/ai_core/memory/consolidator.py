@@ -203,7 +203,7 @@ class MemoryConsolidator:
                     ),
                     timeout=60.0,  # 60 second timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logging.warning("Consolidation API call timed out")
                 return 0
 

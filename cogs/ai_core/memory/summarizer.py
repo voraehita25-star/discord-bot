@@ -95,7 +95,7 @@ class ConversationSummarizer:
 
                     return summary
 
-                except (ValueError, TypeError, OSError, asyncio.TimeoutError, RuntimeError) as e:
+                except (TimeoutError, ValueError, TypeError, OSError, RuntimeError) as e:
                     last_error = e
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1.0 * (attempt + 1))  # Exponential backoff

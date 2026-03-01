@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-
 class TestOrjsonFallback:
     """Tests for orjson fallback to standard json."""
 
@@ -247,7 +246,7 @@ class TestLoadHistory:
         mock_bot.loop.run_in_executor = AsyncMock(return_value=[])
 
         with patch("cogs.ai_core.storage.DATABASE_AVAILABLE", False):
-            result = await load_history(mock_bot, 88888)
+            await load_history(mock_bot, 88888)
 
         # Cleanup
         _history_cache.clear()
@@ -346,7 +345,7 @@ class TestDeleteHistory:
             mock_db.delete_ai_history = AsyncMock(return_value=True)
 
             result = await storage.delete_history(12345)
-            assert result == True
+            assert result
             mock_db.delete_ai_history.assert_called_once_with(12345)
 
     @pytest.mark.asyncio
@@ -595,7 +594,7 @@ class TestLoadMetadata:
             mock_db.get_ai_metadata = AsyncMock(return_value={"thinking_enabled": False})
 
             result = await storage.load_metadata(bot, channel_id)
-            assert result["thinking_enabled"] == False
+            assert not result["thinking_enabled"]
 
 
 class TestGetMessageByLocalId:
@@ -944,7 +943,7 @@ class TestEnforceCacheSizeLimit:
         for i in range(5):
             _history_cache[i] = (current_time, [])
 
-        result = _enforce_cache_size_limit()
+        _enforce_cache_size_limit()
 
         # Should not remove any
         assert len(_history_cache) == 5
@@ -1696,7 +1695,7 @@ class TestCacheCleanup:
         fresh_time = time.time()
         _history_cache[88888] = (fresh_time, [{"test": "data"}])
 
-        result = _cleanup_expired_cache()
+        _cleanup_expired_cache()
 
         # The fresh entry should still be there
         assert 88888 in _history_cache

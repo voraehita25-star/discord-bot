@@ -46,7 +46,7 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
 
     Returns:
         Image bytes if file exists and readable, None otherwise.
-    
+
     Note:
         Cache is limited to IMAGE_CACHE_MAX_SIZE entries to prevent
         memory issues. Only successful reads are cached; missing files
@@ -86,7 +86,7 @@ load_cached_image_bytes.cache_info = _cache_info  # type: ignore[attr-defined]
 
 def get_image_cache_info() -> dict:
     """Get image cache statistics.
-    
+
     Returns:
         Dict with maxsize and currsize (hits/misses not tracked with manual cache).
     """

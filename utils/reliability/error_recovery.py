@@ -107,7 +107,7 @@ _MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
 
 def _cleanup_old_backoff_states() -> None:
     """Remove old backoff states to prevent memory leak.
-    
+
     Cleanup is triggered either when:
     1. State count exceeds MAX_BACKOFF_STATES
     2. Called periodically from _get_backoff_state
@@ -162,7 +162,7 @@ async def _get_backoff_state_async(key: str) -> BackoffState:
 
 def _reset_backoff_state(key: str) -> None:
     """Reset backoff state after success.
-    
+
     Note: This is called from async context via retry_async success path.
     Thread-safe via _backoff_states_lock.
     """

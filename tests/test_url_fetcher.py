@@ -183,7 +183,7 @@ class TestURLFetcherClientAsyncContext:
         with patch.object(URLFetcherClient, "_check_service", new_callable=AsyncMock) as mock_check:
             mock_check.return_value = True
 
-            async with URLFetcherClient() as client:
+            async with URLFetcherClient():
                 mock_check.assert_called_once()
 
     @pytest.mark.asyncio
@@ -259,7 +259,7 @@ class TestURLFetcherClientFetch:
         client._service_available = False
         client._fetch_fallback = AsyncMock(return_value={"url": "http://test.com"})
 
-        result = await client.fetch("http://test.com")
+        await client.fetch("http://test.com")
 
         client._fetch_fallback.assert_called_once_with("http://test.com")
 
@@ -404,7 +404,7 @@ class TestURLFetcherClientFetchBatch:
         })
 
         urls = ["http://a.com", "http://b.com"]
-        result = await client.fetch_batch(urls)
+        await client.fetch_batch(urls)
 
         client._fetch_batch_via_service.assert_called_once()
 
@@ -422,7 +422,7 @@ class TestURLFetcherClientFetchBatch:
         })
 
         urls = ["http://a.com", "http://b.com"]
-        result = await client.fetch_batch(urls)
+        await client.fetch_batch(urls)
 
         client._fetch_batch_fallback.assert_called_once_with(urls)
 
@@ -621,7 +621,7 @@ class TestConvenienceFunctions:
             MockClient.return_value = mock_client
 
             urls = ["http://a.com", "http://b.com"]
-            result = await fetch_urls(urls)
+            await fetch_urls(urls)
 
             mock_client.fetch_batch.assert_called_once_with(urls)
 

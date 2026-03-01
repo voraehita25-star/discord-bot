@@ -138,7 +138,7 @@ class HistoryManager:
     def _estimate_tokens_fallback(self, content: str) -> int:
         """
         Smart fallback token estimation for mixed Thai/English text.
-        
+
         Thai characters and other Unicode typically tokenize differently than ASCII:
         - ASCII/English: ~4 characters per token
         - Thai/Unicode: ~2-3 characters per token (more conservative)

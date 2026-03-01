@@ -226,7 +226,7 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     use std::io::Write;
     
     // Sanitize inputs to prevent log injection (strip newlines from type, limit length)
-    let error_type = error_type.replace('\n', " ").replace('\r', " ").chars().take(256).collect::<String>();
+    let error_type = error_type.replace(['\n', '\r'], " ").chars().take(256).collect::<String>();
     let message = message.chars().take(4096).collect::<String>(); // Limit message size
     
     let manager = lock_bot_manager!(state)?;

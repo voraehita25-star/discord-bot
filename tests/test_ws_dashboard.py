@@ -7,12 +7,7 @@ input validation, and conversation management.
 from __future__ import annotations
 
 import asyncio
-import hmac
-import json
 import os
-import uuid
-from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -153,7 +148,7 @@ class TestRateLimiting:
     @pytest.mark.asyncio
     async def test_under_rate_limit(self, server, ws):
         """Messages under the limit should be processed."""
-        for i in range(5):
+        for _i in range(5):
             await server.handle_message(ws, {"type": "ping"}, "c1")
         pongs = ws.find("pong")
         assert len(pongs) == 5
@@ -161,7 +156,7 @@ class TestRateLimiting:
     @pytest.mark.asyncio
     async def test_rate_limit_enforced_in_handler_loop(self, server):
         """Simulating rate limit by pre-filling message times."""
-        ws = FakeWS()
+        FakeWS()
         client_id = "rate-test"
         # Pre-fill with 30 recent timestamps (simulating burst)
         now = asyncio.get_event_loop().time()

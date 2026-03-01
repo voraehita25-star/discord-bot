@@ -123,7 +123,7 @@ class BotSettings:
 
 class FeatureFlags:
     """Registry tracking which optional features loaded successfully.
-    
+
     Exposed via the health API for debugging.
     """
 

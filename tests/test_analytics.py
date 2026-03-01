@@ -1,12 +1,10 @@
 """Tests for AI Analytics module."""
 
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-
-from unittest.mock import AsyncMock, patch
 
 class TestInteractionLog:
     """Tests for InteractionLog dataclass."""
@@ -211,7 +209,7 @@ class TestAIAnalytics:
         with patch("cogs.ai_core.cache.analytics.DB_AVAILABLE", False):
             analytics = AIAnalytics()
 
-            for i in range(5):
+            for _i in range(5):
                 await analytics.log_interaction(
                     user_id=123,
                     channel_id=456,

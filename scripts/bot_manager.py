@@ -239,9 +239,10 @@ def box_header(text, width=BOX_WIDTH):
 
 def clear_screen():
     """Clear terminal screen"""
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
         shell=False,
+        check=False,
     )
 
 
@@ -512,7 +513,7 @@ def print_status():
 
 def stop_process_list(pids, name="process", graceful_timeout=5):
     """Validates and kills list of pids with graceful shutdown.
-    
+
     Args:
         pids: List of process IDs to stop
         name: Name for logging
@@ -589,11 +590,13 @@ def _launch_script(path, name, hidden=False):
     try:
         path_str = str(path_obj.resolve())
         if hidden:
-            subprocess.Popen(["wscript", path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
+            subprocess.Popen(["wscript", path_str], shell=False,
+        check=False, cwd=str(PROJECT_ROOT.resolve()))
         elif sys.platform == "win32":
             os.startfile(path_str)
         else:
-            subprocess.Popen([path_str], shell=False, cwd=str(PROJECT_ROOT.resolve()))
+            subprocess.Popen([path_str], shell=False,
+        check=False, cwd=str(PROJECT_ROOT.resolve()))
         return True
     except (OSError, subprocess.SubprocessError) as e:
         print(f"{Colors.RED}Failed to start {name}: {e}{Colors.RESET}")

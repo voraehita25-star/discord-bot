@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import base64
 import io
-from unittest.mock import AsyncMock, MagicMock
+
+# Suppress the expected DeprecationWarning from importing the deprecated module
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
-
-# Suppress the expected DeprecationWarning from importing the deprecated module
-from unittest.mock import patch
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:content_processor module is deprecated:DeprecationWarning"

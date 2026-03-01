@@ -35,19 +35,20 @@ if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
 # Import from extracted modules
+from .dashboard_chat import handle_chat_message as _handle_chat_message
 from .dashboard_config import (
-    DB_AVAILABLE,
     DASHBOARD_ROLE_PRESETS,
+    DB_AVAILABLE,
     GEMINI_API_KEY,
-    GEMINI_MODEL,
     WS_HOST,
     WS_PORT,
     Database,
 )
-from .dashboard_chat import handle_chat_message as _handle_chat_message
 from .dashboard_handlers import (
     handle_delete_conversation,
     handle_delete_memory,
+    handle_delete_message,
+    handle_edit_message,
     handle_export_conversation,
     handle_get_memories,
     handle_get_profile,
@@ -136,7 +137,7 @@ class DashboardWebSocketServer:
 
     async def _ensure_port_available(self) -> None:
         """Ensure port is available, killing old process if needed.
-        
+
         SAFETY: Only kills processes that are confirmed to be our own bot instances
         by checking for specific identifiers in the command line.
         """
@@ -219,7 +220,7 @@ class DashboardWebSocketServer:
         expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
         # Determine if connection is from localhost (already origin-restricted)
         peername = request.transport.get_extra_info("peername") if request.transport else None
-        is_localhost = peername and peername[0] in ("127.0.0.1", "::1", "localhost")
+        peername and peername[0] in ("127.0.0.1", "::1", "localhost")
 
         if not expected_token:
             logging.warning(
@@ -368,6 +369,10 @@ class DashboardWebSocketServer:
             await self.handle_rename_conversation(ws, data)
         elif msg_type == "export_conversation":
             await self.handle_export_conversation(ws, data)
+        elif msg_type == "edit_message":
+            await handle_edit_message(ws, data)
+        elif msg_type == "delete_message":
+            await handle_delete_message(ws, data)
         elif msg_type == "save_memory":
             await self.handle_save_memory(ws, data)
         elif msg_type == "get_memories":

@@ -5,17 +5,16 @@ Tests core database operations including CRUD, schema, and edge cases.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 # Add project root to path
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
 
@@ -846,12 +845,14 @@ class TestDatabaseSingleton:
         assert "bot_database.db" in db.db_path
 
     def test_database_has_pool_semaphore(self):
-        """Test Database has pool semaphore."""
+        """Test Database has pool semaphore (lazy-initialized via getter)."""
         from utils.database.database import Database
 
         db = Database()
 
-        assert db._pool_semaphore is not None
+        # _pool_semaphore is lazily created — call the getter to trigger init
+        semaphore = db._get_pool_semaphore()
+        assert semaphore is not None
 
 
 class TestDatabaseAsync:
