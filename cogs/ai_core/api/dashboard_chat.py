@@ -308,7 +308,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
                     chunk_text = chunk.text
 
                 # Send thinking content
-                if chunk_thinking:
+                if chunk_thinking and thinking_enabled:
                     if not is_thinking:
                         is_thinking = True
                         await ws.send_json({
