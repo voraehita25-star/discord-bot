@@ -483,6 +483,9 @@ export class ChatManager {
                 showToast(data.message as string, { type: 'error' });
                 this.isStreaming = false;
                 this.setInputEnabled(true);
+                // Clean up stuck streaming message on error
+                const stuckErrorMsg = document.getElementById('streaming-message');
+                if (stuckErrorMsg) stuckErrorMsg.remove();
                 break;
 
             case 'pong':
@@ -1503,6 +1506,13 @@ export class ChatManager {
         });
 
         document.getElementById('btn-send')?.addEventListener('click', () => this.sendMessage());
+        document.getElementById('thinking-toggle')?.addEventListener('change', (e) => {
+            if (this.currentConversation) {
+                this.currentConversation.thinking_enabled = (e.target as HTMLInputElement).checked;
+                // Optional: send to backend to persist
+            }
+        });
+
         
         // Setup image upload
         this.setupImageUpload();
