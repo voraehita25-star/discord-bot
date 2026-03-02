@@ -33,8 +33,15 @@ impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
         let mut sys = System::new();
         sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        // Use PYTHON_CMD env var or default to "python"
-        let python_cmd = std::env::var("PYTHON_CMD").unwrap_or_else(|_| "python".to_string());
+        // Use PYTHON_CMD env var, or .venv/Scripts/python.exe if it exists, or "python"
+        let python_cmd = std::env::var("PYTHON_CMD").unwrap_or_else(|_| {
+            let venv_python = base_path.join(".venv").join("Scripts").join("python.exe");
+            if venv_python.exists() {
+                venv_python.to_string_lossy().to_string()
+            } else {
+                "python".to_string()
+            }
+        });
         Self { base_path, sys, python_cmd }
     }
 
