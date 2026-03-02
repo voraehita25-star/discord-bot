@@ -577,8 +577,8 @@ def cached_with_ttl(
             return result
 
         # Choose wrapper based on function type
-        import asyncio
-        if asyncio.iscoroutinefunction(func):
+        import inspect
+        if inspect.iscoroutinefunction(func):
             async_wrapper.cache = cache  # type: ignore
             async_wrapper.cache_clear = cache.clear  # type: ignore
             async_wrapper.cache_stats = cache.get_stats  # type: ignore

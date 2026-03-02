@@ -12,8 +12,7 @@ import base64
 import logging
 import os
 import re as _re
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from google.genai import types
@@ -23,8 +22,8 @@ if TYPE_CHECKING:
     from google import genai
 
 from .dashboard_config import (
-    DB_AVAILABLE,
     DASHBOARD_ROLE_PRESETS,
+    DB_AVAILABLE,
     ENI_ESCALATION_FRAMING,
     GEMINI_MODEL,
 )
@@ -374,7 +373,7 @@ IMPORTANT: If user asks you to remember something, respond with the information 
             "chunks_count": chunks_count,
         })
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logging.error("❌ Streaming timeout after %ss", stream_timeout)
         try:
             await ws.send_json({

@@ -480,9 +480,9 @@ def timed(logger: StructuredLogger | None = None):
                         duration_ms=round(duration_ms, 2),
                     )
 
-        import asyncio
+        import inspect
 
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
 

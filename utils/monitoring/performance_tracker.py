@@ -324,9 +324,9 @@ def track_performance(operation: str):
             with perf_tracker.measure(operation):
                 return func(*args, **kwargs)
 
-        import asyncio
+        import inspect
 
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
 

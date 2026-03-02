@@ -169,7 +169,8 @@ class ShutdownManager:
             timeout: Timeout for this handler
             required: Whether failure should be logged as error
         """
-        is_async = asyncio.iscoroutinefunction(callback)
+        import inspect
+        is_async = inspect.iscoroutinefunction(callback)
 
         handler = CleanupHandler(
             name=name,
@@ -221,7 +222,7 @@ class ShutdownManager:
             self._state.handlers_run += 1
             return True
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             msg = f"Cleanup timed out after {handler.timeout}s: {handler.name}"
             self._state.errors.append(msg)
             self._state.handlers_failed += 1

@@ -32,7 +32,7 @@ pub struct BotManager {
 impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
         let mut sys = System::new();
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         // Use PYTHON_CMD env var or default to "python"
         let python_cmd = std::env::var("PYTHON_CMD").unwrap_or_else(|_| "python".to_string());
         Self { base_path, sys, python_cmd }
@@ -57,7 +57,7 @@ impl BotManager {
     #[allow(dead_code)]
     fn is_dev_watcher_running(&mut self) -> bool {
         if let Some(pid) = self.get_dev_watcher_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
         } else {
             false
@@ -179,7 +179,7 @@ impl BotManager {
         
         // Check if process exists and is not zombie
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 // Check memory > 0 indicates process is alive
                 return process.memory() > 0;
@@ -213,7 +213,7 @@ impl BotManager {
 
     pub fn is_running(&mut self) -> bool {
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
         } else {
             false
@@ -252,7 +252,7 @@ impl BotManager {
 
     pub fn get_memory_mb(&mut self) -> f64 {
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 return process.memory() as f64 / 1024.0 / 1024.0;
             }
@@ -263,7 +263,7 @@ impl BotManager {
     pub fn get_mode(&mut self) -> String {
         // Check if dev_watcher.pid exists and the watcher is running
         if let Some(pid) = self.get_dev_watcher_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             if self.sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
                 return "Dev".to_string();
             }
@@ -277,7 +277,7 @@ impl BotManager {
 
     pub fn get_status(&mut self) -> BotStatus {
         // Single process refresh for all status fields (instead of 3-5 separate refreshes)
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         
         let pid = self.get_pid();
         let is_running = pid.map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some()).unwrap_or(false);
@@ -368,7 +368,7 @@ impl BotManager {
             }
             
             // Check if spawned process died
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             if self.sys.process(sysinfo::Pid::from_u32(spawned_pid)).is_none() {
                 // Process died - but check if bot.pid was written (bot may have restarted itself)
                 if self.is_running() {
@@ -442,7 +442,7 @@ impl BotManager {
         let mut exited = false;
         for _ in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
             if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
                 exited = true;
                 break;

@@ -284,7 +284,7 @@ class MessageQueue:
             await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=timeout)
             self._lock_times[channel_id] = time.time()
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _timed_out = True
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)",

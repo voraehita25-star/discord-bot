@@ -1062,7 +1062,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_item = {
                             "role": "user",
@@ -1140,7 +1140,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_entries = []
                         user_item = {
@@ -1175,7 +1175,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Include text file contents in saved history
                     if text_parts:
                         user_msg_text += "\n\n" + "\n".join(text_parts)
-                    current_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
                     new_entries = []
 

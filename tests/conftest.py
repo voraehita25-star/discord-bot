@@ -28,8 +28,32 @@ pytest_plugins = ("pytest_asyncio",)
 
 @pytest.fixture(scope="session")
 def event_loop_policy():
-    """Return the event loop policy for the test session."""
+    """Return the event loop policy for the test session.
+
+    Python 3.14 deprecated asyncio.*EventLoopPolicy (removal in 3.16).
+    The warning is suppressed via pyproject.toml filterwarnings.
+    We keep using DefaultEventLoopPolicy (ProactorEventLoop on Windows)
+    because SelectorEventLoop blocks aiosqlite I/O.
+    """
     return asyncio.DefaultEventLoopPolicy()
+
+
+# ==================== Database Cleanup ====================
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _cleanup_db_pool_on_exit():
+    """Close the Database connection pool at session end.
+
+    Without this, pooled aiosqlite connections keep the event loop alive
+    after all tests finish, causing pytest to hang indefinitely on Windows.
+    """
+    yield
+    try:
+        from utils.database.database import Database
+        Database().close_pool_sync()
+    except Exception:
+        pass
 
 
 # ==================== Database Fixtures ====================
@@ -124,21 +148,19 @@ def mock_bot() -> Any:
     """Create a mock Discord bot."""
     from unittest.mock import AsyncMock, MagicMock
 
-    loop = asyncio.new_event_loop()
     bot = MagicMock()
     bot.is_ready.return_value = True
     bot.is_closed.return_value = False
-    bot.loop = loop
+    bot.loop = MagicMock()  # Mock the loop instead of creating a real one
+    bot.loop.is_running.return_value = True
+    bot.loop.is_closed.return_value = False
     bot.voice_clients = []
     bot.guilds = []
     bot.get_channel = MagicMock(return_value=None)
     bot.get_guild = MagicMock(return_value=None)
     bot.change_presence = AsyncMock()
 
-    yield bot
-
-    # Cleanup: Close the event loop
-    loop.close()
+    return bot
 
 
 @pytest.fixture

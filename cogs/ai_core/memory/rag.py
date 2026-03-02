@@ -26,7 +26,7 @@ except ImportError:
     _DB_AVAILABLE = False
     logging.warning("Database not available for RAG module")
 
-from datetime import timezone
+from datetime import UTC
 
 from ..data.constants import GEMINI_API_KEY
 
@@ -573,8 +573,8 @@ class MemorySystem:
             created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
             # Always use timezone.utc for consistent comparison, avoiding timezone issues
             if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
+                created = created.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
             age_days = (now - created).total_seconds() / 86400
 
             # Exponential decay with half-life
@@ -774,7 +774,7 @@ class MemorySystem:
                     from datetime import datetime
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(timezone.utc)
+                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(UTC)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):
                     pass  # Invalid or missing datetime format

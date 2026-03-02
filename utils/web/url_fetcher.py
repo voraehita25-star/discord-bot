@@ -312,7 +312,7 @@ Default Branch: {data.get("default_branch", "main")}
 
             return title, cleaned_content
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("URL fetch timeout: %s", url)
         return url, None
     except aiohttp.ClientError as e:

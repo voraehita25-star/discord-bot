@@ -22,7 +22,7 @@ pub use encode::{to_base64, from_base64};
 pub use errors::MediaError;
 
 /// Image data container
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct ImageData {
     #[pyo3(get)]
@@ -44,7 +44,7 @@ impl ImageData {
     }
 
     fn get_data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new_bound(py, &self.data)
+        PyBytes::new(py, &self.data)
     }
 
     fn to_base64(&self) -> String {
@@ -177,7 +177,7 @@ impl MediaProcessor {
     fn decode_base64<'py>(py: Python<'py>, encoded: &str) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = from_base64(encoded)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(PyBytes::new_bound(py, &bytes))
+        Ok(PyBytes::new(py, &bytes))
     }
 
     /// Batch resize multiple images (parallel, releases GIL)
@@ -191,7 +191,7 @@ impl MediaProcessor {
         let quality = self.jpeg_quality;
         
         // Release the GIL during CPU-intensive parallel processing
-        let results = py.allow_threads(|| {
+        let results = py.detach(|| {
             bytes_list
                 .par_iter()
                 .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))

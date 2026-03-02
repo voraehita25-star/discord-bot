@@ -3,9 +3,9 @@
 
 [project]
 name = "discord-bot"
-version = "3.3.12"
+version = "3.3.13"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -13,7 +13,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --timeout=30"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
@@ -24,6 +24,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:discord.*",
     "ignore::DeprecationWarning:aiohttp.*",
     "ignore::DeprecationWarning:google.*",
+    # Ignore asyncio EventLoopPolicy deprecation (Python 3.14+, removal in 3.16)
+    "ignore:.*EventLoopPolicy.*is deprecated:DeprecationWarning",
     # Ignore SWIG/native extension deprecation warnings (from faiss, hnswlib, etc.)
     "ignore:builtin type Swig.*:DeprecationWarning",
     # Ignore pending deprecation from dependencies
@@ -35,7 +37,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 exclude = [
     ".venv",
@@ -108,7 +110,7 @@ exclude_dirs = ["tests", "native_dashboard", ".venv"]
 skips = ["B101"]  # assert used in tests
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true

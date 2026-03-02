@@ -657,6 +657,53 @@ class Database:
                     await conn.close()
                     self._connection_count -= 1
 
+    async def close_pool(self) -> None:
+        """Close all pooled connections and reset the pool.
+
+        Call this during shutdown or test teardown to release resources
+        cleanly and prevent the event loop from hanging.
+        """
+        pool = self._conn_pool
+        if pool is not None:
+            closed = 0
+            while not pool.empty():
+                try:
+                    conn = pool.get_nowait()
+                    try:
+                        await conn.close()
+                    except Exception:
+                        # Fallback: close the underlying sqlite3 connection synchronously
+                        if hasattr(conn, "_conn") and conn._conn is not None:
+                            conn._conn.close()
+                    closed += 1
+                except asyncio.QueueEmpty:
+                    break
+            if closed:
+                logging.debug("Closed %d pooled connections", closed)
+        self._conn_pool = None
+        self._pool_semaphore = None
+        self._connection_count = 0
+
+    def close_pool_sync(self) -> None:
+        """Synchronous variant of close_pool for use during interpreter shutdown.
+
+        When the event loop is closing (e.g. pytest teardown), async close()
+        cannot be awaited. This method closes the underlying sqlite3
+        connections directly.
+        """
+        pool = self._conn_pool
+        if pool is not None:
+            while not pool.empty():
+                try:
+                    conn = pool.get_nowait()
+                    if hasattr(conn, "_conn") and conn._conn is not None:
+                        conn._conn.close()
+                except Exception:
+                    pass
+        self._conn_pool = None
+        self._pool_semaphore = None
+        self._connection_count = 0
+
     async def health_check(self) -> bool:
         """
         Verify database connection is healthy.

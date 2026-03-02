@@ -22,7 +22,7 @@ pub use index::VectorIndex;
 pub use errors::RagError;
 
 /// A single memory entry with embedding and metadata
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct MemoryEntry {
     #[pyo3(get)]
@@ -49,7 +49,7 @@ impl MemoryEntry {
 }
 
 /// Search result with score
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct SearchResult {
     #[pyo3(get)]
@@ -137,7 +137,7 @@ impl RagEngine {
         let similarity_threshold = self.similarity_threshold;
 
         // Release GIL during CPU-intensive parallel computation
-        py.allow_threads(|| {
+        py.detach(|| {
             use rayon::prelude::*;
 
             let current_time = std::time::SystemTime::now()
