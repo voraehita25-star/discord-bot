@@ -9,7 +9,7 @@
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
 | **OS** | Windows 10 / Ubuntu 20.04 | Windows 11 / Ubuntu 22.04 |
-| **Python** | 3.10+ | 3.12+ |
+| **Python** | 3.14+ | 3.14+ |
 | **RAM** | 2GB | 4GB |
 | **Storage** | 500MB | 1GB |
 | **FFmpeg** | Required for voice | Required |
@@ -18,19 +18,19 @@
 
 ## 🔧 Prerequisites
 
-### 1. Python 3.10+
+### 1. Python 3.14+
 
 **Windows:**
 ```bash
 # ดาวน์โหลดจาก https://python.org
 # หรือใช้ winget
-winget install Python.Python.3.12
+winget install Python.Python.3.14
 ```
 
 **Linux:**
 ```bash
 sudo apt update
-sudo apt install python3.12 python3.12-venv python3-pip
+sudo apt install python3.14 python3.14-venv python3-pip
 ```
 
 ### 2. FFmpeg (Required for Voice/Music)
@@ -138,26 +138,26 @@ python bot.py
 |---------|---------|---------|
 | `discord.py[voice]` | 2.6.4 | Discord API + Voice Support |
 | `python-dotenv` | 1.2.1 | อ่านค่าจาก .env |
-| `aiohttp` | 3.13.2 | Async HTTP requests |
-| `psutil` | 7.1.3 | System monitoring |
+| `aiohttp` | 3.13.3 | Async HTTP requests |
+| `psutil` | 7.2.2 | System monitoring |
 
 ### AI (จำเป็น)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `google-genai` | 1.56.0 | Gemini AI API |
-| `Pillow` | 12.0.0 | Image processing |
-| `beautifulsoup4` | 4.12.3 | HTML parsing (URL fetching) |
-| `lxml` | 5.3.0 | Fast HTML parser |
-| `numpy` | 2.2.6 | Numerical ops (RAG) |
+| `google-genai` | 1.65.0 | Gemini AI API |
+| `Pillow` | 12.1.1 | Image processing |
+| `beautifulsoup4` | 4.14.3 | HTML parsing (URL fetching) |
+| `lxml` | 6.0.2 | Fast HTML parser |
+| `numpy` | 2.4.2 | Numerical ops (RAG) |
 | `faiss-cpu` | 1.13.2 | Vector search (RAG memory) |
-| `imageio[ffmpeg]` | 2.37.0 | GIF to video conversion |
+| `imageio[ffmpeg]` | 2.37.2 | GIF to video conversion |
 
 ### Music (จำเป็นสำหรับ Music feature)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `yt-dlp` | 2025.12.8 | YouTube download |
+| `yt-dlp` | 2026.2.21 | YouTube download |
 | `spotipy` | 2.25.2 | Spotify API |
 | `PyNaCl` | 1.5.0 | Voice encryption |
 
@@ -173,6 +173,7 @@ python bot.py
 |---------|---------|---------|
 | `pytest` | 9.0.2 | Testing framework |
 | `pytest-asyncio` | 1.3.0 | Async test support |
+| `pytest-timeout` | 2.4.0 | Test timeout safety net |
 | `watchdog` | 6.0.0 | Hot reload (dev mode) |
 | `colorama` | 0.4.6 | Windows colors |
 
@@ -180,9 +181,8 @@ python bot.py
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `orjson` | 3.10.14 | 10x faster JSON |
-| `uvloop` | 0.21.0 | Faster event loop (Unix only) |
-| `sentry-sdk` | 2.49.0 | Error tracking |
+| `orjson` | 3.11.7 | 10x faster JSON |
+| `sentry-sdk` | 2.53.0 | Error tracking |
 
 ---
 
@@ -229,7 +229,7 @@ cargo build --release
 
 High-performance native extensions สำหรับ RAG และ Media processing
 
-> **Pre-built Status:** ✅ พร้อมใช้งาน (January 20, 2026)  
+> **Pre-built Status:** ✅ พร้อมใช้งาน (March 2, 2026)  
 > **Files:** `rag_engine.pyd`, `media_processor.pyd`
 
 ### Prerequisites
@@ -340,4 +340,4 @@ cd native_dashboard && cargo build --release
 
 ---
 
-*Last Updated: February 2026 | Version: 3.3.10*
+*Last Updated: March 2026 | Version: 3.3.13*

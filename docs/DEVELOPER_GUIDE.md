@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** February 26, 2026
-> **Version:** 3.3.10
-> **Python Version:** 3.10+
+> **Last Updated:** March 2, 2026
+> **Version:** 3.3.13
+> **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 251 Python files | 82 Test files | 3,007 Tests
+> **Total Files:** 251 Python files | 82 Test files | 2,926 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 3 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 1 warning (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅
 
 ---
 
@@ -191,7 +191,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (3,007 tests in 82 files)
+├── tests/                    # 🧪 Test Suite (2,926 tests in 82 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -279,7 +279,7 @@ BOT/
 Bot มี native extensions ที่เขียนด้วย **Rust** และ **Go** สำหรับ operations ที่ใช้ CPU/IO เยอะ
 Extensions เหล่านี้เป็น **optional** - bot ทำงานได้ปกติด้วย Python fallback
 
-> **Build Status:** ✅ Rust extensions built successfully (January 20, 2026)  
+> **Build Status:** ✅ Rust extensions built successfully (March 2, 2026)  
 > **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ### Rust Extensions (PyO3)

@@ -24,7 +24,7 @@ Production-ready Discord bot with Gemini AI chat, music player, and advanced mem
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.14+
 - Discord Bot Token
 - Google Gemini API Key
 
@@ -108,7 +108,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Test suite (3,007 tests, 82 files)
+├── tests/              # Test suite (2,926 tests, 82 files)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -160,7 +160,7 @@ The bot includes built-in monitoring capabilities:
 
 High-performance extensions for CPU/IO-intensive operations. **Fully optional** - bot works without them using Python fallbacks.
 
-> **Build Status:** ✅ Rust extensions pre-built (February 26, 2026)  
+> **Build Status:** ✅ Rust extensions pre-built (March 2, 2026)  
 > **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ### Rust Extensions
@@ -180,7 +180,7 @@ High-performance extensions for CPU/IO-intensive operations. **Fully optional** 
 ### Building Native Extensions
 
 ```powershell
-# Prerequisites: Rust 1.75+, Go 1.22+
+# Prerequisites: Rust 1.75+, Go 1.23+
 
 # Build everything
 .\scripts\build_all.ps1 -Release
@@ -274,4 +274,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.10 | **Python:** 3.10+ | **Tests:** 3,007 passing ✅ (82 files) | **Native Extensions:** Rust + Go | **Last Update:** February 26, 2026
+**Version:** 3.3.13 | **Python:** 3.14+ | **Tests:** 2,926 passing ✅ (82 files) | **Native Extensions:** Rust + Go | **Last Update:** March 2, 2026

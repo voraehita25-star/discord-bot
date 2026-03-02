@@ -47,7 +47,7 @@ Prometheus-compatible metrics and health monitoring.
 ## Building
 
 ### Prerequisites
-- Go 1.22+ (install from https://go.dev/dl/)
+- Go 1.23+ (install from https://go.dev/dl/)
 
 ### Build Commands
 

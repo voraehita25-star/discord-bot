@@ -2,8 +2,8 @@
 
 This directory contains high-performance native extensions written in Rust.
 
-> **Build Status:** ✅ Successfully built (January 20, 2026)  
-> **Rust Version:** 1.92.0  
+> **Build Status:** ✅ Successfully built (March 2, 2026)  
+> **Rust Version:** stable  
 > **Output Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ## Components
@@ -30,7 +30,7 @@ High-performance image processing for Discord attachments.
 
 ### Prerequisites
 - Rust 1.75+ (install from https://rustup.rs)
-- Python 3.11+ (for PyO3 bindings)
+- Python 3.14+ (for PyO3 0.28 bindings)
 
 > **Note:** Uses simsimd 6.5+ for SIMD operations (API changed from older 0.x versions)
 
