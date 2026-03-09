@@ -3,25 +3,25 @@
 # Python 3.10+
 
 # ==================== Core ====================
-discord.py[voice]==2.6.4      # Discord API wrapper with voice support
-python-dotenv==1.2.1          # Environment variable management
+discord.py[voice]==2.7.1      # Discord API wrapper with voice support
+python-dotenv==1.2.2          # Environment variable management
 aiohttp==3.13.3               # Async HTTP client
-psutil==7.2.1                 # Process and system utilities
+psutil==7.2.2                 # Process and system utilities
 certifi>=2026.1.4             # SSL certificates (security updates)
 tzdata>=2024.1                # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
-google-genai==1.59.0          # Google Gemini API
-Pillow==12.1.0                # Image processing
+google-genai==1.66.0          # Google Gemini API
+Pillow==12.1.1                # Image processing
 beautifulsoup4==4.14.3        # HTML parsing for URL content
 lxml==5.3.0                   # Fast HTML parser
 numpy==2.2.6                  # Numerical operations (for RAG embeddings)
 faiss-cpu==1.13.2             # Vector similarity search (optional)
-imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini
+imageio[ffmpeg]==2.37.3       # GIF to video conversion for Gemini
 
 # ==================== Music ====================
 yt-dlp==2025.12.8             # YouTube downloader
-spotipy==2.25.2               # Spotify API wrapper
+spotipy==2.26.0               # Spotify API wrapper
 PyNaCl>=1.5.0,<1.6            # Voice encryption for discord.py voice
 
 # ==================== Database ====================
@@ -33,11 +33,11 @@ colorama==0.4.6               # Windows ANSI color support
 pyyaml>=6.0.1                 # YAML parsing for prompt templates
 
 # ==================== Monitoring (Optional) ====================
-sentry-sdk==2.50.0            # Error tracking (optional)
+sentry-sdk==2.54.0            # Error tracking (optional)
 prometheus-client==0.24.1     # Metrics & monitoring
 
 # ==================== Performance ====================
-orjson==3.11.5               # 10x faster JSON parsing (drop-in replacement)
+orjson==3.11.7               # 10x faster JSON parsing (drop-in replacement)
 
 
 # ==================== Windows Utilities ====================
