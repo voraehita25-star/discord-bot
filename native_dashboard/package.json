@@ -27,7 +27,7 @@
   "devDependencies": {
     "@tauri-apps/api": "^2.9.1",
     "@vitest/coverage-v8": "^4.0.17",
-    "jsdom": "^27.4.0",
+    "jsdom": "^28.1.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
   }
