@@ -18,12 +18,18 @@ RUN cd go_services/health_api && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out
 RUN cd go_services/url_fetcher && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/url_fetcher .
 
 # ======================== Stage 2: Rust Builder ========================
-FROM rust:1.80-bookworm AS rust-builder
+# Use the same Python version as production so PyO3 links against the correct ABI.
+# rust:1.80 used python3-dev from Debian bookworm (Python 3.11), which is incompatible
+# with the Python 3.14 production stage — the .so files would fail to import.
+FROM python:3.14.3-bookworm AS rust-builder
 
 WORKDIR /build
 
-# Install Python headers for PyO3
-RUN apt-get update && apt-get install -y --no-install-recommends python3-dev && rm -rf /var/lib/apt/lists/*
+# Install Rust toolchain (stable) and Python headers for PyO3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl build-essential && rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy Cargo manifests for caching
 COPY rust_extensions/Cargo.toml rust_extensions/Cargo.lock* ./rust_extensions/

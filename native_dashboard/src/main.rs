@@ -257,7 +257,15 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     
     file.write_all(log_entry.as_bytes())
         .map_err(|e| format!("Failed to write error log: {}", e))?;
-    
+
+    // Forward to Sentry if a DSN was configured at startup
+    if sentry::Hub::current().client().is_some_and(|c| c.is_enabled()) {
+        sentry::capture_message(
+            &format!("[{}] {}", error_type, message),
+            sentry::Level::Error,
+        );
+    }
+
     Ok(format!("Error logged to: {}", error_log_path.display()))
 }
 
@@ -328,6 +336,22 @@ fn get_ws_token(state: State<AppState>) -> Result<String, String> {
     Ok(String::new())
 }
 
+/// Read a single key from a .env file without requiring AppState.
+fn read_dotenv_value(env_path: &std::path::Path, key: &str) -> Option<String> {
+    let content = std::fs::read_to_string(env_path).ok()?;
+    let prefix = format!("{}=", key);
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix(&prefix) {
+            let val = val.trim().trim_matches('"').trim_matches('\'');
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     // Base path for the bot files - use BOT_BASE_PATH env var or default
     let base_path = std::env::var("BOT_BASE_PATH")
@@ -360,6 +384,18 @@ fn main() {
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
                     })
             }
+        });
+
+    // Initialize Sentry if DSN is configured (reads from .env or SENTRY_DSN env var).
+    // The guard must live for the entire duration of main() to flush events on exit.
+    let env_path = base_path.join(".env");
+    let _sentry_guard = read_dotenv_value(&env_path, "SENTRY_DSN")
+        .or_else(|| std::env::var("SENTRY_DSN").ok())
+        .map(|dsn| {
+            sentry::init((dsn, sentry::ClientOptions {
+                release: sentry::release_name!(),
+                ..Default::default()
+            }))
         });
 
     let bot_manager = BotManager::new(base_path.clone());

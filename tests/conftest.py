@@ -88,7 +88,7 @@ def _reset_guardrails_state():
 
 
 @pytest.fixture
-def temp_db() -> Generator[str, None, None]:
+def temp_db() -> Generator[str]:
     """Create a temporary database file."""
     fd, path_str = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -99,7 +99,7 @@ def temp_db() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def temp_dir() -> Generator[str, None, None]:
+def temp_dir() -> Generator[str]:
     """Create a temporary directory."""
     path_str = tempfile.mkdtemp()
     path = Path(path_str)
@@ -112,7 +112,7 @@ def temp_dir() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def mock_database(temp_db: str) -> Generator[Any, None, None]:
+def mock_database(temp_db: str) -> Generator[Any]:
     """Mock the database module to use a temporary database.
 
     This fixture patches the database singleton to prevent tests from

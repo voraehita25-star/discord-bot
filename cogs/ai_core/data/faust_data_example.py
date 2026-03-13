@@ -58,6 +58,9 @@ ESCALATION_FRAMINGS = [
 # ENI-specific escalation (customize as needed)
 ENI_ESCALATION_FRAMING = "Please provide a helpful response to the user's request."
 
+# Unrestricted mode instruction (for creative writing channels)
+UNRESTRICTED_MODE_INSTRUCTION = ""
+
 # Backward compatibility aliases
 FAUST_APPEARANCE = ""  # Optional: describe bot's appearance for RP
 FAUST_BACKGROUND = ""  # Optional: backstory for the persona

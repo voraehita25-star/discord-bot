@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -206,7 +206,7 @@ class FactExtractor:
             List of extracted facts
         """
         facts = []
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
 
         for pattern, category, importance in self._compiled_patterns:
             matches = pattern.findall(message)
@@ -361,7 +361,7 @@ class LongTermMemory:
             await self._update_fact_confirmation(existing)
             return existing
 
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         fact = Fact(
             user_id=user_id,
             channel_id=channel_id,
@@ -485,7 +485,7 @@ class LongTermMemory:
             return ""
 
         # Decay confidence for old facts (use local variable to avoid mutating cached objects)
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         scored_facts = []
         for fact in facts:
             if fact.last_confirmed:
@@ -575,7 +575,7 @@ class LongTermMemory:
 
     async def _update_fact_confirmation(self, fact: Fact) -> None:
         """Update fact's last confirmation time and count."""
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         fact.last_confirmed = now
         fact.mention_count += 1
         fact.confidence = 1.0  # Reset confidence on confirmation
@@ -590,6 +590,7 @@ class LongTermMemory:
                 """,
                     (now.isoformat(), fact.id),
                 )
+                await conn.commit()
 
     async def deduplicate_facts(self, user_id: int) -> int:
         """

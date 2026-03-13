@@ -14,6 +14,21 @@ from typing import Any
 
 from ..data.constants import PERFORMANCE_SAMPLES_MAX
 
+# Import Prometheus metrics for forwarding
+try:
+    from utils.monitoring.metrics import metrics as _prom_metrics
+
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    _PROMETHEUS_AVAILABLE = False
+    _prom_metrics = None
+
+# Map internal step names to Prometheus metric methods
+_STEP_METRIC_MAP = {
+    "api_call": "observe_ai_response_time",
+    "total": "observe_ai_response_time",
+}
+
 
 class PerformanceTracker:
     """Tracks performance metrics for AI processing steps."""
@@ -54,6 +69,14 @@ class PerformanceTracker:
                 self._metrics[step] = collections.deque(maxlen=PERFORMANCE_SAMPLES_MAX)
 
             self._metrics[step].append(duration)
+
+        # Forward to Prometheus if available
+        if _PROMETHEUS_AVAILABLE and _prom_metrics:
+            method_name = _STEP_METRIC_MAP.get(step)
+            if method_name:
+                method = getattr(_prom_metrics, method_name, None)
+                if method:
+                    method(duration)
 
     def get_stats(self) -> dict[str, Any]:
         """Get performance statistics for all processing steps.

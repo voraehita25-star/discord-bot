@@ -169,7 +169,7 @@ class TestGetPidFromFile:
                 result = healer.get_pid_from_file()
                 assert result == 12345
         finally:
-            os.unlink(temp_path)
+            Path(temp_path).unlink()
 
     def test_returns_none_on_invalid_content(self):
         """Test returns None on invalid PID content."""
@@ -186,7 +186,7 @@ class TestGetPidFromFile:
                 result = healer.get_pid_from_file()
                 assert result is None
         finally:
-            os.unlink(temp_path)
+            Path(temp_path).unlink()
 
 
 class TestDiagnose:
@@ -330,10 +330,10 @@ class TestCleanPidFile:
             with patch("utils.reliability.self_healer.PID_FILE", temp_path):
                 result = healer.clean_pid_file()
                 assert result is True
-                assert not os.path.exists(temp_path)
+                assert not Path(temp_path).exists()
         except Exception:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+            if Path(temp_path).exists():
+                Path(temp_path).unlink()
             raise
 
 

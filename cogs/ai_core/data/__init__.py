@@ -30,6 +30,7 @@ try:
         FAUST_DM_INSTRUCTION,
         FAUST_INSTRUCTION,
         FAUST_SANDBOX,
+        UNRESTRICTED_MODE_INSTRUCTION,
     )
     # Backward compatibility aliases
     try:
@@ -47,6 +48,7 @@ except ImportError:
         FAUST_DM_INSTRUCTION,
         FAUST_INSTRUCTION,
         FAUST_SANDBOX,
+        UNRESTRICTED_MODE_INSTRUCTION,
     )
     FAUST_DM_MODE = FAUST_DM_INSTRUCTION
     FAUST_PERSONA = FAUST_INSTRUCTION
@@ -96,6 +98,7 @@ __all__ = [
     "GUILD_ID_MAIN",
     "GUILD_ID_RESTRICTED",
     "GUILD_ID_RP",
+    "UNRESTRICTED_MODE_INSTRUCTION",
     # Roleplay data
     "ROLEPLAY_ASSISTANT_INSTRUCTION",
     "ROLEPLAY_PROMPT",

@@ -88,10 +88,12 @@ ignore = [
     "SIM117",  # multiple-with-statements (line length control)
     # RUF006 removed — dangling tasks now properly tracked in bot.py
     "RUF059",  # unused-unpacked-variable (tuple unpacking patterns)
+    "UP017",   # datetime-timezone-utc (timezone.utc compat for Python <3.11)
+    "UP046",   # uses-generic-over-type-params (Generic[T] compat for Python <3.12)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG", "PLR", "SIM"]
+"tests/*" = ["ARG", "PLR", "SIM", "F401", "F811"]
 "scripts/*" = ["PLR", "SIM"]
 "*/__init__.py" = ["F401"]  # Re-exports are intentional
 

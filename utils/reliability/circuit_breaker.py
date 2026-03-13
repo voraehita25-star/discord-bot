@@ -5,8 +5,8 @@ Provides automatic failure detection and recovery for external API calls.
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
@@ -52,10 +52,9 @@ class CircuitBreaker:
     _success_count: int = field(default=0, init=False)
     _last_failure_time: float | None = field(default=None, init=False)
     _half_open_calls: int = field(default=0, init=False)
-    # Thread-safe lock for state transitions
+    _current_reset_timeout: float | None = field(default=None, init=False)
+    # Thread-safe lock for state transitions (used for both sync and async paths)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
-    # Async-safe lock for coroutine callers
-    _async_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     @property
     def state(self) -> CircuitState:
@@ -67,7 +66,7 @@ class CircuitBreaker:
             if (
                 self._state == CircuitState.OPEN
                 and self._last_failure_time
-                and (time.time() - self._last_failure_time >= self.reset_timeout)
+                and (time.time() - self._last_failure_time >= (self._current_reset_timeout or self.reset_timeout))
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
             return self._state
@@ -87,6 +86,10 @@ class CircuitBreaker:
             self._failure_count = 0
             self._success_count = 0
             self._last_failure_time = None  # Also reset last failure time
+            self._current_reset_timeout = None
+        elif new_state == CircuitState.OPEN:
+            # Jitter the reset timeout to prevent thundering herd
+            self._current_reset_timeout = self.reset_timeout + random.uniform(0, self.reset_timeout * 0.3)
 
         if old_state != new_state:
             logging.info(
@@ -105,7 +108,7 @@ class CircuitBreaker:
             if (
                 self._state == CircuitState.OPEN
                 and self._last_failure_time
-                and (time.time() - self._last_failure_time >= self.reset_timeout)
+                and (time.time() - self._last_failure_time >= (self._current_reset_timeout or self.reset_timeout))
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
 
@@ -180,19 +183,20 @@ class CircuitBreaker:
 
 
     async def async_can_execute(self) -> bool:
-        """Async-safe version of can_execute for coroutine callers."""
-        async with self._async_lock:
-            return self.can_execute()
+        """Async-safe version of can_execute.
+
+        Uses the same threading.Lock as sync methods so both paths
+        coordinate properly against the shared state.
+        """
+        return self.can_execute()
 
     async def async_record_success(self) -> None:
         """Async-safe version of record_success."""
-        async with self._async_lock:
-            self.record_success()
+        self.record_success()
 
     async def async_record_failure(self) -> None:
         """Async-safe version of record_failure."""
-        async with self._async_lock:
-            self.record_failure()
+        self.record_failure()
 
 
 class CircuitBreakerOpenError(Exception):

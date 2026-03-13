@@ -10,7 +10,7 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 # Try to import database
@@ -148,7 +148,7 @@ class ConversationSummarizer:
             return None
 
         # Get old messages to consolidate
-        cutoff_time = datetime.now() - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
+        cutoff_time = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
 
         async with db.get_connection() as conn:
             cursor = await conn.execute(
@@ -185,7 +185,7 @@ class ConversationSummarizer:
             start_time=start_time,
             end_time=end_time,
             message_count=len(rows),
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
         )
 
         # Save to database
@@ -211,7 +211,7 @@ class ConversationSummarizer:
             return 0
 
         # Get channels with old messages
-        cutoff = datetime.now() - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
 
         async with db.get_connection() as conn:
             cursor = await conn.execute(

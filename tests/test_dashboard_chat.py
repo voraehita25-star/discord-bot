@@ -12,6 +12,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.genai import types as genai_types
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +121,10 @@ class TestChatInputValidation:
 class FakeChunk:
     """Fake Gemini streaming chunk."""
     def __init__(self, text: str = "", thought: object = None):
-        part = MagicMock()
-        part.text = text
-        part.thought = thought
+        part = genai_types.Part(text=text or None, thought=thought)
+        content = genai_types.Content(role="model", parts=[part])
         candidate = MagicMock()
-        candidate.content.parts = [part]
+        candidate.content = content
         self.candidates = [candidate]
 
 
@@ -191,16 +191,7 @@ class TestChatStreaming:
         """Test thinking mode with thought parts."""
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
-        client = self._make_client([
-            FakeChunk(text="", thought=True),  # thought=True with text in part
-            FakeChunk(text="Final answer"),
-        ])
-        # Patch the thought part to have text
-        # For the first chunk, make the part have thought=True and text="Thinking..."
-        first_chunk = FakeChunk(text="", thought=True)
-        first_chunk.candidates[0].content.parts[0].text = "Let me think..."
-        first_chunk.candidates[0].content.parts[0].thought = True
-
+        first_chunk = FakeChunk(text="Let me think...", thought=True)
         client = self._make_client([first_chunk, FakeChunk(text="Answer")])
 
         with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
@@ -632,13 +623,12 @@ class TestErrorBranches:
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
         # Create chunk where thought attr is a string instead of True
-        chunk = MagicMock()
-        part = MagicMock()
-        part.thought = "I am reasoning..."  # string, not bool
-        part.text = None
-        candidate = MagicMock()
-        candidate.content.parts = [part]
-        chunk.candidates = [candidate]
+        # Use SimpleNamespace since types.Part enforces thought as bool
+        from types import SimpleNamespace as _NS
+        part = _NS(text=None, thought="I am reasoning...", function_call=None)
+        content = _NS(parts=[part])
+        candidate = _NS(content=content)
+        chunk = _NS(candidates=[candidate])
 
         # Second chunk is normal text
         text_chunk = FakeChunk(text="Final answer")

@@ -16,12 +16,14 @@ pub fn from_base64(encoded: &str) -> Result<Vec<u8>, MediaError> {
 }
 
 /// Encode with data URI prefix
-pub fn to_data_uri(data: &[u8], mime_type: &str) -> String {
+#[allow(dead_code)]
+pub(crate) fn to_data_uri(data: &[u8], mime_type: &str) -> String {
     format!("data:{};base64,{}", mime_type, STANDARD.encode(data))
 }
 
 /// Extract base64 from data URI
-pub fn from_data_uri(uri: &str) -> Result<Vec<u8>, MediaError> {
+#[allow(dead_code)]
+pub(crate) fn from_data_uri(uri: &str) -> Result<Vec<u8>, MediaError> {
     let base64_part = if let Some(pos) = uri.find(",") {
         &uri[pos + 1..]
     } else {

@@ -28,6 +28,40 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Shared session for connection pooling (lazily initialized)
+_shared_session: aiohttp.ClientSession | None = None
+_session_lock = asyncio.Lock()
+
+# URL content cache: url -> (title, content, timestamp)
+_url_cache: dict[str, tuple[str, str | None, float]] = {}
+_url_cache_lock = asyncio.Lock()
+_URL_CACHE_TTL = 300.0  # 5 minutes
+_URL_CACHE_MAX_SIZE = 100
+
+
+async def _get_shared_session() -> aiohttp.ClientSession:
+    """Get or create a shared aiohttp session with connection pooling."""
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        async with _session_lock:
+            if _shared_session is None or _shared_session.closed:
+                connector = aiohttp.TCPConnector(
+                    limit=20,
+                    ttl_dns_cache=300,
+                    enable_cleanup_closed=True,
+                )
+                _shared_session = aiohttp.ClientSession(connector=connector)
+    return _shared_session
+
+
+async def close_shared_session() -> None:
+    """Close the shared session. Call during bot shutdown."""
+    global _shared_session
+    if _shared_session is not None and not _shared_session.closed:
+        await _shared_session.close()
+        _shared_session = None
+
+
 # URL pattern - matches http/https URLs
 URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 
@@ -147,14 +181,26 @@ async def fetch_url_content(
     """
     close_session = False
     try:
+        # Check URL cache first (under lock to prevent duplicate fetches)
+        import time as _time
+
+        async with _url_cache_lock:
+            cached = _url_cache.get(url)
+            if cached is not None:
+                title, content, ts = cached
+                if _time.time() - ts < _URL_CACHE_TTL:
+                    logger.debug("URL cache hit: %s", url)
+                    return title, content
+                else:
+                    del _url_cache[url]
+
         # SSRF protection: block private/internal IPs
         if await _is_private_url(url):
             logger.warning("Blocked SSRF attempt to private URL: %s", url)
             return url, None
 
         if session is None:
-            session = aiohttp.ClientSession()
-            close_session = True
+            session = await _get_shared_session()
 
         headers = {"User-Agent": USER_AGENT}
 
@@ -207,7 +253,14 @@ Default Branch: {data.get("default_branch", "main")}
                                     readme_text = await readme_resp.text()
                                     content += f"\n--- README ---\n{readme_text[: MAX_CONTENT_LENGTH - len(content)]}"
 
-                            return title, content[:MAX_CONTENT_LENGTH]
+                            result_content = content[:MAX_CONTENT_LENGTH]
+                            # Cache GitHub result
+                            async with _url_cache_lock:
+                                if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
+                                    oldest_key = next(iter(_url_cache))
+                                    del _url_cache[oldest_key]
+                                _url_cache[url] = (title, result_content, _time.time())
+                            return title, result_content
                 except Exception as e:
                     logger.debug("GitHub API failed for %s: %s", url, e)
 
@@ -310,6 +363,14 @@ Default Branch: {data.get("default_branch", "main")}
             if len(cleaned_content) > MAX_CONTENT_LENGTH:
                 cleaned_content = cleaned_content[:MAX_CONTENT_LENGTH] + "\n[Content truncated...]"
 
+            # Store in URL cache
+            async with _url_cache_lock:
+                if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
+                    # Evict oldest entry
+                    oldest_key = next(iter(_url_cache))
+                    del _url_cache[oldest_key]
+                _url_cache[url] = (title, cleaned_content, _time.time())
+
             return title, cleaned_content
 
     except TimeoutError:
@@ -321,9 +382,6 @@ Default Branch: {data.get("default_branch", "main")}
     except Exception as e:
         logger.error("Unexpected error fetching %s: %s", url, e)
         return url, None
-    finally:
-        if close_session and session is not None:
-            await session.close()
 
 
 async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, str, str | None]]:
@@ -343,9 +401,9 @@ async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, 
     # Limit number of URLs
     urls_to_fetch = urls[:max_urls]
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_url_content(url, session) for url in urls_to_fetch]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    session = await _get_shared_session()
+    tasks = [fetch_url_content(url, session) for url in urls_to_fetch]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
     fetched = []
     for url, result in zip(urls_to_fetch, results, strict=False):

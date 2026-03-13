@@ -446,6 +446,25 @@ class AICache:
 
             return len(expired_keys)
 
+    async def start_cleanup_loop(self, interval: float = 3600.0) -> None:
+        """Background loop that periodically cleans up expired cache entries.
+
+        Args:
+            interval: Seconds between cleanup runs (default: 1 hour).
+        """
+        import asyncio
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                removed = self.cleanup_expired()
+                if removed:
+                    self.logger.info("🧹 Background cache cleanup: removed %d entries", removed)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self.logger.debug("Cache cleanup error: %s", e)
+
     def get_stats(self) -> CacheStats:
         """Get cache statistics."""
         with self._cache_lock:

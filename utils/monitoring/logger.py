@@ -6,6 +6,7 @@ Sets up smart color-coded logging and handles log file rotation.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -138,6 +139,40 @@ class JSONLogFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=True)
 
 
+# Patterns that look like secrets (Discord tokens, API keys, bearer tokens)
+_SECRET_PATTERNS = re.compile(
+    r"(?:"
+    # Discord bot token: base64.base64.base64 (3 dot-separated segments, 59+ chars)
+    r"[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}"
+    r"|"
+    # Generic long base64-like API key (32+ alphanumeric chars)
+    r"(?:key|token|secret|password|apikey|api_key|authorization)[\s=:]+['\"]?[A-Za-z0-9_\-]{32,}['\"]?"
+    r")",
+    re.IGNORECASE,
+)
+
+
+class SensitiveDataFilter(logging.Filter):
+    """Filter that redacts potential secrets from log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            # Redact args if they are strings containing secrets
+            if isinstance(record.args, dict):
+                record.args = {
+                    k: _SECRET_PATTERNS.sub("[REDACTED]", str(v)) if isinstance(v, str) else v
+                    for k, v in record.args.items()
+                }
+            elif isinstance(record.args, tuple):
+                record.args = tuple(
+                    _SECRET_PATTERNS.sub("[REDACTED]", str(a)) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        if isinstance(record.msg, str):
+            record.msg = _SECRET_PATTERNS.sub("[REDACTED]", record.msg)
+        return True
+
+
 def setup_smart_logging(json_logs: bool = False) -> None:
     """Initialize logging with file and console handlers.
 
@@ -176,6 +211,11 @@ def setup_smart_logging(json_logs: bool = False) -> None:
     logger.addHandler(file_handler)
     logger.addHandler(error_handler)
     logger.addHandler(console_handler)
+
+    # Add sensitive data redaction filter to all handlers
+    secret_filter = SensitiveDataFilter()
+    for handler in logger.handlers:
+        handler.addFilter(secret_filter)
 
     # Optional: JSON structured logs for analysis
     if json_logs:

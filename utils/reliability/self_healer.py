@@ -71,21 +71,37 @@ class SelfHealer:
         for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
             try:
                 cmdline = proc.info.get("cmdline") or []
-                cmdline_str = " ".join(cmdline).lower()
+                if not cmdline:
+                    continue
 
-                # Look for bot.py but exclude manager, watcher, test files, etc.
-                # Use more precise matching: must end with 'bot.py' (not 'test_bot.py')
-                if "python" in cmdline_str and "bot.py" in cmdline_str:
-                    ignore_list = ["bot_manager", "dev_watcher", "self_healer", "test_bot", "test_"]
-                    if not any(x in cmdline_str for x in ignore_list):
-                        bot_processes.append(
-                            {
-                                "pid": proc.info["pid"],
-                                "cmdline": cmdline_str,
-                                "create_time": proc.info.get("create_time", 0),
-                                "process": psutil.Process(proc.info["pid"]),
-                            }
-                        )
+                # Look for Python processes running a script that is exactly 'bot.py'
+                cmdline_str = " ".join(cmdline).lower()
+                if "python" not in cmdline_str:
+                    continue
+
+                # Check each argument for an exact 'bot.py' script name
+                # This avoids false matches like 'test_bot.py', 'bot.py_backup'
+                is_bot = False
+                ignore_list = ["bot_manager", "dev_watcher", "self_healer", "test_bot", "test_"]
+                for arg in cmdline:
+                    from pathlib import PurePosixPath, PureWindowsPath
+                    try:
+                        name = PureWindowsPath(arg).name
+                    except (ValueError, TypeError):
+                        name = arg
+                    if name.lower() == "bot.py":
+                        is_bot = True
+                        break
+
+                if is_bot and not any(x in cmdline_str for x in ignore_list):
+                    bot_processes.append(
+                        {
+                            "pid": proc.info["pid"],
+                            "cmdline": cmdline_str,
+                            "create_time": proc.info.get("create_time", 0),
+                            "process": psutil.Process(proc.info["pid"]),
+                        }
+                    )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 

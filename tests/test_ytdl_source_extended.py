@@ -6,7 +6,6 @@ Tests configuration and constants.
 
 
 
-from unittest.mock import patch
 
 
 class TestYtdlOptsHq:

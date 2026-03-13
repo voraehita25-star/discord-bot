@@ -115,6 +115,7 @@ class AI(commands.Cog):
         self.chat_manager: ChatManager = ChatManager(bot)
         self.cleanup_task: asyncio.Task | None = None
         self._pending_request_cleanup_task: asyncio.Task | None = None
+        self._cache_cleanup_task: asyncio.Task | None = None
         # Rate limiter cleanup will be started in cog_load()
 
     async def cog_load(self) -> None:
@@ -133,6 +134,14 @@ class AI(commands.Cog):
             self._cleanup_pending_requests_loop()
         )
 
+        # Start AI cache background cleanup (every hour)
+        try:
+            from cogs.ai_core.cache.ai_cache import ai_cache
+
+            self._cache_cleanup_task = asyncio.create_task(ai_cache.start_cleanup_loop())
+        except ImportError:
+            pass
+
         logging.info("🧠 AI Cog loaded successfully")
 
     async def cog_unload(self) -> None:
@@ -147,6 +156,12 @@ class AI(commands.Cog):
             self._pending_request_cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._pending_request_cleanup_task
+
+        # Cancel cache cleanup task
+        if self._cache_cleanup_task:
+            self._cache_cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cache_cleanup_task
 
         # Stop webhook cache cleanup task
         await stop_webhook_cache_cleanup()

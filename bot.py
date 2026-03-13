@@ -253,13 +253,14 @@ class MusicBot(commands.AutoShardedBot):
     start_time: float = 0.0
 
     async def setup_hook(self) -> None:
-        # Optimize thread pool for R7 9800X3D (8C/16T)
+        # Optimize thread pool based on CPU count (default: 2x cores, min 8)
         import concurrent.futures
+        _thread_workers = max(8, (os.cpu_count() or 4) * 2)
         loop = asyncio.get_running_loop()
         loop.set_default_executor(
-            concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="bot-worker")
+            concurrent.futures.ThreadPoolExecutor(max_workers=_thread_workers, thread_name_prefix="bot-worker")
         )
-        logging.info("⚡ ThreadPoolExecutor set to 16 workers for R7 9800X3D")
+        logging.info("⚡ ThreadPoolExecutor set to %d workers", _thread_workers)
 
         # Setup signal handlers for graceful shutdown (Unix only)
         if sys.platform != "win32":
@@ -351,7 +352,7 @@ class MusicBot(commands.AutoShardedBot):
         perf_status = []
         # Check for orjson
         try:
-            import orjson
+            import orjson  # noqa: F401
 
             perf_status.append("orjson")
         except ImportError:
@@ -520,7 +521,14 @@ def create_bot() -> MusicBot:
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True  # Enable members intent for AI features
-    return MusicBot(command_prefix="!", intents=intents, help_command=None)
+    # Prevent AI-generated text from triggering mass pings
+    safe_mentions = discord.AllowedMentions(
+        everyone=False, roles=False, users=True, replied_user=True
+    )
+    return MusicBot(
+        command_prefix="!", intents=intents, help_command=None,
+        allowed_mentions=safe_mentions,
+    )
 
 
 # Global bot instance
@@ -618,6 +626,17 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
         pass  # Database module not available
     except Exception as e:
         logging.error("Error flushing database exports: %s", e)
+
+    # Close shared URL fetcher session
+    try:
+        from utils.web.url_fetcher import close_shared_session
+
+        await close_shared_session()
+        logging.info("🌐 URL fetcher session closed")
+    except ImportError:
+        pass
+    except Exception as e:
+        logging.error("Error closing URL fetcher session: %s", e)
 
     # Close bot connection
     if not bot.is_closed():

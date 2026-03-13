@@ -122,7 +122,7 @@ class TTLCache(Generic[K, V]):
 
     def get(self, key: K, default=None):
         """Get value from cache, returns default if not found or expired.
-        
+
         Pass default=_CACHE_MISS to distinguish a cached None from a miss.
         """
         with self._lock:

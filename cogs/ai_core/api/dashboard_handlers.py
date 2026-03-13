@@ -138,6 +138,14 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
     if not conversation_id or not new_title or not DB_AVAILABLE:
         await ws.send_json({"type": "error", "code": "CANNOT_RENAME", "message": "Cannot rename: missing ID, title, or DB unavailable"})
         return
+    if len(new_title) > 200:
+        await ws.send_json({"type": "error", "code": "TITLE_TOO_LONG", "message": "Title too long (max 200 characters)"})
+        return
+    # Strip non-printable characters (null bytes, control chars, etc.)
+    new_title = "".join(ch for ch in new_title if ch.isprintable()).strip()
+    if not new_title:
+        await ws.send_json({"type": "error", "code": "INVALID_TITLE", "message": "Title contains only invalid characters"})
+        return
 
     try:
         db = _get_db()

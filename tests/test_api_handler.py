@@ -206,7 +206,7 @@ class TestBuildApiConfigFaustMode:
     def test_faust_mode_with_thinking(self):
         """Test Faust mode enables thinking when available."""
         from cogs.ai_core.api.api_handler import build_api_config
-        from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
+        from cogs.ai_core.data import FAUST_INSTRUCTION
 
         chat_data = {
             "system_instruction": FAUST_INSTRUCTION,
@@ -221,7 +221,7 @@ class TestBuildApiConfigFaustMode:
     def test_faust_dm_mode_with_thinking(self):
         """Test Faust DM mode enables thinking when available."""
         from cogs.ai_core.api.api_handler import build_api_config
-        from cogs.ai_core.data.faust_data import FAUST_DM_INSTRUCTION
+        from cogs.ai_core.data import FAUST_DM_INSTRUCTION
 
         chat_data = {
             "system_instruction": FAUST_DM_INSTRUCTION,
@@ -842,19 +842,19 @@ class TestFaustData:
 
     def test_import_faust_instruction(self):
         """Test FAUST_INSTRUCTION can be imported."""
-        from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
+        from cogs.ai_core.data import FAUST_INSTRUCTION
         assert FAUST_INSTRUCTION is not None
         assert isinstance(FAUST_INSTRUCTION, str)
 
     def test_import_faust_dm_instruction(self):
         """Test FAUST_DM_INSTRUCTION can be imported."""
-        from cogs.ai_core.data.faust_data import FAUST_DM_INSTRUCTION
+        from cogs.ai_core.data import FAUST_DM_INSTRUCTION
         assert FAUST_DM_INSTRUCTION is not None
         assert isinstance(FAUST_DM_INSTRUCTION, str)
 
     def test_import_escalation_framings(self):
         """Test ESCALATION_FRAMINGS can be imported."""
-        from cogs.ai_core.data.faust_data import ESCALATION_FRAMINGS
+        from cogs.ai_core.data import ESCALATION_FRAMINGS
         assert ESCALATION_FRAMINGS is not None
 
 
@@ -874,7 +874,7 @@ class TestBuildApiConfigModes:
     def test_build_api_config_faust_mode(self):
         """Test build_api_config with Faust mode."""
         from cogs.ai_core.api.api_handler import build_api_config
-        from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
+        from cogs.ai_core.data import FAUST_INSTRUCTION
 
         chat_data = {
             "system_instruction": FAUST_INSTRUCTION,
@@ -937,7 +937,7 @@ class TestBuildApiConfig:
     def test_build_config_with_thinking(self):
         """Test config with thinking mode enabled."""
         from cogs.ai_core.api.api_handler import build_api_config
-        from cogs.ai_core.data.faust_data import FAUST_INSTRUCTION
+        from cogs.ai_core.data import FAUST_INSTRUCTION
 
         chat_data = {
             "system_instruction": FAUST_INSTRUCTION,

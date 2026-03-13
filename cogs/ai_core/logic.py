@@ -130,6 +130,10 @@ try:
     GUARDRAILS_AVAILABLE = True
 except ImportError:
     GUARDRAILS_AVAILABLE = False
+    logging.critical(
+        "⚠️ GUARDRAILS MODULE UNAVAILABLE — AI responses will NOT be filtered! "
+        "Fix the import error in cogs.ai_core.processing.guardrails to restore safety checks."
+    )
 
     def validate_response(response: str) -> tuple[bool, str, list[str]]:
         return True, response, []
@@ -726,29 +730,14 @@ class ChatManager(SessionMixin, ResponseMixin):
         # the lock state, then attach a done_callback to release the lock if
         # the shielded task completes after we've already timed out.
         lock_acquired = False
-        _timed_out = False
         try:
-            async def _acquire_lock():
-                await lock.acquire()
-                return True
-
-            _acquire_task = asyncio.create_task(_acquire_lock())
-
-            def _release_if_timed_out(task: asyncio.Task) -> None:
-                """Release the lock if we already gave up waiting."""
-                if _timed_out and not task.cancelled() and task.exception() is None:
-                    try:
-                        lock.release()
-                    except RuntimeError:
-                        pass
-
-            _acquire_task.add_done_callback(_release_if_timed_out)
-
-            lock_acquired = await asyncio.wait_for(
-                asyncio.shield(_acquire_task), timeout=LOCK_TIMEOUT
-            )
-        except TimeoutError:
-            _timed_out = True
+            # Safe lock acquisition with timeout.
+            # Uses asyncio.wait_for directly — the CPython #42130 fix landed
+            # in Python 3.12+ (we require 3.14+), so the shield workaround
+            # is no longer needed and avoids the double-release race.
+            await asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT)
+            lock_acquired = True
+        except (TimeoutError, asyncio.TimeoutError):
             logging.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
             )
@@ -1062,7 +1051,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_item = {
                             "role": "user",
@@ -1140,7 +1129,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Include text file contents in saved history
                         if text_parts:
                             user_msg_text += "\n\n" + "\n".join(text_parts)
-                        current_time = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
                         new_entries = []
                         user_item = {
@@ -1224,6 +1213,21 @@ class ChatManager(SessionMixin, ResponseMixin):
                         self.bot, context_channel.id, chat_data, new_entries=new_entries
                     )
 
+                    # Auto-trim history when it grows too large
+                    if HISTORY_MANAGER_AVAILABLE and len(chat_data.get("history", [])) > 2000:
+                        try:
+                            trimmed = await history_manager.smart_trim(
+                                chat_data["history"], max_messages=1500
+                            )
+                            if len(trimmed) < len(chat_data["history"]):
+                                chat_data["history"] = trimmed
+                                logging.info(
+                                    "📦 Auto-trimmed history for channel %s: %d -> %d",
+                                    channel_id, len(chat_data["history"]) + (len(chat_data["history"]) - len(trimmed)), len(trimmed),
+                                )
+                        except Exception as e:
+                            logging.debug("Auto-trim failed: %s", e)
+
                     # --- Memory Enhancement: Update state tracker and consolidator ---
                     if guild_id == GUILD_ID_RP and model_text:
                         try:
@@ -1285,6 +1289,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Check for {{Name}} syntax (Multi-Character Support)
                     # Split by {{Name}} blocks using precompiled pattern
                     parts = PATTERN_CHARACTER_TAG.split(response_text)
+
+                    # Sanitize mentions in all AI output (defense-in-depth)
+                    response_text = response_text.replace("@everyone", "@\u200beveryone")
+                    response_text = response_text.replace("@here", "@\u200bhere")
 
                     # If parts has more than 1 element, it means we found {{...}}
                     if len(parts) > 1:

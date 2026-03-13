@@ -556,7 +556,7 @@ class TestMusicCogSaveQueueJson:
     """Tests for _save_queue_json method."""
 
     def test_save_queue_json_empty(self):
-        """Test _save_queue_json with empty queue."""
+        """Test _save_queue_json_sync with empty queue (no file written when empty)."""
         from cogs.music.cog import Music
 
         mock_bot = MagicMock()
@@ -567,7 +567,7 @@ class TestMusicCogSaveQueueJson:
 
         with patch('pathlib.Path.exists') as mock_exists:
             mock_exists.return_value = False
-            cog._save_queue_json(guild_id)
+            cog._save_queue_json_sync(guild_id)
             # Should not raise
 
     def test_save_queue_json_with_tracks(self):

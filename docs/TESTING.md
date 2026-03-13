@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: March 2, 2026 | Python 3.14+ | Total: 2,926 Tests | 82 Test Files | All passing ✅ | 0 skipped ✅ | 1 warning (harmless mock RuntimeWarning) | Timeout: 30s per test
+> Last Updated: March 13, 2026 | Python 3.14+ | Total: 2,926 Tests | 82 Test Files | All passing ✅ | 0 skipped ✅ | 2 warnings (harmless aiosqlite DeprecationWarning) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -29,7 +29,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (82 Files, 3,007 Tests)
+## Test Structure (82 Files, 2,926 Tests)
 
 ```
 tests/

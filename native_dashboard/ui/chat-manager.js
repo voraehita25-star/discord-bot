@@ -265,7 +265,13 @@ export class ChatManager {
                 this.renderConversationList();
                 break;
             case 'conversation_created':
-                this.currentConversation = data;
+                if (data.id && typeof data.id === 'string') {
+                    this.currentConversation = data;
+                }
+                else {
+                    console.error('Invalid conversation_created data:', data);
+                    break;
+                }
                 this.messages = [];
                 this.showChatContainer();
                 this.updateChatHeader();
@@ -301,6 +307,24 @@ export class ChatManager {
             case 'stream_end':
                 this.isStreaming = false;
                 this.finalizeStreamingMessage(data.full_response);
+                // Backfill DB IDs so newly-sent messages become editable/deletable
+                if (data.assistant_message_id) {
+                    const lastMsg = this.messages[this.messages.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.id) {
+                        lastMsg.id = data.assistant_message_id;
+                    }
+                }
+                if (data.user_message_id) {
+                    for (let i = this.messages.length - 1; i >= 0; i--) {
+                        if (this.messages[i].role === 'user' && !this.messages[i].id) {
+                            this.messages[i].id = data.user_message_id;
+                            break;
+                        }
+                    }
+                }
+                if (data.user_message_id || data.assistant_message_id) {
+                    this.renderMessages();
+                }
                 this.setInputEnabled(true);
                 this.listConversations(); // Refresh sidebar message count
                 break;
@@ -590,7 +614,12 @@ export class ChatManager {
                     <span class="message-time">${timeStr}</span>
                     ${modeHtml}
                 </div>
-                
+
+                <div class="thinking-container" style="display:none">
+                    <div class="thinking-header">💭 Thinking...</div>
+                    <div class="thinking-content"></div>
+                </div>
+
                 <div class="message-content">
                     <span class="streaming-text"></span>
                     <span class="typing-cursor">\u258B</span>

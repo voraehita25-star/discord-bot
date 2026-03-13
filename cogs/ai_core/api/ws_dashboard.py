@@ -85,6 +85,8 @@ class DashboardWebSocketServer:
         self._running = False
         self._client_message_times: dict[str, list[float]] = {}  # rate limit tracking
         self._client_inflight: dict[str, int] = {}  # concurrent request tracking
+        self._authenticated_clients: set[str] = set()  # track authenticated client IDs
+        self._auth_deadline: float = 5.0  # seconds to authenticate after connecting
 
         # Initialize Gemini client
         if GEMINI_API_KEY:
@@ -218,20 +220,27 @@ class DashboardWebSocketServer:
 
         # Authentication: Require API key from environment or query param
         expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
-        # Determine if connection is from localhost (already origin-restricted)
         peername = request.transport.get_extra_info("peername") if request.transport else None
-        peername and peername[0] in ("127.0.0.1", "::1", "localhost")
+        env = os.getenv("BOT_ENV", "").lower()
 
         if not expected_token:
+            if env == "production":
+                logging.error(
+                    "❌ DASHBOARD_WS_TOKEN not set in production — rejecting connection. "
+                    "Set DASHBOARD_WS_TOKEN in .env to allow dashboard access."
+                )
+                return web.Response(status=401, text="Unauthorized: DASHBOARD_WS_TOKEN required in production")
             logging.warning(
                 "⚠️ DASHBOARD_WS_TOKEN not set — WebSocket server has NO authentication! "
                 "Set DASHBOARD_WS_TOKEN in .env for security."
             )
+        # Track whether client authenticated at upgrade time
+        _upgrade_authenticated = False
         if expected_token:
             # Check Authorization header or query param (timing-safe comparison).
-            # If neither is provided, allow connection — the Tauri dashboard sends
-            # the token via WebSocket message (type: 'auth') to avoid URL/header leakage.
-            # Only reject here if a token IS provided but is invalid.
+            # If neither is provided, allow connection but require message-based auth
+            # within the deadline — the Tauri dashboard sends the token via WebSocket
+            # message (type: 'auth') to avoid URL/header leakage.
             auth_header = request.headers.get("Authorization", "")
             query_token = request.query.get("token", "")
             has_credentials = bool(auth_header) or bool(query_token)
@@ -241,6 +250,8 @@ class DashboardWebSocketServer:
                 if not auth_match and not token_match:
                     logging.warning("⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername)
                     return web.Response(status=401, text="Unauthorized: Invalid token")
+                else:
+                    _upgrade_authenticated = True
 
         # Allow connections from localhost only (127.0.0.1 or localhost)
         # Use exact prefix matching to prevent subdomain bypass (e.g., evil-localhost.com)
@@ -291,11 +302,17 @@ class DashboardWebSocketServer:
         client_id = str(uuid.uuid4())[:8]
         logging.info("👋 Dashboard client connected: %s", client_id)
 
+        # Mark as authenticated if validated at upgrade time or no token required
+        if _upgrade_authenticated or not expected_token:
+            self._authenticated_clients.add(client_id)
+
         try:
             # Send welcome message
+            needs_auth = expected_token and not _upgrade_authenticated
             await ws.send_json({
                 "type": "connected",
                 "client_id": client_id,
+                "requires_auth": needs_auth,
                 "presets": {
                     key: {
                         "name": preset["name"],
@@ -306,10 +323,41 @@ class DashboardWebSocketServer:
                 },
             })
 
+            # Enforce auth deadline: if token is required and not yet authenticated,
+            # the client must send an 'auth' message within the deadline.
+            if needs_auth:
+                auth_received = False
+                try:
+                    deadline_msg = await asyncio.wait_for(
+                        ws.receive(), timeout=self._auth_deadline
+                    )
+                    if deadline_msg.type == WSMsgType.TEXT:
+                        try:
+                            auth_data = json.loads(deadline_msg.data)
+                            if auth_data.get("type") == "auth":
+                                token = auth_data.get("token", "")
+                                if hmac.compare_digest(str(token), expected_token):
+                                    self._authenticated_clients.add(client_id)
+                                    auth_received = True
+                                    logging.debug("✅ Client %s authenticated via message", client_id)
+                                else:
+                                    logging.warning("⚠️ Invalid auth token from client %s", client_id)
+                        except json.JSONDecodeError:
+                            pass
+                except asyncio.TimeoutError:
+                    pass
+
+                if not auth_received:
+                    logging.warning("⚠️ Client %s failed to authenticate within %.0fs deadline", client_id, self._auth_deadline)
+                    await ws.send_json({"type": "error", "message": "Authentication required. Connection closing."})
+                    await ws.close(code=4001, message=b"Authentication deadline exceeded")
+                    return ws
+
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
+                        msg_id = str(uuid.uuid4())[:8]
                         # Rate limiting per client
                         now = asyncio.get_running_loop().time()
                         times = self._client_message_times.get(client_id, [])
@@ -320,7 +368,11 @@ class DashboardWebSocketServer:
                             await ws.send_json({"type": "error", "message": "Rate limit exceeded. Please wait."})
                             continue
                         times.append(now)
-                        await self.handle_message(ws, data, client_id)
+                        logging.debug(
+                            "WS msg client=%s msg=%s type=%s",
+                            client_id, msg_id, data.get("type", "?"),
+                        )
+                        await self.handle_message(ws, data, client_id, msg_id=msg_id)
                     except json.JSONDecodeError:
                         await ws.send_json({"type": "error", "message": "Invalid JSON"})
                 elif msg.type == WSMsgType.ERROR:
@@ -331,13 +383,14 @@ class DashboardWebSocketServer:
             logging.error("❌ WebSocket handler error: %s", e)
         finally:
             self.clients.discard(ws)
+            self._authenticated_clients.discard(client_id)
             self._client_message_times.pop(client_id, None)
             self._client_inflight.pop(client_id, None)
             logging.info("👋 Dashboard client disconnected: %s", client_id)
 
         return ws
 
-    async def handle_message(self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "") -> None:
+    async def handle_message(self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "", msg_id: str = "") -> None:
         """Handle incoming WebSocket messages."""
         msg_type = data.get("type")
 
@@ -354,6 +407,7 @@ class DashboardWebSocketServer:
                 return
             self._client_inflight[client_id] = inflight + 1
             try:
+                logging.debug("WS chat start client=%s msg=%s", client_id, msg_id)
                 await self.handle_chat_message(ws, data)
             finally:
                 self._client_inflight[client_id] = max(0, self._client_inflight.get(client_id, 1) - 1)
@@ -384,16 +438,16 @@ class DashboardWebSocketServer:
         elif msg_type == "save_profile":
             await self.handle_save_profile(ws, data)
         elif msg_type == "auth":
-            # Frontend sends token via message (not URL) to avoid leaking in logs.
-            # HTTP-level auth already validates headers/query params during upgrade;
-            # this handler covers the message-based auth flow from the Tauri dashboard.
+            # Re-auth or late auth via message — already handled at connect deadline,
+            # but allow re-validation for token rotation.
             token = data.get("token", "")
             expected = os.getenv("DASHBOARD_WS_TOKEN", "")
             if expected and not hmac.compare_digest(str(token), expected):
                 logging.warning("⚠️ Invalid auth token from client %s", client_id)
                 await ws.send_json({"type": "error", "message": "Invalid auth token"})
             else:
-                logging.debug("✅ Client %s authenticated via message", client_id)
+                self._authenticated_clients.add(client_id)
+                logging.debug("✅ Client %s re-authenticated via message", client_id)
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
         else:

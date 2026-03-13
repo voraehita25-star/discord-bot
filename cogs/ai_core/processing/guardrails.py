@@ -126,10 +126,18 @@ class OutputGuardrails:
 
     # Patterns that should never appear in output
     SENSITIVE_PATTERNS = [
-        # API keys and tokens
+        # API keys and tokens (generic)
         (r'(?i)(?:api[_-]?key|token|secret)["\'"]?\s*[:=]\s*["\'"]?[a-zA-Z0-9_-]{20,}', "api_key"),
         # Discord tokens (specific format)
         (r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27}", "discord_token"),
+        # Google API keys (AIza prefix)
+        (r"AIza[0-9A-Za-z\-_]{35}", "google_api_key"),
+        # OpenAI / Anthropic API keys
+        (r"sk-[a-zA-Z0-9]{20,}", "openai_key"),
+        # AWS access keys
+        (r"AKIA[0-9A-Z]{16}", "aws_access_key"),
+        # Generic Bearer tokens in AI output
+        (r"(?i)Bearer\s+[a-zA-Z0-9_\-\.]{20,}", "bearer_token"),
         # Environment variable patterns
         (r"(?i)(?:password|passwd|pwd)\s*[:=]\s*\S+", "password"),
         # Potential injection attempts in output

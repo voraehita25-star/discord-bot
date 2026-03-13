@@ -1,6 +1,5 @@
 """Unit tests for URL Content Fetcher module."""
 
-import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

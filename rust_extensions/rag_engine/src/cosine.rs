@@ -79,7 +79,8 @@ fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Batch compute similarities (parallel)
-pub fn batch_cosine_similarity(query: &[f32], vectors: &[Vec<f32>]) -> Vec<f32> {
+#[allow(dead_code)]
+pub(crate) fn batch_cosine_similarity(query: &[f32], vectors: &[Vec<f32>]) -> Vec<f32> {
     use rayon::prelude::*;
     
     vectors

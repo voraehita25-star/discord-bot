@@ -7,6 +7,7 @@ Comprehensive tests for RagEngineWrapper and Python fallback.
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -320,7 +321,7 @@ class TestRagEngineWrapperSaveLoad:
         engine.add("b", "Second", [0.4, 0.5, 0.6])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "test.json")
+            path = Path(tmpdir) / "test.json"
             engine.save(path)
 
             # Load into new engine
@@ -341,10 +342,10 @@ class TestRagEngineWrapperSaveLoad:
         engine.add("test", "Test text", [0.1, 0.2, 0.3])
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "test.json")
+            path = Path(tmpdir) / "test.json"
             engine.save(path)
 
-            with open(path, encoding="utf-8") as f:
+            with Path(path).open(encoding="utf-8") as f:
                 data = json.load(f)
 
             assert isinstance(data, list)

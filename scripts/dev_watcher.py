@@ -95,7 +95,7 @@ class DevWatcherConfig:
     verbose_mode: bool = False
 
     @classmethod
-    def load_from_file(cls, filepath: Path) -> "DevWatcherConfig":
+    def load_from_file(cls, filepath: Path) -> DevWatcherConfig:
         """Load config from JSON file."""
         config = cls()
         if filepath.exists():

@@ -227,9 +227,10 @@ impl BotManager {
         }
     }
 
-    pub fn get_uptime(&mut self) -> String {
+    /// Format uptime from PID file modification time.
+    fn format_uptime_from_pid_file(&self) -> String {
         let pid_file = self.pid_file();
-        if !pid_file.exists() || !self.is_running() {
+        if !pid_file.exists() {
             return "-".to_string();
         }
 
@@ -255,6 +256,13 @@ impl BotManager {
             }
         }
         "-".to_string()
+    }
+
+    pub fn get_uptime(&mut self) -> String {
+        if !self.is_running() {
+            return "-".to_string();
+        }
+        self.format_uptime_from_pid_file()
     }
 
     pub fn get_memory_mb(&mut self) -> f64 {
@@ -316,33 +324,7 @@ impl BotManager {
     
     /// Get uptime without refreshing processes (used by get_status which already refreshed)
     fn get_uptime_no_refresh(&self) -> String {
-        let pid_file = self.pid_file();
-        if !pid_file.exists() {
-            return "-".to_string();
-        }
-
-        if let Ok(metadata) = fs::metadata(&pid_file) {
-            if let Ok(modified) = metadata.modified() {
-                let start: DateTime<Local> = modified.into();
-                let now = Local::now();
-                let duration = now.signed_duration_since(start);
-
-                // Clamp to 0 to prevent negative uptime from clock skew
-                let total_secs = duration.num_seconds().max(0);
-                let hours = total_secs / 3600;
-                let mins = (total_secs % 3600) / 60;
-                let secs = total_secs % 60;
-
-                if hours > 0 {
-                    return format!("{}h {}m {}s", hours, mins, secs);
-                } else if mins > 0 {
-                    return format!("{}m {}s", mins, secs);
-                } else {
-                    return format!("{}s", secs);
-                }
-            }
-        }
-        "-".to_string()
+        self.format_uptime_from_pid_file()
     }
 
     pub fn start(&mut self) -> Result<String, String> {
@@ -473,9 +455,18 @@ impl BotManager {
 
     pub fn restart(&mut self) -> Result<String, String> {
         if self.is_running() {
+            let old_pid = self.get_pid();
             self.stop()?;
-            // Wait for process to fully exit before restarting
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            // Poll until process is gone (max 5 seconds)
+            if let Some(pid) = old_pid {
+                for _ in 0..10 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                    if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
+                        break;
+                    }
+                }
+            }
         }
         self.start()
     }

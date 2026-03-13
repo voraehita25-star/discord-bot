@@ -83,6 +83,64 @@ class Music(commands.Cog):
 
         self.spotify: SpotifyHandler = SpotifyHandler(bot)
         self.auto_disconnect_delay: int = 180  # 3 minutes
+        self._temp_cleanup_task: asyncio.Task | None = None
+        self._queue_autosave_task: asyncio.Task | None = None
+        self._queue_save_pending: set[int] = set()  # guild IDs with pending saves
+
+    async def cog_load(self) -> None:
+        """Called when the cog is loaded. Start background tasks."""
+        self._temp_cleanup_task = asyncio.create_task(self._periodic_temp_cleanup())
+        self._queue_autosave_task = asyncio.create_task(self._periodic_queue_save())
+
+    async def _periodic_temp_cleanup(self) -> None:
+        """Periodically clean up stale files in temp directory."""
+        import time as _time
+        temp_dir = Path("temp")
+        stale_threshold = 3600  # 1 hour
+        while True:
+            try:
+                await asyncio.sleep(1800)  # Run every 30 minutes
+                if not temp_dir.exists():
+                    continue
+                now = _time.time()
+                cleaned = 0
+                for f in temp_dir.iterdir():
+                    if f.is_file() and (now - f.stat().st_mtime) > stale_threshold:
+                        try:
+                            f.unlink()
+                            cleaned += 1
+                        except (PermissionError, OSError):
+                            pass
+                if cleaned:
+                    logging.info("🧹 Temp cleanup: removed %d stale files", cleaned)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logging.debug("Temp cleanup error: %s", e)
+
+    async def _periodic_queue_save(self) -> None:
+        """Periodically save all active queues to persist them across restarts."""
+        from .queue import queue_manager
+
+        while True:
+            try:
+                await asyncio.sleep(300)  # Every 5 minutes
+                saved = 0
+                for guild_id, gs in list(self._guild_states.items()):
+                    if gs.queue:
+                        await queue_manager.save_queue(guild_id)
+                        saved += 1
+                self._queue_save_pending.clear()
+                if saved:
+                    logging.info("💾 Auto-saved queues for %d guilds", saved)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logging.debug("Queue auto-save error: %s", e)
+
+    def _schedule_queue_save(self, guild_id: int) -> None:
+        """Mark a guild's queue as needing save (debounced by periodic task)."""
+        self._queue_save_pending.add(guild_id)
 
     # ----- Guild state helpers -----
 
@@ -253,6 +311,12 @@ class Music(commands.Cog):
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
+        # Cancel temp cleanup task
+        if self._temp_cleanup_task is not None:
+            self._temp_cleanup_task.cancel()
+        # Cancel queue auto-save task
+        if self._queue_autosave_task is not None:
+            self._queue_autosave_task.cancel()
         # Cancel all auto-disconnect tasks
         for gs in self._guild_states.values():
             if gs.auto_disconnect_task is not None:
@@ -553,35 +617,32 @@ class Music(commands.Cog):
             self.auto_disconnect_tasks.pop(guild_id, None)
 
     async def safe_delete(self, filename):
-        """Safely delete a file with retries (Non-blocking)."""
-        await asyncio.sleep(2)  # Wait for ffmpeg to fully release
-
-        def _delete():
-            filepath = Path(filename)
-            for i in range(5):  # 5 retries with 1 second delay
-                try:
-                    if filepath.exists():
-                        filepath.unlink()
-                        logging.info("🗑️ Deleted %s", filename)
-                    return True
-                except PermissionError:
-                    if i < 4:
-                        time.sleep(1.0)  # Wait 1s between retries
-                    else:
-                        # Final retry failed
-                        logging.warning(
-                            "❌ Could not delete %s after %d retries (PermissionError)",
-                            filename,
-                            i + 1,
-                        )
-                        return False
-                except OSError as e:
-                    logging.warning("Failed to delete %s: %s", filename, e)
-                    return False
-            # Should not reach here, but just in case
-            return False
-
-        await asyncio.get_running_loop().run_in_executor(None, _delete)
+        """Safely delete a file with exponential backoff (Non-blocking)."""
+        filepath = Path(filename).resolve()
+        temp_root = Path("temp").resolve()
+        if not filepath.is_relative_to(temp_root):
+            logging.warning("🛡️ Blocked file deletion outside temp directory: %s", filepath)
+            return
+        for attempt in range(8):  # 8 retries with exponential backoff
+            if not filepath.exists():
+                return  # Already deleted
+            try:
+                filepath.unlink()
+                logging.info("🗑️ Deleted %s", filename)
+                return
+            except PermissionError:
+                # Exponential backoff: 1s, 2s, 4s, 4s, 4s... (capped at 4s)
+                delay = min(2 ** attempt, 4.0)
+                if attempt < 7:
+                    await asyncio.sleep(delay)
+                else:
+                    logging.warning(
+                        "❌ Could not delete %s after %d retries (PermissionError)",
+                        filename, attempt + 1,
+                    )
+            except OSError as e:
+                logging.warning("Failed to delete %s: %s", filename, e)
+                return
 
     def get_queue(self, ctx) -> collections.deque[dict[str, Any]]:
         """Get or create queue for a guild.
@@ -711,8 +772,11 @@ class Music(commands.Cog):
                         embed.set_footer(text="Use !loop to disable • !skip to skip")
                         await ctx.send(embed=embed)
                         return
-                    except (discord.DiscordException, OSError) as e:
-                        logging.error("Loop replay failed: %s", e)
+                    except discord.DiscordException as e:
+                        logging.error("Loop replay failed (Discord): %s", e)
+                        self.loops[guild_id] = False  # Disable loop on error
+                    except OSError as e:
+                        logging.error("Loop replay failed (audio/file): %s", e)
                         self.loops[guild_id] = False  # Disable loop on error
 
             # 2. Normal Queue Logic
@@ -779,8 +843,8 @@ class Music(commands.Cog):
                             voice_client.play(player, after=after_playing)
                             # Reset retry counter on successful playback start
                             self._play_retries[guild_id] = 0
-                        except (discord.DiscordException, OSError) as e:
-                            logging.error("Failed to start playback: %s", e)
+                        except discord.DiscordException as e:
+                            logging.error("Failed to start playback (Discord): %s", e)
                             # Cleanup FFmpeg process
                             try:
                                 player.cleanup()
@@ -791,7 +855,18 @@ class Music(commands.Cog):
                             # Cleanup file on error
                             if player.filename and not self.loops.get(ctx.guild.id):
                                 self._safe_run_coroutine(self.safe_delete(player.filename))
-                            # Set flag to try next track after lock release
+                            _retry_next = True
+                            return
+                        except OSError as e:
+                            logging.error("Failed to start playback (audio/file): %s", e)
+                            try:
+                                player.cleanup()
+                            except Exception as cleanup_err:
+                                logging.debug(
+                                    "Player cleanup failed (non-critical): %s", cleanup_err
+                                )
+                            if player.filename and not self.loops.get(ctx.guild.id):
+                                self._safe_run_coroutine(self.safe_delete(player.filename))
                             _retry_next = True
                             return
 
@@ -847,15 +922,24 @@ class Music(commands.Cog):
                                 type=discord.ActivityType.listening, name=player.title
                             )
                         )
-                except (discord.DiscordException, OSError) as e:
+                except discord.DiscordException as e:
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Playback Error",
                         description="ไม่สามารถเล่นเพลงถัดไปได้ กรุณาลองใหม่",
                         color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
-                    logging.error("Play error: %s\n%s", e, traceback.format_exc())
-                    _retry_next = True  # Try next one after lock release
+                    logging.error("Play error (Discord): %s\n%s", e, traceback.format_exc())
+                    _retry_next = True
+                except OSError as e:
+                    embed = discord.Embed(
+                        title=f"{Emojis.CROSS} Playback Error",
+                        description="เกิดข้อผิดพลาดกับไฟล์เสียง กรุณาลองใหม่",
+                        color=Colors.ERROR,
+                    )
+                    await ctx.send(embed=embed)
+                    logging.error("Play error (audio/file): %s\n%s", e, traceback.format_exc())
+                    _retry_next = True
             else:
                 # Queue empty
                 self.current_track.pop(ctx.guild.id, None)  # Clear track info
@@ -1081,12 +1165,18 @@ class Music(commands.Cog):
             )
             await fix_msg.edit(embed=success_embed)
 
-        except (discord.DiscordException, OSError) as e:
+        except discord.DiscordException as e:
             error_embed = discord.Embed(
                 title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง", color=Colors.ERROR
             )
             await fix_msg.edit(embed=error_embed)
-            logging.error("Fix failed: %s", e)
+            logging.error("Fix failed (Discord): %s", e)
+        except OSError as e:
+            error_embed = discord.Embed(
+                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดกับไฟล์เสียง กรุณาลองอีกครั้ง", color=Colors.ERROR
+            )
+            await fix_msg.edit(embed=error_embed)
+            logging.error("Fix failed (audio/file): %s", e)
         finally:
             # Always reset fixing flag at the end
             self.fixing[guild_id] = False
@@ -1228,6 +1318,7 @@ class Music(commands.Cog):
                         uploader = info.get("uploader", "Unknown")
 
                         queue.append({"url": url, "title": title, "type": "url"})
+                        self._schedule_queue_save(ctx.guild.id)
 
                         # 🎨 PREMIUM YOUTUBE EMBED
                         embed = discord.Embed(
@@ -1266,12 +1357,26 @@ class Music(commands.Cog):
                         )
                         await ctx.send(embed=embed)
                         return
-                except (discord.DiscordException, OSError, yt_dlp.DownloadError) as e:
+                except discord.DiscordException as e:
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่", color=Colors.ERROR
                     )
                     await ctx.send(embed=embed)
-                    logging.error("Search error: %s", e)
+                    logging.error("Search error (Discord): %s", e)
+                    return
+                except OSError as e:
+                    embed = discord.Embed(
+                        title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดกับไฟล์ กรุณาลองใหม่", color=Colors.ERROR
+                    )
+                    await ctx.send(embed=embed)
+                    logging.error("Search error (file): %s", e)
+                    return
+                except yt_dlp.DownloadError as e:
+                    embed = discord.Embed(
+                        title=f"{Emojis.CROSS} Error", description="ไม่สามารถดาวน์โหลดได้ กรุณาลองใหม่", color=Colors.ERROR
+                    )
+                    await ctx.send(embed=embed)
+                    logging.error("Search error (download): %s", e)
                     return
 
         # If not playing, start playing

@@ -721,6 +721,35 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             "threshold_mb": 500,
         }
 
+        # 6. Circuit breaker status
+        try:
+            from utils.reliability.circuit_breaker import gemini_circuit
+
+            if gemini_circuit:
+                cb_status = gemini_circuit.get_status()
+                cb_state = cb_status.get("state", "unknown")
+                checks["checks"]["circuit_breaker"] = {
+                    "status": "ok" if cb_state == "closed" else "warning",
+                    "state": cb_state,
+                    "failure_count": cb_status.get("failure_count", 0),
+                }
+                if cb_state == "open":
+                    checks["healthy"] = False
+        except ImportError:
+            checks["checks"]["circuit_breaker"] = {"status": "not_available"}
+
+        # 7. FFmpeg availability
+        try:
+            import shutil
+
+            ffmpeg_path = shutil.which("ffmpeg")
+            checks["checks"]["ffmpeg"] = {
+                "status": "ok" if ffmpeg_path else "warning",
+                "available": bool(ffmpeg_path),
+            }
+        except Exception:
+            checks["checks"]["ffmpeg"] = {"status": "unknown"}
+
         return checks
 
 

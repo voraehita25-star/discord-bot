@@ -16,8 +16,12 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # Service configuration
+# GO_HEALTH_API_PORT controls the Go health service port (default 8082).
+# Falls back to HEALTH_API_PORT for backward compatibility, but prefer
+# GO_HEALTH_API_PORT to avoid collision with the Python health server
+# (which also reads HEALTH_API_PORT, defaulting to 8080).
 HEALTH_API_HOST = os.getenv("HEALTH_API_HOST", "localhost")
-HEALTH_API_PORT = os.getenv("HEALTH_API_PORT", "8082")
+HEALTH_API_PORT = os.getenv("GO_HEALTH_API_PORT") or os.getenv("HEALTH_API_PORT", "8082")
 HEALTH_API_URL = f"http://{HEALTH_API_HOST}:{HEALTH_API_PORT}"
 
 
@@ -37,7 +41,9 @@ class HealthAPIClient:
         self._session: aiohttp.ClientSession | None = None
         self._service_available: bool | None = None
         self._last_service_check: float = 0
+        self._retry_count: int = 0  # consecutive unavailable checks, for exponential backoff
         self._metrics_buffer: list[dict] = []
+        self._flush_task: asyncio.Task | None = None
         # Lazily initialized to avoid event loop binding issues
         self._buffer_lock: asyncio.Lock | None = None
         self._connect_lock: asyncio.Lock | None = None
@@ -67,6 +73,8 @@ class HealthAPIClient:
                 )
                 self._session = session
                 await self._check_service()
+                # Start periodic flush task once connected
+                self._flush_task = asyncio.create_task(self._periodic_flush())
             except Exception as e:
                 # Clean up session if service check fails
                 logging.debug("Health client connection failed: %s", e)
@@ -75,8 +83,27 @@ class HealthAPIClient:
                 self._session = None
                 raise
 
+    async def _periodic_flush(self) -> None:
+        """Flush metrics buffer every 30 seconds to avoid staleness during low traffic."""
+        try:
+            while True:
+                await asyncio.sleep(30)
+                if self._session is not None:
+                    await self._flush_buffer()
+        except asyncio.CancelledError:
+            pass
+
     async def close(self):
         """Close the client session."""
+        # Cancel periodic flush task
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+        self._flush_task = None
+
         if self._session:
             # Flush remaining metrics
             await self._flush_buffer()
@@ -84,11 +111,24 @@ class HealthAPIClient:
             self._session = None
 
     async def _check_service(self) -> bool:
-        """Check if Go service is available (re-checks every 5 minutes)."""
+        """Check if Go service is available.
+
+        Uses exponential backoff when unavailable (30s → 60s → 120s → 300s max)
+        and a fixed 5-minute interval when available.
+        """
         import time as _time
         now = _time.monotonic()
-        if self._service_available is not None and (now - getattr(self, '_last_service_check', 0)) < 300:
-            return self._service_available
+        elapsed = now - self._last_service_check
+
+        if self._service_available is not None:
+            if self._service_available:
+                if elapsed < 300:  # 5 min when healthy
+                    return True
+            else:
+                # Backoff: 30s * 2^retry_count, capped at 300s
+                backoff = min(30 * (2 ** self._retry_count), 300)
+                if elapsed < backoff:
+                    return False
 
         if self._session is None:
             self._service_available = False
@@ -98,14 +138,17 @@ class HealthAPIClient:
 
         try:
             async with self._session.get(f"{self.base_url}/health/live") as resp:
-                self._service_available = resp.status == 200
-                self._last_service_check = now
-                if self._service_available:
+                available = resp.status == 200
+                if available and not self._service_available:
                     logger.info("✅ Go Health API service available")
-                return self._service_available
+                    self._retry_count = 0  # reset backoff on recovery
+                self._service_available = available
+                self._last_service_check = now
+                return available
         except (TimeoutError, aiohttp.ClientError):
             self._service_available = False
             self._last_service_check = now
+            self._retry_count = min(self._retry_count + 1, 4)  # cap at 2^4=16 → 300s
             logger.warning("⚠️ Go Health API not available, metrics disabled")
             return False
 

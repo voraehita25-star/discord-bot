@@ -155,6 +155,9 @@ The bot includes built-in monitoring capabilities:
 - **SSRF Protection** - DNS rebinding protection with IPv6 coverage in Go services
 - **Permission Allowlists** - AI server commands restricted to safe permissions only
 - **Mention Sanitization** - Webhook/tool messages sanitize role & user mentions
+- **AllowedMentions** - Bot-level `@everyone`/`@here` mention blocking
+- **Sensitive Data Filter** - Regex-based token/API key redaction in logs
+- **Path Traversal Protection** - `safe_delete()` validates within `temp/` directory
 
 ## 🦀 Native Extensions (Optional)
 
@@ -274,4 +277,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.13 | **Python:** 3.14+ | **Tests:** 2,926 passing ✅ (82 files) | **Native Extensions:** Rust + Go | **Last Update:** March 2, 2026
+**Version:** 3.3.14 | **Python:** 3.14+ | **Tests:** 2,926 passing ✅ (82 files) | **Native Extensions:** Rust + Go | **Last Update:** March 13, 2026

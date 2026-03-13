@@ -272,7 +272,7 @@ class EntityMemoryManager:
             return None
 
         try:
-            async with db_manager.get_connection() as conn:
+            async with db_manager.get_write_connection() as conn:
                 # First try exact match with channel/guild
                 cursor = await conn.execute(
                     """
@@ -324,7 +324,7 @@ class EntityMemoryManager:
             async with db_manager.get_connection() as conn:
                 sql = """
                     SELECT * FROM entity_memories
-                    WHERE (name LIKE ? ESCAPE '\' OR facts LIKE ? ESCAPE '\')
+                    WHERE (name LIKE ? ESCAPE '\\' OR facts LIKE ? ESCAPE '\\')
                 """
                 # Escape LIKE-special characters to prevent query manipulation
                 escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

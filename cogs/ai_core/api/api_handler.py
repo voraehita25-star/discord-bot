@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+import random
 import time
 from typing import Any, cast
 
@@ -17,12 +18,12 @@ from google import genai
 from google.genai import types
 
 from ..data.constants import THINKING_BUDGET_DEFAULT
-from ..data.faust_data import (
+from ..data import (
     ESCALATION_FRAMINGS,
     FAUST_DM_INSTRUCTION,
     FAUST_INSTRUCTION,
+    ROLEPLAY_ASSISTANT_INSTRUCTION,
 )
-from ..data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
 
 # Import circuit breaker for API protection
 try:
@@ -423,7 +424,7 @@ async def call_gemini_api(
                 if ERROR_RECOVERY_AVAILABLE and service_monitor:
                     service_monitor.record_failure("gemini_api", "timeout")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay + random.uniform(0, 1.5))
                     retry_delay = min(retry_delay * 1.5, 10)
                     continue
                 return "⚠️ API หมดเวลา กรุณาลองใหม่อีกครั้ง", "", []
@@ -570,7 +571,7 @@ async def call_gemini_api(
                             break
 
         if attempt < max_retries - 1:
-            await asyncio.sleep(retry_delay)
+            await asyncio.sleep(retry_delay + random.uniform(0, 1.5))
             retry_delay = min(retry_delay * 1.5, 10)
 
     # Record performance metrics

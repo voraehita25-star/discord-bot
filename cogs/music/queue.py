@@ -36,6 +36,14 @@ class QueueManager:
         self.volumes: dict[int, float] = {}
         self.mode_247: dict[int, bool] = {}
         self.current_track: dict[int, dict[str, Any]] = {}
+        # Per-guild locks for concurrent-safe queue mutations
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    def _get_lock(self, guild_id: int) -> asyncio.Lock:
+        """Get or create a lock for a specific guild."""
+        if guild_id not in self._locks:
+            self._locks[guild_id] = asyncio.Lock()
+        return self._locks[guild_id]
 
     def get_queue(self, guild_id: int) -> collections.deque[dict[str, Any]]:
         """Get or create queue for a guild."""
@@ -134,18 +142,19 @@ class QueueManager:
 
     async def save_queue(self, guild_id: int) -> None:
         """Save queue to database for persistence."""
-        queue = self.queues.get(guild_id, [])
+        async with self._get_lock(guild_id):
+            queue = self.queues.get(guild_id, [])
 
-        if not DB_AVAILABLE or db is None:
-            self._save_queue_json(guild_id)
-            return
+            if not DB_AVAILABLE or db is None:
+                self._save_queue_json(guild_id)
+                return
 
-        if not queue:
-            await db.clear_music_queue(guild_id)
-            return
+            if not queue:
+                await db.clear_music_queue(guild_id)
+                return
 
-        await db.save_music_queue(guild_id, list(queue))
-        logging.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue))
+            await db.save_music_queue(guild_id, list(queue))
+            logging.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue))
 
     def _save_queue_json(self, guild_id: int) -> None:
         """Legacy JSON save as fallback with atomic write pattern."""

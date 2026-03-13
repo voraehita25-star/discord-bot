@@ -65,9 +65,12 @@ class Database:
         # 32 connections for 8-core/16-thread CPU (2 per thread)
         self._pool_semaphore: asyncio.Semaphore | None = None
         self._connection_count = 0
-        # Persistent connection pool for reuse (avoids open/close overhead)
+        # Persistent connection pool for reuse (avoids open/close overhead).
+        # Queue size is half the semaphore cap so most concurrent connections
+        # get a reused handle rather than opening a new one each time.
         self._conn_pool: asyncio.Queue | None = None
         self._pool_initialized = False
+        self._checkpoint_task: asyncio.Task | None = None
         self._export_pending_keys: set[str] = set()
         self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
         self._export_lock = asyncio.Lock()  # Lock for export scheduling
@@ -77,21 +80,30 @@ class Database:
         logging.info("💾 Async Database manager created: %s (pool=32, WAL mode)", self.db_path)
 
     def _get_pool_semaphore(self) -> asyncio.Semaphore:
-        """Lazily create the pool semaphore to avoid event loop binding issues."""
+        """Lazily create the pool semaphore to avoid event loop binding issues.
+
+        Thread-safe via double-checked locking with _instance_lock.
+        """
         if self._pool_semaphore is None:
-            self._pool_semaphore = asyncio.Semaphore(32)  # 32 for R7 9800X3D (16T x 2)
+            with self._instance_lock:
+                if self._pool_semaphore is None:
+                    self._pool_semaphore = asyncio.Semaphore(32)
         return self._pool_semaphore
 
     def _get_conn_pool(self) -> asyncio.Queue:
         """Lazily create the connection pool queue to avoid event loop binding issues."""
         if self._conn_pool is None:
-            self._conn_pool = asyncio.Queue(maxsize=10)  # More pooled connections for reuse
+            with self._instance_lock:
+                if self._conn_pool is None:
+                    self._conn_pool = asyncio.Queue(maxsize=16)
         return self._conn_pool
 
     def _get_write_lock(self) -> asyncio.Lock:
         """Lazily create the write lock to avoid event loop binding issues."""
         if self._write_lock is None:
-            self._write_lock = asyncio.Lock()
+            with self._instance_lock:
+                if self._write_lock is None:
+                    self._write_lock = asyncio.Lock()
         return self._write_lock
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
@@ -514,6 +526,12 @@ class Database:
                 await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN mode TEXT")
             except aiosqlite.OperationalError:
                 pass  # Column already exists
+
+            # Add images column if not exists (migration)
+            try:
+                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN images TEXT")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_dashboard_msg_conv
                 ON dashboard_messages(conversation_id, created_at ASC)
@@ -587,6 +605,33 @@ class Database:
             except Exception as e:
                 logging.warning("Migration system error (non-fatal): %s", e)
 
+        # Start periodic WAL checkpoint task
+        if self._checkpoint_task is None or self._checkpoint_task.done():
+            self._checkpoint_task = asyncio.create_task(self._periodic_wal_checkpoint())
+
+    async def _periodic_wal_checkpoint(self) -> None:
+        """Run WAL checkpoint every 10 minutes to keep WAL file from growing unbounded."""
+        try:
+            while True:
+                await asyncio.sleep(600)  # 10 minutes
+                try:
+                    async with self.get_connection() as conn:
+                        await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    logging.debug("💾 WAL checkpoint completed")
+                except Exception as e:
+                    logging.warning("WAL checkpoint failed: %s", e)
+        except asyncio.CancelledError:
+            pass
+
+    async def stop_background_tasks(self) -> None:
+        """Cancel background tasks (WAL checkpoint). Call during shutdown."""
+        if self._checkpoint_task and not self._checkpoint_task.done():
+            self._checkpoint_task.cancel()
+            try:
+                await self._checkpoint_task
+            except asyncio.CancelledError:
+                pass
+
     @asynccontextmanager
     async def get_write_connection(self):
         """Get a write-serialized database connection.
@@ -596,7 +641,21 @@ class Database:
         operations that are called from concurrent tasks (e.g. message
         saving) to avoid SQLITE_BUSY under WAL mode.
         """
+        import time as _time
+
+        lock_start = _time.monotonic()
         async with self._get_write_lock():
+            lock_wait = _time.monotonic() - lock_start
+            if lock_wait > 0.5:
+                logging.warning("⏳ DB write lock wait: %.2fs", lock_wait)
+            # Forward to Prometheus if available
+            try:
+                from utils.monitoring.metrics import metrics
+
+                if metrics.enabled:
+                    metrics.observe_command_latency("db_write_lock_wait", lock_wait)
+            except ImportError:
+                pass
             async with self.get_connection() as conn:
                 yield conn
 
@@ -1163,16 +1222,24 @@ class Database:
         self, user_id: int, guild_id: int, stat_name: str, amount: int = 1
     ) -> None:
         """Increment a user statistic."""
-        valid_stats = ["messages_count", "commands_count", "ai_interactions", "music_requests"]
-        if stat_name not in valid_stats:
+        valid_stats = {
+            "messages_count": "messages_count",
+            "commands_count": "commands_count",
+            "ai_interactions": "ai_interactions",
+            "music_requests": "music_requests",
+        }
+        col = valid_stats.get(stat_name)
+        if col is None:
             return
 
+        # Use bracket-quoted column names to prevent any injection.
+        # The column name is guaranteed safe via the whitelist lookup above.
         async with self.get_write_connection() as conn:
             await conn.execute(
-                f"""INSERT INTO user_stats (user_id, guild_id, {stat_name}, last_active)
+                f"""INSERT INTO user_stats (user_id, guild_id, [{col}], last_active)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(user_id, guild_id) DO UPDATE SET
-                    {stat_name} = {stat_name} + ?,
+                    [{col}] = [{col}] + ?,
                     last_active = CURRENT_TIMESTAMP""",
                 (user_id, guild_id, amount, amount),
             )
@@ -1483,17 +1550,20 @@ class Database:
         content: str,
         thinking: str | None = None,
         mode: str | None = None,
+        images: list[str] | None = None,
     ) -> int:
         """Save a message to a dashboard conversation."""
+        import json
         from datetime import datetime
 
         local_now = datetime.now().isoformat()
+        images_json = json.dumps(images) if images else None
 
         async with self.get_write_connection() as conn:
             cursor = await conn.execute(
-                """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (conversation_id, role, content, thinking, mode, local_now),
+                """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, images, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (conversation_id, role, content, thinking, mode, images_json, local_now),
             )
             # Update conversation's updated_at
             await conn.execute(
@@ -1512,10 +1582,11 @@ class Database:
         self, conversation_id: str, limit: int | None = None
     ) -> list[dict[str, Any]]:
         """Get messages for a dashboard conversation."""
+        import json
         async with self.get_connection() as conn:
             if limit:
                 cursor = await conn.execute(
-                    """SELECT id, role, content, thinking, mode, created_at
+                    """SELECT id, role, content, thinking, mode, images, created_at
                        FROM dashboard_messages
                        WHERE conversation_id = ?
                        ORDER BY created_at ASC
@@ -1524,14 +1595,23 @@ class Database:
                 )
             else:
                 cursor = await conn.execute(
-                    """SELECT id, role, content, thinking, mode, created_at
+                    """SELECT id, role, content, thinking, mode, images, created_at
                        FROM dashboard_messages
                        WHERE conversation_id = ?
                        ORDER BY created_at ASC""",
                     (conversation_id,),
                 )
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            result = []
+            for row in rows:
+                msg = dict(row)
+                if msg.get("images"):
+                    try:
+                        msg["images"] = json.loads(msg["images"])
+                    except (json.JSONDecodeError, TypeError):
+                        msg["images"] = None
+                result.append(msg)
+            return result
 
     async def update_dashboard_message(self, message_id: int, content: str) -> bool:
         """Update a dashboard message's content. Returns True if updated."""

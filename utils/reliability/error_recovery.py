@@ -99,8 +99,7 @@ class BackoffState:
 
 # Global backoff state per service/function with TTL cleanup
 _backoff_states: dict[str, BackoffState] = {}
-_backoff_states_lock = threading.Lock()  # Thread-safe lock for sync access
-_backoff_states_async_lock = asyncio.Lock()  # Async lock for async access
+_backoff_states_lock = threading.Lock()  # Single lock for both sync and async access
 _BACKOFF_STATE_TTL = 3600  # 1 hour TTL for backoff states
 _MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
 
@@ -154,10 +153,8 @@ def _get_backoff_state(key: str) -> BackoffState:
 
 
 async def _get_backoff_state_async(key: str) -> BackoffState:
-    """Get or create backoff state for a key (async thread-safe)."""
-    async with _backoff_states_async_lock:
-        # Use the sync function which has its own thread lock
-        return _get_backoff_state(key)
+    """Get or create backoff state for a key (async-safe via threading.Lock)."""
+    return _get_backoff_state(key)
 
 
 def _reset_backoff_state(key: str) -> None:
@@ -175,14 +172,12 @@ def _reset_backoff_state(key: str) -> None:
 
 
 async def _reset_backoff_state_async(key: str) -> None:
-    """Reset backoff state after success (async thread-safe)."""
-    async with _backoff_states_async_lock:
-        # Directly reset without calling _reset_backoff_state to avoid double-locking
-        with _backoff_states_lock:
-            if key in _backoff_states:
-                state = _backoff_states[key]
-                state.previous_delay = 0.0
-                state.consecutive_failures = 0
+    """Reset backoff state after success (async-safe via threading.Lock)."""
+    with _backoff_states_lock:
+        if key in _backoff_states:
+            state = _backoff_states[key]
+            state.previous_delay = 0.0
+            state.consecutive_failures = 0
 
 
 def calculate_delay_sync(

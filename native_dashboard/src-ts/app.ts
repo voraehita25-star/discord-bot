@@ -411,7 +411,19 @@ function initSakuraAnimation(): void {
         setTimeout(createPetal, i * 300);
     }
 
-    setInterval(createPetal, 1000);
+    let sakuraInterval: number | null = setInterval(createPetal, 1000);
+
+    // Pause animation when window is hidden to save CPU
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            if (sakuraInterval) {
+                clearInterval(sakuraInterval);
+                sakuraInterval = null;
+            }
+        } else if (!sakuraInterval) {
+            sakuraInterval = setInterval(createPetal, 1000);
+        }
+    });
 }
 
 // ============================================================================

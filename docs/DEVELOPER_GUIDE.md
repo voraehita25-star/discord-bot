@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** March 2, 2026
-> **Version:** 3.3.13
+> **Last Updated:** March 13, 2026
+> **Version:** 3.3.14
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
 > **Total Files:** 251 Python files | 82 Test files | 2,926 Tests
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 1 warning (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 2 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅
 
 ---
 
@@ -802,6 +802,11 @@ async def mycommand(self, ctx):
 15. **Lock Safety:** `asyncio.shield()` used for lock acquisition to avoid known CPython deadlock (#42130); `ShutdownManager` defers Event/Lock creation to correct event loop
 16. **Mention Sanitization:** Both `sanitization.py` and webhook `send_as_webhook()` sanitize role mentions (`<@&ID>`) and user mentions (`<@ID>`) with zero-width space
 17. **Atomic Persistence:** RAG engine uses temp-file+rename for atomic saves; VectorStorage flushes mmap after every push
+18. **AllowedMentions Default:** Bot-level `AllowedMentions(everyone=False, roles=False)` prevents AI-generated @everyone/@here from mass-pinging
+19. **Sensitive Data Filter:** Logger filters Discord tokens, API keys, and secrets from all log output via regex patterns
+20. **Path Traversal Guard:** `safe_delete()` validates resolved paths are within `temp/` directory before deletion
+21. **SQL Injection Guard:** `increment_user_stat()` uses a whitelist dict for column names instead of f-string interpolation
+22. **asyncio.TimeoutError Compat:** Dashboard chat catches both `TimeoutError` and `asyncio.TimeoutError` for Python 3.10 compatibility
 
 ---
 
@@ -947,6 +952,37 @@ async def mycommand(self, ctx):
 | RuntimeWarning: coroutine `_cleanup_expired_webhook_cache` never awaited | Added `coroutine_arg.close()` after assertions | `test_webhook_cache.py` |
 | Duplicate `escapeHtml` class method in dashboard | Removed duplicate, unified to standalone `escapeHtml()` | `app.ts` |
 
+### Phase 12 - Security & Reliability Audit (March 13, 2026)
+
+**Security Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| No default `AllowedMentions` — AI could ping @everyone | Added `AllowedMentions(everyone=False, roles=False)` | `bot.py` |
+| `safe_delete()` path traversal vulnerability | Validate path within `temp/` via `Path.resolve()` | `cogs/music/cog.py` |
+| SQL column name f-string injection in stats | Whitelist dict with bracket-quoted column names | `utils/database/database.py` |
+| Guardrails import failure was silent | Log `logging.critical()` on ImportError | `cogs/ai_core/logic.py` |
+| AI response could contain @everyone/@here | Sanitize with zero-width space before all send paths | `cogs/ai_core/logic.py` |
+| Logger could leak tokens/API keys | Added `SensitiveDataFilter` with regex patterns | `utils/monitoring/logger.py` |
+| URL cache race condition (no locking) | Added `asyncio.Lock` for all cache operations | `utils/web/url_fetcher.py` |
+
+**Reliability Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| Circuit breaker mixed `asyncio.Lock` + `threading.Lock` | Unified to `threading.Lock` only | `utils/reliability/circuit_breaker.py` |
+| Music queue no locking on shared dicts | Added per-guild `asyncio.Lock` | `cogs/music/queue.py` |
+| `error_recovery` double-locking deadlock risk | Removed redundant `asyncio.Lock` | `utils/reliability/error_recovery.py` |
+| Self-healer substring matching false positives | `PureWindowsPath.name` exact match | `utils/reliability/self_healer.py` |
+| `asyncio.TimeoutError` uncaught on Python 3.10 | `except (TimeoutError, asyncio.TimeoutError)` | `cogs/ai_core/api/dashboard_chat.py` |
+
+**Test Fixes:**
+
+| Issue | Fix | File |
+|-------|-----|------|
+| `FakeChunk` MagicMock failed Pydantic validation | Use real `genai_types.Part`/`Content` | `tests/test_dashboard_chat.py` |
+| `test_thought_as_string` invalid Part constructor | Use `SimpleNamespace` for edge-case | `tests/test_dashboard_chat.py` |
+
 ### Phase 11 - Security Hardening & Reliability Fixes (February 10, 2026)
 
 **Security Fixes:**
@@ -1004,4 +1040,4 @@ async def mycommand(self, ctx):
 
 ---
 
-*Documentation last updated: February 26, 2026 - Version 3.3.10 | Full-project audit complete (175+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 3,007 tests (0 skipped, 3 harmless warnings) | CI/CD with Codecov & Dependabot*
+*Documentation last updated: March 13, 2026 - Version 3.3.14 | Full-project audit complete (190+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard, SQL injection guard, sensitive data filter | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | 2,926 tests (0 skipped, 2 harmless warnings) | CI/CD with Codecov & Dependabot*

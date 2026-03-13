@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.14']
+        python-version: ['3.13', '3.14']
 
     steps:
     - uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
     - name: Run dependency audit
       run: |
         pip install pip-audit
-        pip-audit --strict --desc || true
+        pip-audit --strict --desc
 
     - name: Clear stale bytecode
       run: find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
@@ -58,7 +58,7 @@ jobs:
         python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term
 
     - name: Upload coverage to Codecov
-      if: matrix.python-version == '3.11'
+      if: matrix.python-version == '3.14'
       uses: codecov/codecov-action@v4
       with:
         files: ./coverage.xml
