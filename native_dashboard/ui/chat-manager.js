@@ -9,6 +9,10 @@ import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
 import { WebSocketClient } from './chat/ws-client.js';
 import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
+import { ConversationList } from './chat/conversation-list.js';
+import { ImageAttachManager } from './chat/image-attach.js';
+import { ContextWindowIndicator } from './chat/context-window.js';
+import { ConversationModals } from './chat/conversation-modals.js';
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -144,9 +148,6 @@ export class ChatManager {
         this.selectedRole = 'general';
         this.isStreaming = false;
         this.presets = {};
-        this.pendingDeleteId = null;
-        this.pendingRenameId = null;
-        this.attachedImages = []; // Base64 encoded images
         this.currentMode = ''; // Store current mode for the streaming message
         this.aiProvider = localStorage.getItem('dashboard_ai_provider') || 'gemini'; // Current AI provider
         this.availableProviders = ['gemini']; // Available providers from server
@@ -157,7 +158,6 @@ export class ChatManager {
         this.userScrolledUp = false; // True when user manually scrolls up during streaming
         this.draftSaveTimer = null; // Debounced localStorage draft writer
         this.allTagsCache = []; // #22 populated by 'all_tags' message
-        this.tokenUsageCache = new Map();
         // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
         // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
         // the same method surface (connect, disconnect, send, scheduleReconnect) +
@@ -180,19 +180,43 @@ export class ChatManager {
                 }
             },
         });
+        // Rename + delete-confirm modals (#11) now live in ./chat/conversation-modals.ts.
+        // ChatManager exposes the same method names as before so event bindings keep working.
+        this.convModals = new ConversationModals({
+            sendWsMessage: (payload) => this.send(payload),
+            isStreaming: () => this.isStreaming,
+            findConversation: (id) => this.conversations.find(c => c.id === id),
+        });
         this.currentThinking = ''; // Store current thinking for the streaming message
-        /** Current text typed into the #conversation-filter-input box. */
-        this.conversationFilter = '';
-        this.conversationFilterDebounce = null;
+        // Conversation list sidebar (#15 / #22) now lives in ./chat/conversation-list.ts.
+        // ChatManager holds one ConversationList instance; callbacks route back here.
+        this.convList = new ConversationList({
+            onLoadConversation: (id) => this.loadConversation(id),
+            sendWsMessage: (payload) => this.send(payload),
+            onFilterChanged: () => {
+                const container = document.getElementById('conversation-list');
+                const savedScroll = container?.scrollTop ?? 0;
+                this.renderConversationList();
+                if (container)
+                    container.scrollTop = savedScroll;
+            },
+        });
+        // Context-window indicator (#21 header bar) now lives in ./chat/context-window.ts.
+        // Thin forwarders preserve the public method names used by handleMessage +
+        // conversation_loaded / streaming paths.
+        this.contextWindow = new ContextWindowIndicator();
         /** Count of messages that arrived while the user was scrolled up. */
         this.newMessagesWhileScrolledUp = 0;
         // In-conversation search (#14) now lives in ./chat/search.ts.
         // ChatManager holds a ChatSearch instance + forwarders so keybinding
         // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
         this.chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
-        // Virtualization state — the thresholds themselves live in
-        // ./chat/message-template.ts where the window math uses them.
+        // Virtualization state — thresholds themselves live in ./chat/message-template.ts.
         this.visibleMessageCount = 0;
+        // Image attach manager — file picker, drag-drop, paste. Thin forwarders
+        // keep the public method surface stable for callers (renderMessages uses
+        // `this.attachedImages` inside template strings; sendMessage snapshots it).
+        this.imageAttach = new ImageAttachManager();
     }
     enrichConversation(conversation) {
         const preset = this.presets[conversation.role_preset] || {};
@@ -444,8 +468,7 @@ export class ChatManager {
                 break;
             case 'conversation_deleted':
                 this.conversations = this.conversations.filter(c => c.id !== data.id);
-                this.tokenUsageCache.delete(data.id);
-                this.saveTokenUsageCache();
+                this.contextWindow.forget(data.id); // forget() saves internally
                 this.renderConversationList();
                 if (this.currentConversation?.id === data.id) {
                     this.currentConversation = null;
@@ -743,61 +766,12 @@ export class ChatManager {
             </div>`;
         container.innerHTML = skeleton() + skeleton() + skeleton();
     }
-    deleteConversation(id) {
-        // Prevent double-click issues
-        if (this.isStreaming)
-            return;
-        // Show custom delete confirmation modal
-        this.pendingDeleteId = id;
-        const modal = document.getElementById('delete-confirm-modal');
-        if (modal) {
-            modal.classList.add('active');
-        }
-    }
-    confirmDelete() {
-        if (this.pendingDeleteId) {
-            this.send({ type: 'delete_conversation', id: this.pendingDeleteId });
-            this.pendingDeleteId = null;
-        }
-        this.closeDeleteModal();
-    }
-    closeDeleteModal() {
-        const modal = document.getElementById('delete-confirm-modal');
-        if (modal) {
-            modal.classList.remove('active');
-        }
-        this.pendingDeleteId = null;
-    }
-    renameConversation(id) {
-        if (this.isStreaming)
-            return;
-        const conv = this.conversations.find(c => c.id === id);
-        this.pendingRenameId = id;
-        const modal = document.getElementById('rename-modal');
-        const input = document.getElementById('rename-input');
-        if (modal && input) {
-            input.value = conv?.title || '';
-            modal.classList.add('active');
-            input.focus();
-            input.select();
-        }
-    }
-    confirmRename() {
-        const input = document.getElementById('rename-input');
-        const newTitle = input?.value?.trim();
-        if (this.pendingRenameId && newTitle) {
-            this.send({ type: 'rename_conversation', id: this.pendingRenameId, title: newTitle });
-            this.pendingRenameId = null;
-        }
-        this.closeRenameModal();
-    }
-    closeRenameModal() {
-        const modal = document.getElementById('rename-modal');
-        if (modal) {
-            modal.classList.remove('active');
-        }
-        this.pendingRenameId = null;
-    }
+    deleteConversation(id) { this.convModals.showDelete(id); }
+    confirmDelete() { this.convModals.confirmDelete(); }
+    closeDeleteModal() { this.convModals.closeDelete(); }
+    renameConversation(id) { this.convModals.showRename(id); }
+    confirmRename() { this.convModals.confirmRename(); }
+    closeRenameModal() { this.convModals.closeRename(); }
     starConversation(id, starred) {
         this.send({ type: 'star_conversation', id, starred });
     }
@@ -898,8 +872,7 @@ export class ChatManager {
             ai_provider: this.aiProvider,
         });
         // Clear attached images after sending
-        this.attachedImages = [];
-        this.renderAttachedImages();
+        this.imageAttach.clear();
     }
     appendStreamingMessage(mode = '') {
         const container = document.getElementById('chat-messages');
@@ -1114,95 +1087,11 @@ export class ChatManager {
             chatContainer.scrollTop = savedScroll;
     }
     renderConversationList() {
-        const container = document.getElementById('conversation-list');
-        if (!container)
-            return;
-        // Wire up the filter input once — it persists across innerHTML replacements
-        // of #conversation-list, so bind it to the separate input element by id.
-        this.setupConversationFilter();
-        if (this.conversations.length === 0) {
-            container.innerHTML = `
-                <div class="no-conversations">
-                    <p>No conversations yet</p>
-                    <p>Start a new chat!</p>
-                </div>
-            `;
-            return;
-        }
-        const filter = this.conversationFilter.trim().toLowerCase();
-        const matches = filter
-            ? this.conversations.filter(c => (c.title || '').toLowerCase().includes(filter))
-            : this.conversations;
-        if (matches.length === 0) {
-            container.innerHTML = `
-                <div class="no-conversations">
-                    <p>No matches for "${escapeHtml(this.conversationFilter)}"</p>
-                </div>
-            `;
-            return;
-        }
-        // Cap render size to keep innerHTML parse fast even with 1000+ convs.
-        // 200 is well above the typical visible window and enough for scrolling.
-        const RENDER_CAP = 200;
-        const visible = matches.slice(0, RENDER_CAP);
-        const overflow = matches.length - visible.length;
-        container.innerHTML = visible.map(conv => {
-            const preset = this.presets[conv.role_preset] || {};
-            const isActive = this.currentConversation?.id === conv.id;
-            const starClass = conv.is_starred ? 'starred' : '';
-            const safeAi = safeAvatarUrl(settings.aiAvatar);
-            const avatarHtml = safeAi
-                ? `<img class="conv-avatar" src="${safeAi}" alt="AI">`
-                : `<span class="conv-emoji">${escapeHtml(preset.emoji || '\uD83D\uDCAC')}</span>`;
-            return `
-                <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}" 
-                     data-id="${escapeHtml(conv.id)}">
-                    ${avatarHtml}
-                    <div class="conv-info">
-                        <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
-                        <span class="conv-meta">${conv.message_count || 0} messages</span>
-                    </div>
-                    ${conv.is_starred ? '<span class="conv-star">\u2B50</span>' : ''}
-                </div>
-            `;
-        }).join('') + (overflow > 0 ? `<div class="conversation-overflow-note">${overflow} more hidden — narrow your filter</div>` : '');
-        // True event delegation on the container — survives innerHTML replacements
-        // Remove old handler before adding new one to avoid duplicates
-        if (container._convClickHandler) {
-            container.removeEventListener('click', container._convClickHandler);
-        }
-        const handler = (e) => {
-            const target = e.target.closest('.conversation-item[data-id]');
-            if (target) {
-                const id = target.dataset.id;
-                if (id)
-                    this.loadConversation(id);
-            }
-        };
-        container._convClickHandler = handler;
-        container.addEventListener('click', handler);
-    }
-    setupConversationFilter() {
-        const input = document.getElementById('conversation-filter-input');
-        if (!input || input.dataset.filterBound)
-            return;
-        input.addEventListener('input', () => {
-            // Debounce — filtering 1000+ conversations on every keystroke is
-            // O(n) innerHTML re-render that drops frames during rapid typing.
-            if (this.conversationFilterDebounce !== null) {
-                clearTimeout(this.conversationFilterDebounce);
-            }
-            this.conversationFilterDebounce = window.setTimeout(() => {
-                this.conversationFilter = input.value;
-                const container = document.getElementById('conversation-list');
-                const savedScroll = container?.scrollTop ?? 0;
-                this.renderConversationList();
-                if (container)
-                    container.scrollTop = savedScroll;
-                this.conversationFilterDebounce = null;
-            }, 120);
+        this.convList.render({
+            conversations: this.conversations,
+            currentConversation: this.currentConversation,
+            presets: this.presets,
         });
-        input.dataset.filterBound = '1';
     }
     renderMessages() {
         const container = document.getElementById('chat-messages');
@@ -1428,41 +1317,7 @@ export class ChatManager {
     }
     /** Render the tag chips + "add tag" input strip under the chat header. */
     renderConversationTags() {
-        const host = document.getElementById('chat-tags');
-        if (!host || !this.currentConversation)
-            return;
-        const tags = this.currentConversation.tags ?? [];
-        const chips = tags.map(t => `<span class="tag-chip" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}<button class="tag-remove" data-tag="${escapeHtml(t)}" aria-label="Remove tag ${escapeHtml(t)}">&times;</button></span>`).join('');
-        host.innerHTML =
-            chips +
-                `<input type="text" class="tag-add-input" id="chat-tag-add" placeholder="+ tag" aria-label="Add tag" maxlength="64">`;
-        // Wire remove buttons.
-        host.querySelectorAll('.tag-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const tag = btn.dataset.tag;
-                if (tag && this.currentConversation) {
-                    this.send({ type: 'remove_tag', conversation_id: this.currentConversation.id, tag });
-                }
-            });
-        });
-        // Wire add input — Enter commits, Esc cancels.
-        const input = document.getElementById('chat-tag-add');
-        if (input) {
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const tag = input.value.trim().toLowerCase();
-                    if (tag && this.currentConversation) {
-                        this.send({ type: 'add_tag', conversation_id: this.currentConversation.id, tag });
-                        input.value = '';
-                    }
-                }
-                else if (e.key === 'Escape') {
-                    input.value = '';
-                    input.blur();
-                }
-            });
-        }
+        this.convList.renderTags(this.currentConversation);
     }
     updateStarButton() {
         const btn = document.getElementById('btn-star-chat');
@@ -1471,74 +1326,13 @@ export class ChatManager {
         }
     }
     updateContextWindowIndicator(usage) {
-        const indicator = document.getElementById('context-window-indicator');
-        const fill = document.getElementById('context-bar-fill');
-        const label = document.getElementById('context-bar-label');
-        if (!indicator || !fill || !label)
-            return;
-        const { input_tokens, output_tokens, context_window } = usage;
-        if (!context_window || context_window <= 0)
-            return;
-        // Cache per conversation for persistence
-        if (this.currentConversation?.id) {
-            this.tokenUsageCache.set(this.currentConversation.id, usage);
-            this.saveTokenUsageCache();
-        }
-        const total = input_tokens + output_tokens;
-        const pct = Math.min((total / context_window) * 100, 100);
-        indicator.style.display = 'flex';
-        fill.style.width = `${pct}%`;
-        fill.classList.remove('usage-moderate', 'usage-high');
-        if (pct >= 80) {
-            fill.classList.add('usage-high');
-        }
-        else if (pct >= 50) {
-            fill.classList.add('usage-moderate');
-        }
-        // Format token counts for readability
-        const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-        label.textContent = `${fmt(total)} / ${fmt(context_window)} (${pct.toFixed(1)}%)`;
-        indicator.title = `Context Window: ${input_tokens.toLocaleString()} input + ${output_tokens.toLocaleString()} output = ${total.toLocaleString()} / ${context_window.toLocaleString()} tokens`;
+        this.contextWindow.update(this.currentConversation?.id ?? null, usage);
     }
-    resetContextWindowIndicator() {
-        const indicator = document.getElementById('context-window-indicator');
-        if (indicator)
-            indicator.style.display = 'none';
-    }
+    resetContextWindowIndicator() { this.contextWindow.reset(); }
     restoreContextWindowIndicator(conversationId) {
-        const cached = this.tokenUsageCache.get(conversationId);
-        if (cached) {
-            this.updateContextWindowIndicator(cached);
-        }
-        else {
-            this.resetContextWindowIndicator();
-        }
+        this.contextWindow.restore(conversationId);
     }
-    saveTokenUsageCache() {
-        const obj = {};
-        // Evict oldest entries if cache exceeds 200 conversations
-        const MAX_TOKEN_CACHE_SIZE = 200;
-        const entries = Array.from(this.tokenUsageCache.entries());
-        const toSave = entries.length > MAX_TOKEN_CACHE_SIZE
-            ? entries.slice(entries.length - MAX_TOKEN_CACHE_SIZE)
-            : entries;
-        for (const [k, v] of toSave) {
-            obj[k] = v;
-        }
-        localStorage.setItem('dashboard_token_usage', JSON.stringify(obj));
-    }
-    loadTokenUsageCache() {
-        try {
-            const raw = localStorage.getItem('dashboard_token_usage');
-            if (raw) {
-                const obj = JSON.parse(raw);
-                this.tokenUsageCache = new Map(Object.entries(obj));
-            }
-        }
-        catch {
-            // Ignore corrupt cache
-        }
-    }
+    loadTokenUsageCache() { this.contextWindow.load(); }
     showChatContainer() {
         const empty = document.getElementById('chat-empty');
         const container = document.getElementById('chat-container');
@@ -1671,130 +1465,11 @@ export class ChatManager {
             input.style.height = Math.min(input.scrollHeight, 150) + 'px';
         }
     }
-    attachImage(file) {
-        if (file.size > ChatManager.MAX_IMAGE_SIZE) {
-            showToast(`Image too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 20MB.`, { type: 'warning' });
-            return;
-        }
-        if (this.attachedImages.length >= ChatManager.MAX_ATTACHED_IMAGES) {
-            showToast(`Maximum ${ChatManager.MAX_ATTACHED_IMAGES} images allowed.`, { type: 'warning' });
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const base64 = e.target?.result;
-            if (base64) {
-                // Store full base64 data URL
-                this.attachedImages.push(base64);
-                this.renderAttachedImages();
-            }
-        };
-        reader.readAsDataURL(file);
-    }
-    removeImage(index) {
-        this.attachedImages.splice(index, 1);
-        this.renderAttachedImages();
-    }
-    renderAttachedImages() {
-        const container = document.getElementById('attached-images');
-        if (!container)
-            return;
-        if (this.attachedImages.length === 0) {
-            container.innerHTML = '';
-            return;
-        }
-        container.innerHTML = this.attachedImages.map((img, idx) => `
-            <div class="attached-image-preview">
-                <img src="${escapeHtml(img)}" alt="Attached ${idx + 1}">
-                <button class="remove-image" data-idx="${idx}">&times;</button>
-            </div>
-        `).join('');
-        // Add click handlers for remove buttons
-        container.querySelectorAll('.remove-image').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const idx = parseInt(e.target.dataset.idx || '0');
-                this.removeImage(idx);
-            });
-        });
-    }
-    setupImageUpload() {
-        const attachBtn = document.getElementById('btn-attach');
-        const fileInput = document.getElementById('image-input');
-        attachBtn?.addEventListener('click', () => {
-            fileInput?.click();
-        });
-        fileInput?.addEventListener('change', () => {
-            const files = fileInput.files;
-            if (files) {
-                Array.from(files).forEach(file => {
-                    if (file.type.startsWith('image/')) {
-                        this.attachImage(file);
-                    }
-                });
-            }
-            // Reset input so same file can be selected again
-            fileInput.value = '';
-        });
-        // Drag-and-drop: accept image files anywhere over the chat input area
-        // or the messages area. We intentionally do not accept drops on the
-        // whole window so links being dragged to the address bar still work.
-        const dropZones = [
-            document.getElementById('chat-messages'),
-            document.querySelector('.chat-input-area'),
-        ].filter((el) => el instanceof HTMLElement);
-        const showDropState = (active) => {
-            dropZones.forEach(z => z.classList.toggle('drop-active', active));
-        };
-        dropZones.forEach(zone => {
-            zone.addEventListener('dragenter', (e) => {
-                if (!e.dataTransfer)
-                    return;
-                if (Array.from(e.dataTransfer.items).some(i => i.kind === 'file')) {
-                    e.preventDefault();
-                    showDropState(true);
-                }
-            });
-            zone.addEventListener('dragover', (e) => {
-                // Needed so drop fires
-                if (e.dataTransfer && Array.from(e.dataTransfer.items).some(i => i.kind === 'file')) {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'copy';
-                }
-            });
-            zone.addEventListener('dragleave', (e) => {
-                // Only clear state when leaving the zone entirely (not its children).
-                if (e.target === zone)
-                    showDropState(false);
-            });
-            zone.addEventListener('drop', (e) => {
-                if (!e.dataTransfer)
-                    return;
-                e.preventDefault();
-                showDropState(false);
-                const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-                if (files.length === 0) {
-                    showToast('Only image files can be attached', { type: 'warning' });
-                    return;
-                }
-                files.forEach(f => this.attachImage(f));
-            });
-        });
-        // Paste support: Ctrl+V an image from clipboard into the chat input
-        document.getElementById('chat-input')?.addEventListener('paste', (e) => {
-            const items = e.clipboardData?.items;
-            if (!items)
-                return;
-            for (const item of Array.from(items)) {
-                if (item.kind === 'file' && item.type.startsWith('image/')) {
-                    const file = item.getAsFile();
-                    if (file) {
-                        e.preventDefault();
-                        this.attachImage(file);
-                    }
-                }
-            }
-        });
-    }
+    get attachedImages() { return this.imageAttach.get(); }
+    attachImage(file) { this.imageAttach.attach(file); }
+    removeImage(index) { this.imageAttach.remove(index); }
+    renderAttachedImages() { this.imageAttach.renderPreview(); }
+    setupImageUpload() { this.imageAttach.setup(); }
     // ========================================================================
     // Message Edit / Delete
     // ========================================================================
@@ -2228,9 +1903,6 @@ export class ChatManager {
 // Cap local message history to bound DOM size in long sessions; rendered
 // history is also capped server-side at 20 messages per request.
 ChatManager.MAX_LOCAL_MESSAGES = 200;
-// Image attachment methods
-ChatManager.MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB
-ChatManager.MAX_ATTACHED_IMAGES = 5;
 // ============================================================================
 // Module-level instances
 // ============================================================================
