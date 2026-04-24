@@ -1,0 +1,109 @@
+# =============================================================================
+# Discord Bot - Docker Compose Configuration
+# Production deployment with volume mounts and restart policies
+# =============================================================================
+
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prod
+    container_name: discord-bot
+    restart: unless-stopped
+
+    # Environment configuration
+    env_file:
+      - ../.env
+
+    environment:
+      # Override these in .env or here
+      - TZ=Asia/Bangkok
+      - PYTHONUNBUFFERED=1
+      # Performance tuning for R7 9800X3D + 32GB DDR5
+      - GOMAXPROCS=14
+      - UV_THREADPOOL_SIZE=16
+      - MALLOC_ARENA_MAX=4
+      - ALERT_MEMORY_THRESHOLD_MB=24576
+
+    # Read-only root filesystem for security hardening
+    read_only: true
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Writable tmpfs mounts for runtime data (sized for 32GB RAM)
+    tmpfs:
+      - /tmp:size=2G
+      - /app/__pycache__:size=256M
+
+    # Volume mounts for persistence
+    volumes:
+      # Persist data directory (database, cache)
+      - ../data:/app/data
+      # Persist logs
+      - ../logs:/app/logs
+      # Persist temporary files (optional)
+      - ../temp:/app/temp
+      # Mount cookies.txt if using YouTube authentication (file must exist)
+      # - ../cookies.txt:/app/cookies.txt:ro
+
+    # Health check (uses bot's health API)
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits — tuned for R7 9800X3D (8C/16T) + 32GB DDR5
+    deploy:
+      resources:
+        limits:
+          memory: 28g
+          cpus: '14.0'
+          pids: 200
+        reservations:
+          memory: 4g
+    # Shared memory for IPC (useful for multi-process)
+    shm_size: 512m
+
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # Network (optional - for multi-container setups)
+    networks:
+      - bot-network
+
+# Network definition
+networks:
+  bot-network:
+    driver: bridge
+
+# =============================================================================
+# Usage:
+#
+# Start bot:
+#   docker compose up -d
+#
+# View logs:
+#   docker compose logs -f bot
+#
+# Restart bot:
+#   docker compose restart bot
+#
+# Stop bot:
+#   docker compose down
+#
+# Rebuild and restart:
+#   docker compose up -d --build
+#
+# Check health:
+#   docker compose ps
+# =============================================================================

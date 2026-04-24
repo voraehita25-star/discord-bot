@@ -1,0 +1,622 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+	"unicode/utf8"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/net/html/charset"
+	"golang.org/x/time/rate"
+)
+
+const (
+	defaultPort        = "8081"
+	maxContentLength   = 10 * 1024 * 1024 // 10MB
+	maxExtractedLength = 50000            // 50KB of text
+	requestTimeout     = 30 * time.Second
+	workerCount        = 10
+)
+
+// privateNetworks is a list of private/internal IP ranges for SSRF protection.
+// Initialized once to avoid repeated parsing.
+var privateNetworks []*net.IPNet
+
+func init() {
+	ranges := []string{
+		"127.0.0.0/8",            // Loopback
+		"10.0.0.0/8",             // Private Class A
+		"172.16.0.0/12",          // Private Class B
+		"192.168.0.0/16",         // Private Class C
+		"169.254.0.0/16",         // Link-local
+		"0.0.0.0/8",              // Current network
+		"100.64.0.0/10",          // Shared address space
+		"255.255.255.255/32",     // Broadcast
+		"::1/128",                // IPv6 loopback
+		"fc00::/7",               // IPv6 unique local
+		"fe80::/10",              // IPv6 link-local
+		"::ffff:127.0.0.0/104",   // IPv4-mapped loopback
+		"::ffff:10.0.0.0/104",    // IPv4-mapped private A
+		"::ffff:172.16.0.0/108",  // IPv4-mapped private B
+		"::ffff:192.168.0.0/112", // IPv4-mapped private C
+		"::ffff:169.254.0.0/112", // IPv4-mapped link-local
+		"::ffff:0.0.0.0/104",     // IPv4-mapped current network
+	}
+	for _, cidr := range ranges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			privateNetworks = append(privateNetworks, network)
+		}
+	}
+}
+
+// isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
+func isPrivateIP(ip net.IP) bool {
+	for _, network := range privateNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateURL checks if a URL resolves to a private/internal IP (SSRF protection)
+func isPrivateURL(rawURL string) (bool, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true, fmt.Errorf("invalid URL: %v", err)
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return true, fmt.Errorf("empty hostname")
+	}
+
+	// Block known dangerous hostnames (cloud metadata endpoints)
+	dangerousHosts := []string{
+		"metadata.google.internal",
+		"metadata.internal",
+		"169.254.169.254",           // AWS/GCP instance metadata
+		"metadata.google.internal.", // trailing dot variant
+		"instance-data",             // AWS alternative
+		"100.100.100.200",           // Alibaba Cloud metadata
+		"fd00:ec2::254",             // AWS IMDSv2 IPv6
+	}
+	for _, h := range dangerousHosts {
+		if strings.EqualFold(hostname, h) {
+			return true, nil
+		}
+	}
+
+	// Resolve hostname to IP and check
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		// Don't block on DNS resolution failure — ssrfSafeDialContext will
+		// re-resolve and validate at connect time.  Blocking here causes
+		// false positives when DNS is temporarily unreachable.
+		return false, fmt.Errorf("DNS resolution failed (will retry at connect): %v", err)
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// FetchRequest represents a URL fetch request
+type FetchRequest struct {
+	URLs    []string `json:"urls"`
+	Timeout int      `json:"timeout,omitempty"` // seconds
+}
+
+// FetchResult represents the result of fetching a URL
+type FetchResult struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Content     string `json:"content,omitempty"`
+	Description string `json:"description,omitempty"`
+	Error       string `json:"error,omitempty"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	FetchTimeMs int64  `json:"fetch_time_ms"`
+}
+
+// FetchResponse is the response for batch fetch
+type FetchResponse struct {
+	Results      []FetchResult `json:"results"`
+	TotalTimeMs  int64         `json:"total_time_ms"`
+	SuccessCount int           `json:"success_count"`
+	ErrorCount   int           `json:"error_count"`
+}
+
+// Fetcher handles URL fetching with rate limiting
+type Fetcher struct {
+	client  *http.Client
+	limiter *rate.Limiter
+}
+
+// ssrfSafeDialContext returns a DialContext function that checks resolved IPs
+// against private ranges at connect time, preventing DNS rebinding attacks.
+func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	resolver := &net.Resolver{}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: invalid address %q: %v", addr, err)
+		}
+
+		// Use context-aware DNS resolution to respect timeouts
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("SSRF blocked: DNS resolution failed for %q: %v", host, err)
+		}
+
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("SSRF blocked: DNS returned no IPs for %q", host)
+		}
+
+		for _, ip := range ips {
+			if isPrivateIP(ip.IP) {
+				return nil, fmt.Errorf("SSRF blocked: %q resolves to private IP %s", host, ip.IP)
+			}
+		}
+
+		// Dial using the first resolved IP directly to prevent DNS rebinding
+		// (a second DNS lookup could return a different, private IP)
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+}
+
+// NewFetcher creates a new Fetcher with SSRF-safe transport
+func NewFetcher() *Fetcher {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext:           ssrfSafeDialContext(dialer),
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       50,
+		IdleConnTimeout:       120 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		WriteBufferSize:       64 * 1024, // 64KB
+		ReadBufferSize:        64 * 1024, // 64KB
+	}
+
+	return &Fetcher{
+		client: &http.Client{
+			Timeout:   requestTimeout,
+			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				// Redirect target IP is validated by ssrfSafeDialContext
+				// so no additional check needed here.
+				return nil
+			},
+		},
+		limiter: rate.NewLimiter(rate.Limit(50), 100), // 50 requests/sec, burst 100 (R7 9800X3D)
+	}
+}
+
+// Fetch retrieves content from a URL
+func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
+	start := time.Now()
+	result := FetchResult{URL: url}
+
+	// SSRF Protection: Block private/internal IPs
+	if isPrivate, err := isPrivateURL(url); isPrivate {
+		errMsg := "SSRF blocked: URL resolves to private/internal address"
+		if err != nil {
+			errMsg = fmt.Sprintf("SSRF blocked: %v", err)
+		}
+		result.Error = errMsg
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		log.Printf("⚠️ SSRF blocked: %s", url)
+		return result
+	}
+
+	// Wait for rate limiter
+	if err := f.limiter.Wait(ctx); err != nil {
+		result.Error = "rate limited"
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		return result
+	}
+
+	// Create request
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("invalid URL: %v", err)
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		return result
+	}
+
+	// Set headers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; DiscordBot/1.0)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+	// Execute request
+	resp, err := f.client.Do(req)
+	if err != nil {
+		result.Error = fmt.Sprintf("fetch error: %v", err)
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.StatusCode = resp.StatusCode
+	result.ContentType = resp.Header.Get("Content-Type")
+
+	if resp.StatusCode != http.StatusOK {
+		// Drain body to allow TCP connection reuse
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		return result
+	}
+
+	// Limit body size
+	limitedReader := io.LimitReader(resp.Body, maxContentLength)
+
+	// Read raw body first to avoid consuming bytes on charset detection failure
+	rawBody, err := io.ReadAll(limitedReader)
+	if err != nil {
+		result.Error = fmt.Sprintf("read error: %v", err)
+		result.FetchTimeMs = time.Since(start).Milliseconds()
+		return result
+	}
+
+	// Handle charset conversion
+	body := rawBody
+	utf8Reader, err := charset.NewReader(bytes.NewReader(rawBody), result.ContentType)
+	if err == nil {
+		if converted, err := io.ReadAll(utf8Reader); err == nil {
+			body = converted
+		}
+	}
+
+	// Extract content
+	if strings.Contains(result.ContentType, "text/html") {
+		title, description, content := extractHTMLContent(body)
+		result.Title = title
+		result.Description = description
+		result.Content = truncateString(content, maxExtractedLength)
+	} else if strings.Contains(result.ContentType, "text/plain") {
+		result.Content = truncateString(string(body), maxExtractedLength)
+	} else {
+		result.Content = "[Binary content]"
+	}
+
+	result.FetchTimeMs = time.Since(start).Milliseconds()
+	return result
+}
+
+// FetchBatch fetches multiple URLs concurrently
+func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
+	start := time.Now()
+	response := FetchResponse{
+		Results: make([]FetchResult, len(urls)),
+	}
+
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, workerCount)
+
+	for i, url := range urls {
+		wg.Add(1)
+		go func(idx int, u string) {
+			defer wg.Done()
+
+			// Check context before acquiring semaphore
+			select {
+			case <-ctx.Done():
+				response.Results[idx] = FetchResult{
+					URL:         u,
+					Error:       "context cancelled",
+					FetchTimeMs: time.Since(start).Milliseconds(),
+				}
+				return
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			}
+
+			response.Results[idx] = f.Fetch(ctx, u)
+		}(i, url)
+	}
+
+	// Wait with context cancellation support
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Context cancelled, wait briefly for in-flight requests
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-done:
+			timer.Stop()
+		case <-timer.C:
+			// Timeout waiting for in-flight requests, still must wait for
+			// goroutines to finish writing before we read Results (avoid data race)
+			<-done
+		}
+	case <-done:
+		// All requests completed
+	}
+
+	// Count results
+	for _, r := range response.Results {
+		if r.Error == "" {
+			response.SuccessCount++
+		} else {
+			response.ErrorCount++
+		}
+	}
+
+	response.TotalTimeMs = time.Since(start).Milliseconds()
+	return response
+}
+
+// extractHTMLContent extracts meaningful content from HTML
+func extractHTMLContent(body []byte) (title, description, content string) {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
+	if err != nil {
+		return "", "", string(body)
+	}
+
+	// Extract title
+	title = strings.TrimSpace(doc.Find("title").First().Text())
+
+	// Extract meta description
+	description, _ = doc.Find(`meta[name="description"]`).Attr("content")
+	if description == "" {
+		description, _ = doc.Find(`meta[property="og:description"]`).Attr("content")
+	}
+
+	// Remove unwanted elements
+	doc.Find("script, style, nav, footer, header, aside, iframe, noscript").Remove()
+
+	// Extract main content
+	var contentBuilder strings.Builder
+
+	// Try specific content selectors
+	selectors := []string{"article", "main", ".content", "#content", ".post-content", ".entry-content"}
+	var mainContent *goquery.Selection
+
+	for _, sel := range selectors {
+		s := doc.Find(sel).First()
+		if s.Length() > 0 {
+			mainContent = s
+			break
+		}
+	}
+
+	if mainContent == nil {
+		mainContent = doc.Find("body")
+	}
+
+	// Extract text with paragraph breaks
+	mainContent.Find("p, h1, h2, h3, h4, h5, h6, li").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		if len(text) > 0 {
+			contentBuilder.WriteString(text)
+			contentBuilder.WriteString("\n\n")
+		}
+	})
+
+	content = strings.TrimSpace(contentBuilder.String())
+
+	// Fallback to all text if content is too short
+	if len(content) < 100 {
+		content = strings.TrimSpace(mainContent.Text())
+	}
+
+	// Clean up whitespace
+	content = cleanWhitespace(content)
+
+	return title, description, content
+}
+
+// cleanWhitespace normalizes whitespace in text
+func cleanWhitespace(s string) string {
+	var result strings.Builder
+	prevSpace := false
+
+	for _, r := range s {
+		switch r {
+		case ' ', '\t':
+			if !prevSpace {
+				result.WriteRune(' ')
+				prevSpace = true
+			}
+		case '\n':
+			if !prevSpace {
+				result.WriteRune('\n')
+				prevSpace = true
+			}
+		default:
+			result.WriteRune(r)
+			prevSpace = false
+		}
+	}
+
+	return strings.TrimSpace(result.String())
+}
+
+// truncateString truncates a string to max length
+func truncateString(s string, maxLen int) string {
+	if utf8.RuneCountInString(s) <= maxLen {
+		return s
+	}
+
+	runes := []rune(s)
+	return string(runes[:maxLen]) + "..."
+}
+
+func main() {
+	port := os.Getenv("URL_FETCHER_PORT")
+	if port == "" {
+		port = defaultPort
+	}
+
+	fetcher := NewFetcher()
+
+	r := chi.NewRouter()
+
+	// Middleware
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Timeout(60 * time.Second))
+	// Trace ID propagation: pass through X-Trace-ID from Python caller
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			traceID := r.Header.Get("X-Trace-ID")
+			if traceID != "" {
+				w.Header().Set("X-Trace-ID", traceID)
+				ctx := context.WithValue(r.Context(), "trace_id", traceID)
+				r = r.WithContext(ctx)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	// Security headers
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Health check
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "healthy"}); err != nil {
+			log.Printf("Failed to encode health response: %v", err)
+		}
+	})
+
+	// Single URL fetch
+	r.Get("/fetch", func(w http.ResponseWriter, r *http.Request) {
+		url := r.URL.Query().Get("url")
+		if url == "" {
+			http.Error(w, "url parameter required", http.StatusBadRequest)
+			return
+		}
+
+		// Reject excessively long URLs to prevent memory/parser abuse
+		if len(url) > 8192 {
+			http.Error(w, "url too long (max 8192 bytes)", http.StatusBadRequest)
+			return
+		}
+
+		// Basic URL validation - must be http/https
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			http.Error(w, "url must use http or https scheme", http.StatusBadRequest)
+			return
+		}
+
+		result := fetcher.Fetch(r.Context(), url)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			log.Printf("Failed to encode fetch response: %v", err)
+		}
+	})
+
+	// Batch URL fetch
+	r.Post("/fetch/batch", func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size to 1MB
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+		var req FetchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.URLs) == 0 {
+			http.Error(w, "urls required", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.URLs) > 20 {
+			http.Error(w, "max 20 URLs per batch", http.StatusBadRequest)
+			return
+		}
+
+		// Validate all URLs use http/https
+		for _, u := range req.URLs {
+			if len(u) > 8192 {
+				http.Error(w, "url too long (max 8192 bytes)", http.StatusBadRequest)
+				return
+			}
+			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+				http.Error(w, "all URLs must use http or https scheme", http.StatusBadRequest)
+				return
+			}
+		}
+
+		ctx := r.Context()
+		if req.Timeout > 0 {
+			// Cap user-provided timeout to 120 seconds max
+			timeout := req.Timeout
+			if timeout > 120 {
+				timeout = 120
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+			defer cancel()
+		}
+
+		response := fetcher.FetchBatch(ctx, req.URLs)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to encode batch response: %v", err)
+		}
+	})
+
+	// Server — bind to localhost to prevent unauthenticated external access
+	server := &http.Server{
+		Addr:              "127.0.0.1:" + port,
+		Handler:           r,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	// Graceful shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+
+		log.Println("Shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
+
+	log.Printf("URL Fetcher service starting on :%s", port)
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatalf("Server error: %v", err)
+	}
+}

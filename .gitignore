@@ -1,0 +1,119 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.gemini/
+*.swp
+*.swo
+*~
+
+# Rust/Tauri build artifacts
+native_dashboard/target/
+rust_extensions/target/
+
+# Dashboard executables (build artifacts)
+*.exe
+
+# Node modules
+native_dashboard/node_modules/
+
+# TypeScript compiled output (regenerated from src-ts/)
+native_dashboard/ui/app.js
+native_dashboard/ui/app.js.map
+native_dashboard/ui/app.test.js
+native_dashboard/ui/app.test.js.map
+native_dashboard/ui/faust_avatar.js
+native_dashboard/ui/faust_avatar.js.map
+
+# Duplicate base64 data (source of truth is ui/assets/)
+native_dashboard/faust_base64.txt
+
+# Go compiled binaries
+go_services/*.exe
+
+# Test & coverage
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# Temp files
+temp/
+*.tmp
+*.temp
+tmpclaude-*
+nul
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+bot.pid
+dev_watcher.pid
+.cache
+
+# Data files (keep structure but ignore content)
+data/brain_model.pkl
+data/players.db
+data/*.json
+
+# YouTube cookies (auth tokens - must not be committed)
+cookies.txt
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/bot_database.db*
+data_backup_*/
+chat_history/
+history_*.json
+data/db_export/
+data/backups/
+
+# Assets (keep in repo)
+# assets/ directory is tracked
+
+# Keep example files
+!env.example
+
+# Sensitive AI data (persona prompts, RP lore)
+cogs/ai_core/data/faust_data.py
+cogs/ai_core/data/roleplay_data.py
+cogs/ai_core/data/unrestricted_channels.json
+
+# RP character images (private)
+assets/RP/
+
+# Visual Studio
+.vs/

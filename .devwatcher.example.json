@@ -1,0 +1,38 @@
+{
+    "watch_extensions": [
+        ".py"
+    ],
+    "ignore_patterns": [
+        "temp",
+        "__pycache__",
+        ".git",
+        ".pyc",
+        "logs",
+        ".log",
+        "bot.pid",
+        "dev_watcher.pid",
+        ".env",
+        "chat_history",
+        "history_",
+        ".json",
+        "assets/",
+        "assets\\",
+        "data/",
+        "data\\",
+        "node_modules",
+        ".venv",
+        "venv",
+        "db_export",
+        ".db",
+        ".sqlite"
+    ],
+    "debounce_seconds": 1.5,
+    "poll_interval": 1.0,
+    "health_check_delay": 3.0,
+    "crash_retry_delay": 5.0,
+    "max_crash_retries": 3,
+    "auto_retry_on_crash": true,
+    "health_check_enabled": true,
+    "sound_on_restart": false,
+    "log_to_file": true
+}

@@ -1,0 +1,142 @@
+# Discord Bot - Python Project Configuration
+# Unified configuration for all Python tools
+
+[project]
+name = "discord-bot"
+version = "3.3.15"
+description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
+requires-python = ">=3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --timeout=30"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "requires_api: marks tests that require API keys",
+]
+filterwarnings = [
+    # Ignore known deprecations from dependencies (not actionable)
+    "ignore::DeprecationWarning:discord.*",
+    "ignore::DeprecationWarning:aiohttp.*",
+    "ignore::DeprecationWarning:google.*",
+    # Ignore asyncio EventLoopPolicy deprecation (Python 3.14+, removal in 3.16)
+    "ignore:.*EventLoopPolicy.*is deprecated:DeprecationWarning",
+    # Ignore SWIG/native extension deprecation warnings (from faiss, hnswlib, etc.)
+    "ignore:builtin type Swig.*:DeprecationWarning",
+    # Ignore pending deprecation from dependencies
+    "ignore::PendingDeprecationWarning:discord.*",
+    "ignore::PendingDeprecationWarning:aiohttp.*",
+    # Keep our own deprecation warnings visible
+    "default::DeprecationWarning:cogs.*",
+    "default::DeprecationWarning:utils.*",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+exclude = [
+    ".venv",
+    "__pycache__",
+    "native_dashboard",
+    "temp",
+    ".pytest_cache",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "PTH",    # flake8-use-pathlib
+    "PL",     # pylint
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "C901",    # complex-structure (existing production patterns)
+    "PLR0913", # too many arguments
+    "PLR2004", # magic value comparison
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR0911", # too many return statements
+    "B008",    # function call in default arg (needed for FastAPI)
+    # Design choice ignores (intentional patterns)
+    "PLC0415", # import outside top level (lazy imports for performance)
+    # F401 handled via per-file-ignores for __init__.py only
+    "ARG001",  # unused function argument (interface compatibility)
+    "ARG002",  # unused method argument (interface compatibility)
+    "ARG005",  # unused lambda argument (callback signatures)
+    "PLW0603", # global statement (singleton patterns)
+    "PLW2901", # redefined loop variable (intentional)
+    "RUF001",  # ambiguous unicode (Thai language support)
+    "RUF012",  # mutable class default (dataclass patterns)
+    "E402",    # module import not at top (sys.path manipulation)
+    # Code style preferences (readability over brevity)
+    "SIM102",  # collapsible-if (nested ifs often more readable)
+    "SIM105",  # suppressible-exception (explicit try-except preferred)
+    "SIM117",  # multiple-with-statements (line length control)
+    # RUF006 removed — dangling tasks now properly tracked in bot.py
+    "RUF059",  # unused-unpacked-variable (tuple unpacking patterns)
+    "UP017",   # datetime-timezone-utc (timezone.utc compat for Python <3.11)
+    "UP046",   # uses-generic-over-type-params (Generic[T] compat for Python <3.12)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR", "SIM", "F401", "F811"]
+"scripts/*" = ["PLR", "SIM"]
+"*/__init__.py" = ["F401"]  # Re-exports are intentional
+
+[tool.ruff.lint.isort]
+known-first-party = ["cogs", "utils", "config"]
+force-single-line = false
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.bandit]
+exclude_dirs = ["tests", "native_dashboard", ".venv"]
+skips = ["B101"]  # assert used in tests
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+exclude = [
+    "native_dashboard",
+    ".venv",
+    "temp",
+]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disable_error_code = ["no-redef"]
+
+[tool.coverage.run]
+source = ["cogs", "utils"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

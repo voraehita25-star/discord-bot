@@ -1,0 +1,36 @@
+{
+    "productName": "디스코드 봇 대시보드",
+    "version": "2.0.0",
+    "identifier": "com.botdashboard.desktop",
+    "build": {
+        "frontendDist": "./ui"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "windows": [
+            {
+                "title": "디스코드 봇 대시보드",
+                "width": 1200,
+                "height": 800,
+                "resizable": true,
+                "fullscreen": false,
+                "decorations": true,
+                "devtools": false
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; object-src 'none'; frame-ancestors 'none'"
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": [
+            "nsis"
+        ],
+        "icon": [
+            "icons/icon.ico",
+            "icons/32x32.png",
+            "icons/128x128.png"
+        ]
+    }
+}

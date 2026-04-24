@@ -1,0 +1,43 @@
+# =============================================================================
+# Discord Bot - Docker Compose DEVELOPMENT Override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# =============================================================================
+
+services:
+  bot:
+    build:
+      dockerfile: docker/Dockerfile  # Use non-prod Dockerfile
+    container_name: discord-bot-dev
+
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PYTHONDONTWRITEBYTECODE=1
+
+    # Relax resource limits for development
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: '4.0'
+          pids: 200
+        reservations:
+          memory: 1g
+    shm_size: 256m
+
+    # Disable read-only for easier debugging
+    read_only: false
+
+    # Mount source code for live editing
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../temp:/app/temp
+      - ../cogs:/app/cogs:ro
+      - ../utils:/app/utils:ro
+      - ../bot.py:/app/bot.py:ro
+
+    # Expose extra ports for debugging
+    ports:
+      - "8080:8080"   # Health API
+      - "8765:8765"   # WebSocket Dashboard
+      - "9090:9090"   # Prometheus metrics

@@ -1,0 +1,33 @@
+[package]
+name = "rag_engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "rag_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+memmap2.workspace = true
+bytemuck.workspace = true
+fs2 = "0.4"
+
+# SIMD optimizations
+simsimd = "6.5"
+
+[features]
+default = []
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "rag_bench"
+harness = false

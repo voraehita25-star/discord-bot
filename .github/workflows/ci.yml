@@ -1,0 +1,398 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Pre-commit Hooks (fast lint/format gate)
+  # ============================================================
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Run pre-commit hooks
+      uses: pre-commit/action@v3.0.1
+
+  # ============================================================
+  # Security Scanning
+  # ============================================================
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run security scan (bandit)
+      run: |
+        pip install bandit[toml]
+        bandit -c pyproject.toml -r cogs/ utils/ -ll --quiet
+
+    - name: Run dependency audit
+      run: |
+        pip install pip-audit
+        pip-audit --strict --desc
+
+    - name: Scan for hardcoded secrets
+      uses: trufflesecurity/trufflehog@v3.88.2
+      with:
+        extra_args: --only-verified
+
+  # ============================================================
+  # Python Tests & Linting
+  # ============================================================
+  python-test:
+    runs-on: ubuntu-latest
+    needs: [pre-commit]
+    strategy:
+      matrix:
+        python-version: ['3.14']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov mypy
+
+    - name: Run linter (ruff)
+      run: |
+        pip install ruff
+        ruff check .
+
+    - name: Run type checker (mypy)
+      run: |
+        # Track error count: fail CI if new type errors introduced
+        BASELINE=8  # Tracked: 2 unused-ignore, 2 union-attr, 3 PIL assignment, 1 PIL attr
+        ERROR_COUNT=$(mypy cogs/ utils/ bot.py config.py 2>&1 | grep -c ': error:' || true)
+        echo "mypy errors: $ERROR_COUNT (baseline: $BASELINE)"
+        if [ "$ERROR_COUNT" -gt "$BASELINE" ]; then
+          echo "::error::mypy regression detected! $ERROR_COUNT errors vs $BASELINE baseline"
+          exit 1
+        fi
+
+    - name: Clear stale bytecode
+      run: find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+    - name: Run tests with coverage
+      env:
+        DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
+        ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
+        GEMINI_API_KEY: "test-gemini-key-not-real"
+        CREATOR_ID: "123456789"
+      run: |
+        python -m pytest tests/ -v --tb=short --cov=cogs --cov=utils --cov-report=xml --cov-report=term --cov-fail-under=55
+
+    - name: Smoke test - import core modules
+      env:
+        DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
+        ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
+        GEMINI_API_KEY: "test-gemini-key-not-real"
+        CREATOR_ID: "123456789"
+      run: |
+        python -c "
+        import utils.database
+        import utils.monitoring.logger
+        import cogs.ai_core.storage
+        import cogs.ai_core.cache.ai_cache
+        import cogs.ai_core.processing.guardrails
+        import cogs.ai_core.api.api_handler
+        print('All core module imports OK')
+        "
+
+    - name: Smoke test - DB schema init
+      env:
+        DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
+        ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
+        GEMINI_API_KEY: "test-gemini-key-not-real"
+        CREATOR_ID: "123456789"
+      run: python scripts/maintenance/schema_smoke.py
+
+    - name: Upload coverage to Codecov
+      if: matrix.python-version == '3.14'
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./coverage.xml
+        fail_ci_if_error: false
+        verbose: true
+
+  # ============================================================
+  # Go Tests & Linting
+  # ============================================================
+  go-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go_services
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache-dependency-path: go_services/go.sum
+
+    - name: Run Go tests
+      run: go test ./... -v -race -count=1
+
+    - name: Run Go linter
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: latest
+        working-directory: go_services
+
+    - name: Run Go vulnerability check
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+  # ============================================================
+  # Rust Tests & Linting
+  # ============================================================
+  rust-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust_extensions/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('rust_extensions/Cargo.lock') }}
+
+    - name: Run Rust tests (extensions)
+      working-directory: rust_extensions
+      run: cargo test --all --verbose
+
+    - name: Run Clippy (extensions)
+      working-directory: rust_extensions
+      run: cargo clippy --all -- -D warnings
+
+    - name: Run Cargo audit (extensions)
+      run: |
+        cargo install cargo-audit
+        cd rust_extensions && cargo audit
+
+  # ============================================================
+  # Native Dashboard Tests (Rust + TypeScript)
+  # ============================================================
+  dashboard-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native_dashboard
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          native_dashboard/target
+        key: ${{ runner.os }}-dashboard-cargo-${{ hashFiles('native_dashboard/Cargo.lock') }}
+
+    - name: Install Tauri system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+    - name: Rust check (dashboard)
+      run: cargo check --lib
+
+    - name: Clippy (dashboard)
+      run: cargo clippy --lib -- -D warnings
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: native_dashboard/package-lock.json
+
+    - name: Install npm dependencies
+      run: npm ci
+
+    - name: TypeScript check
+      run: npx tsc --noEmit
+
+    - name: Run vitest
+      run: npx vitest run
+
+  # ============================================================
+  # Native Dashboard Windows Smoke Test
+  # ============================================================
+  dashboard-windows-smoke:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native_dashboard
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: native_dashboard/package-lock.json
+
+    - name: Install npm dependencies
+      run: npm ci
+
+    - name: TypeScript build (Windows)
+      shell: pwsh
+      run: npm.cmd run build
+
+    - name: Run vitest (Windows)
+      run: npx vitest run
+
+    - name: Rust build (dashboard, Windows)
+      run: cargo build
+
+  # ============================================================
+  # QA Gate (all tests must pass before Docker build)
+  # ============================================================
+  qa-gate:
+    runs-on: ubuntu-latest
+    needs: [python-test, go-test, rust-test, dashboard-test, dashboard-windows-smoke, security]
+    steps:
+    - name: All checks passed
+      run: echo "✅ All tests, linting, and security checks passed — ready for build"
+
+  # ============================================================
+  # Docker Build Smoke Test
+  # ============================================================
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [qa-gate]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image (dev)
+      run: docker build -f docker/Dockerfile -t discord-bot:test .
+
+    - name: Build Docker image (prod)
+      run: docker build -f docker/Dockerfile.prod -t discord-bot:prod-test .
+
+    - name: Verify Docker image
+      run: docker run --rm discord-bot:test python -c "import discord; print('OK')"
+
+    - name: Check Docker image sizes
+      run: |
+        DEV_SIZE=$(docker image inspect discord-bot:test --format='{{.Size}}')
+        PROD_SIZE=$(docker image inspect discord-bot:prod-test --format='{{.Size}}')
+        DEV_MB=$((DEV_SIZE / 1048576))
+        PROD_MB=$((PROD_SIZE / 1048576))
+        echo "Dev image:  ${DEV_MB}MB"
+        echo "Prod image: ${PROD_MB}MB"
+        # Fail if prod image exceeds 3GB
+        if [ "$PROD_MB" -gt 3072 ]; then
+          echo "::error::Prod image too large: ${PROD_MB}MB > 3072MB limit"
+          exit 1
+        fi
+
+  # ============================================================
+  # Performance Benchmark (import time + startup check)
+  # ============================================================
+  benchmark:
+    runs-on: ubuntu-latest
+    needs: [python-test]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Benchmark core module import time
+      env:
+        DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
+        ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
+        GEMINI_API_KEY: "test-gemini-key-not-real"
+        CREATOR_ID: "123456789"
+      run: |
+        python -c "
+        import time
+        modules = [
+            'cogs.ai_core.storage',
+            'cogs.ai_core.cache.ai_cache',
+            'cogs.ai_core.processing.guardrails',
+            'utils.database',
+            'utils.monitoring.metrics',
+        ]
+        total = 0
+        for mod in modules:
+            start = time.perf_counter()
+            __import__(mod)
+            elapsed = (time.perf_counter() - start) * 1000
+            total += elapsed
+            print(f'  {mod}: {elapsed:.0f}ms')
+        print(f'Total import time: {total:.0f}ms')
+        if total > 10000:
+            print('::warning::Core module imports exceed 10s')
+        "

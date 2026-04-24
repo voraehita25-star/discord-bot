@@ -1,0 +1,126 @@
+# =============================================================================
+# Discord Bot - Dockerfile (Production)
+# Multi-stage build: Go + Rust + Python
+# =============================================================================
+
+# ======================== Stage 1: Go Builder ========================
+FROM golang:1.25-bookworm AS go-builder
+
+WORKDIR /build
+
+# Copy Go module files first for layer caching
+COPY go_services/go.mod go_services/go.sum* ./go_services/
+RUN cd go_services && go mod download 2>/dev/null || true
+
+# Copy Go source and build
+COPY go_services/ ./go_services/
+RUN cd go_services/health_api && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/health_api .
+RUN cd go_services/url_fetcher && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/url_fetcher .
+
+# ======================== Stage 2: Rust Builder ========================
+# Use the same Python version as production so PyO3 links against the correct ABI.
+# rust:1.80 used python3-dev from Debian bookworm (Python 3.11), which is incompatible
+# with the Python 3.14 production stage — the .so files would fail to import.
+FROM python:3.14.3-bookworm AS rust-builder
+
+WORKDIR /build
+
+# Install Rust toolchain (stable) and Python headers for PyO3.
+# Hardening vs the classic `curl | sh` pattern:
+#   - Download rustup-init.sh to a file instead of piping straight to sh so the
+#     script body is auditable in the build log.
+#   - Print its SHA-256 so supply-chain monitors can diff across builds and
+#     detect tampering at sh.rustup.rs.
+#   - Require HTTPS + TLS 1.2+ (--proto '=https' --tlsv1.2 -sSf).
+#   - Use --profile minimal to shrink the installed toolchain surface.
+#   - `set -euxo pipefail` so any step failure aborts the layer.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN set -euxo pipefail && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl build-essential ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init.sh https://sh.rustup.rs && \
+    sha256sum /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal --no-modify-path && \
+    rm /tmp/rustup-init.sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustc --version && cargo --version
+
+# Build Python wheels for PyO3 modules with maturin
+RUN pip install --no-cache-dir maturin
+
+# Copy Cargo manifests for caching
+COPY rust_extensions/Cargo.toml rust_extensions/Cargo.lock* ./rust_extensions/
+COPY rust_extensions/media_processor/Cargo.toml ./rust_extensions/media_processor/
+COPY rust_extensions/rag_engine/Cargo.toml ./rust_extensions/rag_engine/
+
+# Create stub src for dependency caching
+RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src && \
+    echo "fn main() {}" > rust_extensions/media_processor/src/lib.rs && \
+    echo "fn main() {}" > rust_extensions/rag_engine/src/lib.rs && \
+    cd rust_extensions && cargo build --release 2>/dev/null || true
+
+# Copy real Rust source and rebuild
+COPY rust_extensions/ ./rust_extensions/
+RUN cd rust_extensions && cargo build --release 2>&1 || { echo "ERROR: Rust extensions failed to build"; exit 1; }
+
+# Build proper Python wheels for the Rust extension modules
+RUN mkdir -p /out-rust-wheels && \
+    maturin build --release --manifest-path rust_extensions/media_processor/Cargo.toml --interpreter python3.14 -o /out-rust-wheels && \
+    maturin build --release --manifest-path rust_extensions/rag_engine/Cargo.toml --interpreter python3.14 -o /out-rust-wheels
+
+# ======================== Stage 3: Python Builder ========================
+FROM python:3.14.3-slim AS py-builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libffi-dev && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# ======================== Stage 4: Production ========================
+FROM python:3.14.3-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    TZ=Asia/Bangkok \
+    # Performance: use system malloc (avoids Python pymalloc overhead in containers)
+    PYTHONMALLOC=malloc
+
+WORKDIR /app
+
+# Runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libopus0 && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --create-home --shell /sbin/nologin botuser
+
+# Copy Python packages
+COPY --from=py-builder --chown=botuser:botuser /root/.local /home/botuser/.local
+ENV PATH=/home/botuser/.local/bin:$PATH
+
+# Copy Go binaries
+COPY --from=go-builder --chown=botuser:botuser /out/health_api /app/go_services/health_api/health_api
+COPY --from=go-builder --chown=botuser:botuser /out/url_fetcher /app/go_services/url_fetcher/url_fetcher
+
+# Install Rust Python extension wheels built with maturin
+COPY --from=rust-builder /out-rust-wheels/ /tmp/rust-wheels/
+RUN pip install --no-cache-dir /tmp/rust-wheels/*.whl && rm -rf /tmp/rust-wheels
+
+# Copy application code
+COPY --chown=botuser:botuser . .
+
+# Create directories
+RUN mkdir -p /app/logs /app/data /app/temp && chown -R botuser:botuser /app
+
+USER botuser
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
+
+EXPOSE 8080 8081 8082 8765 9090
+
+CMD ["python", "bot.py"]

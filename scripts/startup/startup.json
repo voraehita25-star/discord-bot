@@ -1,0 +1,16 @@
+{
+    "bot": {
+        "max_restarts": 50,
+        "restart_delay_seconds": 10,
+        "check_dependencies": true
+    },
+    "health": {
+        "min_disk_space_gb": 1,
+        "min_memory_mb": 1024
+    },
+    "display": {
+        "box_width": 69,
+        "show_banner": true,
+        "colored_output": true
+    }
+}
