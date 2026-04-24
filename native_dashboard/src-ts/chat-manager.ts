@@ -46,6 +46,7 @@ import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js
 import { ConversationList } from './chat/conversation-list.js';
 import { ImageAttachManager } from './chat/image-attach.js';
 import { ContextWindowIndicator, type TokenUsage } from './chat/context-window.js';
+import { ConversationModals } from './chat/conversation-modals.js';
 
 // ============================================================================
 // Memory Manager
@@ -200,8 +201,6 @@ export class ChatManager {
     selectedRole: string = 'general';
     isStreaming: boolean = false;
     presets: Record<string, RolePreset> = {};
-    pendingDeleteId: string | null = null;
-    pendingRenameId: string | null = null;
     currentMode: string = '';  // Store current mode for the streaming message
     aiProvider: string = localStorage.getItem('dashboard_ai_provider') || 'gemini';  // Current AI provider
     availableProviders: string[] = ['gemini'];  // Available providers from server
@@ -804,68 +803,21 @@ export class ChatManager {
         container.innerHTML = skeleton() + skeleton() + skeleton();
     }
 
-    deleteConversation(id: string): void {
-        // Prevent double-click issues
-        if (this.isStreaming) return;
-        
-        // Show custom delete confirmation modal
-        this.pendingDeleteId = id;
-        const modal = document.getElementById('delete-confirm-modal');
-        if (modal) {
-            modal.classList.add('active');
-        }
-    }
+    // Rename + delete-confirm modals (#11) now live in ./chat/conversation-modals.ts.
+    // ChatManager exposes the same method names as before so event bindings keep working.
+    private convModals: ConversationModals = new ConversationModals({
+        sendWsMessage: (payload) => this.send(payload),
+        isStreaming: () => this.isStreaming,
+        findConversation: (id) => this.conversations.find(c => c.id === id),
+    });
 
-    confirmDelete(): void {
-        if (this.pendingDeleteId) {
-            this.send({ type: 'delete_conversation', id: this.pendingDeleteId });
-            this.pendingDeleteId = null;
-        }
-        this.closeDeleteModal();
-    }
+    deleteConversation(id: string): void { this.convModals.showDelete(id); }
+    confirmDelete(): void { this.convModals.confirmDelete(); }
+    closeDeleteModal(): void { this.convModals.closeDelete(); }
 
-    closeDeleteModal(): void {
-        const modal = document.getElementById('delete-confirm-modal');
-        if (modal) {
-            modal.classList.remove('active');
-        }
-        this.pendingDeleteId = null;
-    }
-
-    renameConversation(id: string): void {
-        if (this.isStreaming) return;
-        
-        const conv = this.conversations.find(c => c.id === id);
-        this.pendingRenameId = id;
-        
-        const modal = document.getElementById('rename-modal');
-        const input = document.getElementById('rename-input') as HTMLInputElement;
-        if (modal && input) {
-            input.value = conv?.title || '';
-            modal.classList.add('active');
-            input.focus();
-            input.select();
-        }
-    }
-
-    confirmRename(): void {
-        const input = document.getElementById('rename-input') as HTMLInputElement;
-        const newTitle = input?.value?.trim();
-        
-        if (this.pendingRenameId && newTitle) {
-            this.send({ type: 'rename_conversation', id: this.pendingRenameId, title: newTitle });
-            this.pendingRenameId = null;
-        }
-        this.closeRenameModal();
-    }
-
-    closeRenameModal(): void {
-        const modal = document.getElementById('rename-modal');
-        if (modal) {
-            modal.classList.remove('active');
-        }
-        this.pendingRenameId = null;
-    }
+    renameConversation(id: string): void { this.convModals.showRename(id); }
+    confirmRename(): void { this.convModals.confirmRename(); }
+    closeRenameModal(): void { this.convModals.closeRename(); }
 
     starConversation(id: string, starred: boolean): void {
         this.send({ type: 'star_conversation', id, starred });
