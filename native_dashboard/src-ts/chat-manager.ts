@@ -45,6 +45,7 @@ import { WebSocketClient } from './chat/ws-client.js';
 import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
 import { ConversationList } from './chat/conversation-list.js';
 import { ImageAttachManager } from './chat/image-attach.js';
+import { ContextWindowIndicator, type TokenUsage } from './chat/context-window.js';
 
 // ============================================================================
 // Memory Manager
@@ -212,7 +213,6 @@ export class ChatManager {
     private draftSaveTimer: number | null = null;  // Debounced localStorage draft writer
     private allTagsCache: { tag: string; count: number }[] = [];  // #22 populated by 'all_tags' message
 
-    private tokenUsageCache: Map<string, { input_tokens: number; output_tokens: number; total_tokens: number; context_window: number }> = new Map();
 
     private enrichConversation(conversation: ChatConversation): ChatConversation {
         const preset = this.presets[conversation.role_preset] || {};
@@ -491,8 +491,7 @@ export class ChatManager {
 
             case 'conversation_deleted':
                 this.conversations = this.conversations.filter(c => c.id !== data.id);
-                this.tokenUsageCache.delete(data.id as string);
-                this.saveTokenUsageCache();
+                this.contextWindow.forget(data.id as string);  // forget() saves internally
                 this.renderConversationList();
                 if (this.currentConversation?.id === data.id) {
                     this.currentConversation = null;
@@ -1480,81 +1479,19 @@ export class ChatManager {
         }
     }
 
-    updateContextWindowIndicator(usage: {
-        input_tokens: number;
-        output_tokens: number;
-        total_tokens: number;
-        context_window: number;
-    }): void {
-        const indicator = document.getElementById('context-window-indicator');
-        const fill = document.getElementById('context-bar-fill');
-        const label = document.getElementById('context-bar-label');
-        if (!indicator || !fill || !label) return;
+    // Context-window indicator (#21 header bar) now lives in ./chat/context-window.ts.
+    // Thin forwarders preserve the public method names used by handleMessage +
+    // conversation_loaded / streaming paths.
+    private contextWindow: ContextWindowIndicator = new ContextWindowIndicator();
 
-        const { input_tokens, output_tokens, context_window } = usage;
-        if (!context_window || context_window <= 0) return;
-
-        // Cache per conversation for persistence
-        if (this.currentConversation?.id) {
-            this.tokenUsageCache.set(this.currentConversation.id, usage);
-            this.saveTokenUsageCache();
-        }
-
-        const total = input_tokens + output_tokens;
-        const pct = Math.min((total / context_window) * 100, 100);
-
-        indicator.style.display = 'flex';
-        fill.style.width = `${pct}%`;
-        fill.classList.remove('usage-moderate', 'usage-high');
-        if (pct >= 80) {
-            fill.classList.add('usage-high');
-        } else if (pct >= 50) {
-            fill.classList.add('usage-moderate');
-        }
-
-        // Format token counts for readability
-        const fmt = (n: number): string => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-        label.textContent = `${fmt(total)} / ${fmt(context_window)} (${pct.toFixed(1)}%)`;
-        indicator.title = `Context Window: ${input_tokens.toLocaleString()} input + ${output_tokens.toLocaleString()} output = ${total.toLocaleString()} / ${context_window.toLocaleString()} tokens`;
+    updateContextWindowIndicator(usage: TokenUsage): void {
+        this.contextWindow.update(this.currentConversation?.id ?? null, usage);
     }
-
-    resetContextWindowIndicator(): void {
-        const indicator = document.getElementById('context-window-indicator');
-        if (indicator) indicator.style.display = 'none';
-    }
-
+    resetContextWindowIndicator(): void { this.contextWindow.reset(); }
     restoreContextWindowIndicator(conversationId: string): void {
-        const cached = this.tokenUsageCache.get(conversationId);
-        if (cached) {
-            this.updateContextWindowIndicator(cached);
-        } else {
-            this.resetContextWindowIndicator();
-        }
+        this.contextWindow.restore(conversationId);
     }
-
-    private saveTokenUsageCache(): void {
-        const obj: Record<string, { input_tokens: number; output_tokens: number; total_tokens: number; context_window: number }> = {};
-        // Evict oldest entries if cache exceeds 200 conversations
-        const MAX_TOKEN_CACHE_SIZE = 200;
-        const entries = Array.from(this.tokenUsageCache.entries());
-        const toSave = entries.length > MAX_TOKEN_CACHE_SIZE
-            ? entries.slice(entries.length - MAX_TOKEN_CACHE_SIZE)
-            : entries;
-        for (const [k, v] of toSave) { obj[k] = v; }
-        localStorage.setItem('dashboard_token_usage', JSON.stringify(obj));
-    }
-
-    private loadTokenUsageCache(): void {
-        try {
-            const raw = localStorage.getItem('dashboard_token_usage');
-            if (raw) {
-                const obj = JSON.parse(raw) as Record<string, { input_tokens: number; output_tokens: number; total_tokens: number; context_window: number }>;
-                this.tokenUsageCache = new Map(Object.entries(obj));
-            }
-        } catch {
-            // Ignore corrupt cache
-        }
-    }
+    private loadTokenUsageCache(): void { this.contextWindow.load(); }
 
     showChatContainer(): void {
         const empty = document.getElementById('chat-empty');
