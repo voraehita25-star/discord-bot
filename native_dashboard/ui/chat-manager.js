@@ -7,6 +7,8 @@ import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
+import { WebSocketClient } from './chat/ws-client.js';
+import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -136,15 +138,11 @@ export const memoryManager = new MemoryManager();
 // ============================================================================
 export class ChatManager {
     constructor() {
-        this.ws = null;
-        this.connected = false;
         this.currentConversation = null;
         this.conversations = [];
         this.messages = [];
         this.selectedRole = 'general';
         this.isStreaming = false;
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
         this.presets = {};
         this.pendingDeleteId = null;
         this.pendingRenameId = null;
@@ -157,17 +155,31 @@ export class ChatManager {
         this.editTargetMessageId = null; // DB ID of message being AI-edited
         this.editStreamContent = ''; // Accumulated edit stream content
         this.userScrolledUp = false; // True when user manually scrolls up during streaming
-        this.pingInterval = null; // Track ping interval for cleanup
-        this.reconnectTimeout = null; // Track reconnect timeout
-        this.pongPending = false; // True after sending ping, cleared on pong
-        this.missedPongs = 0; // Consecutive missed pongs
         this.draftSaveTimer = null; // Debounced localStorage draft writer
         this.allTagsCache = []; // #22 populated by 'all_tags' message
-        this.wsToken = null;
-        this.defaultWsEndpoint = 'ws://127.0.0.1:8765/ws';
-        this.localhostWsEndpoint = 'ws://localhost:8765/ws';
-        this.isConnecting = false;
         this.tokenUsageCache = new Map();
+        // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
+        // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
+        // the same method surface (connect, disconnect, send, scheduleReconnect) +
+        // the same read-only fields (ws, connected, reconnectAttempts) so all call
+        // sites in this file keep working without rewrite.
+        this.wsClient = new WebSocketClient({
+            onMessage: (data) => this.handleMessage(data),
+            onConnectStateChange: (connected) => this.updateConnectionStatus(connected),
+            onDisconnect: () => {
+                // Reset streaming state to prevent chat input from being permanently locked.
+                if (this.isStreaming) {
+                    this.isStreaming = false;
+                    this.isEditStreaming = false;
+                    this.editTargetMessageId = null;
+                    this.editStreamContent = '';
+                    this.setInputEnabled(true);
+                    const stuckMsg = document.getElementById('streaming-message');
+                    if (stuckMsg)
+                        stuckMsg.remove();
+                }
+            },
+        });
         this.currentThinking = ''; // Store current thinking for the streaming message
         /** Current text typed into the #conversation-filter-input box. */
         this.conversationFilter = '';
@@ -178,7 +190,9 @@ export class ChatManager {
         // ChatManager holds a ChatSearch instance + forwarders so keybinding
         // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
         this.chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
-        this.visibleMessageCount = 0; // initialized on first render
+        // Virtualization state — the thresholds themselves live in
+        // ./chat/message-template.ts where the window math uses them.
+        this.visibleMessageCount = 0;
     }
     enrichConversation(conversation) {
         const preset = this.presets[conversation.role_preset] || {};
@@ -227,205 +241,28 @@ export class ChatManager {
             showToast('Failed to load conversation history', { type: 'error' });
         }
     }
+    // Field-style forwarders so existing call sites (this.ws, this.connected, etc.)
+    // keep working. TS getters are fine here since the fields were public before.
+    get ws() { return this.wsClient.ws; }
+    get connected() { return this.wsClient.connected; }
+    get reconnectAttempts() { return this.wsClient.reconnectAttempts; }
     connect() {
-        if (this.isConnecting
-            || (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING))) {
-            return;
-        }
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        this.isConnecting = true;
         this.loadTokenUsageCache();
-        try {
-            Promise.all([
-                invoke('get_ws_token').catch(() => ''),
-                invoke('get_ws_endpoint').catch(() => this.defaultWsEndpoint),
-            ]).then(([token, endpoint]) => {
-                this.wsToken = token || null;
-                const candidates = this.buildWsEndpointCandidates(endpoint || this.defaultWsEndpoint);
-                this._connectWithUrl(candidates[0], candidates.slice(1));
-            }).catch(() => {
-                console.warn('WS config unavailable — falling back to default localhost endpoint');
-                this.wsToken = null;
-                const candidates = this.buildWsEndpointCandidates(this.defaultWsEndpoint);
-                this._connectWithUrl(candidates[0], candidates.slice(1));
-            }).finally(() => {
-                this.isConnecting = false;
-            });
-        }
-        catch (e) {
-            this.isConnecting = false;
-            console.error('Failed to create WebSocket:', e);
-            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
-            this.scheduleReconnect();
-        }
+        this.wsClient.connect();
     }
-    buildWsEndpointCandidates(primaryEndpoint) {
-        const normalizedPrimary = primaryEndpoint.trim() || this.defaultWsEndpoint;
-        const candidates = [normalizedPrimary, this.defaultWsEndpoint, this.localhostWsEndpoint];
-        if (normalizedPrimary.includes('127.0.0.1')) {
-            candidates.push(normalizedPrimary.replace('127.0.0.1', 'localhost'));
-        }
-        if (normalizedPrimary.includes('localhost')) {
-            candidates.push(normalizedPrimary.replace('localhost', '127.0.0.1'));
-        }
-        return [...new Set(candidates.map(url => url.trim()).filter(Boolean))];
-    }
-    _connectWithUrl(wsUrl, fallbackUrls = []) {
-        try {
-            const socket = new WebSocket(wsUrl);
-            this.ws = socket;
-            let opened = false;
-            socket.onopen = () => {
-                if (this.ws !== socket) {
-                    socket.close();
-                    return;
-                }
-                opened = true;
-                // Send token as first message for authentication (not in URL)
-                if (this.wsToken) {
-                    try {
-                        socket.send(JSON.stringify({ type: 'auth', token: this.wsToken }));
-                    }
-                    catch (e) {
-                        console.error('Failed to authenticate WebSocket:', e);
-                        errorLogger.log('WEBSOCKET_AUTH_ERROR', 'Failed to send dashboard auth token', String(e));
-                        socket.close();
-                        return;
-                    }
-                }
-                this.connected = true;
-                this.reconnectAttempts = 0;
-                this.pongPending = false;
-                this.missedPongs = 0;
-                this.updateConnectionStatus(true);
-            };
-            socket.onclose = (event) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-                this.ws = null;
-                this.connected = false;
-                if (!opened && fallbackUrls.length > 0) {
-                    const [nextUrl, ...remaining] = fallbackUrls;
-                    errorLogger.log('WEBSOCKET_FALLBACK', `WebSocket connection to ${wsUrl} closed before opening; retrying ${nextUrl}`, JSON.stringify({ code: event.code, reason: event.reason || '' }));
-                    this._connectWithUrl(nextUrl, remaining);
-                    return;
-                }
-                // Reset streaming state to prevent chat input from being permanently locked
-                if (this.isStreaming) {
-                    this.isStreaming = false;
-                    this.isEditStreaming = false;
-                    this.editTargetMessageId = null;
-                    this.editStreamContent = '';
-                    this.setInputEnabled(true);
-                    const stuckMsg = document.getElementById('streaming-message');
-                    if (stuckMsg)
-                        stuckMsg.remove();
-                }
-                this.updateConnectionStatus(false);
-                this.scheduleReconnect();
-            };
-            socket.onerror = (error) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-                // Only log first error, not repeated connection failures
-                if (this.reconnectAttempts === 0) {
-                    console.warn('\uD83D\uDD0C WebSocket connection failed (bot may not be running)');
-                }
-                errorLogger.log('WEBSOCKET_ERROR', `WebSocket connection error (${wsUrl})`, String(error));
-                this.connected = false;
-                this.updateConnectionStatus(false);
-            };
-            socket.onmessage = (event) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-                // Reject excessively large messages to prevent memory exhaustion
-                // Note: 50MB limit needed because conversation_loaded can include base64 images
-                if (typeof event.data === 'string' && event.data.length > 50 * 1024 * 1024) {
-                    console.warn('Dropped oversized WebSocket message:', event.data.length, 'bytes');
-                    return;
-                }
-                try {
-                    const data = JSON.parse(event.data);
-                    this.handleMessage(data);
-                }
-                catch (e) {
-                    console.error('Failed to parse WebSocket message:', e);
-                    errorLogger.log('WEBSOCKET_PARSE_ERROR', 'Failed to parse message', String(e));
-                }
-            };
-        }
-        catch (e) {
-            console.error('Failed to create WebSocket:', e);
-            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
-            this.scheduleReconnect();
-        }
-    }
-    scheduleReconnect() {
-        // Clear existing reconnect timeout to prevent race condition
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.warn('Max reconnect attempts reached');
-            this.updateConnectionStatus(false);
-            // Surface to the user so they don't sit in front of a frozen UI
-            // wondering why messages stop sending.
-            showToast('Connection to AI server lost. Please restart the bot and reload the dashboard.', { type: 'error', duration: 10000 });
-            return;
-        }
-        this.reconnectAttempts++;
-        const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-        const jitter = Math.random() * baseDelay * 0.3; // Add 0-30% jitter to prevent thundering herd
-        const delay = Math.floor(baseDelay + jitter);
-        console.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        this.reconnectTimeout = window.setTimeout(() => {
-            this.reconnectTimeout = null;
-            this.connect();
-        }, delay);
-    }
-    disconnect() {
-        // Clear ping interval
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-        // Clear reconnect timeout
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
-        this.connected = false;
-    }
-    send(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
-        }
-        else {
-            showToast('Not connected to AI server', { type: 'error' });
-        }
-    }
+    disconnect() { this.wsClient.disconnect(); }
+    send(data) { this.wsClient.send(data); }
     handleMessage(data) {
         switch (data.type) {
             case 'connected':
                 this.presets = data.presets || {};
                 if (data.requires_auth) {
-                    if (!this.wsToken) {
+                    if (!this.wsClient.token) {
                         errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
                         showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
                         break;
                     }
-                    this.send({ type: 'auth', token: this.wsToken });
+                    this.send({ type: 'auth', token: this.wsClient.token });
                 }
                 // Update available AI providers from server
                 if (data.available_providers) {
@@ -477,7 +314,7 @@ export class ChatManager {
                 this.aiProvider = this.currentConversation.ai_provider || this.aiProvider;
                 this.messages = data.messages || [];
                 // Reset virtualization window when switching conversations.
-                this.visibleMessageCount = ChatManager.VIRT_WINDOW_SIZE;
+                this.visibleMessageCount = VIRT_WINDOW_SIZE;
                 this.showChatContainer();
                 this.updateChatHeader();
                 this.renderMessages();
@@ -740,8 +577,7 @@ export class ChatManager {
                 }
                 break;
             case 'pong':
-                this.pongPending = false;
-                this.missedPongs = 0;
+                this.wsClient.notePong();
                 break;
             // Memory handlers
             case 'memories':
@@ -803,7 +639,7 @@ export class ChatManager {
             if (connected) {
                 statusEl.textContent = '\uD83D\uDFE2 Connected';
             }
-            else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            else if (this.reconnectAttempts >= this.wsClient.maxReconnectAttempts) {
                 statusEl.textContent = '\uD83D\uDD34 Disconnected';
             }
             else {
@@ -1372,108 +1208,25 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container)
             return;
-        if (this.messages.length === 0) {
-            const emoji = this.currentConversation?.role_emoji || '\uD83E\uDD16';
-            const name = this.currentConversation?.role_name || 'AI';
-            const safeAi = safeAvatarUrl(settings.aiAvatar);
-            const welcomeAvatarHtml = safeAi
-                ? `<img src="${safeAi}" alt="AI" class="welcome-avatar">`
-                : `<div class="welcome-emoji">${emoji}</div>`;
-            container.innerHTML = `
-                <div class="chat-welcome">
-                    ${welcomeAvatarHtml}
-                    <h3>Chat with ${escapeHtml(name)}</h3>
-                    <p>Type a message to start the conversation</p>
-                </div>
-            `;
-            return;
-        }
-        const aiEmoji = this.currentConversation?.role_emoji || '\uD83E\uDD16';
-        const aiName = this.currentConversation?.role_name || 'AI';
-        const userName = settings.userName || 'You';
-        const safeUserAvatar = safeAvatarUrl(settings.userAvatar);
-        const safeAiAvatar = safeAvatarUrl(settings.aiAvatar);
-        // Virtualization: render only the tail window for long conversations.
-        const _total = this.messages.length;
-        const _shouldVirtualize = _total > ChatManager.VIRT_THRESHOLD;
-        if (_shouldVirtualize && this.visibleMessageCount <= 0) {
-            this.visibleMessageCount = ChatManager.VIRT_WINDOW_SIZE;
-        }
-        const _windowSize = _shouldVirtualize ? Math.min(this.visibleMessageCount, _total) : _total;
-        const _startIdx = _total - _windowSize;
-        const _hiddenBefore = _startIdx;
-        const _showEarlierBtn = _hiddenBefore > 0
-            ? `<button class="show-earlier-btn" id="chat-show-earlier">↑ Show ${Math.min(_hiddenBefore, ChatManager.VIRT_WINDOW_SIZE)} earlier (${_hiddenBefore} hidden)</button>`
-            : '';
-        container.innerHTML = _showEarlierBtn + this.messages.slice(_startIdx).map((msg, _sliceIdx) => {
-            const msgIdx = _startIdx + _sliceIdx; // absolute index into this.messages
-            const isUser = msg.role === 'user';
-            const displayName = isUser ? userName : aiName;
-            const timeStr = this.formatTime(msg.created_at);
-            // Both user and AI can have custom avatar images
-            let avatarHtml;
-            if (isUser) {
-                avatarHtml = safeUserAvatar
-                    ? `<img src="${safeUserAvatar}" alt="avatar" class="user-avatar-img">`
-                    : '\uD83D\uDC64';
-            }
-            else {
-                avatarHtml = safeAiAvatar
-                    ? `<img src="${safeAiAvatar}" alt="ai" class="user-avatar-img">`
-                    : aiEmoji;
-            }
-            // Render attached images for user messages (use data attribute to avoid XSS)
-            let imagesHtml = '';
-            if (msg.images && msg.images.length > 0) {
-                imagesHtml = `<div class="message-images">${msg.images.map((img, idx) => `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`).join('')}</div>`;
-            }
-            // Render thinking container for AI messages (collapsed by default)
-            let thinkingHtml = '';
-            if (!isUser && msg.thinking) {
-                thinkingHtml = `
-                    <div class="thinking-container">
-                        <div class="thinking-header collapsible collapsed">
-                            \uD83D\uDCAD Thought Process
-                        </div>
-                        <div class="thinking-content collapsed">${this.formatMessage(msg.thinking)}</div>
-                    </div>
-                `;
-            }
-            // Mode badge for AI messages
-            const modeHtml = (!isUser && msg.mode)
-                ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>`
-                : '';
-            // Action buttons for all messages
-            const msgId = msg.id != null ? msg.id : '';
-            const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">\uD83D\uDCCB Copy</button>`;
-            const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="Edit">\u270F\uFE0F Edit</button>`;
-            const aiEditBtn = (!isUser && msgId) ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="AI Edit">\u2728 AI Edit</button>` : '';
-            const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" data-role="${msg.role}" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>`;
-            const pinLabel = msg.is_pinned ? 'Unpin' : 'Pin';
-            const pinBtn = msgId
-                ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">\uD83D\uDCCC ${pinLabel}</button>`
-                : '';
-            const likeBtn = msgId
-                ? `<button class="like-message-btn${msg.liked ? ' liked' : ''}" data-msg-id="${msgId}" data-liked="${msg.liked ? '1' : '0'}" title="${msg.liked ? 'Unlike' : 'Like'}" aria-label="${msg.liked ? 'Unlike' : 'Like'} message">${msg.liked ? '\u2764\uFE0F' : '\uD83E\uDD0D'}</button>`
-                : '';
-            const actionsHtml = `<div class="message-actions">${copyBtn}${likeBtn}${pinBtn}${editBtn}${aiEditBtn}${deleteBtn}</div>`;
-            return `
-                <div class="chat-message ${msg.role}">
-                    <div class="message-avatar">${avatarHtml}</div>
-                    <div class="message-wrapper">
-                        <div class="message-header">
-                            <span class="message-name">${escapeHtml(displayName)}</span>
-                            <span class="message-time">${timeStr}</span>
-                            ${modeHtml}
-                        </div>
-                        ${thinkingHtml}
-                        ${imagesHtml}
-                        <div class="message-content">${this.formatMessage(this.stripThinkTags(msg.content))}</div>
-                        ${actionsHtml}
-                    </div>
-                </div>
-            `;
-        }).join('');
+        // Template + virtualization-windowing math now lives in
+        // ./chat/message-template.ts. We pass in the formatter/stripThinkTags/
+        // formatTime methods as deps; the template never reaches into `this`.
+        const result = renderMessagesHtml({
+            messages: this.messages,
+            currentConversation: this.currentConversation,
+            visibleMessageCount: this.visibleMessageCount,
+            deps: {
+                formatTime: (s) => this.formatTime(s),
+                formatMessage: (c) => this.formatMessage(c),
+                stripThinkTags: (c) => this.stripThinkTags(c),
+            },
+        });
+        // Propagate the clamped window size back to ChatManager so subsequent
+        // "show earlier" clicks grow from the correct baseline.
+        this.visibleMessageCount = result.visibleMessageCount;
+        container.innerHTML = result.html;
+        if (this.messages.length === 0)
+            return; // no events to bind on the welcome card
         this.scrollToBottom();
         this.setupScrollListener();
         // Fire-and-forget: syntax-highlight any code blocks in the new markup.
@@ -1486,7 +1239,7 @@ export class ChatManager {
                 // Preserve scroll offset so the currently-top visible message stays put.
                 const prevScrollHeight = container.scrollHeight;
                 const prevScrollTop = container.scrollTop;
-                this.visibleMessageCount += ChatManager.VIRT_WINDOW_SIZE;
+                this.visibleMessageCount += VIRT_WINDOW_SIZE;
                 this.renderMessages();
                 // After re-render, shift scrollTop by the added height so the user's
                 // eye stays on the same message they were reading.
@@ -2468,27 +2221,8 @@ export class ChatManager {
                 this.sendMessage();
             }
         });
-        // Store ping interval for cleanup
-        this.pingInterval = window.setInterval(() => {
-            if (this.connected) {
-                if (this.pongPending) {
-                    this.missedPongs++;
-                    if (this.missedPongs >= 2) {
-                        // Server unresponsive — force reconnect
-                        console.warn('🔌 Server unresponsive (missed pongs), forcing reconnect');
-                        errorLogger.log('WEBSOCKET_STALE', `Server missed ${this.missedPongs} pongs, forcing reconnect`);
-                        this.missedPongs = 0;
-                        this.pongPending = false;
-                        if (this.ws) {
-                            this.ws.close();
-                        }
-                        return;
-                    }
-                }
-                this.pongPending = true;
-                this.send({ type: 'ping' });
-            }
-        }, 30000);
+        // Ping/pong keepalive is now owned by WebSocketClient — it starts the
+        // loop on every `onopen` and stops on `onclose`. Nothing to do here.
     }
 }
 // Cap local message history to bound DOM size in long sessions; rendered
@@ -2497,11 +2231,6 @@ ChatManager.MAX_LOCAL_MESSAGES = 200;
 // Image attachment methods
 ChatManager.MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB
 ChatManager.MAX_ATTACHED_IMAGES = 5;
-// Virtualization thresholds for renderMessages (#16).
-// Below THRESHOLD we render every message; above it we keep only the tail
-// WINDOW_SIZE in the DOM and put a "show earlier" button at the top.
-ChatManager.VIRT_THRESHOLD = 150;
-ChatManager.VIRT_WINDOW_SIZE = 100;
 // ============================================================================
 // Module-level instances
 // ============================================================================

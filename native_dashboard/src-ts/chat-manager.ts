@@ -43,6 +43,7 @@ import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
 import { WebSocketClient } from './chat/ws-client.js';
 import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
+import { ConversationList } from './chat/conversation-list.js';
 
 // ============================================================================
 // Memory Manager
@@ -1217,106 +1218,25 @@ export class ChatManager {
         if (chatContainer) chatContainer.scrollTop = savedScroll;
     }
 
-    /** Current text typed into the #conversation-filter-input box. */
-    private conversationFilter: string = '';
+    // Conversation list sidebar (#15 / #22) now lives in ./chat/conversation-list.ts.
+    // ChatManager holds one ConversationList instance; callbacks route back here.
+    private convList: ConversationList = new ConversationList({
+        onLoadConversation: (id) => this.loadConversation(id),
+        sendWsMessage: (payload) => this.send(payload),
+        onFilterChanged: () => {
+            const container = document.getElementById('conversation-list');
+            const savedScroll = container?.scrollTop ?? 0;
+            this.renderConversationList();
+            if (container) container.scrollTop = savedScroll;
+        },
+    });
 
     renderConversationList(): void {
-        const container = document.getElementById('conversation-list');
-        if (!container) return;
-
-        // Wire up the filter input once — it persists across innerHTML replacements
-        // of #conversation-list, so bind it to the separate input element by id.
-        this.setupConversationFilter();
-
-        if (this.conversations.length === 0) {
-            container.innerHTML = `
-                <div class="no-conversations">
-                    <p>No conversations yet</p>
-                    <p>Start a new chat!</p>
-                </div>
-            `;
-            return;
-        }
-
-        const filter = this.conversationFilter.trim().toLowerCase();
-        const matches = filter
-            ? this.conversations.filter(c => (c.title || '').toLowerCase().includes(filter))
-            : this.conversations;
-
-        if (matches.length === 0) {
-            container.innerHTML = `
-                <div class="no-conversations">
-                    <p>No matches for "${escapeHtml(this.conversationFilter)}"</p>
-                </div>
-            `;
-            return;
-        }
-
-        // Cap render size to keep innerHTML parse fast even with 1000+ convs.
-        // 200 is well above the typical visible window and enough for scrolling.
-        const RENDER_CAP = 200;
-        const visible = matches.slice(0, RENDER_CAP);
-        const overflow = matches.length - visible.length;
-
-        container.innerHTML = visible.map(conv => {
-            const preset = this.presets[conv.role_preset] || {};
-            const isActive = this.currentConversation?.id === conv.id;
-            const starClass = conv.is_starred ? 'starred' : '';
-            const safeAi = safeAvatarUrl(settings.aiAvatar);
-            const avatarHtml = safeAi
-                ? `<img class="conv-avatar" src="${safeAi}" alt="AI">`
-                : `<span class="conv-emoji">${escapeHtml(preset.emoji || '\uD83D\uDCAC')}</span>`;
-
-            return `
-                <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}" 
-                     data-id="${escapeHtml(conv.id)}">
-                    ${avatarHtml}
-                    <div class="conv-info">
-                        <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
-                        <span class="conv-meta">${conv.message_count || 0} messages</span>
-                    </div>
-                    ${conv.is_starred ? '<span class="conv-star">\u2B50</span>' : ''}
-                </div>
-            `;
-        }).join('') + (overflow > 0 ? `<div class="conversation-overflow-note">${overflow} more hidden — narrow your filter</div>` : '');
-
-        // True event delegation on the container — survives innerHTML replacements
-        // Remove old handler before adding new one to avoid duplicates
-        if ((container as unknown as Record<string, unknown>)._convClickHandler) {
-            container.removeEventListener('click', (container as unknown as Record<string, EventListener>)._convClickHandler);
-        }
-        const handler = (e: Event) => {
-            const target = (e.target as HTMLElement).closest('.conversation-item[data-id]') as HTMLElement | null;
-            if (target) {
-                const id = target.dataset.id;
-                if (id) this.loadConversation(id);
-            }
-        };
-        (container as unknown as Record<string, EventListener>)._convClickHandler = handler;
-        container.addEventListener('click', handler);
-    }
-
-    private conversationFilterDebounce: number | null = null;
-
-    private setupConversationFilter(): void {
-        const input = document.getElementById('conversation-filter-input') as HTMLInputElement | null;
-        if (!input || input.dataset.filterBound) return;
-        input.addEventListener('input', () => {
-            // Debounce — filtering 1000+ conversations on every keystroke is
-            // O(n) innerHTML re-render that drops frames during rapid typing.
-            if (this.conversationFilterDebounce !== null) {
-                clearTimeout(this.conversationFilterDebounce);
-            }
-            this.conversationFilterDebounce = window.setTimeout(() => {
-                this.conversationFilter = input.value;
-                const container = document.getElementById('conversation-list');
-                const savedScroll = container?.scrollTop ?? 0;
-                this.renderConversationList();
-                if (container) container.scrollTop = savedScroll;
-                this.conversationFilterDebounce = null;
-            }, 120);
+        this.convList.render({
+            conversations: this.conversations,
+            currentConversation: this.currentConversation,
+            presets: this.presets,
         });
-        input.dataset.filterBound = '1';
     }
 
     renderMessages(): void {
@@ -1551,44 +1471,7 @@ export class ChatManager {
 
     /** Render the tag chips + "add tag" input strip under the chat header. */
     renderConversationTags(): void {
-        const host = document.getElementById('chat-tags');
-        if (!host || !this.currentConversation) return;
-
-        const tags = (this.currentConversation as unknown as Record<string, unknown>).tags as string[] | undefined ?? [];
-        const chips = tags.map(t =>
-            `<span class="tag-chip" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}<button class="tag-remove" data-tag="${escapeHtml(t)}" aria-label="Remove tag ${escapeHtml(t)}">&times;</button></span>`
-        ).join('');
-        host.innerHTML =
-            chips +
-            `<input type="text" class="tag-add-input" id="chat-tag-add" placeholder="+ tag" aria-label="Add tag" maxlength="64">`;
-
-        // Wire remove buttons.
-        host.querySelectorAll<HTMLElement>('.tag-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const tag = btn.dataset.tag;
-                if (tag && this.currentConversation) {
-                    this.send({ type: 'remove_tag', conversation_id: this.currentConversation.id, tag });
-                }
-            });
-        });
-
-        // Wire add input — Enter commits, Esc cancels.
-        const input = document.getElementById('chat-tag-add') as HTMLInputElement | null;
-        if (input) {
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const tag = input.value.trim().toLowerCase();
-                    if (tag && this.currentConversation) {
-                        this.send({ type: 'add_tag', conversation_id: this.currentConversation.id, tag });
-                        input.value = '';
-                    }
-                } else if (e.key === 'Escape') {
-                    input.value = '';
-                    input.blur();
-                }
-            });
-        }
+        this.convList.renderTags(this.currentConversation);
     }
 
     updateStarButton(): void {
