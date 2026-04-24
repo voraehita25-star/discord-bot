@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: April 23, 2026 | Python 3.14+ | Total: 3,055 Tests | 90 Test Files | All passing ✅ | 1 skipped ✅ | 2 warnings (harmless aiosqlite DeprecationWarning) | Timeout: 30s per test
+> Last Updated: April 24, 2026 | Python 3.14+ | Python Tests: 3,071 ✅ (91 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -30,14 +30,14 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (90 Files, 3,055 Tests)
+## Test Structure (91 Python files, 3,071 tests)
 
 ```text
 tests/
 ├── __init__.py              # Package init
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
-├── test_*.py                # 88 consolidated test files
+├── test_*.py                # 89 consolidated test files
 │   ├── AI Core              # ~20 test files (ai_cache, ai_cog, logic, storage, etc.)
 │   ├── Music                # ~5 test files (music_cog, music_queue, spotify, ytdl)
 │   ├── Dashboard            # 1 test file (dashboard_handlers - 42 tests)
@@ -49,6 +49,34 @@ tests/
 
 > Tests were consolidated from 129 → 84 files by merging `_extended`, `_more`, `_module`
 > variants into their base files and parametrizing boilerplate tests.
+
+## Frontend Test Structure (10 vitest files, 189 tests)
+
+TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment
+(DOMPurify + KaTeX globals attached via test setup).
+
+```text
+native_dashboard/src-ts/
+├── app.test.ts                     # app.ts — status/logs/DB/settings (legacy suite)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (22 tests)
+├── e2e_smoke.test.ts               # Smoke-level end-to-end flows
+└── chat/
+    ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (25 tests)
+    ├── message-template.test.ts    # computeWindow + renderMessagesHtml (19 tests)
+    ├── context-window.test.ts      # Token bar + LRU cache + localStorage (16 tests)
+    ├── conversation-list.test.ts   # Filter + 200-cap + tag chips (18 tests)
+    ├── conversation-modals.test.ts # Rename + delete isStreaming guard (16 tests)
+    ├── search.test.ts              # wrapMatches + step cycling + keys (21 tests)
+    └── prism.test.ts               # canonicalPrismLang + code highlight (13 tests)
+```
+
+Run from `native_dashboard/`:
+
+```bash
+npm test                 # Run all vitest suites once
+npm run test:watch       # Watch mode
+npm run test:coverage    # With coverage report
+```
 
 ## Test Categories
 

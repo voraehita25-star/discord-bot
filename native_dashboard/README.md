@@ -14,7 +14,7 @@
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send |
 | 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude); Claude can run via SDK or `claude -p` subprocess (subscription) |
 | 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context |
-| 🧪 **Unit Tests** | 26 tests with vitest |
+| 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules) |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -76,12 +76,27 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings (~1.6k lines)
-│   ├── chat-manager.ts     # AI Chat & Memory WebSocket client (~2.5k lines)
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings (~1.75k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~2.08k lines, down from 3.2k after 2026-04 split)
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
-│   └── app.test.ts         # Unit tests (26 tests)
+│   ├── app.test.ts         # app.ts unit tests
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (22 tests)
+│   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
+│   └── chat/               # Chat modules extracted from chat-manager.ts
+│       ├── types.ts            # Shared chat TypeScript interfaces
+│       ├── ws-client.ts        # WebSocket client + ping/pong + reconnect
+│       ├── formatter.ts        # Markdown + LaTeX + code-fence renderer
+│       ├── message-template.ts # Message HTML + tail-window virtualization
+│       ├── context-window.ts   # Token-usage bar (LRU-capped per-conv cache)
+│       ├── conversation-list.ts # Sidebar render + filter (RENDER_CAP=200) + tag chips
+│       ├── conversation-modals.ts # Rename + delete-confirm modals
+│       ├── search.ts           # In-chat search + match wrap/step cycle
+│       ├── prism.ts            # Prism.js lazy language loader
+│       ├── image-attach.ts     # Image attachment + drag-drop + paste
+│       ├── export-picker.ts    # Export format picker UI
+│       └── *.test.ts           # 8 vitest files (167 tests total)
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer
@@ -92,6 +107,7 @@ native_dashboard/
 │   ├── app.js              # Compiled from src-ts/app.ts (do not edit)
 │   ├── chat-manager.js     # Compiled from src-ts/chat-manager.ts
 │   ├── shared.js           # Compiled from src-ts/shared.ts
+│   ├── chat/               # Compiled from src-ts/chat/*.ts (do not edit)
 │   └── vendor/             # Bundled KaTeX + DOMPurify (CSP-friendly, no CDN)
 └── icons/
     ├── icon.ico            # Windows icon

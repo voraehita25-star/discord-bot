@@ -112,7 +112,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Test suite (3,055+ tests)
+├── tests/              # Test suite (3,071 Python + 189 TypeScript tests)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -289,4 +289,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.15 | **Python:** 3.14+ | **Tests:** 3,055 passing ✅ (90 files) | **Native Extensions:** Rust + Go | **Last Update:** April 23, 2026
+**Version:** 3.3.15 | **Python:** 3.14+ | **Tests:** 3,071 Python ✅ (91 files) + 189 TypeScript ✅ (10 files) | **Native Extensions:** Rust + Go | **Last Update:** April 24, 2026

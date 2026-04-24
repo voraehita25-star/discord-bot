@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** April 23, 2026
+> **Last Updated:** April 24, 2026
 > **Version:** 3.3.15
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 214 Python files | 90 Test files | 3,055 Tests
+> **Total Files:** 222 Python files | 91 Python test files (3,071 tests) + 10 vitest files (189 frontend tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | 2 warnings (harmless) | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅
 
 ---
 
@@ -24,7 +24,7 @@ Discord Bot ที่รวม AI Chat (Claude เป็นหลัก + Gemini
 
 ---
 
-## 📁 Directory Structure (214 Python Files)
+## 📁 Directory Structure (222 Python Files)
 
 ```text
 BOT/
@@ -200,7 +200,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Test Suite (3,055 tests in 90 files)
+├── tests/                    # 🧪 Python test suite (3,071 tests in 91 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -245,15 +245,29 @@ BOT/
 │   │   ├── bot_manager.rs    # Bot process control
 │   │   └── database.rs       # SQLite queries
 │   ├── src-ts/
-│   │   ├── app.ts            # TypeScript source (2,905 lines)
-│   │   └── app.test.ts       # Unit tests (26 tests)
+│   │   ├── app.ts            # Status/logs/DB/settings UI (~1,750 lines)
+│   │   ├── chat-manager.ts   # ChatManager orchestrator (~2,080 lines after 2026-04 split)
+│   │   ├── shared.ts         # Shared utils (invoke wrapper, errors, settings, toasts)
+│   │   ├── types.ts          # Shared TypeScript interfaces
+│   │   ├── faust_avatar.ts   # Default AI avatar (base64)
+│   │   ├── app.test.ts       # app.ts unit tests
+│   │   ├── chat-manager.test.ts       # ChatManager dispatcher + state (22 tests)
+│   │   ├── e2e_smoke.test.ts          # Smoke-level end-to-end
+│   │   └── chat/             # Chat modules extracted from chat-manager.ts
+│   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
+│   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
+│   │       ├── search.ts, prism.ts, image-attach.ts, export-picker.ts
+│   │       └── *.test.ts     # 8 vitest files (167 tests)
 │   ├── scripts/
 │   │   ├── build-tauri.ps1   # Build + auto-rename
 │   │   └── create_desktop_shortcut.py
 │   ├── ui/
 │   │   ├── index.html        # Dashboard UI (charts, sakura)
 │   │   ├── styles.css        # Dark/Light theme
-│   │   └── app.js            # Compiled JavaScript
+│   │   ├── app.js            # Compiled from src-ts/app.ts
+│   │   ├── chat-manager.js   # Compiled from src-ts/chat-manager.ts
+│   │   ├── shared.js         # Compiled from src-ts/shared.ts
+│   │   └── chat/             # Compiled from src-ts/chat/*.ts
 │   └── icons/
 │       └── icon.ico          # App icon
 │
@@ -1089,4 +1103,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: April 2, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,055 tests (1 skipped, 2 harmless warnings) | CI/CD with Codecov & Dependabot -->
+<!-- Documentation last updated: April 24, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,071 Python tests + 189 frontend vitest tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) -->

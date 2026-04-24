@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** April 23, 2026 | **Tests:** 3,055 passed ✅ | **Warnings:** 2 (harmless) | **Skipped:** 1 ✅ | **Files:** 214 Python | **Test Files:** 90
+> **Last Updated:** April 24, 2026 | **Tests:** 3,071 Python ✅ + 189 frontend vitest ✅ | **Skipped:** 1 ✅ | **Files:** 222 Python | **Python Test Files:** 91 | **Frontend Test Files:** 10
 
 ## 🛠️ วิธีการตรวจสอบ
 
