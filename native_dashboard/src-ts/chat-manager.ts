@@ -42,6 +42,7 @@ import { formatMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
 import { WebSocketClient } from './chat/ws-client.js';
+import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
 
 // ============================================================================
 // Memory Manager
@@ -357,7 +358,7 @@ export class ChatManager {
                 this.aiProvider = (this.currentConversation as unknown as Record<string, unknown>).ai_provider as string || this.aiProvider;
                 this.messages = (data.messages as ChatMessage[]) || [];
                 // Reset virtualization window when switching conversations.
-                this.visibleMessageCount = ChatManager.VIRT_WINDOW_SIZE;
+                this.visibleMessageCount = VIRT_WINDOW_SIZE;
                 this.showChatContainer();
                 this.updateChatHeader();
                 this.renderMessages();
@@ -1322,118 +1323,25 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container) return;
 
-        if (this.messages.length === 0) {
-            const emoji = this.currentConversation?.role_emoji || '\uD83E\uDD16';
-            const name = this.currentConversation?.role_name || 'AI';
-            const safeAi = safeAvatarUrl(settings.aiAvatar);
-            const welcomeAvatarHtml = safeAi
-                ? `<img src="${safeAi}" alt="AI" class="welcome-avatar">`
-                : `<div class="welcome-emoji">${emoji}</div>`;
-            container.innerHTML = `
-                <div class="chat-welcome">
-                    ${welcomeAvatarHtml}
-                    <h3>Chat with ${escapeHtml(name)}</h3>
-                    <p>Type a message to start the conversation</p>
-                </div>
-            `;
-            return;
-        }
+        // Template + virtualization-windowing math now lives in
+        // ./chat/message-template.ts. We pass in the formatter/stripThinkTags/
+        // formatTime methods as deps; the template never reaches into `this`.
+        const result = renderMessagesHtml({
+            messages: this.messages,
+            currentConversation: this.currentConversation,
+            visibleMessageCount: this.visibleMessageCount,
+            deps: {
+                formatTime: (s) => this.formatTime(s),
+                formatMessage: (c) => this.formatMessage(c),
+                stripThinkTags: (c) => this.stripThinkTags(c),
+            },
+        });
+        // Propagate the clamped window size back to ChatManager so subsequent
+        // "show earlier" clicks grow from the correct baseline.
+        this.visibleMessageCount = result.visibleMessageCount;
+        container.innerHTML = result.html;
 
-        const aiEmoji = this.currentConversation?.role_emoji || '\uD83E\uDD16';
-        const aiName = this.currentConversation?.role_name || 'AI';
-        const userName = settings.userName || 'You';
-        const safeUserAvatar = safeAvatarUrl(settings.userAvatar);
-        const safeAiAvatar = safeAvatarUrl(settings.aiAvatar);
-
-        // Virtualization: render only the tail window for long conversations.
-        const _total = this.messages.length;
-        const _shouldVirtualize = _total > ChatManager.VIRT_THRESHOLD;
-        if (_shouldVirtualize && this.visibleMessageCount <= 0) {
-            this.visibleMessageCount = ChatManager.VIRT_WINDOW_SIZE;
-        }
-        const _windowSize = _shouldVirtualize ? Math.min(this.visibleMessageCount, _total) : _total;
-        const _startIdx = _total - _windowSize;
-        const _hiddenBefore = _startIdx;
-        const _showEarlierBtn = _hiddenBefore > 0
-            ? `<button class="show-earlier-btn" id="chat-show-earlier">↑ Show ${Math.min(_hiddenBefore, ChatManager.VIRT_WINDOW_SIZE)} earlier (${_hiddenBefore} hidden)</button>`
-            : '';
-
-        container.innerHTML = _showEarlierBtn + this.messages.slice(_startIdx).map((msg, _sliceIdx) => {
-            const msgIdx = _startIdx + _sliceIdx;  // absolute index into this.messages
-            const isUser = msg.role === 'user';
-            const displayName = isUser ? userName : aiName;
-            const timeStr = this.formatTime(msg.created_at);
-
-            // Both user and AI can have custom avatar images
-            let avatarHtml: string;
-            if (isUser) {
-                avatarHtml = safeUserAvatar
-                    ? `<img src="${safeUserAvatar}" alt="avatar" class="user-avatar-img">`
-                    : '\uD83D\uDC64';
-            } else {
-                avatarHtml = safeAiAvatar
-                    ? `<img src="${safeAiAvatar}" alt="ai" class="user-avatar-img">`
-                    : aiEmoji;
-            }
-
-            // Render attached images for user messages (use data attribute to avoid XSS)
-            let imagesHtml = '';
-            if (msg.images && msg.images.length > 0) {
-                imagesHtml = `<div class="message-images">${msg.images.map((img, idx) => 
-                    `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`
-                ).join('')}</div>`;
-            }
-
-            // Render thinking container for AI messages (collapsed by default)
-            let thinkingHtml = '';
-            if (!isUser && msg.thinking) {
-                thinkingHtml = `
-                    <div class="thinking-container">
-                        <div class="thinking-header collapsible collapsed">
-                            \uD83D\uDCAD Thought Process
-                        </div>
-                        <div class="thinking-content collapsed">${this.formatMessage(msg.thinking)}</div>
-                    </div>
-                `;
-            }
-
-            // Mode badge for AI messages
-            const modeHtml = (!isUser && msg.mode) 
-                ? `<span class="message-mode">${escapeHtml(msg.mode)}</span>` 
-                : '';
-
-            // Action buttons for all messages
-            const msgId = msg.id != null ? msg.id : '';
-            const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">\uD83D\uDCCB Copy</button>`;
-            const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="Edit">\u270F\uFE0F Edit</button>`;
-            const aiEditBtn = (!isUser && msgId) ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="AI Edit">\u2728 AI Edit</button>` : '';
-            const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" data-role="${msg.role}" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>`;
-            const pinLabel = msg.is_pinned ? 'Unpin' : 'Pin';
-            const pinBtn = msgId
-                ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">\uD83D\uDCCC ${pinLabel}</button>`
-                : '';
-            const likeBtn = msgId
-                ? `<button class="like-message-btn${msg.liked ? ' liked' : ''}" data-msg-id="${msgId}" data-liked="${msg.liked ? '1' : '0'}" title="${msg.liked ? 'Unlike' : 'Like'}" aria-label="${msg.liked ? 'Unlike' : 'Like'} message">${msg.liked ? '\u2764\uFE0F' : '\uD83E\uDD0D'}</button>`
-                : '';
-            const actionsHtml = `<div class="message-actions">${copyBtn}${likeBtn}${pinBtn}${editBtn}${aiEditBtn}${deleteBtn}</div>`;
-
-            return `
-                <div class="chat-message ${msg.role}">
-                    <div class="message-avatar">${avatarHtml}</div>
-                    <div class="message-wrapper">
-                        <div class="message-header">
-                            <span class="message-name">${escapeHtml(displayName)}</span>
-                            <span class="message-time">${timeStr}</span>
-                            ${modeHtml}
-                        </div>
-                        ${thinkingHtml}
-                        ${imagesHtml}
-                        <div class="message-content">${this.formatMessage(this.stripThinkTags(msg.content))}</div>
-                        ${actionsHtml}
-                    </div>
-                </div>
-            `;
-        }).join('');
+        if (this.messages.length === 0) return;  // no events to bind on the welcome card
 
         this.scrollToBottom();
         this.setupScrollListener();
@@ -1448,7 +1356,7 @@ export class ChatManager {
                 // Preserve scroll offset so the currently-top visible message stays put.
                 const prevScrollHeight = container.scrollHeight;
                 const prevScrollTop = container.scrollTop;
-                this.visibleMessageCount += ChatManager.VIRT_WINDOW_SIZE;
+                this.visibleMessageCount += VIRT_WINDOW_SIZE;
                 this.renderMessages();
                 // After re-render, shift scrollTop by the added height so the user's
                 // eye stays on the same message they were reading.
@@ -1921,12 +1829,9 @@ export class ChatManager {
     private static readonly MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB
     private static readonly MAX_ATTACHED_IMAGES = 5;
 
-    // Virtualization thresholds for renderMessages (#16).
-    // Below THRESHOLD we render every message; above it we keep only the tail
-    // WINDOW_SIZE in the DOM and put a "show earlier" button at the top.
-    private static readonly VIRT_THRESHOLD = 150;
-    private static readonly VIRT_WINDOW_SIZE = 100;
-    private visibleMessageCount: number = 0;  // initialized on first render
+    // Virtualization state — the thresholds themselves live in
+    // ./chat/message-template.ts where the window math uses them.
+    private visibleMessageCount: number = 0;
 
     attachImage(file: File): void {
         if (file.size > ChatManager.MAX_IMAGE_SIZE) {
