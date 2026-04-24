@@ -40,6 +40,7 @@ import type {
 import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
+import { promptExportFormat } from './chat/export-picker.js';
 
 // ============================================================================
 // Memory Manager
@@ -1067,67 +1068,10 @@ export class ChatManager {
         this.send({ type: 'export_conversation', id, format });
     }
 
-    /** Show a small modal letting the user pick an export format. */
+    // promptExportFormat now lives in ./chat/export-picker.ts. Thin
+    // forwarder keeps the method name stable for the two call sites below.
     async promptExportFormat(): Promise<string | null> {
-        return new Promise(resolve => {
-            // Build modal lazily to keep index.html small.
-            let modal = document.getElementById('export-format-modal');
-            if (!modal) {
-                modal = document.createElement('div');
-                modal.id = 'export-format-modal';
-                modal.className = 'modal';
-                modal.innerHTML = `
-                    <div class="modal-overlay" data-close-export></div>
-                    <div class="modal-content modal-small">
-                        <div class="modal-header">
-                            <h2>📥 Export Format</h2>
-                            <button class="modal-close" data-close-export aria-label="Close">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <p>Choose an export format:</p>
-                            <div class="export-format-grid">
-                                <button class="btn export-format-btn" data-format="json">
-                                    <span class="format-icon">📋</span>
-                                    <span class="format-name">JSON</span>
-                                    <span class="format-desc">Structured data, re-importable</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="markdown">
-                                    <span class="format-icon">📝</span>
-                                    <span class="format-name">Markdown</span>
-                                    <span class="format-desc">Human-readable, great for sharing</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="html">
-                                    <span class="format-icon">🌐</span>
-                                    <span class="format-name">HTML</span>
-                                    <span class="format-desc">Standalone web page</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="txt">
-                                    <span class="format-icon">📄</span>
-                                    <span class="format-name">Plain Text</span>
-                                    <span class="format-desc">Minimal, just the messages</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                document.body.appendChild(modal);
-            }
-            modal.classList.add('active');
-
-            const cleanup = (result: string | null): void => {
-                modal?.classList.remove('active');
-                resolve(result);
-            };
-            modal.querySelectorAll('[data-close-export]').forEach(el => {
-                el.addEventListener('click', () => cleanup(null), { once: true });
-            });
-            modal.querySelectorAll('.export-format-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const format = (btn as HTMLElement).dataset.format || 'json';
-                    cleanup(format);
-                }, { once: true });
-            });
-        });
+        return promptExportFormat();
     }
 
     sendMessage(): void {
