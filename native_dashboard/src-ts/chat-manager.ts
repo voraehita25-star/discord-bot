@@ -16,54 +16,26 @@ import {
 } from './shared.js';
 
 // ============================================================================
-// Chat Types
+// Chat Types — re-exported from ./chat/types.js so the type surface of this
+// module is unchanged for existing consumers (app.ts etc.).
 // ============================================================================
 
-export interface ChatConversation {
-    id: string;
-    title: string | null;
-    role_preset: string;
-    role_name?: string;
-    role_emoji?: string;
-    role_color?: string;
-    thinking_enabled: boolean;
-    is_starred: boolean;
-    message_count?: number;
-    created_at: string;
-    updated_at?: string;
-    ai_provider?: string;
-    tags?: string[];   // #22 — per-conversation tag list
-}
+export type {
+    ChatConversation,
+    ChatMessage,
+    RolePreset,
+    Memory,
+    NativeConversationDetail,
+} from './chat/types.js';
 
-export interface ChatMessage {
-    id?: number;
-    role: 'user' | 'assistant';
-    content: string;
-    created_at: string;
-    images?: string[];  // Base64 encoded images
-    thinking?: string;  // AI thought process
-    mode?: string;      // Mode used (Thinking, Unrestricted, etc.)
-    is_pinned?: boolean;  // Marked important by user (#20)
-    liked?: boolean;      // User hit ❤️ on this message (#20b)
-}
-
-export interface RolePreset {
-    name: string;
-    emoji: string;
-    color: string;
-}
-
-export interface Memory {
-    id: string;
-    content: string;
-    category: string;
-    created_at: string;
-}
-
-interface NativeConversationDetail {
-    conversation: ChatConversation;
-    messages: ChatMessage[];
-}
+// Bring types into local scope for this file's use.
+import type {
+    ChatConversation,
+    ChatMessage,
+    RolePreset,
+    Memory,
+    NativeConversationDetail,
+} from './chat/types.js';
 
 // ============================================================================
 // Memory Manager
