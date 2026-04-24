@@ -69,15 +69,105 @@ from .dashboard_config import (
     DB_AVAILABLE,
 )
 
-# Per-conversation Claude session id, kept in process memory only.
-# When the user reloads the dashboard or restarts the bot, the map is empty
-# and the next message in any conversation starts a fresh Claude session
-# (Claude has no memory of prior turns until we hand it history again).
+# Per-conversation Claude session id. Loaded from _SESSIONS_FILE at import
+# time and re-saved on every change — persistence lets us find and delete the
+# right .jsonl when the user deletes a Dashboard conversation after a restart.
 _CONVERSATION_SESSIONS: dict[str, str] = {}
 
 # Bound the conversation→session map so a long-running bot doesn't accumulate
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
+
+# Dedicated working directory for every `claude -p` invocation. Claude Code
+# logs each session as a .jsonl under `~/.claude/projects/<encoded-cwd>/`, so
+# spawning from a bot-specific directory isolates Dashboard-spawned sessions
+# from the user's own Claude Code session list (which uses the bot's repo
+# root as CWD). Created lazily on first spawn.
+_CLAUDE_CLI_WORKDIR = Path(__file__).resolve().parents[3] / "data" / "claude_cli_workdir"
+
+# Sidecar JSON persisting {conversation_id: session_id}. Kept next to the
+# workdir (not inside it — Claude Code would pick up random .jsonl-adjacent
+# files in the workdir as project state).
+_SESSIONS_FILE = Path(__file__).resolve().parents[3] / "data" / "claude_cli_sessions.json"
+
+
+def _encode_claude_project_dirname(path: Path) -> str:
+    """Replicate Claude Code's path encoding for its session-log folder.
+
+    Claude Code stores `~/.claude/projects/<encoded>/<session-id>.jsonl`
+    where `<encoded>` replaces `:`, `\\`, `/`, and space with `-`:
+        `c:\\Users\\ME\\BOT Discord`  →  `c--Users-ME-BOT-Discord`
+    We need the same encoding to locate the session file to delete.
+    """
+    s = str(path)
+    for ch in (":", "\\", "/", " "):
+        s = s.replace(ch, "-")
+    return s
+
+
+def _claude_projects_folder() -> Path:
+    """Folder where Claude Code writes .jsonl logs for our dedicated CWD."""
+    return Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
+
+
+def _load_persisted_sessions() -> None:
+    """Populate _CONVERSATION_SESSIONS from the sidecar JSON on import.
+
+    Silently ignores missing/corrupt files — worst case we fail to delete
+    old .jsonl files when conversations are deleted (cosmetic only).
+    """
+    try:
+        if not _SESSIONS_FILE.exists():
+            return
+        raw = _SESSIONS_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return
+        for k, v in data.items():
+            if isinstance(k, str) and isinstance(v, str):
+                _CONVERSATION_SESSIONS[k] = v
+    except Exception:
+        logger.exception("Failed to load persisted Claude CLI session map")
+
+
+def _save_persisted_sessions() -> None:
+    """Atomically rewrite the sidecar JSON.
+
+    Failure is non-fatal — persistence is a nice-to-have, not critical.
+    """
+    try:
+        _SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SESSIONS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(_CONVERSATION_SESSIONS, indent=2), encoding="utf-8")
+        tmp.replace(_SESSIONS_FILE)
+    except Exception:
+        logger.exception("Failed to save Claude CLI session map")
+
+
+def delete_session_file(conversation_id: str) -> bool:
+    """Remove the Claude Code .jsonl for a dashboard conversation.
+
+    Called from the delete-conversation handler so the CLI session log
+    doesn't linger after the user deletes the chat in the dashboard.
+    Returns True if a file was actually deleted.
+    """
+    session_id = _CONVERSATION_SESSIONS.pop(conversation_id, None)
+    _save_persisted_sessions()
+    if not session_id:
+        return False
+    try:
+        target = _claude_projects_folder() / f"{session_id}.jsonl"
+        if target.exists():
+            target.unlink()
+            logger.info("Deleted Claude CLI session file for conv %s", conversation_id)
+            return True
+    except Exception:
+        logger.exception("Failed to delete session file for conv %s", conversation_id)
+    return False
+
+
+# Load persisted state once at import so sync-delete works across restarts.
+_load_persisted_sessions()
 
 # Per-conversation lock: serializes outbound CLI calls so two messages in the
 # SAME conversation can't spawn parallel `claude -p` processes that both try
@@ -148,6 +238,7 @@ def _track_session(conversation_id: str, session_id: str) -> None:
         oldest = next(iter(_CONVERSATION_SESSIONS))
         _CONVERSATION_SESSIONS.pop(oldest, None)
     _CONVERSATION_SESSIONS[conversation_id] = session_id
+    _save_persisted_sessions()
 
 
 def reset_session(conversation_id: str) -> None:
@@ -158,7 +249,8 @@ def reset_session(conversation_id: str) -> None:
     to the DB-loaded message list. Also drops the per-conversation send lock
     so it doesn't accumulate forever in a long-running bot.
     """
-    _CONVERSATION_SESSIONS.pop(conversation_id, None)
+    if _CONVERSATION_SESSIONS.pop(conversation_id, None) is not None:
+        _save_persisted_sessions()
     # Only drop the lock if it's not currently held. If it IS held a delete
     # would orphan the in-flight waiter; let the next finished holder be the
     # one to clean up via the natural eviction path.
@@ -369,12 +461,17 @@ async def _run_claude_subprocess(
     then closes stdin so Claude knows there's no more input.
     """
     env = _make_subprocess_env()
+    # Spawn from a dedicated workdir so Claude Code's session .jsonl files
+    # land in their own `~/.claude/projects/<encoded-cwd>/` folder instead
+    # of mixing with the user's own Claude Code sessions for the bot repo.
+    _CLAUDE_CLI_WORKDIR.mkdir(parents=True, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        cwd=str(_CLAUDE_CLI_WORKDIR),
     )
 
     # stream-json input format expects one JSON message per line on stdin.

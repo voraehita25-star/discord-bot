@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: April 24, 2026 | Python 3.14+ | Python Tests: 3,071 ✅ (91 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) | Timeout: 30s per test
+> Last Updated: April 24, 2026 | Python 3.14+ | Python Tests: 3,088 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 

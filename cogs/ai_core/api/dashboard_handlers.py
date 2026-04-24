@@ -138,6 +138,15 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
     try:
         db = _get_db()
         await db.delete_dashboard_conversation(conversation_id)
+        # Also delete the Claude Code CLI session .jsonl for this conversation,
+        # if the CLI backend ever handled it. No-op for conversations created
+        # under CLAUDE_BACKEND=api (session map never got populated) — hence
+        # the broad try/except so a cleanup failure never blocks the reply.
+        try:
+            from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
+            _delete_cli_session(conversation_id)
+        except Exception:
+            logger.exception("Claude CLI session cleanup failed for %s", conversation_id)
         await ws.send_json({
             "type": "conversation_deleted",
             "id": conversation_id,
