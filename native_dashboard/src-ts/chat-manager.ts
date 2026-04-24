@@ -41,6 +41,7 @@ import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
+import { WebSocketClient } from './chat/ws-client.js';
 
 // ============================================================================
 // Memory Manager
@@ -189,15 +190,11 @@ export class ChatManager {
     // history is also capped server-side at 20 messages per request.
     private static readonly MAX_LOCAL_MESSAGES = 200;
 
-    ws: WebSocket | null = null;
-    connected: boolean = false;
     currentConversation: ChatConversation | null = null;
     conversations: ChatConversation[] = [];
     messages: ChatMessage[] = [];
     selectedRole: string = 'general';
     isStreaming: boolean = false;
-    reconnectAttempts: number = 0;
-    maxReconnectAttempts: number = 5;
     presets: Record<string, RolePreset> = {};
     pendingDeleteId: string | null = null;
     pendingRenameId: string | null = null;
@@ -210,18 +207,9 @@ export class ChatManager {
     editTargetMessageId: number | null = null;  // DB ID of message being AI-edited
     editStreamContent: string = '';  // Accumulated edit stream content
     private userScrolledUp: boolean = false;  // True when user manually scrolls up during streaming
-    private pingInterval: number | null = null;  // Track ping interval for cleanup
-    private reconnectTimeout: number | null = null;  // Track reconnect timeout
-    private pongPending: boolean = false;  // True after sending ping, cleared on pong
-    private missedPongs: number = 0;       // Consecutive missed pongs
     private draftSaveTimer: number | null = null;  // Debounced localStorage draft writer
     private allTagsCache: { tag: string; count: number }[] = [];  // #22 populated by 'all_tags' message
 
-    private wsToken: string | null = null;
-    private readonly defaultWsEndpoint = 'ws://127.0.0.1:8765/ws';
-    private readonly localhostWsEndpoint = 'ws://localhost:8765/ws';
-
-    private isConnecting: boolean = false;
     private tokenUsageCache: Map<string, { input_tokens: number; output_tokens: number; total_tokens: number; context_window: number }> = new Map();
 
     private enrichConversation(conversation: ChatConversation): ChatConversation {
@@ -271,233 +259,52 @@ export class ChatManager {
         }
     }
 
+    // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
+    // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
+    // the same method surface (connect, disconnect, send, scheduleReconnect) +
+    // the same read-only fields (ws, connected, reconnectAttempts) so all call
+    // sites in this file keep working without rewrite.
+    readonly wsClient: WebSocketClient = new WebSocketClient({
+        onMessage: (data) => this.handleMessage(data),
+        onConnectStateChange: (connected) => this.updateConnectionStatus(connected),
+        onDisconnect: () => {
+            // Reset streaming state to prevent chat input from being permanently locked.
+            if (this.isStreaming) {
+                this.isStreaming = false;
+                this.isEditStreaming = false;
+                this.editTargetMessageId = null;
+                this.editStreamContent = '';
+                this.setInputEnabled(true);
+                const stuckMsg = document.getElementById('streaming-message');
+                if (stuckMsg) stuckMsg.remove();
+            }
+        },
+    });
+
+    // Field-style forwarders so existing call sites (this.ws, this.connected, etc.)
+    // keep working. TS getters are fine here since the fields were public before.
+    get ws(): WebSocket | null { return this.wsClient.ws; }
+    get connected(): boolean { return this.wsClient.connected; }
+    get reconnectAttempts(): number { return this.wsClient.reconnectAttempts; }
+
     connect(): void {
-        if (
-            this.isConnecting
-            || (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING))
-        ) {
-            return;
-        }
-
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-
-        this.isConnecting = true;
         this.loadTokenUsageCache();
-
-        try {
-            Promise.all([
-                invoke<string>('get_ws_token').catch(() => ''),
-                invoke<string>('get_ws_endpoint').catch(() => this.defaultWsEndpoint),
-            ]).then(([token, endpoint]) => {
-                this.wsToken = token || null;
-                const candidates = this.buildWsEndpointCandidates(endpoint || this.defaultWsEndpoint);
-                this._connectWithUrl(candidates[0], candidates.slice(1));
-            }).catch(() => {
-                console.warn('WS config unavailable — falling back to default localhost endpoint');
-                this.wsToken = null;
-                const candidates = this.buildWsEndpointCandidates(this.defaultWsEndpoint);
-                this._connectWithUrl(candidates[0], candidates.slice(1));
-            }).finally(() => {
-                this.isConnecting = false;
-            });
-        } catch (e) {
-            this.isConnecting = false;
-            console.error('Failed to create WebSocket:', e);
-            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
-            this.scheduleReconnect();
-        }
+        this.wsClient.connect();
     }
-
-    private buildWsEndpointCandidates(primaryEndpoint: string): string[] {
-        const normalizedPrimary = primaryEndpoint.trim() || this.defaultWsEndpoint;
-        const candidates = [normalizedPrimary, this.defaultWsEndpoint, this.localhostWsEndpoint];
-
-        if (normalizedPrimary.includes('127.0.0.1')) {
-            candidates.push(normalizedPrimary.replace('127.0.0.1', 'localhost'));
-        }
-        if (normalizedPrimary.includes('localhost')) {
-            candidates.push(normalizedPrimary.replace('localhost', '127.0.0.1'));
-        }
-
-        return [...new Set(candidates.map(url => url.trim()).filter(Boolean))];
-    }
-
-    private _connectWithUrl(wsUrl: string, fallbackUrls: string[] = []): void {
-        try {
-            const socket = new WebSocket(wsUrl);
-            this.ws = socket;
-            let opened = false;
-
-            socket.onopen = () => {
-                if (this.ws !== socket) {
-                    socket.close();
-                    return;
-                }
-
-                opened = true;
-
-                // Send token as first message for authentication (not in URL)
-                if (this.wsToken) {
-                    try {
-                        socket.send(JSON.stringify({ type: 'auth', token: this.wsToken }));
-                    } catch (e) {
-                        console.error('Failed to authenticate WebSocket:', e);
-                        errorLogger.log('WEBSOCKET_AUTH_ERROR', 'Failed to send dashboard auth token', String(e));
-                        socket.close();
-                        return;
-                    }
-                }
-                this.connected = true;
-                this.reconnectAttempts = 0;
-                this.pongPending = false;
-                this.missedPongs = 0;
-                this.updateConnectionStatus(true);
-            };
-
-            socket.onclose = (event) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-
-                this.ws = null;
-                this.connected = false;
-
-                if (!opened && fallbackUrls.length > 0) {
-                    const [nextUrl, ...remaining] = fallbackUrls;
-                    errorLogger.log(
-                        'WEBSOCKET_FALLBACK',
-                        `WebSocket connection to ${wsUrl} closed before opening; retrying ${nextUrl}`,
-                        JSON.stringify({ code: event.code, reason: event.reason || '' }),
-                    );
-                    this._connectWithUrl(nextUrl, remaining);
-                    return;
-                }
-
-                // Reset streaming state to prevent chat input from being permanently locked
-                if (this.isStreaming) {
-                    this.isStreaming = false;
-                    this.isEditStreaming = false;
-                    this.editTargetMessageId = null;
-                    this.editStreamContent = '';
-                    this.setInputEnabled(true);
-                    const stuckMsg = document.getElementById('streaming-message');
-                    if (stuckMsg) stuckMsg.remove();
-                }
-                this.updateConnectionStatus(false);
-                this.scheduleReconnect();
-            };
-
-            socket.onerror = (error) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-
-                // Only log first error, not repeated connection failures
-                if (this.reconnectAttempts === 0) {
-                    console.warn('\uD83D\uDD0C WebSocket connection failed (bot may not be running)');
-                }
-                errorLogger.log('WEBSOCKET_ERROR', `WebSocket connection error (${wsUrl})`, String(error));
-                this.connected = false;
-                this.updateConnectionStatus(false);
-            };
-
-            socket.onmessage = (event) => {
-                if (this.ws !== socket) {
-                    return;
-                }
-
-                // Reject excessively large messages to prevent memory exhaustion
-                // Note: 50MB limit needed because conversation_loaded can include base64 images
-                if (typeof event.data === 'string' && event.data.length > 50 * 1024 * 1024) {
-                    console.warn('Dropped oversized WebSocket message:', event.data.length, 'bytes');
-                    return;
-                }
-
-                try {
-                    const data = JSON.parse(event.data);
-                    this.handleMessage(data);
-                } catch (e) {
-                    console.error('Failed to parse WebSocket message:', e);
-                    errorLogger.log('WEBSOCKET_PARSE_ERROR', 'Failed to parse message', String(e));
-                }
-            };
-        } catch (e) {
-            console.error('Failed to create WebSocket:', e);
-            errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
-            this.scheduleReconnect();
-        }
-    }
-
-    scheduleReconnect(): void {
-        // Clear existing reconnect timeout to prevent race condition
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.warn('Max reconnect attempts reached');
-            this.updateConnectionStatus(false);
-            // Surface to the user so they don't sit in front of a frozen UI
-            // wondering why messages stop sending.
-            showToast(
-                'Connection to AI server lost. Please restart the bot and reload the dashboard.',
-                { type: 'error', duration: 10000 },
-            );
-            return;
-        }
-
-        this.reconnectAttempts++;
-        const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-        const jitter = Math.random() * baseDelay * 0.3;  // Add 0-30% jitter to prevent thundering herd
-        const delay = Math.floor(baseDelay + jitter);
-        console.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        this.reconnectTimeout = window.setTimeout(() => {
-            this.reconnectTimeout = null;
-            this.connect();
-        }, delay);
-    }
-
-    disconnect(): void {
-        // Clear ping interval
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-        // Clear reconnect timeout
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
-        }
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
-        this.connected = false;
-    }
-
-    send(data: unknown): void {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
-        } else {
-            showToast('Not connected to AI server', { type: 'error' });
-        }
-    }
+    disconnect(): void { this.wsClient.disconnect(); }
+    send(data: unknown): void { this.wsClient.send(data); }
 
     handleMessage(data: Record<string, unknown>): void {
         switch (data.type) {
             case 'connected':
                 this.presets = (data.presets as Record<string, RolePreset>) || {};
                 if (data.requires_auth) {
-                    if (!this.wsToken) {
+                    if (!this.wsClient.token) {
                         errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
                         showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
                         break;
                     }
-                    this.send({ type: 'auth', token: this.wsToken });
+                    this.send({ type: 'auth', token: this.wsClient.token });
                 }
                 // Update available AI providers from server
                 if (data.available_providers) {
@@ -822,8 +629,7 @@ export class ChatManager {
                 break;
 
             case 'pong':
-                this.pongPending = false;
-                this.missedPongs = 0;
+                this.wsClient.notePong();
                 break;
                 
             // Memory handlers
@@ -892,7 +698,7 @@ export class ChatManager {
             statusEl.className = connected ? 'connected' : 'disconnected';
             if (connected) {
                 statusEl.textContent = '\uD83D\uDFE2 Connected';
-            } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            } else if (this.reconnectAttempts >= this.wsClient.maxReconnectAttempts) {
                 statusEl.textContent = '\uD83D\uDD34 Disconnected';
             } else {
                 statusEl.textContent = '\uD83D\uDFE0 Connecting...';
@@ -2703,27 +2509,8 @@ export class ChatManager {
             }
         });
 
-        // Store ping interval for cleanup
-        this.pingInterval = window.setInterval(() => {
-            if (this.connected) {
-                if (this.pongPending) {
-                    this.missedPongs++;
-                    if (this.missedPongs >= 2) {
-                        // Server unresponsive — force reconnect
-                        console.warn('🔌 Server unresponsive (missed pongs), forcing reconnect');
-                        errorLogger.log('WEBSOCKET_STALE', `Server missed ${this.missedPongs} pongs, forcing reconnect`);
-                        this.missedPongs = 0;
-                        this.pongPending = false;
-                        if (this.ws) {
-                            this.ws.close();
-                        }
-                        return;
-                    }
-                }
-                this.pongPending = true;
-                this.send({ type: 'ping' });
-            }
-        }, 30000);
+        // Ping/pong keepalive is now owned by WebSocketClient — it starts the
+        // loop on every `onopen` and stops on `onclose`. Nothing to do here.
     }
 }
 

@@ -3,6 +3,10 @@
  * Extracted from app.ts for modularity.
  */
 import { invoke, errorLogger, escapeHtml, isSafeAvatarUrl, safeAvatarUrl, showToast, showConfirmDialog, settings, saveSettings, } from './shared.js';
+import { highlightCodeBlocks } from './chat/prism.js';
+import { formatMessage, stripThinkTags } from './chat/formatter.js';
+import { ChatSearch } from './chat/search.js';
+import { promptExportFormat } from './chat/export-picker.js';
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -168,16 +172,12 @@ export class ChatManager {
         /** Current text typed into the #conversation-filter-input box. */
         this.conversationFilter = '';
         this.conversationFilterDebounce = null;
-        this.prismLoadPromises = new Map();
         /** Count of messages that arrived while the user was scrolled up. */
         this.newMessagesWhileScrolledUp = 0;
-        // ------------------------------------------------------------------
-        // In-conversation search (#14) — Ctrl+F overlays a search bar that
-        // highlights matches inside the currently-rendered messages and steps
-        // through them with ↑/↓.
-        // ------------------------------------------------------------------
-        this.searchMatches = [];
-        this.searchCurrentIdx = -1;
+        // In-conversation search (#14) now lives in ./chat/search.ts.
+        // ChatManager holds a ChatSearch instance + forwarders so keybinding
+        // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
+        this.chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
         this.visibleMessageCount = 0; // initialized on first render
     }
     enrichConversation(conversation) {
@@ -968,66 +968,10 @@ export class ChatManager {
     exportConversation(id, format = 'json') {
         this.send({ type: 'export_conversation', id, format });
     }
-    /** Show a small modal letting the user pick an export format. */
+    // promptExportFormat now lives in ./chat/export-picker.ts. Thin
+    // forwarder keeps the method name stable for the two call sites below.
     async promptExportFormat() {
-        return new Promise(resolve => {
-            // Build modal lazily to keep index.html small.
-            let modal = document.getElementById('export-format-modal');
-            if (!modal) {
-                modal = document.createElement('div');
-                modal.id = 'export-format-modal';
-                modal.className = 'modal';
-                modal.innerHTML = `
-                    <div class="modal-overlay" data-close-export></div>
-                    <div class="modal-content modal-small">
-                        <div class="modal-header">
-                            <h2>📥 Export Format</h2>
-                            <button class="modal-close" data-close-export aria-label="Close">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <p>Choose an export format:</p>
-                            <div class="export-format-grid">
-                                <button class="btn export-format-btn" data-format="json">
-                                    <span class="format-icon">📋</span>
-                                    <span class="format-name">JSON</span>
-                                    <span class="format-desc">Structured data, re-importable</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="markdown">
-                                    <span class="format-icon">📝</span>
-                                    <span class="format-name">Markdown</span>
-                                    <span class="format-desc">Human-readable, great for sharing</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="html">
-                                    <span class="format-icon">🌐</span>
-                                    <span class="format-name">HTML</span>
-                                    <span class="format-desc">Standalone web page</span>
-                                </button>
-                                <button class="btn export-format-btn" data-format="txt">
-                                    <span class="format-icon">📄</span>
-                                    <span class="format-name">Plain Text</span>
-                                    <span class="format-desc">Minimal, just the messages</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                document.body.appendChild(modal);
-            }
-            modal.classList.add('active');
-            const cleanup = (result) => {
-                modal?.classList.remove('active');
-                resolve(result);
-            };
-            modal.querySelectorAll('[data-close-export]').forEach(el => {
-                el.addEventListener('click', () => cleanup(null), { once: true });
-            });
-            modal.querySelectorAll('.export-format-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const format = btn.dataset.format || 'json';
-                    cleanup(format);
-                }, { once: true });
-            });
-        });
+        return promptExportFormat();
     }
     sendMessage() {
         const input = document.getElementById('chat-input');
@@ -1677,256 +1621,17 @@ export class ChatManager {
             });
         });
     }
+    // stripThinkTags + formatMessage now live in ./chat/formatter.ts.
+    // These thin forwarders keep the ChatManager method surface stable so
+    // inline templates (`${this.formatMessage(...)}`) don't all have to be updated.
     stripThinkTags(content) {
-        return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-    }
-    /** Normalize alias → canonical Prism id (js → javascript, py → python, …). */
-    canonicalPrismLang(lang) {
-        const aliases = {
-            js: 'javascript', ts: 'typescript', py: 'python',
-            rb: 'ruby', rs: 'rust', cs: 'csharp', 'c++': 'cpp',
-            sh: 'bash', shell: 'bash', md: 'markdown',
-            ps1: 'powershell', yml: 'yaml',
-        };
-        return aliases[lang] || lang;
-    }
-    /** Lazily load a Prism language component via <script> injection. */
-    async loadPrismLanguage(lang) {
-        const canon = this.canonicalPrismLang(lang);
-        if (!ChatManager.PRISM_LANGS.has(canon))
-            return;
-        const prism = window.Prism;
-        if (!prism)
-            return; // Prism core not loaded (CSP block or load failure).
-        if (prism.languages[canon])
-            return;
-        const existing = this.prismLoadPromises.get(canon);
-        if (existing)
-            return existing;
-        const p = new Promise((resolve) => {
-            const script = document.createElement('script');
-            script.src = `vendor/prism/prism-${canon}.min.js`;
-            script.async = false; // Preserve load order (markup may depend on clike etc.)
-            script.onload = () => resolve();
-            script.onerror = () => {
-                errorLogger.log('PRISM_LANG_LOAD_FAIL', `Failed to load Prism language: ${canon}`);
-                resolve(); // Don't reject — fall back to plain-text code.
-            };
-            document.head.appendChild(script);
-        });
-        this.prismLoadPromises.set(canon, p);
-        return p;
-    }
-    /** Walk newly-rendered <pre><code class="language-X"> blocks and highlight them. */
-    async highlightCodeBlocks(root) {
-        const prism = window.Prism;
-        if (!prism)
-            return;
-        const codes = root.querySelectorAll('pre code[class*="language-"]');
-        for (const code of Array.from(codes)) {
-            if (code.dataset.prismDone === '1')
-                continue;
-            const cls = code.className.match(/language-(\S+)/);
-            if (!cls)
-                continue;
-            const lang = cls[1].toLowerCase();
-            if (lang === 'code')
-                continue; // Our fallback marker from formatMessage.
-            await this.loadPrismLanguage(lang);
-            if (prism.languages[this.canonicalPrismLang(lang)]) {
-                try {
-                    prism.highlightElement(code);
-                }
-                catch (e) {
-                    console.debug('Prism highlight failed:', e);
-                }
-            }
-            code.dataset.prismDone = '1';
-        }
+        return stripThinkTags(content);
     }
     formatMessage(content) {
-        // Extract LaTeX blocks BEFORE HTML escaping so KaTeX gets raw math notation
-        const latexBlocks = [];
-        const blockPlaceholder = '\x00BLOCK_LATEX_';
-        const inlinePlaceholder = '\x00INLINE_LATEX_';
-        // Extract block LaTeX ($$...$$)
-        let processed = content.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
-            const idx = latexBlocks.length;
-            try {
-                if (typeof window !== 'undefined' && window.katex) {
-                    latexBlocks.push(`<div class="math-block">${window.katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })}</div>`);
-                }
-                else {
-                    latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
-                }
-            }
-            catch {
-                latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
-            }
-            return `${blockPlaceholder}${idx}\x00`;
-        });
-        // Extract inline LaTeX ($...$)
-        processed = processed.replace(/(?<!\$)\$(?!\$)([^$]+)\$(?!\$)/g, (_match, tex) => {
-            const idx = latexBlocks.length;
-            try {
-                if (typeof window !== 'undefined' && window.katex) {
-                    latexBlocks.push(`<span class="math-inline">${window.katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })}</span>`);
-                }
-                else {
-                    latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
-                }
-            }
-            catch {
-                latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
-            }
-            return `${inlinePlaceholder}${idx}\x00`;
-        });
-        // Now HTML-escape the rest (placeholders will be escaped but we restore them below)
-        let html = escapeHtml(processed);
-        // Restore LaTeX blocks from placeholders
-        html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => {
-            return latexBlocks[parseInt(idx)] || '';
-        });
-        // Extract code blocks into placeholders BEFORE converting \n to <br>.
-        // Include a copy button that reads the raw code from data-code-copy.
-        // `code` is already HTML-escaped (line 1589 above), so it's safe to
-        // embed inside a data attribute — escapeHtml also escapes " and `.
-        const codeBlocks = [];
-        const codePlaceholder = '\x01CODE_BLOCK_';
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-            const idx = codeBlocks.length;
-            const langLabel = lang || 'code';
-            codeBlocks.push(`<div class="code-block-wrapper">` +
-                `<div class="code-block-header">` +
-                `<span class="code-lang">${langLabel}</span>` +
-                `<button class="code-copy-btn" data-code-copy="${code}" title="Copy code">📋</button>` +
-                `</div>` +
-                `<pre><code class="language-${langLabel}">${code}</code></pre>` +
-                `</div>`);
-            return `${codePlaceholder}${idx}\x01`;
-        });
-        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-        // Headings (# to ######) — must be at start of line
-        html = html.replace(/^#{6}\s+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
-        html = html.replace(/^#{5}\s+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
-        html = html.replace(/^#{4}\s+(.+)$/gm, '<h4 class="md-heading">$1</h4>');
-        html = html.replace(/^#{3}\s+(.+)$/gm, '<h3 class="md-heading">$1</h3>');
-        html = html.replace(/^#{2}\s+(.+)$/gm, '<h2 class="md-heading">$1</h2>');
-        html = html.replace(/^#{1}\s+(.+)$/gm, '<h1 class="md-heading">$1</h1>');
-        // Horizontal rule (--- or ___ or *** on its own line)
-        html = html.replace(/^(?:---+|___+|\*\*\*+)\s*$/gm, '<hr class="md-hr">');
-        // Blockquotes (> at start of line)
-        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-        // Merge consecutive blockquotes
-        html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
-        // Markdown tables — extract into placeholders before \n → <br>
-        const tableBlocks = [];
-        const tablePlaceholder = '\x02TABLE_BLOCK_';
-        html = html.replace(/(?:^|\n)(\|.+\|\n\|[\s:|-]+\|\n(?:\|.+\|(?:\n|$))+)/g, (_match, table) => {
-            const rows = table.trim().split('\n');
-            if (rows.length < 2)
-                return _match;
-            const headerCells = rows[0].split('|').filter(c => c.trim() !== '');
-            // rows[1] is separator — parse alignment
-            const alignCells = rows[1].split('|').filter(c => c.trim() !== '');
-            const aligns = alignCells.map(c => {
-                const t = c.trim();
-                if (t.startsWith(':') && t.endsWith(':'))
-                    return 'center';
-                if (t.endsWith(':'))
-                    return 'right';
-                return 'left';
-            });
-            let tbl = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
-            headerCells.forEach((cell, i) => {
-                const align = aligns[i] || 'left';
-                tbl += `<th style="text-align:${align}">${cell.trim()}</th>`;
-            });
-            tbl += '</tr></thead><tbody>';
-            for (let r = 2; r < rows.length; r++) {
-                const cells = rows[r].split('|').filter(c => c.trim() !== '');
-                tbl += '<tr>';
-                cells.forEach((cell, i) => {
-                    const align = aligns[i] || 'left';
-                    tbl += `<td style="text-align:${align}">${cell.trim()}</td>`;
-                });
-                tbl += '</tr>';
-            }
-            tbl += '</tbody></table></div>';
-            const idx = tableBlocks.length;
-            tableBlocks.push(tbl);
-            return `${tablePlaceholder}${idx}\x02`;
-        });
-        // Unordered lists: consecutive lines starting with - or *
-        const listBlocks = [];
-        const listPlaceholder = '\x03LIST_BLOCK_';
-        html = html.replace(/((?:^|\n)(?:[-*]\s+.+(?:\n|$))+)/g, (match) => {
-            const items = match.trim().split('\n').map(line => line.replace(/^[-*]\s+/, '').trim());
-            const i = listBlocks.length;
-            listBlocks.push('<ul>' + items.map(item => `<li>${item}</li>`).join('') + '</ul>');
-            return `\n${listPlaceholder}${i}\x03\n`;
-        });
-        // Ordered lists: consecutive lines starting with 1. 2. etc.
-        html = html.replace(/((?:^|\n)(?:\d+\.\s+.+(?:\n|$))+)/g, (match) => {
-            const items = match.trim().split('\n').map(line => line.replace(/^\d+\.\s+/, '').trim());
-            const i = listBlocks.length;
-            listBlocks.push('<ol>' + items.map(item => `<li>${item}</li>`).join('') + '</ol>');
-            return `\n${listPlaceholder}${i}\x03\n`;
-        });
-        // Paragraph breaks: double+ newlines become spaced paragraph break
-        html = html.replace(/\n{2,}/g, '<br><div class="paragraph-break"></div>');
-        html = html.replace(/\n/g, '<br>');
-        // Restore list blocks
-        html = html.replace(/\x03LIST_BLOCK_(\d+)\x03/g, (_match, idx) => {
-            return listBlocks[parseInt(idx)] || '';
-        });
-        // Restore table blocks
-        html = html.replace(/\x02TABLE_BLOCK_(\d+)\x02/g, (_match, idx) => {
-            return tableBlocks[parseInt(idx)] || '';
-        });
-        // Restore code blocks (newlines preserved inside <pre>)
-        html = html.replace(/\x01CODE_BLOCK_(\d+)\x01/g, (_match, idx) => {
-            return codeBlocks[parseInt(idx)] || '';
-        });
-        // Sanitize final HTML output with DOMPurify (whitelist approach).
-        // DOMPurify is bundled locally in vendor/ and always available — if it
-        // ever fails to load, better to throw than render unsanitized HTML.
-        const purify = window.DOMPurify;
-        if (!purify) {
-            errorLogger.log('DOMPURIFY_MISSING', 'DOMPurify failed to load — rendering aborted to prevent XSS');
-            return '';
-        }
-        html = purify.sanitize(html, {
-            ALLOWED_TAGS: [
-                'br', 'hr', 'p', 'div', 'span',
-                'strong', 'b', 'em', 'i', 'u', 's', 'del',
-                'code', 'pre', 'blockquote',
-                'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                'ul', 'ol', 'li',
-                'table', 'thead', 'tbody', 'tr', 'th', 'td',
-                'img', 'button',
-                // KaTeX elements
-                'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup',
-                'msub', 'mfrac', 'mover', 'munder', 'msqrt', 'mtext',
-                'annotation',
-            ],
-            ALLOWED_ATTR: [
-                'class', 'style', 'src', 'alt',
-                'title', 'colspan', 'rowspan',
-                // KaTeX attributes
-                'mathvariant', 'encoding', 'xmlns', 'display',
-                'aria-hidden', 'focusable', 'role',
-                'width', 'height', 'viewBox', 'fill', 'stroke',
-                'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'd',
-            ],
-            ADD_ATTR: ['data-img-idx', 'data-code-copy'],
-            ALLOW_DATA_ATTR: false,
-            ALLOWED_URI_REGEXP: /^(?:(?:https?|data):)/i,
-            ADD_DATA_URI_TAGS: ['img'],
-        });
-        return html;
+        return formatMessage(content);
+    }
+    async highlightCodeBlocks(root) {
+        return highlightCodeBlocks(root);
     }
     updateChatHeader() {
         if (!this.currentConversation)
@@ -2141,156 +1846,11 @@ export class ChatManager {
             }
         }
     }
-    openChatSearch() {
-        const bar = document.getElementById('chat-search-bar');
-        const input = document.getElementById('chat-search-input');
-        if (!bar || !input)
-            return;
-        bar.classList.remove('hidden');
-        input.focus();
-        input.select();
-    }
-    closeChatSearch() {
-        const bar = document.getElementById('chat-search-bar');
-        if (!bar)
-            return;
-        bar.classList.add('hidden');
-        this.clearSearchHighlights();
-        this.searchMatches = [];
-        this.searchCurrentIdx = -1;
-    }
-    clearSearchHighlights() {
-        const container = document.getElementById('chat-messages');
-        if (!container)
-            return;
-        container.querySelectorAll('mark.chat-search-hit').forEach(mark => {
-            const parent = mark.parentNode;
-            if (!parent)
-                return;
-            // Unwrap <mark> by replacing with its text content.
-            parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
-            parent.normalize();
-        });
-    }
-    /** Find all text nodes within a root that contain `query` (case-insensitive). */
-    wrapMatches(root, query) {
-        if (!query)
-            return [];
-        const hits = [];
-        const needle = query.toLowerCase();
-        // TreeWalker over text nodes, skipping <script>/<style>/<mark> and hidden nodes.
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-            acceptNode: (node) => {
-                const parent = node.parentElement;
-                if (!parent)
-                    return NodeFilter.FILTER_REJECT;
-                const tag = parent.tagName;
-                if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK')
-                    return NodeFilter.FILTER_REJECT;
-                if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle))
-                    return NodeFilter.FILTER_SKIP;
-                return NodeFilter.FILTER_ACCEPT;
-            },
-        });
-        const candidates = [];
-        // Collect first so we can mutate the DOM without breaking iteration.
-        let n = walker.nextNode();
-        while (n) {
-            candidates.push(n);
-            n = walker.nextNode();
-        }
-        for (const textNode of candidates) {
-            const text = textNode.nodeValue || '';
-            const lower = text.toLowerCase();
-            let idx = 0;
-            let start = lower.indexOf(needle, idx);
-            if (start < 0)
-                continue;
-            const fragment = document.createDocumentFragment();
-            while (start >= 0) {
-                if (start > idx) {
-                    fragment.appendChild(document.createTextNode(text.slice(idx, start)));
-                }
-                const mark = document.createElement('mark');
-                mark.className = 'chat-search-hit';
-                mark.textContent = text.slice(start, start + query.length);
-                fragment.appendChild(mark);
-                hits.push(mark);
-                idx = start + query.length;
-                start = lower.indexOf(needle, idx);
-            }
-            if (idx < text.length) {
-                fragment.appendChild(document.createTextNode(text.slice(idx)));
-            }
-            textNode.replaceWith(fragment);
-        }
-        return hits;
-    }
-    performChatSearch(query) {
-        this.clearSearchHighlights();
-        this.searchMatches = [];
-        this.searchCurrentIdx = -1;
-        const container = document.getElementById('chat-messages');
-        const countEl = document.getElementById('chat-search-count');
-        if (!container)
-            return;
-        if (query) {
-            this.searchMatches = this.wrapMatches(container, query);
-            if (this.searchMatches.length > 0) {
-                this.focusSearchMatch(0);
-            }
-        }
-        if (countEl) {
-            countEl.textContent = `${this.searchMatches.length ? this.searchCurrentIdx + 1 : 0} / ${this.searchMatches.length}`;
-        }
-    }
-    focusSearchMatch(idx) {
-        if (this.searchMatches.length === 0)
-            return;
-        idx = ((idx % this.searchMatches.length) + this.searchMatches.length) % this.searchMatches.length;
-        this.searchMatches.forEach(m => m.classList.remove('active'));
-        const target = this.searchMatches[idx];
-        target.classList.add('active');
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        this.searchCurrentIdx = idx;
-        const countEl = document.getElementById('chat-search-count');
-        if (countEl)
-            countEl.textContent = `${idx + 1} / ${this.searchMatches.length}`;
-    }
-    stepChatSearch(direction) {
-        if (this.searchMatches.length === 0)
-            return;
-        this.focusSearchMatch(this.searchCurrentIdx + direction);
-    }
-    setupChatSearchHandlers() {
-        const input = document.getElementById('chat-search-input');
-        const bar = document.getElementById('chat-search-bar');
-        if (!input || !bar || bar.dataset.searchBound)
-            return;
-        let debounce = null;
-        input.addEventListener('input', () => {
-            if (debounce !== null)
-                clearTimeout(debounce);
-            debounce = window.setTimeout(() => {
-                this.performChatSearch(input.value);
-                debounce = null;
-            }, 120);
-        });
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                this.stepChatSearch(e.shiftKey ? -1 : 1);
-            }
-            else if (e.key === 'Escape') {
-                e.preventDefault();
-                this.closeChatSearch();
-            }
-        });
-        document.getElementById('chat-search-next')?.addEventListener('click', () => this.stepChatSearch(1));
-        document.getElementById('chat-search-prev')?.addEventListener('click', () => this.stepChatSearch(-1));
-        document.getElementById('chat-search-close')?.addEventListener('click', () => this.closeChatSearch());
-        bar.dataset.searchBound = '1';
-    }
+    openChatSearch() { this.chatSearch.open(); }
+    closeChatSearch() { this.chatSearch.close(); }
+    performChatSearch(query) { this.chatSearch.perform(query); }
+    stepChatSearch(direction) { this.chatSearch.step(direction); }
+    setupChatSearchHandlers() { this.chatSearch.setup(); }
     setupScrollListener() {
         // Piggy-back: also bind the chat search handlers once, since both are
         // wired up after the chat DOM is available.
@@ -2934,17 +2494,6 @@ export class ChatManager {
 // Cap local message history to bound DOM size in long sessions; rendered
 // history is also capped server-side at 20 messages per request.
 ChatManager.MAX_LOCAL_MESSAGES = 200;
-// ------------------------------------------------------------------
-// Prism.js syntax highlighting (#11).
-// Languages are loaded once per session, on demand, from vendor/prism/.
-// ------------------------------------------------------------------
-/** Languages we shipped bundles for (see native_dashboard/ui/vendor/prism/). */
-ChatManager.PRISM_LANGS = new Set([
-    'markup', 'css', 'clike', 'javascript', 'js', 'bash', 'shell', 'c',
-    'csharp', 'cs', 'cpp', 'diff', 'go', 'ini', 'java', 'json', 'kotlin',
-    'lua', 'markdown', 'md', 'powershell', 'ps1', 'python', 'py', 'ruby',
-    'rb', 'rust', 'rs', 'sql', 'swift', 'toml', 'typescript', 'ts', 'yaml', 'yml',
-]);
 // Image attachment methods
 ChatManager.MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB
 ChatManager.MAX_ATTACHED_IMAGES = 5;
