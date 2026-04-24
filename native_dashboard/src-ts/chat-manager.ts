@@ -39,6 +39,7 @@ import type {
 
 import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, stripThinkTags } from './chat/formatter.js';
+import { ChatSearch } from './chat/search.js';
 
 // ============================================================================
 // Memory Manager
@@ -2079,159 +2080,18 @@ export class ChatManager {
         }
     }
 
-    // ------------------------------------------------------------------
-    // In-conversation search (#14) — Ctrl+F overlays a search bar that
-    // highlights matches inside the currently-rendered messages and steps
-    // through them with ↑/↓.
-    // ------------------------------------------------------------------
-    private searchMatches: HTMLElement[] = [];
-    private searchCurrentIdx: number = -1;
+    // In-conversation search (#14) now lives in ./chat/search.ts.
+    // ChatManager holds a ChatSearch instance + forwarders so keybinding
+    // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
+    private chatSearch: ChatSearch = new ChatSearch(
+        () => document.getElementById('chat-messages'),
+    );
 
-    openChatSearch(): void {
-        const bar = document.getElementById('chat-search-bar');
-        const input = document.getElementById('chat-search-input') as HTMLInputElement | null;
-        if (!bar || !input) return;
-        bar.classList.remove('hidden');
-        input.focus();
-        input.select();
-    }
-
-    closeChatSearch(): void {
-        const bar = document.getElementById('chat-search-bar');
-        if (!bar) return;
-        bar.classList.add('hidden');
-        this.clearSearchHighlights();
-        this.searchMatches = [];
-        this.searchCurrentIdx = -1;
-    }
-
-    private clearSearchHighlights(): void {
-        const container = document.getElementById('chat-messages');
-        if (!container) return;
-        container.querySelectorAll('mark.chat-search-hit').forEach(mark => {
-            const parent = mark.parentNode;
-            if (!parent) return;
-            // Unwrap <mark> by replacing with its text content.
-            parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
-            parent.normalize();
-        });
-    }
-
-    /** Find all text nodes within a root that contain `query` (case-insensitive). */
-    private wrapMatches(root: HTMLElement, query: string): HTMLElement[] {
-        if (!query) return [];
-        const hits: HTMLElement[] = [];
-        const needle = query.toLowerCase();
-        // TreeWalker over text nodes, skipping <script>/<style>/<mark> and hidden nodes.
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-            acceptNode: (node: Node) => {
-                const parent = node.parentElement;
-                if (!parent) return NodeFilter.FILTER_REJECT;
-                const tag = parent.tagName;
-                if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
-                if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle)) return NodeFilter.FILTER_SKIP;
-                return NodeFilter.FILTER_ACCEPT;
-            },
-        });
-
-        const candidates: Text[] = [];
-        // Collect first so we can mutate the DOM without breaking iteration.
-        let n: Node | null = walker.nextNode();
-        while (n) {
-            candidates.push(n as Text);
-            n = walker.nextNode();
-        }
-
-        for (const textNode of candidates) {
-            const text = textNode.nodeValue || '';
-            const lower = text.toLowerCase();
-            let idx = 0;
-            let start = lower.indexOf(needle, idx);
-            if (start < 0) continue;
-            const fragment = document.createDocumentFragment();
-            while (start >= 0) {
-                if (start > idx) {
-                    fragment.appendChild(document.createTextNode(text.slice(idx, start)));
-                }
-                const mark = document.createElement('mark');
-                mark.className = 'chat-search-hit';
-                mark.textContent = text.slice(start, start + query.length);
-                fragment.appendChild(mark);
-                hits.push(mark);
-                idx = start + query.length;
-                start = lower.indexOf(needle, idx);
-            }
-            if (idx < text.length) {
-                fragment.appendChild(document.createTextNode(text.slice(idx)));
-            }
-            textNode.replaceWith(fragment);
-        }
-        return hits;
-    }
-
-    performChatSearch(query: string): void {
-        this.clearSearchHighlights();
-        this.searchMatches = [];
-        this.searchCurrentIdx = -1;
-        const container = document.getElementById('chat-messages');
-        const countEl = document.getElementById('chat-search-count');
-        if (!container) return;
-
-        if (query) {
-            this.searchMatches = this.wrapMatches(container, query);
-            if (this.searchMatches.length > 0) {
-                this.focusSearchMatch(0);
-            }
-        }
-        if (countEl) {
-            countEl.textContent = `${this.searchMatches.length ? this.searchCurrentIdx + 1 : 0} / ${this.searchMatches.length}`;
-        }
-    }
-
-    private focusSearchMatch(idx: number): void {
-        if (this.searchMatches.length === 0) return;
-        idx = ((idx % this.searchMatches.length) + this.searchMatches.length) % this.searchMatches.length;
-        this.searchMatches.forEach(m => m.classList.remove('active'));
-        const target = this.searchMatches[idx];
-        target.classList.add('active');
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        this.searchCurrentIdx = idx;
-        const countEl = document.getElementById('chat-search-count');
-        if (countEl) countEl.textContent = `${idx + 1} / ${this.searchMatches.length}`;
-    }
-
-    stepChatSearch(direction: 1 | -1): void {
-        if (this.searchMatches.length === 0) return;
-        this.focusSearchMatch(this.searchCurrentIdx + direction);
-    }
-
-    private setupChatSearchHandlers(): void {
-        const input = document.getElementById('chat-search-input') as HTMLInputElement | null;
-        const bar = document.getElementById('chat-search-bar');
-        if (!input || !bar || bar.dataset.searchBound) return;
-
-        let debounce: number | null = null;
-        input.addEventListener('input', () => {
-            if (debounce !== null) clearTimeout(debounce);
-            debounce = window.setTimeout(() => {
-                this.performChatSearch(input.value);
-                debounce = null;
-            }, 120);
-        });
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                this.stepChatSearch(e.shiftKey ? -1 : 1);
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                this.closeChatSearch();
-            }
-        });
-        document.getElementById('chat-search-next')?.addEventListener('click', () => this.stepChatSearch(1));
-        document.getElementById('chat-search-prev')?.addEventListener('click', () => this.stepChatSearch(-1));
-        document.getElementById('chat-search-close')?.addEventListener('click', () => this.closeChatSearch());
-        bar.dataset.searchBound = '1';
-    }
+    openChatSearch(): void { this.chatSearch.open(); }
+    closeChatSearch(): void { this.chatSearch.close(); }
+    performChatSearch(query: string): void { this.chatSearch.perform(query); }
+    stepChatSearch(direction: 1 | -1): void { this.chatSearch.step(direction); }
+    private setupChatSearchHandlers(): void { this.chatSearch.setup(); }
 
     setupScrollListener(): void {
         // Piggy-back: also bind the chat search handlers once, since both are
