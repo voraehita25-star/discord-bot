@@ -37,6 +37,8 @@ import type {
     NativeConversationDetail,
 } from './chat/types.js';
 
+import { highlightCodeBlocks } from './chat/prism.js';
+
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -1834,78 +1836,12 @@ export class ChatManager {
         return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     }
 
-    // ------------------------------------------------------------------
-    // Prism.js syntax highlighting (#11).
-    // Languages are loaded once per session, on demand, from vendor/prism/.
-    // ------------------------------------------------------------------
-
-    /** Languages we shipped bundles for (see native_dashboard/ui/vendor/prism/). */
-    private static readonly PRISM_LANGS: ReadonlySet<string> = new Set([
-        'markup', 'css', 'clike', 'javascript', 'js', 'bash', 'shell', 'c',
-        'csharp', 'cs', 'cpp', 'diff', 'go', 'ini', 'java', 'json', 'kotlin',
-        'lua', 'markdown', 'md', 'powershell', 'ps1', 'python', 'py', 'ruby',
-        'rb', 'rust', 'rs', 'sql', 'swift', 'toml', 'typescript', 'ts', 'yaml', 'yml',
-    ]);
-
-    private prismLoadPromises: Map<string, Promise<void>> = new Map();
-
-    /** Normalize alias → canonical Prism id (js → javascript, py → python, …). */
-    private canonicalPrismLang(lang: string): string {
-        const aliases: Record<string, string> = {
-            js: 'javascript', ts: 'typescript', py: 'python',
-            rb: 'ruby', rs: 'rust', cs: 'csharp', 'c++': 'cpp',
-            sh: 'bash', shell: 'bash', md: 'markdown',
-            ps1: 'powershell', yml: 'yaml',
-        };
-        return aliases[lang] || lang;
-    }
-
-    /** Lazily load a Prism language component via <script> injection. */
-    private async loadPrismLanguage(lang: string): Promise<void> {
-        const canon = this.canonicalPrismLang(lang);
-        if (!ChatManager.PRISM_LANGS.has(canon)) return;
-        const prism = (window as unknown as { Prism?: { languages: Record<string, unknown> } }).Prism;
-        if (!prism) return;  // Prism core not loaded (CSP block or load failure).
-        if (prism.languages[canon]) return;
-        const existing = this.prismLoadPromises.get(canon);
-        if (existing) return existing;
-
-        const p = new Promise<void>((resolve) => {
-            const script = document.createElement('script');
-            script.src = `vendor/prism/prism-${canon}.min.js`;
-            script.async = false;  // Preserve load order (markup may depend on clike etc.)
-            script.onload = () => resolve();
-            script.onerror = () => {
-                errorLogger.log('PRISM_LANG_LOAD_FAIL', `Failed to load Prism language: ${canon}`);
-                resolve();  // Don't reject — fall back to plain-text code.
-            };
-            document.head.appendChild(script);
-        });
-        this.prismLoadPromises.set(canon, p);
-        return p;
-    }
-
-    /** Walk newly-rendered <pre><code class="language-X"> blocks and highlight them. */
+    // Prism.js syntax highlighting (#11) now lives in ./chat/prism.ts.
+    // `highlightCodeBlocks` is re-exposed as a method for the two call sites
+    // inside this class (renderMessages + stream-complete) without them needing
+    // to import the helper themselves.
     async highlightCodeBlocks(root: HTMLElement): Promise<void> {
-        const prism = (window as unknown as { Prism?: { highlightElement: (el: Element) => void; languages: Record<string, unknown> } }).Prism;
-        if (!prism) return;
-        const codes = root.querySelectorAll('pre code[class*="language-"]');
-        for (const code of Array.from(codes)) {
-            if ((code as HTMLElement).dataset.prismDone === '1') continue;
-            const cls = code.className.match(/language-(\S+)/);
-            if (!cls) continue;
-            const lang = cls[1].toLowerCase();
-            if (lang === 'code') continue;  // Our fallback marker from formatMessage.
-            await this.loadPrismLanguage(lang);
-            if (prism.languages[this.canonicalPrismLang(lang)]) {
-                try {
-                    prism.highlightElement(code);
-                } catch (e) {
-                    console.debug('Prism highlight failed:', e);
-                }
-            }
-            (code as HTMLElement).dataset.prismDone = '1';
-        }
+        return highlightCodeBlocks(root);
     }
 
     formatMessage(content: string): string {
