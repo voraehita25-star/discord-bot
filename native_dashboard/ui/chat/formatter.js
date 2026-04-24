@@ -71,6 +71,13 @@ export function formatMessage(content) {
     });
     // Now HTML-escape the rest (placeholders will be escaped but we restore them below).
     let html = escapeHtml(processed);
+    // Restore backticks. escapeHtml() in shared.ts also escapes `\`` → `&#96;`
+    // defensively for attribute contexts, but our markdown pipeline matches on
+    // literal backticks and would otherwise miss every `\`code\`` and fenced
+    // ``` block. Content captured by those regexes is already escaped for <, >,
+    // ", ' so this doesn't reintroduce an XSS vector. (Bug surfaced by
+    // chat/formatter.test.ts — code blocks never rendered before this line.)
+    html = html.replace(/&#96;/g, '`');
     // Restore LaTeX blocks from placeholders.
     html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => {
         return latexBlocks[parseInt(idx)] || '';
