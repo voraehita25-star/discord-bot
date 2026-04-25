@@ -6,6 +6,7 @@ Handles execution of Gemini AI function calls and server commands.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 from pathlib import Path

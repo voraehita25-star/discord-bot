@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+
 logger = logging.getLogger(__name__)
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -73,11 +75,13 @@ def _save_unrestricted_channels(channels_snapshot: list[int] | None = None) -> b
             with _unrestricted_lock:
                 channels_snapshot = list(unrestricted_channels)
         data_to_save = {"channels": channels_snapshot}
-        # Atomic write: write to temp file then rename
-        temp_file.write_text(
-            json.dumps(data_to_save, indent=2),
-            encoding="utf-8",
-        )
+        # Atomic write: write to temp file, fsync, then rename.
+        # fsync flushes OS buffers before the rename so a crash mid-write
+        # cannot leave a half-written temp that later gets promoted.
+        with temp_file.open("w", encoding="utf-8") as f:
+            json.dump(data_to_save, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         temp_file.replace(_UNRESTRICTED_FILE)  # Atomic on most filesystems
         return True
     except (OSError, TypeError, ValueError):

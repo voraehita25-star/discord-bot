@@ -651,7 +651,7 @@ class TestLoadCachedImageBytesFunction:
     def test_load_cached_image_bytes_exists(self):
         """Test loading image bytes when file exists."""
         try:
-            from cogs.ai_core.media_processor import load_cached_image_bytes, _BASE_DIR
+            from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
         except ImportError:
             pytest.skip("content_processor not available")
             return
@@ -659,8 +659,11 @@ class TestLoadCachedImageBytesFunction:
         # Clear the cache
         load_cached_image_bytes.cache_clear()
 
+        # Cache validates files via ``st_mtime_ns``, so patch ``stat`` (not
+        # ``exists``). Path stays within _BASE_DIR for the security check.
         test_path = str(_BASE_DIR / 'assets' / 'test_image.png')
-        with patch('pathlib.Path.exists', return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch('pathlib.Path.stat', return_value=fake_stat):
             with patch('pathlib.Path.read_bytes', return_value=b'test_image_data'):
                 result = load_cached_image_bytes(test_path)
 
@@ -676,7 +679,7 @@ class TestLoadCachedImageBytesFunction:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=False):
+        with patch('pathlib.Path.stat', side_effect=FileNotFoundError):
             result = load_cached_image_bytes('/nonexistent/image.png')
 
         assert result is None
@@ -691,7 +694,8 @@ class TestLoadCachedImageBytesFunction:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch('pathlib.Path.stat', return_value=fake_stat):
             with patch('pathlib.Path.read_bytes', side_effect=OSError("Read error")):
                 result = load_cached_image_bytes('/error/image.png')
 

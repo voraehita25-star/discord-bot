@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 from typing import Any
@@ -74,7 +75,7 @@ class ConversationSummarizer:
             prompt = SUMMARIZE_PROMPT.replace("{conversation}", conversation_text)
 
             max_retries = 3
-            last_error = None
+            last_error: Exception | None = None
 
             for attempt in range(max_retries):
                 try:

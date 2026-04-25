@@ -7,12 +7,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 logger = logging.getLogger(__name__)
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import discord
 import yt_dlp
+
+
+class FFmpegOptions(TypedDict):
+    """Kwargs accepted by `discord.FFmpegPCMAudio` we set here.
+
+    Constraining the dict keys lets `**opts` unpack cleanly into the
+    constructor without the type checker objecting that arbitrary keys
+    might collide with `pipe`/`stderr`.
+    """
+
+    options: str
+    before_options: str
 
 # --- MUSIC SYSTEM ---
 # Suppress bug reports
@@ -125,7 +138,7 @@ def get_ytdl_fallback() -> yt_dlp.YoutubeDL:
     return yt_dlp.YoutubeDL(get_ytdl_fallback_opts())
 
 
-def get_ffmpeg_options(stream: bool = False, start_time: int = 0) -> dict[str, str]:
+def get_ffmpeg_options(stream: bool = False, start_time: int = 0) -> FFmpegOptions:
     """
     🎵 Premium FFmpeg Audio Settings
     - 48kHz sample rate (Discord native)
@@ -165,7 +178,7 @@ def get_ffmpeg_options(stream: bool = False, start_time: int = 0) -> dict[str, s
     if start_time > 0:
         before_options.extend(["-ss", str(int(start_time))])
 
-    return {"options": " ".join(options), "before_options": " ".join(before_options)}
+    return FFmpegOptions(options=" ".join(options), before_options=" ".join(before_options))
 
 
 class YTDLSource(discord.PCMVolumeTransformer):

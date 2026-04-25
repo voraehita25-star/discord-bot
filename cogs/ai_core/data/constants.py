@@ -8,7 +8,7 @@ and are re-exported here for backward compatibility.
 from __future__ import annotations
 
 # Re-export environment-dependent config (keeps all existing imports working)
-from .constants_env import (  # noqa: F401
+from .constants_env import (
     ANTHROPIC_API_KEY,
     CHANNEL_ID_ALLOWED,
     CHANNEL_ID_RP_COMMAND,
@@ -24,6 +24,23 @@ from .constants_env import (  # noqa: F401
     GUILD_ID_RP,
     _safe_int_env,
 )
+
+__all__ = [
+    "ANTHROPIC_API_KEY",
+    "CHANNEL_ID_ALLOWED",
+    "CHANNEL_ID_RP_COMMAND",
+    "CHANNEL_ID_RP_OUTPUT",
+    "CLAUDE_MAX_TOKENS",
+    "CLAUDE_MODEL",
+    "CREATOR_ID",
+    "DEFAULT_MODEL",
+    "GEMINI_API_KEY",
+    "GUILD_ID_COMMAND_ONLY",
+    "GUILD_ID_MAIN",
+    "GUILD_ID_RESTRICTED",
+    "GUILD_ID_RP",
+    "_safe_int_env",
+]
 
 # ==================== AI Processing Limits ====================
 # History limits (number of messages to keep per channel type)

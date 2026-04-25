@@ -72,7 +72,7 @@ def find_json_files() -> JsonFileBuckets:
 async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> int:
     """Migrate a single history file to database."""
     try:
-        history = json.loads(filepath.read_text(encoding="utf-8"))  # noqa: ASYNC240 - one-shot CLI migration
+        history = json.loads(filepath.read_text(encoding="utf-8"))
 
         if not isinstance(history, list):
             print(f"    [!] Invalid format in {filepath}")
@@ -124,7 +124,7 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
 async def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = False) -> bool:
     """Migrate a single metadata file to database."""
     try:
-        metadata = json.loads(filepath.read_text(encoding="utf-8"))  # noqa: ASYNC240 - one-shot CLI migration
+        metadata = json.loads(filepath.read_text(encoding="utf-8"))
 
         if not isinstance(metadata, dict):
             return False
@@ -281,13 +281,13 @@ async def async_main():
         import aiosqlite
 
         db_path = Path("data/bot_database.db")
-        if db_path.exists():  # noqa: ASYNC240 - one-shot CLI migration
+        if db_path.exists():
             async with aiosqlite.connect(str(db_path)) as conn:
                 cur = await conn.execute("SELECT COUNT(*) FROM ai_history")
                 history_count = (await cur.fetchone())[0]
                 cur = await conn.execute("SELECT COUNT(*) FROM ai_metadata")
                 metadata_count_db = (await cur.fetchone())[0]
-                db_size_mb = db_path.stat().st_size / (1024 * 1024)  # noqa: ASYNC240
+                db_size_mb = db_path.stat().st_size / (1024 * 1024)
             print("  📊 Database Statistics:")
             print(f"     • AI History: {history_count} records")
             print(f"     • AI Metadata: {metadata_count_db} records")

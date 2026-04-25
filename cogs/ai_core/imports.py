@@ -7,6 +7,7 @@ when they are not available, ensuring the AI core can run even with missing pack
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
@@ -97,7 +98,7 @@ except ImportError:
         return bool(not response or not response.strip())  # Only flag truly empty responses
 
 try:
-    from .processing.intent_detector import Intent, detect_intent  # noqa: F401
+    from .processing.intent_detector import Intent, detect_intent
 
     INTENT_DETECTOR_AVAILABLE = True
 except ImportError:
@@ -107,21 +108,21 @@ except ImportError:
 # 3. Cache & Memory
 # ==========================================
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction  # noqa: F401
+    from .cache.analytics import get_ai_stats, log_ai_interaction
 
     ANALYTICS_AVAILABLE = True
 except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher  # noqa: F401
+    from .cache.ai_cache import ai_cache, context_hasher
 
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 try:
-    from .memory.history_manager import history_manager  # noqa: F401 (re-exported)
+    from .memory.history_manager import history_manager
 
     HISTORY_MANAGER_AVAILABLE = True
 except ImportError:

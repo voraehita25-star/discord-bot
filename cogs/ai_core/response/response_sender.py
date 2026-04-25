@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 import time
@@ -173,17 +174,39 @@ class ResponseSender:
         chunks: list[str] = []
         remaining = content
         max_chunks = 20  # Safety limit to prevent unbounded chunking
+        # Track which fenced-code-block we're currently inside so the next chunk
+        # can re-open it. Without this, splitting in the middle of a ```python
+        # block leaves the first chunk with a stray opening fence (no close)
+        # and the second chunk with a stray closing fence (no open) — both
+        # render broken in Discord.
+        open_fence_lang: str | None = None
 
         while remaining and len(chunks) < max_chunks:
             if len(remaining) <= max_length:
-                chunks.append(remaining)
+                chunk = remaining
+                if open_fence_lang is not None:
+                    chunk = f"```{open_fence_lang}\n" + chunk
+                chunks.append(chunk)
                 break
 
             # Find a good split point
             split_at = self._find_split_point(remaining, max_length)
             if split_at <= 0:
                 split_at = max_length  # Ensure forward progress
-            chunks.append(remaining[:split_at])
+            piece = remaining[:split_at]
+            # Re-open carry from prior chunk
+            if open_fence_lang is not None:
+                piece = f"```{open_fence_lang}\n" + piece
+            # Detect open fence in this chunk (odd count = opens stayed open).
+            new_open_fence = self._detect_open_fence(piece, open_fence_lang)
+            if new_open_fence is not None:
+                # Close the fence at end of this chunk so Discord doesn't
+                # render a half-formed code block.
+                if not piece.endswith("\n"):
+                    piece += "\n"
+                piece += "```"
+            open_fence_lang = new_open_fence
+            chunks.append(piece)
             remaining = remaining[split_at:].lstrip()
 
         if remaining and len(chunks) >= max_chunks:
@@ -191,6 +214,29 @@ class ResponseSender:
             chunks.append(remaining[:max_length - 3] + "...")
 
         return chunks
+
+    @staticmethod
+    def _detect_open_fence(piece: str, prior_open: str | None) -> str | None:
+        """Return the language of the still-open code fence at end of `piece`,
+        or None if no fence is open. Treats triple-backticks at line start as
+        fence markers, ignoring inline `code`."""
+        # Walk lines; track whether we're inside a fenced block. The language
+        # tag on the most-recent opener is what the next chunk needs to reopen.
+        in_fence = prior_open is not None
+        current_lang: str | None = prior_open
+        for line in piece.split("\n"):
+            stripped = line.lstrip()
+            if not stripped.startswith("```"):
+                continue
+            if in_fence:
+                in_fence = False
+                current_lang = None
+            else:
+                in_fence = True
+                # Lang tag = chars after ``` until whitespace/EOL.
+                tag = stripped[3:].split(maxsplit=1)
+                current_lang = tag[0] if tag else ""
+        return current_lang if in_fence else None
 
     def _find_split_point(self, text: str, max_length: int) -> int:
         """Find a good point to split text.

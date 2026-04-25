@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 from pathlib import Path
@@ -35,16 +36,19 @@ from .data.constants import (
     GUILD_ID_RP,
 )
 
-# Centralized optional dependencies
-from .imports import (
-    FEEDBACK_AVAILABLE,  # noqa: F401 (re-exported for tests)
+# Centralized optional dependencies.
+# Some of the re-exports below are not referenced inside this module but ARE
+# consumed via ``from cogs.ai_core.ai_cog import X`` elsewhere (tests,
+# diagnostic scripts). Keep them as part of the module's public surface.
+from .imports import (  # noqa: F401 - public re-exports
+    FEEDBACK_AVAILABLE,
     GUARDRAILS_AVAILABLE,
-    LOCALIZATION_AVAILABLE,  # noqa: F401 (re-exported for tests)
-    add_feedback_reactions,  # noqa: F401 (re-exported for tests)
-    feedback_collector,  # noqa: F401 (re-exported for tests)
+    LOCALIZATION_AVAILABLE,
+    add_feedback_reactions,
+    feedback_collector,
     is_unrestricted,
-    msg,  # noqa: F401 (re-exported for tests)
-    msg_en,  # noqa: F401 (re-exported for tests)
+    msg,
+    msg_en,
     set_unrestricted,
     unrestricted_channels,
 )
@@ -165,6 +169,21 @@ class AI(commands.Cog):
 
             self._cache_cleanup_task = asyncio.create_task(ai_cache.start_cleanup_loop())
             self._cache_cleanup_task.add_done_callback(self._on_bg_task_done)
+        except ImportError:
+            pass
+
+        # Pre-populate token tracker quota cache from DB. Without this, hourly
+        # / daily limits reset to "fully available" on every restart even if
+        # the user just spent their quota seconds before the bot bounced.
+        # Fire-and-forget — quota check happens to be in-memory anyway, so a
+        # brief gap before the load completes just means the first few requests
+        # see a slightly under-counted total.
+        try:
+            from cogs.ai_core.cache.token_tracker import token_tracker
+
+            asyncio.create_task(token_tracker.init_from_db()).add_done_callback(
+                self._on_bg_task_done,
+            )
         except ImportError:
             pass
 
@@ -476,14 +495,23 @@ class AI(commands.Cog):
                         break
             except (discord.Forbidden, discord.HTTPException):
                 pass
-            # Cache the result (with size limit)
+            # Cache the result (with size limit). pop(.., None) instead of del
+            # because two on_message coroutines can race past the await on the
+            # webhooks() call above and both try to evict the same expired key —
+            # del would KeyError on the loser. After pruning expired entries, if
+            # still full, evict the entry with the soonest expiry (LRU-ish) so
+            # we don't blow away the entire cache on a hot path.
             now = _time.time()
             if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
                 expired = [k for k, v in self._webhook_verify_cache.items() if v[1] <= now]
                 for k in expired:
-                    del self._webhook_verify_cache[k]
+                    self._webhook_verify_cache.pop(k, None)
                 if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
-                    self._webhook_verify_cache.clear()
+                    oldest = min(
+                        self._webhook_verify_cache.items(),
+                        key=lambda kv: kv[1][1],
+                    )[0]
+                    self._webhook_verify_cache.pop(oldest, None)
             self._webhook_verify_cache[webhook_id] = (
                 is_known_proxy,
                 now + self._WEBHOOK_CACHE_TTL,
@@ -780,7 +808,7 @@ class AI(commands.Cog):
         )
         if enable_streaming:
             embed.add_field(
-                name="ℹ️ หมายเหตุ",  # noqa: RUF001 - ℹ is intentional info emoji
+                name="ℹ️ หมายเหตุ",
                 value="Streaming จะปิด Thinking Mode อัตโนมัติ\nข้อความจะอัพเดตแบบ real-time",
                 inline=False,
             )

@@ -92,8 +92,10 @@ class AIAnalytics:
         self.logger = logging.getLogger("AIAnalytics")
         self._stats_lock = asyncio.Lock()
 
-        # In-memory stats for quick access
-        self._stats = {
+        # In-memory stats for quick access. Heterogeneous values (int, float,
+        # defaultdict, list) — kept as dict[str, Any] to satisfy type checker
+        # while preserving the runtime layout used throughout this class.
+        self._stats: dict[str, Any] = {
             "total_interactions": 0,
             "total_response_time_ms": 0,
             "cache_hits": 0,

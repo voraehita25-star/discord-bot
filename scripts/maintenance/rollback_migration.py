@@ -104,8 +104,29 @@ def cmd_list(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_backup_arg(user_arg: str) -> Path | None:
+    """Resolve ``user_arg`` under BACKUP_DIR, rejecting any path that escapes it.
+
+    Returns None (and prints an error) for traversal attempts or invalid paths —
+    this is CLI-only and operator-run, but a sane guard keeps scripted
+    invocations from accidentally targeting unrelated files.
+    """
+    candidate = BACKUP_DIR / user_arg
+    try:
+        resolved = candidate.resolve(strict=False)
+        if not resolved.is_relative_to(BACKUP_DIR.resolve()):
+            print(f"ERROR: backup path escapes backup directory: {user_arg}")
+            return None
+    except (OSError, ValueError) as e:
+        print(f"ERROR: invalid backup path '{user_arg}': {e}")
+        return None
+    return candidate
+
+
 def cmd_diff(args: argparse.Namespace) -> int:
-    backup = BACKUP_DIR / args.backup
+    backup = _resolve_backup_arg(args.backup)
+    if backup is None:
+        return 1
     if not backup.exists():
         print(f"ERROR: backup not found: {backup}")
         return 1
@@ -140,7 +161,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
-    backup = BACKUP_DIR / args.backup
+    backup = _resolve_backup_arg(args.backup)
+    if backup is None:
+        return 1
     if not backup.exists():
         print(f"ERROR: backup not found: {backup}")
         return 1

@@ -6,6 +6,7 @@ Manages AI system prompts with template support.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import random
 from datetime import datetime
@@ -14,7 +15,7 @@ from typing import Any
 
 # Try to import YAML
 try:
-    import yaml  # type: ignore[import-untyped]
+    import yaml
 
     YAML_AVAILABLE = True
 except ImportError:

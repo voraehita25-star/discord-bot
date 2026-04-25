@@ -651,7 +651,7 @@ class TestLoadCachedImageBytesFunction:
     def test_load_cached_image_bytes_exists(self):
         """Test loading image bytes when file exists."""
         try:
-            from cogs.ai_core.media_processor import load_cached_image_bytes, _BASE_DIR
+            from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
         except ImportError:
             pytest.skip("content_processor not available")
             return
@@ -659,9 +659,12 @@ class TestLoadCachedImageBytesFunction:
         # Clear the cache
         load_cached_image_bytes.cache_clear()
 
-        # Use a path within the project base directory so path validation passes
+        # Use a path within the project base directory so path validation passes.
+        # Patch ``stat`` (for the mtime check) AND ``read_bytes`` because the
+        # cache validates files via ``st_mtime_ns`` to detect on-disk changes.
         test_path = str(_BASE_DIR / 'assets' / 'test_image.png')
-        with patch('pathlib.Path.exists', return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=1234567890)
+        with patch('pathlib.Path.stat', return_value=fake_stat):
             with patch('pathlib.Path.read_bytes', return_value=b'test_image_data'):
                 result = load_cached_image_bytes(test_path)
 
@@ -677,7 +680,9 @@ class TestLoadCachedImageBytesFunction:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=False):
+        # ``stat`` raises FileNotFoundError for a missing file — that's what
+        # the cache uses to short-circuit the read.
+        with patch('pathlib.Path.stat', side_effect=FileNotFoundError):
             result = load_cached_image_bytes('/nonexistent/image.png')
 
         assert result is None
@@ -685,7 +690,7 @@ class TestLoadCachedImageBytesFunction:
     def test_load_cached_image_bytes_oserror(self):
         """Test loading image bytes with OSError."""
         try:
-            from cogs.ai_core.media_processor import load_cached_image_bytes, _BASE_DIR
+            from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
         except ImportError:
             pytest.skip("content_processor not available")
             return
@@ -693,7 +698,8 @@ class TestLoadCachedImageBytesFunction:
         load_cached_image_bytes.cache_clear()
 
         test_path = str(_BASE_DIR / 'assets' / 'error_image.png')
-        with patch('pathlib.Path.exists', return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch('pathlib.Path.stat', return_value=fake_stat):
             with patch('pathlib.Path.read_bytes', side_effect=OSError("Read error")):
                 result = load_cached_image_bytes(test_path)
 

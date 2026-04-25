@@ -6,6 +6,7 @@ Provides automatic error tracking and performance monitoring.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 from typing import Any

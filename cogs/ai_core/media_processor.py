@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+
 logger = logging.getLogger(__name__)
 from collections import namedtuple
 from pathlib import Path
@@ -35,8 +36,11 @@ except ImportError:
 # 50 images * ~500KB average = ~25MB max memory for cache
 IMAGE_CACHE_MAX_SIZE = 50
 
-# Manual cache dict to avoid caching misses (lru_cache would permanently cache None)
-_image_cache: dict[str, bytes] = {}
+# Manual cache dict to avoid caching misses (lru_cache would permanently cache None).
+# Each entry is ``(mtime_ns, bytes)`` so we can detect on-disk changes — without
+# this, an updated character image stays stale until process restart even though
+# the new file is sitting on disk.
+_image_cache: dict[str, tuple[int, bytes]] = {}
 
 
 # Fixed base directory for path validation (resolved once at import time)
@@ -58,25 +62,44 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
     Note:
         Cache is limited to IMAGE_CACHE_MAX_SIZE entries to prevent
         memory issues. Only successful reads are cached; missing files
-        are NOT cached so they can be found after deployment.
+        are NOT cached so they can be found after deployment. Cache hits
+        are validated against the file's ``mtime_ns`` so an on-disk update
+        invalidates the entry on the next access — no manual clear needed
+        when swapping a character image.
         Path must be within the project base directory for security.
     """
-    if full_path in _image_cache:
-        return _image_cache[full_path]
     path = Path(full_path).resolve()
     # Security: Validate path is within the project directory
     if not path.is_relative_to(_BASE_DIR):
         logger.warning("Blocked path traversal attempt in image cache: %s", full_path)
         return None
-    if path.exists():
-        try:
-            data = path.read_bytes()
-            if len(_image_cache) < IMAGE_CACHE_MAX_SIZE:
-                _image_cache[full_path] = data
-            return data
-        except OSError:
-            return None
-    return None  # Don't cache misses
+
+    # Stat once and reuse — we need mtime for the cache check AND to know
+    # whether the file exists to read.
+    try:
+        current_mtime = path.stat().st_mtime_ns
+    except (FileNotFoundError, OSError):
+        # File missing or unreadable — drop any stale cache entry so we don't
+        # keep returning bytes for a deleted file forever.
+        _image_cache.pop(full_path, None)
+        return None
+
+    cached = _image_cache.get(full_path)
+    if cached is not None and cached[0] == current_mtime:
+        return cached[1]
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        # Read failed (race with delete, perms changed) — clear stale and bail.
+        _image_cache.pop(full_path, None)
+        return None
+
+    # Capacity check applies only when we're inserting a brand-new key — a
+    # mtime-driven refresh of an existing key isn't growth.
+    if full_path in _image_cache or len(_image_cache) < IMAGE_CACHE_MAX_SIZE:
+        _image_cache[full_path] = (current_mtime, data)
+    return data
 
 
 def clear_image_cache() -> None:

@@ -1,9 +1,9 @@
 # AI Core Module
 
-> Last Updated: April 2, 2026
-> Version: 3.3.15
+> Last Updated: April 24, 2026
+> Version: 3.3.16
 
-ระบบ AI หลักของ Discord Bot - ใช้ Gemini API
+ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.7 (ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
 ## Structure (Reorganized v3.3.8)
 

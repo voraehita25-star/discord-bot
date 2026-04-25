@@ -1,6 +1,21 @@
 """
 Self-Reflection Module for AI Response Quality.
-Implements a lightweight check system for AI responses before sending.
+
+**Advisory-only.** This module inspects an already-generated response and
+returns a quality score plus a list of detected issues — it does *not*
+trigger automatic regeneration or rewrite the response. Callers can decide
+whether to surface the issues, log them for analytics, or (for low scores)
+reject the response and prompt the model again. Hooking up auto-retry is
+a deliberate non-goal because every retry doubles latency and Anthropic
+billing, so the project keeps the regenerate decision in user code.
+
+Detected issues:
+    - HALLUCINATION  — high density of uncertainty markers
+    - INCOMPLETE     — sentence appears truncated mid-thought
+    - OFF_TOPIC      — keyword overlap with the user message is too low
+    - REPETITIVE     — duplicate sentences or 5-gram repetition
+    - TOO_SHORT/LONG — response length outside configured bounds
+    - UNSAFE         — matches a high-severity safety regex
 """
 
 from __future__ import annotations
@@ -38,12 +53,18 @@ class Issue:
 
 @dataclass
 class ReflectionResult:
-    """Result of self-reflection analysis."""
+    """Result of self-reflection analysis.
+
+    The reflector is advisory-only — see module docstring. ``is_valid`` is
+    a recommendation; the caller decides whether to drop the response or
+    surface the issues. There is no ``suggested_revision`` field because
+    fixing a bad response requires another LLM call and the reflector
+    does not initiate one.
+    """
 
     is_valid: bool
     confidence: float
     issues: list[Issue] = field(default_factory=list)
-    suggested_revision: str | None = None
     processing_time_ms: float = 0.0
 
     @property

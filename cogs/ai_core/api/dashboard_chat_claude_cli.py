@@ -40,9 +40,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -176,18 +178,38 @@ _load_persisted_sessions()
 # — the lock is keyed by conversation_id, not global. Cleaned up alongside
 # session ids when a conversation is reset/deleted.
 _CONVERSATION_LOCKS: dict[str, asyncio.Lock] = {}
+_MAX_TRACKED_LOCKS = 500  # cap parallel to _MAX_TRACKED_SESSIONS
 
 
 def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
-    """Return (creating if needed) the per-conversation send lock."""
+    """Return (creating if needed) the per-conversation send lock.
+
+    Bound the dict size on insert: a long-running bot that sees thousands of
+    distinct conversation ids would otherwise leak Lock objects forever — the
+    sessions dict has the same cap (_MAX_TRACKED_SESSIONS), which is a
+    natural reference point. Eviction picks the oldest unheld lock so we
+    never yank one out from under an in-flight subprocess.
+    """
     lock = _CONVERSATION_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _CONVERSATION_LOCKS[conversation_id] = lock
+    if lock is not None:
+        return lock
+    if len(_CONVERSATION_LOCKS) >= _MAX_TRACKED_LOCKS:
+        for old_id, old_lock in list(_CONVERSATION_LOCKS.items()):
+            if not old_lock.locked():
+                _CONVERSATION_LOCKS.pop(old_id, None)
+                break
+    lock = asyncio.Lock()
+    _CONVERSATION_LOCKS[conversation_id] = lock
     return lock
 
 # Where to drop temp image files Claude reads via the Read tool.
 _TEMP_IMAGE_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_images"
+
+# Where to drop non-image attachments (PDFs, text, code) — Claude Code reads
+# them via its Read tool the same way it reads images. Kept separate from
+# _TEMP_IMAGE_ROOT for easier cleanup + debugging, but both directories are
+# safe to nuke at any time (files are regenerated on the next turn if needed).
+_TEMP_DOCS_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_docs"
 
 # Allowed image MIME types — must match what the SDK backend accepts so users
 # don't get inconsistent behavior across the toggle.
@@ -197,6 +219,23 @@ _SUPPORTED_IMAGE_MIME = {
     "image/jpg": ".jpg",
     "image/gif": ".gif",
     "image/webp": ".webp",
+}
+
+# Safe extensions for document attachments. Binary (.pdf/.docx) is written
+# from base64; everything else is treated as UTF-8 text. Frontend whitelist
+# in document-attach.ts should stay synchronised.
+_SUPPORTED_DOC_BINARY_EXT = {".pdf", ".docx"}
+_SUPPORTED_DOC_TEXT_EXT = {
+    ".txt", ".md", ".markdown", ".rst",
+    ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env",
+    ".csv", ".tsv", ".xml", ".log",
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+    ".rs", ".go", ".java", ".kt", ".scala", ".swift",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx",
+    ".cs", ".rb", ".php", ".pl", ".r", ".lua",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+    ".sql", ".graphql", ".gql",
 }
 
 
@@ -294,7 +333,7 @@ def _save_inline_images(
             continue
         try:
             data = base64.b64decode(payload, validate=True)
-        except (ValueError, base64.binascii.Error):
+        except (ValueError, binascii.Error):
             continue
         # Enforce per-image size cap to mirror the SDK backend's safety net.
         # Without this an attacker (or a misclick) could push a 100 MB image
@@ -326,6 +365,105 @@ def _cleanup_image_dir(conversation_id: str) -> None:
                 target_dir.rmdir()
 
 
+def _save_inline_documents(
+    conversation_id: str,
+    documents: list[Any],
+    max_size_bytes: int,
+) -> list[Path]:
+    """Decode dashboard document payloads (PDF / text / code) to a temp dir.
+
+    Payload shape from the frontend's DocumentAttachManager::
+        {name, mime, kind: 'binary'|'text', data, size_bytes}
+
+    Binary kind: ``data`` is a ``data:<mime>;base64,...`` URL — decoded and
+    written as bytes.
+
+    Text kind: ``data`` is a decoded UTF-8 string — written directly.
+
+    Files with unsafe extensions (anything outside the allowlist) are
+    silently skipped so a compromised frontend can't push ``.exe`` / ``.bat``
+    into a directory Claude's Read tool later points at.
+    """
+    if not documents or not conversation_id:
+        return []
+
+    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    target_dir = _TEMP_DOCS_ROOT / safe_conv
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    timestamp = int(time.time() * 1000)
+    for idx, raw in enumerate(documents):
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name", ""))[:200]
+        kind = raw.get("kind")
+        data_field = raw.get("data")
+        if not name or not isinstance(data_field, str):
+            continue
+
+        # Derive a safe extension from the filename. We do NOT trust the
+        # caller's `mime` field for routing — extension is a stronger signal
+        # (the browser sometimes lies about MIME for niche files).
+        ext_match = re.search(r"\.[A-Za-z0-9]+$", name)
+        ext = ext_match.group(0).lower() if ext_match else ""
+
+        is_binary_ext = ext in _SUPPORTED_DOC_BINARY_EXT
+        is_text_ext = ext in _SUPPORTED_DOC_TEXT_EXT
+        if not (is_binary_ext or is_text_ext):
+            logger.warning("Dropping document with disallowed extension: %s", name)
+            continue
+
+        # Preserve the user's filename (sanitised) so Claude sees meaningful
+        # names — makes prompt output more coherent than `doc_0.pdf`.
+        safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)[:80] or f"doc_{idx}{ext}"
+        path = target_dir / f"{timestamp}_{idx}_{safe_name}"
+
+        if kind == "binary" or is_binary_ext:
+            # Binary: expect data URL format
+            if "," not in data_field or not data_field.startswith("data:"):
+                continue
+            _header, _, payload = data_field.partition(",")
+            try:
+                decoded = base64.b64decode(payload, validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            if len(decoded) > max_size_bytes:
+                logger.warning(
+                    "Dropping oversized document %s (%d bytes > %d cap)",
+                    name, len(decoded), max_size_bytes,
+                )
+                continue
+            path.write_bytes(decoded)
+        else:
+            # Text: UTF-8 string. Size check against raw byte length.
+            encoded = data_field.encode("utf-8", errors="replace")
+            if len(encoded) > max_size_bytes:
+                logger.warning(
+                    "Dropping oversized document %s (%d bytes > %d cap)",
+                    name, len(encoded), max_size_bytes,
+                )
+                continue
+            path.write_bytes(encoded)
+        written.append(path)
+    return written
+
+
+def _cleanup_docs_dir(conversation_id: str) -> None:
+    """Best-effort cleanup of the per-conversation temp documents dir."""
+    if not conversation_id:
+        return
+    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    target_dir = _TEMP_DOCS_ROOT / safe_conv
+    with contextlib.suppress(Exception):
+        if target_dir.exists():
+            for p in target_dir.iterdir():
+                with contextlib.suppress(Exception):
+                    p.unlink()
+            with contextlib.suppress(Exception):
+                target_dir.rmdir()
+
+
 def _build_full_prompt(
     persona: str,
     user_context: str,
@@ -334,20 +472,28 @@ def _build_full_prompt(
     history_limit: int,
     current_message: str,
     image_paths: list[Path],
+    doc_paths: list[Path] | None,
     is_resumed_session: bool,
 ) -> str:
     """Compose the prompt body sent to ``claude -p`` via stdin.
 
-    When ``is_resumed_session`` is True the persona/history headers are
-    omitted because Claude already has them in the resumed session — sending
-    them again would waste the prompt cache and inflate token usage.
+    Persona + user context + memories are sent on EVERY turn — matching the
+    SDK backend's behavior so updates to role preset, profile, or long-term
+    memories take effect immediately instead of being frozen at the session's
+    first turn. Without this, a memory the user adds mid-conversation would
+    not surface until they started a new chat.
+
+    The conversation history block is the one piece we still skip on resumed
+    turns: Claude already has the prior messages server-side via ``--resume``,
+    and re-injecting them here would make the model see the same exchange
+    twice (once in the session log, once in the prompt body).
     """
     parts: list[str] = []
 
+    parts.append(f"# Persona\n{persona}")
+    if user_context:
+        parts.append(f"# Context\n{user_context}{memories_context}")
     if not is_resumed_session:
-        parts.append(f"# Persona\n{persona}")
-        if user_context:
-            parts.append(f"# Context\n{user_context}{memories_context}")
         history_block = _build_history_block(history, history_limit)
         if history_block:
             parts.append(f"# Conversation so far\n{history_block}")
@@ -359,6 +505,17 @@ def _build_full_prompt(
             "The user attached the following image file(s). Use the Read tool "
             "to view them as needed before answering.\n"
             f"{path_lines}"
+        )
+
+    if doc_paths:
+        doc_lines = "\n".join(f"- {p}" for p in doc_paths)
+        parts.append(
+            "# Attached documents\n"
+            "The user attached the following document file(s) (PDF, text, code, "
+            "markdown, etc.). Use the Read tool to view their contents as needed "
+            "before answering. PDFs are parsed natively — you can see both text "
+            "and any embedded images.\n"
+            f"{doc_lines}"
         )
 
     # Inject the timestamp inline so Claude knows when the message was sent
@@ -614,6 +771,8 @@ async def handle_chat_message_claude_cli(
     max_history_messages: int = 100,
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
+    max_documents: int = 5,
+    max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
 ) -> None:
     """Stream a dashboard chat reply via ``claude -p`` (subscription billing)."""
@@ -628,6 +787,7 @@ async def handle_chat_message_claude_cli(
     unrestricted_requested = bool(data.get("unrestricted_mode"))
     thinking_enabled = bool(data.get("thinking_enabled"))
     images_raw = data.get("images") or []
+    documents_raw = data.get("documents") or []
 
     if not content:
         await ws.send_json({"type": "error", "message": "Empty message", "conversation_id": conversation_id})
@@ -675,6 +835,38 @@ async def handle_chat_message_claude_cli(
         else []
     )
 
+    # Cap + save document attachments (PDF / text / code) the same way.
+    capped_docs = documents_raw[:max_documents] if isinstance(documents_raw, list) else []
+    doc_paths = (
+        _save_inline_documents(conversation_id or "default", capped_docs, max_document_size_bytes)
+        if capped_docs
+        else []
+    )
+
+    # Persistent document memory — extract text from every attached document
+    # and save it to the DB so future turns (in any conversation) see the
+    # content without the user re-uploading. This runs alongside the temp
+    # file save above: Claude still reads the full binary THIS turn for
+    # maximum fidelity; the DB snapshot is a text-only fallback for later.
+    if capped_docs and DB_AVAILABLE:
+        try:
+            from .document_extractor import extract_and_persist
+            db_inst = get_db()
+            saved_docs = await extract_and_persist(
+                capped_docs, db=db_inst, source_conversation_id=conversation_id,
+            )
+            if saved_docs:
+                # Non-blocking UX feedback. Does not gate the chat response —
+                # the message continues regardless of whether the toast lands.
+                with contextlib.suppress(Exception):
+                    await ws.send_json({
+                        "type": "document_saved",
+                        "documents": saved_docs,
+                        "conversation_id": conversation_id,
+                    })
+        except Exception:
+            logger.exception("Document extraction/persistence failed (CLI backend)")
+
     # Build the prompt
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
     persona = str(preset.get("system_instruction", ""))
@@ -686,22 +878,21 @@ async def handle_chat_message_claude_cli(
     session_id = _CONVERSATION_SESSIONS.get(conversation_id or "") if conversation_id else None
     is_resumed = bool(session_id)
 
-    # Skip the user-context DB query on resumed turns — the persona/context
-    # block is only injected on the first turn of a session, so the lookup
-    # would be wasted work (and an extra round trip to SQLite) otherwise.
-    if is_resumed:
-        user_context, memories_context = "", ""
-    else:
-        try:
-            user_context, memories_context, _unused = await build_user_context(
-                user_name, unrestricted_requested,
-            )
-        except Exception:
-            logger.exception("build_user_context failed (CLI backend)")
-            user_context, memories_context = f"Name: {user_name}", ""
+    # Always rebuild the user context (profile + long-term memories + per-conv
+    # docs) so changes the user makes mid-conversation take effect on the very
+    # next turn, the same way they do in the SDK backend. The 60s TTL cache in
+    # build_user_context() keeps the SQLite round trips cheap on chat bursts.
+    try:
+        user_context, memories_context, _unused = await build_user_context(
+            user_name, unrestricted_requested, conversation_id=conversation_id,
+        )
+    except Exception:
+        logger.exception("build_user_context failed (CLI backend)")
+        user_context, memories_context = f"Name: {user_name}", ""
 
-    # Inject a persona+history header only on the first turn of the session.
-    # Resumed sessions already have everything cached on the Claude side.
+    # Persona + context go in every turn now (matches API behavior); only the
+    # raw conversation history stays gated on the first turn because Claude
+    # carries it server-side via --resume.
     full_prompt = _build_full_prompt(
         persona=persona,
         user_context=user_context,
@@ -710,6 +901,7 @@ async def handle_chat_message_claude_cli(
         history_limit=max_history_messages,
         current_message=content,
         image_paths=image_paths,
+        doc_paths=doc_paths,
         is_resumed_session=is_resumed,
     )
 
@@ -722,6 +914,8 @@ async def handle_chat_message_claude_cli(
         mode_info.append("🔓 Unrestricted")
     if image_paths:
         mode_info.append(f"🖼️ {len(image_paths)} image(s)")
+    if doc_paths:
+        mode_info.append(f"📎 {len(doc_paths)} doc(s)")
     mode_label = " • ".join(mode_info)
     await ws.send_json({
         "type": "stream_start",
@@ -769,10 +963,14 @@ async def handle_chat_message_claude_cli(
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
 
     claude_exe = _resolve_claude_executable() or "claude"
+    # The Read tool must be enabled whenever Claude needs to open any attached
+    # file — images AND documents both live on disk. `allow_read_for_images`
+    # is kept as the argv flag name for compatibility but covers both.
+    need_read = bool(image_paths) or bool(doc_paths)
     argv = _build_claude_argv(
         claude_exe,
         session_id=session_id,
-        allow_read_for_images=bool(image_paths),
+        allow_read_for_images=need_read,
         enable_thinking=thinking_enabled,
     )
 
@@ -811,20 +1009,32 @@ async def handle_chat_message_claude_cli(
                     )
                     if conversation_id:
                         reset_session(conversation_id)
+                    # Refetch context for the retry. The original build happened
+                    # before the stale-session error fired; if the user mutated
+                    # a memory or profile in the meantime, the prompt we resend
+                    # would otherwise carry the pre-mutation snapshot.
+                    try:
+                        fresh_user_context, fresh_memories_context, _unused = await build_user_context(
+                            user_name, unrestricted_requested, conversation_id=conversation_id,
+                        )
+                    except Exception:
+                        logger.exception("build_user_context failed during stale-session retry")
+                        fresh_user_context, fresh_memories_context = user_context, memories_context
                     fresh_prompt = _build_full_prompt(
                         persona=persona,
-                        user_context=user_context,
-                        memories_context=memories_context,
+                        user_context=fresh_user_context,
+                        memories_context=fresh_memories_context,
                         history=history,
                         history_limit=max_history_messages,
                         current_message=content,
                         image_paths=image_paths,
+                        doc_paths=doc_paths,
                         is_resumed_session=False,
                     )
                     fresh_argv = _build_claude_argv(
                         claude_exe,
                         session_id=None,
-                        allow_read_for_images=bool(image_paths),
+                        allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
                     )
                     new_session_id, usage = await _run_claude_subprocess(
@@ -862,9 +1072,11 @@ async def handle_chat_message_claude_cli(
     finally:
         if lock is not None and lock.locked():
             lock.release()
-        # Temp images aren't needed once the subprocess has been drained.
+        # Temp attachments aren't needed once the subprocess has been drained.
         if image_paths and conversation_id:
             _cleanup_image_dir(conversation_id)
+        if doc_paths and conversation_id:
+            _cleanup_docs_dir(conversation_id)
 
     # Save session id for next turn so Claude keeps context server-side.
     if conversation_id and new_session_id:
@@ -1056,7 +1268,9 @@ async def handle_ai_edit_message_claude_cli(
     persona = str(preset.get("system_instruction", ""))
 
     try:
-        user_context, memories_context, _ = await build_user_context(user_name, False)
+        user_context, memories_context, _ = await build_user_context(
+            user_name, False, conversation_id=conversation_id,
+        )
     except Exception:
         logger.exception("build_user_context failed (CLI edit)")
         user_context, memories_context = f"Name: {user_name}", ""

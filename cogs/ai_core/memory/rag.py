@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 import threading
@@ -364,6 +365,11 @@ class MemorySystem:
         """Generate vector embedding for text using Gemini API."""
         if not self.client:
             return None
+        # Skip empty / whitespace-only payloads — they always yield a useless
+        # near-zero vector but still cost an API call against the embedding
+        # quota. Cheap guard up front saves quota on long-tail noisy inputs.
+        if not text or not text.strip():
+            return None
 
         try:
             result = await self.client.aio.models.embed_content(
@@ -391,21 +397,34 @@ class MemorySystem:
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
+            # Pre-filter empty/whitespace entries — they always yield useless
+            # near-zero vectors but still cost an API call. Single-text guard
+            # in generate_embedding() does the same; mirror it here so batch
+            # callers don't burn quota on noise.
+            send_indices = [j for j, t in enumerate(batch) if t and t.strip()]
+            if not send_indices:
+                results.extend([None] * len(batch))
+                continue
+            send_texts = [batch[j] for j in send_indices]
             try:
                 # Process batch concurrently
                 tasks = [
                     self.client.aio.models.embed_content(model=EMBEDDING_MODEL, contents=text)
-                    for text in batch
+                    for text in send_texts
                 ]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                for result in batch_results:
+                # Re-expand results to match original batch shape; positions
+                # whose text was empty stay None.
+                expanded: list[np.ndarray | None] = [None] * len(batch)
+                for src_idx, result in zip(send_indices, batch_results, strict=False):
                     if isinstance(result, Exception):
-                        results.append(None)
+                        expanded[src_idx] = None
                     elif result.embeddings:  # type: ignore[union-attr]
-                        results.append(np.array(result.embeddings[0].values, dtype=np.float32))  # type: ignore[union-attr]
+                        expanded[src_idx] = np.array(result.embeddings[0].values, dtype=np.float32)  # type: ignore[union-attr]
                     else:
-                        results.append(None)
+                        expanded[src_idx] = None
+                results.extend(expanded)
 
             except Exception:
                 logger.exception("Batch embedding failed")

@@ -31,6 +31,7 @@ def json_dumps(obj, **kwargs):
 import asyncio
 import hashlib
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -336,12 +337,16 @@ async def _save_history_db(
         seen_content_hashes: set[str] = set()  # Track content to prevent duplicates
 
         # Get last message from DB to check for duplicates
-        # Use SHA-256 hash for reliable duplicate detection (avoids prefix collisions)
-        HASH_LENGTH = 500
+        # Hash the full content (not just a prefix) so two messages that share
+        # a long prefix but diverge later don't get falsely flagged as
+        # duplicates and silently dropped. SHA-256 is fast enough that 500-char
+        # vs full-content makes no measurable difference for chat-sized payloads.
         last_db_content_hash = None
         last_db_role = None
         if db_history:
-            last_db_content_hash = hashlib.sha256(db_history[-1].get("content", "")[:HASH_LENGTH].encode()).hexdigest()
+            last_db_content_hash = hashlib.sha256(
+                db_history[-1].get("content", "").encode()
+            ).hexdigest()
             last_db_role = db_history[-1].get("role")
 
         for item in new_messages:
@@ -362,11 +367,14 @@ async def _save_history_db(
             if not content:
                 continue
 
-            # Create content hash for duplicate detection
-            content_hash = f"{role}:{hashlib.sha256(content[:HASH_LENGTH].encode()).hexdigest()}"
+            # Hash the content once; reuse for both the per-batch dedupe key
+            # and the just-in-DB comparison. Recomputing twice was wasteful on
+            # long messages and trivially fixable.
+            raw_hash = hashlib.sha256(content.encode()).hexdigest()
+            content_hash = f"{role}:{raw_hash}"
 
             # Skip if this exact content was just in DB (immediate duplicate)
-            if last_db_content_hash and hashlib.sha256(content[:HASH_LENGTH].encode()).hexdigest() == last_db_content_hash and role == last_db_role:
+            if last_db_content_hash and raw_hash == last_db_content_hash and role == last_db_role:
                 logger.warning("⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50])
                 continue
 

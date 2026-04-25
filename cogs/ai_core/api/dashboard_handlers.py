@@ -7,6 +7,7 @@ These are standalone async functions called by the main WebSocket server.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 from itertools import islice
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 MAX_PREFERENCE_KEYS = 50  # Prevent DoS via unbounded dict keys
 
+from .dashboard_common import invalidate_user_context_cache
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
     DASHBOARD_ROLE_PRESETS,
@@ -519,6 +521,11 @@ async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> Non
     try:
         db = _get_db()
         memory_id = await db.save_dashboard_memory(content, category)
+        # Memories are global (no conversation_id column) so blow away every
+        # entry. The CLI backend now re-injects context on every turn, so a
+        # stale 60s-TTL cache would mean the user sees their freshly-saved
+        # memory only after the cache lapses — defeating the point of saving.
+        invalidate_user_context_cache(None)
         await ws.send_json({
             "type": "memory_saved",
             "id": memory_id,
@@ -568,6 +575,10 @@ async def handle_delete_memory(ws: WebSocketResponse, data: dict[str, Any]) -> N
     try:
         db = _get_db()
         await db.delete_dashboard_memory(int(memory_id))
+        # Same rationale as save_memory: drop every cached context so the deleted
+        # memory disappears from prompts on the next turn instead of lingering
+        # for up to 60s on resumed CLI sessions.
+        invalidate_user_context_cache(None)
         await ws.send_json({
             "type": "memory_deleted",
             "id": memory_id,
@@ -611,6 +622,386 @@ def _sanitize_profile_field(value: str | None, max_length: int = 200) -> str | N
     return value[:max_length].strip() or None
 
 
+async def handle_list_conversation_documents(
+    ws: WebSocketResponse, data: dict[str, Any]
+) -> None:
+    """List all documents (PDF / text / code) attached in a specific conversation.
+
+    Returns metadata only — ``extracted_text`` is omitted to keep the frame
+    small. The chat-header "📎 Files" panel renders filename + kind + size +
+    date from this payload; if the user wants to see full contents, they
+    ask the AI ("what's in character.pdf?").
+    """
+    conversation_id = data.get("conversation_id")
+    if not conversation_id or not isinstance(conversation_id, str):
+        await ws.send_json({
+            "type": "error",
+            "code": "MISSING_ID",
+            "message": "Missing conversation ID",
+        })
+        return
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", conversation_id):
+        await ws.send_json({
+            "type": "error",
+            "code": "INVALID_ID",
+            "message": "Invalid conversation ID format",
+        })
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json({
+            "type": "conversation_documents",
+            "conversation_id": conversation_id,
+            "documents": [],
+        })
+        return
+
+    try:
+        db = _get_db()
+        # Metadata-only listing + explicit conversation scope. We can't use
+        # ``list_document_memories`` (no scope arg) nor ``get_document_memories``
+        # (returns extracted_text — wastes bandwidth); the query here picks
+        # the middle ground.
+        async with db.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, filename, file_kind, char_count, page_count, created_at
+                   FROM dashboard_document_memories
+                   WHERE source_conversation_id = ?
+                   ORDER BY created_at DESC""",
+                (conversation_id,),
+            )
+            rows = await cursor.fetchall()
+        documents = [
+            {
+                "id": r[0],
+                "filename": r[1],
+                "file_kind": r[2],
+                "char_count": r[3],
+                "page_count": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+        await ws.send_json({
+            "type": "conversation_documents",
+            "conversation_id": conversation_id,
+            "documents": documents,
+        })
+    except Exception:
+        logger.exception("Failed to list conversation documents")
+        await ws.send_json({
+            "type": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Failed to list documents",
+        })
+
+
+async def handle_delete_document_memory(
+    ws: WebSocketResponse, data: dict[str, Any]
+) -> None:
+    """Delete a single document memory by id.
+
+    Frontend sends ``{type: 'delete_document_memory', id: <int>,
+    conversation_id: <str>}``. We verify the id belongs to the stated
+    conversation before deleting — defense against a compromised client
+    nuking documents from a different conversation by sending a fabricated id.
+    """
+    raw_id = data.get("id")
+    conversation_id = data.get("conversation_id")
+    if raw_id is None:
+        await ws.send_json({
+            "type": "error",
+            "code": "INVALID_ID",
+            "message": "Invalid document id",
+        })
+        return
+    try:
+        memory_id = int(raw_id)
+    except (TypeError, ValueError):
+        await ws.send_json({
+            "type": "error",
+            "code": "INVALID_ID",
+            "message": "Invalid document id",
+        })
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json({
+            "type": "error",
+            "code": "DB_UNAVAILABLE",
+            "message": "Database not available",
+        })
+        return
+
+    try:
+        db = _get_db()
+        # Scope check: only delete if the document belongs to the stated
+        # conversation. Prevents cross-conversation deletion even if a
+        # malicious client guesses or enumerates ids.
+        async with db.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT source_conversation_id FROM dashboard_document_memories WHERE id = ?",
+                (memory_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            # Idempotent: missing id is treated as already-deleted. Matches
+            # REST DELETE semantics and avoids confusing the UI when the
+            # user clicks delete twice quickly.
+            await ws.send_json({
+                "type": "document_memory_deleted",
+                "id": memory_id,
+                "conversation_id": conversation_id,
+            })
+            return
+        owner = row[0]
+        if conversation_id and owner and owner != conversation_id:
+            await ws.send_json({
+                "type": "error",
+                "code": "FORBIDDEN",
+                "message": "Document does not belong to this conversation",
+            })
+            return
+        await db.delete_document_memory(memory_id)
+        # Drop cached user_context so the next AI turn rebuilds without this doc.
+        # Use the document's owner conversation rather than the (possibly None)
+        # ``conversation_id`` from the request — the doc may have been a global
+        # one with no conversation scope, in which case ``owner`` is None and
+        # we fall back to invalidating the request's conversation.
+        invalidate_user_context_cache(owner or conversation_id)
+        await ws.send_json({
+            "type": "document_memory_deleted",
+            "id": memory_id,
+            "conversation_id": conversation_id,
+        })
+    except Exception:
+        logger.exception("Failed to delete document memory")
+        await ws.send_json({
+            "type": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Failed to delete document",
+        })
+
+
+async def handle_update_document_memory(
+    ws: WebSocketResponse, data: dict[str, Any]
+) -> None:
+    """Update a document memory's filename and/or extracted text.
+
+    Frontend sends ``{type: 'update_document_memory', id, conversation_id,
+    filename?, extracted_text?}``. Either ``filename`` or ``extracted_text``
+    (or both) must be provided — missing fields preserve the existing value.
+
+    Same scope check as delete: the id must belong to ``conversation_id`` so
+    a compromised client can't edit documents in a different conversation
+    by fabricating an id.
+    """
+    raw_id = data.get("id")
+    conversation_id = data.get("conversation_id")
+    new_filename = data.get("filename")
+    new_text = data.get("extracted_text")
+
+    if raw_id is None:
+        await ws.send_json({
+            "type": "error", "code": "INVALID_ID", "message": "Invalid document id",
+        })
+        return
+    try:
+        memory_id = int(raw_id)
+    except (TypeError, ValueError):
+        await ws.send_json({
+            "type": "error", "code": "INVALID_ID", "message": "Invalid document id",
+        })
+        return
+
+    # Nothing to update? Treat as a no-op confirmation so the UI doesn't
+    # need to special-case empty-patch submissions.
+    if new_filename is None and new_text is None:
+        await ws.send_json({
+            "type": "document_memory_updated",
+            "id": memory_id,
+            "conversation_id": conversation_id,
+            "noop": True,
+        })
+        return
+
+    # Sanitise + cap incoming strings — mirrors the extractor's own caps so
+    # we never persist something bigger than what ``extract_and_persist``
+    # would have saved originally.
+    sanitised_filename: str | None = None
+    if new_filename is not None:
+        if not isinstance(new_filename, str):
+            await ws.send_json({
+                "type": "error", "code": "INVALID_ARG",
+                "message": "filename must be a string",
+            })
+            return
+        # Basic filename cleanup: strip control chars, trim, cap length.
+        sanitised_filename = re.sub(
+            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", new_filename,
+        ).strip()[:200]
+        if not sanitised_filename:
+            await ws.send_json({
+                "type": "error", "code": "INVALID_ARG",
+                "message": "filename cannot be empty",
+            })
+            return
+
+    sanitised_text: str | None = None
+    if new_text is not None:
+        if not isinstance(new_text, str):
+            await ws.send_json({
+                "type": "error", "code": "INVALID_ARG",
+                "message": "extracted_text must be a string",
+            })
+            return
+        # Strip C0 controls except \t/\n; cap at same MAX_EXTRACTED_CHARS
+        # used during first-upload extraction (500K chars). Users editing
+        # a doc aren't allowed to persist more text than a fresh upload
+        # could have.
+        from .document_extractor import MAX_EXTRACTED_CHARS
+        sanitised_text = re.sub(
+            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", new_text,
+        )
+        if len(sanitised_text) > MAX_EXTRACTED_CHARS:
+            sanitised_text = sanitised_text[:MAX_EXTRACTED_CHARS]
+
+    if not DB_AVAILABLE:
+        await ws.send_json({
+            "type": "error", "code": "DB_UNAVAILABLE",
+            "message": "Database not available",
+        })
+        return
+
+    try:
+        db = _get_db()
+        # Scope check: verify ownership before update, same pattern as delete.
+        async with db.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT source_conversation_id FROM dashboard_document_memories WHERE id = ?",
+                (memory_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            await ws.send_json({
+                "type": "error", "code": "NOT_FOUND",
+                "message": "Document not found",
+            })
+            return
+        owner = row[0]
+        if conversation_id and owner and owner != conversation_id:
+            await ws.send_json({
+                "type": "error", "code": "FORBIDDEN",
+                "message": "Document does not belong to this conversation",
+            })
+            return
+
+        updated = await db.update_document_memory(
+            memory_id,
+            filename=sanitised_filename,
+            extracted_text=sanitised_text,
+        )
+        if not updated:
+            await ws.send_json({
+                "type": "error", "code": "NOT_FOUND",
+                "message": "Document not found",
+            })
+            return
+
+        # Doc text/filename changed — drop cached user_context so the next
+        # turn rebuilds with the new content.
+        invalidate_user_context_cache(owner or conversation_id)
+        await ws.send_json({
+            "type": "document_memory_updated",
+            "id": memory_id,
+            "conversation_id": conversation_id,
+            "filename": sanitised_filename,
+            "char_count": len(sanitised_text) if sanitised_text is not None else None,
+        })
+    except Exception:
+        logger.exception("Failed to update document memory")
+        await ws.send_json({
+            "type": "error", "code": "INTERNAL_ERROR",
+            "message": "Failed to update document",
+        })
+
+
+async def handle_get_document_memory_content(
+    ws: WebSocketResponse, data: dict[str, Any]
+) -> None:
+    """Fetch a single document memory's full extracted text for editing.
+
+    ``list_conversation_documents`` deliberately omits ``extracted_text`` to
+    keep the list response lean; when the user clicks "Edit" we need the
+    full content, so this endpoint returns just one row with everything.
+    Scope-checked by conversation_id like the other per-doc handlers.
+    """
+    raw_id = data.get("id")
+    conversation_id = data.get("conversation_id")
+    if raw_id is None:
+        await ws.send_json({
+            "type": "error", "code": "INVALID_ID", "message": "Invalid document id",
+        })
+        return
+    try:
+        memory_id = int(raw_id)
+    except (TypeError, ValueError):
+        await ws.send_json({
+            "type": "error", "code": "INVALID_ID", "message": "Invalid document id",
+        })
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json({
+            "type": "error", "code": "DB_UNAVAILABLE",
+            "message": "Database not available",
+        })
+        return
+
+    try:
+        db = _get_db()
+        async with db.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, filename, file_kind, extracted_text, char_count,
+                          page_count, source_conversation_id, created_at
+                   FROM dashboard_document_memories WHERE id = ?""",
+                (memory_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            await ws.send_json({
+                "type": "error", "code": "NOT_FOUND",
+                "message": "Document not found",
+            })
+            return
+        owner = row[6]
+        if conversation_id and owner and owner != conversation_id:
+            await ws.send_json({
+                "type": "error", "code": "FORBIDDEN",
+                "message": "Document does not belong to this conversation",
+            })
+            return
+        await ws.send_json({
+            "type": "document_memory_content",
+            "document": {
+                "id": row[0],
+                "filename": row[1],
+                "file_kind": row[2],
+                "extracted_text": row[3],
+                "char_count": row[4],
+                "page_count": row[5],
+                "source_conversation_id": row[6],
+                "created_at": row[7],
+            },
+        })
+    except Exception:
+        logger.exception("Failed to fetch document memory content")
+        await ws.send_json({
+            "type": "error", "code": "INTERNAL_ERROR",
+            "message": "Failed to load document",
+        })
+
+
 async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Save user profile."""
     profile_data = data.get("profile", {})
@@ -641,6 +1032,9 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
             preferences=sanitized_prefs,
             # Note: is_creator is NOT accepted from client input for security
         )
+        # Profile is shared across every conversation, so clear the entire
+        # user_context cache instead of trying to enumerate per-conv entries.
+        invalidate_user_context_cache(None)
         await ws.send_json({
             "type": "profile_saved",
             "profile": profile_data,

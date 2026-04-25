@@ -405,7 +405,7 @@ class TestMaxClients:
 
     def test_limits_constants(self, server):
         """Verify all limit constants are set."""
-        assert server.MAX_CONTENT_LENGTH == 50_000
+        assert server.MAX_CONTENT_LENGTH == 200_000
         assert server.MAX_HISTORY_MESSAGES == 100
         assert server.MAX_IMAGES == 10
         assert server.MAX_IMAGE_SIZE_BYTES == 10 * 1024 * 1024

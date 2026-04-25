@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -736,6 +737,37 @@ class Database:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_dashboard_memories_category
                 ON dashboard_memories(category, importance DESC)
+            """)
+
+            # Dashboard Document Memory Table — persistent text extracted
+            # from uploaded PDFs / DOCX / text files. Binary files are not
+            # stored (kept only during the upload turn); extracted text is
+            # auto-injected into every future AI turn via build_user_context
+            # so the user doesn't re-upload the same character sheet / lore
+            # bible on every new conversation.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_document_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    file_kind TEXT NOT NULL,
+                    extracted_text TEXT NOT NULL,
+                    char_count INTEGER NOT NULL,
+                    page_count INTEGER,
+                    source_conversation_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_document_memories_created
+                ON dashboard_document_memories(created_at DESC)
+            """)
+            # Scoped lookup index: build_user_context filters by conversation
+            # on every AI turn so each RP thread sees only its own attachments.
+            # Without this index the query degrades to a full scan as the
+            # document library grows.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_document_memories_conversation
+                ON dashboard_document_memories(source_conversation_id, created_at DESC)
             """)
 
             await conn.execute("""
@@ -2277,6 +2309,190 @@ class Database:
         """Delete a specific memory. Returns True if a row was actually deleted."""
         async with self.get_write_connection() as conn:
             cursor = await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
+            return bool(cursor.rowcount > 0)
+
+    # ==================== Dashboard Document Memories ====================
+    # Persistent extracted text from uploaded PDFs / DOCX / text files.
+    # Unlike raw attachments (deleted after the turn), these survive bot
+    # restarts and cross-conversation boundaries so RP users don't have to
+    # re-upload the same character sheets / lore docs every session.
+
+    async def save_document_memory(
+        self,
+        filename: str,
+        file_kind: str,
+        extracted_text: str,
+        char_count: int,
+        page_count: int | None = None,
+        source_conversation_id: str | None = None,
+    ) -> int:
+        """Store extracted text from an uploaded document. Returns the row id."""
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO dashboard_document_memories
+                   (filename, file_kind, extracted_text, char_count, page_count, source_conversation_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (filename, file_kind, extracted_text, char_count, page_count, source_conversation_id),
+            )
+            rowid = cursor.lastrowid
+            return int(rowid) if rowid is not None else 0
+
+    async def get_document_memories(
+        self,
+        limit: int = 20,
+        conversation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch the most recent document memories for prompt injection.
+
+        When ``conversation_id`` is provided, only documents uploaded in that
+        conversation are returned — scoped so each RP thread has its own
+        library of character sheets / lore without leaking into unrelated
+        conversations. Pass ``None`` to get every document (used by the
+        management UI, NOT by the prompt builder).
+
+        Ordered newest-first because users typically attach the most relevant
+        material right before asking about it — older uploads become less
+        important context. Callers can trim further based on token budget.
+        """
+        async with self.get_connection() as conn:
+            if conversation_id is None:
+                cursor = await conn.execute(
+                    """SELECT id, filename, file_kind, extracted_text, char_count,
+                              page_count, source_conversation_id, created_at
+                       FROM dashboard_document_memories
+                       ORDER BY created_at DESC
+                       LIMIT ?""",
+                    (limit,),
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT id, filename, file_kind, extracted_text, char_count,
+                              page_count, source_conversation_id, created_at
+                       FROM dashboard_document_memories
+                       WHERE source_conversation_id = ?
+                       ORDER BY created_at DESC
+                       LIMIT ?""",
+                    (conversation_id, limit),
+                )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "filename": r[1],
+                    "file_kind": r[2],
+                    "extracted_text": r[3],
+                    "char_count": r[4],
+                    "page_count": r[5],
+                    "source_conversation_id": r[6],
+                    "created_at": r[7],
+                }
+                for r in rows
+            ]
+
+    async def list_document_memories(self) -> list[dict[str, Any]]:
+        """Metadata-only listing (no extracted_text) for the UI grid —
+        avoids sending tens of MB of text over the WebSocket just to
+        render a filename list."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, filename, file_kind, char_count, page_count,
+                          source_conversation_id, created_at
+                   FROM dashboard_document_memories
+                   ORDER BY created_at DESC"""
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "filename": r[1],
+                    "file_kind": r[2],
+                    "char_count": r[3],
+                    "page_count": r[4],
+                    "source_conversation_id": r[5],
+                    "created_at": r[6],
+                }
+                for r in rows
+            ]
+
+    async def delete_document_memory(self, memory_id: int) -> bool:
+        """Delete a document memory by id. Returns True if a row was removed."""
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM dashboard_document_memories WHERE id = ?",
+                (memory_id,),
+            )
+            return bool(cursor.rowcount > 0)
+
+    async def update_document_memory(
+        self,
+        memory_id: int,
+        filename: str | None = None,
+        extracted_text: str | None = None,
+    ) -> bool:
+        """Update a document memory's filename and/or extracted text.
+
+        ``None`` arguments preserve the existing value (PATCH semantics) — pass
+        only the fields you want to change. ``char_count`` is recomputed
+        whenever ``extracted_text`` changes so callers don't have to.
+
+        Returns True if the row existed and was updated, False if the id was
+        not found.
+        """
+        if filename is None and extracted_text is None:
+            return False
+
+        # Fetch current row so we can skip SET clauses for unchanged fields
+        # — avoids a needless write + keeps the filename stable when only
+        # the text is being patched (and vice-versa).
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT filename, extracted_text FROM dashboard_document_memories WHERE id = ?",
+                (memory_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            new_filename = filename if filename is not None else row[0]
+            new_text = extracted_text if extracted_text is not None else row[1]
+            new_count = len(new_text) if new_text else 0
+            cursor = await conn.execute(
+                """UPDATE dashboard_document_memories
+                   SET filename = ?, extracted_text = ?, char_count = ?
+                   WHERE id = ?""",
+                (new_filename, new_text, new_count, memory_id),
+            )
+            return bool(cursor.rowcount > 0)
+
+    async def count_document_memories(self) -> int:
+        """Fast count for limit enforcement (caps total document memories)."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM dashboard_document_memories"
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    async def total_document_memories_size(self) -> int:
+        """Sum of extracted_text char counts across all document memories,
+        used to enforce an aggregate storage cap."""
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COALESCE(SUM(char_count), 0) FROM dashboard_document_memories"
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    async def delete_oldest_document_memory(self) -> bool:
+        """Drop the oldest document memory (LRU-style trimming). Called by
+        the handler when adding a new memory would exceed the total cap."""
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                """DELETE FROM dashboard_document_memories
+                   WHERE id = (
+                       SELECT id FROM dashboard_document_memories
+                       ORDER BY created_at ASC LIMIT 1
+                   )"""
+            )
             return bool(cursor.rowcount > 0)
 
     async def get_dashboard_user_profile(self) -> dict[str, Any] | None:

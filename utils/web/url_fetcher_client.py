@@ -104,7 +104,8 @@ class URLFetcherClient:
             pass  # url_fetcher unavailable — Go service should have its own SSRF protection
 
         try:
-            assert self._session is not None
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
             # Propagate trace ID to Go service
             headers: dict[str, str] = {}
             try:
@@ -166,14 +167,27 @@ class URLFetcherClient:
                 return result
 
         try:
-            assert self._session is not None
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
+            # allow_redirects=False closes the SSRF redirect-bypass window: the
+            # initial host was checked above, but a 302 pointing at 169.254.169.254
+            # or 127.0.0.1 would otherwise be followed by aiohttp's default
+            # redirect chaser without re-resolving through the private-IP guard.
             async with self._session.get(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                }
+                },
+                allow_redirects=False,
             ) as resp:
+                # If we got a redirect, surface it as an error rather than
+                # silently following to a possibly-private target.
+                if 300 <= resp.status < 400:
+                    result["status_code"] = resp.status
+                    result["error"] = f"Redirect not followed (SSRF guard): {resp.headers.get('Location', '')}"
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
                 result["status_code"] = resp.status
                 result["content_type"] = resp.headers.get("Content-Type", "")
 
@@ -231,7 +245,8 @@ class URLFetcherClient:
             if timeout:
                 payload["timeout"] = timeout
 
-            assert self._session is not None
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
             async with self._session.post(
                 f"{self.base_url}/fetch/batch",
                 json=payload

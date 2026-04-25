@@ -1,6 +1,26 @@
 """
-Memory Consolidation Module.
-Summarizes long conversations into compact memory chunks.
+Conversation Summary Archiver.
+
+Archives long-running conversation history into compact summary rows in
+the ``conversation_summaries`` table, with optional opt-in deletion of the
+originals (``CONSOLIDATOR_DELETE_ORIGINALS=1``). The summary itself is
+extractive (key-sentence + topic-keyword) rather than LLM-generated; for
+abstractive summaries see :mod:`cogs.ai_core.memory.summarizer`.
+
+This module is **distinct** from :mod:`cogs.ai_core.memory.consolidator`:
+
+  * ``consolidator.py`` extracts structured *facts* about characters from
+    recent turns and feeds them into ``entity_memory`` to fight
+    hallucinations. It is fact-oriented and runs every N messages.
+  * ``memory_consolidator.py`` (this file) trims the *raw history* itself,
+    rolling old turns into a one-line summary so the chat history table
+    doesn't grow unboundedly. It is storage-oriented and runs every few
+    hours.
+
+Both files used to expose ``MemoryConsolidator``/``memory_consolidator``
+as legacy aliases — those have been removed in favour of the explicit
+:class:`SummaryArchiver` / :data:`summary_archiver` names so callers can
+no longer accidentally grab the wrong subsystem.
 """
 
 from __future__ import annotations
@@ -9,6 +29,7 @@ import asyncio
 import contextlib
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 from dataclasses import dataclass, field
@@ -59,15 +80,19 @@ class ConversationSummary:
         return "\n".join(parts)
 
 
-class ConversationSummarizer:
+class SummaryArchiver:
     """
-    Consolidates conversation history into summaries.
+    Archives old conversation history into compact summary rows.
 
     Features:
     - Summarizes old conversations to save context space
     - Preserves key topics and decisions
     - Periodic background consolidation
     - Tiered memory (recent > summary > archived)
+
+    For abstractive (LLM-generated) summaries, see :class:`ConversationSummarizer`
+    in :mod:`.summarizer` — this class only does extractive summarization
+    (first/last user line + keyword topics) so it can run without an API key.
     """
 
     # Configuration
@@ -76,7 +101,7 @@ class ConversationSummarizer:
     MAX_SUMMARY_LENGTH = 500
 
     def __init__(self):
-        self.logger = logging.getLogger("ConversationSummarizer")
+        self.logger = logging.getLogger("SummaryArchiver")
         self._consolidation_task: asyncio.Task | None = None
 
     async def init_schema(self) -> None:
@@ -473,8 +498,4 @@ class ConversationSummarizer:
 
 
 # Global instance
-conversation_summarizer = ConversationSummarizer()
-
-# Backward-compatible aliases
-MemoryConsolidator = ConversationSummarizer
-memory_consolidator = conversation_summarizer
+summary_archiver = SummaryArchiver()

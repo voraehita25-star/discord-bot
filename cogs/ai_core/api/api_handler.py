@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 import time
@@ -274,7 +275,7 @@ _OPINION_RE = re.compile(
 
 # Short casual messages (< 5 words, no question mark) — likely chat
 _SHORT_CASUAL_RE = re.compile(
-    r'^[^?？]{1,30}$',  # noqa: RUF001 - fullwidth ？ is intentional (Thai/Japanese input)
+    r'^[^?？]{1,30}$',
     re.UNICODE,
 )
 
@@ -353,7 +354,7 @@ def classify_search_intent(message: str) -> bool | None:
     no_search_score = no_search_pattern_score  # Start with weighted pattern hits
     no_search_score += len(words & _NO_SEARCH_SIGNAL_WORDS)
     # Question marks are a mild search signal
-    if '?' in msg or '？' in msg:  # noqa: RUF001 - fullwidth ？ intentional
+    if '?' in msg or '？' in msg:
         search_score += 1
 
     # If scoring is decisive (gap >= 2), return the verdict

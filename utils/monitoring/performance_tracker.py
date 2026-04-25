@@ -309,7 +309,7 @@ try:
 except ImportError:
     PROMETHEUS_BRIDGE_AVAILABLE = False
 
-    def record_to_prometheus(operation: str, duration: float) -> None:  # noqa: ARG001
+    def record_to_prometheus(operation: str, duration: float) -> None:
         """No-op when prometheus_client is not installed."""
 
     def get_prometheus_metrics() -> str:

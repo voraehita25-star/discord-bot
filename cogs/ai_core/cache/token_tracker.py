@@ -9,7 +9,22 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _aware_now() -> datetime:
+    """Tz-aware UTC now. Naive datetime.now() compared against tz-aware
+    timestamps loaded from the DB raises TypeError, which silently breaks
+    rolling-window queries — use this everywhere instead."""
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(dt: datetime) -> datetime:
+    """Promote a naive datetime to UTC. Used for legacy DB rows that may not
+    carry an offset."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 from typing import Any
 
 from ..data.constants import DEFAULT_MODEL
@@ -123,6 +138,83 @@ class TokenTracker:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self.logger.info("📊 Token tracker cleanup task started")
 
+    async def init_from_db(self, hours: int = 24, max_rows: int = 10_000) -> int:
+        """Pre-populate the in-memory cache from the ``token_usage`` table.
+
+        Quotas are enforced against ``_usage_cache``, which is empty after a
+        process restart — so without this call, ``check_limits`` would let a
+        user blow past their hourly limit until enough new requests refilled
+        the cache. We replay the last ``hours`` worth of recorded usage so
+        post-restart quotas line up with what was already spent.
+
+        Returns the number of records loaded. Called from bot startup; safe
+        to call multiple times (each call re-reads from DB, replacing any
+        records currently in the same time window).
+        """
+        if not DB_AVAILABLE or db is None:
+            return 0
+
+        cutoff = _aware_now() - timedelta(hours=hours)
+        try:
+            async with db.get_connection() as conn:
+                cursor = await conn.execute(
+                    """SELECT user_id, channel_id, guild_id, input_tokens,
+                              output_tokens, model, cached, created_at
+                       FROM token_usage
+                       WHERE created_at >= ?
+                       ORDER BY created_at DESC
+                       LIMIT ?""",
+                    (cutoff.isoformat(), max_rows),
+                )
+                rows = await cursor.fetchall()
+        except Exception as e:
+            self.logger.warning("Failed to load token_usage history: %s", e)
+            return 0
+
+        if not rows:
+            return 0
+
+        loaded = 0
+        async with self._lock:
+            for row in rows:
+                try:
+                    ts_raw = row[7]
+                    ts = (
+                        _ensure_aware(datetime.fromisoformat(ts_raw))
+                        if isinstance(ts_raw, str)
+                        else _aware_now()
+                    )
+                    usage = TokenUsage(
+                        user_id=int(row[0]),
+                        channel_id=int(row[1]),
+                        guild_id=int(row[2]) if row[2] is not None else None,
+                        input_tokens=int(row[3] or 0),
+                        output_tokens=int(row[4] or 0),
+                        model=row[5] or DEFAULT_MODEL,
+                        cached=bool(row[6]),
+                        timestamp=ts,
+                    )
+                except (TypeError, ValueError) as e:
+                    self.logger.debug("Skipping malformed token_usage row: %s", e)
+                    continue
+
+                self._usage_cache[f"user:{usage.user_id}"].append(usage)
+                self._usage_cache[f"channel:{usage.channel_id}"].append(usage)
+                if usage.guild_id is not None:
+                    self._usage_cache[f"guild:{usage.guild_id}"].append(usage)
+                loaded += 1
+
+            # Trim each key to the cap in case the DB had more than
+            # MAX_RECORDS_PER_KEY rows for one user.
+            for key in self._usage_cache:
+                if len(self._usage_cache[key]) > self.MAX_RECORDS_PER_KEY:
+                    self._usage_cache[key] = self._usage_cache[key][-self.MAX_RECORDS_PER_KEY:]
+
+        self.logger.info(
+            "📊 Token tracker pre-populated: %d records from last %dh", loaded, hours
+        )
+        return loaded
+
     def stop_cleanup_task(self) -> None:
         """Stop the cleanup task."""
         if self._cleanup_task and not self._cleanup_task.done():
@@ -143,10 +235,13 @@ class TokenTracker:
 
     async def _cleanup_old_records(self) -> None:
         """Remove records older than 7 days from memory cache."""
-        cutoff = datetime.now() - timedelta(days=7)
+        cutoff = _aware_now() - timedelta(days=7)
         async with self._lock:
             for key in list(self._usage_cache.keys()):
-                self._usage_cache[key] = [u for u in self._usage_cache[key] if u.timestamp > cutoff]
+                self._usage_cache[key] = [
+                    u for u in self._usage_cache[key]
+                    if _ensure_aware(u.timestamp) > cutoff
+                ]
                 if not self._usage_cache[key]:
                     del self._usage_cache[key]
         self.logger.debug("🧹 Cleaned up old token usage records")
@@ -220,10 +315,10 @@ class TokenTracker:
 
     def _get_usage_in_period(self, key: str, period: timedelta) -> list[TokenUsage]:
         """Get usage records within a time period (returns snapshot, caller should use with lock if needed)."""
-        cutoff = datetime.now() - period
+        cutoff = _aware_now() - period
         # Return a copy to avoid modification during iteration
         records = self._usage_cache.get(key, [])
-        return [u for u in records if u.timestamp > cutoff]
+        return [u for u in records if _ensure_aware(u.timestamp) > cutoff]
 
     async def get_usage_in_period_safe(self, key: str, period: timedelta) -> list[TokenUsage]:
         """Thread-safe version of _get_usage_in_period."""

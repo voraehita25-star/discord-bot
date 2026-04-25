@@ -10,6 +10,7 @@ import hmac
 import html
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import platform
@@ -257,7 +258,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler for health endpoints."""
 
     # Suppress default logging
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 - signature required by BaseHTTPRequestHandler
+    def log_message(self, format: str, *args) -> None:
         """Override to suppress logging."""
 
     def _send_json_response(self, data: dict, status: int = 200) -> None:

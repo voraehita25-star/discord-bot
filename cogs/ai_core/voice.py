@@ -6,6 +6,7 @@ Handles voice channel join/leave operations and status tracking.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast

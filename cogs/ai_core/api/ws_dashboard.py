@@ -23,6 +23,7 @@ import asyncio
 import hmac
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import uuid
@@ -73,14 +74,17 @@ if API_FAILOVER_AVAILABLE:
 from .dashboard_handlers import (
     handle_add_conversation_tag,
     handle_delete_conversation,
+    handle_delete_document_memory,
     handle_delete_memory,
     handle_delete_message,
     handle_edit_message,
     handle_export_conversation,
+    handle_get_document_memory_content,
     handle_get_memories,
     handle_get_profile,
     handle_like_message,
     handle_list_all_tags,
+    handle_list_conversation_documents,
     handle_list_conversations,
     handle_load_conversation,
     handle_pin_message,
@@ -89,6 +93,7 @@ from .dashboard_handlers import (
     handle_save_memory,
     handle_save_profile,
     handle_star_conversation,
+    handle_update_document_memory,
 )
 
 # ============================================================================
@@ -100,10 +105,19 @@ class DashboardWebSocketServer:
 
     # Limits
     MAX_CLIENTS = 20
-    MAX_CONTENT_LENGTH = 50_000  # characters
+    # Raised from 50K → 200K: matches the direct-API backend ceiling and lets
+    # users paste large RP context (character sheets / world bibles / full
+    # scenes) in a single message. Claude Opus 4.7 1M context window has
+    # plenty of headroom — 200K chars ≈ 50-80K tokens, ~8% of the window.
+    MAX_CONTENT_LENGTH = 200_000  # characters
     MAX_HISTORY_MESSAGES = 100
     MAX_IMAGES = 10
     MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB per image
+    # Document attachments (PDF / text / code). 32 MB matches the Anthropic
+    # API document-block cap exactly — setting it higher would just surface
+    # 413 errors from the server instead of a local-side rejection.
+    MAX_DOCUMENTS = 5
+    MAX_DOCUMENT_SIZE_BYTES = 32 * 1024 * 1024
     STREAM_TIMEOUT = 300  # seconds for full stream consumption
     RATE_LIMIT_MESSAGES_PER_MINUTE = 30  # max messages per client per minute
 
@@ -119,6 +133,10 @@ class DashboardWebSocketServer:
         self._client_inflight: dict[str, int] = {}  # concurrent request tracking
         self._authenticated_clients: set[str] = set()  # track authenticated client IDs
         self._auth_deadline: float = 5.0  # seconds to authenticate after connecting
+        # Long-running handlers (chat, ai_edit) are dispatched as background
+        # tasks so the read loop stays responsive to pings + other messages
+        # while the AI streams. We hold strong refs here so tasks aren't GC'd.
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
         # Initialize Gemini client
         if GEMINI_API_KEY:
@@ -485,7 +503,19 @@ class DashboardWebSocketServer:
                         if msg_type not in ("auth", "ping") and expected_token and client_id not in self._authenticated_clients:
                             await ws.send_json({"type": "error", "message": "Authentication required"})
                             continue
-                        await self.handle_message(ws, data, client_id, msg_id=msg_id)
+                        # Long-running AI ops are dispatched as background tasks so
+                        # the read loop keeps draining pings + other messages while
+                        # the AI streams. Without this, a 60s+ AI turn starves the
+                        # client's ping/pong loop and triggers a forced reconnect,
+                        # surfacing as "Not connected to AI server" mid-response.
+                        if msg_type in ("message", "ai_edit_message"):
+                            task = asyncio.create_task(
+                                self.handle_message(ws, data, client_id, msg_id=msg_id)
+                            )
+                            self._background_tasks.add(task)
+                            task.add_done_callback(self._background_tasks.discard)
+                        else:
+                            await self.handle_message(ws, data, client_id, msg_id=msg_id)
                     except json.JSONDecodeError:
                         await ws.send_json({"type": "error", "message": "Invalid JSON"})
                 elif msg.type == WSMsgType.ERROR:
@@ -570,6 +600,14 @@ class DashboardWebSocketServer:
             await self.handle_get_memories(ws, data)
         elif msg_type == "delete_memory":
             await self.handle_delete_memory(ws, data)
+        elif msg_type == "list_conversation_documents":
+            await handle_list_conversation_documents(ws, data)
+        elif msg_type == "delete_document_memory":
+            await handle_delete_document_memory(ws, data)
+        elif msg_type == "get_document_memory_content":
+            await handle_get_document_memory_content(ws, data)
+        elif msg_type == "update_document_memory":
+            await handle_update_document_memory(ws, data)
         elif msg_type == "get_profile":
             await self.handle_get_profile(ws)
         elif msg_type == "save_profile":
@@ -652,6 +690,8 @@ class DashboardWebSocketServer:
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     max_images=self.MAX_IMAGES,
                     max_image_size_bytes=self.MAX_IMAGE_SIZE_BYTES,
+                    max_documents=self.MAX_DOCUMENTS,
+                    max_document_size_bytes=self.MAX_DOCUMENT_SIZE_BYTES,
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return
@@ -665,6 +705,8 @@ class DashboardWebSocketServer:
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     max_images=self.MAX_IMAGES,
                     max_image_size_bytes=self.MAX_IMAGE_SIZE_BYTES,
+                    max_documents=self.MAX_DOCUMENTS,
+                    max_document_size_bytes=self.MAX_DOCUMENT_SIZE_BYTES,
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return

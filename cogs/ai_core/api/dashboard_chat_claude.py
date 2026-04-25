@@ -11,6 +11,7 @@ import asyncio
 import base64
 import io
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -144,7 +145,10 @@ from ..claude_payloads import (
     build_cached_system_prompt,
     build_claude_base64_image_block,
     build_claude_message,
+    build_claude_pdf_document_block,
     build_claude_text_block,
+    build_claude_text_document_block,
+    build_split_cached_system_prompt,
 )
 from .dashboard_common import (
     LeadingTimestampStripper,
@@ -175,6 +179,8 @@ async def handle_chat_message_claude(
     max_history_messages: int = 500,
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
+    max_documents: int = 5,
+    max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
 ) -> None:
     """Handle incoming chat message and stream response via Claude."""
@@ -185,6 +191,7 @@ async def handle_chat_message_claude(
     unrestricted_mode_requested = data.get("unrestricted_mode", False)
     history = data.get("history", [])
     images = data.get("images", [])
+    documents = data.get("documents", [])
     user_name = data.get("user_name", "User")
     is_regeneration = data.get("is_regeneration", False)
     is_failover_retry = data.get("_failover_retry", False)
@@ -203,8 +210,15 @@ async def handle_chat_message_claude(
     if len(images) > max_images:
         await ws.send_json({"type": "error", "message": f"Too many images (max {max_images})"})
         return
+    # Validate + cap documents the same way — defense against a malicious or
+    # buggy client sending an unbounded list.
+    if not isinstance(documents, list):
+        documents = []
+    if len(documents) > max_documents:
+        await ws.send_json({"type": "error", "message": f"Too many documents (max {max_documents})"})
+        return
 
-    if not content and not images:
+    if not content and not images and not documents:
         await ws.send_json({"type": "error", "message": "Empty message"})
         return
 
@@ -223,9 +237,34 @@ async def handle_chat_message_claude(
         except Exception as e:
             logger.warning("Failed to save user message: %s", e)
 
-    # Build context with user identity and memories
+    # Persistent document memory — extract + save uploaded PDFs / DOCX /
+    # text files so future turns see the content without re-upload. Claude
+    # still gets the raw attachments as `document` blocks for THIS turn
+    # (highest fidelity); the DB snapshot is the cross-conversation fallback.
+    if documents and DB_AVAILABLE and not is_regeneration:
+        try:
+            from .document_extractor import extract_and_persist
+            db_inst = _get_db()
+            saved_docs = await extract_and_persist(
+                documents, db=db_inst, source_conversation_id=conversation_id,
+            )
+            if saved_docs:
+                # Non-blocking UX feedback.
+                try:
+                    await ws.send_json({
+                        "type": "document_saved",
+                        "documents": saved_docs,
+                        "conversation_id": conversation_id,
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Document extraction/persistence failed (API backend)")
+
+    # Build context with user identity and memories, scoped to this
+    # conversation so uploaded documents stay within their RP thread.
     user_context, memories_context, unrestricted_mode = await build_user_context(
-        user_name, unrestricted_mode_requested,
+        user_name, unrestricted_mode_requested, conversation_id=conversation_id,
     )
 
     # Build conversation messages for Claude API format
@@ -302,6 +341,66 @@ async def handle_chat_message_claude(
         except Exception as e:
             logger.warning("Failed to process image: %s", e)
 
+    # Add documents — PDFs become native `document` blocks (Claude parses
+    # text + embedded images itself); text files become `document` blocks
+    # with a text source so Claude treats them as distinct reference docs
+    # rather than chat content. Either way, filename travels along as the
+    # block's ``title`` for logs/citations.
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        doc_name = str(doc.get("name", "attachment"))[:200]
+        doc_kind = doc.get("kind")
+        doc_data = doc.get("data")
+        if not isinstance(doc_data, str) or not doc_data:
+            continue
+
+        # Filename-based routing — the frontend's ``kind`` is advisory; a
+        # malicious / buggy client could lie. Extension is the stronger
+        # signal and also what the CLI backend uses.
+        ext_match = re.search(r"\.[A-Za-z0-9]+$", doc_name)
+        ext = ext_match.group(0).lower() if ext_match else ""
+
+        if ext == ".pdf" or doc_kind == "binary":
+            # Binary payload arrives as a data URL; pull the base64 part.
+            if "," not in doc_data or not doc_data.startswith("data:"):
+                logger.warning("Rejected document %s: malformed data URL", doc_name)
+                continue
+            _header, _, b64_payload = doc_data.partition(",")
+            # Size pre-check via base64 length (avoids decoding huge strings
+            # just to discover they're too big).
+            estimated_size = len(b64_payload) * 3 // 4
+            if estimated_size > max_document_size_bytes:
+                await ws.send_json({
+                    "type": "error",
+                    "message": f"Document too large (max {max_document_size_bytes // 1024 // 1024}MB)",
+                })
+                continue
+            try:
+                doc_block = build_claude_pdf_document_block(b64_payload, title=doc_name)
+            except Exception as e:
+                logger.warning("Failed to build PDF block for %s: %s", doc_name, e)
+                continue
+            current_content.append(doc_block)
+            logger.info("📎 Added PDF document to Claude message (%s, ~%d bytes)", doc_name, estimated_size)
+        else:
+            # Text/code file — pass through as text-source document.
+            # Size check on byte length, not char count (UTF-8 multibyte).
+            encoded_len = len(doc_data.encode("utf-8", errors="replace"))
+            if encoded_len > max_document_size_bytes:
+                await ws.send_json({
+                    "type": "error",
+                    "message": f"Document too large (max {max_document_size_bytes // 1024 // 1024}MB)",
+                })
+                continue
+            try:
+                doc_block = build_claude_text_document_block(doc_data, title=doc_name)
+            except Exception as e:
+                logger.warning("Failed to build text doc block for %s: %s", doc_name, e)
+                continue
+            current_content.append(doc_block)
+            logger.info("📄 Added text document to Claude message (%s, %d chars)", doc_name, len(doc_data))
+
     # Add text content — prefix with send timestamp so Claude sees when the
     # newly arrived message was sent, matching the [timestamp] prefix on
     # historical messages above.
@@ -339,16 +438,23 @@ async def handle_chat_message_claude(
     if thinking_enabled:
         thinking_prompt_enhancement = "\n[REASONING DIRECTIVE]\nPlease provide a thorough internal thought process before each response. Analyze the user's intent, context, and potential responses step-by-step regardless of the query's complexity."
 
-    system_prompt = f"""{preset["system_instruction"]}
+    # Split system prompt into stable + volatile blocks for prompt caching.
+    # The stable block (persona + injections + user context + memories + the
+    # standing reminders) is identical between turns within a 5-minute window,
+    # so it gets a cache_control marker and rides on Anthropic's prompt cache.
+    # Only the per-turn ``Current Time: ...`` line goes in the volatile block,
+    # which means a turn-to-turn time change no longer invalidates the cached
+    # ~99% of the system prompt.
+    stable_system_prompt = f"""{preset["system_instruction"]}
 {unrestricted_injection}
 {thinking_prompt_enhancement}
 [System Context]
 {user_context}
-Current Time: {current_time_str} (ICT)
 {memories_context}
 
 IMPORTANT: If user asks you to remember something, respond with the information you'll remember. The system will automatically save important facts.
 NOTE: User messages (both historical and the current one) may be prefixed with timestamps like [2026-03-25T14:30:22]. These are system-injected metadata indicating when each message was sent. Do NOT include such timestamp prefixes in your own responses. Use them only to understand the timing context of the conversation."""
+    volatile_system_prompt = f"Current Time: {current_time_str} (ICT)"
 
     # Build mode info for display
     mode_info: list[str] = []
@@ -379,7 +485,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         "model": CLAUDE_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
         "cache_control": {"type": "ephemeral"},
-        "system": build_cached_system_prompt(system_prompt),
+        "system": build_split_cached_system_prompt(
+            stable_system_prompt, volatile_system_prompt,
+        ),
         "messages": messages,
     }
 
@@ -641,8 +749,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
         # Fallback: estimate tokens from content if API didn't return usage
         if not input_tokens:
-            # Estimate input tokens from system prompt + conversation history
-            input_text = system_prompt
+            # Estimate input tokens from system prompt + conversation history.
+            # The system prompt is now sent as two blocks (stable + volatile)
+            # for prompt caching, so concat both back together for the estimate.
+            input_text = stable_system_prompt + volatile_system_prompt
             for msg in messages:
                 c = msg.get("content", "")
                 if isinstance(c, str):
@@ -830,8 +940,10 @@ async def handle_ai_edit_message_claude(
     original_content = target_msg.get("content", "")
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
-    # Build context
-    user_context, memories_context, _ = await build_user_context(user_name, False)
+    # Build context — scoped to this conversation's document library.
+    user_context, memories_context, _ = await build_user_context(
+        user_name, False, conversation_id=conversation_id,
+    )
 
     # Build edit prompt — use search/replace format for partial edits
     edit_prompt = (
@@ -874,12 +986,15 @@ async def handle_ai_edit_message_claude(
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
-    system_prompt = (
+    # Same stable/volatile split as the main chat path — keeps the long
+    # persona+context+memories prefix in cache while only the per-turn time
+    # line is uncached.
+    stable_system_prompt = (
         f"{preset['system_instruction']}\n"
         f"[System Context]\n{user_context}\n"
-        f"Current Time: {current_time_str} (ICT)\n"
         f"{memories_context}"
     )
+    volatile_system_prompt = f"Current Time: {current_time_str} (ICT)"
 
     # Build mode info
     mode_info: list[str] = []
@@ -895,7 +1010,9 @@ async def handle_ai_edit_message_claude(
         "model": CLAUDE_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
         "cache_control": {"type": "ephemeral"},
-        "system": build_cached_system_prompt(system_prompt),
+        "system": build_split_cached_system_prompt(
+            stable_system_prompt, volatile_system_prompt,
+        ),
         "messages": messages,
     }
 

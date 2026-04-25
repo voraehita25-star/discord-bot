@@ -5,6 +5,7 @@ Dashboard WebSocket configuration, constants, and role presets.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 

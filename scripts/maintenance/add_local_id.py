@@ -20,7 +20,7 @@ async def add_local_id_column():
     """Add local_id column to ai_history and populate with per-channel sequential IDs."""
 
     # Create backup (one-shot CLI script — sync path I/O is acceptable)
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backup_name = f"bot_before_localid_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     backup_path = BACKUP_DIR / backup_name
     shutil.copy2(DB_PATH, backup_path)

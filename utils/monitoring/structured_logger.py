@@ -543,7 +543,8 @@ def setup_structured_logging(
 def get_correlation_id() -> str | None:
     """Get current correlation/request ID from context."""
     ctx = _log_context.get({})
-    return ctx.get("request_id") or ctx.get("correlation_id")
+    value = ctx.get("request_id") or ctx.get("correlation_id")
+    return value if isinstance(value, str) else None
 
 
 def set_correlation_id(correlation_id: str) -> None:

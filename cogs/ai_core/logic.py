@@ -16,6 +16,7 @@ import base64
 import contextlib
 import datetime
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 import time
@@ -80,14 +81,17 @@ from .data.roleplay_data import SERVER_CHARACTER_NAMES
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
 # TTS module removed - not used
-# Centralized optional dependencies
-from .imports import (
-    CACHE_AVAILABLE,  # noqa: F401 (re-exported for tests)
+# Centralized optional dependencies. CACHE_AVAILABLE / FALLBACK_AVAILABLE /
+# TOKEN_TRACKER_AVAILABLE aren't referenced locally but are part of this
+# module's public surface (tests import them via
+# ``from cogs.ai_core.logic import X``).
+from .imports import (  # noqa: F401 - public re-exports
+    CACHE_AVAILABLE,
     CIRCUIT_BREAKER_AVAILABLE,
-    FALLBACK_AVAILABLE,  # noqa: F401 (re-exported for tests)
+    FALLBACK_AVAILABLE,
     GUARDRAILS_AVAILABLE,
     HISTORY_MANAGER_AVAILABLE,
-    TOKEN_TRACKER_AVAILABLE,  # noqa: F401 (re-exported for tests)
+    TOKEN_TRACKER_AVAILABLE,
     URL_FETCHER_AVAILABLE,
     extract_urls,
     fetch_all_urls,

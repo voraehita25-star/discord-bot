@@ -109,6 +109,36 @@ Common causes:
 - RAG engine in-memory vectors
 - Uncollected attachment data
 
+### Document Attachments (Dashboard)
+
+**Drag-drop doesn't attach files (only the 📎 button works):**
+
+Tauri v2's native drag-drop intercepts file-drop events at the WebView2 layer, leaving the JS `event.dataTransfer.files` array empty. The dashboard ships with `dragDropEnabled: false` in `native_dashboard/tauri.conf.json` to disable the native handler and let the browser deliver drop events normally. If you customise the config, keep that flag off or re-implement using the Tauri drag-drop plugin.
+
+**PDF upload "saved" but AI doesn't see the content:**
+
+1. `pypdf` / `python-docx` must be installed: `pip install pypdf python-docx`
+2. Encrypted PDFs are skipped silently — remove the password before uploading
+3. Check `logs/bot.log` for lines starting with `📎 Saved document memory` — absence means extraction failed
+4. Scanned PDFs with no text layer extract as empty; Claude still sees them as images for the upload turn (no persistence)
+
+**Document memory not persisting across conversations:**
+
+By design. Each conversation has its own scoped document library — uploads in conversation A won't appear in conversation B. If you want the same document visible in multiple conversations, re-upload it there (or edit-then-delete per file via the 📎 button in chat header).
+
+**"Document too large" on a file under 32 MB:**
+
+The WebSocket frame cap is 10 MB (`max_msg_size` in `ws_dashboard.py`), which bounds the payload *per WebSocket frame*, including the base64 overhead. PDFs near the 10 MB raw mark balloon to ~13 MB once base64-encoded and get rejected before hitting the 32 MB document cap. Split large PDFs with a PDF editor.
+
+**Storage caps are hit — oldest documents disappearing:**
+
+`dashboard_document_memories` has hard caps in `document_extractor.py`:
+- 500,000 chars per file
+- 20,000,000 chars across all rows
+- 200 rows total
+
+When exceeded, the oldest memory is LRU-evicted. Bump `MAX_TOTAL_CHARS` / `MAX_ROWS` if you have a lot of long-form RP material.
+
 ### Database Issues
 
 **Schema migration failed:**
@@ -151,7 +181,12 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | `CLAUDE_MODEL` | `claude-opus-4-7` | Claude model name |
-| `CLAUDE_MAX_TOKENS` | `128000` | Max output tokens |
+| `CLAUDE_MAX_TOKENS` | `128000` | Max output tokens per response |
+| `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 4.7 supports 1M with subscription auth (`CLAUDE_BACKEND=cli`) or `betas: context-1m` header on direct API |
+| `CLAUDE_BACKEND` | `api` | Dashboard Claude path: `api` (anthropic SDK, per-token) or `cli` (`claude -p` subprocess, Max subscription quota) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `""` | Only needed when `CLAUDE_BACKEND=cli` and bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
+| `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-7` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
+| `CLAUDE_EFFORT` | `high` | Effort level: `low` / `medium` / `high` / `xhigh` / `max` |
 | `GEMINI_API_KEY` | `""` | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |

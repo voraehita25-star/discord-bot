@@ -6,6 +6,7 @@ Sets up smart color-coded logging and handles log file rotation.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 import sys

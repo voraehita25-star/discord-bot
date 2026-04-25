@@ -21,7 +21,7 @@ async def reindex_ai_history():
     """Re-index all IDs in ai_history table to be sequential starting from 1."""
 
     # Create backup directory (one-shot CLI script — sync path I/O is acceptable)
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Backup database first
     backup_name = f"bot_before_reindex_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"

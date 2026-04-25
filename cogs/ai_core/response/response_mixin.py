@@ -7,6 +7,7 @@ Extracted from logic.py for better modularity.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 import re
 from typing import TYPE_CHECKING
@@ -193,9 +194,10 @@ class ResponseMixin:
                 # DM channels have no guild — deny cross-user history access entirely.
                 # Only the DM participant may view their own DM history, but that path
                 # goes through a different handler; here we refuse.
-                if not hasattr(channel, "guild") or channel.guild is None:
+                guild = getattr(channel, "guild", None)
+                if guild is None:
                     return f"❌ ไม่สามารถดูประวัติแชทของ DM channel {channel_id} ผ่านทางนี้ได้"
-                member = channel.guild.get_member(requester_id)
+                member = guild.get_member(requester_id)
                 if member is not None:
                     perms = channel.permissions_for(member)  # type: ignore[union-attr]
                     if not perms.read_messages:

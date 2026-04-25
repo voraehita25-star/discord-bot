@@ -186,11 +186,11 @@ class MemoryCommands(commands.Cog):
         Owner only.
         """
         try:
-            from cogs.ai_core.memory.memory_consolidator import memory_consolidator
+            from cogs.ai_core.memory.memory_consolidator import summary_archiver
 
             status_msg = await ctx.send("⏳ กำลังรวบรวมความจำ...")
 
-            result = await memory_consolidator.consolidate_channel(
+            result = await summary_archiver.consolidate_channel(
                 channel_id=ctx.channel.id, force=True
             )
 
@@ -225,7 +225,7 @@ class MemoryCommands(commands.Cog):
         """Show memory system statistics. Owner only."""
         try:
             from cogs.ai_core.memory.long_term_memory import long_term_memory
-            from cogs.ai_core.memory.memory_consolidator import memory_consolidator
+            from cogs.ai_core.memory.memory_consolidator import summary_archiver
 
             embed = discord.Embed(title="📊 Memory System Statistics", color=Colors.INFO)
 
@@ -245,7 +245,7 @@ class MemoryCommands(commands.Cog):
             )
 
             # Get channel summaries
-            summaries = await memory_consolidator.get_channel_summaries(ctx.channel.id)
+            summaries = await summary_archiver.get_channel_summaries(ctx.channel.id)
             embed.add_field(
                 name="📦 Channel Summaries", value=f"```{len(summaries)} summaries```", inline=True
             )

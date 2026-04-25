@@ -226,6 +226,36 @@ Indexes:
 
 Index: `idx_dashboard_memories_category(category, importance DESC)`
 
+### dashboard_document_memories — Persistent doc text per conversation
+
+Text extracted from PDF / DOCX / text / code files uploaded via the
+dashboard. Scoped to the conversation that received the upload so each
+RP thread has its own document library. The raw binary file is NOT kept
+— only extracted text, which makes storage linear in content length
+rather than file size.
+
+| Column | Type | Constraints |
+| -------- | ------ | ------------- |
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| filename | TEXT | NOT NULL |
+| file_kind | TEXT | NOT NULL — `'pdf'` / `'docx'` / `'text'` |
+| extracted_text | TEXT | NOT NULL |
+| char_count | INTEGER | NOT NULL |
+| page_count | INTEGER | nullable (PDF only) |
+| source_conversation_id | TEXT | nullable (scopes injection) |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
+Indexes:
+
+- `idx_dashboard_document_memories_created(created_at DESC)` — LRU eviction
+- `idx_dashboard_document_memories_conversation(source_conversation_id, created_at DESC)` — per-conversation lookup
+
+Caps (enforced by `document_extractor.extract_and_persist`):
+
+- 500,000 chars per file (truncated on extract)
+- 20,000,000 chars total across all rows (oldest evicted)
+- 200 rows max (oldest evicted)
+
 ### user_facts — Per-user Memory
 
 | Column | Type | Constraints |

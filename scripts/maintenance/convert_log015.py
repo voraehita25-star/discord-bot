@@ -108,7 +108,7 @@ def main() -> int:
             continue
         try:
             changed, reason = convert_file(path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[ERR ] {rel}: {e}")
             failed += 1
             continue

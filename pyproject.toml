@@ -96,6 +96,7 @@ ignore = [
 "tests/*" = ["ARG", "PLR", "SIM", "F401", "F811"]
 "scripts/*" = ["PLR", "SIM"]
 "*/__init__.py" = ["F401"]  # Re-exports are intentional
+"cogs/ai_core/imports.py" = ["F401"]  # Conditional-import shim; fallback stubs re-exported
 
 [tool.ruff.lint.isort]
 known-first-party = ["cogs", "utils", "config"]

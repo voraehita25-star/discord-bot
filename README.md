@@ -12,13 +12,14 @@ Production-ready Discord bot with Claude AI chat, music player, and advanced mem
 
 | Feature | Description |
 | ------- | ----------- |
-| 🤖 **AI Chat** | Claude (claude-opus-4-7) powered conversations with context memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
+| 🤖 **AI Chat** | Claude (claude-opus-4-7, 1M context) powered conversations with memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
+| 📎 **Document Attachments (Dashboard)** | Drag-drop PDF / DOCX / text / code (20+ types, 32 MB cap). Extracted text persists in SQLite per-conversation — no need to re-upload RP material |
 | 🔗 **URL Reading** | Auto-fetch and summarize web pages & GitHub repos |
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
 | 🛡️ **Reliability** | Circuit breaker, rate limiting, auto-recovery, graceful shutdown, memory management |
-| 🖥️ **Dashboard** | Native Tauri desktop dashboard for bot management |
+| 🖥️ **Dashboard** | Native Tauri desktop app — 3D UI polish, PDF attach, persistent doc memory, file editor |
 | 🦀 **Native Extensions** | Optional Rust (RAG, media) & Go (URL fetch, metrics) for 5-25x speedup |
 
 ## 🚀 Quick Start
@@ -205,13 +206,18 @@ A Tauri-based desktop application for managing the bot with Korean UI support.
 
 ### Features
 
-- 🔔 Toast Notifications
-- 📈 Real-time Performance Charts
-- 🌙 Dark/Light Theme Toggle
-- 🌸 Sakura Petal Animation
-- 💬 AI Chat with WebSocket streaming
-- 🧠 Long-term Memory management
-- ⌨️ Keyboard Shortcuts (Ctrl+1-6, Ctrl+R, Ctrl+T)
+- 💬 **AI Chat** — WebSocket streaming (Gemini + Claude). Claude runs via SDK or `claude -p` subprocess (Max subscription). 1M-token context active by default on CLI backend. 200K chars/message cap.
+- 📎 **Document Attachments** — Drag-drop PDF, DOCX, or any text/code file (20+ types). 32 MB per file, 5 per message. Claude reads PDFs natively (text + embedded images).
+- 📂 **Persistent Document Memory** — Extracted text saved to SQLite per-conversation; auto-injected into every AI turn so you don't re-upload RP material.
+- ✏️ **File Editor** — 📎 button in chat header shows per-conversation file list. Inline editor for filename + text content, with Ctrl+S save + delete.
+- 🧠 **Long-term Memory** — Add / browse / delete free-form memories the bot recalls.
+- 🎨 **3D UI Polish** — Layered shadows, cursor-tracking tilt, ripple clicks, glassmorphism noise, custom scrollbars, skeleton loaders, number count-up, chart entrance.
+- 🌸 **Sakura Animation** — Cherry-blossom petals with mouse parallax (toggleable).
+- 🔊 **Sound + Haptic** — Optional synth click + vibration on button press (off by default).
+- 🌙 **Dark / Light Theme** — Pink/purple anime palette with localStorage persistence.
+- 📈 **Real-time Performance Charts** — Memory & message count graphs.
+- 🔔 **Toast Notifications** — Animated slide-in confirmations / errors.
+- ⌨️ **Keyboard Shortcuts** — Ctrl+1-6 nav, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter send, Ctrl+S save-in-editor, Ctrl+F search-in-chat.
 
 ### Quick Start
 
@@ -289,4 +295,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.16 | **Python:** 3.14+ | **Tests:** 3,088 Python ✅ (92 files) + 189 TypeScript ✅ (10 files) | **Native Extensions:** Rust + Go | **Last Update:** April 24, 2026
+**Version:** 3.3.16 | **Python:** 3.14+ | **Tests:** 3,088 Python ✅ (92 files) + 189 TypeScript ✅ (10 files) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** April 24, 2026

@@ -512,12 +512,16 @@ class TestTokenTracker:
 
     def test_get_usage_in_period(self):
         """Test _get_usage_in_period."""
+        from datetime import timezone
+
         from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage
 
         tracker = TokenTracker()
 
-        # Add records with different timestamps
-        now = datetime.now()
+        # Add records with different timestamps. Use tz-aware UTC so the cutoff
+        # comparison is unambiguous — the production code now requires this so
+        # naive local time vs aware UTC don't silently mis-classify records.
+        now = datetime.now(timezone.utc)
         tracker._usage_cache["user:123"] = [
             TokenUsage(
                 input_tokens=100,

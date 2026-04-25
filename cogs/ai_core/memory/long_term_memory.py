@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -107,6 +108,17 @@ class Fact:
 class FactExtractor:
     """
     Extracts facts from messages using pattern matching.
+
+    Note:
+        This is the *offline* fact-extraction path — pure regex, runs on every
+        user message, no API call. The patterns here are intentionally narrow
+        (``IDENTITY`` + explicit "remember"/"forget" commands carry the most
+        weight) so the noise rate stays low. When an Anthropic API key is
+        configured, :mod:`cogs.ai_core.memory.consolidator` runs every N
+        messages and extracts richer entity facts via Claude — that's the
+        higher-quality path. Treat the FactExtractor output as a fast-but-
+        rough first pass; the consolidator's results take precedence in
+        ``entity_memory`` because they have higher confidence scores.
     """
 
     # Patterns for extracting facts (pattern, category, importance)
@@ -258,7 +270,9 @@ class LongTermMemory:
     def __init__(self):
         self.logger = logging.getLogger("LongTermMemory")
         self.extractor = FactExtractor()
-        self._cache: dict[int, list[Fact]] = {}  # user_id -> facts
+        # OrderedDict + move_to_end gives true LRU eviction so heavily-used
+        # users aren't kicked out just because they were inserted first.
+        self._cache: OrderedDict[int, list[Fact]] = OrderedDict()
         self._next_cache_id: int = 0  # monotonic counter for cache-only IDs
         self._lock = asyncio.Lock()
 
@@ -425,6 +439,8 @@ class LongTermMemory:
         """
         if not DB_AVAILABLE or db is None:
             async with self._lock:
+                if user_id in self._cache:
+                    self._cache.move_to_end(user_id)
                 return list(self._cache.get(user_id, []))
 
         async with db.get_connection() as conn:
@@ -541,12 +557,13 @@ class LongTermMemory:
             # Store in cache only (thread-safe)
             async with self._lock:
                 if fact.user_id not in self._cache:
-                    # Evict oldest user cache if at capacity
+                    # Evict least-recently-used user cache if at capacity
                     if len(self._cache) >= self.MAX_CACHE_USERS:
-                        oldest_uid = next(iter(self._cache))
-                        del self._cache[oldest_uid]
+                        oldest_uid, _ = self._cache.popitem(last=False)
                         self.logger.debug("Evicted LTM cache for user %s (capacity %d)", oldest_uid, self.MAX_CACHE_USERS)
                     self._cache[fact.user_id] = []
+                else:
+                    self._cache.move_to_end(fact.user_id)
                 self._next_cache_id += 1
                 fact.id = self._next_cache_id
                 self._cache[fact.user_id].append(fact)

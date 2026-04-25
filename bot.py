@@ -355,7 +355,7 @@ class MusicBot(commands.AutoShardedBot):
         # Load main cogs from cogs/ directory (sorted for deterministic order across platforms).
         # Sync iterdir is fine here: this runs once at startup, before the bot connects.
         cogs_dir = Path("./cogs")
-        for filename in sorted(cogs_dir.iterdir()):  # noqa: ASYNC240 - startup-only, bot not yet connected
+        for filename in sorted(cogs_dir.iterdir()):
             if filename.suffix == ".py":
                 # Skip utility modules
                 if filename.name in skip_modules:
@@ -468,7 +468,7 @@ class MusicBot(commands.AutoShardedBot):
         perf_status = []
         # Check for orjson
         try:
-            import orjson  # noqa: F401
+            import orjson  # noqa: F401 - import-for-availability check
 
             perf_status.append("orjson")
         except ImportError:
@@ -750,7 +750,7 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
     exec_ref = getattr(bot, "_default_executor", None)
     if exec_ref is not None:
         try:
-            exec_ref.shutdown(wait=False, cancel_futures=True)  # type: ignore[attr-defined]
+            exec_ref.shutdown(wait=False, cancel_futures=True)
             logger.info("🧵 Default thread pool executor shut down")
         except Exception:
             logger.exception("Error shutting down default executor")
@@ -817,7 +817,7 @@ def run_bot_with_confirmation() -> None:
                     logger.exception("Error closing old bot instance")
                 # Re-read token in case .env was updated
                 load_dotenv(override=True)
-                token = os.getenv("DISCORD_TOKEN")
+                token = os.getenv("DISCORD_TOKEN") or ""
                 # Recreate bot instance for restart
                 bot = create_bot()
                 bot.start_time = time.time()

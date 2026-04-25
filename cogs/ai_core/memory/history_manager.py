@@ -72,11 +72,14 @@ class HistoryManager:
         (r"\{\{[^}]+\}\}", "character", 1.4),
     ]
 
-    # Default settings - optimized for Gemini 2M context window
+    # Default settings — sized for the smaller of Claude/Gemini current context
+    # windows (1M each). Reserve ~40% for system prompt, response, and tool
+    # outputs so a default trim never blows past either provider's limit. If
+    # you want a tighter target, pass max_tokens explicitly to smart_trim_by_tokens.
     DEFAULT_KEEP_RECENT = 200  # Always keep last N messages
     DEFAULT_MAX_HISTORY = 10000  # Max messages after trimming
     DEFAULT_COMPRESS_THRESHOLD = 2000  # Start compressing after this
-    DEFAULT_MAX_TOKENS = 1200000  # 1.2M tokens for history (60% of 2M)
+    DEFAULT_MAX_TOKENS = 600_000  # ~60% of 1M context window
     TOKENS_PER_MESSAGE_ESTIMATE = 50  # Fallback rough estimate
 
     def __init__(

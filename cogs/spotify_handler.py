@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 from collections.abc import Callable
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 import spotipy
-from requests.exceptions import (
+from requests.exceptions import (  # type: ignore[import-untyped]
     ConnectionError as RequestsConnectionError,
     ReadTimeout,
 )

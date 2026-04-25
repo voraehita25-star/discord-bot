@@ -54,8 +54,11 @@ class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
         self._base = base
 
     async def resolve(
-        self, host: str, port: int = 0, family: int = socket.AF_INET
-    ) -> list[dict]:
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[aiohttp.abc.ResolveResult]:
         addrs = await self._base.resolve(host, port, family)
         for addr in addrs:
             ip_str = addr.get("host")

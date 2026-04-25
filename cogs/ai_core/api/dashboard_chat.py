@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -28,7 +29,7 @@ from .dashboard_common import (
     build_user_context,
     get_db as _get_db,
     normalize_timestamp_to_bangkok,
-    sanitize_profile_field as _sanitize_profile_field,  # noqa: F401 (re-exported for tests)
+    sanitize_profile_field as _sanitize_profile_field,  # noqa: F401 - contract re-export for tests
     strip_leading_timestamp,
 )
 from .dashboard_config import (
@@ -98,9 +99,10 @@ async def handle_chat_message(
         except Exception as e:
             logger.warning("Failed to save user message: %s", e)
 
-    # Build context with user identity and memories
+    # Build context with user identity and memories, scoped to this conversation
+    # so uploaded documents don't leak between RP threads.
     user_context, memories_context, unrestricted_mode = await build_user_context(
-        user_name, unrestricted_mode_requested,
+        user_name, unrestricted_mode_requested, conversation_id=conversation_id,
     )
 
     # Build conversation contents
@@ -639,8 +641,11 @@ async def handle_ai_edit_message(
     original_content = target_msg.get("content", "")
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
-    # Build context
-    user_context, memories_context, _ = await build_user_context(user_name, False)
+    # Build context — scoped to this conversation so /edit sees the same
+    # document library the original reply had access to.
+    user_context, memories_context, _ = await build_user_context(
+        user_name, False, conversation_id=conversation_id,
+    )
 
     # Build edit prompt
     edit_prompt = (

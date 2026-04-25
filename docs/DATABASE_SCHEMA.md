@@ -204,6 +204,40 @@ Index: `idx_dashboard_msg_conv(conversation_id, created_at ASC)`
 
 Index: `idx_dashboard_memories_category(category, importance DESC)`
 
+#### dashboard_document_memories
+
+Text extracted from PDFs / DOCX / text+code files the user attached via
+the dashboard chat. Scoped per-conversation (via `source_conversation_id`)
+so each RP thread keeps its own document library. Auto-injected into the
+system prompt on every AI turn by `build_user_context()`.
+
+Binary PDFs live in a tmp dir only during the upload turn (full fidelity
+for Claude's multimodal read), then get deleted. This row keeps the
+extracted plain text forever — that's how persistence survives bot
+restarts without ballooning DB size with megabytes of binary data.
+
+| Column                   | Type     | Constraints                                     |
+| ------------------------ | -------- | ----------------------------------------------- |
+| id                       | INTEGER  | PRIMARY KEY AUTOINCREMENT                       |
+| filename                 | TEXT     | NOT NULL                                        |
+| file_kind                | TEXT     | NOT NULL — `'pdf' \| 'docx' \| 'text'`          |
+| extracted_text           | TEXT     | NOT NULL                                        |
+| char_count               | INTEGER  | NOT NULL                                        |
+| page_count               | INTEGER  | nullable (populated for PDFs only)              |
+| source_conversation_id   | TEXT     | nullable — scopes prompt injection to this chat |
+| created_at               | DATETIME | DEFAULT CURRENT_TIMESTAMP                       |
+
+Indexes:
+
+- `idx_dashboard_document_memories_created(created_at DESC)` — newest-first LRU eviction
+- `idx_dashboard_document_memories_conversation(source_conversation_id, created_at DESC)` — per-conversation lookup on every AI turn
+
+Hard caps enforced in `cogs/ai_core/api/document_extractor.py`:
+
+- `MAX_EXTRACTED_CHARS = 500_000` per file
+- `MAX_TOTAL_CHARS = 20_000_000` across all rows (LRU-evict oldest)
+- `MAX_ROWS = 200` (LRU-evict oldest)
+
 ### Guild & User
 
 #### guild_settings

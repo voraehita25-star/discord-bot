@@ -741,7 +741,7 @@ class TestLoadCachedImageBytes:
 
     def test_load_existing_file(self):
         """Test loading existing image file."""
-        from cogs.ai_core.media_processor import load_cached_image_bytes, _BASE_DIR
+        from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
 
         # Create a temp image
         img = Image.new("RGB", (10, 10), color="red")
@@ -749,8 +749,11 @@ class TestLoadCachedImageBytes:
             img.save(buf, format="PNG")
             expected_bytes = buf.getvalue()
 
+        # The cache validates against ``st_mtime_ns`` to detect on-disk
+        # changes, so patch ``stat`` (not ``exists``) alongside ``read_bytes``.
         test_path = str(_BASE_DIR / 'assets' / 'test_image.png')
-        with patch("pathlib.Path.exists", return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch("pathlib.Path.stat", return_value=fake_stat):
             with patch("pathlib.Path.read_bytes", return_value=expected_bytes):
                 # Clear cache first
                 load_cached_image_bytes.cache_clear()
@@ -766,7 +769,9 @@ class TestLoadCachedImageBytes:
         # Clear cache
         load_cached_image_bytes.cache_clear()
 
-        with patch("pathlib.Path.exists", return_value=False):
+        # Missing files raise FileNotFoundError from ``stat`` — that's the
+        # short-circuit the cache uses to return None without attempting a read.
+        with patch("pathlib.Path.stat", side_effect=FileNotFoundError):
             result = load_cached_image_bytes("/nonexistent/image.png")
 
             assert result is None
@@ -777,7 +782,8 @@ class TestLoadCachedImageBytes:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch("pathlib.Path.exists", return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch("pathlib.Path.stat", return_value=fake_stat):
             with patch("pathlib.Path.read_bytes", side_effect=OSError("read error")):
                 result = load_cached_image_bytes("/error/image.png")
 

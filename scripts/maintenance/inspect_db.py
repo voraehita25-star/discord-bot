@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 
 for db in ['data/bot_database.db', 'data/ai_cache_l2.db']:
     try:
