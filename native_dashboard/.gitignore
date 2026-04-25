@@ -1,0 +1,13 @@
+# Playwright test artifacts — generated each run, never check in.
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Vitest coverage output
+coverage/
+
+# Node
+node_modules/
+
+# Tauri build outputs (handled by parent .gitignore via target/, but explicit)
+target/
