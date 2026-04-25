@@ -2,20 +2,25 @@
 
 🎮 **Enhanced Edition** - Tauri-based native desktop dashboard for managing Discord Bot.
 
-## ✨ New Features (v2.0)
+## ✨ Features
 
 | Feature | Description |
 |---------|-------------|
-| 🔔 **Toast Notifications** | Beautiful animated notifications for all actions |
-| 📈 **Performance Charts** | Real-time memory & message count graphs |
-| 🌙 **Dark/Light Theme** | Toggle theme with localStorage persistence |
-| 🌸 **Sakura Animation** | Beautiful falling cherry blossom petals |
-| ⚡ **Performance Caching** | Smart caching reduces API calls by 50% |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send |
-| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude); Claude can run via SDK or `claude -p` subprocess (subscription) |
-| 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context |
-| 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules) |
-| 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars |
+| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). 1M-token context window active by default when using CLI backend. 200K chars/message cap (raised from 50K). |
+| 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
+| 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
+| ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |
+| 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context (separate from document memory). |
+| 🎨 **3D UI Polish** | Layered shadows, cursor-tracking card tilt, ripple on click, button press feedback, glassmorphism noise overlay, 3D sphere status dot, custom scrollbars, skeleton loaders, number count-up animations, chart entrance fade. |
+| 🌸 **Sakura Animation** | Cherry-blossom petals with mouse-parallax drift. Toggleable. |
+| 🔊 **Sound + Haptic** | Optional synth click + vibration on button press (off by default). |
+| 🌙 **Dark / Light Theme** | Toggle with localStorage persistence — pink/purple anime palette. |
+| 🔔 **Toast Notifications** | Animated slide-in for confirmations / errors. |
+| 📈 **Performance Charts** | Real-time memory & message count graphs. |
+| ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
+| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
+| 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules). |
+| 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
 ## 📦 Features
@@ -40,6 +45,33 @@
 | `Ctrl+R` | Refresh All Data |
 | `Ctrl+T` | Toggle Dark/Light Theme |
 | `Ctrl+Enter` | Send Message (in Chat) |
+| `Ctrl+S` | Save (inside file editor) |
+| `Ctrl+F` | In-chat search (inside chat view) |
+
+## 📎 File Attachments
+
+Drag + drop — or click the 📎 button in the input area — to attach up to
+**5 files per message, 32 MB each**:
+
+| Category | Formats |
+|----------|---------|
+| Images | PNG, JPEG, GIF, WebP (20 MB cap) |
+| Documents | PDF, DOCX |
+| Text + code | `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.xml`, `.log`, `.py`, `.js`, `.ts`, `.rs`, `.go`, `.java`, `.html`, `.css`, `.sh`, `.sql`, … |
+
+PDFs and DOCX are parsed via `pypdf` / `python-docx` on the bot side — the
+extracted text goes into `dashboard_document_memories` (SQLite), scoped to
+the conversation. On every subsequent AI turn it's auto-injected into the
+system prompt so you don't need to re-upload the same character sheets.
+
+Click the **📎 (count)** button in the chat header to see every file attached
+to the current conversation. Per-row **Edit** opens a roomy editor (filename
++ extracted text) and **Delete** removes the file from memory.
+
+> Tauri's native drag-drop is disabled in `tauri.conf.json` (`dragDropEnabled: false`)
+> so browser `dataTransfer.files` works normally inside WebView2. Without this
+> flip, the OS would intercept file drops and hand the JS layer empty file
+> arrays.
 
 ## 🏗️ Tech Stack
 
@@ -55,10 +87,11 @@
 
 | Metric | Value |
 |--------|-------|
-| Executable Size | ~17 MB (release build) |
+| Executable Size | ~17.5 MB (release build) |
 | Memory Usage | ~30 MB idle |
 | Startup Time | < 1 second |
-| API Call Reduction | 50% (with caching) |
+| API Call Reduction | ~50% (with LRU caching) |
+| Per-message ceiling | 200,000 chars (text) + 5 files × 32 MB (attachments) |
 
 ## 📁 Project Structure
 
@@ -76,27 +109,28 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings (~1.75k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~2.08k lines, down from 3.2k after 2026-04 split)
-│   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts)
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~1.8k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~2.2k lines) — chat + file memory modal + editor
+│   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
 │   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (22 tests)
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
-│       ├── types.ts            # Shared chat TypeScript interfaces
-│       ├── ws-client.ts        # WebSocket client + ping/pong + reconnect
-│       ├── formatter.ts        # Markdown + LaTeX + code-fence renderer
-│       ├── message-template.ts # Message HTML + tail-window virtualization
-│       ├── context-window.ts   # Token-usage bar (LRU-capped per-conv cache)
-│       ├── conversation-list.ts # Sidebar render + filter (RENDER_CAP=200) + tag chips
+│       ├── types.ts              # Shared chat TypeScript interfaces
+│       ├── ws-client.ts          # WebSocket client + ping/pong + reconnect
+│       ├── formatter.ts          # Markdown + LaTeX + code-fence renderer
+│       ├── message-template.ts   # Message HTML + tail-window virtualization
+│       ├── context-window.ts     # Token-usage bar (LRU-capped per-conv cache)
+│       ├── conversation-list.ts  # Sidebar render + filter (RENDER_CAP=200) + tag chips
 │       ├── conversation-modals.ts # Rename + delete-confirm modals
-│       ├── search.ts           # In-chat search + match wrap/step cycle
-│       ├── prism.ts            # Prism.js lazy language loader
-│       ├── image-attach.ts     # Image attachment + drag-drop + paste
-│       ├── export-picker.ts    # Export format picker UI
-│       └── *.test.ts           # 8 vitest files (167 tests total)
+│       ├── search.ts             # In-chat search + match wrap/step cycle
+│       ├── prism.ts              # Prism.js lazy language loader
+│       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
+│       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
+│       ├── export-picker.ts      # Export format picker UI
+│       └── *.test.ts             # 8 vitest files (167 tests total)
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer

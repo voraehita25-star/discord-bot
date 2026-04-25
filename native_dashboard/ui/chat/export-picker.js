@@ -59,21 +59,33 @@ export function promptExportFormat() {
     return new Promise(resolve => {
         const modal = ensureModal();
         modal.classList.add('active');
+        // AbortController is the right tool here: `{once: true}` only removes the
+        // handler that fires, so listeners on un-clicked buttons accumulate every
+        // time the modal is opened-and-closed. With a controller we drop ALL
+        // bound listeners on cleanup, regardless of which one resolved.
+        const ac = new AbortController();
+        const opts = { signal: ac.signal };
         const cleanup = (result) => {
+            ac.abort();
             modal.classList.remove('active');
+            document.removeEventListener('keydown', escHandler);
             resolve(result);
         };
-        // {once: true} ensures handlers don't accumulate across re-opens since
-        // we reuse the same DOM nodes each time.
         modal.querySelectorAll('[data-close-export]').forEach(el => {
-            el.addEventListener('click', () => cleanup(null), { once: true });
+            el.addEventListener('click', () => cleanup(null), opts);
         });
         modal.querySelectorAll('.export-format-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const format = (btn.dataset.format || 'json');
                 cleanup(format);
-            }, { once: true });
+            }, opts);
         });
+        // Escape closes (matches the affordance other modals provide).
+        const escHandler = (e) => {
+            if (e.key === 'Escape')
+                cleanup(null);
+        };
+        document.addEventListener('keydown', escHandler);
     });
 }
 //# sourceMappingURL=export-picker.js.map

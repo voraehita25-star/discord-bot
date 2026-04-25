@@ -172,6 +172,8 @@ export let settings = {
     aiAvatar: DEFAULT_AI_AVATAR,
     isCreator: false,
     sakuraEnabled: true,
+    soundEnabled: false,
+    hapticEnabled: false,
     lastConversationId: null,
 };
 export function loadSettings() {
@@ -275,5 +277,296 @@ export function showToast(message, options = { type: 'info' }) {
         toast.classList.add('toast-hiding');
         setTimeout(() => toast.remove(), 300);
     }, duration);
+}
+const _interactionState = { bound: false };
+/**
+ * Bind all 3D interaction handlers exactly once. Call from app init after
+ * DOMContentLoaded. Idempotent — subsequent calls no-op.
+ *
+ * Bundled: click ripple, cursor-tracking card tilt, send-button pulse,
+ * sakura parallax, optional click sound, optional haptic feedback.
+ */
+export function setup3DInteractions() {
+    if (_interactionState.bound)
+        return;
+    _interactionState.bound = true;
+    setupButtonRipple();
+    setupCardTilt();
+    setupSendButtonPulse();
+    setupSakuraParallax();
+}
+/**
+ * Click ripple: delegated at document level. Works for any button-like element
+ * currently on the page OR added later. Skips disabled buttons.
+ *
+ * Also fires optional sound + haptic feedback (respects user settings).
+ */
+function setupButtonRipple() {
+    document.addEventListener('click', (e) => {
+        const target = e.target;
+        if (!target)
+            return;
+        const btn = target.closest('.btn, .nav-item, .modal-close, .btn-icon, .role-card, .memory-category-btn');
+        if (!btn)
+            return;
+        // Respect disabled state (both HTML attr and aria-disabled)
+        if (btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true')
+            return;
+        const rect = btn.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const size = Math.max(rect.width, rect.height) * 1.6;
+        const ripple = document.createElement('span');
+        ripple.className = 'btn-ripple';
+        ripple.style.width = `${size}px`;
+        ripple.style.height = `${size}px`;
+        ripple.style.left = `${x - size / 2}px`;
+        ripple.style.top = `${y - size / 2}px`;
+        // position:absolute ripple needs a positioned parent — ensure buttons
+        // without explicit position still contain the ripple. Most already do
+        // via .btn { position: relative } in the base styles.
+        const computedPos = getComputedStyle(btn).position;
+        if (computedPos === 'static')
+            btn.style.position = 'relative';
+        btn.appendChild(ripple);
+        ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+        // Backstop in case animationend never fires (browser tab suspend, animation
+        // interrupted by reflow, prefers-reduced-motion). Without this the ripple
+        // <span> would linger in the DOM forever and slowly leak nodes.
+        setTimeout(() => ripple.remove(), 1000);
+        // Concurrent sensory feedback (both cheap, both no-op if disabled)
+        playClickSound();
+        hapticTick();
+    });
+}
+/**
+ * Mouse-follow 3D tilt for `.stat-card` and `.role-card`.
+ *
+ * Uses rAF-throttled pointermove so we only touch the transform once per
+ * frame even if events fire faster. Skipped on coarse (touch-only) pointers
+ * to avoid unwanted tilt when scrolling with a finger.
+ */
+function setupCardTilt() {
+    if (window.matchMedia('(hover: none)').matches)
+        return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+        return;
+    const selector = '.stat-card, .role-card';
+    const bound = new WeakSet();
+    const bindTo = (card) => {
+        if (bound.has(card))
+            return;
+        bound.add(card);
+        let raf = 0;
+        const onMove = (e) => {
+            const rect = card.getBoundingClientRect();
+            const nx = (e.clientX - rect.left) / rect.width; // 0..1
+            const ny = (e.clientY - rect.top) / rect.height;
+            const tiltX = (ny - 0.5) * -10; // X rotation in deg
+            const tiltY = (nx - 0.5) * 10;
+            cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(() => {
+                card.style.transform =
+                    `perspective(1000px) rotateX(${tiltX.toFixed(2)}deg) ` +
+                        `rotateY(${tiltY.toFixed(2)}deg) translateZ(12px)`;
+            });
+        };
+        const onLeave = () => {
+            cancelAnimationFrame(raf);
+            card.style.transform = '';
+        };
+        card.addEventListener('pointermove', onMove);
+        card.addEventListener('pointerleave', onLeave);
+    };
+    // Bind to existing + observe for new ones added by dynamic rendering.
+    document.querySelectorAll(selector).forEach(bindTo);
+    const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            m.addedNodes.forEach((node) => {
+                if (!(node instanceof HTMLElement))
+                    return;
+                if (node.matches?.(selector))
+                    bindTo(node);
+                node.querySelectorAll?.(selector).forEach(bindTo);
+            });
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+/**
+ * Toggle `.has-content` on the send button so its glow pulses when the
+ * chat input isn't empty. Cheap state sync on every keystroke.
+ */
+function setupSendButtonPulse() {
+    const input = document.getElementById('chat-input');
+    const btn = document.getElementById('btn-send');
+    if (!input || !btn)
+        return;
+    const update = () => {
+        btn.classList.toggle('has-content', input.value.trim().length > 0);
+    };
+    input.addEventListener('input', update);
+    update();
+}
+/**
+ * Sakura parallax — petals drift slightly opposite to the cursor so the
+ * falling animation feels like it's floating in a 3D world. We set CSS
+ * custom properties on the container; the container has
+ * `transform: translate(var(--parallax-x), var(--parallax-y))` so all
+ * petals shift in unison. rAF-throttled; only runs if sakura is enabled.
+ */
+function setupSakuraParallax() {
+    if (window.matchMedia('(hover: none)').matches)
+        return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+        return;
+    const container = document.getElementById('sakura-container');
+    if (!container)
+        return;
+    let raf = 0;
+    const STRENGTH = 20; // max px the whole petal field shifts by
+    window.addEventListener('pointermove', (e) => {
+        const nx = (e.clientX / window.innerWidth) - 0.5; // -0.5..0.5
+        const ny = (e.clientY / window.innerHeight) - 0.5;
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {
+            // Negative so petals drift OPPOSITE to mouse — feels like parallax layers behind
+            container.style.setProperty('--parallax-x', `${(-nx * STRENGTH).toFixed(2)}px`);
+            container.style.setProperty('--parallax-y', `${(-ny * STRENGTH * 0.5).toFixed(2)}px`);
+        });
+    }, { passive: true });
+}
+export function animateNumber(el, to, options = {}) {
+    if (!el)
+        return;
+    if (!Number.isFinite(to))
+        return;
+    const duration = options.duration ?? 700;
+    const prefix = options.prefix ?? '';
+    const suffix = options.suffix ?? '';
+    const useLocale = options.locale !== false;
+    // Auto-detect decimals from target value if not specified
+    const decimals = options.decimals ?? (Number.isInteger(to) ? 0 : (to.toString().split('.')[1]?.length ?? 0));
+    // Extract current number from textContent (strip non-numeric chars except minus and dot)
+    const current = parseFloat((el.textContent || '0').replace(/[^\d.\-]/g, '')) || 0;
+    if (current === to)
+        return;
+    // Respect reduced motion — just set the final value
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        el.textContent = prefix + formatN(to, decimals, useLocale) + suffix;
+        return;
+    }
+    const start = performance.now();
+    const step = (now) => {
+        const t = Math.min((now - start) / duration, 1);
+        // ease-out-expo: matches CSS motion system
+        const eased = t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+        const v = current + (to - current) * eased;
+        el.textContent = prefix + formatN(v, decimals, useLocale) + suffix;
+        if (t < 1)
+            requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+function formatN(v, decimals, locale) {
+    if (locale) {
+        return v.toLocaleString(undefined, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals,
+        });
+    }
+    return v.toFixed(decimals);
+}
+// ============================================================================
+// Skeleton Loader — shimmer placeholder toggle
+// ============================================================================
+/**
+ * Show/hide a shimmer placeholder on an element. Toggles `.is-loading` which
+ * is defined in styles.css. Useful for stat values or log containers while
+ * initial data is being fetched.
+ *
+ * Example:
+ *   setSkeleton('stat-memory', true);
+ *   const data = await fetchData();
+ *   setSkeleton('stat-memory', false);
+ *   animateNumber(document.getElementById('stat-memory'), data.memory);
+ */
+export function setSkeleton(el, loading) {
+    const element = typeof el === 'string' ? document.getElementById(el) : el;
+    if (!element)
+        return;
+    element.classList.toggle('is-loading', loading);
+}
+// ============================================================================
+// Sound Feedback — Web Audio synthesis (no asset files)
+// ============================================================================
+let _audioCtx = null;
+function getAudioCtx() {
+    if (_audioCtx)
+        return _audioCtx;
+    try {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor)
+            return null;
+        _audioCtx = new Ctor();
+        return _audioCtx;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Synthesize a short percussive click via oscillator. No external asset files.
+ * Noop unless `settings.soundEnabled` is true. ~10ms tone; enveloped to avoid
+ * audible pops. Safe to call at high frequency (each click allocates one
+ * short-lived oscillator which is auto-disposed by the Web Audio runtime).
+ */
+export function playClickSound() {
+    if (!settings.soundEnabled)
+        return;
+    const ctx = getAudioCtx();
+    if (!ctx)
+        return;
+    // Some browsers start AudioContext suspended; resume on first user gesture.
+    if (ctx.state === 'suspended')
+        ctx.resume().catch(() => { });
+    try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1400, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(700, ctx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.1);
+    }
+    catch {
+        /* ignore — audio is pure polish */
+    }
+}
+// ============================================================================
+// Haptic Feedback — navigator.vibrate (mobile/touch devices only)
+// ============================================================================
+/**
+ * Short vibration for button clicks. Noop if:
+ *  - `settings.hapticEnabled` is false (default)
+ *  - Browser doesn't support `navigator.vibrate` (most desktops)
+ *  - Device has no vibration hardware (vibrate just returns false)
+ */
+export function hapticTick() {
+    if (!settings.hapticEnabled)
+        return;
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function')
+        return;
+    try {
+        navigator.vibrate(8);
+    }
+    catch {
+        /* some WebViews throw on vibrate; ignore */
+    }
 }
 //# sourceMappingURL=shared.js.map

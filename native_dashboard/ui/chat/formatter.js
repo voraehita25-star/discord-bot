@@ -37,8 +37,20 @@ export function formatMessage(content) {
     const blockPlaceholder = '\x00BLOCK_LATEX_';
     const inlinePlaceholder = '\x00INLINE_LATEX_';
     const katex = getKatex();
-    // Extract block LaTeX ($$...$$).
-    let processed = content.replace(/\$\$([^$]+)\$\$/g, (_match, tex) => {
+    // Streaming guard: if the buffer ends with an unclosed code fence (odd count
+    // of ``` markers), the code-block regex won't match and the user sees three
+    // literal backticks until the closing fence arrives. Adding a virtual close
+    // lets us render the partial block as code mid-stream. The closing fence is
+    // local to this format pass — the next pass with more content will re-parse
+    // from the (possibly now-closed) original.
+    const fenceCount = (content.match(/```/g) || []).length;
+    if (fenceCount % 2 === 1) {
+        content = content + '\n```';
+    }
+    // Extract block LaTeX ($$...$$). The pattern allows `\$` (escaped dollar)
+    // inside the formula so equations like `$$\frac{1}{\$x}$$` survive
+    // extraction instead of slipping past as plain text.
+    let processed = content.replace(/\$\$((?:[^$]|\\\$)+)\$\$/g, (_match, tex) => {
         const idx = latexBlocks.length;
         try {
             if (katex) {

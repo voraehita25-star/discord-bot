@@ -11,8 +11,127 @@ import { WebSocketClient } from './chat/ws-client.js';
 import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
 import { ConversationList } from './chat/conversation-list.js';
 import { ImageAttachManager } from './chat/image-attach.js';
+import { DocumentAttachManager } from './chat/document-attach.js';
 import { ContextWindowIndicator } from './chat/context-window.js';
 import { ConversationModals } from './chat/conversation-modals.js';
+function chatFileIconFor(kind, name) {
+    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    if (ext === 'pdf')
+        return '📕';
+    if (ext === 'docx')
+        return '📘';
+    if (kind === 'text') {
+        if (['json', 'yaml', 'yml', 'toml'].includes(ext))
+            return '🧩';
+        if (['md', 'markdown'].includes(ext))
+            return '📝';
+        if (['csv', 'tsv', 'xml'].includes(ext))
+            return '📊';
+    }
+    return '📄';
+}
+/** Conservative PDF reflow: merges only obvious per-glyph orphan lines
+ * (1-4 Thai / 1-3 Latin chars sandwiched between longer lines). Mirrors
+ * the Python backend's `_rejoin_pdf_lines` which now runs alongside
+ * `extraction_mode="layout"` — the combination preserves real line
+ * breaks from the PDF while cleaning up orphan glyphs.
+ *
+ * Intentionally NOT aggressive: the previous implementation merged
+ * every prose line into long paragraphs and stripped all spaces between
+ * Thai characters, which destroyed the layout-mode output the backend
+ * now produces. If a user's file really has legacy-mangled data, they
+ * should delete the document memory entry and re-upload — the fresh
+ * extraction with layout mode will produce correct output.
+ */
+function reflowPdfText(text) {
+    if (!text)
+        return text;
+    const CONTINUOUS = '฀-๿຀-໿ក-៿぀-ヿㇰ-ㇿ一-鿿㐀-䶿豈-﫿가-힯';
+    const reContinuous = new RegExp('[' + CONTINUOUS + ']');
+    const reHeading = /^#{1,6}\s/;
+    const reList = /^(?:[-*•◦▪■]\s|\d+[.)]\s|>\s?)/;
+    const reSeparator = /^[\s\-⎯—━═*._=·‧…]+$/;
+    const reHasSepChar = /[\-⎯—━═_=]/;
+    const isStructural = (line) => {
+        const s = line.trim();
+        if (!s)
+            return false;
+        if (reHeading.test(s))
+            return true;
+        if (reList.test(s))
+            return true;
+        if (reSeparator.test(s) && reHasSepChar.test(s))
+            return true;
+        return false;
+    };
+    const isShortOrphan = (stripped, resultSoFar, allLines, idx) => {
+        if (isStructural(stripped))
+            return false;
+        const first = stripped[0];
+        const maxLen = reContinuous.test(first) ? 4 : 3;
+        if (stripped.length > maxLen)
+            return false;
+        if (!resultSoFar.length || !resultSoFar[resultSoFar.length - 1].trim())
+            return false;
+        const prevStripped = resultSoFar[resultSoFar.length - 1].trim();
+        if (isStructural(prevStripped))
+            return false;
+        if (prevStripped.length <= maxLen)
+            return false;
+        if (idx + 1 >= allLines.length)
+            return true;
+        const nextStripped = allLines[idx + 1].trim();
+        if (!nextStripped)
+            return true;
+        if (isStructural(nextStripped))
+            return false;
+        return nextStripped.length > maxLen;
+    };
+    const lines = text.split('\n');
+    const result = [];
+    for (let i = 0; i < lines.length; i++) {
+        const current = lines[i];
+        const stripped = current.trim();
+        if (!stripped) {
+            result.push('');
+            continue;
+        }
+        if (isShortOrphan(stripped, result, lines, i)) {
+            const prev = result[result.length - 1];
+            const last = prev[prev.length - 1] || '';
+            const first = stripped[0];
+            let sep = '';
+            if (!(reContinuous.test(last) && reContinuous.test(first))) {
+                sep = (prev && !prev.endsWith(' ') && !prev.endsWith('	')) ? ' ' : '';
+            }
+            result[result.length - 1] = prev + sep + stripped;
+        }
+        else {
+            result.push(current);
+        }
+    }
+    let out = result.join('\n');
+    out = out.replace(/\n{3,}/g, '\n\n');
+    return out.trim();
+}
+function formatChatFileDate(iso) {
+    if (!iso)
+        return '';
+    try {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime()))
+            return iso;
+        // Short absolute format — works in any locale without being verbose.
+        // e.g. "Apr 24, 15:32". Users mainly care about "was this today".
+        return d.toLocaleString(undefined, {
+            month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+        });
+    }
+    catch {
+        return iso;
+    }
+}
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -217,6 +336,13 @@ export class ChatManager {
         // keep the public method surface stable for callers (renderMessages uses
         // `this.attachedImages` inside template strings; sendMessage snapshots it).
         this.imageAttach = new ImageAttachManager();
+        this.docAttach = new DocumentAttachManager();
+        // ========================================================================
+        // Chat File Editor — filename + extracted_text edit view
+        // ========================================================================
+        /** Currently-editing document id. Stored on the instance so the
+         * `document_memory_content` WS frame knows which row to hydrate. */
+        this.editingDocId = null;
     }
     enrichConversation(conversation) {
         const preset = this.presets[conversation.role_preset] || {};
@@ -349,6 +475,12 @@ export class ChatManager {
                     this.restoreContextWindowIndicator(this.currentConversation.id);
                 }
                 this.renderConversationList();
+                // Refresh the 📎 badge count for the newly-opened conversation.
+                // A fresh list request is cheap (metadata-only SQL + WS frame)
+                // and keeps the badge accurate without adding payload to the
+                // conversation_loaded frame itself.
+                this.updateChatFilesBadge(0);
+                this.refreshChatFilesBadge();
                 break;
             case 'stream_start':
                 this.isStreaming = true;
@@ -639,6 +771,61 @@ export class ChatManager {
             case 'profile_saved':
                 showToast('Profile saved! AI will remember you.', { type: 'success' });
                 break;
+            case 'document_saved':
+                // Server confirmed a document's text was extracted + persisted
+                // to the document memory store. Show a short toast summarising
+                // what was saved so the user knows the upload will persist
+                // across restarts (scoped to this conversation only).
+                {
+                    const docs = data.documents || [];
+                    if (docs.length === 1) {
+                        const d = docs[0];
+                        showToast(`📎 Saved "${d.filename}" to this conversation (${d.char_count.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
+                    }
+                    else if (docs.length > 1) {
+                        const totalChars = docs.reduce((s, d) => s + d.char_count, 0);
+                        showToast(`📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`, { type: 'success', duration: 3500 });
+                    }
+                    // Refresh the files badge count — pulls the fresh list
+                    // from the server rather than optimistically incrementing
+                    // so the badge stays in sync even on reconnect races.
+                    this.refreshChatFilesBadge();
+                }
+                break;
+            case 'conversation_documents':
+                // Populate the 📎 Files modal with the conversation-scoped
+                // document list. Also updates the chat-header badge so the
+                // count stays accurate.
+                this.renderChatFilesModal(data.conversation_id, data.documents || []);
+                break;
+            case 'document_memory_deleted':
+                // Server confirmed a delete. Drop the row locally without
+                // a full refetch — faster than round-tripping list again.
+                this.removeChatFileRow(data.id);
+                this.refreshChatFilesBadge();
+                showToast('🗑️ Deleted', { type: 'info', duration: 1800 });
+                break;
+            case 'document_memory_content':
+                // Full content arrived for the document currently being
+                // edited — populate the editor form.
+                this.hydrateChatFileEditor(data.document);
+                break;
+            case 'document_memory_updated':
+                // Server ack for a save. Close editor, refetch the list
+                // (so filename / char-count in the list row reflect the
+                // new values), and nudge with a toast.
+                this.closeChatFileEditor();
+                if (!data.noop) {
+                    showToast('✓ Saved', { type: 'success', duration: 1800 });
+                    // Refresh the list + badge to pick up new metadata.
+                    if (this.currentConversation) {
+                        this.send({
+                            type: 'list_conversation_documents',
+                            conversation_id: this.currentConversation.id,
+                        });
+                    }
+                }
+                break;
             // API Failover handlers
             case 'api_endpoints':
                 window.dispatchEvent(new CustomEvent('api-failover-status', { detail: data }));
@@ -785,18 +972,34 @@ export class ChatManager {
     }
     sendMessage() {
         const input = document.getElementById('chat-input');
-        const content = input?.value?.trim();
-        if (!content || this.isStreaming)
+        const rawContent = input?.value?.trim() ?? '';
+        // A message is sendable if it has text OR attached images OR attached
+        // docs. Sending attachments with no text is a legitimate pattern
+        // ("here, look at this PDF") — the old check required text too, which
+        // blocked that flow entirely.
+        const hasAttachments = this.attachedImages.length > 0 || this.attachedDocs.length > 0;
+        if ((!rawContent && !hasAttachments) || this.isStreaming)
             return;
         if (!this.currentConversation) {
             showToast('Please start a conversation first', { type: 'warning' });
             return;
         }
+        // Set the streaming gate immediately so a second send (e.g. Enter + Send-button
+        // click in the same frame, or a fast double-tap) cannot slip through before
+        // the backend's `stream_start` frame arrives and sets it. The disconnect
+        // handler resets isStreaming on WS errors, so this won't strand the UI.
+        this.isStreaming = true;
+        // When only attachments are sent, substitute a short default prompt
+        // so the backend (which treats empty content as an error) has
+        // something to anchor the turn on. Claude reads the attached files
+        // anyway, so "please take a look" works as a neutral nudge.
+        const content = rawContent || '[attached file(s) for you to review]';
         // Detect /edit command: AI rewrites its last message based on user instruction
         if (content.startsWith('/edit ')) {
             const instruction = content.substring(6).trim();
             if (!instruction) {
                 showToast('Usage: /edit <instruction>', { type: 'warning' });
+                this.isStreaming = false; // release gate set above
                 return;
             }
             // Find last assistant message with a DB ID
@@ -809,6 +1012,7 @@ export class ChatManager {
             }
             if (!targetMsg || !targetMsg.id) {
                 showToast('No AI message to edit', { type: 'warning' });
+                this.isStreaming = false; // release gate set above
                 return;
             }
             if (input) {
@@ -857,6 +1061,9 @@ export class ChatManager {
         const searchToggle = document.getElementById('chat-use-search');
         const unrestrictedToggle = document.getElementById('chat-unrestricted');
         const userName = settings.userName || 'User';
+        // Snapshot both attachment types before the send so clear() can't
+        // race with in-flight FileReaders still resolving their payload.
+        const docs = this.attachedDocs;
         this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
@@ -868,11 +1075,13 @@ export class ChatManager {
             use_search: searchToggle?.checked ?? true,
             unrestricted_mode: unrestrictedToggle?.checked || false,
             images: this.attachedImages,
+            documents: docs.length > 0 ? docs : undefined,
             user_name: userName,
             ai_provider: this.aiProvider,
         });
-        // Clear attached images after sending
+        // Clear attached images + documents after sending
         this.imageAttach.clear();
+        this.docAttach.clear();
     }
     appendStreamingMessage(mode = '') {
         const container = document.getElementById('chat-messages');
@@ -1399,12 +1608,17 @@ export class ChatManager {
     stepChatSearch(direction) { this.chatSearch.step(direction); }
     setupChatSearchHandlers() { this.chatSearch.setup(); }
     setupScrollListener() {
-        // Piggy-back: also bind the chat search handlers once, since both are
-        // wired up after the chat DOM is available.
-        this.setupChatSearchHandlers();
         const container = document.getElementById('chat-messages');
         if (!container)
             return;
+        // Guard: setupScrollListener() is called from both init() and renderMessages().
+        // Without this flag the scroll listener stacks N times after N renders, turning
+        // each scroll into N callbacks and causing FAB flicker / UI jank on long chats.
+        if (container.dataset.scrollBound === '1')
+            return;
+        container.dataset.scrollBound = '1';
+        // setupChatSearchHandlers() also lives here so it binds once on the same gate.
+        this.setupChatSearchHandlers();
         const FAB_THRESHOLD = 200; // px from bottom to show FAB
         const AUTO_SCROLL_THRESHOLD = 150; // px from bottom to keep auto-scroll
         container.addEventListener('scroll', () => {
@@ -1420,15 +1634,16 @@ export class ChatManager {
             }
             this.updateScrollFab(shouldShow);
         });
-        // Click FAB → smooth scroll to bottom
+        // Click FAB → smooth scroll to bottom. Mark flag BEFORE addEventListener
+        // so a re-entrant call cannot slip through between check and bind.
         const fab = document.getElementById('scroll-to-bottom-fab');
         if (fab && !fab.dataset.fabBound) {
+            fab.dataset.fabBound = '1';
             fab.addEventListener('click', () => {
                 container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
                 this.newMessagesWhileScrolledUp = 0;
                 this.updateScrollFab(false);
             });
-            fab.dataset.fabBound = '1';
         }
     }
     formatTime(dateStr) {
@@ -1466,10 +1681,259 @@ export class ChatManager {
         }
     }
     get attachedImages() { return this.imageAttach.get(); }
+    get attachedDocs() { return this.docAttach.get(); }
     attachImage(file) { this.imageAttach.attach(file); }
     removeImage(index) { this.imageAttach.remove(index); }
     renderAttachedImages() { this.imageAttach.renderPreview(); }
-    setupImageUpload() { this.imageAttach.setup(); }
+    /** Bind the shared file picker + drop zone. Document manager is passed
+     * to the image manager so non-image files (PDF, text, code) are routed
+     * to it automatically rather than rejected. */
+    setupImageUpload() { this.imageAttach.setup(this.docAttach); }
+    // ========================================================================
+    // Chat Files Modal — per-conversation document list (📎 button)
+    // ========================================================================
+    /** Open the "Attached Files" modal for the active conversation and
+     * request a fresh list from the server. */
+    openChatFilesModal() {
+        if (!this.currentConversation) {
+            showToast('Open a conversation first', { type: 'warning' });
+            return;
+        }
+        const modal = document.getElementById('chat-files-modal');
+        const subtitle = document.getElementById('chat-files-subtitle');
+        const list = document.getElementById('chat-files-list');
+        const empty = document.getElementById('chat-files-empty');
+        if (!modal)
+            return;
+        if (subtitle)
+            subtitle.textContent = 'Loading…';
+        if (list)
+            list.innerHTML = '';
+        if (empty)
+            empty.classList.add('hidden');
+        modal.classList.add('active');
+        this.send({
+            type: 'list_conversation_documents',
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    closeChatFilesModal() {
+        const modal = document.getElementById('chat-files-modal');
+        modal?.classList.remove('active');
+    }
+    /** Handler for the `conversation_documents` WS frame. Renders the list
+     * or shows the empty state. */
+    renderChatFilesModal(conversationId, docs) {
+        // Drop the frame if the user already switched to a different
+        // conversation (request race) — we don't want to show stale data.
+        if (!this.currentConversation || conversationId !== this.currentConversation.id)
+            return;
+        const subtitle = document.getElementById('chat-files-subtitle');
+        const list = document.getElementById('chat-files-list');
+        const empty = document.getElementById('chat-files-empty');
+        // Update the badge on the header button regardless of modal state.
+        this.updateChatFilesBadge(docs.length);
+        if (!list)
+            return;
+        if (docs.length === 0) {
+            if (subtitle)
+                subtitle.textContent = '';
+            list.innerHTML = '';
+            empty?.classList.remove('hidden');
+            return;
+        }
+        empty?.classList.add('hidden');
+        if (subtitle) {
+            const totalChars = docs.reduce((s, d) => s + (d.char_count || 0), 0);
+            subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
+        }
+        list.innerHTML = docs.map(d => {
+            const icon = chatFileIconFor(d.file_kind, d.filename);
+            const meta = [
+                `${(d.char_count || 0).toLocaleString()} chars`,
+                d.page_count ? `${d.page_count} page(s)` : null,
+                d.file_kind.toUpperCase(),
+                formatChatFileDate(d.created_at),
+            ].filter(Boolean).join(' · ');
+            return `
+                <div class="chat-file-row" data-id="${d.id}">
+                    <span class="file-icon" aria-hidden="true">${icon}</span>
+                    <div class="file-body">
+                        <div class="file-name">${escapeHtml(d.filename)}</div>
+                        <div class="file-meta">${escapeHtml(meta)}</div>
+                    </div>
+                    <button class="file-edit" data-id="${d.id}" title="Edit contents">Edit</button>
+                    <button class="file-delete" data-id="${d.id}" title="Remove from memory">Delete</button>
+                </div>
+            `;
+        }).join('');
+        list.querySelectorAll('.file-edit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.currentTarget.dataset.id || '0');
+                if (!id || !this.currentConversation)
+                    return;
+                this.openChatFileEditor(id);
+            });
+        });
+        list.querySelectorAll('.file-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.currentTarget.dataset.id || '0');
+                if (!id || !this.currentConversation)
+                    return;
+                this.send({
+                    type: 'delete_document_memory',
+                    id,
+                    conversation_id: this.currentConversation.id,
+                });
+            });
+        });
+    }
+    /** Switch the files modal into editor view and request the full content
+     * for the given id. The textarea fills in once `document_memory_content`
+     * arrives — avoids shipping the full text in the list frame. Also
+     * flips the `.editing` class on the modal-content so CSS can widen the
+     * box from the compact list size to a roomy editing surface. */
+    openChatFileEditor(docId) {
+        if (!this.currentConversation)
+            return;
+        this.editingDocId = docId;
+        const modalContent = document.querySelector('.chat-files-modal-content');
+        const listView = document.getElementById('chat-files-list-view');
+        const editView = document.getElementById('chat-files-edit-view');
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        const counter = document.getElementById('chat-files-edit-counter');
+        if (nameInput)
+            nameInput.value = '';
+        if (textInput) {
+            textInput.value = '';
+            textInput.placeholder = 'Loading…';
+        }
+        if (counter)
+            counter.textContent = '0 chars';
+        listView?.classList.add('hidden');
+        editView?.classList.remove('hidden');
+        modalContent?.classList.add('editing');
+        this.send({
+            type: 'get_document_memory_content',
+            id: docId,
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    /** Populate the edit form from a `document_memory_content` WS frame. */
+    hydrateChatFileEditor(doc) {
+        if (this.editingDocId !== doc.id)
+            return; // stale frame
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        if (nameInput)
+            nameInput.value = doc.filename || '';
+        if (textInput) {
+            textInput.placeholder = '';
+            textInput.value = doc.extracted_text || '';
+            textInput.focus();
+        }
+        this.updateChatFileEditorCounter();
+    }
+    closeChatFileEditor() {
+        this.editingDocId = null;
+        document.getElementById('chat-files-edit-view')?.classList.add('hidden');
+        document.getElementById('chat-files-list-view')?.classList.remove('hidden');
+        // Shrink the modal back to the compact list size — the CSS
+        // transition makes this feel smooth rather than popping.
+        document.querySelector('.chat-files-modal-content')?.classList.remove('editing');
+    }
+    /** Refresh the char counter under the textarea. */
+    updateChatFileEditorCounter() {
+        const textInput = document.getElementById('chat-files-edit-text');
+        const counter = document.getElementById('chat-files-edit-counter');
+        if (!textInput || !counter)
+            return;
+        counter.textContent = `${textInput.value.length.toLocaleString()} / 500,000 chars`;
+    }
+    /** Reflow broken per-glyph newlines in the current editor textarea.
+     *
+     * Old PDFs uploaded before the extraction fix have `\n` between every
+     * few characters — renders as vertically-stacked text in the editor.
+     * This button re-applies the same join algorithm the backend now uses
+     * on fresh uploads: single newlines become spaces, double newlines
+     * stay as paragraph breaks, runs of spaces collapse.
+     *
+     * Kept as an explicit button rather than running automatically so the
+     * user can choose whether to keep intentional line breaks (e.g. in a
+     * text file with bulleted lists) or reflow a genuinely broken extract.
+     */
+    reflowChatFileEditor() {
+        const textInput = document.getElementById('chat-files-edit-text');
+        if (!textInput)
+            return;
+        const original = textInput.value;
+        if (!original)
+            return;
+        const joined = reflowPdfText(original);
+        if (joined === original) {
+            showToast('Nothing to reflow — already looks clean', { type: 'info', duration: 2000 });
+            return;
+        }
+        textInput.value = joined;
+        this.updateChatFileEditorCounter();
+        textInput.focus();
+        showToast(`🔀 Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`, { type: 'success', duration: 3000 });
+    }
+    /** Submit edit — server patches both fields in one UPDATE, then we pop
+     * back to the list view and request a fresh list so the row shows the
+     * new char count / filename. */
+    saveChatFileEditor() {
+        if (!this.editingDocId || !this.currentConversation)
+            return;
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        const filename = nameInput?.value.trim() || '';
+        const extractedText = textInput?.value ?? '';
+        if (!filename) {
+            showToast('Filename cannot be empty', { type: 'warning' });
+            nameInput?.focus();
+            return;
+        }
+        this.send({
+            type: 'update_document_memory',
+            id: this.editingDocId,
+            conversation_id: this.currentConversation.id,
+            filename,
+            extracted_text: extractedText,
+        });
+    }
+    /** Remove a single row from the modal (called after delete ack). */
+    removeChatFileRow(id) {
+        const row = document.querySelector(`.chat-file-row[data-id="${id}"]`);
+        row?.remove();
+        // If that was the last row, flip to empty state.
+        const list = document.getElementById('chat-files-list');
+        if (list && list.children.length === 0) {
+            document.getElementById('chat-files-empty')?.classList.remove('hidden');
+            const subtitle = document.getElementById('chat-files-subtitle');
+            if (subtitle)
+                subtitle.textContent = '';
+        }
+    }
+    /** Fire-and-forget badge refresh: asks the server for the current count
+     * without opening the modal. Called after upload + delete. */
+    refreshChatFilesBadge() {
+        if (!this.currentConversation || !this.connected)
+            return;
+        this.send({
+            type: 'list_conversation_documents',
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    /** Set the 📎 badge count on the chat-header button. Hidden when 0. */
+    updateChatFilesBadge(count) {
+        const badge = document.getElementById('chat-files-badge');
+        if (!badge)
+            return;
+        badge.textContent = String(count);
+        badge.classList.toggle('hidden', count <= 0);
+    }
     // ========================================================================
     // Message Edit / Delete
     // ========================================================================
@@ -1847,6 +2311,42 @@ export class ChatManager {
         document.getElementById('btn-delete-chat')?.addEventListener('click', () => {
             if (this.currentConversation) {
                 this.deleteConversation(this.currentConversation.id);
+            }
+        });
+        // Attached files modal — opens per-conversation document list
+        document.getElementById('btn-chat-files')?.addEventListener('click', () => {
+            this.openChatFilesModal();
+        });
+        document.querySelectorAll('[data-close-files]').forEach(el => {
+            el.addEventListener('click', () => {
+                // Closing from editor view should bail editing too, not
+                // just re-hide the modal with the editor still "open".
+                this.closeChatFileEditor();
+                this.closeChatFilesModal();
+            });
+        });
+        // Chat-file editor controls
+        document.getElementById('chat-files-edit-back')?.addEventListener('click', () => {
+            this.closeChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-cancel')?.addEventListener('click', () => {
+            this.closeChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-save')?.addEventListener('click', () => {
+            this.saveChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-reflow')?.addEventListener('click', () => {
+            this.reflowChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-text')?.addEventListener('input', () => {
+            this.updateChatFileEditorCounter();
+        });
+        // Ctrl/Cmd+S inside the editor textarea = save, same as RP Notes.
+        document.getElementById('chat-files-edit-text')?.addEventListener('keydown', (e) => {
+            const ev = e;
+            if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') {
+                ev.preventDefault();
+                this.saveChatFileEditor();
             }
         });
         // Delete confirmation modal handlers

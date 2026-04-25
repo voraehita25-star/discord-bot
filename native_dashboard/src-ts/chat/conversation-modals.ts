@@ -30,8 +30,27 @@ export interface ConversationModalsCallbacks {
 export class ConversationModals {
     private pendingDeleteId: string | null = null;
     private pendingRenameId: string | null = null;
+    private escapeHandler: ((e: KeyboardEvent) => void) | null = null;
 
     constructor(private readonly cb: ConversationModalsCallbacks) {}
+
+    /** Install an Escape-to-close handler on document, scoped to whichever modal
+     * is open. We attach lazily on show and detach on close so the listener
+     * doesn't run on every keystroke when no modal is visible. */
+    private attachEscape(close: () => void): void {
+        this.detachEscape();
+        this.escapeHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', this.escapeHandler);
+    }
+
+    private detachEscape(): void {
+        if (this.escapeHandler) {
+            document.removeEventListener('keydown', this.escapeHandler);
+            this.escapeHandler = null;
+        }
+    }
 
     // ---------- Delete ----------
 
@@ -41,6 +60,7 @@ export class ConversationModals {
         this.pendingDeleteId = id;
         const modal = document.getElementById('delete-confirm-modal');
         modal?.classList.add('active');
+        this.attachEscape(() => this.closeDelete());
     }
 
     /** User clicked "Delete" in the confirm modal. Emits WS frame + hides modal. */
@@ -56,6 +76,7 @@ export class ConversationModals {
     closeDelete(): void {
         document.getElementById('delete-confirm-modal')?.classList.remove('active');
         this.pendingDeleteId = null;
+        this.detachEscape();
     }
 
     // ---------- Rename ----------
@@ -73,6 +94,7 @@ export class ConversationModals {
             modal.classList.add('active');
             input.focus();
             input.select();
+            this.attachEscape(() => this.closeRename());
         }
     }
 
@@ -96,5 +118,6 @@ export class ConversationModals {
     closeRename(): void {
         document.getElementById('rename-modal')?.classList.remove('active');
         this.pendingRenameId = null;
+        this.detachEscape();
     }
 }

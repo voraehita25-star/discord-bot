@@ -19,6 +19,24 @@ export class ConversationModals {
         this.cb = cb;
         this.pendingDeleteId = null;
         this.pendingRenameId = null;
+        this.escapeHandler = null;
+    }
+    /** Install an Escape-to-close handler on document, scoped to whichever modal
+     * is open. We attach lazily on show and detach on close so the listener
+     * doesn't run on every keystroke when no modal is visible. */
+    attachEscape(close) {
+        this.detachEscape();
+        this.escapeHandler = (e) => {
+            if (e.key === 'Escape')
+                close();
+        };
+        document.addEventListener('keydown', this.escapeHandler);
+    }
+    detachEscape() {
+        if (this.escapeHandler) {
+            document.removeEventListener('keydown', this.escapeHandler);
+            this.escapeHandler = null;
+        }
     }
     // ---------- Delete ----------
     /** Called by the trash-can button in the chat header. */
@@ -28,6 +46,7 @@ export class ConversationModals {
         this.pendingDeleteId = id;
         const modal = document.getElementById('delete-confirm-modal');
         modal?.classList.add('active');
+        this.attachEscape(() => this.closeDelete());
     }
     /** User clicked "Delete" in the confirm modal. Emits WS frame + hides modal. */
     confirmDelete() {
@@ -41,6 +60,7 @@ export class ConversationModals {
     closeDelete() {
         document.getElementById('delete-confirm-modal')?.classList.remove('active');
         this.pendingDeleteId = null;
+        this.detachEscape();
     }
     // ---------- Rename ----------
     /** Called by the pencil button in the chat header. */
@@ -56,6 +76,7 @@ export class ConversationModals {
             modal.classList.add('active');
             input.focus();
             input.select();
+            this.attachEscape(() => this.closeRename());
         }
     }
     /** User hit Enter or clicked Save. */
@@ -76,6 +97,7 @@ export class ConversationModals {
     closeRename() {
         document.getElementById('rename-modal')?.classList.remove('active');
         this.pendingRenameId = null;
+        this.detachEscape();
     }
 }
 //# sourceMappingURL=conversation-modals.js.map

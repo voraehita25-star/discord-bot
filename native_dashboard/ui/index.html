@@ -243,7 +243,7 @@
                                     <span class="context-bar-label" id="context-bar-label">0%</span>
                                 </div>
                                 <div class="chat-header-actions">
-                                    <select class="select-provider-inline" id="chat-ai-provider" title="AI Provider">
+                                    <select class="select-provider-inline" id="chat-ai-provider" title="AI Provider" aria-label="AI Provider">
                                         <option value="gemini">Gemini</option>
                                         <option value="claude">Claude</option>
                                     </select>
@@ -251,6 +251,9 @@
                                         <input type="checkbox" id="thinking-toggle">
                                         <span class="thinking-label">⚡ Thinking</span>
                                     </label>
+                                    <button class="btn btn-icon" id="btn-chat-files" title="View attached files in this conversation" aria-label="View attached files">
+                                        📎<span class="chat-files-badge hidden" id="chat-files-badge">0</span>
+                                    </button>
                                     <button class="btn btn-icon" id="btn-rename-chat" title="Rename Conversation" aria-label="Rename Conversation">
                                         ✏️
                                     </button>
@@ -278,7 +281,7 @@
                                     <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match">↓</button>
                                     <button class="btn btn-icon" id="chat-search-close" title="Close (Esc)" aria-label="Close search">&times;</button>
                                 </div>
-                                <div class="chat-messages" id="chat-messages">
+                                <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat conversation">
                                     <!-- Messages will be rendered here -->
                                 </div>
                                 <button class="scroll-to-bottom-fab hidden" id="scroll-to-bottom-fab" aria-label="Scroll to bottom" title="Scroll to latest">
@@ -307,12 +310,16 @@
                                     <div class="attached-images" id="attached-images">
                                         <!-- Preview of attached images -->
                                     </div>
+                                    <div class="attached-docs" id="attached-docs">
+                                        <!-- Preview of attached documents (PDF, txt, code, etc.) -->
+                                    </div>
                                 </div>
                                 <div class="chat-input-container">
-                                    <textarea 
-                                        id="chat-input" 
+                                    <textarea
+                                        id="chat-input"
                                         placeholder="Type your message... (Enter to send)"
                                         rows="1"
+                                        aria-label="Type your message"
                                     ></textarea>
                                     <button class="btn btn-send" id="btn-send" title="Send Message (Enter)" aria-label="Send Message">
                                         <span class="send-icon">➤</span>
@@ -404,6 +411,71 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Attached Files Modal — lists every document (PDF / text / code)
+                     saved to persistent memory for the current conversation.
+                     Switches between list view and editor view in-place. -->
+                <div class="modal" id="chat-files-modal">
+                    <div class="modal-overlay" data-close-files></div>
+                    <div class="modal-content chat-files-modal-content">
+                        <!-- LIST VIEW -->
+                        <div class="chat-files-view" id="chat-files-list-view">
+                            <div class="modal-header">
+                                <h2>📎 Attached Files</h2>
+                                <button class="modal-close" id="chat-files-close" data-close-files aria-label="Close">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="chat-files-subtitle" id="chat-files-subtitle">Loading…</p>
+                                <div class="chat-files-list" id="chat-files-list">
+                                    <!-- Populated by JS -->
+                                </div>
+                                <div class="chat-files-empty hidden" id="chat-files-empty">
+                                    <span class="chat-files-empty-icon">📭</span>
+                                    <p>No files attached in this conversation yet.</p>
+                                    <p class="hint">Drop a PDF / text / code file onto the chat to add one.</p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- EDITOR VIEW -->
+                        <div class="chat-files-view hidden" id="chat-files-edit-view">
+                            <div class="modal-header">
+                                <button class="btn btn-icon chat-files-back" id="chat-files-edit-back" aria-label="Back to list">← Back</button>
+                                <h2>✏️ Edit File</h2>
+                                <button class="modal-close" data-close-files aria-label="Close">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="setting-row">
+                                    <label for="chat-files-edit-name">Filename</label>
+                                    <div class="setting-control">
+                                        <input type="text" id="chat-files-edit-name" class="setting-input" maxlength="200" placeholder="character_sheet.pdf">
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="chat-files-edit-text">
+                                        Extracted text
+                                        <span class="setting-hint-inline" id="chat-files-edit-counter">0 chars</span>
+                                    </label>
+                                    <div class="setting-control setting-control-full">
+                                        <textarea id="chat-files-edit-text"
+                                                  class="setting-textarea chat-files-edit-textarea"
+                                                  spellcheck="false"
+                                                  maxlength="500000"
+                                                  placeholder="File content goes here…"></textarea>
+                                    </div>
+                                </div>
+                                <p class="chat-files-edit-hint">
+                                    Changes save to the document memory for this conversation only.
+                                    AI sees the edited text from the next message onward.
+                                </p>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="chat-files-edit-reflow" title="Join per-glyph newlines into paragraphs (useful for old PDFs extracted before the fix)">🔀 Reflow</button>
+                                <button class="btn" id="chat-files-edit-cancel">Cancel</button>
+                                <button class="btn btn-primary" id="chat-files-edit-save">💾 Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <!-- Memories Page -->
@@ -467,7 +539,7 @@
                 <div class="page-header">
                     <h1>Log Viewer <span id="live-indicator" class="live-indicator">🔴 LIVE</span></h1>
                     <div class="log-controls">
-                        <select id="log-filter">
+                        <select id="log-filter" aria-label="Filter log level">
                             <option value="all">All Levels</option>
                             <option value="INFO">INFO</option>
                             <option value="WARNING">WARNING</option>
@@ -540,7 +612,9 @@
                         <label>AI Avatar</label>
                         <div class="setting-control avatar-control">
                             <div class="avatar-preview ai-avatar-preview" id="ai-avatar-preview">
-                                <img id="ai-avatar-image" src="" alt="AI Avatar">
+                                <!-- 1x1 transparent dataURI prevents the browser's broken-image
+                                     icon from flashing before JS sets the real src. -->
+                                <img id="ai-avatar-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="AI Avatar">
                                 <span class="avatar-placeholder">🤖</span>
                             </div>
                             <button class="btn btn-secondary" id="btn-change-ai-avatar">📷 Change</button>
@@ -557,7 +631,7 @@
                         <label>Profile Picture</label>
                         <div class="setting-control avatar-control">
                             <div class="avatar-preview" id="avatar-preview">
-                                <img id="avatar-image" src="" alt="Avatar">
+                                <img id="avatar-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Avatar">
                                 <span class="avatar-placeholder">👤</span>
                             </div>
                             <button class="btn btn-secondary" id="btn-change-avatar">📷 Change</button>
@@ -629,6 +703,26 @@
                         <label for="sakura-toggle">🌸 Sakura Petals Animation</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="sakura-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <label for="sound-toggle">
+                            🔊 Click Sounds
+                            <span class="setting-hint-inline">(subtle synth clicks on buttons)</span>
+                        </label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="sound-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <label for="haptic-toggle">
+                            📳 Haptic Feedback
+                            <span class="setting-hint-inline">(vibration on supported devices)</span>
+                        </label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="haptic-toggle">
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -733,6 +827,7 @@
 
     <!-- Avatar Cropper Modal -->
     <div id="avatar-crop-modal" class="modal">
+        <div class="modal-overlay" data-close-avatar-crop></div>
         <div class="modal-content avatar-crop-content">
             <div class="modal-header">
                 <h2>✂️ Crop Avatar</h2>
@@ -740,12 +835,12 @@
             </div>
             <div class="crop-container">
                 <div class="crop-area" id="crop-area">
-                    <img id="crop-image" src="" alt="Crop preview">
+                    <img id="crop-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Crop preview">
                     <div class="crop-circle" id="crop-circle"></div>
                 </div>
                 <div class="crop-controls">
-                    <label>Zoom</label>
-                    <input type="range" id="crop-zoom" min="100" max="300" value="100">
+                    <label for="crop-zoom">Zoom</label>
+                    <input type="range" id="crop-zoom" min="100" max="300" value="100" aria-label="Zoom level">
                     <div class="crop-position-hint">Drag image to position</div>
                 </div>
             </div>

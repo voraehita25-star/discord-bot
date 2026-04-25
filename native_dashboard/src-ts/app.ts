@@ -17,6 +17,9 @@ import {
     loadSettings,
     saveSettings,
     initToastContainer,
+    setup3DInteractions,
+    animateNumber,
+    setSkeleton,
     showToast,
     showConfirmDialog,
 } from './shared.js';
@@ -112,6 +115,13 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update AI avatars after all init
     updateAiAvatars();
     initApiFailoverUI();
+    // Bind avatar-crop modal listeners up front so Escape works even on the
+    // first open (the previous lazy bind inside openCropModal meant the very
+    // first session had no Escape handler attached yet).
+    setupCropEventListeners();
+    // 3D polish: ripple, cursor-tracking tilt, send-button pulse.
+    // Called last so it can attach to all elements rendered by the inits above.
+    setup3DInteractions();
 });
 
 // Cleanup on window unload — clear timers and close WebSocket so dev hot-reload
@@ -306,6 +316,12 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Fade-in entrance on the very first draw (CSS handles the transition;
+    // .chart-ready flips opacity from 0→1 and translateY from 16px→0).
+    if (!canvas.classList.contains('chart-ready')) {
+        requestAnimationFrame(() => canvas.classList.add('chart-ready'));
+    }
+
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     
@@ -479,7 +495,12 @@ function initSakuraAnimation(): void {
         activePetals.add(petal);
 
         const size = Math.random() * 15 + 10;
-        const startX = Math.random() * window.innerWidth;
+        // Cap startX so the petal's right edge cannot push the document past
+        // the viewport. Petals are position:fixed but still contribute to
+        // scrollWidth — the previous formula could position a 25px petal at
+        // x = innerWidth - 1, leaving its right side ~24px outside the
+        // viewport and forcing a horizontal scrollbar / layout overflow.
+        const startX = Math.random() * Math.max(0, window.innerWidth - size);
         const duration = Math.random() * 6 + 6;
         const delay = Math.random() * 2;
         const rotateStart = Math.random() * 360;
@@ -489,7 +510,11 @@ function initSakuraAnimation(): void {
         const shape = petalShapes[Math.floor(Math.random() * petalShapes.length)];
 
         petal.innerHTML = shape;
-        petal.style.position = 'fixed';
+        // position:absolute (not fixed) so the container's overflow:hidden
+        // actually clips petals — fixed escapes any ancestor clip and would
+        // push past the viewport during the sway transform, creating a few
+        // hundred px of phantom horizontal scroll.
+        petal.style.position = 'absolute';
         petal.style.width = `${size}px`;
         petal.style.height = `${size}px`;
         petal.style.left = `${startX}px`;
@@ -581,6 +606,18 @@ function initNavigation(): void {
         setSakuraEnabled(enabled);
     });
 
+    document.getElementById('sound-toggle')?.addEventListener('change', (e) => {
+        const enabled = (e.target as HTMLInputElement).checked;
+        updateSetting('soundEnabled', enabled);
+        if (enabled) showToast('🔊 Click sounds enabled', { type: 'info', duration: 2000 });
+    });
+
+    document.getElementById('haptic-toggle')?.addEventListener('change', (e) => {
+        const enabled = (e.target as HTMLInputElement).checked;
+        updateSetting('hapticEnabled', enabled);
+        if (enabled) showToast('📳 Haptic feedback enabled', { type: 'info', duration: 2000 });
+    });
+
     document.getElementById('telemetry-toggle')?.addEventListener('change', async (e) => {
         const enabled = (e.target as HTMLInputElement).checked;
         try {
@@ -607,7 +644,7 @@ function initNavigation(): void {
     document.getElementById('btn-save-profile')?.addEventListener('click', () => {
         saveProfileToAI();
     });
-    
+
     // Avatar upload handlers
     document.getElementById('btn-change-avatar')?.addEventListener('click', () => {
         document.getElementById('avatar-input')?.click();
@@ -736,6 +773,12 @@ async function updateStatus(): Promise<void> {
             cachedDbStats ?? invoke<DbStats>('get_db_stats')
         ]);
 
+        // Either side can return null when the bot isn't running yet
+        // (DB not initialized, status endpoint hasn't responded). Without
+        // these guards the .memory_mb / .total_messages accesses below
+        // crash the entire dashboard at bootstrap, leaving a blank UI.
+        if (!status || !dbStats) return;
+
         // Cache the results
         if (!cachedStatus) dataCache.set('status', status, 1500);
         if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
@@ -803,20 +846,35 @@ function updateButtons(status: BotStatus): void {
 }
 
 function updateStats(status: BotStatus, dbStats: DbStats): void {
-    const updates: [string, string][] = [
+    // Strings that don't animate naturally (uptime, mode) — just set textContent.
+    const stringUpdates: [string, string][] = [
         ['stat-uptime', status.uptime],
         ['stat-mode', status.mode],
-        ['stat-memory', `${status.memory_mb.toFixed(1)} MB`],
-        ['stat-messages', dbStats.total_messages.toLocaleString()],
-        ['stat-channels', dbStats.active_channels.toString()]
     ];
-
-    updates.forEach(([id, value]) => {
+    stringUpdates.forEach(([id, value]) => {
         const el = document.getElementById(id);
-        if (el && el.textContent !== value) {
-            el.textContent = value;
+        if (el) {
+            setSkeleton(el, false);
+            if (el.textContent !== value) el.textContent = value;
         }
     });
+
+    // Numeric stats — animate the count so changes feel alive.
+    const memEl = document.getElementById('stat-memory');
+    if (memEl) {
+        setSkeleton(memEl, false);
+        animateNumber(memEl, status.memory_mb, { decimals: 1, suffix: ' MB' });
+    }
+    const msgEl = document.getElementById('stat-messages');
+    if (msgEl) {
+        setSkeleton(msgEl, false);
+        animateNumber(msgEl, dbStats.total_messages);
+    }
+    const chEl = document.getElementById('stat-channels');
+    if (chEl) {
+        setSkeleton(chEl, false);
+        animateNumber(chEl, dbStats.active_channels);
+    }
 }
 
 // ============================================================================
@@ -1008,7 +1066,11 @@ function clearLogs(): void {
 async function loadDbStats(): Promise<void> {
     try {
         const stats = await invoke<DbStats>('get_db_stats');
-        
+        // Same defensive guard as updateStatus: backend can legitimately
+        // return null before the DB is initialized; treat as "no data yet"
+        // and let the next poll fill it in instead of crashing the page.
+        if (!stats) return;
+
         batchDOMUpdate([
             () => {
                 const dbMessages = document.getElementById('db-messages');
@@ -1016,18 +1078,26 @@ async function loadDbStats(): Promise<void> {
                 const dbEntities = document.getElementById('db-entities');
                 const dbRag = document.getElementById('db-rag');
 
-                if (dbMessages) dbMessages.textContent = stats.total_messages.toLocaleString();
-                if (dbChannels) dbChannels.textContent = stats.active_channels.toString();
-                if (dbEntities) dbEntities.textContent = stats.total_entities.toString();
-                if (dbRag) dbRag.textContent = stats.rag_memories.toString();
+                // animateNumber handles reduced-motion fallback internally,
+                // and setSkeleton clears any loading placeholder the first
+                // time real data arrives.
+                if (dbMessages) { setSkeleton(dbMessages, false); animateNumber(dbMessages, stats.total_messages); }
+                if (dbChannels) { setSkeleton(dbChannels, false); animateNumber(dbChannels, stats.active_channels); }
+                if (dbEntities) { setSkeleton(dbEntities, false); animateNumber(dbEntities, stats.total_entities); }
+                if (dbRag)      { setSkeleton(dbRag, false);      animateNumber(dbRag, stats.rag_memories); }
             }
         ]);
 
-        // Load channels and users in parallel
-        const [channels, users] = await Promise.all([
+        // Load channels and users in parallel. Coerce nulls (which the
+        // backend can return before the bot has indexed anything) to empty
+        // arrays so the .length / .forEach calls below don't crash and
+        // leave the UI in a half-rendered state.
+        const [channelsRaw, usersRaw] = await Promise.all([
             invoke<ChannelInfo[]>('get_recent_channels', { limit: 10 }),
             invoke<UserInfo[]>('get_top_users', { limit: 10 })
         ]);
+        const channels = channelsRaw ?? [];
+        const users = usersRaw ?? [];
 
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
@@ -1184,6 +1254,16 @@ function loadSettingsUI(): void {
     const sakuraToggleEl = document.getElementById('sakura-toggle') as HTMLInputElement | null;
     if (sakuraToggleEl) {
         sakuraToggleEl.checked = settings.sakuraEnabled !== false;
+    }
+
+    const soundToggleEl = document.getElementById('sound-toggle') as HTMLInputElement | null;
+    if (soundToggleEl) {
+        soundToggleEl.checked = settings.soundEnabled === true;
+    }
+
+    const hapticToggleEl = document.getElementById('haptic-toggle') as HTMLInputElement | null;
+    if (hapticToggleEl) {
+        hapticToggleEl.checked = settings.hapticEnabled === true;
     }
 
     // Telemetry toggle is stored outside localStorage — it's a file on disk
@@ -1383,9 +1463,26 @@ function setupCropEventListeners(): void {
     // Cancel/Close
     cancelBtn.onclick = closeCropModal;
     closeBtn.onclick = closeCropModal;
+    // Click on the .modal-overlay backdrop closes the modal. The overlay was added so
+    // the avatar crop modal gets the same dim+blur backdrop as other modals; before
+    // that, the modal content floated over an unblurred page.
+    modal.querySelector<HTMLElement>('[data-close-avatar-crop]')?.addEventListener('click', closeCropModal);
+    // Fallback: clicking the modal element itself (outside both content + overlay)
+    // also closes — keeps backwards compat with the previous click-target check.
     modal.onclick = (e) => {
         if (e.target === modal) closeCropModal();
     };
+    // Escape key dismiss — only active while modal is open.
+    // Guard with a dataset flag so re-opening the crop modal doesn't stack
+    // duplicate document-level keydown listeners every time. Without this
+    // flag every avatar-crop session leaks one more listener for the rest
+    // of the page lifetime.
+    if (!modal.dataset.escBound) {
+        modal.dataset.escBound = '1';
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.classList.contains('active')) closeCropModal();
+        });
+    }
 }
 
 function startDrag(e: MouseEvent): void {
@@ -1582,13 +1679,13 @@ function saveProfileToAI(): void {
     const bio = (document.getElementById('user-bio-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const preferences = (document.getElementById('user-preferences-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const isCreator = (document.getElementById('creator-toggle') as HTMLInputElement)?.checked || false;
-    
+
     if (chatManager?.connected) {
-        chatManager.send({ 
-            type: 'save_profile', 
+        chatManager.send({
+            type: 'save_profile',
             profile: { display_name: displayName, bio, preferences, is_creator: isCreator }
         });
-        
+
         // Also update local settings
         settings.userName = displayName;
         settings.isCreator = isCreator;
