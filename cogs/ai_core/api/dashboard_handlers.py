@@ -301,6 +301,19 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
         if regenerate and conversation_id:
             deleted_count = await db.delete_dashboard_messages_after(conversation_id, message_id_int)
 
+        # Edit/regenerate diverges the DB from Claude's server-side --resume
+        # transcript. If we leave the CLI session id in place, the next turn
+        # would --resume the old jsonl and replay the pre-edit content as if
+        # nothing changed. Wipe the session pointer + jsonl so the next CLI
+        # turn starts fresh from the current DB state via the prompt builder's
+        # `# Conversation so far` block. No-op in API mode.
+        if conversation_id:
+            try:
+                from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
+                _delete_cli_session(conversation_id)
+            except Exception:
+                logger.exception("Claude CLI session reset failed for %s", conversation_id)
+
         await ws.send_json({
             "type": "message_edited",
             "message_id": message_id,
@@ -485,6 +498,15 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
             pair_conv_id = await db.delete_dashboard_message(int(pair_message_id))
             if pair_conv_id:
                 deleted_pair_id = pair_message_id
+
+        # Same divergence problem as edit: the DB now lacks messages that
+        # Claude's --resume transcript still has, so the next CLI turn would
+        # replay the deleted content. Drop the session pointer + jsonl.
+        try:
+            from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
+            _delete_cli_session(conv_id)
+        except Exception:
+            logger.exception("Claude CLI session reset failed for %s", conv_id)
 
         await ws.send_json({
             "type": "message_deleted",
