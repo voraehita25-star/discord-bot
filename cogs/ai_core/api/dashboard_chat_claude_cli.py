@@ -97,12 +97,15 @@ def _encode_claude_project_dirname(path: Path) -> str:
     """Replicate Claude Code's path encoding for its session-log folder.
 
     Claude Code stores `~/.claude/projects/<encoded>/<session-id>.jsonl`
-    where `<encoded>` replaces `:`, `\\`, `/`, and space with `-`:
-        `c:\\Users\\ME\\BOT Discord`  →  `c--Users-ME-BOT-Discord`
-    We need the same encoding to locate the session file to delete.
+    where `<encoded>` replaces `:`, `\\`, `/`, space, and `_` with `-`:
+        `c:\\Users\\ME\\BOT Discord\\data\\claude_cli_workdir`
+            →  `c--Users-ME-BOT-Discord-data-claude-cli-workdir`
+    We need the same encoding to locate the session file to delete —
+    missing the `_` substitution silently breaks `delete_session_file()`
+    so deleted dashboard conversations leave orphan .jsonl behind.
     """
     s = str(path)
-    for ch in (":", "\\", "/", " "):
+    for ch in (":", "\\", "/", " ", "_"):
         s = s.replace(ch, "-")
     return s
 

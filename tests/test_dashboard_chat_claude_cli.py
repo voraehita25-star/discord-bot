@@ -58,10 +58,16 @@ class TestEncodeProjectDirname:
         p = Path("/tmp/foo/bar")
         assert cli_mod._encode_claude_project_dirname(p) == "-tmp-foo-bar"
 
-    def test_preserves_underscores_and_letters(self):
+    def test_underscores_replaced_with_dash_to_match_claude_code(self):
+        # Claude Code's actual encoder replaces `_` with `-` along with
+        # `:`, `\`, `/`, and space. If we don't, delete_session_file()
+        # looks for the file in a folder Claude never wrote to, leaving
+        # orphan .jsonl behind on every dashboard conversation delete.
         p = Path("/opt/claude_cli_workdir")
         result = cli_mod._encode_claude_project_dirname(p)
-        assert "claude_cli_workdir" in result
+        assert "claude_cli_workdir" not in result
+        assert "claude-cli-workdir" in result
+        assert "_" not in result
 
 
 # ============================================================================
