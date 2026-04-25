@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** April 24, 2026
-> **Version:** 3.3.15
+> **Last Updated:** April 26, 2026
+> **Version:** 3.3.16
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 222 Python files | 91 Python test files (3,071 tests) + 10 vitest files (189 frontend tests)
+> **Total Files:** 222 Python files | 92 Python test files (3,088 tests) + 10 vitest files (189 frontend tests) + 5 Playwright spec files (63 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
 ---
 
@@ -54,34 +54,21 @@ BOT/
 │       ├── fallback_responses.py  # Fallback when AI fails
 │       ├── session_mixin.py  # Session management mixin
 │       ├── media_processor.py # Media processing
+│       ├── claude_payloads.py # Typed Claude message builders + prompt-cache helpers
+│       ├── imports.py        # Centralised optional-dependency imports
 │       │
-│       ├── # Re-export files (backward compat)
-│       ├── tools.py → tools/
-│       ├── api_handler.py → api/
-│       ├── performance.py → core/
-│       ├── message_queue.py → core/
-│       ├── context_builder.py → core/
-│       ├── response_sender.py → response/
-│       ├── response_mixin.py → response/
-│       ├── webhook_cache.py → response/
-│       ├── debug_commands.py → commands/
-│       ├── memory_commands.py → commands/
-│       ├── server_commands.py → commands/
-│       ├── tool_definitions.py → tools/
-│       ├── tool_executor.py → tools/
-│       │
-│       ├── api/              # 🔌 AI API Integration (Claude primary + Gemini embeddings)
+│       ├── api/              # 🔌 AI API Integration (Claude primary + Gemini embeddings) + dashboard backend
 │       │   ├── __init__.py
-│       │   ├── api_handler.py          # Core API calls, streaming, retry
+│       │   ├── api_handler.py          # Claude API calls (anthropic SDK), streaming, retry
 │       │   ├── api_failover.py         # Direct + proxy failover for Claude
-│       │   ├── claude_payloads.py      # Typed Claude message builders + prompt-cache helpers
-│       │   ├── ws_dashboard.py         # Dashboard WebSocket server
-│       │   ├── dashboard_chat.py       # Gemini-based dashboard chat
-│       │   ├── dashboard_chat_claude.py # Claude streaming chat + edit via anthropic SDK (per-token billing)
-│       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (subscription billing). Toggle with CLAUDE_BACKEND=cli
-│       │   ├── dashboard_common.py     # Shared helpers (timestamps, timezone)
+│       │   ├── ws_dashboard.py         # Dashboard WebSocket server (auth, origin check)
+│       │   ├── dashboard_chat.py       # Gemini-backed dashboard chat
+│       │   ├── dashboard_chat_claude.py     # Claude streaming chat + edit via anthropic SDK (per-token billing)
+│       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (Max subscription). Toggle with CLAUDE_BACKEND=cli
+│       │   ├── dashboard_common.py     # Shared helpers (timestamps, persona+context builder, memory cache)
 │       │   ├── dashboard_config.py     # Dashboard env config
-│       │   └── dashboard_handlers.py   # Dashboard command handlers
+│       │   ├── dashboard_handlers.py   # Conversation/memory CRUD with invalidate_user_context_cache hooks
+│       │   └── document_extractor.py   # PDF/DOCX/text extraction → dashboard_document_memories
 │       │
 │       ├── core/             # 🏗️ Core Components
 │       │   ├── __init__.py
@@ -200,7 +187,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (3,071 tests in 91 files)
+├── tests/                    # 🧪 Python test suite (3,088 tests in 92 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -256,8 +243,16 @@ BOT/
 │   │   └── chat/             # Chat modules extracted from chat-manager.ts
 │   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
 │   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
-│   │       ├── search.ts, prism.ts, image-attach.ts, export-picker.ts
+│   │       ├── search.ts, prism.ts, image-attach.ts, document-attach.ts, export-picker.ts
 │   │       └── *.test.ts     # 8 vitest files (167 tests)
+│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI
+│   │   ├── _fixtures/mock-tauri.ts      # Tauri IPC shim + WS mock + page-error tracker
+│   │   ├── dashboard-smoke.spec.ts      # 18 smoke tests covering UI fixes
+│   │   ├── interactions.spec.ts         # 16 user-flow tests
+│   │   ├── a11y.spec.ts                 # 8 axe-core audits
+│   │   ├── visual-regression.spec.ts    # 8 baseline screenshots
+│   │   └── screenshots.spec.ts          # 13 manual-inspection captures
+│   ├── playwright.config.ts  # Playwright config (python http.server + Chromium)
 │   ├── scripts/
 │   │   ├── build-tauri.ps1   # Build + auto-rename
 │   │   └── create_desktop_shortcut.py
@@ -1103,4 +1098,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: April 24, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,071 Python tests + 189 frontend vitest tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) -->
+<!-- Documentation last updated: April 26, 2026 - Version 3.3.16 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,088 Python tests + 189 frontend vitest tests + 63 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-26) -->

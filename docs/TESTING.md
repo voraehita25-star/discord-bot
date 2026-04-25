@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: April 24, 2026 | Python 3.14+ | Python Tests: 3,088 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) | Timeout: 30s per test
+> Last Updated: April 26, 2026 | Python 3.14+ | Python Tests: 3,088 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 63 ✅ (5 Playwright spec files: smoke + interactions + a11y + visual regression) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -30,7 +30,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (91 Python files, 3,071 tests)
+## Test Structure (92 Python files, 3,088 tests)
 
 ```text
 tests/
@@ -77,6 +77,38 @@ npm test                 # Run all vitest suites once
 npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage report
 ```
+
+## Headless E2E Tests (5 Playwright files, 63 tests)
+
+Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
+served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
+(`tests-e2e/_fixtures/mock-tauri.ts`) that mocks `window.__TAURI__.core.invoke` and the WebSocket
+stream — so no Tauri runtime, no bot process, no Discord token needed.
+
+```text
+native_dashboard/tests-e2e/
+├── _fixtures/
+│   └── mock-tauri.ts            # Tauri IPC shim + WS mock + page-error tracker
+├── dashboard-smoke.spec.ts      # 18 smoke tests covering recent UI fixes
+├── interactions.spec.ts         # 16 user-flow tests (click/type/keyboard)
+├── a11y.spec.ts                 # 8 axe-core audits — zero critical/serious WCAG 2.1 AA violations
+├── visual-regression.spec.ts    # 8 baselines — pages, themes, modals
+├── visual-regression.spec.ts-snapshots/  # PNG baselines (chromium-win32, in git)
+└── screenshots.spec.ts          # 13 manual-inspection captures
+```
+
+Run from `native_dashboard/`:
+
+```bash
+npm run test:e2e                 # All 63 tests, headless Chromium
+npm run test:e2e:ui              # Interactive UI mode for debugging
+npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
+npm run test:e2e:screenshots     # Just the screenshot captures
+```
+
+CI: the `dashboard-test` job in `.github/workflows/ci.yml` runs vitest then Playwright.
+On failure, `playwright-report/` and `test-results/` are uploaded as artifacts (7-day retention)
+so the diff is debuggable without re-running locally.
 
 ## Test Categories
 

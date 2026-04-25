@@ -20,6 +20,7 @@
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
 | 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules). |
+| 🤖 **Headless E2E** | 63 Playwright tests in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots. Runs in CI on Chromium with python http.server + mocked Tauri IPC. |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -79,7 +80,8 @@ to the current conversation. Per-row **Edit** opens a roomy editor (filename
 |-----------|------------|
 | Backend | Rust + Tauri v2 |
 | Frontend | HTML + CSS + **TypeScript** |
-| Testing | Vitest + jsdom |
+| Unit tests | Vitest + jsdom |
+| Headless E2E | Playwright (Chromium) + axe-core (a11y) + visual-regression screenshots |
 | Database | SQLite (rusqlite) |
 | Process Control | sysinfo, std::process |
 
@@ -102,7 +104,8 @@ native_dashboard/
 ├── build.rs                # Build script
 ├── package.json            # npm dependencies (v2.0.0)
 ├── tsconfig.json           # TypeScript config
-├── vitest.config.ts        # Test configuration
+├── vitest.config.ts        # Vitest (unit) configuration
+├── playwright.config.ts    # Playwright (headless e2e) configuration
 ├── src/
 │   ├── main.rs             # App entry + Tauri commands
 │   ├── lib.rs              # Module exports
@@ -131,6 +134,14 @@ native_dashboard/
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
 │       └── *.test.ts             # 8 vitest files (167 tests total)
+├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
+│   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
+│   ├── dashboard-smoke.spec.ts   # 18 smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
+│   ├── interactions.spec.ts      # 16 user-flow tests (clicks, typing, keyboard nav)
+│   ├── a11y.spec.ts              # 8 axe-core audits — zero critical/serious WCAG 2.1 AA violations
+│   ├── visual-regression.spec.ts # 8 page/theme/modal screenshot baselines (chromium-win32, <0.5% pixel diff)
+│   ├── visual-regression.spec.ts-snapshots/  # Baseline PNGs (checked into git)
+│   └── screenshots.spec.ts       # 13 capture targets for manual inspection
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer
@@ -203,10 +214,22 @@ python scripts/create_desktop_shortcut.py
 ### Testing
 
 ```bash
-npm test             # Run tests once
-npm run test:watch   # Watch mode
-npm run test:coverage # With coverage report
+# Unit tests (vitest, ~5s)
+npm test                       # Run all 189 vitest tests
+npm run test:watch             # Watch mode
+npm run test:coverage          # With coverage report
+
+# Headless e2e (Playwright + Chromium, ~30s)
+npm run test:e2e               # Run all 63 Playwright tests (smoke + interactions + a11y + visual)
+npm run test:e2e:ui            # Interactive UI mode for debugging
+npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
+npm run test:e2e:screenshots   # Capture screenshots for manual inspection
 ```
+
+> Playwright spawns `python -m http.server` against `ui/` and installs a Tauri-IPC shim
+> (`tests-e2e/_fixtures/mock-tauri.ts`) so the static dashboard runs in pure Chromium —
+> no Tauri runtime required. Visual baselines live in
+> `tests-e2e/visual-regression.spec.ts-snapshots/` and are checked into git.
 
 ### Output Files
 

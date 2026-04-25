@@ -1,6 +1,6 @@
 # AI Core Module
 
-> Last Updated: April 24, 2026
+> Last Updated: April 26, 2026
 > Version: 3.3.16
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.7 (ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
@@ -19,25 +19,21 @@ cogs/ai_core/
 ├── fallback_responses.py  # Fallback when AI fails
 ├── session_mixin.py   # Session management mixin
 ├── media_processor.py # Media processing
+├── claude_payloads.py # Typed Claude message builders + prompt-cache helpers
+├── imports.py         # Centralised optional-dependency imports
 │
-├── # Backward compatibility re-exports (thin wrappers)
-├── tools.py           # → tools/
-├── api_handler.py     # → api/
-├── performance.py     # → core/
-├── message_queue.py   # → core/
-├── context_builder.py # → core/
-├── response_sender.py # → response/
-├── response_mixin.py  # → response/
-├── webhook_cache.py   # → response/
-├── debug_commands.py  # → commands/
-├── memory_commands.py # → commands/
-├── server_commands.py # → commands/
-├── tool_definitions.py # → tools/
-├── tool_executor.py   # → tools/
-│
-├── api/               # 🔌 Gemini API integration
+├── api/               # 🔌 AI APIs + dashboard backend
 │   ├── __init__.py
-│   └── api_handler.py # API calls, streaming, retry logic
+│   ├── api_handler.py            # Claude API calls (anthropic SDK), streaming, retry
+│   ├── api_failover.py           # Direct + proxy failover for Claude
+│   ├── ws_dashboard.py           # Dashboard WebSocket server (auth, origin check)
+│   ├── dashboard_chat.py         # Gemini-backed dashboard chat
+│   ├── dashboard_chat_claude.py  # Claude via anthropic SDK (per-token billing)
+│   ├── dashboard_chat_claude_cli.py  # Claude via `claude -p` subprocess (Max subscription)
+│   ├── dashboard_common.py       # Shared helpers (timestamps, persona+context builder)
+│   ├── dashboard_config.py       # Dashboard env config
+│   ├── dashboard_handlers.py     # Conversation/memory CRUD handlers (with cache invalidation hooks)
+│   └── document_extractor.py     # PDF/DOCX/text extraction for dashboard attachments
 │
 ├── core/              # 🏗️ Core components
 │   ├── __init__.py
@@ -86,8 +82,11 @@ cogs/ai_core/
 │   ├── __init__.py
 │   ├── guardrails.py  # ⚠️ Safety (is_silent_block) & unrestricted mode
 │   ├── intent_detector.py # Intent classification
-│   ├── prompt_manager.py  # System prompts
+│   ├── prompt_manager.py  # Loads system prompts from prompts/*.yaml
 │   └── self_reflection.py # Response quality
+│
+├── prompts/           # 📝 System prompt templates (YAML)
+│   └── base.yaml      # Base persona/system prompt
 │
 └── cache/             # 📊 Caching & Analytics
     ├── __init__.py
@@ -241,6 +240,37 @@ python -m pytest tests/test_webhooks.py -v
 
 ## Recent Updates
 
+### v3.3.16 — AI/Memory Audit (April 26, 2026)
+
+Three rounds of audits surfaced 17 bugs; key behavioural fixes:
+
+- **CLI memory now matches API.** `dashboard_chat_claude_cli._build_full_prompt`
+  always injects persona + user context every turn (same as the Anthropic SDK
+  path); only the `# Conversation so far` history block is skipped on resumed
+  sessions where `claude -p --resume` already replays it. Without this,
+  edits to long-term memory were not reflected on the next CLI turn until
+  the bot restarted.
+- **Memory cache invalidation hooks.** `dashboard_handlers.save_dashboard_memory`
+  and `delete_dashboard_memory` now call `invalidate_user_context_cache(None)`
+  so the next chat turn rebuilds context with the current memory list.
+- **`_CONVERSATION_LOCKS` capped at 500.** The CLI session-lock dict was
+  unbounded; now LRU-evicts oldest entries past the cap.
+- **`token_tracker` is fully tz-aware.** `_aware_now()` / `_ensure_aware()`
+  helpers replace every naive `datetime.now()`. Naive timestamps loaded from
+  older DB rows are wrapped as UTC, fixing comparison drift in
+  `get_usage_in_period`.
+- **`storage.py` dedup hashes full content.** Was hashing only the first
+  500 chars, so two long messages sharing a prefix collapsed into one row.
+- **`response_sender` is code-fence-aware.** `_detect_open_fence()` re-opens
+  ` ``` ` in the next chunk so long replies don't break formatting on Discord.
+- **Webhook cache uses `pop(k, None)` + LRU evict** instead of `clear()`,
+  preventing in-flight webhook deletion from racing the cleanup task.
+- **RAG embeddings skip empty/whitespace text** before hitting the API.
+
+New module: **`api/document_extractor.py`** — extracts text from
+PDF/DOCX/text-like dashboard attachments and persists it in
+`dashboard_document_memories` so RP material auto-injects every turn.
+
 ### v3.3.10 - Deep Code Audit & Test Verification (February 7, 2026)
 
 - 🛡️ **Security hardening** across all modules (specific exceptions, input validation, resource cleanup)
@@ -252,7 +282,7 @@ python -m pytest tests/test_webhooks.py -v
 ### v3.3.8 - ai_core Reorganization + E501 Fixes (January 21, 2026)
 
 - 📁 **Reorganized ai_core** into logical subdirectories:
-  - `api/` - Gemini API integration (api_handler.py)
+  - `api/` - AI APIs (Claude SDK + dashboard backend handlers)
   - `core/` - Performance, message queue, context builder
   - `response/` - Response sending, webhooks
   - `commands/` - Debug, memory, server commands
