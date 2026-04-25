@@ -243,3 +243,32 @@ async def test_tags_cascade_delete_on_conversation_delete(fresh_db):
     await db.delete_dashboard_conversation("temp-conv")
     # FK ON DELETE CASCADE should have wiped the tag too.
     assert await db.get_conversation_tags("temp-conv") == []
+
+
+@pytest.mark.asyncio
+async def test_document_memories_cascade_delete_on_conversation_delete(fresh_db):
+    """Document memories are tagged via a plain text column (no FK), so the
+    cascade has to be done manually inside delete_dashboard_conversation.
+    Without this, the rows linger and could be re-injected if a future
+    conversation ever shared the same UUID — confusing the user with
+    "phantom history" from deleted threads.
+    """
+    db = fresh_db
+    await db.create_dashboard_conversation(
+        "doc-conv", title="x", role_preset="general",
+        system_instruction="", thinking_enabled=False,
+    )
+    await db.save_document_memory(
+        filename="lore.txt",
+        file_kind="text",
+        extracted_text="Some lore",
+        char_count=9,
+        page_count=None,
+        source_conversation_id="doc-conv",
+    )
+    docs = await db.get_document_memories(conversation_id="doc-conv")
+    assert len(docs) == 1
+
+    await db.delete_dashboard_conversation("doc-conv")
+    docs_after = await db.get_document_memories(conversation_id="doc-conv")
+    assert docs_after == []

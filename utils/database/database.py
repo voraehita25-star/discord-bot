@@ -1843,7 +1843,16 @@ class Database:
             return False
 
         async with self.get_write_connection() as conn:
-            # Messages will be deleted automatically due to ON DELETE CASCADE
+            # Messages will be deleted automatically due to ON DELETE CASCADE.
+            # Document memories have no FK (text column source_conversation_id
+            # is matched at query time only) — without this manual DELETE the
+            # rows linger forever, and on the rare chance a new conversation
+            # is generated with the same UUID they'd silently re-inject the
+            # old document into every turn.
+            await conn.execute(
+                "DELETE FROM dashboard_document_memories WHERE source_conversation_id = ?",
+                (conversation_id,),
+            )
             await conn.execute(
                 "DELETE FROM dashboard_conversations WHERE id = ?",
                 (conversation_id,),
