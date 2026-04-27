@@ -34,7 +34,7 @@ aiosqlite==0.22.1             # Async SQLite (latest)
 watchdog==6.0.0               # File watcher for hot reload (latest)
 colorama==0.4.6               # Windows ANSI color support (latest)
 pyyaml>=6.0.1                 # YAML parsing for prompt templates
-types-PyYAML>=6.0             # Type stubs for mypy
+types-PyYAML>=6.0.12.20260408             # Type stubs for mypy
 types-requests>=2.32.0.20250306  # Type stubs for requests/spotipy integration
 
 # ==================== Monitoring (Optional) ====================
