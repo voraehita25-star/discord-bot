@@ -8,7 +8,7 @@ python-dotenv==1.2.1          # Environment variable management (latest)
 aiohttp==3.13.4               # Async HTTP client (security fixes)
 psutil==7.2.2                 # Process and system utilities
 certifi>=2026.1.4             # SSL certificates (security updates)
-cryptography>=46.0.7          # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892
+cryptography>=47.0.0          # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892
 requests>=2.33.0              # Transitive dep — pinned for CVE-2026-25645
 tzdata>=2024.1                # IANA timezone data (required on Windows)
 
