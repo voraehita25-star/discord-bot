@@ -61,7 +61,7 @@ jobs:
         pip-audit --strict --desc
 
     - name: Scan for hardcoded secrets
-      uses: trufflesecurity/trufflehog@v3.88.2
+      uses: trufflesecurity/trufflehog@v3.95.2
       with:
         extra_args: --only-verified
 
