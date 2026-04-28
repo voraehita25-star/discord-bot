@@ -20,4 +20,4 @@ thiserror = "2.0"
 parking_lot = "0.12"
 memmap2 = "0.9"
 bytemuck = { version = "1.14", features = ["derive"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
