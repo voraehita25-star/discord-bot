@@ -24,6 +24,7 @@
 | `manager.ps1` | Interactive console สำหรับจัดการ bot |
 | `_common.psm1` | Shared module - logging, health checks, display functions |
 | `startup.json` | Configuration file |
+| `start.bat` / `dev.bat` / `manager.bat` | Thin `.bat` wrappers around the matching `.ps1` files (so users can double-click without setting PowerShell exec policy) |
 
 ## Configuration
 
@@ -32,12 +33,18 @@
 ```json
 {
     "bot": {
-        "max_restarts": 50,        // จำนวน restart สูงสุดก่อนหยุด
-        "restart_delay_seconds": 10 // รอกี่วินาทีก่อน restart
+        "max_restarts": 50,           // จำนวน restart สูงสุดก่อนหยุด
+        "restart_delay_seconds": 10,  // รอกี่วินาทีก่อน restart
+        "check_dependencies": true    // ตรวจ pip + venv ก่อนเริ่ม
     },
     "health": {
         "min_disk_space_gb": 1,    // Minimum disk space
         "min_memory_mb": 1024      // Minimum RAM
+    },
+    "display": {
+        "box_width": 69,           // ความกว้าง banner ที่ console
+        "show_banner": true,
+        "colored_output": true
     }
 }
 ```

@@ -69,9 +69,13 @@ except ImportError:
 
 
 # Constants
-STATUS_FILE = "bot_status.json"
-PID_FILE = "bot.pid"
-STOP_FLAG = "stop_loop.flag"
+# Resolve to absolute paths under PROJECT_ROOT so we don't drift with the
+# caller's CWD. ``start.ps1`` looks for ``$ProjectRoot/stop_loop.flag`` —
+# if we wrote it relative to the invocation CWD, the restart loop would
+# never see it. Same trap for ``bot.pid`` and ``bot_status.json``.
+STATUS_FILE = str(PROJECT_ROOT / "bot_status.json")
+PID_FILE = str(PROJECT_ROOT / "bot.pid")
+STOP_FLAG = str(PROJECT_ROOT / "stop_loop.flag")
 BOX_WIDTH = 50
 
 # Compact Emoji Ranges
@@ -269,18 +273,31 @@ def print_banner():
     print(box_bottom())
 
 
-def _find_processes(match_terms, exclude_terms=None):
-    """Find process IDs matching ALL terms (not ANY)"""
+def _find_processes(match_terms, exclude_terms=None, exact_basenames=None):
+    """Find process IDs matching ALL terms (not ANY).
+
+    ``exact_basenames`` is an optional iterable of basenames that MUST appear
+    as a script-file argument (after ``os.path.basename``). This avoids the
+    substring trap where a user path like
+    ``C:\\Users\\bot.py-tools\\start.py`` would falsely match a search for
+    ``bot.py``.
+    """
     pids = []
+    exact_basenames = set(exact_basenames or ())
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             cmdline = proc.info.get("cmdline") or []
             cmdline_str = " ".join(cmdline).lower()
-            # Must match ALL terms (not ANY)
+            # Must match ALL substring terms (not ANY)
             if not all(term in cmdline_str for term in match_terms):
                 continue
             if exclude_terms and any(term in cmdline_str for term in exclude_terms):
                 continue
+            # If callers requested an exact basename match, enforce it now.
+            if exact_basenames:
+                arg_basenames = {os.path.basename(a).lower() for a in cmdline if a}
+                if not exact_basenames.issubset(arg_basenames):
+                    continue
             # Exclude VS Code extensions and other non-project Python processes
             non_project_patterns = [".antigravity", "vscode", "ms-python", "pylance"]
             if any(pattern in cmdline_str for pattern in non_project_patterns):
@@ -292,8 +309,17 @@ def _find_processes(match_terms, exclude_terms=None):
 
 
 def find_all_bot_processes():
-    """Find all main bot processes"""
-    return _find_processes(["python", "bot.py"], ["bot_manager", "dev_watcher"])
+    """Find all main bot processes.
+
+    Match is tightened: cmdline must contain ``python`` AND have an arg
+    whose basename is exactly ``bot.py``. Substring matching on bot.py
+    used to false-positive on paths like ``.../my-bot.py-fork/run.py``.
+    """
+    return _find_processes(
+        ["python"],
+        ["bot_manager", "dev_watcher"],
+        exact_basenames=["bot.py"],
+    )
 
 
 def find_all_dev_watcher_processes():
@@ -327,8 +353,12 @@ def _get_launcher_info(proc):
                 "features": ["Standard startup"],
             }
 
-        # Check hidden
-        if name in ("wscript.exe", "cscript.exe"):
+        # Check hidden — verify the cmdline actually points at our launcher
+        # to avoid mislabelling unrelated wscript instances as our bot's
+        # hidden-startup wrapper.
+        if name in ("wscript.exe", "cscript.exe") and (
+            "start_bot_hidden" in cmdline_str or "bot.py" in cmdline_str
+        ):
             return {
                 "name": "Hidden Startup",
                 "script": "start_bot_hidden.vbs",
@@ -336,8 +366,12 @@ def _get_launcher_info(proc):
                 "features": ["No visible window", "Background execution"],
             }
 
-        # Check Task Scheduler
-        if name in ("svchost.exe", "taskeng.exe", "taskhost.exe"):
+        # Check Task Scheduler — same idea: svchost/taskeng/taskhost are
+        # parents of nearly every Windows process, so require evidence
+        # that THIS chain actually launched our bot before claiming it.
+        if name in ("svchost.exe", "taskeng.exe", "taskhost.exe") and (
+            "bot.py" in cmdline_str or "start_bot" in cmdline_str
+        ):
             return {
                 "name": "Scheduled Task",
                 "script": "Windows Task Scheduler",
@@ -563,12 +597,41 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
     return count
 
 
-def auto_stop_existing_bot(status):
-    """Automatically stop ALL existing bot instances"""
+def auto_stop_existing_bot(status, *, assume_yes: bool = False):
+    """Stop ALL existing bot instances after explicit confirmation.
+
+    The previous version killed running instances unconditionally on any
+    `start_bot()` call, so a stray menu keystroke could nuke a live bot
+    in production. We now prompt y/N unless the caller passes
+    ``assume_yes=True`` (e.g. an explicit "restart" path that already
+    confirmed). The ``BOT_MANAGER_ASSUME_YES=1`` env var also bypasses
+    the prompt for non-interactive flows (CI, scripted restarts).
+    """
     if not status["running"]:
         return True
 
-    print(f"{Colors.BRIGHT_YELLOW}[*] Automatically stopping existing bot...{Colors.RESET}")
+    env_yes = os.environ.get("BOT_MANAGER_ASSUME_YES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not assume_yes and not env_yes:
+        pids = status.get("all_pids", []) + status.get("dev_watcher_pids", [])
+        print(
+            f"{Colors.BRIGHT_YELLOW}[!] An existing bot is running "
+            f"(PIDs: {pids}). Stop it before starting a new one?{Colors.RESET}"
+        )
+        try:
+            answer = input(f"{Colors.BRIGHT_CYAN}Type 'yes' to stop, anything else to abort:{Colors.RESET} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(f"{Colors.YELLOW}Aborted.{Colors.RESET}")
+            return False
+        if answer != "yes":
+            print(f"{Colors.YELLOW}Aborted — leaving the existing bot running.{Colors.RESET}")
+            return False
+
+    print(f"{Colors.BRIGHT_YELLOW}[*] Stopping existing bot...{Colors.RESET}")
 
     stop_process_list(status["dev_watcher_pids"], "dev_watcher")
     stop_process_list(status["all_pids"], "bot")
@@ -611,6 +674,17 @@ def start_bot(mode="production"):
 
     # Scripts are now in scripts/startup/ subdirectory
     scripts = PROJECT_ROOT / "scripts" / "startup"
+
+    # Task Scheduler launches can't be re-triggered from this process. Warn
+    # explicitly so the user knows we fell back to a foreground launch and
+    # can manually re-arm the scheduled task if they want it back.
+    if mode == "scheduled":
+        print(
+            f"{Colors.YELLOW}Note: cannot re-trigger Windows Task Scheduler "
+            f"from here; falling back to Hidden mode.{Colors.RESET}"
+        )
+        mode = "hidden"
+
     print(f"{Colors.GREEN}Starting bot in {mode.capitalize()} Mode...{Colors.RESET}")
 
     if mode == "dev":
@@ -649,6 +723,17 @@ def stop_bot():
 
     Path(PID_FILE).unlink(missing_ok=True)
 
+    # Best-effort cleanup of the stop flag. ``start.ps1`` consumes it after
+    # the bot exits, so by the time we get here it's usually already gone.
+    # If the bot was launched directly (no .ps1 wrapper), nobody removed it —
+    # leaving it would block the next manual start. Brief sleep gives the
+    # launcher a chance to consume it first; ``missing_ok`` handles the race.
+    time.sleep(1)
+    try:
+        Path(STOP_FLAG).unlink(missing_ok=True)
+    except OSError:
+        pass
+
     if stopped > 0:
         print(f"{Colors.GREEN}[OK] Stopped {stopped} process(es){Colors.RESET}")
         return True
@@ -661,9 +746,17 @@ def restart_bot():
     status = get_bot_status()
     mode = "production"
     if status["running"]:
-        if status["launcher"]["type"] == "development":
+        # Preserve the original launcher type — previously this only mapped
+        # "development" to "dev" and silently downgraded "hidden"/"scheduled"
+        # back to a foreground production process on every restart.
+        launcher_type = status["launcher"]["type"]
+        if launcher_type == "development":
             mode = "dev"
-        print(f"{Colors.YELLOW}Restarting bot...{Colors.RESET}")
+        elif launcher_type == "hidden":
+            mode = "hidden"
+        elif launcher_type == "scheduled":
+            mode = "scheduled"
+        print(f"{Colors.YELLOW}Restarting bot ({mode})...{Colors.RESET}")
         stop_bot()
         time.sleep(2)
     start_bot(mode)
@@ -755,7 +848,9 @@ def run_kill_all():
         return
     print(f"\n{Colors.BRIGHT_RED}⚠️  WARNING: Kill ALL bot processes? (yes/no){Colors.RESET}")
     if input(f"{Colors.BRIGHT_CYAN}➤{Colors.RESET} ").strip().lower() == "yes":
-        result = kill_everything("bot_manager")
+        # User already confirmed via the prompt above — forward the
+        # authorization signal so the bulk-kill gate doesn't no-op.
+        result = kill_everything("bot_manager", authorized=True)
         killed_bots = result["bots_killed"]
         killed_watchers = result["watchers_killed"]
         print(
@@ -766,6 +861,30 @@ def run_kill_all():
         print("Cancelled.")
 
 
+def _tail_lines(path: Path, n: int = 20, encoding: str = "utf-8") -> list[str]:
+    """Return the last `n` lines of a file without reading the whole thing.
+
+    Reads from the end in chunks so a multi-GB log doesn't blow up RAM.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    chunk = 64 * 1024
+    data = b""
+    with path.open("rb") as f:
+        pos = size
+        while pos > 0 and data.count(b"\n") <= n:
+            read_size = min(chunk, pos)
+            pos -= read_size
+            f.seek(pos)
+            data = f.read(read_size) + data
+    text = data.decode(encoding, errors="replace")
+    return text.splitlines()[-n:]
+
+
 def view_logs():
     """View recent logs"""
     for f_name in ["bot.log", "bot_errors.log", "logs/self_healer.log"]:
@@ -773,7 +892,8 @@ def view_logs():
         if log_path.exists():
             print(f"\n{Colors.BRIGHT_CYAN}═══ {f_name} (Last 20 lines) ═══{Colors.RESET}")
             try:
-                lines = log_path.read_text(encoding="utf-8").splitlines()[-20:]
+                # Tail-from-end so a 100 MB log doesn't get fully loaded.
+                lines = _tail_lines(log_path, n=20)
                 for line in lines:
                     col = Colors.DIM
                     if "ERROR" in line:

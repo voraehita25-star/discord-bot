@@ -6,12 +6,24 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::os::windows::process::CommandExt;
 use sysinfo::System;
 use chrono::{DateTime, Local};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Absolute path to taskkill.exe so we don't fall through to a poisoned
+/// PATH entry. On every supported Windows build this lives in System32.
+fn taskkill_path() -> String {
+    if let Ok(systemroot) = std::env::var("SystemRoot") {
+        format!("{}\\System32\\taskkill.exe", systemroot)
+    } else {
+        // Fallback to the canonical default — virtually every Windows
+        // install has SystemRoot=C:\Windows.
+        String::from("C:\\Windows\\System32\\taskkill.exe")
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BotStatus {
@@ -26,6 +38,10 @@ pub struct BotManager {
     base_path: PathBuf,
     sys: System,
     python_cmd: String,
+    /// Held Child handles so we can `wait()` on stop and avoid leaking
+    /// Windows process handles / zombie process descriptors.
+    child: Option<Child>,
+    dev_watcher_child: Option<Child>,
 }
 
 #[allow(dead_code)]
@@ -71,7 +87,22 @@ impl BotManager {
                     "python".to_string()
                 }
             });
-        Self { base_path, sys, python_cmd }
+        Self { base_path, sys, python_cmd, child: None, dev_watcher_child: None }
+    }
+
+    /// Reap a stored Child if its underlying process has exited. Always non-blocking.
+    /// Used to avoid leaking handles when the bot exits on its own.
+    fn reap_finished_children(&mut self) {
+        if let Some(c) = self.child.as_mut() {
+            if let Ok(Some(_)) = c.try_wait() {
+                self.child = None;
+            }
+        }
+        if let Some(c) = self.dev_watcher_child.as_mut() {
+            if let Ok(Some(_)) = c.try_wait() {
+                self.dev_watcher_child = None;
+            }
+        }
     }
 
     fn pid_file(&self) -> PathBuf {
@@ -100,24 +131,48 @@ impl BotManager {
         }
     }
 
-    fn stop_dev_watcher(&self) {
+    fn stop_dev_watcher(&mut self) {
         if let Some(pid) = self.get_dev_watcher_pid() {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            // Verify the PID actually points at a python process before
+            // killing — Windows recycles PIDs aggressively and the watcher
+            // may have died long ago, leaving the PID assigned to an
+            // unrelated foreground program (browser, IDE, etc.). The
+            // production stop() does the same name check; this path used
+            // to skip it.
+            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            let is_python = self
+                .sys
+                .process(sysinfo::Pid::from_u32(pid))
+                .map(|p| p.name().to_string_lossy().to_lowercase().contains("python"))
+                .unwrap_or(false);
+
+            if is_python {
+                let _ = Command::new(taskkill_path())
+                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
             let _ = fs::remove_file(self.dev_watcher_pid_file());
+        }
+
+        // Reap our stored dev-watcher Child to release the process handle.
+        if let Some(mut c) = self.dev_watcher_child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
         }
     }
 
     /// Kill any orphan bot.py processes that may have survived a previous stop.
     /// Uses sysinfo to scan all processes for python running bot.py.
+    /// Scoped to THIS dashboard's project tree (self.base_path) so we never
+    /// kill someone else's unrelated bot.py running on the same machine.
     fn kill_orphan_bot_processes(&mut self) {
         self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
         // Ignore script file basenames (not substring-match on joined cmdline —
         // a user path like C:\Users\test_user\BOT\bot.py would falsely trip "test_").
         let ignore_basenames = ["bot_manager.py", "dev_watcher.py", "self_healer.py"];
+        let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
         let mut pids_to_kill: Vec<u32> = Vec::new();
 
         for (pid, process) in self.sys.processes() {
@@ -127,6 +182,7 @@ impl BotManager {
             }
 
             let cmd: Vec<String> = process.cmd().iter().map(|s| s.to_string_lossy().to_lowercase().to_string()).collect();
+            let cmdline = cmd.join(" ");
 
             // Collect basenames of every arg so we can match script files precisely.
             let basenames: Vec<String> = cmd.iter().map(|arg| {
@@ -139,14 +195,17 @@ impl BotManager {
             let has_bot_py = basenames.iter().any(|b| b == "bot.py");
             let is_test = basenames.iter().any(|b| b.starts_with("test_"));
             let is_ignored_script = basenames.iter().any(|b| ignore_basenames.contains(&b.as_str()));
+            // Only kill processes whose cmdline references our own base_path —
+            // never reach across to other Discord-bot installs on the same host.
+            let belongs_to_us = !base_path_str.is_empty() && cmdline.contains(&base_path_str);
 
-            if has_bot_py && !is_test && !is_ignored_script {
+            if has_bot_py && !is_test && !is_ignored_script && belongs_to_us {
                 pids_to_kill.push(pid.as_u32());
             }
         }
 
         for pid in &pids_to_kill {
-            let _ = Command::new("taskkill")
+            let _ = Command::new(taskkill_path())
                 .args(["/PID", &pid.to_string(), "/F", "/T"])
                 .creation_flags(CREATE_NO_WINDOW)
                 .output();
@@ -298,7 +357,26 @@ impl BotManager {
     pub fn is_running(&mut self) -> bool {
         if let Some(pid) = self.get_pid() {
             self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-            self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+            if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
+                // PID alone is not enough — Windows recycles PIDs aggressively.
+                // Verify the cmdline references both bot.py AND our base_path
+                // so we don't report "running" for an unrelated PID-reuse.
+                let cmd: Vec<String> = process
+                    .cmd()
+                    .iter()
+                    .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                    .collect();
+                let cmdline = cmd.join(" ");
+                let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
+                let has_bot_py = cmd.iter().any(|arg| {
+                    std::path::Path::new(arg.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
+                        .unwrap_or(false)
+                });
+                return has_bot_py && (base_path_str.is_empty() || cmdline.contains(&base_path_str));
+            }
+            false
         } else {
             false
         }
@@ -370,9 +448,28 @@ impl BotManager {
     pub fn get_status(&mut self) -> BotStatus {
         // Single process refresh for all status fields (instead of 3-5 separate refreshes)
         self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        
+
         let pid = self.get_pid();
-        let is_running = pid.map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some()).unwrap_or(false);
+        // Mirror is_running()'s cmdline verification — pure PID existence is
+        // unreliable on Windows due to aggressive PID reuse.
+        let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
+        let is_running = pid.and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
+            .map(|process| {
+                let cmd: Vec<String> = process
+                    .cmd()
+                    .iter()
+                    .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                    .collect();
+                let cmdline = cmd.join(" ");
+                let has_bot_py = cmd.iter().any(|arg| {
+                    std::path::Path::new(arg.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
+                        .unwrap_or(false)
+                });
+                has_bot_py && (base_path_str.is_empty() || cmdline.contains(&base_path_str))
+            })
+            .unwrap_or(false);
         
         let uptime = if is_running { self.get_uptime_no_refresh() } else { "-".to_string() };
         let memory_mb = if is_running {
@@ -416,7 +513,7 @@ impl BotManager {
         let _ = fs::remove_file(self.pid_file());
 
         let bot_script = self.base_path.join("bot.py");
-        
+
         let child = Command::new(&self.python_cmd)
             .arg(&bot_script)
             .current_dir(&self.base_path)
@@ -424,8 +521,13 @@ impl BotManager {
             .spawn()
             .map_err(|e| format!("Failed to start bot: {}", e))?;
 
-        // Get the spawned process ID
+        // Keep the Child handle so we can wait() on it during stop(). Dropping
+        // it without waiting leaves a process descriptor on POSIX (zombie) and
+        // leaks the Win32 process handle until our own dashboard exits.
         let spawned_pid = child.id();
+        // Reap any previously-tracked Child that already exited so the slot is empty.
+        self.reap_finished_children();
+        self.child = Some(child);
 
         // Wait for bot to fully start (up to 10 seconds)
         for _ in 0..20 {
@@ -473,8 +575,24 @@ impl BotManager {
             .spawn()
             .map_err(|e| format!("Failed to start dev watcher: {}", e))?;
 
-        // Save dev_watcher PID for later cleanup
-        let _ = fs::write(self.dev_watcher_pid_file(), child.id().to_string());
+        // Save dev_watcher PID for later cleanup. If the write fails we can
+        // never kill this watcher again, so log loudly instead of swallowing
+        // the error — that used to leak orphan watchers across restarts.
+        let pid_path = self.dev_watcher_pid_file();
+        let pid = child.id();
+        // Hold onto the Child handle so stop_dev_watcher() can wait() on it
+        // and release the OS handle cleanly. Previously we dropped here and
+        // the handle leaked until the dashboard itself exited.
+        self.reap_finished_children();
+        self.dev_watcher_child = Some(child);
+        if let Err(e) = fs::write(&pid_path, pid.to_string()) {
+            eprintln!(
+                "⚠️ Failed to write dev_watcher PID {} to {}: {} — orphan risk on restart",
+                pid,
+                pid_path.display(),
+                e,
+            );
+        }
 
         std::thread::sleep(std::time::Duration::from_secs(3));
 
@@ -517,7 +635,7 @@ impl BotManager {
         self.stop_dev_watcher();
 
         // Force kill the bot process tree immediately
-        let _ = Command::new("taskkill")
+        let _ = Command::new(taskkill_path())
             .args(["/PID", &pid.to_string(), "/F", "/T"])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
@@ -533,6 +651,13 @@ impl BotManager {
 
         // Kill any remaining orphan bot.py processes
         self.kill_orphan_bot_processes();
+
+        // Reap our own tracked Child (if any) so its Win32/POSIX process
+        // descriptor is released and we don't leak it across restarts.
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
 
         // Delete PID file
         let _ = fs::remove_file(self.pid_file());

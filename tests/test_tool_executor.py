@@ -538,7 +538,15 @@ class TestExecuteToolCallMoreFunctions:
 
     @pytest.mark.asyncio
     async def test_read_channel(self):
-        """Test read_channel function."""
+        """Test read_channel function.
+
+        read_channel now performs a per-channel permission check via
+        ``target_channel.permissions_for(user).read_messages`` to prevent
+        a non-admin from asking the AI to relay messages from a private
+        staff/mod channel they have no access to. The test patches
+        ``discord.utils.get`` to return a controlled mock channel with
+        the right permissions, so the auth check passes through.
+        """
         from cogs.ai_core.tools.tool_executor import execute_tool_call
 
         bot = MagicMock()
@@ -548,11 +556,19 @@ class TestExecuteToolCallMoreFunctions:
         user = MagicMock()
         user.guild_permissions.administrator = True
 
+        # Caller has read access on the target channel.
+        target_channel = MagicMock()
+        target_channel.permissions_for.return_value = MagicMock(
+            read_messages=True,
+            view_channel=True,
+        )
+
         tool_call = MagicMock()
         tool_call.name = "read_channel"
         tool_call.args = {"channel_name": "general", "limit": 50}
 
-        with patch("cogs.ai_core.tools.tool_executor.cmd_read_channel", new_callable=AsyncMock):
+        with patch("cogs.ai_core.tools.tool_executor.cmd_read_channel", new_callable=AsyncMock), \
+             patch("cogs.ai_core.tools.tool_executor.discord.utils.get", return_value=target_channel):
             result = await execute_tool_call(bot, channel, user, tool_call)
 
         assert "Requested reading channel" in result

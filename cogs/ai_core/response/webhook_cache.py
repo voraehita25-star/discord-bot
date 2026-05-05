@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-logger = logging.getLogger(__name__)
 import threading
 import time
 
 import discord
+
+logger = logging.getLogger(__name__)
 
 # ==================== Webhook Cache ====================
 # Cache webhooks to reduce API calls
@@ -89,6 +89,30 @@ def start_webhook_cache_cleanup(bot) -> None:
         if _webhook_cache_cleanup_task is None or _webhook_cache_cleanup_task.done():
             _webhook_cache_cleanup_task = loop.create_task(_cleanup_expired_webhook_cache())
             logger.info("🧹 Started webhook cache cleanup task")
+
+
+def webhook_cache_healthcheck(bot=None) -> bool:
+    """Verify the cleanup task is alive; restart it if not.
+
+    Call from the main bot startup / on_ready hook to defend against the
+    case where ``start_webhook_cache_cleanup`` was invoked too early
+    (before any loop existed) and the cleanup task therefore never
+    started. Returns True if a running task exists at exit.
+    """
+    with _webhook_task_lock:
+        task_alive = (
+            _webhook_cache_cleanup_task is not None
+            and not _webhook_cache_cleanup_task.done()
+        )
+    if task_alive:
+        return True
+    logger.info("🩺 Webhook cache cleanup not running — attempting restart")
+    start_webhook_cache_cleanup(bot)
+    with _webhook_task_lock:
+        return (
+            _webhook_cache_cleanup_task is not None
+            and not _webhook_cache_cleanup_task.done()
+        )
 
 
 async def stop_webhook_cache_cleanup() -> None:

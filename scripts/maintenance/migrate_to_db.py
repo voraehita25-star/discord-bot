@@ -20,10 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Add project root to path
+# Add project root to path. We do NOT chdir at import time — that would
+# silently change CWD for any tool that imported this module. The CLI
+# entry point at the bottom of the file handles cwd via main().
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-os.chdir(PROJECT_ROOT)
 
 import contextlib
 
@@ -34,9 +35,14 @@ JsonFileBuckets = dict[str, JsonFileGroup]
 
 
 def find_json_files() -> JsonFileBuckets:
-    """Find all JSON files that need to be migrated."""
-    data_dir = Path("data")
-    config_dir = Path("data/ai_config")
+    """Find all JSON files that need to be migrated.
+
+    Anchored to project root so it can be called standalone (without
+    relying on ``async_main`` having already done ``os.chdir``).
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    data_dir = project_root / "data"
+    config_dir = project_root / "data" / "ai_config"
 
     files: JsonFileBuckets = {"history": [], "metadata": [], "queue": []}
 
@@ -70,7 +76,15 @@ def find_json_files() -> JsonFileBuckets:
 
 
 async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False) -> int:
-    """Migrate a single history file to database."""
+    """Migrate a single history file to database.
+
+    All inserts for one file happen inside a single explicit transaction
+    (BEGIN IMMEDIATE / COMMIT). Previously each ``save_ai_message`` ran in
+    its own implicit transaction, so a crash mid-file left the destination
+    table half-populated AND the source JSON still on disk — making it
+    impossible to tell which rows had been applied during a re-run.
+    """
+    from datetime import datetime, timezone
     try:
         history = json.loads(filepath.read_text(encoding="utf-8"))
 
@@ -78,7 +92,9 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
             print(f"    [!] Invalid format in {filepath}")
             return 0
 
-        count = 0
+        # Pre-process all items (cheap CPU work) BEFORE we open the write
+        # connection so the lock is held for as little time as possible.
+        rows: list[tuple[int, str, str, int | None, str]] = []
         for item in history:
             if not isinstance(item, dict):
                 continue
@@ -88,7 +104,6 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
             message_id = item.get("message_id")
             timestamp = item.get("timestamp")
 
-            # Convert parts to string (handle both str and dict formats)
             if isinstance(parts, list):
                 def _extract_text(part: Any) -> str:
                     if isinstance(part, str):
@@ -104,21 +119,47 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
             if not content:
                 continue
 
-            if not dry_run:
-                await db.save_ai_message(
-                    channel_id=channel_id,
-                    role=role,
-                    content=content,
-                    message_id=message_id,
-                    timestamp=timestamp,
-                )
-            count += 1
+            ts = timestamp or datetime.now(timezone.utc).isoformat()
+            rows.append((channel_id, role, content, message_id, ts))
+
+        if dry_run:
+            return len(rows)
+
+        # Single transaction per file. BEGIN IMMEDIATE acquires the
+        # writer lock up-front so we either fully migrate this file or
+        # roll back cleanly.
+        count = 0
+        async with db.get_write_connection() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                for chan_id, role, content, message_id, ts in rows:
+                    await conn.execute(
+                        """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
+                           VALUES (?, ?, ?, ?, ?,
+                               (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
+                        (chan_id, role, content, message_id, ts, chan_id),
+                    )
+                    count += 1
+                await conn.execute("COMMIT")
+            except Exception:
+                # On any failure, roll back the whole file so we never
+                # leave a partially-migrated channel in the DB.
+                with contextlib.suppress(Exception):
+                    await conn.execute("ROLLBACK")
+                raise
 
         return count
 
     except (json.JSONDecodeError, OSError) as e:
         print(f"    [X] Error reading {filepath}: {e}")
         return 0
+    except Exception as e:
+        # Re-raise so the caller can detect partial-migration failures and
+        # avoid deleting the source JSON file when --delete-json is on.
+        # A bare `return 0` here used to make a half-migrated file
+        # indistinguishable from an empty file → eligible for deletion.
+        print(f"    [X] Migration aborted for {filepath} after partial write: {e}")
+        raise
 
 
 async def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = False) -> bool:
@@ -162,10 +203,39 @@ async def async_main():
     parser.add_argument(
         "--delete-json", action="store_true", help="Delete JSON files after successful migration"
     )
+    parser.add_argument(
+        "--yes-delete-json",
+        action="store_true",
+        help=(
+            "Acknowledge JSON deletion without --backup. Required by --delete-json "
+            "when --backup is not given (safety guard)."
+        ),
+    )
     args = parser.parse_args()
 
-    # Initialize database before use
-    await db.init_schema()
+    # Safety: refuse to delete the source JSON unless the user has either
+    # taken a backup OR explicitly acknowledged with --yes-delete-json.
+    # The migration writes to a NEW SQLite file; if anything corrupts the
+    # database between now and the next bot start, the deleted JSON is the
+    # only copy of the user's history. Make this require a deliberate signal.
+    if args.delete_json and not args.dry_run and not args.backup and not args.yes_delete_json:
+        print(
+            "[ABORT] --delete-json refused: pass --backup to snapshot the data "
+            "first, or --yes-delete-json to acknowledge that you accept the risk "
+            "of losing the source files."
+        )
+        sys.exit(2)
+
+    # CLI entry point: chdir to project root so relative paths resolve.
+    os.chdir(PROJECT_ROOT)
+
+    # Initialize database before use — but skip during dry run so the
+    # schema migrations don't get applied when the user explicitly asked
+    # for "no changes".
+    if not args.dry_run:
+        await db.init_schema()
+    else:
+        print("  [DRY RUN] Skipping db.init_schema() — no schema changes will be applied.")
 
     print()
     print("=" * 60)
@@ -215,7 +285,14 @@ async def async_main():
     migrated_history_paths: list[Path] = []
 
     for channel_id, filepath in files["history"]:
-        count = await migrate_history(channel_id, filepath, args.dry_run)
+        try:
+            count = await migrate_history(channel_id, filepath, args.dry_run)
+        except Exception:
+            # Partial migration: some rows already inserted but the file
+            # blew up midway. Do NOT mark this filepath migrated so the
+            # cleanup step won't unlink an under-imported source.
+            print(f"        ✗ Channel {channel_id}: skipped (partial failure)")
+            continue
         if count > 0:
             migrated_messages += count
             migrated_files += 1

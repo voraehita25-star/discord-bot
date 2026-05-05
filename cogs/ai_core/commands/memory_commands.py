@@ -6,6 +6,7 @@ Provides user-facing commands for memory management.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import discord
@@ -14,6 +15,10 @@ from discord.ext.commands import Context
 
 # Use Discord embed colors, not ANSI terminal colors
 from cogs.music.utils import Colors
+
+# Strip control characters except newline/tab — compiled once at module
+# load so `!remember` doesn't re-parse the pattern on every invocation.
+_CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 
 class MemoryCommands(commands.Cog):
@@ -46,9 +51,10 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ ข้อความยาวเกินไป (สูงสุด 500 ตัวอักษร)")
             return
 
-        # Sanitize: strip control characters except newline/tab
-        import re as _re
-        fact = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', fact).strip()
+        # Sanitize: strip control characters except newline/tab. Pattern is
+        # compiled at module level (`_CONTROL_CHARS_RE`) to avoid re-parsing
+        # the regex on every `!remember` invocation.
+        fact = _CONTROL_CHARS_RE.sub('', fact).strip()
         if len(fact) < 3:
             await ctx.send("❌ ข้อความสั้นเกินไปหลังทำความสะอาด")
             return
@@ -216,8 +222,11 @@ class MemoryCommands(commands.Cog):
         except ImportError:
             await ctx.send("❌ ระบบ consolidation ยังไม่พร้อมใช้งาน")
         except Exception as e:
-            self.logger.error("Consolidate command error: %s", e)
-            await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+            # Log the full exception for ops, send a generic message to
+            # the user — `str(e)` may include DB paths or connection
+            # strings that shouldn't surface in chat.
+            self.logger.exception("Consolidate command error: %s", e)
+            await ctx.send("❌ เกิดข้อผิดพลาดในการรวบรวม กรุณาลองใหม่")
 
     @commands.command(name="memory_stats")
     @commands.is_owner()
@@ -252,11 +261,13 @@ class MemoryCommands(commands.Cog):
 
             await ctx.send(embed=embed)
 
-        except ImportError as e:
-            await ctx.send(f"❌ ระบบยังไม่พร้อม: {e}")
+        except ImportError:
+            await ctx.send("❌ ระบบยังไม่พร้อม กรุณาลองใหม่ภายหลัง")
         except Exception as e:
-            self.logger.error("Memory stats error: %s", e)
-            await ctx.send(f"❌ เกิดข้อผิดพลาด: {e}")
+            # Log full exception for ops; chat message stays generic so DB
+            # paths / connection strings don't leak via str(e).
+            self.logger.exception("Memory stats error: %s", e)
+            await ctx.send("❌ เกิดข้อผิดพลาดในการดึงสถิติ กรุณาลองใหม่")
 
 
 async def setup(bot: commands.Bot) -> None:

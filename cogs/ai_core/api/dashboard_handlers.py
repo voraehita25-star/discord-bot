@@ -7,8 +7,6 @@ These are standalone async functions called by the main WebSocket server.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
 import re
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -18,7 +16,7 @@ if TYPE_CHECKING:
 
 MAX_PREFERENCE_KEYS = 50  # Prevent DoS via unbounded dict keys
 
-from .dashboard_common import invalidate_user_context_cache
+from .dashboard_common import invalidate_user_context_cache, sanitize_profile_field
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
     DASHBOARD_ROLE_PRESETS,
@@ -27,6 +25,7 @@ from .dashboard_config import (
     GEMINI_CONTEXT_WINDOW,
 )
 
+logger = logging.getLogger(__name__)
 
 # Lazy import Database to avoid circular imports
 def _get_db():
@@ -65,7 +64,7 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         return
 
     # Validate conversation_id format (defense in depth - DB also validates)
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"})
         return
 
@@ -133,7 +132,7 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"})
         return
 
@@ -146,7 +145,7 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
         # the broad try/except so a cleanup failure never blocks the reply.
         try:
             from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
-            _delete_cli_session(conversation_id)
+            await _delete_cli_session(conversation_id)
         except Exception:
             logger.exception("Claude CLI session cleanup failed for %s", conversation_id)
         await ws.send_json({
@@ -170,7 +169,7 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"})
         return
 
@@ -199,7 +198,7 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"})
         return
 
@@ -245,7 +244,7 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"})
         return
 
@@ -292,7 +291,12 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
     try:
         db = _get_db()
-        updated = await db.update_dashboard_message(message_id_int, content)
+        # Pass conversation_id to enforce ownership — without this the
+        # client could edit any message ID in any conversation by guessing.
+        updated = await db.update_dashboard_message(
+            message_id_int, content,
+            expected_conversation_id=conversation_id,
+        )
         if not updated:
             await ws.send_json({"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"})
             return
@@ -310,7 +314,7 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
         if conversation_id:
             try:
                 from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
-                _delete_cli_session(conversation_id)
+                await _delete_cli_session(conversation_id)
             except Exception:
                 logger.exception("Claude CLI session reset failed for %s", conversation_id)
 
@@ -397,7 +401,7 @@ _VALID_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 
 
 def _validate_conversation_id(conversation_id: Any) -> bool:
-    return isinstance(conversation_id, str) and bool(re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id))
+    return isinstance(conversation_id, str) and bool(re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id))
 
 
 async def handle_add_conversation_tag(ws: WebSocketResponse, data: dict[str, Any]) -> None:
@@ -485,17 +489,33 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
         await ws.send_json({"type": "error", "code": "CANNOT_DELETE", "message": "Cannot delete: missing ID or DB unavailable"})
         return
 
+    # Validate message_id (and the optional pair) up front so a non-numeric
+    # client payload yields a clear 400-style error rather than being caught
+    # by the broad Exception handler below as INTERNAL_ERROR.
+    try:
+        message_id_int = int(message_id)
+    except (TypeError, ValueError):
+        await ws.send_json({"type": "error", "code": "BAD_REQUEST", "message": "Invalid message ID"})
+        return
+    pair_message_id_int: int | None = None
+    if delete_pair and pair_message_id:
+        try:
+            pair_message_id_int = int(pair_message_id)
+        except (TypeError, ValueError):
+            await ws.send_json({"type": "error", "code": "BAD_REQUEST", "message": "Invalid pair message ID"})
+            return
+
     try:
         db = _get_db()
-        conv_id = await db.delete_dashboard_message(int(message_id))
+        conv_id = await db.delete_dashboard_message(message_id_int)
         if not conv_id:
             await ws.send_json({"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"})
             return
 
         # Delete paired message if requested
         deleted_pair_id = None
-        if delete_pair and pair_message_id:
-            pair_conv_id = await db.delete_dashboard_message(int(pair_message_id))
+        if pair_message_id_int is not None:
+            pair_conv_id = await db.delete_dashboard_message(pair_message_id_int)
             if pair_conv_id:
                 deleted_pair_id = pair_message_id
 
@@ -504,7 +524,7 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
         # replay the deleted content. Drop the session pointer + jsonl.
         try:
             from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
-            _delete_cli_session(conv_id)
+            await _delete_cli_session(conv_id)
         except Exception:
             logger.exception("Claude CLI session reset failed for %s", conv_id)
 
@@ -523,6 +543,12 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
 # Memory handlers
 # ============================================================================
 
+_ALLOWED_MEMORY_CATEGORIES: set[str] = {
+    "general", "personal", "preferences", "facts", "rules",
+    "reminders", "notes", "context", "task",
+}
+
+
 async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Save a memory for the user."""
     content = data.get("content", "").strip()
@@ -532,13 +558,21 @@ async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> Non
         await ws.send_json({"type": "error", "code": "CANNOT_SAVE_MEMORY", "message": "Cannot save: empty content or DB unavailable"})
         return
 
-    # Enforce size limits
+    # Enforce size limits. Type-check category BEFORE calling len() — a client
+    # sending a non-string (number, list) used to crash with TypeError on the
+    # len() call here before the allowlist branch could normalise it.
     if len(content) > 2000:
         await ws.send_json({"type": "error", "code": "CONTENT_TOO_LONG", "message": "Memory content too long (max 2,000 characters)"})
         return
-    if len(category) > 50:
+    if not isinstance(category, str):
+        category = "general"
+    elif len(category) > 50:
         await ws.send_json({"type": "error", "code": "CATEGORY_TOO_LONG", "message": "Category too long (max 50 characters)"})
         return
+    elif category not in _ALLOWED_MEMORY_CATEGORIES:
+        # Validate against allowlist — previously a misclick from the UI could
+        # write any freeform string as the category, fragmenting filters.
+        category = "general"
 
     try:
         db = _get_db()
@@ -570,9 +604,17 @@ async def handle_get_memories(ws: WebSocketResponse, data: dict[str, Any]) -> No
     try:
         db = _get_db()
         memories = await db.get_dashboard_memories(category)
+        # Cap the WS payload — without an upper bound, a user with
+        # thousands of memories would push a multi-MB frame on every
+        # sidebar refresh. Frontend only renders a paginated list anyway.
+        MAX_MEMORIES_PER_FRAME = 500
+        truncated = isinstance(memories, list) and len(memories) > MAX_MEMORIES_PER_FRAME
+        payload = memories[:MAX_MEMORIES_PER_FRAME] if truncated else memories
         await ws.send_json({
             "type": "memories",
-            "memories": memories,
+            "memories": payload,
+            "truncated": truncated,
+            "total_count": len(memories) if isinstance(memories, list) else 0,
         })
     except Exception:
         logger.exception("WebSocket handler error")
@@ -633,15 +675,22 @@ async def handle_get_profile(ws: WebSocketResponse) -> None:
 
 
 def _sanitize_profile_field(value: str | None, max_length: int = 200) -> str | None:
-    """Sanitize a profile text field."""
+    """Sanitize a profile text field.
+
+    Delegates to ``dashboard_common.sanitize_profile_field`` so the chat
+    path and the profile-save path use identical defenses (NFKC
+    normalisation, control-char strip, prompt-injection word filter).
+    Without this, a user could store a ``display_name`` containing
+    Unicode lookalikes / zalgo / mathematical-bold "system" that bypass
+    the prompt-injection filter when the name is later rendered into
+    the model's context.
+    """
     if value is None:
         return None
     if not isinstance(value, str):
         return None
-    # Strip control characters except newline/tab
-    value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
-    # Truncate to max length
-    return value[:max_length].strip() or None
+    cleaned = sanitize_profile_field(value, max_len=max_length)
+    return cleaned or None
 
 
 async def handle_list_conversation_documents(
@@ -662,7 +711,7 @@ async def handle_list_conversation_documents(
             "message": "Missing conversation ID",
         })
         return
-    if not re.match(r"^[a-zA-Z0-9_\-]+$", conversation_id):
+    if not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id):
         await ws.send_json({
             "type": "error",
             "code": "INVALID_ID",
@@ -1037,17 +1086,36 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # Sanitize user-controlled text fields
         display_name = _sanitize_profile_field(profile_data.get("display_name"), max_length=50) or "User"
         bio = _sanitize_profile_field(profile_data.get("bio"), max_length=500)
-        # Sanitize preferences: only allow known keys with safe values
+        # Sanitize preferences: only allow known keys with safe values.
+        # Strings get length-clamped; numeric/bool stored as-is. Previously
+        # the int/float/bool branch passed values through unchanged via
+        # `else: v` while strings were truncated — inconsistency that
+        # invited bugs (e.g. NaN floats slipping through). Now everything
+        # gets explicit handling.
         raw_prefs = profile_data.get("preferences")
         sanitized_prefs: dict[str, str | int | float | bool | list[str]] | None = None
         if isinstance(raw_prefs, dict):
             sanitized_prefs = {}
             for k, v in islice(raw_prefs.items(), MAX_PREFERENCE_KEYS):
                 key = str(k)[:50]
-                if isinstance(v, (str, int, float, bool)):
-                    sanitized_prefs[key] = str(v)[:200] if isinstance(v, str) else v
+                if isinstance(v, str):
+                    sanitized_prefs[key] = v[:200]
+                elif isinstance(v, bool):
+                    # bool MUST come before int (bool is a subclass of int)
+                    sanitized_prefs[key] = v
+                elif isinstance(v, int):
+                    # Clamp to a sensible range so a giant integer can't
+                    # blow up downstream JSON serialisation.
+                    sanitized_prefs[key] = max(-(2**53), min(2**53, v))
+                elif isinstance(v, float):
+                    import math as _math
+                    sanitized_prefs[key] = v if _math.isfinite(v) else 0.0
                 elif isinstance(v, list):
-                    sanitized_prefs[key] = [str(i)[:200] for i in v[:20] if isinstance(i, (str, int, float, bool))]
+                    sanitized_prefs[key] = [
+                        str(i)[:200]
+                        for i in v[:20]
+                        if isinstance(i, (str, int, float, bool))
+                    ]
         await db.save_dashboard_user_profile(
             display_name=display_name,
             bio=bio,

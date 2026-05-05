@@ -25,7 +25,10 @@ const DEFAULT_WS_ENDPOINT = 'ws://127.0.0.1:8765/ws';
 const LOCALHOST_WS_ENDPOINT = 'ws://localhost:8765/ws';
 const PING_INTERVAL_MS = 30000;
 const MISSED_PONG_LIMIT = 2;
-const MAX_MESSAGE_BYTES = 50 * 1024 * 1024; // 50 MB — conversation_loaded may include base64 images
+// 50 MB cap — note that we measure JS string `.length` (UTF-16 code units),
+// not raw bytes. We treat it as a safety net rather than an exact byte cap;
+// for ASCII payloads the two match closely and that's the worst case.
+const MAX_MESSAGE_LENGTH = 50 * 1024 * 1024;
 export class WebSocketClient {
     constructor(callbacks) {
         this.callbacks = callbacks;
@@ -42,14 +45,25 @@ export class WebSocketClient {
     }
     /** Current token (for consumers that need to re-auth inline, e.g. cross-origin iframes). */
     get token() { return this.wsToken; }
-    /** Send a JSON frame. Shows a toast + drops the message if not open. */
+    /** Send a JSON frame. Returns true on success, false if the socket
+     *  isn't open (caller can roll back streaming-state flags). Always
+     *  shows a toast on drop. */
     send(data) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
+            try {
+                this.ws.send(JSON.stringify(data));
+                return true;
+            }
+            catch (e) {
+                // Most often "InvalidStateError" if the socket closed
+                // between readyState check and send. Treat as drop.
+                showToast('Failed to send: connection lost', { type: 'error' });
+                console.warn('WebSocket send failed:', e);
+                return false;
+            }
         }
-        else {
-            showToast('Not connected to AI server', { type: 'error' });
-        }
+        showToast('Not connected to AI server', { type: 'error' });
+        return false;
     }
     /** Clear the pong-pending flag. Call this when an incoming `{type:'pong'}` arrives. */
     notePong() {
@@ -82,8 +96,8 @@ export class WebSocketClient {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }
-        this.isConnecting = true;
         try {
+            this.isConnecting = true;
             Promise.all([
                 invoke('get_ws_token').catch(() => ''),
                 invoke('get_ws_endpoint').catch(() => DEFAULT_WS_ENDPOINT),
@@ -183,12 +197,22 @@ export class WebSocketClient {
                 if (this.ws !== socket)
                     return;
                 // Reject oversized frames to prevent memory exhaustion.
-                if (typeof event.data === 'string' && event.data.length > MAX_MESSAGE_BYTES) {
-                    console.warn('Dropped oversized WebSocket message:', event.data.length, 'bytes');
+                // Length is measured in UTF-16 code units, not bytes.
+                if (typeof event.data === 'string' && event.data.length > MAX_MESSAGE_LENGTH) {
+                    console.warn('Dropped oversized WebSocket message:', event.data.length, 'code units');
                     return;
                 }
                 try {
-                    const data = JSON.parse(event.data);
+                    const data = JSON.parse(event.data, (k, v) => k === '__proto__' || k === 'constructor' || k === 'prototype' ? undefined : v);
+                    // Reject anything that isn't a non-null object — the
+                    // frontend dispatches on `data.type`, which would crash
+                    // (or silently no-op) on `null` / strings / arrays. This
+                    // is also a small safety net against malformed server
+                    // frames triggering odd behavior downstream.
+                    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+                        console.warn('Ignoring non-object WebSocket frame:', typeof data);
+                        return;
+                    }
                     this.callbacks.onMessage(data);
                 }
                 catch (e) {
@@ -215,7 +239,7 @@ export class WebSocketClient {
             return;
         }
         this.reconnectAttempts++;
-        const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
         const jitter = Math.random() * baseDelay * 0.3;
         const delay = Math.floor(baseDelay + jitter);
         console.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);

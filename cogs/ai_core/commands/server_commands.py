@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger(__name__)
-
 import discord
 
 from ..sanitization import sanitize_channel_name, sanitize_role_name
@@ -71,6 +69,9 @@ except ImportError:
     log_admin_action = None  # type: ignore[assignment]
 
 
+
+logger = logging.getLogger(__name__)
+
 def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
     """Find a member by name, display_name, or partial match.
 
@@ -98,7 +99,11 @@ def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
 
 
 async def cmd_create_text(
-    guild: discord.Guild, origin_channel: discord.TextChannel, name: str, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    name: str,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Create a text channel.
 
@@ -107,7 +112,12 @@ async def cmd_create_text(
         origin_channel: The channel where the command was issued
         name: The name for the new channel
         args: Additional arguments (optional category name)
+        user: The user who triggered the command (for permission checks)
     """
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        return
+
     if not name:
         return
 
@@ -142,7 +152,11 @@ async def cmd_create_text(
 
 
 async def cmd_create_voice(
-    guild: discord.Guild, origin_channel: discord.TextChannel, name: str, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    name: str,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Create a voice channel.
 
@@ -151,7 +165,12 @@ async def cmd_create_voice(
         origin_channel: The channel where the command was issued
         name: The name for the new channel
         args: Additional arguments (optional category name)
+        user: The user who triggered the command (for permission checks)
     """
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        return
+
     if not name:
         return
 
@@ -186,7 +205,11 @@ async def cmd_create_voice(
 
 
 async def cmd_create_category(
-    guild: discord.Guild, origin_channel: discord.TextChannel, name: str, _args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    name: str,
+    _args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Create a category.
 
@@ -195,7 +218,12 @@ async def cmd_create_category(
         origin_channel: The channel where the command was issued
         name: The name for the new category
         _args: Unused arguments
+        user: The user who triggered the command (for permission checks)
     """
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        return
+
     if not name:
         return
 
@@ -217,7 +245,11 @@ async def cmd_create_category(
 
 
 async def cmd_delete_channel(
-    guild: discord.Guild, origin_channel: discord.TextChannel, name: str, _args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    name: str,
+    _args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Delete a channel by name or ID.
 
@@ -226,21 +258,29 @@ async def cmd_delete_channel(
         origin_channel: The channel where the command was issued
         name: The name or ID of the channel to delete
         _args: Unused arguments
+        user: The user who triggered the command (for permission checks)
     """
-
-    # Check for duplicate names
-    matches = [ch for ch in guild.channels if ch.name.lower() == name.lower()]
-    if len(matches) > 1:
-        await origin_channel.send(
-            f"⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย"
-        )
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
-    channel = matches[0] if matches else None
-
-    # Try ID if not found by name
-    if not channel and name.isdigit():
+    # If the input is purely numeric, prefer ID lookup — it's a more specific
+    # signal of intent than a name match (Discord allows numeric channel
+    # names, so a string "12345" could match either a channel literally
+    # named "12345" or the channel with that snowflake ID; the user almost
+    # always means the latter).
+    channel = None
+    if name.isdigit():
         channel = guild.get_channel(int(name))
+
+    if channel is None:
+        matches = [ch for ch in guild.channels if ch.name.lower() == name.lower()]
+        if len(matches) > 1:
+            await origin_channel.send(
+                f"⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย"
+            )
+            return
+        channel = matches[0] if matches else None
 
     if channel:
         if channel.id == origin_channel.id:
@@ -261,9 +301,17 @@ async def cmd_delete_channel(
 
 
 async def cmd_create_role(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Create a role with optional color."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        return
+
     if not args or len(args) < 1:
         await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการสร้าง")
         return
@@ -284,7 +332,11 @@ async def cmd_create_role(
     if color_hex:
         try:
             val = color_hex[1:] if color_hex.startswith("#") else color_hex
-            color = discord.Color(int(val, 16))
+            int_val = int(val, 16)
+            # Discord colors are 24-bit RGB; reject anything outside that
+            # range so a 9-digit hex (or worse) can't crash discord.Color.
+            if 0 <= int_val <= 0xFFFFFF:
+                color = discord.Color(int_val)
         except ValueError:
             pass
     try:
@@ -309,9 +361,17 @@ async def cmd_create_role(
 
 
 async def cmd_delete_role(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Delete a role."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        return
+
     if not args or len(args) < 1:
         await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการลบ")
         return
@@ -347,9 +407,17 @@ async def cmd_delete_role(
 
 
 async def cmd_add_role(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Add a role to a user."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        return
+
     if len(args) < 2:
         return
     user_name = args[0].strip()
@@ -361,7 +429,9 @@ async def cmd_add_role(
 
     member = find_member(guild, user_name)
 
-    # Partial match fallback
+    # Partial match fallback. If multiple users match, surface the ambiguity
+    # to origin_channel instead of silently doing nothing — previously the
+    # AI would receive no feedback and falsely report success to the user.
     if not member:
         matches = [
             m
@@ -370,6 +440,13 @@ async def cmd_add_role(
         ]
         if len(matches) == 1:
             member = matches[0]
+        elif len(matches) > 1:
+            preview = ", ".join(m.display_name for m in matches[:5])
+            extra = "..." if len(matches) > 5 else ""
+            await origin_channel.send(
+                f"❌ ผู้ใช้ **{user_name}** ไม่ชัดเจน — ตรงกับ {len(matches)} คน: {preview}{extra}"
+            )
+            return
 
     if role and member:
         # Pre-validation: Check role hierarchy before API call
@@ -403,9 +480,17 @@ async def cmd_add_role(
 
 
 async def cmd_remove_role(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Remove a role from a user."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        return
+
     if len(args) < 2:
         return
     user_name = args[0].strip()
@@ -424,6 +509,15 @@ async def cmd_remove_role(
         ]
         if len(matches) == 1:
             member = matches[0]
+        elif len(matches) > 1:
+            # Surface ambiguity instead of silently failing — same UX as
+            # cmd_add_role above. Otherwise the AI tool gets a generic
+            # "user not found" and may try to create a duplicate operation.
+            await origin_channel.send(
+                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน "
+                f"กรุณาระบุให้ชัดเจน"
+            )
+            return
 
     if role and member:
         # Pre-validation: Check role hierarchy before API call
@@ -457,9 +551,17 @@ async def cmd_remove_role(
 
 
 async def cmd_set_channel_perm(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Set permissions for a channel."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        return
+
     if len(args) < 4:
         await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: ช่อง|เป้าหมาย|สิทธิ์|ค่า")
         return
@@ -528,9 +630,17 @@ async def cmd_set_channel_perm(
 
 
 async def cmd_set_role_perm(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    user: discord.Member | discord.User | None = None,
 ) -> None:
     """Set permissions for a role."""
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        return
+
     if len(args) < 3:
         await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: ยศ|สิทธิ์|ค่า")
         return
@@ -566,6 +676,20 @@ async def cmd_set_role_perm(
         return
 
     if hasattr(perms, perm_name):
+        # Pre-validate role hierarchy. cmd_add_role / cmd_remove_role already
+        # do this; without the same check here, role.edit() raises Forbidden
+        # at the API and the user just sees a generic error. Surface the
+        # specific cause so they understand WHY it was rejected.
+        if guild.me is None:
+            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            return
+        if role >= guild.me.top_role:
+            await origin_channel.send(
+                f"❌ บอทไม่สามารถแก้ไขยศ **{role.name}** ได้ "
+                f"(ยศของบอทอยู่ที่ตำแหน่ง {guild.me.top_role.position}, "
+                f"ยศเป้าหมายอยู่ที่ตำแหน่ง {role.position})"
+            )
+            return
         try:
             setattr(perms, perm_name, value)
             await role.edit(permissions=perms)
@@ -584,7 +708,11 @@ async def cmd_set_role_perm(
 
 
 async def cmd_list_channels(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, _args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    _args: list[str],
+    _user: discord.Member | discord.User | None = None,
 ) -> None:
     """List all text channels."""
     channels = [f"#{ch.name} (ID: {ch.id})" for ch in guild.text_channels]
@@ -592,7 +720,11 @@ async def cmd_list_channels(
 
 
 async def cmd_list_roles(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, _args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    _args: list[str],
+    _user: discord.Member | discord.User | None = None,
 ) -> None:
     """List all roles."""
     roles = [f"{r.name} (ID: {r.id})" for r in reversed(guild.roles) if r.name != "@everyone"]
@@ -600,7 +732,11 @@ async def cmd_list_roles(
 
 
 async def cmd_list_members(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    _user: discord.Member | discord.User | None = None,
 ) -> None:
     """List members with optional query and limit."""
     limit = 50  # Default limit
@@ -636,7 +772,11 @@ async def cmd_list_members(
 
 
 async def cmd_get_user_info(
-    guild: discord.Guild, origin_channel: discord.TextChannel, _name: str | None, args: list[str]
+    guild: discord.Guild,
+    origin_channel: discord.TextChannel,
+    _name: str | None,
+    args: list[str],
+    _user: discord.Member | discord.User | None = None,
 ) -> None:
     """Get detailed info about a user."""
     if not args or len(args) < 1:
@@ -686,8 +826,15 @@ async def cmd_get_user_info(
         await origin_channel.send(f"❌ ไม่พบผู้ใช้: {target}")
 
 
-async def cmd_edit_message(_guild, origin_channel, _name, args):
+async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     """Edit a message owned by the bot."""
+    # Require manage_messages: cmd_edit_message can edit any bot-owned or
+    # bot-controlled webhook message in the channel, so it needs the same
+    # permission Discord requires for editing/managing messages.
+    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_messages", False):
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Messages")
+        return
+
     if len(args) < 2:
         await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: message_id | new_content")
         return
@@ -700,9 +847,18 @@ async def cmd_edit_message(_guild, origin_channel, _name, args):
         await origin_channel.send("❌ เนื้อหาใหม่ไม่สามารถว่างได้")
         return
 
+    # `origin_channel.guild` is None in DMs — bail before dereferencing it.
+    guild = getattr(origin_channel, "guild", None)
+    if guild is None:
+        await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น")
+        return
+
     try:
         msg = await origin_channel.fetch_message(msg_id)
-        bot = origin_channel.guild.me
+        bot = guild.me
+        if bot is None:
+            await origin_channel.send("❌ ไม่พบ bot member ใน server นี้")
+            return
         if msg.author == bot:
             await msg.edit(content=new_content)
         elif msg.webhook_id:
@@ -715,10 +871,13 @@ async def cmd_edit_message(_guild, origin_channel, _name, args):
         else:
             await origin_channel.send("❌ แก้ไขไม่ได้: ข้อความไม่ใช่ของบอท")
     except (discord.NotFound, discord.HTTPException) as err:
-        await origin_channel.send(f"❌ เกิดข้อผิดพลาด: {err}")
+        # `discord.HTTPException.__str__` can include the raw API response
+        # body. Use the shared formatter (which strips internal metadata)
+        # for parity with the rest of the file.
+        await origin_channel.send(_fmt_http_error(err))
 
 
-async def cmd_read_channel(guild, origin_channel, _name, args):
+async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
     """Read the last N messages from a channel."""
     if not args or len(args) < 1:
         await origin_channel.send("❌ กรุณาระบุชื่อช่องที่ต้องการอ่าน")
@@ -737,6 +896,19 @@ async def cmd_read_channel(guild, origin_channel, _name, args):
         target_channel = guild.get_channel(int(target_name))
 
     if target_channel:
+        # Privacy: only let the user read messages from a channel they
+        # themselves can read. Without this, an admin could ask the bot to
+        # echo private channel contents back into a public channel.
+        if user is not None:
+            try:
+                if not target_channel.permissions_for(user).read_messages:
+                    await origin_channel.send("❌ คุณไม่มีสิทธิ์อ่านห้องนั้น")
+                    return
+            except (AttributeError, TypeError):
+                # If we can't compute permissions (e.g. user is a User not a
+                # Member), refuse rather than risk leaking.
+                await origin_channel.send("❌ ไม่สามารถตรวจสอบสิทธิ์ของคุณได้")
+                return
         try:
             messages = []
             async for msg in target_channel.history(limit=limit):
@@ -754,10 +926,24 @@ async def cmd_read_channel(guild, origin_channel, _name, args):
         await origin_channel.send(f"❌ ไม่พบช่อง: {target_name}")
 
 
+def _escape_for_code_block(s: str) -> str:
+    """Neutralise triple-backticks in user-provided content so it can't
+    break out of the surrounding ``` code block. Replaces with a similar-
+    looking char (zero-width-space-separated) to preserve readability."""
+    return s.replace("```", "`\u200b`\u200b`")
+
+
 async def send_long_message(channel, header, lines):
-    """Send a message that might exceed Discord's character limit."""
-    current_chunk = header
-    for line in lines:
+    """Send a message that might exceed Discord's character limit.
+
+    Header + lines may include user-controlled content (channel/role names);
+    escape any ``` so an attacker can't break out of the wrapping code
+    block to inject markdown / mentions / @everyone.
+    """
+    safe_header = _escape_for_code_block(header)
+    safe_lines = [_escape_for_code_block(line) for line in lines]
+    current_chunk = safe_header
+    for line in safe_lines:
         if len(current_chunk) + len(line) + 5 > 1900:
             await channel.send(f"```\n{current_chunk}\n```")
             current_chunk = line + "\n"

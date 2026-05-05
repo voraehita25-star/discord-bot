@@ -391,15 +391,35 @@ class TestRequestDeduplicator:
         assert "123" in key
 
     def test_generate_key_long_message(self):
-        """Test generating key with long message uses only first 100 chars."""
+        """Test long messages with shared 100-char prefix don't collide.
+
+        The dedup key now hashes the FULL content (was content[:100]) so
+        two distinct long messages with the same first 100 chars produce
+        distinct keys. The old behavior caused dedup to drop the second
+        request as a "duplicate" of the first.
+        """
         from cogs.ai_core.core.performance import RequestDeduplicator
 
-        long_msg = "A" * 200
-        key1 = RequestDeduplicator.generate_key(123, 456, long_msg)
-        key2 = RequestDeduplicator.generate_key(123, 456, long_msg[:100])
+        # Two different long messages that share their first 200 chars.
+        msg_a = "A" * 200 + "abc"
+        msg_b = "A" * 200 + "xyz"
 
-        # Should produce same key since only first 100 chars used
-        assert key1 == key2
+        key_a = RequestDeduplicator.generate_key(123, 456, msg_a)
+        key_b = RequestDeduplicator.generate_key(123, 456, msg_b)
+
+        # Full-content hash distinguishes them (would have collided before).
+        assert key_a != key_b
+
+        # Key shape: "<channel>:<user>:<sha256-hex-prefix>". The hash slice
+        # length is an implementation detail of generate_key; assert it's
+        # a non-empty hex string and that the prefix structure is intact.
+        parts = key_a.split(":")
+        assert parts[0] == "123"
+        assert parts[1] == "456"
+        msg_hash = parts[-1]
+        assert len(msg_hash) > 0
+        # Hex digits only — produced by hashlib.sha256().hexdigest().
+        int(msg_hash, 16)
 
 
 class TestCorePerformanceSingletons:

@@ -298,13 +298,20 @@ class TestSaveHistoryDB:
 
     @pytest.mark.asyncio
     async def test_save_history_db_prune_over_limit(self):
-        """Test pruning when over limit."""
+        """Test pruning when over limit + 50-message buffer.
+
+        Pruning now triggers only when count > limit + 50 to avoid
+        count/prune thrashing under concurrent writes (two near-simultaneous
+        saves both seeing "count > limit" would otherwise both call prune
+        and race on the same rows).
+        """
         from cogs.ai_core.storage import _save_history_db
 
         with patch("cogs.ai_core.storage.db") as mock_db:
             mock_db.get_ai_history = AsyncMock(return_value=[])
             mock_db.save_ai_messages_batch = AsyncMock()
-            mock_db.get_ai_history_count = AsyncMock(return_value=150)
+            # 200 > 100 + 50 → triggers prune (was 150 > 100, no longer enough).
+            mock_db.get_ai_history_count = AsyncMock(return_value=200)
             mock_db.prune_ai_history = AsyncMock()
             mock_db.save_ai_metadata = AsyncMock()
 
@@ -439,11 +446,35 @@ class TestMoveHistory:
             storage, "copy_history", new_callable=AsyncMock
         ) as mock_copy, patch.object(storage, "db") as mock_db:
             mock_copy.return_value = 5
+            # Target must be empty before move — mirror that explicitly so the
+            # safety check in move_history passes (it returns 0 otherwise).
+            mock_db.get_ai_history_count = AsyncMock(return_value=0)
             mock_db.delete_ai_history = AsyncMock()
 
             result = await storage.move_history(111, 222)
             assert result == 5
             mock_db.delete_ai_history.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_move_history_refuses_non_empty_target(self):
+        """move_history must NOT proceed when the target channel already has rows.
+
+        Previously the rollback path used delete_ai_history(target) on copy
+        failure, which would wipe pre-existing target rows along with the
+        copies. The fix is to refuse the move when the target is non-empty.
+        """
+        from cogs.ai_core import storage
+
+        with patch.object(storage, "DATABASE_AVAILABLE", True), patch.object(
+            storage, "copy_history", new_callable=AsyncMock
+        ) as mock_copy, patch.object(storage, "db") as mock_db:
+            mock_db.get_ai_history_count = AsyncMock(return_value=42)
+            mock_db.delete_ai_history = AsyncMock()
+
+            result = await storage.move_history(111, 222)
+            assert result == 0
+            mock_copy.assert_not_called()
+            mock_db.delete_ai_history.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_move_history_no_db(self):

@@ -1,6 +1,14 @@
 """
 Token Usage Tracker for Discord Bot.
 Tracks token usage per user, channel, and provides analytics.
+
+DEPRECATED: prefer ``cogs.ai_core.cache.token_tracker`` for new code.
+That implementation has DB persistence, model-aware cost calculation,
+and is fed by the AI request path. This module exists for the boilerplate
+imports + a handful of legacy callers; both modules currently coexist and
+record into separate stores, so a metric pulled from ONE of them is
+incomplete. A future PR should make one a thin re-export of the other or
+delete this file once all callers are migrated.
 """
 
 from __future__ import annotations
@@ -8,9 +16,33 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
+
+
+_deprecation_warned = False
+
+
+def _emit_deprecation_warning() -> None:
+    """Emit the module's deprecation warning lazily on first real use.
+
+    Emitting at import time fires whenever any module imports this one
+    (including transitive imports from `utils.reliability.__init__`),
+    which produces noise pointing at the wrong frame. Defer until a
+    caller actually records usage so the frame points at the real caller.
+    """
+    global _deprecation_warned
+    if _deprecation_warned:
+        return
+    _deprecation_warned = True
+    warnings.warn(
+        "utils.monitoring.token_tracker is deprecated; prefer "
+        "cogs.ai_core.cache.token_tracker (has DB + cost calc).",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @dataclass
@@ -91,6 +123,7 @@ class TokenTracker:
         self, user_id: int, input_tokens: int, output_tokens: int, channel_id: int | None = None
     ) -> None:
         """Record token usage for a user."""
+        _emit_deprecation_warning()
         with self._lock:
             now = time.time()
             hour_key = datetime.now().strftime("%Y-%m-%d-%H")
@@ -257,18 +290,23 @@ class TokenTracker:
         cutoff_hour_key = cutoff.strftime("%Y-%m-%d-%H")
         removed = 0
 
-        for stats in self._user_stats.values():
-            # Clean hourly data (using hourly format for proper comparison)
-            old_hours = [k for k in stats.hourly_usage if k < cutoff_hour_key]
-            for k in old_hours:
-                del stats.hourly_usage[k]
-                removed += 1
+        # Hold the lock while iterating + mutating per-user dicts. Without it,
+        # a concurrent record() on the same user_id can mutate hourly_usage /
+        # daily_usage mid-iteration, raising "dictionary changed size during
+        # iteration" or losing a counter increment.
+        with self._lock:
+            for stats in self._user_stats.values():
+                # Clean hourly data (using hourly format for proper comparison)
+                old_hours = [k for k in stats.hourly_usage if k < cutoff_hour_key]
+                for k in old_hours:
+                    del stats.hourly_usage[k]
+                    removed += 1
 
-            # Clean daily data (using daily format)
-            old_days = [k for k in stats.daily_usage if k < cutoff_day_key]
-            for k in old_days:
-                del stats.daily_usage[k]
-                removed += 1
+                # Clean daily data (using daily format)
+                old_days = [k for k in stats.daily_usage if k < cutoff_day_key]
+                for k in old_days:
+                    del stats.daily_usage[k]
+                    removed += 1
 
         if removed > 0:
             self.logger.info("Cleaned up %d old token records", removed)

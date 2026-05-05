@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-
-logger = logging.getLogger(__name__)
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -69,6 +67,8 @@ from .tools import (
     start_webhook_cache_cleanup,
     stop_webhook_cache_cleanup,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
@@ -181,9 +181,16 @@ class AI(commands.Cog):
         try:
             from cogs.ai_core.cache.token_tracker import token_tracker
 
-            asyncio.create_task(token_tracker.init_from_db()).add_done_callback(
-                self._on_bg_task_done,
-            )
+            # Hold a strong reference so the task isn't GC'd before it
+            # finishes. add_done_callback alone doesn't keep the Task alive
+            # — Python may collect it and emit "Task was destroyed but it is
+            # pending!" warnings, dropping the actual init work.
+            if not hasattr(self, "_bg_tasks"):
+                self._bg_tasks: set[asyncio.Task[Any]] = set()
+            _bg_task = asyncio.create_task(token_tracker.init_from_db())
+            self._bg_tasks.add(_bg_task)
+            _bg_task.add_done_callback(self._bg_tasks.discard)
+            _bg_task.add_done_callback(self._on_bg_task_done)
         except ImportError:
             pass
 
@@ -208,6 +215,17 @@ class AI(commands.Cog):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._cache_cleanup_task
 
+        # Cancel any background bookkeeping tasks tracked in _bg_tasks
+        # (e.g. token_tracker.init_from_db). They're best-effort, so
+        # cancellation + suppress is fine.
+        bg_tasks = getattr(self, "_bg_tasks", None)
+        if bg_tasks:
+            for t in list(bg_tasks):
+                if not t.done():
+                    t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
+
         # Stop webhook cache cleanup task
         await stop_webhook_cache_cleanup()
 
@@ -217,6 +235,17 @@ class AI(commands.Cog):
 
         # Save all active sessions before unload
         await self.chat_manager.save_all_sessions()
+
+        # Flush pending L2 SQLite cache writes so anything queued via
+        # _post_set_hook actually lands on disk before the loop closes.
+        try:
+            from .cache.ai_cache import flush_l2_pending
+
+            flushed = await flush_l2_pending(timeout=5.0)
+            if flushed:
+                logger.info("💾 Flushed %d pending L2 cache writes", flushed)
+        except Exception as e:
+            logger.warning("Failed to flush L2 cache: %s", e)
 
         # Flush pending database exports to prevent "Task was destroyed" warning
         try:
@@ -366,16 +395,30 @@ class AI(commands.Cog):
     @commands.is_owner()
     async def reset_ai(self, ctx):
         """Reset Chat History (Owner Only)."""
-        # Remove from memory
-        if ctx.channel.id in self.chat_manager.chats:
-            del self.chat_manager.chats[ctx.channel.id]
+        channel_id = ctx.channel.id
+
+        # Remove from memory. Use pop() — `if x in d: del d[x]` races with
+        # the LRU evictor in _enforce_channel_limit which can delete the
+        # key between the check and the del, raising KeyError.
+        self.chat_manager.chats.pop(channel_id, None)
 
         # Remove from disk
-        await delete_history(ctx.channel.id)
+        await delete_history(channel_id)
 
-        # Clear seen users for this channel too
-        if ctx.channel.id in self.chat_manager.seen_users:
-            self.chat_manager.seen_users[ctx.channel.id].clear()
+        # Clean up ALL per-channel state to mirror on_guild_channel_delete.
+        # Without this, locks / queued messages / typing markers / cancel
+        # flags persist after the history wipe and the next message lands
+        # in an inconsistent state (e.g. a stale cancel_flag = True that
+        # silently kills the new turn).
+        self.chat_manager.seen_users.pop(channel_id, None)
+        self.chat_manager.last_accessed.pop(channel_id, None)
+        self.chat_manager.processing_locks.pop(channel_id, None)
+        self.chat_manager.streaming_enabled.pop(channel_id, None)
+        self.chat_manager.current_typing_msg.pop(channel_id, None)
+        self.chat_manager._message_queue.pending_messages.pop(channel_id, None)
+        self.chat_manager._message_queue.cancel_flags.pop(channel_id, None)
+        self.chat_manager._message_queue.processing_locks.pop(channel_id, None)
+        self.chat_manager._message_queue._lock_times.pop(channel_id, None)
 
         await ctx.send("🧹 ล้างความจำ AI ในห้องนี้เรียบร้อยแล้ว เริ่มต้นคุยใหม่ได้เลย!")
 
@@ -397,18 +440,19 @@ class AI(commands.Cog):
         # Invalidate webhook cache for deleted channel
         invalidate_webhook_cache_on_channel_delete(channel.id)
 
-        # Clean up chat manager data for this channel
-        if channel.id in self.chat_manager.chats:
-            del self.chat_manager.chats[channel.id]
-        if channel.id in self.chat_manager.seen_users:
-            del self.chat_manager.seen_users[channel.id]
-        # Clean up all remaining per-channel state to prevent memory leaks
+        # Clean up all per-channel state to prevent memory leaks. Always
+        # use pop(..., None) — `if x in d: del d[x]` races with the LRU
+        # evictor in _enforce_channel_limit and can KeyError.
+        self.chat_manager.chats.pop(channel.id, None)
+        self.chat_manager.seen_users.pop(channel.id, None)
         self.chat_manager.last_accessed.pop(channel.id, None)
         self.chat_manager.processing_locks.pop(channel.id, None)
         self.chat_manager.streaming_enabled.pop(channel.id, None)
         self.chat_manager.current_typing_msg.pop(channel.id, None)
         self.chat_manager._message_queue.pending_messages.pop(channel.id, None)
         self.chat_manager._message_queue.cancel_flags.pop(channel.id, None)
+        self.chat_manager._message_queue.processing_locks.pop(channel.id, None)
+        self.chat_manager._message_queue._lock_times.pop(channel.id, None)
 
     async def _resolve_prefix_tuple(self, message: discord.Message) -> tuple[str, ...]:
         """Resolve bot.command_prefix into a tuple of prefix strings.
@@ -486,6 +530,7 @@ class AI(commands.Cog):
         if cached and cached[1] > _time.time():
             is_known_proxy = cached[0]
         else:
+            should_cache = True
             try:
                 webhooks = await webhook_channel.webhooks()
                 for wh in webhooks:
@@ -493,8 +538,11 @@ class AI(commands.Cog):
                         if wh.user and wh.user.bot and wh.user.id in self._ALLOWED_WEBHOOK_BOT_IDS:
                             is_known_proxy = True
                         break
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            except discord.Forbidden:
+                # Don't cache the negative result — permissions can change.
+                return
+            except discord.HTTPException:
+                should_cache = False
             # Cache the result (with size limit). pop(.., None) instead of del
             # because two on_message coroutines can race past the await on the
             # webhooks() call above and both try to evict the same expired key —
@@ -502,20 +550,21 @@ class AI(commands.Cog):
             # still full, evict the entry with the soonest expiry (LRU-ish) so
             # we don't blow away the entire cache on a hot path.
             now = _time.time()
-            if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
-                expired = [k for k, v in self._webhook_verify_cache.items() if v[1] <= now]
-                for k in expired:
-                    self._webhook_verify_cache.pop(k, None)
+            if should_cache:
                 if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
-                    oldest = min(
-                        self._webhook_verify_cache.items(),
-                        key=lambda kv: kv[1][1],
-                    )[0]
-                    self._webhook_verify_cache.pop(oldest, None)
-            self._webhook_verify_cache[webhook_id] = (
-                is_known_proxy,
-                now + self._WEBHOOK_CACHE_TTL,
-            )
+                    expired = [k for k, v in self._webhook_verify_cache.items() if v[1] <= now]
+                    for k in expired:
+                        self._webhook_verify_cache.pop(k, None)
+                    if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
+                        oldest = min(
+                            self._webhook_verify_cache.items(),
+                            key=lambda kv: kv[1][1],
+                        )[0]
+                        self._webhook_verify_cache.pop(oldest, None)
+                self._webhook_verify_cache[webhook_id] = (
+                    is_known_proxy,
+                    now + self._WEBHOOK_CACHE_TTL,
+                )
 
         if not is_known_proxy:
             return
@@ -538,13 +587,22 @@ class AI(commands.Cog):
         if not allowed:
             return
 
-        # Check prefix and command manually
+        # Check prefix and command manually. Resolve via the bot's command
+        # registry instead of a hardcoded list — this used to silently fall
+        # out of sync if a chat command was renamed/added.
         message_content = message.content or ""
         content = message_content.strip()
         if content and content.startswith("!"):
             parts = content[1:].split(" ", 1)
             cmd = parts[0].lower() if parts[0] else ""
-            if not cmd or cmd not in ["chat", "ask", "gemini"]:
+            if not cmd:
+                return
+            registered = self.bot.get_command(cmd)
+            if registered is None or registered.cog_name != self.__class__.__name__:
+                return
+            # Only chat-style commands have an output that benefits from the
+            # webhook proxy path; the rest fall through to normal handling.
+            if registered.name not in {"chat", "ask", "gemini"}:
                 return
 
             if not await check_rate_limit("gemini_api", message, send_message=False):
@@ -688,8 +746,12 @@ class AI(commands.Cog):
             else:
                 return
 
-        # Check if mentioned or in allowed channel
-        is_mentioned = self.bot.user in message.mentions
+        # Check if mentioned or in allowed channel. Guard against
+        # bot.user being None during very-early ready / disconnect — the
+        # `in` operator on None would crash and `==` would compare None
+        # to message author, which evaluates as a False match anyway.
+        bot_user = self.bot.user
+        is_mentioned = bool(bot_user is not None and bot_user in message.mentions)
         is_reply = False
         if message.reference and message.reference.message_id is not None:
             try:
@@ -699,7 +761,11 @@ class AI(commands.Cog):
                     ref_msg = None
                 elif not isinstance(ref_msg, discord.Message):
                     ref_msg = await reply_channel.fetch_message(message.reference.message_id)
-                if isinstance(ref_msg, discord.Message) and ref_msg.author == self.bot.user:
+                if (
+                    bot_user is not None
+                    and isinstance(ref_msg, discord.Message)
+                    and ref_msg.author.id == bot_user.id
+                ):
                     is_reply = True
             except (discord.NotFound, discord.HTTPException, TypeError):
                 pass
@@ -921,12 +987,12 @@ class AI(commands.Cog):
             )
 
         try:
-            msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+            confirm_msg = await self.bot.wait_for("message", check=check, timeout=30.0)
         except TimeoutError:
             await ctx.send("⏰ หมดเวลา - ยกเลิกการดำเนินการ")
             return
 
-        if msg.content.lower() in ["no", "n"]:
+        if confirm_msg.content.lower() in ["no", "n"]:
             await ctx.send("❌ ยกเลิกการดำเนินการ")
             return
 
@@ -938,8 +1004,7 @@ class AI(commands.Cog):
 
             if copied > 0:
                 # Reload the chat session to include new history
-                if target_id in self.chat_manager.chats:
-                    del self.chat_manager.chats[target_id]
+                self.chat_manager.chats.pop(target_id, None)
 
                 embed = discord.Embed(
                     title="✅ Link Memory Successful",
@@ -1015,11 +1080,23 @@ class AI(commands.Cog):
 
         status_msg = await ctx.send("📤 กำลังส่งข้อความใหม่...")
 
-        # Get the output channel
-        output_channel = self.bot.get_channel(target_channel_id)
-        if not output_channel:
+        # Get the output channel. get_channel returns Optional[GuildChannel |
+        # PrivateChannel], which includes Voice/Stage/Forum/Category — none
+        # of which expose .send(). Restrict to TextChannel/Thread/DMChannel
+        # so .send/webhook calls below don't AttributeError at runtime.
+        raw_channel = self.bot.get_channel(target_channel_id)
+        if not raw_channel:
             await status_msg.edit(content="❌ ไม่พบช่อง output")
             return
+        if not isinstance(
+            raw_channel,
+            (discord.TextChannel, discord.Thread, discord.DMChannel),
+        ):
+            await status_msg.edit(
+                content=f"❌ ช่อง output ไม่รองรับการส่งข้อความ ({type(raw_channel).__name__})"
+            )
+            return
+        output_channel = raw_channel
 
         try:
             # Split by {{Name}} pattern (same as logic.py)
@@ -1029,7 +1106,7 @@ class AI(commands.Cog):
             async def _send_chunked(text: str) -> None:
                 """Send text to output_channel, chunked to Discord's 2000-char cap."""
                 for i in range(0, len(text), max_len):
-                    await output_channel.send(text[i : i + max_len])  # type: ignore[union-attr]
+                    await output_channel.send(text[i : i + max_len])
 
             # If found {{...}} patterns
             if len(split_parts) > 1:
@@ -1149,12 +1226,12 @@ class AI(commands.Cog):
             )
 
         try:
-            msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+            confirm_msg = await self.bot.wait_for("message", check=check, timeout=30.0)
         except TimeoutError:
             await ctx.send("⏰ หมดเวลา - ยกเลิกการดำเนินการ")
             return
 
-        if msg.content.lower() in ["no", "n"]:
+        if confirm_msg.content.lower() in ["no", "n"]:
             await ctx.send("❌ ยกเลิกการดำเนินการ")
             return
 
@@ -1166,12 +1243,10 @@ class AI(commands.Cog):
 
             if moved > 0:
                 # Reload the chat session to include new history
-                if target_id in self.chat_manager.chats:
-                    del self.chat_manager.chats[target_id]
+                self.chat_manager.chats.pop(target_id, None)
 
                 # Clear source from memory too
-                if source_id in self.chat_manager.chats:
-                    del self.chat_manager.chats[source_id]
+                self.chat_manager.chats.pop(source_id, None)
 
                 embed = discord.Embed(
                     title="✅ Move Memory Successful",
@@ -1341,27 +1416,17 @@ class AI(commands.Cog):
                 await ctx.send(f"📭 No audit logs found in the last {days} days")
                 return
 
-            # Create JSON file
+            # Create JSON file in-memory to avoid temp-file races on Windows
+            from io import BytesIO
+
             filename = f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            temp_dir = Path("temp")
-            await asyncio.to_thread(temp_dir.mkdir, parents=True, exist_ok=True)
-            filepath = temp_dir / filename
+            payload = json.dumps(logs, ensure_ascii=False, indent=2, default=str)
+            bio = BytesIO(payload.encode("utf-8"))
 
-            try:
-                await asyncio.to_thread(
-                    filepath.write_text,
-                    json.dumps(logs, ensure_ascii=False, indent=2, default=str),
-                    encoding="utf-8",
-                )
-
-                await ctx.send(
-                    f"📤 Exported {len(logs)} audit entries from last {days} days",
-                    file=discord.File(str(filepath), filename=filename),
-                )
-            finally:
-                # Always cleanup temp file
-                if filepath.exists():
-                    filepath.unlink()
+            await ctx.send(
+                f"📤 Exported {len(logs)} audit entries from last {days} days",
+                file=discord.File(fp=bio, filename=filename),
+            )
 
         except ImportError:
             await ctx.send("❌ Audit logging not available")
@@ -1380,11 +1445,11 @@ class AI(commands.Cog):
         """
         channel_id = ctx.channel.id
 
-        if channel_id not in self.chat_manager.chats:
+        chat_data = self.chat_manager.chats.get(channel_id)
+        if chat_data is None:
             await ctx.send("❌ No active session in this channel")
             return
 
-        chat_data = self.chat_manager.chats[channel_id]
         history = chat_data.get("history", [])
 
         if not history:
@@ -1407,18 +1472,22 @@ class AI(commands.Cog):
         try:
             from cogs.ai_core.memory.history_manager import history_manager
 
-            # Use smart_trim_by_tokens
-            trimmed = await history_manager.smart_trim_by_tokens(
-                history, max_tokens=max_tokens, reserve_tokens=2000
+            lock = self.chat_manager.processing_locks.setdefault(
+                channel_id, asyncio.Lock()
             )
+            async with lock:
+                # Use smart_trim_by_tokens
+                trimmed = await history_manager.smart_trim_by_tokens(
+                    history, max_tokens=max_tokens, reserve_tokens=2000
+                )
 
-            # Update history
-            chat_data["history"] = trimmed
+                # Update history
+                chat_data["history"] = trimmed
 
-            # Save to storage
-            from cogs.ai_core.storage import save_history
+                # Save to storage
+                from cogs.ai_core.storage import save_history
 
-            await save_history(self.bot, channel_id, chat_data)
+                await save_history(self.bot, channel_id, chat_data)
 
             new_tokens = history_manager.estimate_tokens(trimmed)
 

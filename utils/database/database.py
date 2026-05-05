@@ -9,17 +9,17 @@ import asyncio
 import contextlib
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import re
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 # Database timeout configuration (in seconds)
 # Can be overridden via environment variable
@@ -55,6 +55,7 @@ class Database:
 
     _instance: Database | None = None
     _instance_lock = threading.Lock()  # Thread-safe singleton creation
+    _init_lock = threading.Lock()  # Serialise __init__ check+init
 
     def __new__(cls) -> Database:
         """Singleton pattern - only one database instance (thread-safe)."""
@@ -63,38 +64,47 @@ class Database:
                 # Double-check locking pattern
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
+                    # Set _initialized BEFORE releasing the class lock so a
+                    # concurrent thread entering __init__ via this same
+                    # instance can never observe the attribute as missing.
                     cls._instance._initialized = False  # type: ignore[has-type]
         return cls._instance
 
     def __init__(self) -> None:
         """Initialize database settings."""
-        if self._initialized:  # type: ignore[has-type]
-            return
+        # Serialise the check-then-init under a class-level lock — without
+        # it, two threads racing through __new__ could both see
+        # _initialized=False here and run the body twice.
+        with type(self)._init_lock:
+            if self._initialized:  # type: ignore[has-type]
+                return
 
-        self._initialized = True
-        self.db_path = str(DB_FILE)
-        self._schema_initialized = False
-        self._export_pending = False
-        self._export_delay = 3  # seconds
-        # Track multiple export tasks to prevent task destruction warnings
-        self._export_tasks: set[asyncio.Task] = set()
-        # Connection pool semaphore - lazily initialized to avoid event loop binding issues
-        # 32 connections for 8-core/16-thread CPU (2 per thread)
-        self._pool_semaphore: asyncio.Semaphore | None = None
-        self._connection_count = 0
-        # Persistent connection pool for reuse (avoids open/close overhead).
-        # Queue size is half the semaphore cap so most concurrent connections
-        # get a reused handle rather than opening a new one each time.
-        self._conn_pool: asyncio.Queue | None = None
-        self._pool_initialized = False
-        self._checkpoint_task: asyncio.Task | None = None
-        self._export_pending_keys: set[str] = set()
-        self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
-        self._export_lock = asyncio.Lock()  # Lock for export scheduling
-        # Write serialization lock — SQLite WAL allows concurrent reads but only
-        # one writer at a time. This lock prevents SQLITE_BUSY on concurrent writes.
-        self._write_lock: asyncio.Lock | None = None
-        logger.info("💾 Async Database manager created: %s (pool=32, WAL mode)", self.db_path)
+            self.db_path = str(DB_FILE)
+            self._schema_initialized = False
+            self._export_pending = False
+            self._export_delay = 3  # seconds
+            # Track multiple export tasks to prevent task destruction warnings
+            self._export_tasks: set[asyncio.Task] = set()
+            # Connection pool semaphore - lazily initialized to avoid event loop binding issues
+            # 32 connections for 8-core/16-thread CPU (2 per thread)
+            self._pool_semaphore: asyncio.Semaphore | None = None
+            self._connection_count = 0
+            # Persistent connection pool for reuse (avoids open/close overhead).
+            # Queue size is half the semaphore cap so most concurrent connections
+            # get a reused handle rather than opening a new one each time.
+            self._conn_pool: asyncio.Queue | None = None
+            self._pool_initialized = False
+            self._checkpoint_task: asyncio.Task | None = None
+            self._export_pending_keys: set[str] = set()
+            self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
+            self._export_lock = asyncio.Lock()  # Lock for export scheduling
+            # Write serialization lock — SQLite WAL allows concurrent reads but only
+            # one writer at a time. This lock prevents SQLITE_BUSY on concurrent writes.
+            self._write_lock: asyncio.Lock | None = None
+            # Set the init flag last so a concurrent caller observing the
+            # flag is guaranteed to see all the attributes above.
+            self._initialized = True
+            logger.info("💾 Async Database manager created: %s (pool=32, WAL mode)", self.db_path)
 
     def _get_pool_semaphore(self) -> asyncio.Semaphore:
         """Lazily create the pool semaphore to avoid event loop binding issues.
@@ -102,13 +112,18 @@ class Database:
         This uses a simple check-and-set pattern. The threading.Lock is only
         needed on the very first call (creation); subsequent calls hit the
         fast path without contention.
+
+        Uses BoundedSemaphore so that _reinitialize_pool's force-replenish loop
+        cannot over-release past the original 32-slot limit; without that bound
+        repeated reinit cycles silently grow the effective pool size and
+        defeat the connection cap.
         """
         sem = self._pool_semaphore
         if sem is not None:
             return sem
         with self._instance_lock:
             if self._pool_semaphore is None:
-                self._pool_semaphore = asyncio.Semaphore(32)
+                self._pool_semaphore = asyncio.BoundedSemaphore(32)
             return self._pool_semaphore
 
     def _get_conn_pool(self) -> asyncio.Queue:
@@ -243,16 +258,21 @@ class Database:
         """Flush any pending exports immediately (call during shutdown).
 
         This ensures data is exported before the bot shuts down,
-        bypassing the debounce delay and properly cancelling pending tasks.
+        bypassing the debounce delay and waiting for in-flight tasks
+        to complete instead of cancelling them (cancelling a debounced
+        export task means the user-visible dashboard JSON file never
+        gets refreshed for that conversation, silently losing data).
         """
-        # Cancel all pending export tasks to prevent "Task was destroyed" warning
-        for task in list(self._export_tasks):
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass  # Expected when we cancel the task
+        # Wait for in-flight export tasks to finish — do NOT cancel them.
+        # Each task is the actual write to disk for one conversation; a
+        # cancel here is a data-loss event for that conversation.
+        pending_tasks = [t for t in list(self._export_tasks) if not t.done()]
+        if pending_tasks:
+            logger.info(
+                "💾 Awaiting %d in-flight export task(s) before shutdown...",
+                len(pending_tasks),
+            )
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
         self._export_tasks.clear()
 
         # Always run final export on shutdown to ensure data safety
@@ -266,7 +286,18 @@ class Database:
             self._export_pending = False
             if hasattr(self, '_export_pending_keys'):
                 self._export_pending_keys.clear()
+            # Drain any remaining dashboard export keys synchronously so
+            # the conversations they pointed at don't lose their final
+            # message in the on-disk JSON.
+            remaining_dash = list(self._dashboard_export_pending)
             self._dashboard_export_pending.clear()
+            for conv_id in remaining_dash:
+                try:
+                    await self.export_dashboard_conversation_to_json(conv_id)
+                except Exception:
+                    logger.exception(
+                        "Failed final dashboard export for conv %s", conv_id,
+                    )
 
         # Always export on shutdown for data safety
         try:
@@ -802,10 +833,14 @@ class Database:
             """)
 
             await conn.commit()
-            self._schema_initialized = True
-            logger.info("💾 Database schema initialized (async)")
+            logger.info("💾 Database schema CREATE TABLE statements applied")
 
-            # Run versioned migrations (with auto-backup)
+            # Run versioned migrations (with auto-backup). The
+            # _schema_initialized flag is set ONLY after migrations
+            # succeed — flipping it before would let the rest of the
+            # codebase begin querying tables that haven't yet had their
+            # columns/indexes added by pending migrations, silently
+            # corrupting writes against the half-initialised schema.
             try:
                 from utils.database.migrations import (
                     discover_migrations,
@@ -818,7 +853,10 @@ class Database:
                     # Auto-backup before applying migrations
                     backup_dir = DB_DIR / "backups"
                     backup_dir.mkdir(exist_ok=True)
-                    backup_name = f"bot_database_v{current_ver}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                    backup_name = (
+                        f"bot_database_v{current_ver}_"
+                        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%SZ')}.db"
+                    )
                     backup_path = backup_dir / backup_name
                     import shutil
                     shutil.copy2(self.db_path, backup_path)
@@ -830,8 +868,16 @@ class Database:
                 applied = await run_migrations(conn)
                 if applied:
                     logger.info("📦 %d migration(s) applied successfully", applied)
-            except Exception as e:
-                logger.warning("Migration system error (non-fatal): %s", e)
+            except Exception:
+                # Migration failure is now FATAL: leave _schema_initialized
+                # False so subsequent get_connection() calls don't proceed
+                # against a half-migrated DB, and re-raise so the caller
+                # (bot startup) can refuse to come up.
+                logger.exception("Migration failed — refusing to mark schema initialised")
+                raise
+
+            self._schema_initialized = True
+            logger.info("💾 Database schema initialized (async)")
 
         # Start periodic WAL checkpoint task
         if self._checkpoint_task is None or self._checkpoint_task.done():
@@ -966,8 +1012,12 @@ class Database:
 
             # Create a new connection if needed
             if conn is None:
-                self._connection_count += 1
+                # Connect FIRST, then bump the counter — otherwise a failed
+                # aiosqlite.connect() leaks the count by 1 each time and
+                # eventually pushes set_db_pool() into negative-available
+                # nonsense.
                 conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
+                self._connection_count += 1
                 conn.row_factory = aiosqlite.Row
 
                 # Performance optimizations — per-connection PRAGMAs only
@@ -981,31 +1031,62 @@ class Database:
             # once at connection-create time proved unreliable. It's a cheap
             # pragma; always doing it is the durable fix. Must run BEFORE any
             # DML to take effect.
-            await conn.commit()  # ensure no implicit transaction is open
+            #
+            # ROLLBACK rather than COMMIT here: if the previous user of this
+            # pooled connection raised inside their `async with` block, the
+            # rollback in the except path may have failed silently (it's
+            # wrapped in contextlib.suppress). A blind commit would then
+            # FLUSH whatever uncommitted writes were lingering — defeating
+            # the point of the rollback. Rollback is a no-op when no tx is
+            # open, so it's strictly safer than commit in this slot.
+            with contextlib.suppress(Exception):
+                await conn.rollback()
             await conn.execute("PRAGMA foreign_keys=ON")
 
+            rollback_failed = False
             try:
                 yield conn
                 await conn.commit()
             except BaseException:
-                with contextlib.suppress(Exception):
+                try:
                     await conn.rollback()
+                except Exception:
+                    # Rollback failed — connection state is unknown. Drop
+                    # it instead of returning a tainted handle to the pool
+                    # where the next caller would inherit dangling
+                    # uncommitted writes.
+                    rollback_failed = True
                 raise
             finally:
-                # Return connection to pool instead of closing
-                try:
-                    self._get_conn_pool().put_nowait(conn)
-                except asyncio.QueueFull:
-                    # Pool is full, close this connection
-                    await conn.close()
+                if rollback_failed:
+                    # Discard the broken connection; do NOT put back.
+                    with contextlib.suppress(Exception):
+                        await conn.close()
                     self._connection_count -= 1
+                else:
+                    # Reset row_factory before returning to the pool so
+                    # any per-call mutation (e.g. callers that switch to
+                    # a tuple factory) doesn't leak across requests.
+                    conn.row_factory = aiosqlite.Row
+                    # Return connection to pool instead of closing
+                    try:
+                        self._get_conn_pool().put_nowait(conn)
+                    except asyncio.QueueFull:
+                        # Pool is full, close this connection
+                        await conn.close()
+                        self._connection_count -= 1
         finally:
             sem.release()
-            # Export pool utilization to Prometheus
+            # Export pool utilization to Prometheus.
+            # Compute available slots from the in-flight connection count we
+            # already track instead of reading asyncio.Semaphore's private
+            # _value attribute (undocumented, may change between CPython
+            # releases).
             try:
                 from utils.monitoring.metrics import metrics
                 if metrics.enabled:
-                    metrics.set_db_pool(32, sem._value)
+                    available = max(0, 32 - self._connection_count)
+                    metrics.set_db_pool(32, available)
             except ImportError:
                 pass
 
@@ -1124,21 +1205,53 @@ class Database:
             logger.info("Drained %d stale connections from pool", drained)
             self._connection_count = max(0, self._connection_count - drained)
 
-        # Replace the connection pool queue (safe since we just drained it)
-        # Keep maxsize in sync with _get_conn_pool() (16)
+        # Replace the connection pool queue (safe since we just drained it).
+        # Keep maxsize in sync with _get_conn_pool() (16).
         self._conn_pool = asyncio.Queue(maxsize=16)
 
-        # Reset the semaphore safely by creating a new one.
-        # This only runs during recovery after failures, so creating a new
-        # semaphore is acceptable. Active waiters on the old semaphore
-        # will see the old one — we don't replace it if connections are active.
-        if self._connection_count == 0:
-            self._pool_semaphore = asyncio.Semaphore(32)
-            logger.info("Reset pool semaphore to 32 slots")
-        else:
-            logger.warning(
-                "Skipping semaphore reset: %d connections still active", self._connection_count
+        # The previous implementation rebuilt the semaphore. That silently
+        # abandoned any coroutines already awaiting on the OLD semaphore —
+        # they would never wake up and the calling task would hang. Instead
+        # we mutate the existing semaphore in place: release any unbounded
+        # acquires that recovery makes available, so waiters wake up
+        # against the same object.
+        if self._pool_semaphore is not None:
+            POOL_TARGET = 32
+            current = self._pool_semaphore
+            # Force-replenish slots up to the target. Each release wakes one
+            # waiter (FIFO inside asyncio.Semaphore on modern Python).
+            # BoundedSemaphore raises ValueError once we hit the original cap,
+            # which is exactly the safety net we want — the loop stops cleanly
+            # without silently growing the pool past 32.
+            #
+            # Two-layer cap:
+            #   1. Account for in-flight connections (_connection_count) —
+            #      releasing those slots would put us over capacity.
+            #   2. Hard-cap the total number of releases at POOL_TARGET so
+            #      a programming error here can never call release() in an
+            #      unbounded loop.
+            in_flight = max(0, self._connection_count)
+            slots_to_add = min(
+                max(0, POOL_TARGET - in_flight),
+                POOL_TARGET,  # absolute upper bound on releases
             )
+            released = 0
+            for _ in range(slots_to_add):
+                try:
+                    current.release()
+                except (ValueError, RuntimeError):
+                    # BoundedSemaphore reached its original bound — stop here
+                    # to keep the pool capped. Without the BoundedSemaphore,
+                    # this branch never fired and over-release silently leaked.
+                    break
+                released += 1
+            logger.info(
+                "Replenished existing pool semaphore (target=%d, in_flight=%d, released=%d)",
+                POOL_TARGET, in_flight, released,
+            )
+        elif self._connection_count == 0:
+            self._pool_semaphore = asyncio.BoundedSemaphore(32)
+            logger.info("Created pool semaphore with 32 slots")
 
         # Re-ensure schema on next connection
         self._schema_initialized = False
@@ -1274,7 +1387,11 @@ class Database:
     ) -> int:
         """Save a single AI message to history."""
         async with self.get_write_connection() as conn:
-            ts = timestamp or datetime.now().isoformat()
+            # Use tz-aware UTC so cross-day ORDER BY queries don't drift
+            # across DST transitions or moves between machines in different
+            # timezones. The column DEFAULT is CURRENT_TIMESTAMP (UTC) and
+            # mixing local-naive writes here corrupted ORDER BY results.
+            ts = timestamp or datetime.now(timezone.utc).isoformat()
 
             # Atomic local_id generation + insert in a single statement
             # Prevents race condition where two concurrent saves get the same local_id
@@ -1291,7 +1408,17 @@ class Database:
         return lastrowid if lastrowid is not None else 0
 
     async def save_ai_messages_batch(self, messages: list[dict[str, Any]]) -> int:
-        """Batch insert AI messages for better performance."""
+        """Batch insert AI messages for better performance.
+
+        Per-channel `local_id` is computed once via a single MAX query and
+        then assigned in Python for the rest of the batch — previously every
+        row issued its own ``SELECT COALESCE(MAX(local_id),0)+1`` subquery,
+        which is fine for a few rows but turns into hundreds of correlated
+        scans for big migrations / restores.
+
+        Within the same write transaction this is still race-free because
+        the write lock serialises us against any other writer.
+        """
         if not messages:
             return 0
 
@@ -1306,16 +1433,35 @@ class Database:
 
         async with self.get_write_connection() as conn:
             for channel_id, channel_messages in by_channel.items():
-                # Use atomic subquery for local_id to prevent race condition
-                # when concurrent calls target the same channel_id
+                # One-shot MAX(local_id) lookup per channel.
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(local_id), 0) FROM ai_history WHERE channel_id = ?",
+                    (channel_id,),
+                )
+                row = await cursor.fetchone()
+                next_local_id = (row[0] if row else 0) + 1
+
+                rows_to_insert = []
                 for msg in channel_messages:
                     msg["channel_id"] = channel_id
-                    await conn.execute(
-                        """INSERT INTO ai_history (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                           VALUES (:channel_id, :user_id, :role, :content, :message_id, :timestamp,
-                               (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = :channel_id))""",
-                        msg,
-                    )
+                    rows_to_insert.append((
+                        channel_id,
+                        msg.get("user_id"),
+                        msg.get("role"),
+                        msg.get("content"),
+                        msg.get("message_id"),
+                        msg.get("timestamp"),
+                        next_local_id,
+                    ))
+                    next_local_id += 1
+
+                await conn.executemany(
+                    """INSERT INTO ai_history
+                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    rows_to_insert,
+                )
+            await conn.commit()
 
         # Trigger auto-export for each channel
         for channel_id in by_channel:
@@ -1601,12 +1747,18 @@ class Database:
                 # Clear existing queue
                 await conn.execute("DELETE FROM music_queue WHERE guild_id = ?", (guild_id,))
 
-                # Insert new queue
-                for i, track in enumerate(queue):
-                    await conn.execute(
+                # Insert new queue in a single executemany — was previously
+                # one INSERT per track which serialised hundreds of round
+                # trips for long queues and held the write lock for ages.
+                if queue:
+                    rows = [
+                        (guild_id, i, t.get("url"), t.get("title"), t.get("added_by"))
+                        for i, t in enumerate(queue)
+                    ]
+                    await conn.executemany(
                         """INSERT INTO music_queue (guild_id, position, url, title, added_by)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (guild_id, i, track.get("url"), track.get("title"), track.get("added_by")),
+                        rows,
                     )
                 return True
         except Exception:
@@ -1669,7 +1821,9 @@ class Database:
                     FROM audit_log
                     WHERE created_at >= datetime('now', ?)
                 """
-                params: list[Any] = [f"-{days} days"]
+                # Force int cast so a non-int sneaking through wouldn't
+                # produce malformed SQLite datetime modifiers. Defense in depth.
+                params: list[Any] = [f"-{int(days)} days"]
 
                 if guild_id is not None:
                     query += " AND guild_id = ?"
@@ -1858,12 +2012,21 @@ class Database:
                 (conversation_id,),
             )
 
-            # Delete the exported JSON file if it exists
+            # Delete the exported JSON file if it exists. Run the sync
+            # filesystem ops in a worker so a slow disk doesn't stall the
+            # event loop while we're inside delete_dashboard_conversation.
             try:
                 export_dir = Path("data/db_export/dashboard_chats")
                 json_file = export_dir / f"{conversation_id}.json"
-                if json_file.exists():
-                    json_file.unlink()
+
+                def _unlink_if_exists() -> bool:
+                    if json_file.exists():
+                        json_file.unlink()
+                        return True
+                    return False
+
+                deleted = await asyncio.to_thread(_unlink_if_exists)
+                if deleted:
                     logger.info("🗑️ Deleted exported JSON: %s", json_file.name)
             except Exception as e:
                 logger.warning("Failed to delete exported JSON for %s: %s", conversation_id, e)
@@ -1879,18 +2042,26 @@ class Database:
         mode: str | None = None,
         images: list[str] | None = None,
     ) -> int:
-        """Save a message to a dashboard conversation."""
-        import json
-        from datetime import datetime
+        """Save a message to a dashboard conversation.
 
-        local_now = datetime.now().isoformat()
-        images_json = json.dumps(images) if images else None
+        Uses SQLite's CURRENT_TIMESTAMP for created_at so the column stays
+        in UTC and matches the conversations table — previously this
+        wrote naive local-time ISO, which broke ORDER BY across DST and
+        confused range queries.
+        """
+        import json
+
+        # Use ensure_ascii=False so non-Latin filenames/captions in the
+        # image list survive the round-trip; the previous default would
+        # mangle Thai/Japanese/CJK strings into \u-escape soup.
+        images_json = json.dumps(images, ensure_ascii=False) if images else None
 
         async with self.get_write_connection() as conn:
             cursor = await conn.execute(
-                """INSERT INTO dashboard_messages (conversation_id, role, content, thinking, mode, images, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (conversation_id, role, content, thinking, mode, images_json, local_now),
+                """INSERT INTO dashboard_messages
+                   (conversation_id, role, content, thinking, mode, images, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (conversation_id, role, content, thinking, mode, images_json),
             )
             # Update conversation's updated_at using CURRENT_TIMESTAMP (UTC) to stay
             # consistent with other update paths (update_dashboard_conversation,
@@ -1984,7 +2155,8 @@ class Database:
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 """SELECT * FROM (
-                       SELECT id, role, content, thinking, mode, images, created_at
+                       SELECT id, role, content, thinking, mode, images, created_at,
+                              is_pinned, liked
                        FROM dashboard_messages
                        WHERE conversation_id = ? AND id < ?
                        ORDER BY id DESC
@@ -2025,13 +2197,27 @@ class Database:
             )
             return await cursor.fetchone() is not None
 
-    async def update_dashboard_message(self, message_id: int, content: str) -> bool:
-        """Update a dashboard message's content. Returns True if updated."""
+    async def update_dashboard_message(
+        self, message_id: int, content: str, *, expected_conversation_id: str | None = None,
+    ) -> bool:
+        """Update a dashboard message's content. Returns True if updated.
+
+        ``expected_conversation_id`` lets callers assert the row belongs to
+        a specific conversation — defends against a client editing a
+        message in another conversation by guessing IDs.
+        """
         async with self.get_write_connection() as conn:
-            cursor = await conn.execute(
-                "UPDATE dashboard_messages SET content = ? WHERE id = ?",
-                (content, message_id),
-            )
+            if expected_conversation_id is not None:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET content = ? "
+                    "WHERE id = ? AND conversation_id = ?",
+                    (content, message_id, expected_conversation_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET content = ? WHERE id = ?",
+                    (content, message_id),
+                )
             if cursor.rowcount > 0:
                 # Update conversation's updated_at (UTC via CURRENT_TIMESTAMP for consistency)
                 row = await (await conn.execute(
@@ -2253,13 +2439,32 @@ class Database:
 
                 # Sanitize conv_id to prevent path traversal
                 safe_id = str(conv_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+                # Windows reserved device names (with or without an extension)
+                # cannot be opened as regular files — write_text would raise
+                # OSError partway through the loop and abort the export of
+                # subsequent conversations. Reject up front.
+                _WINDOWS_RESERVED = (
+                    {"CON", "PRN", "AUX", "NUL"}
+                    | {f"COM{i}" for i in range(1, 10)}
+                    | {f"LPT{i}" for i in range(1, 10)}
+                )
+                if safe_id.upper().split(".")[0] in _WINDOWS_RESERVED:
+                    logger.warning(
+                        "Skipping reserved-filename conv_id: %s", conv_id,
+                    )
+                    continue
                 output_file = (dashboard_export_dir / f"{safe_id}.json").resolve()
                 if not str(output_file).startswith(str(dashboard_export_dir.resolve())):
                     logger.warning("Skipping suspicious conv_id: %s", conv_id)
                     continue
-                output_file.write_text(
-                    json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
-                    encoding="utf-8",
+                # Offload the sync write — for chat exports with thousands of
+                # turns the JSON serialise + disk write can stall the loop
+                # for hundreds of milliseconds per conversation.
+                serialised = json.dumps(
+                    export_data, ensure_ascii=False, indent=2, default=str,
+                )
+                await asyncio.to_thread(
+                    output_file.write_text, serialised, encoding="utf-8",
                 )
 
             logger.info("📤 Exported %d dashboard conversations", len(conversations))
@@ -2493,13 +2698,18 @@ class Database:
 
     async def delete_oldest_document_memory(self) -> bool:
         """Drop the oldest document memory (LRU-style trimming). Called by
-        the handler when adding a new memory would exceed the total cap."""
+        the handler when adding a new memory would exceed the total cap.
+
+        Adds ``id ASC`` as a tiebreaker — without it, two rows inserted in
+        the same second can resolve in arbitrary order across SQLite
+        versions, and we'd thrash on which row gets evicted.
+        """
         async with self.get_write_connection() as conn:
             cursor = await conn.execute(
                 """DELETE FROM dashboard_document_memories
                    WHERE id = (
                        SELECT id FROM dashboard_document_memories
-                       ORDER BY created_at ASC LIMIT 1
+                       ORDER BY created_at ASC, id ASC LIMIT 1
                    )"""
             )
             return bool(cursor.rowcount > 0)
@@ -2598,8 +2808,12 @@ class Database:
 
                             if data:
                                 output_file = ai_history_dir / f"{channel_id}.json"
-                                output_file.write_text(
-                                    json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                                serialised = json.dumps(
+                                    data, ensure_ascii=False, indent=2, default=str,
+                                )
+                                await asyncio.to_thread(
+                                    output_file.write_text,
+                                    serialised,
                                     encoding="utf-8",
                                 )
                                 total_messages += len(data)
@@ -2613,20 +2827,34 @@ class Database:
                     if table not in KNOWN_TABLES:
                         logger.warning("Skipping unknown table in export: %s", table)
                         continue
+                    # Belt-and-suspenders identifier check — even if the
+                    # whitelist is later edited to include something with
+                    # a stray quote/space, this assertion blocks the
+                    # f-string interpolation from becoming an injection.
+                    assert table.replace("_", "").isalnum(), (
+                        f"Invalid table name {table!r}"
+                    )
                     cursor = await conn.execute(f"SELECT * FROM [{table}]")
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
                     summary[table] = len(data)
 
                     output_file = EXPORT_DIR / f"{table}.json"
-                    output_file.write_text(
-                        json.dumps(data, ensure_ascii=False, indent=2, default=str),
-                        encoding="utf-8",
+                    serialised = json.dumps(
+                        data, ensure_ascii=False, indent=2, default=str,
+                    )
+                    await asyncio.to_thread(
+                        output_file.write_text, serialised, encoding="utf-8",
                     )
 
-                summary["exported_at"] = datetime.now().isoformat()
-                (EXPORT_DIR / "_summary.json").write_text(
-                    json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+                summary["exported_at"] = datetime.now(timezone.utc).isoformat()
+                summary_serialised = json.dumps(
+                    summary, ensure_ascii=False, indent=2,
+                )
+                await asyncio.to_thread(
+                    (EXPORT_DIR / "_summary.json").write_text,
+                    summary_serialised,
+                    encoding="utf-8",
                 )
 
                 logger.info("📤 Exported database to JSON (AI history per channel)")
@@ -2659,9 +2887,14 @@ class Database:
 
                 if data:
                     output_file = ai_history_dir / f"{channel_id}.json"
-                    output_file.write_text(
-                        json.dumps(data, ensure_ascii=False, indent=2, default=str),
-                        encoding="utf-8",
+                    # Push the json.dumps + write_text off the event loop —
+                    # for big channels this can be tens of MB and would
+                    # otherwise stall every other coroutine for the duration
+                    # of the write. Mirrors export_to_json which already
+                    # uses to_thread for the same reason.
+                    payload = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+                    await asyncio.to_thread(
+                        output_file.write_text, payload, encoding="utf-8",
                     )
 
                     logger.debug("📤 Exported %d messages for channel %d", len(data), channel_id)
@@ -2679,10 +2912,19 @@ db = Database()
 async def init_database() -> Database:
     """Initialize database and return instance."""
     await db.init_schema()
-    # Initialize user_facts table for long-term memory persistence
+    # Initialize user_facts table for long-term memory persistence.
+    # Swallow ImportError (the module may legitimately not be available in
+    # cut-down deployments) but propagate real schema errors so the bot
+    # doesn't start in a half-initialised state — a hidden schema bug
+    # would otherwise surface much later as cryptic runtime errors.
     try:
         from cogs.ai_core.memory.long_term_memory import long_term_memory
-        await long_term_memory.init_schema()
-    except Exception:
-        pass  # Module may not be available in all environments
+    except ImportError:
+        pass
+    else:
+        try:
+            await long_term_memory.init_schema()
+        except Exception:
+            logger.exception("long_term_memory.init_schema failed")
+            raise
     return db

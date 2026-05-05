@@ -7,13 +7,13 @@ Extracted from logic.py for better modularity.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
 import re
 from typing import TYPE_CHECKING
 
-from ..data.roleplay_data import SERVER_CHARACTER_NAMES
+from ..data import SERVER_CHARACTER_NAMES
 from ..storage import get_all_channels_summary, get_channel_history_preview
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -261,9 +261,16 @@ class ResponseMixin:
             char_names.sort(key=len, reverse=True)
             for char_name in char_names:
                 pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"
-                replacement = f"{{{{{char_name}}}}}"
+                # Use a callable replacement so re.sub doesn't interpret
+                # any character in the name as a backref/escape (`\1`,
+                # `\g<name>`, `&` in some flavours). The previous
+                # `.replace("\\", r"\\")` only handled backslashes.
+                replacement_text = f"{{{{{char_name}}}}}"
                 response_text = re.sub(
-                    pattern, replacement, response_text, flags=re.MULTILINE | re.IGNORECASE
+                    pattern,
+                    lambda _m, rep=replacement_text: rep,
+                    response_text,
+                    flags=re.MULTILINE | re.IGNORECASE,
                 )
 
         # Prepend search indicator

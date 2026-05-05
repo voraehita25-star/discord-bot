@@ -1,6 +1,6 @@
 # 🔧 Owner Commands Documentation
 
-คำสั่งพิเศษสำหรับเจ้าของบอท (Owner ID: `781560793719636019`)
+คำสั่งพิเศษสำหรับเจ้าของบอท (Owner ID: ตั้งใน `.env` ที่ตัวแปร `CREATOR_ID`)
 
 ---
 

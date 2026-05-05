@@ -94,7 +94,8 @@ go build -o ../bin/health_api.exe ./health_api
 | `URL_FETCHER_PORT` | 8081 | URL Fetcher port |
 | `GO_HEALTH_API_HOST` | 127.0.0.1 | Go Health API bind host |
 | `GO_HEALTH_API_PORT` | 8082 | Go Health API port |
-| `HEALTH_API_PORT` | 8082 | Legacy fallback for Go Health API port |
+| `HEALTH_API_HOST` | 127.0.0.1 | Legacy fallback for `GO_HEALTH_API_HOST` |
+| `HEALTH_API_PORT` | 8082 | Legacy fallback for `GO_HEALTH_API_PORT`. **Note:** the value `8080` is intentionally ignored (it conflicts with the Python health server) — use a different port if you set this. |
 | `BOT_VERSION` | dev | Version for health endpoint |
 
 ## Usage from Python

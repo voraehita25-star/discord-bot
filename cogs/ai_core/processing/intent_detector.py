@@ -124,7 +124,12 @@ class IntentDetector:
         self._compiled_patterns = {}
         for intent, patterns in self.INTENT_PATTERNS.items():
             self._compiled_patterns[intent] = [
-                (re.compile(pattern, re.IGNORECASE | re.MULTILINE), sub_cat, conf)
+                # IGNORECASE only — MULTILINE made `^` / `$` match line
+                # starts/ends, so a multi-line roleplay prompt with "สวัสดี"
+                # on line 2 would falsely classify as a 0.9-confidence
+                # GREETING. The patterns here all want string-level
+                # anchoring.
+                (re.compile(pattern, re.IGNORECASE), sub_cat, conf)
                 for pattern, sub_cat, conf in patterns
             ]
         self._pronoun_pattern = re.compile(

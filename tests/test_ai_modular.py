@@ -278,7 +278,7 @@ class TestMessageQueue:
         assert queue.cancel_flags == {}
         assert queue.processing_locks == {}
 
-    def test_get_lock(self):
+    async def test_get_lock(self):
         """Test getting a lock for a channel."""
         from cogs.ai_core.core.message_queue import MessageQueue
 
@@ -288,7 +288,7 @@ class TestMessageQueue:
         assert isinstance(lock, asyncio.Lock)
         assert 123 in queue.processing_locks
 
-    def test_get_lock_same_channel(self):
+    async def test_get_lock_same_channel(self):
         """Test getting same lock for same channel."""
         from cogs.ai_core.core.message_queue import MessageQueue
 
@@ -379,7 +379,9 @@ class TestMessageQueue:
 
         assert len(messages) == 2
         assert queue.pending_messages[123] == []
-        assert queue.cancel_flags[123] is False
+        # cancel_flags entry is removed (not set to False) so unbounded
+        # growth doesn't accumulate per channel.
+        assert 123 not in queue.cancel_flags
 
     def test_merge_pending_messages(self):
         """Test merging pending messages."""
@@ -457,28 +459,29 @@ class TestMessageQueue:
         # Cleanup
         lock.release()
 
-    def test_release_lock(self):
+    async def test_release_lock(self):
         """Test releasing a lock."""
         from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
+        # get_lock_sync requires a running asyncio loop (asserts via
+        # asyncio._get_running_loop()), so this test must be async.
         _ = queue.get_lock_sync(123)  # Lock created for side effect
 
-        # Acquire then release
-        asyncio.new_event_loop().run_until_complete(
-            queue.acquire_lock_with_timeout(123)
-        )
+        # Acquire then release on the test's running loop.
+        await queue.acquire_lock_with_timeout(123)
         queue.release_lock(123)
 
         assert queue.is_locked(123) is False
 
-    def test_cleanup_stale_locks(self):
+    async def test_cleanup_stale_locks(self):
         """Test detecting stale locks (no longer force-releases)."""
         from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
         # Add old lock time
         queue._lock_times[123] = time.time() - 400  # 400 seconds ago
+        # get_lock_sync requires a running asyncio loop, so this test is async.
         queue.get_lock_sync(123)
 
         # cleanup_stale_locks now only detects stale locks (doesn't release)

@@ -150,6 +150,13 @@ class FallbackSystem:
 
     def _remember_fallback(self, key: tuple[int | None, str], message: str) -> None:
         """Record that ``message`` was shown for ``key`` and evict if over capacity."""
+        # `key not in self._recent` is the right check, but
+        # `self._recent[key].append(...)` below is a defaultdict access that
+        # auto-creates the entry — so a key seen before but evicted from
+        # `_recent` would NOT trigger the order-list append, leaving it in
+        # `_recent_order` only as the prior (now stale) entry. Use explicit
+        # contains check + create to keep `_recent_order` in lockstep with
+        # `_recent` membership.
         if key not in self._recent:
             self._recent_order.append(key)
             # Bound dict size — drop the oldest tracked pair.

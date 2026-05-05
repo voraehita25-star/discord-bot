@@ -362,7 +362,9 @@ class HistoryManager:
         current_tokens = self.estimate_tokens(history)
 
         if current_tokens <= target_tokens:
-            return history  # Already within budget
+            return list(history)  # Already within budget; return a copy so the
+                                 # caller can mutate it without surprising
+                                 # other callers that share the input list.
 
         self.logger.info("📊 Token trim needed: %d -> %d tokens", current_tokens, target_tokens)
 
@@ -390,18 +392,16 @@ class HistoryManager:
 
         removed_indices: set[int] = set()
 
-        while running_total > target_tokens:
+        while running_total > target_tokens and importance_heap:
             if len(working_history) - len(removed_indices) <= protected_count + 1:
                 self.logger.warning("Cannot trim further without losing recent context")
                 break
 
-            # Pop lowest importance from heap, skip already-removed indices
-            while importance_heap:
-                importance, remove_idx = heapq.heappop(importance_heap)
-                if remove_idx not in removed_indices:
-                    break
-            else:
-                break  # Heap exhausted
+            importance, remove_idx = heapq.heappop(importance_heap)
+            if remove_idx in removed_indices:
+                # Already removed by an earlier iteration; skip without
+                # double-subtracting from running_total.
+                continue
 
             removed_indices.add(remove_idx)
             running_total -= message_tokens[remove_idx]
@@ -441,8 +441,11 @@ class HistoryManager:
             "rules": [],
         }
 
+        # Cap the captured name at 50 chars so adversarial input with no
+        # punctuation can't blow up cache size by appending a 10 KB
+        # "name" to facts["names"].
         name_pattern = re.compile(
-            r"(?:ชื่อ|name)\s*(?:ของ)?(?:ฉัน|ผม|my)?\s*(?:คือ|is|เป็น)?\s*[:\s]*([^\s,\.]+)",
+            r"(?:ชื่อ|name)\s*(?:ของ)?(?:ฉัน|ผม|my)?\s*(?:คือ|is|เป็น)?\s*[:\s]*([^\s,\.]{1,50})",
             re.IGNORECASE,
         )
 

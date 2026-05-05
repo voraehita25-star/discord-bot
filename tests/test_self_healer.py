@@ -583,7 +583,7 @@ class TestKillAllBots:
         with patch.object(healer, "find_all_bot_processes", return_value=[]):
             with patch.object(healer, "find_launcher_processes", return_value=[]):
                 with patch.object(healer, "clean_pid_file", return_value=True):
-                    result = healer.kill_all_bots()
+                    result = healer.kill_all_bots(authorized=True)
 
         assert result == 0
 
@@ -603,9 +603,31 @@ class TestKillAllBots:
             with patch.object(healer, "find_launcher_processes", return_value=[]):
                 with patch.object(healer, "kill_process", return_value=True):
                     with patch.object(healer, "clean_pid_file", return_value=True):
-                        result = healer.kill_all_bots()
+                        result = healer.kill_all_bots(authorized=True)
 
         assert result == 2
+
+    def test_kill_all_denies_without_authorization(self):
+        """The bulk-kill gate must refuse calls with no authorized=True and no env var."""
+        import time
+
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        mock_bots = [
+            {"pid": 5001, "cmdline": "python bot.py", "create_time": time.time()},
+        ]
+
+        with patch.dict("os.environ", {}, clear=False):
+            # Make sure the env gate is off for this test
+            import os as _os
+            _os.environ.pop("SELF_HEALER_ALLOW_KILL", None)
+            with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
+                with patch.object(healer, "kill_process", return_value=True) as mock_kill:
+                    result = healer.kill_all_bots()  # no authorized=True
+
+        assert result == 0
+        mock_kill.assert_not_called()
 
 
 class TestKillAllWatchers:
@@ -618,7 +640,7 @@ class TestKillAllWatchers:
         healer = SelfHealer()
 
         with patch.object(healer, "find_all_dev_watchers", return_value=[]):
-            result = healer.kill_all_watchers()
+            result = healer.kill_all_watchers(authorized=True)
 
         assert result == 0
 
@@ -675,11 +697,30 @@ class TestConvenienceFunctions:
             mock_instance.kill_all_watchers.return_value = 1
             MockHealer.return_value = mock_instance
 
-            result = kill_everything("test")
+            result = kill_everything("test", authorized=True)
 
         assert result["bots_killed"] == 2
         assert result["watchers_killed"] == 1
         assert result["success"] is True
+
+    def test_kill_everything_denies_without_authorization(self):
+        """kill_everything must refuse when neither flag nor env var is set."""
+        import os as _os
+
+        from utils.reliability.self_healer import kill_everything
+
+        _os.environ.pop("SELF_HEALER_ALLOW_KILL", None)
+        with patch("utils.reliability.self_healer.SelfHealer") as MockHealer:
+            mock_instance = MagicMock()
+            MockHealer.return_value = mock_instance
+
+            result = kill_everything("test")  # no authorization
+
+        assert result["success"] is False
+        assert result["bots_killed"] == 0
+        assert result["watchers_killed"] == 0
+        mock_instance.kill_all_bots.assert_not_called()
+        mock_instance.kill_all_watchers.assert_not_called()
 
 
 class TestDiagnoseEdgeCases:

@@ -23,15 +23,11 @@ const MAX_ATTACHED_IMAGES = 5;
 
 export class ImageAttachManager {
     private images: string[] = [];
+    private pendingCount = 0;
 
-    /** Current snapshot of attached base64 data URLs (read before sendMessage).
-     *
-     * Empty strings represent slots reserved for a FileReader that hasn't
-     * resolved yet — omit them so we never send a half-encoded image if the
-     * user hits send before decoding finishes.
-     */
+    /** Current snapshot of attached base64 data URLs (read before sendMessage). */
     get(): string[] {
-        return this.images.filter(img => img !== '');
+        return this.images.slice();
     }
 
     /** Drop every attached image. Called by ChatManager after a successful send. */
@@ -42,35 +38,34 @@ export class ImageAttachManager {
 
     /** Add one file — size + count limits enforced. Base64 encoded via FileReader.
      *
-     * Reserves the preview slot BEFORE the FileReader resolves so that if the
-     * user picks multiple files at once, the visible order matches the pick
-     * order even when readers finish out-of-order (small image loaded before
-     * a large one).
+     * Pushes onto `images` only after the FileReader successfully resolves
+     * with a `data:image/` URL. Errors decrement `pendingCount` without
+     * pushing, so a failed read can never leak a placeholder slot.
      */
     attach(file: File): void {
         if (file.size > MAX_IMAGE_SIZE) {
             showToast(`Image too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum is 20MB.`, { type: 'warning' });
             return;
         }
-        if (this.images.length >= MAX_ATTACHED_IMAGES) {
+        // Count both committed images and in-flight readers against the cap so
+        // a user can't queue 100 large reads while the first ones are still
+        // decoding.
+        if (this.images.length + this.pendingCount >= MAX_ATTACHED_IMAGES) {
             showToast(`Maximum ${MAX_ATTACHED_IMAGES} images allowed.`, { type: 'warning' });
             return;
         }
-        const slot = this.images.length;
-        this.images.push('');  // reserve this slot so later attaches don't shift under us
+        this.pendingCount++;
         const reader = new FileReader();
         reader.onload = (e) => {
+            this.pendingCount--;
             const base64 = e.target?.result as string;
-            if (base64) {
-                this.images[slot] = base64;
+            if (typeof base64 === 'string' && base64.startsWith('data:image/')) {
+                this.images.push(base64);
                 this.renderPreview();
-            } else {
-                this.images.splice(slot, 1);
             }
         };
         reader.onerror = () => {
-            this.images.splice(slot, 1);
-            this.renderPreview();
+            this.pendingCount--;
         };
         reader.readAsDataURL(file);
     }
@@ -85,11 +80,11 @@ export class ImageAttachManager {
         const container = document.getElementById('attached-images');
         if (!container) return;
 
-        // Skip reserved-but-still-loading slots so the UI never shows a
-        // broken-image icon for a FileReader that hasn't resolved yet.
+        // Defence in depth: drop anything that isn't a data:image/ URL even
+        // though attach() already validates this before pushing.
         const visible = this.images
             .map((img, idx) => ({ img, idx }))
-            .filter(({ img }) => img !== '');
+            .filter(({ img }) => typeof img === 'string' && img.startsWith('data:image/'));
 
         if (visible.length === 0) {
             container.innerHTML = '';
@@ -187,8 +182,14 @@ export class ImageAttachManager {
                 }
             });
             zone.addEventListener('dragleave', (e) => {
-                // Only clear state when leaving the zone entirely (not its children).
-                if (e.target === zone) showDropState(false);
+                // dragleave fires for every child boundary crossed inside the
+                // zone, not just when the cursor truly exits. e.target there is
+                // the child being left, never the zone itself, so the previous
+                // `e.target === zone` guard never cleared state — the overlay
+                // got stuck on after first dragenter. Use relatedTarget (the
+                // element being entered) and only clear when it's outside.
+                const next = e.relatedTarget as Node | null;
+                if (!next || !zone.contains(next)) showDropState(false);
             });
             zone.addEventListener('drop', (e) => {
                 if (!e.dataTransfer) return;

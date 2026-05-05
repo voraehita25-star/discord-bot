@@ -132,10 +132,17 @@ class TestAIAnalytics:
         assert analytics._stats["errors"] == 0
 
     def test_chars_per_token_constant(self):
-        """Test CHARS_PER_TOKEN constant."""
+        """Test CHARS_PER_TOKEN is set on the instance.
+
+        Moved from class attribute to instance attribute (initialized in
+        __init__) so it can be overridden per-instance via the
+        BOT_CHARS_PER_TOKEN env var.
+        """
         from cogs.ai_core.cache.analytics import AIAnalytics
 
-        assert AIAnalytics.CHARS_PER_TOKEN == 4
+        # Recalibrated from 4 (English) to 2.5 default (Thai-leaning); env-tunable.
+        analytics = AIAnalytics()
+        assert 0 < analytics.CHARS_PER_TOKEN < 10
 
     @pytest.mark.asyncio
     async def test_log_interaction(self):
@@ -535,14 +542,17 @@ class TestAIAnalyticsConstants:
     """Tests for AIAnalytics constants."""
 
     def test_chars_per_token_constant(self):
-        """Test CHARS_PER_TOKEN constant."""
+        """Test CHARS_PER_TOKEN is set on the instance."""
         try:
             from cogs.ai_core.cache.analytics import AIAnalytics
         except ImportError:
             pytest.skip("analytics not available")
             return
 
-        assert AIAnalytics.CHARS_PER_TOKEN == 4
+        # Recalibrated from 4 (English) to 2.5 default (Thai-leaning); env-tunable.
+        # Now an instance attribute (env-overridable via BOT_CHARS_PER_TOKEN).
+        analytics = AIAnalytics()
+        assert 0 < analytics.CHARS_PER_TOKEN < 10
 
 
 class TestDatabaseAvailable:
@@ -1130,10 +1140,13 @@ class TestCharsPerToken:
     """Test CHARS_PER_TOKEN constant."""
 
     def test_chars_per_token_constant(self):
-        """Test CHARS_PER_TOKEN constant exists."""
+        """Test CHARS_PER_TOKEN is set on the instance."""
         from cogs.ai_core.cache.analytics import AIAnalytics
 
-        assert AIAnalytics.CHARS_PER_TOKEN == 4
+        # Recalibrated from 4 (English) to 2.5 default (Thai-leaning); env-tunable.
+        # Now an instance attribute (env-overridable via BOT_CHARS_PER_TOKEN).
+        analytics = AIAnalytics()
+        assert 0 < analytics.CHARS_PER_TOKEN < 10
 
 
 # ==================== TestModuleImports ====================
@@ -1463,7 +1476,10 @@ class TestAIAnalyticsHourlyCounts:
         from cogs.ai_core.cache.analytics import AIAnalytics
 
         analytics = AIAnalytics()
-        hour_key = datetime.now().strftime("%Y-%m-%d-%H")
+        # Hourly bucket key is now UTC (was naive local time, which drifted
+        # vs the UTC timestamps stored on InteractionLog rows).
+        from datetime import timezone as _tz
+        hour_key = datetime.now(_tz.utc).strftime("%Y-%m-%d-%H")
 
         with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
             await analytics.log_interaction(

@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-logger = logging.getLogger(__name__)
 import re
 import time
 from dataclasses import dataclass
@@ -25,6 +23,9 @@ try:
 except ImportError:
     MAX_DISCORD_LENGTH = 2000
     WEBHOOK_SEND_TIMEOUT = 10.0
+
+
+logger = logging.getLogger(__name__)
 
 # Precompiled regex patterns
 CHARACTER_TAG_PATTERN = re.compile(r"^\[([^\]]+)\]:\s*")
@@ -123,20 +124,29 @@ class ResponseSender:
             return SendResult(success=False, error=str(e))
 
     def _sanitize_webhook_content(self, content: str) -> str:
-        """Sanitize content for webhook sending to prevent @everyone/@here mentions.
+        """Sanitize content for webhook sending.
 
-        Webhooks can bypass allowed_mentions for these special mentions, so we need
-        to escape them manually.
+        Webhooks bypass ``allowed_mentions`` for ``@everyone`` and
+        ``@here``, so those must be escaped manually. We also escape
+        user and role mentions so a chunk going via the webhook path
+        can't accidentally ping every mentioned id when the caller
+        forgot to set ``allowed_mentions``. Mirrors the full mention
+        defense in ``tool_executor.send_as_webhook``.
 
         Args:
             content: Content to sanitize
 
         Returns:
-            Sanitized content with dangerous mentions escaped
+            Sanitized content with all mention types neutralised
         """
         # Replace @everyone and @here with escaped versions
-        # Use zero-width space to break the mention
-        sanitized = DANGEROUS_MENTION_PATTERN.sub(r"@\u200b\1", content)
+        # Use zero-width space to break the mention. Replacement strings must
+        # NOT be raw \u2014 `r"\u200b"` is six literal chars, not the ZWS code point.
+        sanitized = DANGEROUS_MENTION_PATTERN.sub("@\u200b\\1", content)
+        # User mentions: <@123> / <@!123>
+        sanitized = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", sanitized)
+        # Role mentions: <@&456>
+        sanitized = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", sanitized)
         return sanitized
 
     def extract_character_tag(self, content: str) -> tuple[str | None, str]:
@@ -189,16 +199,30 @@ class ResponseSender:
                 chunks.append(chunk)
                 break
 
-            # Find a good split point
-            split_at = self._find_split_point(remaining, max_length)
+            # Find a good split point. Reserve enough headroom for the
+            # potential reopen prefix (```lang\n) and close suffix (\n```).
+            # Without this, a chunk that needs both wrappers can exceed
+            # max_length by ~10-20 chars and Discord rejects with HTTP 400.
+            wrap_overhead = 0
+            if open_fence_lang is not None:
+                wrap_overhead += len(open_fence_lang) + 4   # "```lang\n"
+            wrap_overhead += 4  # "\n```" close on this chunk if still open
+            effective_max = max(1, max_length - wrap_overhead)
+            split_at = self._find_split_point(remaining, effective_max)
             if split_at <= 0:
-                split_at = max_length  # Ensure forward progress
-            piece = remaining[:split_at]
+                split_at = effective_max  # Ensure forward progress
+            raw_piece = remaining[:split_at]
+            # Detect on the RAW piece (no reopen prefix) so the prefix's own
+            # ``` doesn't get re-interpreted as a closing fence — passing
+            # prior_open already tells _detect_open_fence we entered inside
+            # a fence. Calling it on the prefixed piece produced silent
+            # misdetection: every iteration after the first cleared
+            # open_fence_lang, breaking the truncation reopen path.
+            new_open_fence = self._detect_open_fence(raw_piece, open_fence_lang)
+            piece = raw_piece
             # Re-open carry from prior chunk
             if open_fence_lang is not None:
                 piece = f"```{open_fence_lang}\n" + piece
-            # Detect open fence in this chunk (odd count = opens stayed open).
-            new_open_fence = self._detect_open_fence(piece, open_fence_lang)
             if new_open_fence is not None:
                 # Close the fence at end of this chunk so Discord doesn't
                 # render a half-formed code block.
@@ -207,11 +231,20 @@ class ResponseSender:
                 piece += "```"
             open_fence_lang = new_open_fence
             chunks.append(piece)
-            remaining = remaining[split_at:].lstrip()
+            # Strip only leading newlines, not all whitespace — inside an open
+            # code fence the next chunk's first line may be indented (Python
+            # def/if blocks) and `.lstrip()` would corrupt the code.
+            remaining = remaining[split_at:].lstrip("\n")
 
         if remaining and len(chunks) >= max_chunks:
-            # Append truncation notice
-            chunks.append(remaining[:max_length - 3] + "...")
+            # Append truncation notice. If the previous chunk ended inside an
+            # open fence, prepend the reopen so the truncated content doesn't
+            # render as plain text outside any code block.
+            reopen = f"```{open_fence_lang}\n" if open_fence_lang is not None else ""
+            close = "\n```" if open_fence_lang is not None else ""
+            budget = max_length - len(reopen) - len(close) - 3  # "..."
+            budget = max(budget, 1)
+            chunks.append(reopen + remaining[:budget] + "..." + close)
 
         return chunks
 
@@ -354,11 +387,20 @@ class ResponseSender:
                     last_message_id = msg.id if msg else None
                     chunks_sent += 1
                 except TimeoutError:
-                    logger.warning("Webhook send timeout for chunk %d", i + 1)
-                    # Retry timed-out chunk + remaining chunks via direct send
-                    # (webhook timeout doesn't guarantee delivery failed)
+                    logger.warning(
+                        "Webhook send timeout for chunk %d — assuming in-flight, "
+                        "skipping it on direct retry to avoid duplicate delivery",
+                        i + 1,
+                    )
+                    # The webhook send timed out but the message may already
+                    # have been queued upstream by Discord. Re-sending the
+                    # same chunk via the direct path was producing visible
+                    # duplicates. Resume from the NEXT chunk; if the
+                    # in-flight one was lost the user sees a small gap, a
+                    # better outcome than two copies of the same content.
+                    chunks_sent += 1  # count the in-flight chunk as best-effort sent
                     return await self._send_remaining_direct(
-                        channel, chunks[i:], reference, allowed_mentions, i
+                        channel, chunks[i + 1:], reference, allowed_mentions, i + 1
                     )
 
             elapsed = time.time() - start_time
@@ -470,21 +512,40 @@ class ResponseSender:
         """
         result = await self._send_direct(channel, chunks, reference, allowed_mentions)
         result.sent_via = "chunked"
-        result.chunk_count = start_index + result.chunk_count
+        # Total = number of chunks sent before this fallback (start_index)
+        # plus the count we attempted via direct send (len(chunks)). The
+        # previous form `start_index + result.chunk_count` undercounted on
+        # partial failures because `_send_direct` only counts successful
+        # sends in `chunk_count`.
+        result.chunk_count = start_index + len(chunks)
         return result
 
     async def send_typing(self, channel: Any) -> None:
-        """Send typing indicator to channel.
+        """Send a one-shot typing indicator to the channel.
 
-        Args:
-            channel: Discord channel
+        Discord's typing indicator decays after ~10s if not refreshed; this
+        method sends a single typing payload and returns. Callers that need
+        the indicator to persist for the duration of an in-flight response
+        should use ``async with channel.typing():`` directly around the
+        long-running work instead of calling this method, which only fires
+        the start-of-typing notification.
         """
         try:
-            if hasattr(channel, "typing"):
+            send_typing = getattr(channel, "_state", None)
+            if send_typing is not None and hasattr(send_typing, "http"):
+                # discord.py 2.x: send a single Typing payload via the HTTP
+                # API. This avoids opening + immediately closing a
+                # ``channel.typing()`` async context (which sends one packet
+                # then cancels the indicator within milliseconds), and
+                # avoids the dead ``trigger_typing`` branch that doesn't
+                # exist on Messageable in discord.py 2.x.
+                await send_typing.http.send_typing(channel.id)
+            elif hasattr(channel, "typing"):
+                # Last-resort: open the context manager. This sends the
+                # typing payload via __aenter__ and __aexit__ doesn't
+                # actively cancel it, so the 10s decay still applies.
                 async with channel.typing():
                     pass
-            elif hasattr(channel, "trigger_typing"):
-                await channel.trigger_typing()
         except Exception as e:
             logger.debug("Typing indicator error: %s", e)
 
@@ -503,9 +564,18 @@ class ResponseSender:
             True if edit was successful
         """
         try:
-            # Truncate if too long
+            # Truncate if too long. If the truncation would leave a code
+            # fence half-open, close it so Discord doesn't render every
+            # subsequent message as code.
             if len(content) > MAX_DISCORD_LENGTH:
-                content = content[: MAX_DISCORD_LENGTH - 3] + "..."
+                truncated = content[: MAX_DISCORD_LENGTH - 3] + "..."
+                # Count fences in truncated text — odd count means we
+                # opened more than we closed, so append a closing fence.
+                fence_count = truncated.count("```")
+                if fence_count % 2 == 1:
+                    # Reserve room for the close fence inside the cap.
+                    truncated = content[: MAX_DISCORD_LENGTH - 7] + "...\n```"
+                content = truncated
 
             await message.edit(content=content)
             return True

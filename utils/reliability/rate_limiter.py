@@ -9,8 +9,6 @@ import asyncio
 import contextlib
 import functools
 import logging
-
-logger = logging.getLogger(__name__)
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -31,6 +29,9 @@ except ImportError:
     CircuitState = None  # type: ignore[assignment, misc]
     gemini_circuit = None  # type: ignore[assignment]
 
+
+
+logger = logging.getLogger(__name__)
 
 class RateLimitType(Enum):
     """Types of rate limiting."""
@@ -257,8 +258,15 @@ class RateLimiter:
         else:
             return f"{config_name}:unknown"
 
-    def _get_or_create_bucket(self, key: str, config: RateLimitConfig) -> RateLimitBucket:
+    def _get_or_create_bucket(self, key: str, config: RateLimitConfig) -> RateLimitBucket | None:
         """Get existing bucket or create a new one.
+
+        Returns ``None`` when the bucket pool is exhausted *and* every
+        existing bucket is locked by a concurrent caller — the previous
+        behaviour routed every overflow to a single shared ``__overflow__``
+        bucket, which let one noisy key burn the tokens of every other key
+        and turned the safety valve into a DoS amplifier. The caller must
+        treat ``None`` as a deny.
 
         Note: This is called within an async lock context, so race conditions
         are already handled. Using setdefault for additional safety.
@@ -266,9 +274,20 @@ class RateLimiter:
         """
         # Check if bucket limit reached and evict oldest if necessary
         if key not in self._buckets and len(self._buckets) >= self.MAX_BUCKETS:
-            # Find oldest bucket that is NOT currently locked (safe eviction)
-            # Sort by last_update time, oldest first
-            sorted_keys = sorted(self._buckets.keys(), key=lambda k: self._buckets[k].last_update)
+            # Find oldest bucket that is NOT currently locked (safe eviction).
+            # Take a snapshot of the keys so concurrent mutation of
+            # ``_buckets`` (other coroutines creating/deleting buckets after
+            # we yield via the per-key lock check) can't raise
+            # ``RuntimeError: dictionary changed size during iteration``.
+            snapshot_keys = list(self._buckets.keys())
+            sorted_keys = sorted(
+                snapshot_keys,
+                key=lambda k: (
+                    self._buckets[k].last_update
+                    if k in self._buckets
+                    else float("inf")
+                ),
+            )
             evicted = False
             for candidate_key in sorted_keys:
                 candidate_lock = self._locks.get(candidate_key)
@@ -279,24 +298,24 @@ class RateLimiter:
                     logger.debug("🧹 Evicted oldest rate limit bucket: %s", candidate_key)
                     evicted = True
                     break
-            # If all buckets are locked, force evict oldest anyway to prevent unbounded growth
+            # If we couldn't evict (every bucket is locked = active traffic),
+            # refuse to create a new one. The previous shared __overflow__
+            # bucket let any caller drain tokens that should have belonged
+            # to a different key — turning the safety valve into a global
+            # DoS amplifier. We'd rather deny the request and signal
+            # retry_after = the config's window.
             if not evicted:
-                # Force evict the oldest bucket to maintain the limit
-                oldest_key = sorted_keys[0] if sorted_keys else None
-                if oldest_key:
-                    self._buckets.pop(oldest_key, None)
-                    self._locks.pop(oldest_key, None)
-                    logger.warning(
-                        "🧹 Force-evicted locked rate limit bucket: %s (all buckets were locked)",
-                        oldest_key,
-                    )
-                else:
-                    logger.warning(
-                        "🧹 All rate limit buckets are locked and no candidate found. "
-                        "Current count: %d (max: %d)",
-                        len(self._buckets),
-                        self.MAX_BUCKETS,
-                    )
+                existing = self._buckets.get(key)
+                if existing is not None:
+                    return existing
+                logger.warning(
+                    "🧹 Rate limit bucket pool exhausted (count=%d, max=%d); "
+                    "denying %s — caller should back off for one window.",
+                    len(self._buckets),
+                    self.MAX_BUCKETS,
+                    key,
+                )
+                return None
 
         # Use setdefault for atomic get-or-create operation
         return self._buckets.setdefault(
@@ -333,10 +352,28 @@ class RateLimiter:
         config = self._configs[config_name]
         key = self._get_bucket_key(config_name, config, user_id, channel_id, guild_id)
 
-        # Use per-bucket lock - atomic get-or-create to prevent race condition
-        lock = self._locks.setdefault(key, asyncio.Lock())
+        # Lazy lock creation. We avoid ``setdefault(asyncio.Lock())`` because
+        # that constructs a fresh Lock object on every call — only to throw
+        # it away when one already exists. Worse, the throwaway Lock binds
+        # to the current event loop on every call, so every miss measurably
+        # cost CPU and trash GC pressure on hot paths.
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        lock = self._locks[key]
         async with lock:
             bucket = self._get_or_create_bucket(key, config)
+            if bucket is None:
+                # Pool exhausted (see _get_or_create_bucket). Deny without
+                # touching anyone else's tokens. retry_after is one full
+                # window so the caller backs off long enough for some
+                # bucket somewhere to free up.
+                self._stats[config_name]["blocked"] += 1
+                msg = (
+                    config.cooldown_message.format(retry=config.window)
+                    if config.cooldown_message and not config.silent
+                    else "Rate limiter overloaded — please retry shortly"
+                )
+                return False, float(config.window), msg
 
             # Apply adaptive multiplier for adaptive configs
             if config.adaptive and self._adaptive_enabled:
@@ -438,9 +475,12 @@ class RateLimiter:
                 ),
             )
 
-        # Update or create bucket under lock to prevent race conditions
+        # Update or create bucket under lock to prevent race conditions.
+        # Lazy-init avoids constructing a throwaway Lock on every call.
         key = f"{config_name}:channel:{channel_id}"
-        lock = self._locks.setdefault(key, asyncio.Lock())
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        lock = self._locks[key]
         async with lock:
             if key in self._buckets:
                 self._buckets[key].max_tokens = requests_per_minute
@@ -520,6 +560,20 @@ class RateLimiter:
 
         Thread-safe: Acquires lock before removing each bucket to ensure
         no concurrent operations are in progress.
+
+        We deliberately DO NOT pop the per-key lock from _locks WHILE the
+        bucket is being removed (see below). Doing so during the remove
+        introduced a race: a coroutine that already grabbed the lock via
+        ``setdefault`` would keep running with the old object while a
+        concurrent caller would call ``setdefault`` after the pop and get
+        a fresh, unrelated lock — two callers ended up inside the critical
+        section under different locks.
+
+        However, after the per-bucket remove pass, we sweep ``_locks`` for
+        keys that no longer have a corresponding bucket and drop those
+        unused lock objects. This avoids an unbounded leak of asyncio.Lock
+        objects (one per ever-seen key), which would otherwise accumulate
+        forever during long-running processes with churning bucket keys.
         """
         now = time.time()
         removed = 0
@@ -529,23 +583,31 @@ class RateLimiter:
             key for key, bucket in list(self._buckets.items()) if now - bucket.last_update > max_age
         ]
 
-        # Remove buckets and their associated locks atomically per key
+        # Remove buckets atomically per key (locks stay during this pass —
+        # see docstring; locks are swept *after* this loop completes).
         for key in keys_to_remove:
-            # Get the lock (don't pop yet - other coroutines may need it)
             lock = self._locks.get(key)
             if lock:
-                # Acquire lock to ensure no concurrent operations
                 async with lock:
-                    # Re-check condition under lock in case bucket was used recently
                     bucket = self._buckets.get(key)
                     if bucket and now - bucket.last_update > max_age:
                         self._buckets.pop(key, None)
-                        self._locks.pop(key, None)  # Safe to remove lock after bucket
                         removed += 1
             else:
                 # No lock means no concurrent operations - safe to remove
                 self._buckets.pop(key, None)
                 removed += 1
+
+        # Sweep orphaned locks (no corresponding bucket). Skip locks that
+        # are currently held — a caller may be inside the critical section
+        # right now and removing the lock would let a concurrent
+        # ``setdefault`` install a fresh, unrelated lock and double-enter
+        # the section.
+        for k in list(self._locks):
+            if k not in self._buckets:
+                lock = self._locks.get(k)
+                if lock is None or not lock.locked():
+                    self._locks.pop(k, None)
 
         if removed > 0:
             logger.info("🧹 Cleaned up %d old rate limit buckets", removed)

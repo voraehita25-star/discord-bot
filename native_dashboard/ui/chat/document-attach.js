@@ -101,10 +101,11 @@ function iconFor(kind, name) {
 export class DocumentAttachManager {
     constructor() {
         this.docs = [];
+        this.pendingCount = 0;
     }
     /** Snapshot for the send payload. */
     get() {
-        return this.docs.filter(d => d.data !== '');
+        return this.docs.slice();
     }
     clear() {
         this.docs = [];
@@ -120,43 +121,31 @@ export class DocumentAttachManager {
             showToast(`Unsupported file type: ${file.name}`, { type: 'warning' });
             return;
         }
-        if (this.docs.length >= MAX_ATTACHED_DOCS) {
+        // Count both committed docs and in-flight readers against the cap.
+        if (this.docs.length + this.pendingCount >= MAX_ATTACHED_DOCS) {
             showToast(`Maximum ${MAX_ATTACHED_DOCS} documents allowed.`, { type: 'warning' });
             return;
         }
         const kind = classify(file);
-        const slot = this.docs.length;
-        // Reserve slot so parallel attaches keep pick order (same pattern as
-        // ImageAttachManager — small file can resolve before a large one).
-        this.docs.push({
-            name: file.name,
-            mime: file.type || 'application/octet-stream',
-            kind,
-            data: '',
-            size_bytes: file.size,
-        });
-        this.renderPreview();
+        this.pendingCount++;
         const reader = new FileReader();
         reader.onload = (e) => {
+            this.pendingCount--;
             const result = e.target?.result;
-            if (typeof result !== 'string') {
-                this.docs.splice(slot, 1);
-                this.renderPreview();
+            if (typeof result !== 'string' || result === '')
                 return;
-            }
-            this.docs[slot] = {
+            this.docs.push({
                 name: file.name,
                 mime: file.type || (kind === 'binary' ? 'application/octet-stream' : 'text/plain'),
                 kind,
                 data: result,
                 size_bytes: file.size,
-            };
+            });
             this.renderPreview();
         };
         reader.onerror = () => {
+            this.pendingCount--;
             showToast(`Failed to read ${file.name}`, { type: 'error' });
-            this.docs.splice(slot, 1);
-            this.renderPreview();
         };
         if (kind === 'binary') {
             reader.readAsDataURL(file);
@@ -174,8 +163,6 @@ export class DocumentAttachManager {
         const container = document.getElementById('attached-docs');
         if (!container)
             return;
-        // Skip reserved-but-still-loading slots so the UI doesn't flash a
-        // broken item for a FileReader that hasn't resolved yet.
         const visible = this.docs
             .map((doc, idx) => ({ doc, idx }))
             .filter(({ doc }) => doc.data !== '');

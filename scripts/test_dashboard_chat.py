@@ -5,8 +5,10 @@ Run: python scripts/test_dashboard_chat.py
 
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+# Anchor sys.path to project root so the script works from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 async def test_database():
     """Test database schema and methods."""

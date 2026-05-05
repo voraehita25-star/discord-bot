@@ -1,7 +1,9 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
-> เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot  
-> **Last Updated:** April 26, 2026 | **Tests:** 3,088 Python ✅ + 189 frontend vitest ✅ + 63 Playwright ✅ | **Skipped:** 1 ✅ | **Files:** 222 Python | **Python Test Files:** 92 | **Frontend Test Files:** 10 vitest + 5 Playwright e2e
+> เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot
+> **Last Updated:** April 27, 2026 | **Tests:** 3,094 Python ✅ + 189 frontend vitest ✅ + 63 Playwright ✅ | **Skipped:** 1 ✅ | **Files:** ~231 Python | **Python Test Files:** 92 | **Frontend Test Files:** 10 vitest + 5 Playwright e2e
+>
+> Tooling configs live in `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`, `[tool.coverage]`. There is no separate `requirements-dev.txt` — dev tooling installs are listed in `Makefile`'s `install` target.
 
 ## 🛠️ วิธีการตรวจสอบ
 
@@ -22,7 +24,7 @@ python -m py_compile <filename.py>
 
 # ตรวจหลายไฟล์
 
-python -m py_compile bot.py config.py bot_dashboard.py
+python -m py_compile bot.py config.py
 ```
 
 ### 2. Import Check (ตรวจ Import Error)
@@ -47,15 +49,19 @@ python -m pytest tests/ -v
 
 ---
 
-## 📁 รายการไฟล์ทั้งหมด (206 ไฟล์)
+## 📁 รายการไฟล์ทั้งหมด (~231 Python ไฟล์)
 
-### Core Files (3 ไฟล์)
+> ไฟล์ลิสต์ในเอกสารนี้คือสรุป — ไม่ใช่ source of truth ที่ละเอียดที่สุด.
+> ใช้ `git ls-files | grep "\.py$"` ถ้าต้องนับให้แม่นยำ. การ refactor ครั้งใหญ่
+> (v3.3.7+v3.3.8) ย้าย `cogs/ai_core/*.py` หลายไฟล์ไปอยู่ใน subpackage —
+> โครงสร้างปัจจุบันให้อ่านที่ `cogs/ai_core/README.md` แทน.
+
+### Core Files (2 ไฟล์)
 
 | ไฟล์ | คำอธิบาย |
 | --- | --- |
 | `bot.py` | Main entry point, Discord bot initialization |
 | `config.py` | Configuration management with dataclasses |
-| `create_shortcut.py` | Desktop shortcut creator |
 
 ---
 

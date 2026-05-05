@@ -80,18 +80,26 @@ class TestInteractionCheck:
 
     @pytest.mark.asyncio
     async def test_interaction_check_in_voice(self):
-        """Test check passes when user in voice."""
+        """Test check passes when user shares the bot's voice channel.
+
+        interaction_check now requires a connected voice_client (the bot
+        is in a voice channel) AND that the user is in the same channel.
+        With voice_client=None the controls have nothing to act on.
+        """
         with patch("discord.ui.View.__init__", return_value=None):
             from cogs.music.views import MusicControlView
 
             mock_cog = MagicMock()
             view = MusicControlView(cog=mock_cog, guild_id=12345)
 
+            shared_channel = MagicMock()
+            mock_voice_client = MagicMock(channel=shared_channel)
+
             mock_interaction = MagicMock()
             mock_interaction.user = MagicMock(spec=discord.Member)
             mock_interaction.user.voice = MagicMock()
-            mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
-            mock_interaction.guild.voice_client = None  # Bot not in voice
+            mock_interaction.user.voice.channel = shared_channel
+            mock_interaction.guild.voice_client = mock_voice_client
             mock_interaction.response.send_message = AsyncMock()
             mock_interaction.response.edit_message = AsyncMock()
 
@@ -289,6 +297,13 @@ class TestStopButton:
 
             view = MusicControlView(cog=mock_cog, guild_id=12345)
             view.stop = MagicMock()  # Mock the View.stop method
+            # stop_button now disables children before calling stop. With
+            # discord.ui.View.__init__ patched out, the View has no
+            # `_children` list set up — provide an empty one so the public
+            # `self.children` property doesn't AttributeError.
+            view._children = []
+            # Required by stop_button's `if self.message:` branch.
+            view.message = None
 
             mock_voice_client = MagicMock()
             mock_voice_client.stop = MagicMock()
@@ -316,6 +331,11 @@ class TestStopButton:
 
             view = MusicControlView(cog=mock_cog, guild_id=12345)
             view.stop = MagicMock()
+            # stop_button now disables children before calling stop. See
+            # test_stop_button_clears_queue above for the same workaround
+            # reasoning.
+            view._children = []
+            view.message = None
 
             mock_interaction = MagicMock()
             mock_interaction.guild.voice_client = None

@@ -20,7 +20,7 @@ tail -f logs/bot_errors.log
 
 **Symptom:** Bot crashes immediately on startup.
 
-1. **Missing `.env` file** — Copy `.env.example` and fill in required values:
+1. **Missing `.env` file** — Copy `env.example` (note: no leading dot) and fill in required values:
 
    ```ini
    DISCORD_TOKEN=...

@@ -16,8 +16,6 @@ import collections
 import contextlib
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import random
 import time
 import traceback
@@ -30,10 +28,13 @@ import yt_dlp
 from discord.ext import commands
 
 from cogs.ai_core.data.constants import CREATOR_ID
+from utils.media import get_ffmpeg_executable
 from utils.media.ytdl_source import YTDLSource, get_ffmpeg_options
 
 from .utils import Colors, Emojis, create_progress_bar, format_duration
 from .views import MusicControlView  # Import from views module to avoid duplication
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
@@ -124,17 +125,27 @@ class Music(commands.Cog):
 
     async def _periodic_queue_save(self) -> None:
         """Periodically save all active queues to persist them across restarts."""
-        from .queue import queue_manager
-
         while True:
             try:
                 await asyncio.sleep(300)  # Every 5 minutes
-                saved = 0
-                for guild_id, gs in list(self._guild_states.items()):
-                    if gs.queue:
-                        await queue_manager.save_queue(guild_id)
-                        saved += 1
+                # Save only guilds whose queue actually changed since the
+                # last save — the previous version walked every guild_state
+                # every tick, which on a 1000-guild bot meant 1000 redundant
+                # DB writes every 5 minutes for queues that hadn't moved.
+                # The _queue_save_pending set is populated by mutators
+                # (enqueue, skip, etc.) and cleared after we drain it.
+                if not self._queue_save_pending:
+                    continue
+                pending = list(self._queue_save_pending)
                 self._queue_save_pending.clear()
+                saved = 0
+                for guild_id in pending:
+                    gs = self._guild_states.get(guild_id)
+                    if gs is None:
+                        continue
+                    # save_queue handles the empty-queue case (clears DB).
+                    await self.save_queue(guild_id)
+                    saved += 1
                 if saved:
                     logger.info("💾 Auto-saved queues for %d guilds", saved)
             except asyncio.CancelledError:
@@ -165,7 +176,16 @@ class Music(commands.Cog):
         try:
             loop = self.bot.loop
             if loop and loop.is_running() and not loop.is_closed():
-                asyncio.run_coroutine_threadsafe(coro, loop)
+                # Attach a done callback so coroutine exceptions don't get
+                # silently swallowed by a discarded Future.
+                def _on_done(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        logger.warning("safe_run_coroutine error: %s", e)
+
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                future.add_done_callback(_on_done)
         except (RuntimeError, AttributeError):
             # Event loop closed or bot shutting down - silently ignore
             pass
@@ -188,10 +208,19 @@ class Music(commands.Cog):
                 await self.save_queue(guild_id)
             except Exception:
                 logger.debug("Failed to save queue for guild %s during unload", guild_id)
-        # Disconnect all voice clients to prevent resource leaks
+        # Disconnect only voice clients in guilds where this cog has state,
+        # so we don't tear down voice connections owned by other cogs.
+        managed_guild_ids = set(self._guild_states.keys())
         for vc in list(self.bot.voice_clients):
             try:
-                await vc.disconnect(force=True)
+                # discord.py declares ``voice_clients`` as ``list[VoiceProtocol]``
+                # which has no ``.guild``; in practice every entry is a
+                # ``VoiceClient`` (subclass) which does. Use ``getattr`` so
+                # mypy stays happy and a non-VC subclass (e.g. a custom
+                # third-party protocol) is handled gracefully.
+                guild = getattr(vc, "guild", None)
+                if guild and guild.id in managed_guild_ids:
+                    await vc.disconnect(force=True)
             except Exception:
                 logger.debug("Failed to disconnect voice client during unload")
         # Cleanup Spotify handler
@@ -273,6 +302,9 @@ class Music(commands.Cog):
 
         try:
             filepath = Path(f"data/queue_{guild_id}.json")
+            # Ensure data/ exists — fresh installs may not have it yet,
+            # and write_text would raise FileNotFoundError.
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             temp_path = filepath.with_suffix(".json.tmp")
             temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(filepath)  # Atomic on POSIX; near-atomic on Windows
@@ -327,8 +359,37 @@ class Music(commands.Cog):
                     "📂 Loaded queue for guild %s (%d tracks) from JSON", guild_id, len(queue)
                 )
 
-                # Remove file after loading (migrated to DB)
-                await asyncio.to_thread(filepath.unlink)
+                # JSON-to-DB migration: persist to the DB FIRST, then verify
+                # the round-trip succeeded, THEN delete the source. The
+                # previous code deleted on the optimistic assumption that
+                # the in-memory load was enough; if the next save_queue
+                # crashed before its DB write, the JSON was already gone
+                # and the user lost their queue. We now only unlink after
+                # confirmed durable storage.
+                try:
+                    await self.save_queue(guild_id)
+                    db_queue: list = []
+                    try:
+                        from utils.database import db as _db
+                        db_queue = await _db.load_music_queue(guild_id)
+                    except ImportError:
+                        # No DB layer available — keep the JSON as the
+                        # canonical store and skip the unlink.
+                        return True
+                    if db_queue:
+                        await asyncio.to_thread(filepath.unlink)
+                    else:
+                        logger.warning(
+                            "Queue migration for guild %s: DB read-back empty, "
+                            "keeping JSON as fallback",
+                            guild_id,
+                        )
+                except Exception:
+                    # Save failed — leave JSON in place so we can retry on next boot
+                    logger.exception(
+                        "Failed to migrate queue for guild %s to DB; JSON retained",
+                        guild_id,
+                    )
                 return True
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             logger.exception("Failed to load queue for guild %s", guild_id)
@@ -366,6 +427,11 @@ class Music(commands.Cog):
             if not hasattr(vc, "guild") or not vc.guild or not vc.channel:
                 continue
 
+            # Only process the voice client for the guild this event belongs to.
+            # The event is for member.guild, so VCs in other guilds are unrelated.
+            if vc.guild.id != member.guild.id:
+                continue
+
             guild = vc.guild
             guild_id = guild.id
 
@@ -396,9 +462,13 @@ class Music(commands.Cog):
                     continue
                 humans = [m for m in bot_channel.members if not m.bot]
                 if len(humans) == 0:
-                    # Start auto-disconnect countdown
-                    if self._gs(guild_id).auto_disconnect_task is None:
-                        self._gs(guild_id).auto_disconnect_task = asyncio.create_task(
+                    # Start auto-disconnect countdown. Capture the state ref
+                    # once so the check-and-set lands on the same dict entry
+                    # (no `await` between read and write keeps it atomic under
+                    # asyncio's cooperative scheduler).
+                    gs = self._gs(guild_id)
+                    if gs.auto_disconnect_task is None:
+                        gs.auto_disconnect_task = asyncio.create_task(
                             self._auto_disconnect(guild_id, vc)
                         )
                         logger.info("⏳ Started auto-disconnect timer for guild %s", guild_id)
@@ -461,9 +531,12 @@ class Music(commands.Cog):
             if voice_client.is_connected() and voice_client.channel:
                 humans = [m for m in voice_client.channel.members if not m.bot]
                 if len(humans) == 0:
-                    # Cleanup and disconnect
-                    await self.cleanup_guild_data(guild_id)
+                    # Disconnect FIRST, then cleanup. If `cleanup_guild_data`
+                    # ran first and `disconnect()` raised, we'd be left with
+                    # a zombie voice client (still connected to Discord) but
+                    # no guild state to track it.
                     await voice_client.disconnect()
+                    await self.cleanup_guild_data(guild_id)
 
                     # Update presence
                     await self.bot.change_presence(
@@ -521,10 +594,42 @@ class Music(commands.Cog):
         return self._gs(ctx.guild.id).queue
 
     async def play_next(self, ctx: Context) -> None:
-        """Play the next track in the queue."""
-        # Check if voice_client exists
+        """Play the next track in the queue.
+
+        Iterative wrapper around the per-call body — previously this method
+        recursed via ``await self.play_next(ctx)`` to retry after a failed
+        track, which grew the asyncio task stack and was awkward to reason
+        about with the lock-acquire dance below. Loop instead with the same
+        retry cap.
+        """
         if not ctx.voice_client or not ctx.guild:
             return
+        guild_id = ctx.guild.id
+        max_retries = 10
+        for _ in range(max_retries + 1):
+            retry_next = await self._play_next_once(ctx)
+            if not retry_next:
+                # Reset the per-guild retry counter on a clean exit so the
+                # next track has a fresh budget.
+                self._gs(guild_id).play_retries = 0
+                return
+            count = self._gs(guild_id).play_retries
+            if count >= max_retries:
+                logger.warning("play_next retry limit reached for guild %s", guild_id)
+                self._gs(guild_id).play_retries = 0
+                return
+            self._gs(guild_id).play_retries = count + 1
+
+    async def _play_next_once(self, ctx: Context) -> bool:
+        """Single attempt of play_next. Returns True if caller should retry.
+
+        Body lifted verbatim from the original recursive ``play_next`` so
+        the iterative wrapper above can decide whether to re-enter rather
+        than the body recursing into itself.
+        """
+        # Check if voice_client exists
+        if not ctx.voice_client or not ctx.guild:
+            return False
 
         # Cast voice_client to VoiceClient for proper type hints
         voice_client = cast(discord.VoiceClient, ctx.voice_client)
@@ -554,28 +659,37 @@ class Music(commands.Cog):
         _acquire_task.add_done_callback(_release_if_timed_out)
 
         try:
-            acquired = await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=0.1)
+            # Bumped from 0.1s to 2s. The original 100ms was meant to make
+            # this "effectively non-blocking" but it routinely dropped legit
+            # play requests during brief contention — yt-dlp can hold the
+            # lock for hundreds of ms, which made the second of two
+            # back-to-back !play / after-callback calls land in the timeout
+            # window and silently no-op, leaving voice_client idle even
+            # though the queue had tracks. 2s comfortably covers a normal
+            # acquire window without making "another task is processing"
+            # detection unreliable.
+            acquired = await asyncio.wait_for(asyncio.shield(_acquire_task), timeout=2.0)
             if not acquired:
                 logger.debug("play_next lock acquisition failed for guild %s", guild_id)
-                return
+                return False
         except TimeoutError:
             _timed_out_flag[0] = True
             # Another task is processing - skip this call
             logger.debug("play_next already in progress for guild %s", guild_id)
-            return
+            return False
 
         _retry_next = False
         try:
             # Check voice_client again inside lock
             if not ctx.voice_client:
-                return
+                return False
 
             # Re-cast after null check
             voice_client = cast(discord.VoiceClient, ctx.voice_client)
 
             # Double check if playing inside lock to prevent race conditions
             if voice_client.is_playing() or voice_client.is_paused():
-                return
+                return False
 
             # 1. Check Loop Mode
             track_info = self._gs(guild_id).current_track
@@ -589,13 +703,13 @@ class Music(commands.Cog):
                         # Verify voice_client is still valid
                         if not ctx.voice_client or not voice_client.is_connected():
                             logger.warning("Voice client disconnected during loop replay")
-                            return
+                            return False
 
                         # Recreate player from existing file
                         current_options = get_ffmpeg_options(stream=False)
                         player = YTDLSource(
                             discord.FFmpegPCMAudio(
-                                filename, **current_options, executable="ffmpeg"  # type: ignore[arg-type]
+                                filename, **current_options, executable=get_ffmpeg_executable()
                             ),
                             data=data,
                             filename=filename,
@@ -631,7 +745,18 @@ class Music(commands.Cog):
 
                             self._safe_run_coroutine(self.play_next(ctx))
 
-                        voice_client.play(player, after=after_playing_loop)
+                        try:
+                            voice_client.play(player, after=after_playing_loop)
+                        except (discord.DiscordException, OSError):
+                            # FFmpegPCMAudio at line 690 already spawned an
+                            # ffmpeg subprocess; if play() rejects it, the
+                            # process otherwise stays alive holding the
+                            # audio file open. cleanup() kills it.
+                            try:
+                                player.cleanup()
+                            except Exception as _e:
+                                logger.debug("Loop player cleanup failed: %s", _e)
+                            raise
 
                         # Loop embed
                         embed = discord.Embed(
@@ -641,7 +766,7 @@ class Music(commands.Cog):
                         )
                         embed.set_footer(text="Use !loop to disable • !skip to skip")
                         await ctx.send(embed=embed)
-                        return
+                        return False
                     except discord.DiscordException:
                         logger.exception("Loop replay failed (Discord)")
                         self._gs(guild_id).loop = False  # Disable loop on error
@@ -652,16 +777,51 @@ class Music(commands.Cog):
             # 2. Normal Queue Logic
             queue = self.get_queue(ctx)
             if len(queue) > 0:
-                item = queue.popleft()
+                # Peek-then-validate so an entry without a URL doesn't
+                # vanish from the user's queue silently. We only popleft
+                # AFTER we've confirmed the item is dispatchable; for
+                # invalid items we drop them with a log line.
+                item = queue[0]
                 url = item.get("url") if isinstance(item, dict) else item
 
                 if not url:
-                    return
+                    queue.popleft()
+                    self._schedule_queue_save(guild_id)
+                    logger.warning(
+                        "Dropped queue entry without URL for guild %s: %r",
+                        guild_id, item,
+                    )
+                    return False
+                queue.popleft()
+                self._schedule_queue_save(guild_id)
 
+                # Track whether voice_client.play() actually accepted the
+                # player. While False, any exception path must call
+                # ``player.cleanup()`` so the FFmpeg subprocess that
+                # ``YTDLSource.from_url`` spawned doesn't leak.
+                player = None
+                player_handed_off = False
                 try:
                     async with ctx.typing():
+                        # Resolve search-type items (e.g. Spotify enqueues
+                        # text queries with type="search") to a concrete
+                        # YouTube URL before handing off to from_url, which
+                        # only accepts http(s) URLs.
+                        play_url = url
+                        if isinstance(item, dict) and item.get("type") == "search":
+                            search_info = await YTDLSource.search_source(
+                                url, loop=asyncio.get_running_loop()
+                            )
+                            if not search_info or not search_info.get("webpage_url"):
+                                logger.warning(
+                                    "Search resolution failed for queue item: %r", item
+                                )
+                                _retry_next = True
+                                return _retry_next
+                            play_url = search_info["webpage_url"]
+
                         # Use Download Mode (stream=False)
-                        player = await YTDLSource.from_url(url, loop=asyncio.get_running_loop(), stream=False)
+                        player = await YTDLSource.from_url(play_url, loop=asyncio.get_running_loop(), stream=False)
 
                         # Apply stored volume to new track
                         player.volume = self._gs(guild_id).volume
@@ -711,6 +871,7 @@ class Music(commands.Cog):
 
                         try:
                             voice_client.play(player, after=after_playing)
+                            player_handed_off = True
                             # Reset retry counter on successful playback start
                             self._gs(guild_id).play_retries = 0
                         except discord.DiscordException:
@@ -726,7 +887,7 @@ class Music(commands.Cog):
                             if player.filename and not self._gs(ctx.guild.id).loop:
                                 self._safe_run_coroutine(self.safe_delete(player.filename))
                             _retry_next = True
-                            return
+                            return _retry_next
                         except OSError:
                             logger.exception("Failed to start playback (audio/file)")
                             try:
@@ -738,7 +899,7 @@ class Music(commands.Cog):
                             if player.filename and not self._gs(ctx.guild.id).loop:
                                 self._safe_run_coroutine(self.safe_delete(player.filename))
                             _retry_next = True
-                            return
+                            return _retry_next
 
                     # 🎨 PREMIUM NOW PLAYING EMBED
                     duration = player.data.get("duration", 0)
@@ -810,6 +971,31 @@ class Music(commands.Cog):
                     await ctx.send(embed=embed)
                     logger.error("Play error (audio/file): %s\n%s", e, traceback.format_exc())
                     _retry_next = True
+                except yt_dlp.DownloadError as e:
+                    # A bad URL / 4xx from YouTube would otherwise propagate
+                    # uncaught, kill _play_next_once, and freeze the queue
+                    # behind a now-popped track. Skip to the next item instead.
+                    embed = discord.Embed(
+                        title=f"{Emojis.CROSS} Download Error",
+                        description="โหลดเพลงนี้ไม่ได้ ข้ามไปเพลงถัดไป",
+                        color=Colors.ERROR,
+                    )
+                    try:
+                        await ctx.send(embed=embed)
+                    except discord.DiscordException:
+                        pass
+                    logger.warning("yt-dlp download error, skipping track: %s", e)
+                    _retry_next = True
+                finally:
+                    # If FFmpeg was spawned but never handed to voice_client
+                    # (an exception fired between from_url() and play()),
+                    # the subprocess would otherwise stay alive holding the
+                    # downloaded audio file open. cleanup() kills it.
+                    if player is not None and not player_handed_off:
+                        try:
+                            player.cleanup()
+                        except Exception as _e:
+                            logger.debug("Pre-handoff player cleanup failed: %s", _e)
             else:
                 # Queue empty
                 self._gs(ctx.guild.id).current_track = None  # Clear track info
@@ -822,16 +1008,9 @@ class Music(commands.Cog):
             # Always release the lock
             lock.release()
 
-        # Retry next track AFTER lock is released (avoids deadlock)
-        if _retry_next:
-            # Limit retries to prevent unbounded recursion (per-guild tracking)
-            retry_count = self._gs(guild_id).play_retries
-            if retry_count < 10:  # Max 10 retries to prevent stack overflow
-                self._gs(guild_id).play_retries = retry_count + 1
-                await self.play_next(ctx)
-            else:
-                logger.warning("play_next retry limit reached for guild %s", guild_id)
-                self._gs(guild_id).play_retries = 0  # Reset for next session
+        # Retry decision flows back to the iterative ``play_next`` wrapper —
+        # it owns the per-guild retry budget so this body stays simple.
+        return _retry_next
 
     @commands.hybrid_command(name="loop", aliases=["l"])  # type: ignore[arg-type]
     @commands.guild_only()
@@ -989,7 +1168,7 @@ class Music(commands.Cog):
             current_options = get_ffmpeg_options(stream=False, start_time=elapsed)
 
             player = YTDLSource(
-                discord.FFmpegPCMAudio(filename, **current_options, executable="ffmpeg"),
+                discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
                 data=data,
                 filename=filename,
             )
@@ -1025,7 +1204,17 @@ class Music(commands.Cog):
                     logger.error("Fix player error: %s", error)
                 self._safe_run_coroutine(self.play_next(ctx))
 
-            voice_client_fix.play(player, after=after_playing_fix)
+            try:
+                voice_client_fix.play(player, after=after_playing_fix)
+            except Exception:
+                # If play() rejects the source, the FFmpegPCMAudio subprocess
+                # is orphaned holding the file open. Clean it up before
+                # propagating so the outer except blocks render the error UI.
+                try:
+                    player.cleanup()
+                except Exception as _e:
+                    logger.debug("Fix player cleanup failed (non-critical): %s", _e)
+                raise
 
             # Success embed
             success_embed = discord.Embed(
@@ -1080,14 +1269,29 @@ class Music(commands.Cog):
             return
 
         if ctx.voice_client is not None:
-            await ctx.voice_client.move_to(channel)
+            try:
+                await ctx.voice_client.move_to(channel)
+            except (TimeoutError, discord.HTTPException) as e:
+                embed = discord.Embed(
+                    description=f"{Emojis.CROSS} ย้ายไม่สำเร็จ: {e}",
+                    color=Colors.ERROR,
+                )
+                await ctx.send(embed=embed)
+                return
             embed = discord.Embed(
                 description=f"{Emojis.CHECK} ย้ายไป **{channel.name}**", color=Colors.RESUMED
             )
             await ctx.send(embed=embed)
             return
 
-        await channel.connect()
+        try:
+            await channel.connect(timeout=30.0)
+        except (asyncio.TimeoutError, discord.ClientException) as e:
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
+            )
+            await ctx.send(embed=embed)
+            return
         embed = discord.Embed(
             title=f"{Emojis.HEADPHONES} เชื่อมต่อแล้ว",
             description=f"เข้าร่วม **{channel.name}**",
@@ -1097,6 +1301,7 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="play", aliases=["p"])
+    @commands.guild_only()
     @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def play(self, ctx: Context, *, query: str | None = None) -> None:
         """เล่นเพลงจาก YouTube หรือ Spotify."""
@@ -1150,8 +1355,8 @@ class Music(commands.Cog):
         # Connect if not connected
         if ctx.voice_client is None:
             try:
-                await channel.connect()
-            except discord.ClientException as e:
+                await channel.connect(timeout=30.0)
+            except (asyncio.TimeoutError, discord.ClientException) as e:
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
                 )
@@ -1163,8 +1368,19 @@ class Music(commands.Cog):
 
         queue = self.get_queue(ctx)
 
-        # Check if Spotify URL
-        if "open.spotify.com" in query and self.spotify.is_available():
+        # Check if Spotify URL — match on parsed hostname instead of bare
+        # substring so attacker URLs like "https://evil.com/?ref=open.spotify.com"
+        # don't get treated as Spotify links.
+        from urllib.parse import urlparse as _urlparse
+        try:
+            _spotify_host = _urlparse(query).hostname or ""
+        except (ValueError, TypeError):
+            _spotify_host = ""
+        is_spotify_url = (
+            _spotify_host == "open.spotify.com"
+            or _spotify_host.endswith(".spotify.com")
+        )
+        if is_spotify_url and self.spotify.is_available():
             success = await self.spotify.process_spotify_url(ctx, query, queue)  # type: ignore[arg-type]
             if not success:
                 return
@@ -1339,9 +1555,18 @@ class Music(commands.Cog):
     @commands.guild_only()
     async def stop(self, ctx):
         """หยุดเล่นและล้างคิว."""
-        self._gs(ctx.guild.id).queue = collections.deque()
-        self._gs(ctx.guild.id).loop = False  # Disable loop
-        self._gs(ctx.guild.id).current_track = None
+        gs = self._gs(ctx.guild.id)
+        gs.queue.clear()  # Clear in place so concurrent play_next sees empty
+        gs.loop = False  # Disable loop
+        gs.current_track = None
+        self._schedule_queue_save(ctx.guild.id)
+
+        # Cancel any pending auto-disconnect timer; otherwise a stop while
+        # 24/7 mode is off can still trigger a delayed disconnect after
+        # the user starts playing again.
+        if gs.auto_disconnect_task is not None:
+            gs.auto_disconnect_task.cancel()
+            gs.auto_disconnect_task = None
 
         if ctx.voice_client:
             ctx.voice_client.stop()
@@ -1361,8 +1586,10 @@ class Music(commands.Cog):
     @commands.guild_only()
     async def clear(self, ctx):
         """ล้างคิวเพลงทั้งหมด (แต่ไม่หยุดเพลงที่เล่นอยู่)."""
-        cleared_count = len(self._gs(ctx.guild.id).queue)
-        self._gs(ctx.guild.id).queue = collections.deque()
+        gs = self._gs(ctx.guild.id)
+        cleared_count = len(gs.queue)
+        gs.queue.clear()
+        self._schedule_queue_save(ctx.guild.id)
 
         embed = discord.Embed(
             title=f"{Emojis.CHECK} ล้างคิวแล้ว",
@@ -1378,9 +1605,18 @@ class Music(commands.Cog):
         """ออกจากช่องเสียง."""
         if ctx.voice_client:
             # Cleanup
-            self._gs(ctx.guild.id).queue = collections.deque()
-            self._gs(ctx.guild.id).loop = False
-            self._gs(ctx.guild.id).current_track = None
+            gs = self._gs(ctx.guild.id)
+            gs.queue.clear()
+            gs.loop = False
+            gs.current_track = None
+            self._schedule_queue_save(ctx.guild.id)
+
+            # Cancel any pending auto-disconnect timer so it doesn't fire
+            # against an already-disconnected voice client and re-enter
+            # cleanup paths.
+            if gs.auto_disconnect_task is not None:
+                gs.auto_disconnect_task.cancel()
+                gs.auto_disconnect_task = None
 
             await ctx.voice_client.disconnect()
             # Only change global presence if this was the last voice client
@@ -1505,6 +1741,7 @@ class Music(commands.Cog):
         random.shuffle(items)
         queue.clear()
         queue.extend(items)
+        self._schedule_queue_save(ctx.guild.id)
 
         embed = discord.Embed(
             title=f"{Emojis.SPARKLES} Queue Shuffled!",
@@ -1641,11 +1878,29 @@ class Music(commands.Cog):
             filename = track_info["filename"]
             data = track_info["data"]
 
+            # Verify the file still exists. The previous track's
+            # after_playing callback may have already deleted it (loop=False
+            # path calls safe_delete on track end), in which case ffmpeg
+            # would silently produce no audio and the user just sees the
+            # "playing" UI without sound. Surface the issue instead.
+            from pathlib import Path as _P
+            if not filename or not _P(filename).exists():
+                self._gs(guild_id).fixing = False
+                embed = discord.Embed(
+                    title="Cannot Seek",
+                    description=(
+                        f"{Emojis.CROSS} Source file is no longer available. "
+                        "Re-add the track to the queue and try again."
+                    ),
+                    color=Colors.ERROR,
+                )
+                return await ctx.send(embed=embed)
+
             # Get ffmpeg options with seek
             current_options = get_ffmpeg_options(stream=False, start_time=seek_time)
 
             player = YTDLSource(
-                discord.FFmpegPCMAudio(filename, **current_options, executable="ffmpeg"),  # type: ignore[arg-type]
+                discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
                 data=data,
                 filename=filename,
             )
@@ -1685,6 +1940,11 @@ class Music(commands.Cog):
             except Exception as e:
                 # Reset fixing flag if play() fails
                 self._gs(guild_id).fixing = False
+                # Clean up the orphaned FFmpegPCMAudio subprocess before re-raising
+                try:
+                    player.cleanup()
+                except Exception as _e:
+                    logger.debug("Seek player cleanup failed (non-critical): %s", _e)
                 logger.error("Seek play error: %s", e)
                 raise
         except Exception as e:
@@ -1779,8 +2039,17 @@ class Music(commands.Cog):
         embed.set_footer(text="Use !help for all commands")
         await ctx.send(embed=embed)
 
-    # Owner ID for special commands visibility - use config value
+    # Owner ID for special commands visibility - use config value.
+    # CREATOR_ID can be 0 if the env var is unset (constants_env.py default).
+    # Treating 0 as a sentinel and skipping the check avoids the trap where
+    # `if user.id == 0` is meaningless (no Discord user has ID 0) — and more
+    # importantly, prevents accidental fail-OPEN if a future check inverted
+    # the comparison.
     OWNER_ID = CREATOR_ID
+
+    def _is_owner(self, ctx) -> bool:
+        """True only if a real owner ID is configured AND it matches ctx.author."""
+        return bool(self.OWNER_ID) and ctx.author.id == self.OWNER_ID
 
     @commands.command(name="help", aliases=["h"])
     async def help(self, ctx):
@@ -1844,7 +2113,7 @@ class Music(commands.Cog):
         )
 
         # 🔧 Owner-only commands (visible only to owner)
-        if ctx.author.id == self.OWNER_ID:
+        if self._is_owner(ctx):
             embed.add_field(
                 name="🔧 Owner Commands",
                 value=(
@@ -1913,8 +2182,15 @@ class Music(commands.Cog):
                     continue
 
                 try:
-                    # Get size before deleting
-                    size = filepath.stat().st_size
+                    # Reuse the stat() result from the mtime check above
+                    # via filepath.stat() — actually capture it once. We
+                    # already passed the mtime check above so the file
+                    # existed then; use a fresh stat to read size, but
+                    # cheaply tolerate it being deleted in the gap.
+                    try:
+                        size = filepath.stat().st_size
+                    except FileNotFoundError:
+                        continue
                     filepath.unlink()
                     deleted_count += 1
                     freed_bytes += size

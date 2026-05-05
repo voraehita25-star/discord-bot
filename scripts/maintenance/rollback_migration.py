@@ -73,7 +73,11 @@ def _table_row_counts(db: Path) -> dict[str, int]:
             ).fetchall()
             for (name,) in rows:
                 try:
-                    cur = conn.execute(f'SELECT COUNT(*) FROM "{name}"')
+                    # Use bracket-quoted identifier — even though `name` is
+                    # read from sqlite_master (trusted), bracketed identifiers
+                    # tolerate any character (including `"`) without escaping
+                    # gymnastics. Identifiers can't be parameterised in SQLite.
+                    cur = conn.execute(f"SELECT COUNT(*) FROM [{name}]")
                     counts[name] = int(cur.fetchone()[0])
                 except sqlite3.Error:
                     counts[name] = -1

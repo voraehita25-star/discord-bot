@@ -51,7 +51,7 @@ HISTORY_LIMIT_MAIN = 8000  # Token limit for main server (higher traffic)
 HISTORY_LIMIT_RP = 30000  # Token limit for roleplay server (critical for continuity)
 
 # Processing timeouts (in seconds)
-LOCK_TIMEOUT = 30.0  # Max wait time for lock acquisition (API timeout handles the actual call)
+LOCK_TIMEOUT = 180.0  # Max wait time for lock acquisition (must exceed API_TIMEOUT so a slow API call doesn't drop queued messages)
 API_TIMEOUT = 120.0  # Max wait time for Claude API response
 STREAMING_TIMEOUT_INITIAL = 30.0  # Initial chunk timeout
 STREAMING_TIMEOUT_CHUNK = 10.0  # Subsequent chunk timeout
@@ -85,6 +85,8 @@ PERFORMANCE_SAMPLES_MAX = 100  # Max samples to keep per metric
 
 # ==================== Discord Limits ====================
 DISCORD_MESSAGE_LIMIT = 2000  # Max characters per message
+MAX_DISCORD_LENGTH = DISCORD_MESSAGE_LIMIT  # Alias used by response_sender.py
+# WEBHOOK_SEND_TIMEOUT is defined once above in "HTTP/External service timeouts"
 DISCORD_WEBHOOK_LIMIT = 15  # Max webhooks per channel
 MAX_CHANNEL_NAME_LENGTH = 100  # Max length for channel/category names
 MAX_ROLE_NAME_LENGTH = 100  # Max length for role names

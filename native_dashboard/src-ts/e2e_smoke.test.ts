@@ -45,8 +45,14 @@ describe('index.html shell smoke', () => {
         const content = csp?.getAttribute('content') ?? '';
         expect(content).toContain("default-src 'self'");
         expect(content).toContain("object-src 'none'");
-        expect(content).toContain("frame-ancestors 'none'");
         expect(content).not.toContain("'unsafe-eval'");
+        // frame-ancestors is intentionally NOT in the <meta> CSP — browsers
+        // ignore that directive when delivered this way and log a console
+        // error on every page load. Tauri's WebView is not embeddable in
+        // an iframe, so omitting it is safe. The Tauri runtime CSP
+        // (tauri.conf.json -> security.csp) is the canonical place if we
+        // ever need framing protection.
+        expect(content).not.toContain('frame-ancestors');
     });
 
     it('has SRI integrity hashes on every vendor <script src>', () => {

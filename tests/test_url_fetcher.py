@@ -433,9 +433,24 @@ class TestURLFetcherClientFetchBatchViaService:
     """Tests for _fetch_batch_via_service method."""
 
     @pytest.mark.asyncio
-    async def test_fetch_batch_via_service_success(self):
-        """Test successful batch fetch via service."""
+    async def test_fetch_batch_via_service_success(self, monkeypatch):
+        """Test successful batch fetch via service.
+
+        _fetch_batch_via_service now performs a per-URL SSRF check via
+        ``utils.web.url_fetcher._is_private_url`` BEFORE forwarding to
+        the Go service — without this, any URL that bypassed the Go-side
+        check (or any future config drift between the two sides) would
+        become an SSRF. Stub the SSRF helper to return False so the test
+        URLs aren't filtered out before the Go-service mock fires.
+        """
         from utils.web.url_fetcher_client import URLFetcherClient
+
+        # Stub the SSRF helper at the source module so the lazy import
+        # inside _fetch_batch_via_service picks up our mock.
+        monkeypatch.setattr(
+            "utils.web.url_fetcher._is_private_url",
+            AsyncMock(return_value=False),
+        )
 
         client = URLFetcherClient()
 
@@ -462,9 +477,19 @@ class TestURLFetcherClientFetchBatchViaService:
         assert len(result["results"]) == 2
 
     @pytest.mark.asyncio
-    async def test_fetch_batch_via_service_with_timeout(self):
-        """Test batch fetch via service with timeout."""
+    async def test_fetch_batch_via_service_with_timeout(self, monkeypatch):
+        """Test batch fetch via service with timeout.
+
+        See test_fetch_batch_via_service_success for why _is_private_url
+        must be stubbed — without it the test URL is filtered out and
+        the Go-service POST is short-circuited (never called).
+        """
         from utils.web.url_fetcher_client import URLFetcherClient
+
+        monkeypatch.setattr(
+            "utils.web.url_fetcher._is_private_url",
+            AsyncMock(return_value=False),
+        )
 
         client = URLFetcherClient()
 

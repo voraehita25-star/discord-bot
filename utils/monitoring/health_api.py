@@ -10,18 +10,18 @@ import hmac
 import html
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import platform
 import threading
-from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Any
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -34,20 +34,31 @@ HEALTH_API_TOKEN = os.getenv("HEALTH_API_TOKEN", "")  # Bearer token for sensiti
 # Security: If no auth token is set and host is not localhost, force localhost binding
 _LOCALHOST_ADDRESSES = {"127.0.0.1", "localhost", "::1"}
 if not HEALTH_API_TOKEN:
-    if _HEALTH_API_HOST_RAW not in _LOCALHOST_ADDRESSES:
-        logger.warning(
-            "⚠️ HEALTH_API_TOKEN not set but HEALTH_API_HOST=%s — "
-            "forcing bind to 127.0.0.1 for security. "
-            "Set HEALTH_API_TOKEN in .env to bind to other addresses.",
-            _HEALTH_API_HOST_RAW,
-        )
-        HEALTH_API_HOST = "127.0.0.1"
-    else:
-        HEALTH_API_HOST = _HEALTH_API_HOST_RAW
-        logger.warning(
-            "⚠️ HEALTH_API_TOKEN not set — protected endpoints have NO authentication! "
-            "Set HEALTH_API_TOKEN in .env for security."
-        )
+    # Auto-generate an ephemeral token rather than running with auth
+    # disabled. Previously a missing token meant protected endpoints
+    # served their data unauthenticated to any localhost listener — any
+    # other process on the box (or a logged-in user) could scrape guild
+    # names / latency / configured keys. Generate-once-per-process means
+    # the operator MUST configure a real token if they want stable
+    # access from a sidecar/Grafana, but the failure mode is now
+    # "401 Unauthorized" instead of "silently exposed".
+    import secrets
+    HEALTH_API_TOKEN = secrets.token_urlsafe(32)
+    logger.warning(
+        "⚠️ HEALTH_API_TOKEN not set; generated ephemeral token: %s "
+        "(set HEALTH_API_TOKEN in .env for a stable value).",
+        HEALTH_API_TOKEN,
+    )
+
+if _HEALTH_API_HOST_RAW not in _LOCALHOST_ADDRESSES and not os.getenv(
+    "HEALTH_API_ALLOW_REMOTE", ""
+):
+    logger.warning(
+        "⚠️ HEALTH_API_HOST=%s — forcing bind to 127.0.0.1. "
+        "Set HEALTH_API_ALLOW_REMOTE=1 to opt into remote binding.",
+        _HEALTH_API_HOST_RAW,
+    )
+    HEALTH_API_HOST = "127.0.0.1"
 else:
     HEALTH_API_HOST = _HEALTH_API_HOST_RAW
 
@@ -86,17 +97,32 @@ GO_URL_FETCHER_URL = _validate_service_url(
     os.getenv("GO_URL_FETCHER_URL", "http://127.0.0.1:8081/health"), "GO_URL_FETCHER_URL"
 ) or "http://127.0.0.1:8081/health"
 
-# Endpoints that require authentication (when HEALTH_API_TOKEN is set)
-_PROTECTED_ENDPOINTS = {"/", "/metrics", "/health/deep", "/health/json", "/ai/stats", "/ai/stats/json"}
+# Endpoints that require authentication (when HEALTH_API_TOKEN is set).
+# Anything that exposes guild names, user counts, cogs loaded, latency,
+# or process state is information disclosure — gate them behind the
+# token. The /health/live and /health/ready probes stay unauth'd because
+# Kubernetes-style liveness/readiness probes need that.
+_PROTECTED_ENDPOINTS = {
+    "/",
+    "/metrics",
+    "/stats",
+    "/stats/json",
+    "/health",
+    "/health/json",
+    "/health/deep",
+    "/health/status",
+    "/ai/stats",
+    "/ai/stats/json",
+}
 
 
 class BotHealthData:
     """Stores bot health metrics for the API."""
 
     def __init__(self) -> None:
-        self.start_time: datetime = datetime.now()
+        self.start_time: datetime = datetime.now(timezone.utc)
         self.bot: Bot | None = None
-        self.last_heartbeat: datetime = datetime.now()
+        self.last_heartbeat: datetime = datetime.now(timezone.utc)
         self._counter_lock = threading.Lock()  # Thread-safe lock for counters
         self._data_lock = threading.Lock()  # Thread-safe lock for bot data updates
         self.message_count: int = 0
@@ -111,12 +137,23 @@ class BotHealthData:
         self.service_health: dict[str, dict[str, Any]] = {}
         # Feature flags (populated from config.feature_flags)
         self.feature_flags: dict[str, bool] = {}
+        # Cached process handle so cpu_percent(interval=None) can compute a
+        # real delta. A fresh psutil.Process() each call always reports 0.0
+        # because the "previous sample" tracked inside the object dies with
+        # the previous instance. None means "construct lazily on first read"
+        # so tests that mock psutil.Process at patch-time still see the mock.
+        self._process: psutil.Process | None = None
+
+    def _get_process(self) -> psutil.Process:
+        if self._process is None:
+            self._process = psutil.Process()
+        return self._process
 
     def update_from_bot(self, bot: Bot) -> None:
         """Update health data from bot instance (thread-safe)."""
         with self._data_lock:
             self.bot = bot
-            self.last_heartbeat = datetime.now()
+            self.last_heartbeat = datetime.now(timezone.utc)
             self.is_ready = bot.is_ready()
 
             if bot.is_ready():
@@ -142,7 +179,7 @@ class BotHealthData:
 
     def get_uptime(self) -> timedelta:
         """Get bot uptime."""
-        return datetime.now() - self.start_time
+        return datetime.now(timezone.utc) - self.start_time
 
     def get_uptime_str(self) -> str:
         """Get formatted uptime string."""
@@ -161,8 +198,18 @@ class BotHealthData:
             return f"{seconds}s"
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert health data to dictionary (thread-safe)."""
-        process = psutil.Process()
+        """Convert health data to dictionary (thread-safe).
+
+        Calls ``cpu_percent(interval=None)`` so the value reported is the
+        delta since the last call (cheap), rather than blocking for the
+        default measurement window. The first call after process start
+        always reports 0.0 — that's fine because health endpoints get
+        polled regularly enough that the second call onwards is accurate.
+        """
+        process = self._get_process()
+        # Non-blocking read: returns the delta since the last call. Requires
+        # the same psutil.Process() instance across calls — see _get_process.
+        cpu_percent = process.cpu_percent(interval=None)
 
         with self._data_lock:
             is_ready = self.is_ready
@@ -179,7 +226,7 @@ class BotHealthData:
 
         return {
             "status": "healthy" if is_ready else "starting",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "uptime": self.get_uptime_str(),
             "uptime_seconds": int(self.get_uptime().total_seconds()),
             "bot": {
@@ -198,13 +245,13 @@ class BotHealthData:
             "system": {
                 "platform": platform.system(),
                 "python_version": platform.python_version(),
-                "cpu_percent": process.cpu_percent(),
+                "cpu_percent": cpu_percent,
                 "memory_mb": round(process.memory_info().rss / 1024 / 1024, 2),
                 "threads": process.num_threads(),
             },
             "heartbeat": {
                 "last": last_heartbeat.isoformat(),
-                "age_seconds": int((datetime.now() - last_heartbeat).total_seconds()),
+                "age_seconds": int((datetime.now(timezone.utc) - last_heartbeat).total_seconds()),
             },
             "services": self.service_health,
             "features": self.feature_flags,
@@ -225,11 +272,11 @@ class BotHealthData:
         if not is_ready:
             return False
 
-        heartbeat_age = (datetime.now() - last_heartbeat).total_seconds()
+        heartbeat_age = (datetime.now(timezone.utc) - last_heartbeat).total_seconds()
         if heartbeat_age > HEARTBEAT_MAX_AGE_SECONDS:
             return False
 
-        return not latency_ms > MAX_LATENCY_MS
+        return latency_ms <= MAX_LATENCY_MS
 
     def get_ai_performance_stats(self) -> dict:
         """Get AI performance statistics from chat manager.
@@ -257,18 +304,48 @@ health_data = BotHealthData()
 class HealthRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler for health endpoints."""
 
-    # Suppress default logging
+    # Route stdlib's stdout-style access logs through our structured logger so
+    # auth failures, scans, and other non-2xx responses leave a forensic trail.
+    # The previous empty override silently dropped every access log line.
     def log_message(self, format: str, *args) -> None:
-        """Override to suppress logging."""
+        try:
+            msg = format % args
+        except Exception:
+            msg = " ".join(str(a) for a in args)
+        # client_address is set by stdlib only when the handler is processing a
+        # real connection. In unit tests / synthetic invocations it's missing —
+        # fall back to "?" instead of crashing.
+        client = "?"
+        addr = getattr(self, "client_address", None)
+        if isinstance(addr, tuple) and addr:
+            client = str(addr[0])
+        # Anything that isn't a 2xx is interesting (auth failures, scans, 4xx).
+        # The first %args entry on stdlib's BaseHTTPRequestHandler is the
+        # request line, the second is the status code as a string.
+        status_str = args[1] if len(args) > 1 else ""
+        if isinstance(status_str, str) and status_str.startswith(("4", "5")):
+            logger.warning("health_api %s - %s", client, msg)
+        else:
+            logger.debug("health_api %s - %s", client, msg)
 
-    def _send_json_response(self, data: dict, status: int = 200) -> None:
-        """Send JSON response."""
+    def _send_json_response(
+        self, data: dict, status: int = 200, *, allow_cors: bool = True
+    ) -> None:
+        """Send JSON response. Pass allow_cors=False for unauthenticated paths."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        # Restrict CORS to localhost only for security
-        self.send_header("Access-Control-Allow-Origin", "http://localhost")
+        if allow_cors and status < 400:
+            # Only attach the CORS header on successful, authenticated responses.
+            # Dropping it for 4xx prevents cross-origin readers (any localhost
+            # tab) from learning whether protected endpoints exist.
+            self.send_header("Access-Control-Allow-Origin", "http://localhost")
         self.end_headers()
-        self.wfile.write(json.dumps(data, indent=2).encode())
+        # ensure_ascii=False: guild names / Discord usernames frequently
+        # contain CJK / emoji / Thai characters; the default would
+        # \u-escape them into garbage in the response body.
+        self.wfile.write(
+            json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        )
 
     def _send_text_response(self, text: str, status: int = 200) -> None:
         """Send plain text response."""
@@ -277,13 +354,14 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(text.encode())
 
-    def _send_html_response(self, html: str, status: int = 200) -> None:
+    def _send_html_response(self, body: str, status: int = 200) -> None:
         """Send HTML response."""
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "http://localhost")
+        if status < 400:
+            self.send_header("Access-Control-Allow-Origin", "http://localhost")
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(body.encode("utf-8"))
 
     def _get_anime_theme_css(self) -> str:
         """Get shared anime theme CSS with sakura petals."""
@@ -580,11 +658,15 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
         elif path in {"/health/live", "/livez"}:
             # Kubernetes liveness probe - is the process running?
-            self._send_json_response({"status": "alive", "timestamp": datetime.now().isoformat()})
+            self._send_json_response({"status": "alive", "timestamp": datetime.now(timezone.utc).isoformat()})
 
         elif path in {"/health/ready", "/readyz"}:
-            # Kubernetes readiness probe - is the bot ready to serve?
-            if health_data.is_ready:
+            # Kubernetes readiness probe - is the bot fully healthy + ready?
+            # Use the full is_healthy() rather than just is_ready so a bot
+            # with a stuck heartbeat or runaway latency stops getting
+            # traffic. is_healthy() also takes the data lock so we don't
+            # race with update_from_bot.
+            if health_data.is_healthy():
                 self._send_json_response(
                     {
                         "status": "ready",
@@ -594,7 +676,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._send_json_response(
-                    {"status": "not_ready", "message": "Bot is still starting up"}, 503
+                    {"status": "not_ready", "message": "Bot is still starting up or unhealthy"}, 503
                 )
 
         elif path == "/health/status":
@@ -673,59 +755,80 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
     def _generate_prometheus_metrics(self) -> str:
         """Generate Prometheus-compatible metrics."""
-        process = psutil.Process()
+        process = health_data._get_process()
+
+        # Snapshot every counter under the same locks to_dict() uses.
+        # Without this, Prometheus scrapes can read torn state while
+        # update_from_bot() is mid-write, producing inconsistent
+        # adjacent gauges (e.g. is_ready=true with latency_ms still 0).
+        with health_data._data_lock:
+            is_ready = health_data.is_ready
+            latency_ms = health_data.latency_ms
+            guild_count = health_data.guild_count
+            user_count = health_data.user_count
+        with health_data._counter_lock:
+            message_count = health_data.message_count
+            command_count = health_data.command_count
+            error_count = health_data.error_count
+        uptime_seconds = int(health_data.get_uptime().total_seconds())
+
+        # cpu_percent(interval=None) is delta-based and requires the
+        # singleton process handle. cpu_percent() with no arg blocks 0.1s.
+        cpu_percent = process.cpu_percent(interval=None)
+        memory_rss = process.memory_info().rss
+        num_threads = process.num_threads()
 
         lines = [
             "# HELP discord_bot_up Bot is up and running",
             "# TYPE discord_bot_up gauge",
-            f"discord_bot_up {1 if health_data.is_ready else 0}",
+            f"discord_bot_up {1 if is_ready else 0}",
             "",
             "# HELP discord_bot_latency_ms Discord API latency in milliseconds",
             "# TYPE discord_bot_latency_ms gauge",
-            f"discord_bot_latency_ms {health_data.latency_ms:.2f}",
+            f"discord_bot_latency_ms {latency_ms:.2f}",
             "",
             "# HELP discord_bot_guilds Number of guilds the bot is in",
             "# TYPE discord_bot_guilds gauge",
-            f"discord_bot_guilds {health_data.guild_count}",
+            f"discord_bot_guilds {guild_count}",
             "",
             "# HELP discord_bot_users Total users across all guilds",
             "# TYPE discord_bot_users gauge",
-            f"discord_bot_users {health_data.user_count}",
+            f"discord_bot_users {user_count}",
             "",
             "# HELP discord_bot_messages_total Total messages processed",
             "# TYPE discord_bot_messages_total counter",
-            f"discord_bot_messages_total {health_data.message_count}",
+            f"discord_bot_messages_total {message_count}",
             "",
             "# HELP discord_bot_commands_total Total commands executed",
             "# TYPE discord_bot_commands_total counter",
-            f"discord_bot_commands_total {health_data.command_count}",
+            f"discord_bot_commands_total {command_count}",
             "",
             "# HELP discord_bot_errors_total Total errors",
             "# TYPE discord_bot_errors_total counter",
-            f"discord_bot_errors_total {health_data.error_count}",
+            f"discord_bot_errors_total {error_count}",
             "",
             "# HELP discord_bot_uptime_seconds Bot uptime in seconds",
             "# TYPE discord_bot_uptime_seconds counter",
-            f"discord_bot_uptime_seconds {int(health_data.get_uptime().total_seconds())}",
+            f"discord_bot_uptime_seconds {uptime_seconds}",
             "",
             "# HELP process_cpu_percent CPU usage percentage",
             "# TYPE process_cpu_percent gauge",
-            f"process_cpu_percent {process.cpu_percent()}",
+            f"process_cpu_percent {cpu_percent}",
             "",
             "# HELP process_memory_bytes Memory usage in bytes",
             "# TYPE process_memory_bytes gauge",
-            f"process_memory_bytes {process.memory_info().rss}",
+            f"process_memory_bytes {memory_rss}",
             "",
             "# HELP process_threads Number of threads",
             "# TYPE process_threads gauge",
-            f"process_threads {process.num_threads()}",
+            f"process_threads {num_threads}",
         ]
 
         return "\n".join(lines) + "\n"
 
     def _perform_deep_health_check(self) -> dict[str, Any]:
         """Perform deep health check on all subsystems."""
-        checks: dict[str, Any] = {"timestamp": datetime.now().isoformat(), "healthy": True, "checks": {}}
+        checks: dict[str, Any] = {"timestamp": datetime.now(timezone.utc).isoformat(), "healthy": True, "checks": {}}
 
         # 1. Bot status check
         checks["checks"]["bot"] = {
@@ -768,7 +871,12 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             checks["checks"]["database"] = {"status": "error", "error": str(e)[:100]}
             checks["healthy"] = False
 
-        # 3. API Keys check (existence only, not validity)
+        # 3. API Keys check (existence only, not validity).
+        # Do NOT enumerate which keys are present/absent — that tells an
+        # attacker exactly which integrations they can probe (e.g. a
+        # missing GEMINI_API_KEY signals "Anthropic-only deployment, go
+        # try a prompt injection on the Claude path"). Report aggregate
+        # presence instead.
         spotify_client_id = os.getenv("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
         spotify_client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET")
         api_keys = {
@@ -778,11 +886,12 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             "SPOTIPY_CLIENT_ID": bool(spotify_client_id),
             "SPOTIPY_CLIENT_SECRET": bool(spotify_client_secret),
         }
-        missing_keys = [k for k, v in api_keys.items() if not v]
+        configured_count = sum(1 for v in api_keys.values() if v)
+        total_count = len(api_keys)
         checks["checks"]["api_keys"] = {
-            "status": "ok" if not missing_keys else "warning",
-            "configured": [k for k, v in api_keys.items() if v],
-            "missing": missing_keys,
+            "status": "ok" if configured_count == total_count else "warning",
+            "api_keys_configured": configured_count,
+            "api_keys_total": total_count,
         }
 
         # 4. Filesystem check
@@ -795,13 +904,25 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             checks["checks"]["filesystem"] = {"status": "error", "error": str(e)[:100]}
 
-        # 5. Memory check
-        process = psutil.Process()
+        # 5. Memory check. Use the configurable threshold from
+        # ``MemoryMonitor`` defaults so this endpoint matches whatever the
+        # cleanup loop is actually reacting to (was hardcoded 500 MB,
+        # which was wildly out of sync with the 8 GB/16 GB reality).
+        # Reuse the singleton process handle from the module-level
+        # ``health_data`` so ``cpu_percent(interval=None)`` callers
+        # downstream have a real "previous sample" to diff against
+        # (a fresh `psutil.Process()` always reports 0.0% on first call).
+        process = health_data._get_process()
         memory_mb = process.memory_info().rss / 1024 / 1024
+        try:
+            from utils.reliability.memory_manager import MemoryMonitor as _MM
+            mem_warning = float(getattr(_MM, "DEFAULT_WARNING_MB", 8192))
+        except Exception:
+            mem_warning = 8192.0
         checks["checks"]["memory"] = {
-            "status": "ok" if memory_mb < 500 else "warning",
+            "status": "ok" if memory_mb < mem_warning else "warning",
             "usage_mb": round(memory_mb, 2),
-            "threshold_mb": 500,
+            "threshold_mb": mem_warning,
         }
 
         # 6. Circuit breaker status
@@ -823,12 +944,13 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
         # 7. FFmpeg availability
         try:
-            import shutil
+            from utils.media import get_ffmpeg_executable, is_ffmpeg_available
 
-            ffmpeg_path = shutil.which("ffmpeg")
+            available = is_ffmpeg_available()
             checks["checks"]["ffmpeg"] = {
-                "status": "ok" if ffmpeg_path else "warning",
-                "available": bool(ffmpeg_path),
+                "status": "ok" if available else "warning",
+                "available": available,
+                "path": get_ffmpeg_executable() if available else None,
             }
         except Exception:
             checks["checks"]["ffmpeg"] = {"status": "unknown"}
@@ -842,7 +964,7 @@ class HealthAPIServer:
     def __init__(self, host: str = HEALTH_API_HOST, port: int = HEALTH_API_PORT) -> None:
         self.host = host
         self.port = port
-        self.server: HTTPServer | None = None
+        self.server: ThreadingHTTPServer | None = None
         self.thread: Thread | None = None
         self.running = False
 
@@ -852,7 +974,9 @@ class HealthAPIServer:
             return True
 
         try:
-            self.server = HTTPServer((self.host, self.port), HealthRequestHandler)
+            # ThreadingHTTPServer so a slow request (DB liveness probe, deep
+            # health) doesn't block other concurrent health checks.
+            self.server = ThreadingHTTPServer((self.host, self.port), HealthRequestHandler)
             self.thread = Thread(target=self._run_server, daemon=True)
             self.thread.start()
             self.running = True
@@ -875,6 +999,13 @@ class HealthAPIServer:
         """Stop the health API server."""
         if self.server:
             self.server.shutdown()
+            # Release the listen socket immediately — without server_close()
+            # the FD lingers until the ThreadingHTTPServer object is GC'd,
+            # which can leak across hot reloads.
+            try:
+                self.server.server_close()
+            except Exception:
+                logger.debug("Health server socket close failed", exc_info=True)
             self.running = False
             logger.info("🏥 Health API stopped")
 
@@ -934,21 +1065,25 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 healthy = resp.status == 200
-                health_data.service_health[name] = {
-                    "status": "healthy" if healthy else "unhealthy",
-                    "status_code": resp.status,
-                    "last_check": datetime.now().isoformat(),
-                }
+                # Mutate service_health under the same data lock to_dict()
+                # uses, so concurrent reads can't observe a half-updated row.
+                with health_data._data_lock:
+                    health_data.service_health[name] = {
+                        "status": "healthy" if healthy else "unhealthy",
+                        "status_code": resp.status,
+                        "last_check": datetime.now(timezone.utc).isoformat(),
+                    }
                 if healthy:
                     _service_failures[name] = 0
                 else:
                     _service_failures[name] = _service_failures.get(name, 0) + 1
         except Exception:
             _service_failures[name] = _service_failures.get(name, 0) + 1
-            health_data.service_health[name] = {
-                "status": "unreachable",
-                "last_check": datetime.now().isoformat(),
-            }
+            with health_data._data_lock:
+                health_data.service_health[name] = {
+                    "status": "unreachable",
+                    "last_check": datetime.now(timezone.utc).isoformat(),
+                }
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -995,18 +1130,21 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
 
 
 def setup_health_hooks(bot: Bot) -> None:
-    """Setup event hooks to track bot health metrics."""
+    """Setup event hooks to track bot health metrics.
+
+    Idempotent: re-calling on the same bot instance won't double-register
+    any of the four listeners. Previously the guard sat AFTER the
+    on_ready registration, so on_ready could double-fire if
+    setup_health_hooks ran twice.
+    """
+    if getattr(bot, "_health_hooks_registered", False):
+        return
+    bot._health_hooks_registered = True  # type: ignore[attr-defined]
 
     @bot.listen("on_ready")
     async def health_on_ready():
         health_data.is_ready = True
         health_data.update_from_bot(bot)
-
-    # Track messages (be careful not to override existing handlers)
-    if hasattr(bot, "_health_on_message_set"):
-        return
-
-    bot._health_on_message_set = True  # type: ignore[attr-defined]
 
     @bot.listen("on_message")
     async def health_on_message(message):

@@ -3,7 +3,13 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; object-src 'none'; frame-ancestors 'none';">
+    <!-- CSP delivered via <meta>: NOTE that browsers ignore the
+         frame-ancestors directive when set this way (must be an HTTP
+         header). It's safe to omit here because Tauri's WebView is not
+         iframe-loadable in the first place — no embedding surface to
+         protect. Keeping it would just spam the console with a warning
+         on every page load. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; object-src 'none';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
@@ -338,17 +344,17 @@
                     <div class="modal-content">
                         <div class="modal-header">
                             <h2>🎭 New Conversation</h2>
-                            <button class="modal-close" id="modal-close">&times;</button>
+                            <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
                         </div>
                         <div class="modal-body">
                             <p>Select an AI role:</p>
                             <div class="role-cards">
-                                <div class="role-card selected" data-role="general">
+                                <div class="role-card selected" data-role="general" role="button" tabindex="0" aria-label="General Assistant">
                                     <div class="role-card-emoji">🤖</div>
                                     <div class="role-card-name">General Assistant</div>
                                     <div class="role-card-desc">Helpful AI for general tasks</div>
                                 </div>
-                                <div class="role-card" data-role="faust">
+                                <div class="role-card" data-role="faust" role="button" tabindex="0" aria-label="Faust">
                                     <div class="role-card-emoji">👻</div>
                                     <div class="role-card-name">Faust</div>
                                     <div class="role-card-desc">Sinner #2 from Limbus Company</div>
@@ -509,7 +515,7 @@
                     <div class="modal-content">
                         <div class="modal-header">
                             <h2>🧠 Add Memory</h2>
-                            <button class="modal-close" id="memory-modal-close">&times;</button>
+                            <button class="modal-close" id="memory-modal-close" aria-label="Close">&times;</button>
                         </div>
                         <div class="modal-body">
                             <div class="form-group">
@@ -672,9 +678,9 @@
                 <div class="settings-card">
                     <h2>🎨 Appearance</h2>
                     <div class="setting-row">
-                        <label for="theme-select">Theme</label>
+                        <span class="setting-label">Theme</span>
                         <div class="setting-control">
-                            <button class="btn" id="theme-toggle-settings">
+                            <button class="btn" id="theme-toggle-settings" aria-label="Toggle theme">
                                 <span id="theme-icon-settings">🌙</span> Toggle Theme (Ctrl+T)
                             </button>
                         </div>
@@ -831,7 +837,7 @@
         <div class="modal-content avatar-crop-content">
             <div class="modal-header">
                 <h2>✂️ Crop Avatar</h2>
-                <button class="modal-close" id="avatar-crop-close">&times;</button>
+                <button class="modal-close" id="avatar-crop-close" aria-label="Close">&times;</button>
             </div>
             <div class="crop-container">
                 <div class="crop-area" id="crop-area">

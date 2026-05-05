@@ -29,8 +29,6 @@ import asyncio
 import contextlib
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -45,6 +43,9 @@ except ImportError:
     db = None  # type: ignore
     DB_AVAILABLE = False
 
+
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ConversationSummary:
@@ -242,7 +243,21 @@ class SummaryArchiver:
         )
         if summary_id is not None and delete_originals:
             message_ids = [row["id"] for row in rows]
-            await self._delete_consolidated_messages(message_ids)
+            # If delete fails after the summary commit, the summary row
+            # already references content that still lives in ai_history —
+            # not catastrophic, but log loudly so an operator can replay
+            # the cleanup. A crash between save and delete is recoverable
+            # the same way (re-run consolidate_channel will skip already-
+            # summarized rows on next pass).
+            try:
+                await self._delete_consolidated_messages(message_ids)
+            except Exception:
+                self.logger.error(
+                    "❌ Summary %d saved but delete of %d originals failed for "
+                    "channel %d — re-run consolidation to clean up",
+                    summary_id, len(message_ids), channel_id,
+                    exc_info=True,
+                )
         elif summary_id is None:
             self.logger.warning(
                 "⚠️ Summary save failed for channel %d — keeping original messages",
@@ -267,11 +282,15 @@ class SummaryArchiver:
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
 
         async with db.get_connection() as conn:
+            # Compare timestamps as raw strings (ISO-8601 sorts lexically)
+            # so SQLite can use the timestamp index directly. Wrapping the
+            # column in datetime() forced a full-table scan even when the
+            # column was indexed.
             cursor = await conn.execute(
                 """
                 SELECT channel_id, COUNT(*) as count
                 FROM ai_history
-                WHERE datetime(timestamp) < datetime(?)
+                WHERE timestamp < ?
                 GROUP BY channel_id
                 HAVING count >= ?
             """,
@@ -306,6 +325,17 @@ class SummaryArchiver:
             )
             rows = list(await cursor.fetchall())
 
+        def _safe_dt(val: Any) -> datetime | None:
+            # Defensive parse: a malformed timestamp in DB shouldn't take
+            # down the whole get_channel_summaries call. Mirror the
+            # _parse_ts pattern used elsewhere in this module.
+            if not val:
+                return None
+            try:
+                return datetime.fromisoformat(val)
+            except (TypeError, ValueError):
+                return None
+
         summaries = []
         for row in rows:
             summary = ConversationSummary(
@@ -314,10 +344,10 @@ class SummaryArchiver:
                 summary=row["summary"],
                 key_topics=self._load_json_list(row["key_topics"]),
                 key_decisions=self._load_json_list(row["key_decisions"]),
-                start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
-                end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+                start_time=_safe_dt(row["start_time"]),
+                end_time=_safe_dt(row["end_time"]),
                 message_count=row["message_count"],
-                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+                created_at=_safe_dt(row["created_at"]),
             )
             summaries.append(summary)
 
@@ -488,13 +518,24 @@ class SummaryArchiver:
         if not DB_AVAILABLE or db is None or not message_ids:
             return
 
-        # Batch into chunks of 900 to avoid SQLite variable limit (default 999)
+        # Batch into chunks of 900 to avoid SQLite variable limit (default 999).
+        # Wrap the whole thing in a single transaction so a partial failure
+        # rolls back instead of leaving the table half-deleted while the
+        # corresponding summary row is already committed.
         batch_size = 900
         async with db.get_write_connection() as conn:
-            for i in range(0, len(message_ids), batch_size):
-                batch = message_ids[i : i + batch_size]
-                placeholders = ",".join("?" * len(batch))
-                await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch)
+            try:
+                for i in range(0, len(message_ids), batch_size):
+                    batch = message_ids[i : i + batch_size]
+                    placeholders = ",".join("?" * len(batch))
+                    await conn.execute(
+                        f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch
+                    )
+                await conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                raise
 
 
 # Global instance

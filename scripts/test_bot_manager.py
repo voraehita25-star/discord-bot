@@ -3,8 +3,12 @@ Test script for bot_manager.py functions
 """
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+# Anchor sys.path to the project root, not the caller's cwd. Otherwise
+# launching from `scripts/` (or any subdirectory) would fail to resolve
+# `scripts.bot_manager`.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.bot_manager import (
     find_all_bot_processes,

@@ -71,6 +71,11 @@ class TestWebSocketAuth:
         server._client_message_times = {}
         server._client_inflight = {}
         server._auth_deadline = 5.0
+        # Per-IP failed-auth tracker (added for H5 brute-force backoff)
+        server._auth_failures = {}
+        server._AUTH_FAIL_WINDOW = 60.0
+        server._AUTH_FAIL_THRESHOLD = 5
+        server._AUTH_FAIL_LOCKOUT = 300.0
 
         request = self._make_request(auth_header="Bearer wrong-token")
 
@@ -87,6 +92,10 @@ class TestWebSocketAuth:
         server.clients = set()
         server.MAX_CLIENTS = 20
         server._authenticated_clients = set()
+        server._auth_failures = {}
+        server._AUTH_FAIL_WINDOW = 60.0
+        server._AUTH_FAIL_THRESHOLD = 5
+        server._AUTH_FAIL_LOCKOUT = 300.0
 
         request = self._make_request(origin="https://evil.com", host="evil.com")
 

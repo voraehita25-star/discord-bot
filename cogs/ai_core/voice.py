@@ -6,10 +6,10 @@ Handles voice channel join/leave operations and status tracking.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
 import re
 from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -58,15 +58,15 @@ async def join_voice_channel(bot: Bot, channel_id: int) -> tuple[bool, str]:
 
         # Check if already connected to this channel
         voice_client = guild.voice_client
-        if voice_client:
+        if voice_client and voice_client.is_connected():
             if voice_client.channel and voice_client.channel.id == channel_id:
                 return True, f"✅ อยู่ใน **{voice_channel.name}** อยู่แล้ว"
             # Move to new channel
             await voice_client.move_to(voice_channel)
             return True, f"✅ ย้ายมารอใน **{voice_channel.name}** แล้ว"
 
-        # Join voice channel
-        await voice_channel.connect()
+        # Join voice channel (with timeout to prevent indefinite hang on gateway issues)
+        await voice_channel.connect(timeout=30.0)
         logger.info("🎤 AI joined voice channel: %s", voice_channel.name)
         return True, f"✅ เข้าไปรอใน **{voice_channel.name}** แล้ว"
 

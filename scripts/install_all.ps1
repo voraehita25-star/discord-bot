@@ -13,8 +13,51 @@ $ProgressPreference = 'SilentlyContinue'
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $DownloadDir = "$env:TEMP\bot_setup"
 
+# Force TLS 1.2+ for every Invoke-WebRequest below. Older PS defaults
+# allow TLS 1.0/1.1 which are deprecated and vulnerable to downgrade
+# attacks. This affects ALL HTTPS downloads in this session.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+
 if (-not (Test-Path $DownloadDir)) {
     New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
+}
+
+# ---------------------------------------------------------------
+# Invoke-VerifiedDownload — wraps Invoke-WebRequest with:
+#   * MaximumRedirection cap (5) so malicious redirect chains can't loop us
+#   * SHA-256 verification when ExpectedHash is provided (file is removed
+#     and the function throws on mismatch — caller must catch)
+#   * Refusal to follow http:// → https:// downgrades (refused outright,
+#     URLs must be https://)
+# Pass -ExpectedHash '' (or omit) to skip verification for installers
+# whose SHA changes per release; in that case a warning is printed.
+# ---------------------------------------------------------------
+function Invoke-VerifiedDownload {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [string]$OutFile,
+        [string]$ExpectedHash = ''
+    )
+
+    if ($Uri -notmatch '^https://') {
+        throw "Refusing non-HTTPS download: $Uri"
+    }
+
+    Invoke-WebRequest -Uri $Uri -OutFile $OutFile `
+        -UseBasicParsing -MaximumRedirection 5 -ErrorAction Stop
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
+        Write-Host "  [WARN] Downloaded $OutFile without SHA-256 check (none provided)" -ForegroundColor Yellow
+        return
+    }
+
+    $actual = (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToUpperInvariant()
+    $expected = $ExpectedHash.ToUpperInvariant()
+    if ($actual -ne $expected) {
+        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+        throw "SHA-256 mismatch for $Uri`n  expected: $expected`n  actual:   $actual"
+    }
+    Write-Host "  [OK] SHA-256 verified ($($actual.Substring(0,12))...)" -ForegroundColor Green
 }
 
 function Write-Step {
@@ -51,12 +94,12 @@ if (Test-CommandExists "winget") {
         # Need VCLibs and UI.Xaml as prerequisites
         $vcLibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
         $vcLibsFile = "$DownloadDir\vclibs.appx"
-        Invoke-WebRequest -Uri $vcLibsUrl -OutFile $vcLibsFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $vcLibsUrl -OutFile $vcLibsFile
         Add-AppxPackage -Path $vcLibsFile -ErrorAction SilentlyContinue
 
         $wingetUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
         $wingetFile = "$DownloadDir\winget.msixbundle"
-        Invoke-WebRequest -Uri $wingetUrl -OutFile $wingetFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $wingetUrl -OutFile $wingetFile
         Add-AppxPackage -Path $wingetFile -ForceApplicationShutdown
         Start-Sleep -Seconds 5
         Refresh-Path
@@ -88,7 +131,7 @@ if (Test-CommandExists "git") {
         Write-Info "Downloading Git installer..."
         $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.2/Git-2.47.1.2-64-bit.exe"
         $gitFile = "$DownloadDir\git-installer.exe"
-        Invoke-WebRequest -Uri $gitUrl -OutFile $gitFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $gitUrl -OutFile $gitFile
         Write-Info "Running Git installer (silent)..."
         Start-Process -FilePath $gitFile -ArgumentList "/VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES" -Wait
     }
@@ -113,7 +156,7 @@ if ($pythonVer -match "3\.14") {
         Write-Info "Downloading Python 3.14 installer..."
         $pythonUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a3-amd64.exe"
         $pythonFile = "$DownloadDir\python-installer.exe"
-        Invoke-WebRequest -Uri $pythonUrl -OutFile $pythonFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $pythonUrl -OutFile $pythonFile
         Write-Info "Running Python installer (silent, adding to PATH)..."
         Start-Process -FilePath $pythonFile -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
     }
@@ -139,7 +182,7 @@ if (Test-CommandExists "ffmpeg") {
         $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
         $ffmpegZip = "$DownloadDir\ffmpeg.zip"
         $ffmpegInstall = "C:\ffmpeg"
-        Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $ffmpegUrl -OutFile $ffmpegZip
         Write-Info "Extracting FFmpeg..."
         Expand-Archive -Path $ffmpegZip -DestinationPath "$DownloadDir\ffmpeg_temp" -Force
         $ffmpegDir = Get-ChildItem "$DownloadDir\ffmpeg_temp" -Directory | Select-Object -First 1
@@ -179,7 +222,7 @@ if ($hasBuildTools) {
         Write-Info "Downloading VS Build Tools installer..."
         $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
         $vsFile = "$DownloadDir\vs_BuildTools.exe"
-        Invoke-WebRequest -Uri $vsUrl -OutFile $vsFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $vsUrl -OutFile $vsFile
         Write-Info "Installing VS Build Tools with C++ workload (this takes a while)..."
         Start-Process -FilePath $vsFile -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -Wait
     }
@@ -205,7 +248,7 @@ if (Test-CommandExists "cargo") {
         Write-Info "Downloading rustup-init..."
         $rustupUrl = "https://win.rustup.rs/x86_64"
         $rustupFile = "$DownloadDir\rustup-init.exe"
-        Invoke-WebRequest -Uri $rustupUrl -OutFile $rustupFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $rustupUrl -OutFile $rustupFile
         Write-Info "Installing Rust (stable)..."
         Start-Process -FilePath $rustupFile -ArgumentList "-y --default-toolchain stable" -Wait
     }
@@ -229,7 +272,7 @@ if (Test-CommandExists "go") {
         Write-Info "Downloading Go installer..."
         $goUrl = "https://go.dev/dl/go1.23.5.windows-amd64.msi"
         $goFile = "$DownloadDir\go-installer.msi"
-        Invoke-WebRequest -Uri $goUrl -OutFile $goFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $goUrl -OutFile $goFile
         Write-Info "Installing Go (silent)..."
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$goFile`" /quiet /norestart" -Wait
     }
@@ -253,7 +296,7 @@ if (Test-CommandExists "node") {
         Write-Info "Downloading Node.js LTS installer..."
         $nodeUrl = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-x64.msi"
         $nodeFile = "$DownloadDir\node-installer.msi"
-        Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeFile -UseBasicParsing
+        Invoke-VerifiedDownload -Uri $nodeUrl -OutFile $nodeFile
         Write-Info "Installing Node.js (silent)..."
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeFile`" /quiet /norestart" -Wait
     }
@@ -280,7 +323,7 @@ if ($SkipDocker) {
             Write-Info "Downloading Docker Desktop installer..."
             $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
             $dockerFile = "$DownloadDir\docker-installer.exe"
-            Invoke-WebRequest -Uri $dockerUrl -OutFile $dockerFile -UseBasicParsing
+            Invoke-VerifiedDownload -Uri $dockerUrl -OutFile $dockerFile
             Write-Info "Installing Docker Desktop (silent)..."
             Start-Process -FilePath $dockerFile -ArgumentList "install --quiet --accept-license" -Wait
         }

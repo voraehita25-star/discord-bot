@@ -112,5 +112,17 @@ if _GUILD_ID_RP:
         # Add mappings for each character name and nickname
     }
 
+# Per-guild character image map.
+# Format: guild_id -> {character_name: image_path_relative_to_project_root}
+# Used by media_processor.load_character_image (line 325-345) to find a
+# character image when {{Name}} appears in the AI response. Keys are matched
+# case-insensitively against the message text; values must be paths under the
+# project directory (path traversal is blocked).
+SERVER_CHARACTER_NAMES: dict[int, dict[str, str]] = {}
+if _GUILD_ID_RP:
+    SERVER_CHARACTER_NAMES[_GUILD_ID_RP] = {
+        "Example Character": "assets/RP/example.png",
+    }
+
 # Backward compatibility aliases
 ROLEPLAY_ASSISTANT_INSTRUCTION = ROLEPLAY_PROMPT

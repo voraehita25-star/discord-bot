@@ -107,5 +107,13 @@ __all__ = [
 
 
 async def setup(bot):
-    """Setup function to add the AI cog to the bot."""
-    await bot.add_cog(AI(bot))
+    """Setup function to add the AI cog to the bot.
+
+    Delegate to ``ai_cog.setup`` so loading this package is equivalent to
+    loading ``cogs.ai_core.ai_cog``. Without this, calling
+    ``bot.load_extension("cogs.ai_core")`` silently skipped the
+    ``AIDebug`` and ``MemoryCommands`` sub-cogs that ``ai_cog.setup``
+    registers.
+    """
+    from .ai_cog import setup as _ai_cog_setup
+    await _ai_cog_setup(bot)

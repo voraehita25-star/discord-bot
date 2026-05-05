@@ -9,9 +9,9 @@ import asyncio
 import contextlib
 import copy
 import logging
-import random
 import threading
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -85,16 +85,27 @@ class ConversationBranchManager:
         self._branches: dict[str, ConversationBranch] = {}
         self._active_branch: dict[int, str | None] = {}  # channel_id -> branch_id
         self._message_counts: dict[int, int] = defaultdict(int)
-        self._lock = asyncio.Lock()  # Async lock for async cleanup
-        self._sync_lock = threading.Lock()  # Thread-safe lock for sync methods
+        # Single threading.Lock — all critical sections are short, in-memory
+        # dict ops protected by the GIL. Mixing asyncio.Lock + threading.Lock
+        # invited deadlock if the async holder yielded while the sync one
+        # was contended on a worker thread.
+        self._sync_lock = threading.Lock()
         self._cleanup_task: asyncio.Task | None = None
         self.logger = logging.getLogger("ConversationBranch")
 
     def start_cleanup_task(self) -> None:
         """Start background cleanup task for old branches and checkpoints."""
         if self._cleanup_task is None or self._cleanup_task.done():
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            self.logger.info("🌿 Branch cleanup task started")
+            try:
+                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+                self.logger.info("🌿 Branch cleanup task started")
+            except RuntimeError as e:
+                # No running event loop — caller invoked this from a sync
+                # context before the bot's async setup. Skip; the task
+                # will be (re)started when called again from on_ready.
+                self.logger.warning(
+                    "Branch cleanup task not started (no running loop): %s", e
+                )
 
     async def stop_cleanup_task(self) -> None:
         """Stop the cleanup task gracefully."""
@@ -132,29 +143,28 @@ class ConversationBranchManager:
         cutoff_time = time.time() - (max_age * 3600)
         removed = 0
 
-        async with self._lock:
-            with self._sync_lock:
-                # Clean old checkpoints
-                for channel_id in list(self._checkpoints.keys()):
-                    old_count = len(self._checkpoints[channel_id])
-                    self._checkpoints[channel_id] = [
-                        cp for cp in self._checkpoints[channel_id] if cp.timestamp > cutoff_time
-                    ]
-                    removed += old_count - len(self._checkpoints[channel_id])
+        with self._sync_lock:
+            # Clean old checkpoints
+            for channel_id in list(self._checkpoints.keys()):
+                old_count = len(self._checkpoints[channel_id])
+                self._checkpoints[channel_id] = [
+                    cp for cp in self._checkpoints[channel_id] if cp.timestamp > cutoff_time
+                ]
+                removed += old_count - len(self._checkpoints[channel_id])
 
-                    # Remove empty channel entries
-                    if not self._checkpoints[channel_id]:
-                        del self._checkpoints[channel_id]
+                # Remove empty channel entries
+                if not self._checkpoints[channel_id]:
+                    del self._checkpoints[channel_id]
 
-                # Clean old branches
-                for branch_id in list(self._branches.keys()):
-                    branch = self._branches[branch_id]
-                    if branch.created_at < cutoff_time:
-                        # Clear active branch reference if needed
-                        if self._active_branch.get(branch.channel_id) == branch_id:
-                            self._active_branch[branch.channel_id] = None
-                        del self._branches[branch_id]
-                        removed += 1
+            # Clean old branches
+            for branch_id in list(self._branches.keys()):
+                branch = self._branches[branch_id]
+                if branch.created_at < cutoff_time:
+                    # Clear active branch reference if needed
+                    if self._active_branch.get(branch.channel_id) == branch_id:
+                        self._active_branch[branch.channel_id] = None
+                    del self._branches[branch_id]
+                    removed += 1
 
         return removed
 
@@ -177,7 +187,10 @@ class ConversationBranchManager:
         Returns:
             Created checkpoint
         """
-        checkpoint_id = f"cp_{channel_id}_{int(time.time() * 1000)}_{random.randint(0, 999):03d}"
+        # uuid4 hex slice gives ~48 bits of entropy — collisions are
+        # vanishingly unlikely even at high checkpoint rates, unlike the
+        # old time+random scheme that collided under burst writes.
+        checkpoint_id = f"cp_{channel_id}_{uuid.uuid4().hex[:12]}"
 
         # Bound the snapshot to the trailing CHECKPOINT_HISTORY_LIMIT messages to
         # keep memory usage sane on very long channels.
@@ -226,15 +239,17 @@ class ConversationBranchManager:
         Returns:
             Created checkpoint if one was made, None otherwise
         """
-        self._message_counts[channel_id] += 1
-
-        if self._message_counts[channel_id] >= self.AUTO_CHECKPOINT_INTERVAL:
+        # Atomic increment-and-check under the sync lock so two concurrent
+        # callers can't both see the threshold reached and double-checkpoint.
+        with self._sync_lock:
+            self._message_counts[channel_id] += 1
+            if self._message_counts[channel_id] < self.AUTO_CHECKPOINT_INTERVAL:
+                return None
             self._message_counts[channel_id] = 0
-            return self.create_checkpoint(
-                channel_id, history, label=f"Auto-checkpoint at {len(history)} messages"
-            )
 
-        return None
+        return self.create_checkpoint(
+            channel_id, history, label=f"Auto-checkpoint at {len(history)} messages"
+        )
 
     def get_checkpoints(self, channel_id: int) -> list[ConversationCheckpoint]:
         """Get all checkpoints for a channel."""
@@ -254,7 +269,10 @@ class ConversationBranchManager:
         Returns:
             Checkpoint if found, None otherwise
         """
-        checkpoints = self._checkpoints.get(channel_id, [])
+        # Snapshot under the lock so concurrent cleanup can't trigger
+        # "list changed size during iteration" on the for-loop below.
+        with self._sync_lock:
+            checkpoints = list(self._checkpoints.get(channel_id, []))
 
         if not checkpoints:
             return None
@@ -314,7 +332,7 @@ class ConversationBranchManager:
         if checkpoint is None:
             return None
 
-        branch_id = f"br_{channel_id}_{int(time.time() * 1000)}_{random.randint(0, 999):03d}"
+        branch_id = f"br_{channel_id}_{uuid.uuid4().hex[:12]}"
 
         branch = ConversationBranch(
             branch_id=branch_id,
@@ -325,7 +343,8 @@ class ConversationBranchManager:
             label=label,
         )
 
-        self._branches[branch_id] = branch
+        with self._sync_lock:
+            self._branches[branch_id] = branch
 
         self.logger.info("🌿 Branch created: %s from checkpoint %s", branch_id, checkpoint_id)
 
@@ -346,29 +365,33 @@ class ConversationBranchManager:
         """
         if branch_id is None:
             # Switch back to main
-            self._active_branch[channel_id] = None
+            with self._sync_lock:
+                self._active_branch[channel_id] = None
             self.logger.info("🌿 Switched to main timeline for channel %d", channel_id)
             return None  # Caller should use main history
 
-        branch = self._branches.get(branch_id)
+        with self._sync_lock:
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.channel_id != channel_id:
+                self.logger.warning("Branch not found: %s", branch_id)
+                return None
+            self._active_branch[channel_id] = branch_id
+            history_snapshot = [copy.deepcopy(msg) for msg in branch.history]
 
-        if branch is None or branch.channel_id != channel_id:
-            self.logger.warning("Branch not found: %s", branch_id)
-            return None
-
-        self._active_branch[channel_id] = branch_id
-
-        self.logger.info("🌿 Switched to branch: %s (%d messages)", branch_id, len(branch.history))
-
-        return [copy.deepcopy(msg) for msg in branch.history]
+        self.logger.info("🌿 Switched to branch: %s (%d messages)", branch_id, len(history_snapshot))
+        return history_snapshot
 
     def get_active_branch(self, channel_id: int) -> str | None:
         """Get the active branch ID for a channel (None = main timeline)."""
-        return self._active_branch.get(channel_id)
+        with self._sync_lock:
+            return self._active_branch.get(channel_id)
 
     def list_branches(self, channel_id: int) -> list[ConversationBranch]:
         """List all branches for a channel."""
-        return [branch for branch in self._branches.values() if branch.channel_id == channel_id]
+        # Snapshot under the lock so cleanup_old_data can't trigger
+        # "dictionary changed size during iteration".
+        with self._sync_lock:
+            return [b for b in self._branches.values() if b.channel_id == channel_id]
 
     def update_branch_history(self, channel_id: int, history: list[dict[str, Any]]) -> None:
         """
@@ -378,47 +401,58 @@ class ConversationBranchManager:
             channel_id: Discord channel ID
             history: Updated history
         """
-        branch_id = self._active_branch.get(channel_id)
-
-        if branch_id and branch_id in self._branches:
-            self._branches[branch_id].history = [copy.deepcopy(msg) for msg in history]
+        # Bound the snapshot the same way create_checkpoint does — without
+        # this, every turn deep-copied the entire (potentially huge) history
+        # into the branch, causing GC pressure + memory blow-up.
+        bounded = (
+            history[-self.CHECKPOINT_HISTORY_LIMIT:]
+            if len(history) > self.CHECKPOINT_HISTORY_LIMIT
+            else history
+        )
+        with self._sync_lock:
+            branch_id = self._active_branch.get(channel_id)
+            if branch_id and branch_id in self._branches:
+                self._branches[branch_id].history = [copy.deepcopy(msg) for msg in bounded]
 
     def delete_branch(self, branch_id: str) -> bool:
         """Delete a branch."""
-        if branch_id in self._branches:
-            branch = self._branches.pop(branch_id)
-
-            # Clear active branch if it was this one
-            if self._active_branch.get(branch.channel_id) == branch_id:
-                self._active_branch[branch.channel_id] = None
-
-            self.logger.info("🗑️ Deleted branch: %s", branch_id)
-            return True
-
+        with self._sync_lock:
+            if branch_id in self._branches:
+                branch = self._branches.pop(branch_id)
+                # Clear active branch if it was this one
+                if self._active_branch.get(branch.channel_id) == branch_id:
+                    self._active_branch[branch.channel_id] = None
+                self.logger.info("🗑️ Deleted branch: %s", branch_id)
+                return True
         return False
 
     def clear_channel(self, channel_id: int) -> None:
         """Clear all checkpoints and branches for a channel."""
-        self._checkpoints[channel_id].clear()
-        self._active_branch.pop(channel_id, None)
-        self._message_counts.pop(channel_id, None)
+        with self._sync_lock:
+            # `pop` instead of `[].clear()` so we don't accidentally create
+            # an empty defaultdict entry for a channel with no checkpoints.
+            self._checkpoints.pop(channel_id, None)
+            self._active_branch.pop(channel_id, None)
+            self._message_counts.pop(channel_id, None)
 
-        # Remove branches for this channel
-        to_remove = [
-            branch_id
-            for branch_id, branch in self._branches.items()
-            if branch.channel_id == channel_id
-        ]
-        for branch_id in to_remove:
-            del self._branches[branch_id]
+            # Remove branches for this channel — under the same lock so
+            # concurrent create_branch can't add a new entry mid-iteration.
+            to_remove = [
+                branch_id
+                for branch_id, branch in self._branches.items()
+                if branch.channel_id == channel_id
+            ]
+            for branch_id in to_remove:
+                del self._branches[branch_id]
 
         self.logger.info("🧹 Cleared branching data for channel %d", channel_id)
 
     def get_stats(self) -> dict[str, Any]:
         """Get statistics about branching system."""
-        total_checkpoints = sum(len(cps) for cps in self._checkpoints.values())
-        total_branches = len(self._branches)
-        channels_with_checkpoints = len(self._checkpoints)
+        with self._sync_lock:
+            total_checkpoints = sum(len(cps) for cps in self._checkpoints.values())
+            total_branches = len(self._branches)
+            channels_with_checkpoints = len(self._checkpoints)
 
         return {
             "total_checkpoints": total_checkpoints,

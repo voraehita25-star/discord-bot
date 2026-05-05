@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import sys
 import threading
 import time
@@ -113,8 +114,14 @@ class TTLCache(Generic[K, V]):
         self.logger = logging.getLogger(f"TTLCache.{name}")
 
     def _is_expired(self, entry: CacheEntry[V]) -> bool:
-        """Check if entry has expired."""
-        return time.time() - entry.created_at > self.ttl
+        """Check if entry has expired.
+
+        Uses ``time.monotonic`` for TTL math so backward wall-clock jumps
+        (NTP sync, manual clock change) can't make a cached entry suddenly
+        appear unexpired or evict a fresh one. ``created_at`` is itself
+        recorded with ``time.monotonic`` in ``set()``.
+        """
+        return time.monotonic() - entry.created_at > self.ttl
 
     def _estimate_size(self, value: V) -> int:
         """Estimate memory size of value."""
@@ -139,7 +146,7 @@ class TTLCache(Generic[K, V]):
                 return default
 
             # Update access time and move to end (most recently used)
-            entry.last_accessed = time.time()
+            entry.last_accessed = time.monotonic()
             entry.hits += 1
             self._cache.move_to_end(key)
             self._hits += 1
@@ -148,7 +155,8 @@ class TTLCache(Generic[K, V]):
 
     def set(self, key: K, value: V) -> None:
         """Set value in cache, evicting LRU if necessary."""
-        now = time.time()
+        # Use monotonic for TTL math — see _is_expired docstring.
+        now = time.monotonic()
 
         with self._lock:
             # Remove if exists to update position
@@ -188,7 +196,8 @@ class TTLCache(Generic[K, V]):
     def cleanup_expired(self) -> int:
         """Remove expired entries. Returns count removed."""
         with self._lock:
-            now = time.time()
+            # Use monotonic for TTL math — see _is_expired docstring.
+            now = time.monotonic()
             expired_keys = [
                 key for key, entry in self._cache.items()
                 if now - entry.created_at > self.ttl
@@ -425,11 +434,12 @@ class MemoryMonitor:
                 results[name] = -1
 
         if aggressive:
-            # Force garbage collection in a non-blocking way
-            # gc.collect() can take 100-500ms, so we don't run it inline
-            # Instead, we schedule it as a background task
+            # NOTE: this is the SYNC entry point — generation=0 only, which
+            # is typically <10 ms but still synchronous. Async callers
+            # should prefer ``_run_cleanups_async`` which runs full
+            # gc.collect in a worker thread.
             import gc
-            gc.collect(generation=0)  # Fast collection of youngest generation only
+            gc.collect(generation=0)
 
         return results
 
@@ -438,10 +448,17 @@ class MemoryMonitor:
         results = self._run_cleanups(aggressive=False)  # Run sync cleanups
 
         if aggressive:
-            # Run full gc.collect in executor to avoid blocking event loop
+            # gc.collect() holds the GIL for its entire duration (CPython
+            # implementation detail), so running it in a thread does NOT
+            # keep the event loop responsive — the loop pauses for the full
+            # collection. The previous comment claiming otherwise was wrong.
+            # Walk through generations 0,1,2 in separate steps so each
+            # individual call is short and the loop gets a chance to make
+            # progress between them.
             import gc
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, gc.collect)
+            for generation in (0, 1, 2):
+                await loop.run_in_executor(None, gc.collect, generation)
 
         return results
 
@@ -483,25 +500,73 @@ class MemoryMonitor:
                 self.logger.error("Memory monitor error: %s", e)
 
     def start(self) -> None:
-        """Start background monitoring."""
+        """Start background monitoring.
+
+        ``asyncio.create_task`` raises ``RuntimeError`` if there's no running
+        event loop (e.g. start() called from synchronous setup before the
+        bot has begun ``run()``). Treat that as a soft no-op so the rest of
+        the cog can still initialize; callers can re-invoke once the loop
+        is up via the bot's on_ready hook.
+        """
         if self._running:
             return
 
+        try:
+            self._monitor_task = asyncio.create_task(self._monitor_loop())
+        except RuntimeError as exc:
+            self._running = False
+            self._monitor_task = None
+            self.logger.warning(
+                "🧠 Memory monitor not started — no running event loop (%s); "
+                "call start() again after the loop is running.",
+                exc,
+            )
+            return
+
         self._running = True
-        self._monitor_task = asyncio.create_task(self._monitor_loop())
         self.logger.info(
             "🧠 Memory monitor started (warning: %.0f MB, critical: %.0f MB)",
             self.warning_mb, self.critical_mb
         )
 
     def stop(self) -> None:
-        """Stop background monitoring."""
+        """Stop background monitoring (fire-and-forget).
+
+        WARNING: This is sync and does NOT await the monitor task's exit.
+        Cancellation is scheduled but the task may still be in the middle
+        of a cleanup pass when this returns. Pending awaitables inside the
+        loop (e.g. ``_run_cleanups_async``) will see CancelledError on the
+        next checkpoint, but synchronous side effects already in progress
+        complete normally.
+
+        For a clean async-aware teardown that awaits the monitor's exit,
+        prefer ``await astop()``.
+        """
         self._running = False
 
         if self._monitor_task and not self._monitor_task.done():
+            # Issue the cancel request — the loop will deliver CancelledError
+            # at the next await point inside ``_monitor_loop``.
             self._monitor_task.cancel()
+            self.logger.warning(
+                "🧠 stop() requested cancellation but did NOT await; use astop() "
+                "for deterministic shutdown."
+            )
             self._monitor_task = None
 
+        self.logger.info("🧠 Memory monitor stopped")
+
+    async def astop(self) -> None:
+        """Async-aware stop — cancels the monitor task and awaits it."""
+        self._running = False
+        task = self._monitor_task
+        self._monitor_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self.logger.info("🧠 Memory monitor stopped")
 
     def get_status(self) -> dict[str, Any]:
@@ -540,6 +605,30 @@ def cached_with_ttl(
     """
     cache: TTLCache[str, Any] = TTLCache(ttl=ttl, max_size=max_size, name="decorator")
 
+    def _build_default_key(func_name: str, args: tuple, kwargs: dict) -> str:
+        """Build a cache key without relying on repr() of mutable args.
+
+        repr() of a list/dict only reflects the current state; a mutation
+        between cache writes can collide unrelated calls. We coerce mutable
+        args to ``id(arg)`` so the key reflects identity (stable lifetime
+        of the object) rather than its momentary contents. Callers that
+        need value-based keying should pass an explicit ``key_fn``.
+        """
+        def _coerce(v: Any) -> Any:
+            try:
+                hash(v)
+                return v
+            except TypeError:
+                return f"<id:{id(v)}>"
+            return v
+
+        coerced_args = tuple(_coerce(a) for a in args)
+        coerced_kwargs = sorted(
+            ((k, _coerce(v)) for k, v in kwargs.items()),
+            key=lambda kv: kv[0],
+        )
+        return f"{func_name}:{coerced_args!s}:{coerced_kwargs!s}"
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -547,7 +636,7 @@ def cached_with_ttl(
             if key_fn:
                 key = key_fn(*args, **kwargs)
             else:
-                key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
+                key = _build_default_key(func.__name__, args, kwargs)
 
             # Check cache (use sentinel to distinguish cached None from miss)
             cached = cache.get(key, _CACHE_MISS)
@@ -566,7 +655,7 @@ def cached_with_ttl(
             if key_fn:
                 key = key_fn(*args, **kwargs)
             else:
-                key = f"{func.__name__}:{args}:{sorted(kwargs.items())}"
+                key = _build_default_key(func.__name__, args, kwargs)
 
             cached = cache.get(key, _CACHE_MISS)
             if cached is not _CACHE_MISS:
@@ -592,11 +681,28 @@ def cached_with_ttl(
     return decorator
 
 
-# Global memory monitor instance — tuned for 32GB DDR5 system
+def _env_float(name: str, default: float) -> float:
+    """Read a float from env, falling back to ``default`` on missing/invalid."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Global memory monitor instance.
+# Defaults are tuned for a typical Discord-bot host (≤2 GiB resident),
+# NOT a 32 GiB workstation. The previous defaults of 8 GiB warning /
+# 16 GiB critical sat above the OOM-killer threshold on every host the
+# bot actually runs on, so the cleanup hooks never fired in practice
+# and the bot would just get killed instead. Override per-host with
+# BOT_MEMORY_WARNING_MB / BOT_MEMORY_CRITICAL_MB / BOT_MEMORY_CHECK_INTERVAL.
 memory_monitor = MemoryMonitor(
-    warning_mb=8192.0,    # 8 GB — start light cleanup
-    critical_mb=16384.0,  # 16 GB — aggressive gc.collect + eviction
-    check_interval=30.0,  # Check every 30s (fast CPU can handle it)
+    warning_mb=_env_float("BOT_MEMORY_WARNING_MB", 1024.0),     # 1 GiB
+    critical_mb=_env_float("BOT_MEMORY_CRITICAL_MB", 1536.0),   # 1.5 GiB
+    check_interval=_env_float("BOT_MEMORY_CHECK_INTERVAL", 30.0),
 )
 
 

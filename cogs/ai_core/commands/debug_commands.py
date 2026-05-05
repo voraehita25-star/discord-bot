@@ -150,7 +150,11 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.memory.entity_memory import entity_memory
 
-            entity_count = len(entity_memory._cache) if hasattr(entity_memory, "_cache") else 0
+            # `_cache` is private; treat any non-Sized object the same as
+            # missing, so a partially-initialised entity_memory doesn't blow
+            # up the debug command with TypeError on len().
+            _cache_obj = getattr(entity_memory, "_cache", None)
+            entity_count = len(_cache_obj) if hasattr(_cache_obj, "__len__") else 0
             embed.add_field(
                 name="👤 Entity Memory",
                 value=f"```\nCached: {entity_count} entities```",

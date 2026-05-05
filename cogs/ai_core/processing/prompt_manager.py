@@ -6,8 +6,6 @@ Manages AI system prompts with template support.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
 import random
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +19,9 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
+
+
+logger = logging.getLogger(__name__)
 
 class PromptManager:
     """
@@ -279,10 +280,28 @@ class PromptManager:
         return "\n".join(parts)
 
     def reload(self) -> None:
-        """Reload all templates from disk."""
-        self.templates.clear()
-        self._load_templates()
-        self.logger.info("Templates reloaded")
+        """Reload all templates from disk atomically.
+
+        Build into a temp ``new_templates`` dict and only swap it onto
+        ``self.templates`` once the load succeeds. Previously we cleared
+        ``self.templates`` before loading, so a failure mid-load left the
+        manager with an empty (or half-built) template set even when the
+        ``except`` branch tried to restore the previous version.
+        """
+        prev_templates = self.templates
+        try:
+            new_templates: dict[str, Any] = {}
+            # Temporarily swap so `_load_templates` (which writes to
+            # `self.templates`) populates the new dict instead.
+            self.templates = new_templates
+            self._load_templates()
+        except Exception:
+            self.templates = prev_templates
+            self.logger.exception("Reload failed; kept previous templates")
+            raise
+        # _load_templates fills `self.templates` (= new_templates) directly;
+        # the assignment above is the atomic swap point.
+        self.logger.info("Templates reloaded (%d entries)", len(self.templates))
 
 
 # Global instance

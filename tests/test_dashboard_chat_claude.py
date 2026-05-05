@@ -171,7 +171,9 @@ class TestClaudeDashboardRetry:
         assert all("/3" not in message["content"] for message in retry_chunks)
         assert "(attempt 4)" in retry_chunks[-1]["content"]
         assert ws.find("stream_end")[0]["full_response"] == "Edited response"
-        mock_db.update_dashboard_message.assert_awaited_once_with(2, "Edited response")
+        mock_db.update_dashboard_message.assert_awaited_once_with(
+            2, "Edited response", expected_conversation_id="conv-1"
+        )
         assert client.attempts == 5
         assert [call.args[0] for call in sleep_mock.await_args_list] == [2, 4, 8, 16]
 

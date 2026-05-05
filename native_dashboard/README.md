@@ -19,7 +19,7 @@
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules). |
+| 🧪 **Unit Tests** | 189 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
 | 🤖 **Headless E2E** | 63 Playwright tests in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots. Runs in CI on Chromium with python http.server + mocked Tauri IPC. |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
@@ -133,13 +133,13 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 8 vitest files (167 tests total)
+│       └── *.test.ts             # 7 vitest files (128 tests total)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # 18 smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
 │   ├── interactions.spec.ts      # 16 user-flow tests (clicks, typing, keyboard nav)
-│   ├── a11y.spec.ts              # 8 axe-core audits — zero critical/serious WCAG 2.1 AA violations
-│   ├── visual-regression.spec.ts # 8 page/theme/modal screenshot baselines (chromium-win32, <0.5% pixel diff)
+│   ├── a11y.spec.ts              # 4 axe-core audits — zero critical/serious WCAG 2.1 AA violations
+│   ├── visual-regression.spec.ts # 8 visual tests producing 9 screenshot baselines (chromium-win32, <0.5% pixel diff)
 │   ├── visual-regression.spec.ts-snapshots/  # Baseline PNGs (checked into git)
 │   └── screenshots.spec.ts       # 13 capture targets for manual inspection
 ├── scripts/
@@ -173,8 +173,11 @@ native_dashboard/
 ```bash
 cd native_dashboard
 npm install          # First time only
-npm run build        # Compile TypeScript
-npm test             # Run unit tests
+npm run build        # Compile TypeScript (tsc → ui/)
+npm run watch        # Continuous TS recompile (alternative to one-shot build)
+npm test             # Run vitest unit tests
+npm run dev          # Shortcut: npm run build && cargo tauri dev
+# or run cargo tauri dev manually after npm run build:
 cargo tauri dev
 ```
 
@@ -234,8 +237,10 @@ npm run test:e2e:screenshots   # Capture screenshots for manual inspection
 ### Output Files
 
 ```
-target/release/디스코드 봇 대시보드.exe           # Main executable
-target/release/bundle/nsis/디스코드 봇 대시보드_1.0.0_x64-setup.exe  # Installer
+target/release/bot-dashboard.exe                  # Source binary (Cargo output)
+target/release/Discord Bot Dashboard.exe          # English alias (copy)
+target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
+target/release/bundle/nsis/디스코드 봇 대시보드_2.0.0_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI

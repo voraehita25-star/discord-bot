@@ -29,6 +29,7 @@ import base64
 import binascii
 import logging
 import re
+import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -37,6 +38,29 @@ if TYPE_CHECKING:
     from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Defuse python-docx's XML parser. python-docx uses lxml under the hood; without
+# this guard, a DOCX with crafted external entity references can read local
+# files, hit internal URLs, or chew CPU via billion-laughs expansion. We import
+# defusedxml.lxml which provides a hardened replacement etree, then monkey-patch
+# docx.oxml.parser.etree before the first docx.Document(...) call so the parse
+# uses the safe variant. If defusedxml is missing we disable DOCX entirely.
+try:
+    import defusedxml.lxml as _defused_lxml
+    from defusedxml.common import EntitiesForbidden
+    from defusedxml.lxml import _etree as _defused_etree
+
+    DOCX_DISABLED = False
+except ImportError:
+    _defused_lxml = None  # type: ignore[assignment]
+    _defused_etree = None  # type: ignore[assignment]
+    EntitiesForbidden = Exception  # type: ignore[assignment, misc]
+    DOCX_DISABLED = True
+    logger.critical(
+        "defusedxml not installed — DOCX extraction is DISABLED to avoid XXE risk. "
+        "Install defusedxml to re-enable DOCX support."
+    )
 
 
 # Cap extracted text per file. 500K chars ≈ ~120-200K tokens depending on
@@ -140,8 +164,36 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
         logger.info("Skipping encrypted PDF: %s", filename)
         return None
 
+    # Reject excessively large PDFs before doing per-page extraction. A
+    # malicious or malformed PDF with tens of thousands of pages can spin
+    # pypdf for minutes per file; pages we'd never use anyway are bounded
+    # by MAX_DOC_PAGES below, but we want to fail fast rather than chew
+    # through 50k empty pages first.
+    MAX_DOC_PAGES = 2000
+    try:
+        page_count = len(reader.pages)
+    except Exception:
+        page_count = 0
+    if page_count > MAX_DOC_PAGES:
+        logger.warning(
+            "Rejecting oversized PDF %s (%d pages > %d cap)",
+            filename, page_count, MAX_DOC_PAGES,
+        )
+        return None
+
     pages: list[str] = []
+    start = time.monotonic()
     for idx, page in enumerate(reader.pages):
+        # Wall-clock guard: a single PDF with thousands of dense pages
+        # (or pathological text operators) can keep pypdf busy for minutes
+        # and starve the event loop. 60s gives even a 2k-page document a
+        # fair shot while still bounding worst-case latency.
+        if time.monotonic() - start > 60:
+            logger.warning(
+                "PDF extraction timeout for %s after page %d, returning partial result",
+                filename, idx,
+            )
+            break
         try:
             # "layout" mode reconstructs text using the PDF's positional
             # information, which preserves real line breaks from the source
@@ -187,18 +239,66 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
 
 def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
     """Decode base64 DOCX and pull paragraph text via python-docx."""
+    if DOCX_DISABLED:
+        logger.warning("DOCX extraction disabled (defusedxml missing): %s", filename)
+        return None
+
     docx_bytes = _decode_data_url(data_field)
     if docx_bytes is None:
         return None
 
     try:
         import docx
+        import docx.oxml.parser as _docx_parser
     except ImportError:
         logger.warning("python-docx not installed — DOCX extraction unavailable")
         return None
 
+    # Swap python-docx's lxml.etree for the defused variant before parsing.
+    # Done lazily here (rather than at module import) so installs that don't
+    # have python-docx still load this module cleanly.
+    if _defused_etree is not None:
+        _docx_parser.etree = _defused_etree
+
+    # Zip-bomb guard. DOCX is a ZIP container; python-docx itself does not
+    # cap per-entry decompression. A 1 KiB DOCX whose [Content_Types].xml
+    # decompresses to multi-GB would blow out the process. The header-
+    # declared file_size is forgeable — a malicious DOCX can advertise a
+    # tiny size while actually decompressing to gigabytes — so we stream-
+    # decompress every entry in 64 KiB chunks and abort the moment the
+    # observed bytes exceed the cap. Cap is a hard 50 MiB aggregate.
+    import zipfile
+    _MAX_DOCX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MiB aggregate (real bytes)
+    _CHUNK = 64 * 1024
+    try:
+        with zipfile.ZipFile(BytesIO(docx_bytes)) as zf:
+            total = 0
+            for info in zf.infolist():
+                with zf.open(info.filename) as entry:
+                    while True:
+                        chunk = entry.read(_CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _MAX_DOCX_TOTAL_BYTES:
+                            logger.warning(
+                                "DOCX %s exceeded %d-byte decompression cap "
+                                "(zip-bomb guard)",
+                                filename, _MAX_DOCX_TOTAL_BYTES,
+                            )
+                            return None
+    except zipfile.BadZipFile:
+        logger.warning("DOCX %s is not a valid zip", filename)
+        return None
+    except Exception:
+        logger.exception("DOCX %s zip preflight failed", filename)
+        return None
+
     try:
         document = docx.Document(BytesIO(docx_bytes))
+    except EntitiesForbidden:
+        logger.warning("DOCX %s rejected: contains forbidden XML entities (XXE guard)", filename)
+        return None
     except Exception as e:
         logger.warning("python-docx failed to parse %s: %s", filename, e)
         return None
@@ -487,6 +587,23 @@ MAX_TOTAL_CHARS = 20_000_000
 # files don't blow past ``MAX_TOTAL_CHARS`` before it notices.
 MAX_ROWS = 200
 
+# Module-level lock guarding the cap-check / evict / save sequence. Each of
+# the underlying DB calls opens its own write connection, so the multi-await
+# sequence is otherwise vulnerable to TOCTOU between concurrent uploaders
+# (two large docs both pass the size check, both save, both blow past the cap).
+# Lazily created so test code that imports the module without an event loop
+# doesn't blow up on import.
+_persist_lock: Any = None
+
+
+def _get_persist_lock() -> Any:
+    """Return the module-level asyncio.Lock, creating it on first use."""
+    global _persist_lock
+    if _persist_lock is None:
+        import asyncio as _asyncio
+        _persist_lock = _asyncio.Lock()
+    return _persist_lock
+
 
 async def extract_and_persist(
     documents: list[Any],
@@ -525,6 +642,7 @@ async def extract_and_persist(
         return_exceptions=True,
     )
 
+    persist_lock = _get_persist_lock()
     for idx, extracted in enumerate(extractions):
         if isinstance(extracted, BaseException):
             logger.warning(
@@ -535,44 +653,61 @@ async def extract_and_persist(
         if extracted is None or not extracted.text.strip():
             continue
 
-        # Enforce aggregate caps with LRU eviction. Loop rather than a
-        # single check-and-delete because a freshly added big doc could
-        # require evicting several older entries.
-        fits = False
-        try:
-            while True:
-                total = await db.total_document_memories_size()
-                count = await db.count_document_memories()
-                if total + extracted.char_count <= MAX_TOTAL_CHARS and count < MAX_ROWS:
-                    fits = True
-                    break
-                evicted = await db.delete_oldest_document_memory()
-                if not evicted:
-                    # Empty table but still can't fit — incoming doc is
-                    # larger than the whole cap. Skip it rather than spin.
-                    logger.warning(
-                        "Dropping document %s: %d chars exceeds total cap %d",
-                        extracted.filename, extracted.char_count, MAX_TOTAL_CHARS,
-                    )
-                    break
-        except Exception as e:
-            logger.warning("Document memory cap check failed: %s", e)
-            continue
-        if not fits:
+        # Reject docs larger than the entire aggregate cap up-front. Without
+        # this, the eviction loop below would dutifully delete every existing
+        # document memory before discovering the incoming one still doesn't
+        # fit — destroying every other user's saved doc to make room for a
+        # file that can never fit anyway.
+        if extracted.char_count > MAX_TOTAL_CHARS:
+            logger.warning(
+                "Single document %s exceeds total cap (%d > %d); rejecting",
+                extracted.filename, extracted.char_count, MAX_TOTAL_CHARS,
+            )
             continue
 
-        try:
-            memory_id = await db.save_document_memory(
-                filename=extracted.filename,
-                file_kind=extracted.kind,
-                extracted_text=extracted.text,
-                char_count=extracted.char_count,
-                page_count=extracted.page_count,
-                source_conversation_id=source_conversation_id,
-            )
-        except Exception as e:
-            logger.warning("Failed to save document memory for %s: %s", extracted.filename, e)
-            continue
+        # Serialize the cap-check / evict / save sequence so two concurrent
+        # uploads can't both pass the size check and then both write past
+        # the cap.
+        async with persist_lock:
+            # Enforce aggregate caps with LRU eviction. Loop rather than a
+            # single check-and-delete because a freshly added big doc could
+            # require evicting several older entries.
+            fits = False
+            try:
+                while True:
+                    total = await db.total_document_memories_size()
+                    count = await db.count_document_memories()
+                    if total + extracted.char_count <= MAX_TOTAL_CHARS and count < MAX_ROWS:
+                        fits = True
+                        break
+                    evicted = await db.delete_oldest_document_memory()
+                    if not evicted:
+                        # Empty table but still can't fit — shouldn't happen
+                        # because the up-front guard already filters this,
+                        # but keep the safety bail-out.
+                        logger.warning(
+                            "Dropping document %s: %d chars exceeds total cap %d",
+                            extracted.filename, extracted.char_count, MAX_TOTAL_CHARS,
+                        )
+                        break
+            except Exception as e:
+                logger.warning("Document memory cap check failed: %s", e)
+                continue
+            if not fits:
+                continue
+
+            try:
+                memory_id = await db.save_document_memory(
+                    filename=extracted.filename,
+                    file_kind=extracted.kind,
+                    extracted_text=extracted.text,
+                    char_count=extracted.char_count,
+                    page_count=extracted.page_count,
+                    source_conversation_id=source_conversation_id,
+                )
+            except Exception as e:
+                logger.warning("Failed to save document memory for %s: %s", extracted.filename, e)
+                continue
 
         saved.append({
             "id": memory_id,

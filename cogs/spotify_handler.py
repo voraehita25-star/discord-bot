@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 from collections.abc import Callable
 from http.client import RemoteDisconnected
@@ -22,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 import spotipy
-from requests.exceptions import (  # type: ignore[import-untyped]
+from requests.exceptions import (
     ConnectionError as RequestsConnectionError,
     ReadTimeout,
 )
@@ -39,6 +37,9 @@ try:
 except ImportError:
     CIRCUIT_BREAKER_AVAILABLE = False
     spotify_circuit = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
@@ -58,9 +59,45 @@ class SpotifyHandler:
         self._setup_client()
 
     def _setup_client(self) -> None:
-        """Initialize Spotify client with credentials from environment."""
-        client_id = os.getenv("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
-        client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET")
+        """Initialize Spotify client with credentials from environment.
+
+        Prefer ``SPOTIPY_*`` (the spotipy library convention) over
+        ``SPOTIFY_*`` for backwards compatibility. Warn if both are set
+        with different values so an operator who left a stale value in
+        their env after a credential rotation isn't silently using the
+        wrong identity.
+        """
+        spotipy_id = os.getenv("SPOTIPY_CLIENT_ID")
+        spotify_id = os.getenv("SPOTIFY_CLIENT_ID")
+        spotipy_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
+        spotify_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+        if spotipy_id and spotify_id and spotipy_id != spotify_id:
+            logger.warning(
+                "SPOTIPY_CLIENT_ID and SPOTIFY_CLIENT_ID are both set with "
+                "different values; preferring SPOTIPY_CLIENT_ID. Remove the "
+                "unused one to avoid surprise credential swaps."
+            )
+        if spotipy_secret and spotify_secret and spotipy_secret != spotify_secret:
+            logger.warning(
+                "SPOTIPY_CLIENT_SECRET and SPOTIFY_CLIENT_SECRET differ; "
+                "preferring SPOTIPY_CLIENT_SECRET."
+            )
+        client_id = spotipy_id or spotify_id
+        client_secret = spotipy_secret or spotify_secret
+
+        # Close any pre-existing session before reassigning self.sp.
+        # Recreate-on-retry would otherwise keep the old requests.Session
+        # alive, leaking sockets/file descriptors each time.
+        if self.sp is not None:
+            old_session = getattr(self.sp, "_session", None) or (
+                getattr(self.sp.auth_manager, "_session", None)
+                if hasattr(self.sp, "auth_manager") else None
+            )
+            if old_session is not None:
+                try:
+                    old_session.close()
+                except Exception:
+                    pass
 
         if client_id and client_secret:
             try:
@@ -81,12 +118,25 @@ class SpotifyHandler:
         """Cleanup Spotify client resources.
 
         Call this when the Music cog unloads to release resources.
+
+        Tries the public `session` attribute first, then the legacy `_session`
+        private attribute as a fallback for older spotipy versions. If neither
+        is present (e.g., spotipy upgraded again and renamed it), we log at
+        debug level so an upgrade surfaces this site instead of silently
+        leaking the underlying requests Session.
         """
-        if self.sp and hasattr(self.sp, '_session'):
-            try:
-                self.sp._session.close()
-            except Exception:
-                logger.debug("Failed to close Spotify session during cleanup")
+        if self.sp:
+            session = getattr(self.sp, "session", None) or getattr(self.sp, "_session", None)
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    logger.debug("Failed to close Spotify session during cleanup")
+            else:
+                logger.debug(
+                    "Spotify client has no session/_session attribute — "
+                    "spotipy may have changed; sockets may leak until GC"
+                )
         self.sp = None
         logger.debug("🧹 Spotify handler cleaned up")
 
@@ -188,7 +238,10 @@ class SpotifyHandler:
                 await ctx.send(embed=embed)
                 return False
 
-        except (spotipy.SpotifyException, RequestsConnectionError, ReadTimeout) as e:
+        except (spotipy.SpotifyException, RequestsConnectionError, ReadTimeout, ConnectionError, OSError) as e:
+            # Catch a wider net so circuit-breaker ConnectionError + low-level
+            # OSError surface as a friendly Spotify error instead of crashing
+            # the command handler.
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ข้อผิดพลาด Spotify",
                 description=(
@@ -204,6 +257,17 @@ class SpotifyHandler:
     async def _handle_track(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
         """Handle a single Spotify track."""
         if not self.sp:
+            return False
+
+        # Enforce queue size cap (the play command checks for non-Spotify
+        # paths but the Spotify path used to bypass it).
+        from cogs.music.queue import MAX_QUEUE_SIZE
+        if len(queue) >= MAX_QUEUE_SIZE:
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)",
+                color=Colors.ERROR,
+            )
+            await ctx.send(embed=embed)
             return False
 
         track = await self._api_call_with_retry(self.sp.track, query)
@@ -313,6 +377,27 @@ class SpotifyHandler:
             await ctx.send(embed=embed)
             return False
 
+        # Enforce queue size cap (the play command checks for non-Spotify
+        # paths but the Spotify path used to bypass it). Truncate the
+        # incoming playlist so we never exceed MAX_QUEUE_SIZE.
+        from cogs.music.queue import MAX_QUEUE_SIZE
+        capacity_remaining = MAX_QUEUE_SIZE - len(queue)
+        truncated = False
+        if capacity_remaining <= 0:
+            try:
+                await msg.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)",
+                color=Colors.ERROR,
+            )
+            await ctx.send(embed=embed)
+            return False
+        if len(results) > capacity_remaining:
+            results = results[:capacity_remaining]
+            truncated = True
+
         count = 0
         for item in results:
             if not item:
@@ -350,6 +435,12 @@ class SpotifyHandler:
             color=Colors.SPOTIFY,
         )
         embed.add_field(name="ขนาดคิว", value=f"`{len(queue)}` เพลง", inline=True)
+        if truncated:
+            embed.add_field(
+                name=f"{Emojis.WARNING} Truncated",
+                value=f"คิวเต็ม • เพิ่มได้สูงสุด `{MAX_QUEUE_SIZE}` เพลงเท่านั้น",
+                inline=False,
+            )
         embed.set_footer(
             text=f"ขอโดย {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url
         )
@@ -386,6 +477,23 @@ class SpotifyHandler:
             await ctx.send(embed=embed)
             return False
 
+        # Enforce queue size cap (the play command checks for non-Spotify
+        # paths but the Spotify path used to bypass it). Truncate the
+        # incoming album so we never exceed MAX_QUEUE_SIZE.
+        from cogs.music.queue import MAX_QUEUE_SIZE
+        capacity_remaining = MAX_QUEUE_SIZE - len(queue)
+        truncated = False
+        if capacity_remaining <= 0:
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)",
+                color=Colors.ERROR,
+            )
+            await ctx.send(embed=embed)
+            return False
+        if len(items) > capacity_remaining:
+            items = items[:capacity_remaining]
+            truncated = True
+
         for track in items:
             if track and track.get("artists") and len(track["artists"]) > 0 and track.get("name"):
                 artist_name = track["artists"][0]["name"]
@@ -413,6 +521,12 @@ class SpotifyHandler:
             color=Colors.SPOTIFY,
         )
         embed.add_field(name="ขนาดคิว", value=f"`{len(queue)}` เพลง", inline=True)
+        if truncated:
+            embed.add_field(
+                name=f"{Emojis.WARNING} Truncated",
+                value=f"คิวเต็ม • เพิ่มได้สูงสุด `{MAX_QUEUE_SIZE}` เพลงเท่านั้น",
+                inline=False,
+            )
         embed.set_footer(
             text=f"ขอโดย {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url
         )

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-logger = logging.getLogger(__name__)
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +20,8 @@ from .data import (
     UNRESTRICTED_MODE_INSTRUCTION,
 )
 from .storage import load_history, load_metadata, save_history
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -105,6 +105,10 @@ class SessionMixin:
                 "history": history,
                 "system_instruction": system_instruction,
                 "thinking_enabled": metadata.get("thinking_enabled", True),
+                # Flag whether history came from DB so save_history can refuse
+                # to dump the full in-memory history if a later DB read returns
+                # empty (which would corrupt persisted history with duplicates).
+                "_db_loaded": bool(history),
             }
         else:
             # Cached session exists - verify system_instruction is correct for guild
@@ -112,8 +116,19 @@ class SessionMixin:
             if guild_id == GUILD_ID_RP and ROLEPLAY_ASSISTANT_INSTRUCTION not in cached_instruction:
                 logger.warning("⚠️ Correcting system_instruction for RP channel %s", channel_id)
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
+                # Mirror the cache-miss path's 8000-char cap so an
+                # oversized lore entry can't bypass the API token limit
+                # just because we hit the cache-correction branch.
                 if guild_id in SERVER_LORE:
-                    system_instruction = system_instruction + "\n\n" + SERVER_LORE[guild_id]
+                    lore = SERVER_LORE[guild_id]
+                    MAX_LORE_LENGTH = 8000
+                    if len(lore) > MAX_LORE_LENGTH:
+                        lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
+                        logger.warning(
+                            "Truncated server lore for guild %s on cache fixup (%d -> %d chars)",
+                            guild_id, len(SERVER_LORE[guild_id]), MAX_LORE_LENGTH,
+                        )
+                    system_instruction = system_instruction + "\n\n" + lore
                 self.chats[channel_id]["system_instruction"] = system_instruction
 
             # Force enable thinking mode for RP server
@@ -122,18 +137,30 @@ class SessionMixin:
                 self.chats[channel_id]["thinking_enabled"] = True
 
         # UNRESTRICTED MODE INJECTION — only for channels explicitly marked unrestricted
-        # Also REMOVES the instruction when unrestricted mode is disabled
+        # Also REMOVES the instruction when unrestricted mode is disabled.
+        # We test for the actual injected text rather than a fixed marker so the
+        # check works regardless of what UNRESTRICTED_MODE_INSTRUCTION's content
+        # is (it's swapped between FAUST_SANDBOX and a fallback). A previous
+        # version checked for a literal "[Private Creative Session]" substring
+        # which never existed in the real instruction text — so the system
+        # prompt grew unbounded on every get_chat_session call and the disable
+        # path never ran.
         try:
             from .processing.guardrails import is_unrestricted
+            # Re-read AFTER any RP-fix branch above so we don't clobber its update.
             current_instruction = self.chats[channel_id].get("system_instruction", "")
+            already_injected = bool(
+                UNRESTRICTED_MODE_INSTRUCTION
+                and UNRESTRICTED_MODE_INSTRUCTION in current_instruction
+            )
             if is_unrestricted(channel_id):
-                if "[Private Creative Session]" not in current_instruction:
+                if not already_injected and UNRESTRICTED_MODE_INSTRUCTION:
                     logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
                     self.chats[channel_id]["system_instruction"] = (
                         UNRESTRICTED_MODE_INSTRUCTION + current_instruction
                     )
             # Remove unrestricted instruction if it was previously injected
-            elif "[Private Creative Session]" in current_instruction:
+            elif already_injected:
                 logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
                 self.chats[channel_id]["system_instruction"] = (
                     current_instruction.replace(UNRESTRICTED_MODE_INSTRUCTION, "")
@@ -174,13 +201,32 @@ class SessionMixin:
                     for channel_id in inactive_channels:
                         if channel_id in self.chats:
                             # Save before unloading (with timeout to prevent hanging)
+                            save_succeeded = False
                             try:
-                                await asyncio.wait_for(
+                                save_succeeded = await asyncio.wait_for(
                                     save_history(self.bot, channel_id, self.chats[channel_id]),
                                     timeout=30,
                                 )
                             except TimeoutError:
-                                logger.warning("Timeout saving session for channel %s during cleanup", channel_id)
+                                logger.warning(
+                                    "Timeout saving session for channel %s during cleanup; "
+                                    "keeping in memory to avoid data loss",
+                                    channel_id,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Save failed for channel %s during cleanup; "
+                                    "keeping in memory to avoid data loss",
+                                    channel_id,
+                                )
+
+                            # Only evict from memory if the save actually persisted.
+                            # On timeout/error we leave the chat in self.chats so the
+                            # next cleanup pass (or an explicit save) can retry without
+                            # losing in-flight history.
+                            if not save_succeeded:
+                                continue
+
                             # Re-check after await: channel may have been re-accessed
                             if (
                                 channel_id in self.last_accessed

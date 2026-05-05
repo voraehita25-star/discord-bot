@@ -9,16 +9,21 @@ from __future__ import annotations
 import base64
 import io
 import logging
-
-logger = logging.getLogger(__name__)
-from collections import namedtuple
+import warnings
+from collections import OrderedDict, namedtuple
 from pathlib import Path
 from typing import Any, TypedDict
 
 import discord
 from PIL import Image
 
-from .data.roleplay_data import SERVER_CHARACTER_NAMES
+# Decompression-bomb hardening: cap pixel count and convert PIL's
+# DecompressionBombWarning into a hard error so existing except clauses trip
+# instead of silently letting a 100MP image through.
+Image.MAX_IMAGE_PIXELS = 30_000_000  # ~30MP cap (Pillow default is ~89MP)
+warnings.simplefilter("error", Image.DecompressionBombWarning)
+
+from .data import SERVER_CHARACTER_NAMES
 
 # Try to import imageio for GIF to video conversion
 try:
@@ -30,6 +35,9 @@ except ImportError:
     iio = None  # type: ignore
 
 
+
+logger = logging.getLogger(__name__)
+
 # ==================== Image Caching ====================
 
 # Cache configuration - limit memory usage for image bytes
@@ -40,7 +48,9 @@ IMAGE_CACHE_MAX_SIZE = 50
 # Each entry is ``(mtime_ns, bytes)`` so we can detect on-disk changes — without
 # this, an updated character image stays stale until process restart even though
 # the new file is sitting on disk.
-_image_cache: dict[str, tuple[int, bytes]] = {}
+# Uses OrderedDict so we can evict the oldest entry on cap (true LRU behaviour)
+# instead of relying on insertion-only dict ordering plus accidental eviction.
+_image_cache: OrderedDict[str, tuple[int, bytes]] = OrderedDict()
 
 
 # Fixed base directory for path validation (resolved once at import time)
@@ -86,6 +96,8 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
 
     cached = _image_cache.get(full_path)
     if cached is not None and cached[0] == current_mtime:
+        # Mark as most-recently-used so it won't be the next eviction target.
+        _image_cache.move_to_end(full_path)
         return cached[1]
 
     try:
@@ -95,10 +107,12 @@ def load_cached_image_bytes(full_path: str) -> bytes | None:
         _image_cache.pop(full_path, None)
         return None
 
-    # Capacity check applies only when we're inserting a brand-new key — a
-    # mtime-driven refresh of an existing key isn't growth.
-    if full_path in _image_cache or len(_image_cache) < IMAGE_CACHE_MAX_SIZE:
-        _image_cache[full_path] = (current_mtime, data)
+    # Insert / refresh the entry, then evict the oldest if we're over capacity.
+    # Always move_to_end so a refresh promotes the entry to MRU.
+    _image_cache[full_path] = (current_mtime, data)
+    _image_cache.move_to_end(full_path)
+    while len(_image_cache) > IMAGE_CACHE_MAX_SIZE:
+        _image_cache.popitem(last=False)
     return data
 
 
@@ -223,6 +237,18 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         pil_check = None
         try:
             pil_check = Image.open(io.BytesIO(gif_data))
+            # Reject oversized GIFs early: a 4000x4000 GIF with 300 frames
+            # would balloon to ~14GB of decoded RGB pixels in frames_list
+            # below. ~1.5MP is enough for any reasonable Discord avatar /
+            # reaction GIF and bounds total memory at ~1.3GB worst case.
+            first_w = pil_check.width
+            first_h = pil_check.height
+            if first_w * first_h > 1_500_000:
+                logger.warning(
+                    "GIF too large to process: %sx%s",
+                    first_w, first_h,
+                )
+                return None
             frame_count = 0
             try:
                 while True:
@@ -240,12 +266,30 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         if frame_count < 2:
             return None  # Not animated
 
-        # Read GIF frames using imageio (only up to _MAX_GIF_FRAMES)
-        frames = iio.imread(gif_data, index=None, extension=".gif")
+        # Decode frames lazily via PIL so we never load more than
+        # _MAX_GIF_FRAMES into memory at once. iio.imread(index=None)
+        # would decode every frame first then slice — which a crafted
+        # GIF with thousands of frames could turn into a memory bomb.
+        import numpy as np
 
-        # Limit frame count to prevent decompression bombs
-        if len(frames) > _MAX_GIF_FRAMES:
-            frames = frames[:_MAX_GIF_FRAMES]
+        frames_list: list[np.ndarray] = []
+        pil_iter = None
+        try:
+            pil_iter = Image.open(io.BytesIO(gif_data))
+            try:
+                while len(frames_list) < _MAX_GIF_FRAMES:
+                    frame_rgb = pil_iter.convert("RGB")
+                    frames_list.append(np.asarray(frame_rgb, dtype=np.uint8))
+                    pil_iter.seek(pil_iter.tell() + 1)
+            except EOFError:
+                pass  # End of frames
+        finally:
+            if pil_iter is not None:
+                pil_iter.close()
+
+        if not frames_list:
+            return None
+        frames = np.stack(frames_list, axis=0)
 
         # Get frame duration from PIL (imageio doesn't expose this well)
         pil_img = None
@@ -257,19 +301,38 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
                 pil_img.close()
         fps = min(30, max(5, 1000 / duration))  # Clamp FPS between 5-30
 
-        # Write to MP4 video bytes
+        # Write to MP4 video bytes. Bound the ffmpeg encode at 60s — without
+        # this a pathological input could hang the worker thread indefinitely.
+        # We run imwrite in a thread-pool executor so we can enforce the
+        # timeout without blocking the calling event loop (callers are async)
+        # and without depending on Unix-only signal.alarm.
+        import concurrent.futures
         video_buffer = io.BytesIO()
         try:
-            iio.imwrite(
-                video_buffer,
-                frames,
-                extension=".mp4",
-                fps=fps,
-                codec="libx264",
-                pixelformat="yuv420p",
-            )
-            video_buffer.seek(0)
+            def _encode():
+                iio.imwrite(
+                    video_buffer,
+                    frames,
+                    extension=".mp4",
+                    fps=fps,
+                    codec="libx264",
+                    pixelformat="yuv420p",
+                )
 
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_encode)
+                try:
+                    future.result(timeout=60.0)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("GIF -> MP4 encode timed out after 60s")
+                    # `future.cancel()` only works on not-yet-started
+                    # futures — the worker is already running so it's a
+                    # no-op here. Exiting the `with` block waits for the
+                    # thread; return None so the caller falls back to a
+                    # static image while the doomed thread finishes.
+                    return None
+
+            video_buffer.seek(0)
             logger.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
             return video_buffer.read()
         finally:

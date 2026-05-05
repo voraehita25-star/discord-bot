@@ -11,7 +11,6 @@ import concurrent.futures
 import contextlib
 import logging
 import os
-import shutil
 import signal
 import sys
 import time
@@ -30,9 +29,9 @@ load_dotenv()
 # Module logger — declared before the optional-import blocks below use it.
 # setup_smart_logging() below wires up handlers; until then this logger
 # delegates to the root logger's default config.
-logger = logging.getLogger(__name__)
-
 from utils.monitoring.logger import cleanup_cache, setup_smart_logging
+
+logger = logging.getLogger(__name__)
 
 # Import Health API
 try:
@@ -267,13 +266,20 @@ def bootstrap() -> None:
                 logger.exception("Cannot create %s directory", dir_name)
                 raise
 
-    # Check for FFmpeg
-    if not shutil.which("ffmpeg"):
+    # Check for FFmpeg — honour FFMPEG_PATH and the bundled ./ffmpeg/bin
+    # before falling back to system PATH so installs that ship a vendored
+    # binary work without polluting the OS PATH.
+    from utils.media import get_ffmpeg_executable, is_ffmpeg_available
+
+    if not is_ffmpeg_available():
         logger.critical(
             "❌ FFmpeg not found! Music features will not work. "
-            "Please install FFmpeg and add it to PATH."
+            "Set FFMPEG_PATH in .env, drop a binary at ./ffmpeg/bin/ffmpeg.exe, "
+            "or install FFmpeg and add it to PATH."
         )
         os.environ["FFMPEG_MISSING"] = "1"
+    else:
+        logger.info("FFmpeg resolved to: %s", get_ffmpeg_executable())
 
     cleanup_cache()
 
@@ -441,9 +447,32 @@ class MusicBot(commands.AutoShardedBot):
 
             await ctx.send(embed=embed)
 
-    def _schedule_shutdown(self, sig) -> None:
-        """Schedule graceful shutdown, keeping a reference to prevent GC."""
-        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig))
+    def _schedule_shutdown(self, sig: signal.Signals) -> None:
+        """Schedule graceful shutdown, keeping a reference to prevent GC.
+
+        Passes ``self`` so graceful_shutdown tears down THIS bot instance
+        even if the module-level `bot` global has been rebound (e.g. after
+        a "no, resume" answer to the Ctrl+C prompt rebuilt the bot).
+        """
+        # Cancel any earlier in-flight shutdown task — re-issuing the signal
+        # shouldn't drop the original task on the floor.
+        prev = self._shutdown_task
+        if prev is not None and not prev.done():
+            prev.cancel()
+
+            def _swallow(t: asyncio.Task) -> None:
+                # Swallow the cancellation noise but log a real exception
+                # so a failed prior shutdown doesn't disappear silently.
+                if t.cancelled():
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    logger.warning("Previous shutdown task ended with: %s", exc)
+
+            prev.add_done_callback(_swallow)
+        self._shutdown_task = asyncio.create_task(
+            graceful_shutdown(sig, bot_instance=self)
+        )
 
     @staticmethod
     def _on_health_task_done(task: asyncio.Task) -> None:
@@ -615,13 +644,17 @@ class MusicBot(commands.AutoShardedBot):
 
     async def on_message(self, message: discord.Message) -> None:
         """Track messages for metrics."""
-        # Ignore bot messages
+        # Ignore bot messages (own + other bots/webhooks).
         if message.author.bot:
             return
 
-        # Track message in metrics
+        # Track message in metrics. Only count as a "command" if the
+        # prefix-stripped content actually resolves to a registered
+        # command — previously every "!" prefix incremented even when
+        # the command didn't exist or was rejected, skewing metrics.
         if METRICS_AVAILABLE and metrics:
-            if message.content.startswith("!"):
+            ctx = await self.get_context(message)
+            if ctx.valid and ctx.command is not None:
                 metrics.increment_messages("command")
             else:
                 metrics.increment_messages("other")
@@ -686,8 +719,21 @@ def validate_token(token: str | None) -> bool:
     return len(token) >= 50
 
 
-async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
-    """Gracefully shutdown the bot"""
+async def graceful_shutdown(
+    sig: signal.Signals | None = None,
+    bot_instance: MusicBot | None = None,
+) -> None:
+    """Gracefully shutdown the bot.
+
+    `bot_instance` lets the caller pin the exact bot we should be tearing
+    down — important after run_bot_with_confirmation() recreates the global
+    `bot`, otherwise we'd close the new instance and leak resources from
+    the old one.
+    """
+    bot = bot_instance if bot_instance is not None else globals().get("bot")
+    if bot is None:
+        logger.warning("graceful_shutdown invoked with no bot instance; skipping")
+        return
     if sig:
         logger.info("🛑 Received signal %s, shutting down gracefully...", sig.name)
     else:
@@ -795,9 +841,12 @@ def run_bot_with_confirmation() -> None:
                 logger.info("🛑 Bot stopped by user (Ctrl+C)")
                 # Run graceful shutdown on any platform where no running loop exists yet.
                 # bot.run() has already returned so its internal loop is closed; a fresh
-                # asyncio.run() is safe here.
+                # asyncio.run() is safe here. Pass the current bot explicitly
+                # so we don't accidentally clean up a different instance if
+                # the global was rebound elsewhere.
+                _current_bot = bot
                 try:
-                    asyncio.run(graceful_shutdown())
+                    asyncio.run(graceful_shutdown(bot_instance=_current_bot))
                 except RuntimeError as e:
                     logger.warning("Skipping graceful_shutdown (%s)", e)
                 except Exception:

@@ -6,11 +6,7 @@ Handles building context for AI responses including RAG, entity memory, state tr
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
-
-logger = logging.getLogger(__name__)
-import socket
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +24,9 @@ except ImportError:
     RAG_MIN_SIMILARITY = 0.4
     MAX_ENTITY_ITEMS = 3
 
+
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class AIContext:
@@ -386,33 +385,18 @@ class ContextBuilder:
             contents = []
             for url in urls[:3]:  # Limit to 3 URLs
                 try:
-                    # Validate URL scheme to prevent SSRF
+                    # Cheap scheme guard so we don't even attempt fetch on
+                    # file:// / gopher:// / etc. The real SSRF + DNS-rebinding
+                    # protection lives inside utils.web.url_fetcher's custom
+                    # _SSRFSafeResolver, which is enforced at aiohttp connect
+                    # time (race-safe). We rely on that single boundary
+                    # instead of re-resolving here, which had a TOCTOU window.
                     parsed = urlparse(url)
                     if parsed.scheme not in ("http", "https"):
                         logger.warning("Blocked non-HTTP URL scheme: %s", url)
                         continue
-
-                    # SSRF protection: block private/internal IPs
-                    hostname = parsed.hostname
-                    if not hostname:
+                    if not parsed.hostname:
                         logger.warning("Blocked URL with no hostname: %s", url)
-                        continue
-
-                    try:
-                        loop = asyncio.get_running_loop()
-                        resolved_ips = await asyncio.wait_for(
-                            loop.getaddrinfo(hostname, None), timeout=5.0,
-                        )
-                        for _family, _type, _proto, _canon, sockaddr in resolved_ips:
-                            ip = ipaddress.ip_address(sockaddr[0])
-                            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                                logger.warning("Blocked SSRF attempt to private/internal IP: %s -> %s", url, ip)
-                                raise ValueError(f"Blocked private IP: {ip}")
-                    except TimeoutError:
-                        logger.warning("DNS resolution timed out for URL: %s", url)
-                        continue
-                    except socket.gaierror:
-                        logger.warning("DNS resolution failed for URL: %s", url)
                         continue
 
                     text_content, _ = await fetch_url(url)
@@ -422,9 +406,10 @@ class ContextBuilder:
                             text_content = text_content[:max_content_length] + "..."
                         # Wrap in untrusted markers to prevent prompt injection from web content
                         contents.append(f"[URL Content from {url} — external/untrusted]\n{text_content}\n[End URL Content]")
-                except ValueError:
-                    continue  # Already logged above
                 except Exception as e:
+                    # `fetch_url` can raise anything from network errors to
+                    # parser ValueErrors — none of them should abort the
+                    # whole context build. Log per-URL and move on.
                     logger.warning("URL fetch error for %s: %s", url, e)
 
             return "\n\n".join(contents)

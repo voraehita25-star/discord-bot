@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -40,12 +41,12 @@ class RagEngineWrapper:
     Wrapper for RAG Engine with automatic fallback to Python implementation.
 
     Usage:
-        engine = RagEngineWrapper(dimension=384)
+        engine = RagEngineWrapper(dimension=768)  # text-embedding-004 / 005
         engine.add("id1", "Some text", embedding_vector, importance=1.0)
         results = engine.search(query_embedding, top_k=5)
     """
 
-    def __init__(self, dimension: int = 384, similarity_threshold: float = 0.7):
+    def __init__(self, dimension: int = 768, similarity_threshold: float = 0.7):
         self.dimension = dimension
         self.similarity_threshold = similarity_threshold
         self._use_rust = RUST_AVAILABLE
@@ -55,6 +56,10 @@ class RagEngineWrapper:
         else:
             # Python fallback
             self._entries: dict[str, dict[str, Any]] = {}
+            # Protect _entries against concurrent add/remove/clear/search.
+            # Without this, _python_search iterating self._entries.values()
+            # while another thread mutates the dict raises RuntimeError.
+            self._entries_lock = threading.RLock()
 
     def add(
         self,
@@ -72,13 +77,14 @@ class RagEngineWrapper:
             entry = MemoryEntry(entry_id, text, embedding, timestamp, importance)  # type: ignore[misc]
             self._engine.add(entry)
         else:
-            self._entries[entry_id] = {
-                "id": entry_id,
-                "text": text,
-                "embedding": embedding,
-                "timestamp": timestamp,
-                "importance": importance,
-            }
+            with self._entries_lock:
+                self._entries[entry_id] = {
+                    "id": entry_id,
+                    "text": text,
+                    "embedding": embedding,
+                    "timestamp": timestamp,
+                    "importance": importance,
+                }
 
     def add_batch(self, entries: list[dict[str, Any]]) -> int:
         """Add multiple entries at once."""
@@ -105,7 +111,8 @@ class RagEngineWrapper:
         if self._use_rust:
             return self._engine.remove(entry_id)  # type: ignore[no-any-return]
         else:
-            return self._entries.pop(entry_id, None) is not None
+            with self._entries_lock:
+                return self._entries.pop(entry_id, None) is not None
 
     def search(
         self,
@@ -133,8 +140,20 @@ class RagEngineWrapper:
         current_time = time.time()
         results = []
 
-        for entry in self._entries.values():
-            base_score = self._cosine_similarity(query_embedding, entry["embedding"])
+        # Snapshot entries under the lock so concurrent mutators can't trip
+        # "dictionary changed size during iteration" while we score.
+        with self._entries_lock:
+            entries_snapshot = list(self._entries.values())
+
+        for entry in entries_snapshot:
+            try:
+                base_score = self._cosine_similarity(query_embedding, entry["embedding"])
+            except (ValueError, KeyError, TypeError):
+                # Skip a single malformed entry rather than crashing the
+                # whole search. Logged at debug to avoid log spam if a batch
+                # of entries was loaded with stale dimensions.
+                logger.debug("Skipping entry with bad embedding", exc_info=True)
+                continue
 
             if time_decay_factor > 0:
                 age_hours = (current_time - entry["timestamp"]) / 3600.0
@@ -170,20 +189,23 @@ class RagEngineWrapper:
     def __len__(self) -> int:
         if self._use_rust:
             return self._engine.len()  # type: ignore[no-any-return]
-        return len(self._entries)
+        with self._entries_lock:
+            return len(self._entries)
 
     def clear(self) -> None:
         """Clear all entries."""
         if self._use_rust:
             self._engine.clear()
         else:
-            self._entries.clear()
+            with self._entries_lock:
+                self._entries.clear()
 
     def get_ids(self) -> list[str]:
         """Get all entry IDs."""
         if self._use_rust:
             return self._engine.get_ids()  # type: ignore[no-any-return]
-        return list(self._entries.keys())
+        with self._entries_lock:
+            return list(self._entries.keys())
 
     def save(self, path: str | Path) -> None:
         """Save to JSON file."""
@@ -191,12 +213,16 @@ class RagEngineWrapper:
         if self._use_rust:
             self._engine.save(str(path))
         else:
+            # Snapshot under lock so concurrent writers can't trigger
+            # "dictionary changed size during iteration" while we serialise.
+            with self._entries_lock:
+                entries_snapshot = list(self._entries.values())
             # Atomic write: write to sibling tmp file, fsync, then replace.
             # Prevents corruption if the process crashes mid-write.
             tmp_path = path.with_suffix(path.suffix + ".tmp")
             try:
                 with tmp_path.open("w", encoding="utf-8") as f:
-                    json.dump(list(self._entries.values()), f, ensure_ascii=False, indent=2)
+                    json.dump(entries_snapshot, f, ensure_ascii=False, indent=2)
                     f.flush()
                     try:
                         os.fsync(f.fileno())
@@ -213,7 +239,11 @@ class RagEngineWrapper:
                 raise
 
     def load(self, path: str | Path) -> int:
-        """Load from JSON file."""
+        """Load from JSON file.
+
+        Replaces existing entries (does not merge). Calling load() twice on
+        different files used to silently merge them, which surprised callers.
+        """
         path = Path(path)
         if self._use_rust:
             return self._engine.load(str(path))  # type: ignore[no-any-return]
@@ -225,10 +255,12 @@ class RagEngineWrapper:
                 logger.exception("Failed to load RAG data from %s", path)
                 return 0
             loaded = 0
-            for entry in entries:
-                if isinstance(entry, dict) and "id" in entry:
-                    self._entries[entry["id"]] = entry
-                    loaded += 1
+            with self._entries_lock:
+                self._entries.clear()
+                for entry in entries:
+                    if isinstance(entry, dict) and "id" in entry:
+                        self._entries[entry["id"]] = entry
+                        loaded += 1
             return loaded
 
     @property

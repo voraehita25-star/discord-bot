@@ -48,7 +48,10 @@ export interface RenderResult {
 
 /** Render the "no messages yet" welcome card. */
 export function renderWelcomeCard(conversation: ChatConversation | null): string {
-    const emoji = conversation?.role_emoji || '🤖';
+    // role_emoji and role_name come from the WS server's `connected` /
+    // `conversation_loaded` frames. A compromised server could send HTML
+    // here, so escape both before interpolating into innerHTML.
+    const emoji = escapeHtml(conversation?.role_emoji || '🤖');
     const name = conversation?.role_name || 'AI';
     const safeAi = safeAvatarUrl(settings.aiAvatar);
     const welcomeAvatarHtml = safeAi
@@ -96,7 +99,10 @@ export function renderMessagesHtml(ctx: RenderContext): RenderResult {
 
     const win = computeWindow(total, ctx.visibleMessageCount);
 
-    const aiEmoji = ctx.currentConversation?.role_emoji || '🤖';
+    // Escape role_emoji — a compromised WS server could otherwise inject HTML
+    // into the avatar fallback (this value flows directly into innerHTML via
+    // `renderSingleMessage`'s avatarHtml). aiName is escaped at use site.
+    const aiEmoji = escapeHtml(ctx.currentConversation?.role_emoji || '🤖');
     const aiName = ctx.currentConversation?.role_name || 'AI';
     const userName = settings.userName || 'You';
     const safeUserAvatar = safeAvatarUrl(settings.userAvatar);
@@ -140,7 +146,10 @@ interface PerMessageCtx {
 function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageCtx): string {
     const { isUser, aiEmoji, aiName, userName, safeUserAvatar, safeAiAvatar, deps } = mctx;
     const displayName = isUser ? userName : aiName;
-    const timeStr = deps.formatTime(msg.created_at);
+    // formatTime returns an Intl-formatted string in the happy path, but defs
+    // are caller-supplied — escape defensively so a malformed `created_at`
+    // can't smuggle HTML into the interpolation below.
+    const timeStr = escapeHtml(deps.formatTime(msg.created_at));
 
     // Avatar — either a safe image URL or an emoji fallback.
     let avatarHtml: string;
@@ -154,13 +163,20 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
             : aiEmoji;
     }
 
-    // Attached images (user messages only, typically). `img` is a base64 data
-    // URL — escapeHtml defuses quote/angle chars so it's safe inside src="".
+    // Attached images (user messages only, typically). `img` is expected to
+    // be a base64 ``data:image/...`` URL — only let those (and https) through
+    // so a compromised server can't inject ``javascript:`` or ``http://``
+    // tracking pixels. escapeHtml still defuses quote/angle chars in src="".
     let imagesHtml = '';
     if (msg.images && msg.images.length > 0) {
-        imagesHtml = `<div class="message-images">${msg.images.map((img, idx) =>
-            `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`,
-        ).join('')}</div>`;
+        imagesHtml = `<div class="message-images">${msg.images
+            .filter((img) => typeof img === 'string'
+                && ((img.startsWith('data:image/') && !img.toLowerCase().startsWith('data:image/svg'))
+                    || img.startsWith('https://')))
+            .map((img, idx) =>
+                `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`,
+            )
+            .join('')}</div>`;
     }
 
     // Thinking container (collapsed by default; click-to-expand is wired in ChatManager).
@@ -189,7 +205,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     const aiEditBtn = (!isUser && msgId)
         ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="AI Edit">✨ AI Edit</button>`
         : '';
-    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" data-role="${msg.role}" title="Delete">🗑️ Delete</button>`;
+    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" data-role="${escapeHtml(msg.role)}" title="Delete">🗑️ Delete</button>`;
     const pinLabel = msg.is_pinned ? 'Unpin' : 'Pin';
     const pinBtn = msgId
         ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">📌 ${pinLabel}</button>`
@@ -200,7 +216,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     const actionsHtml = `<div class="message-actions">${copyBtn}${likeBtn}${pinBtn}${editBtn}${aiEditBtn}${deleteBtn}</div>`;
 
     return `
-        <div class="chat-message ${msg.role}">
+        <div class="chat-message ${escapeHtml(msg.role)}">
             <div class="message-avatar">${avatarHtml}</div>
             <div class="message-wrapper">
                 <div class="message-header">

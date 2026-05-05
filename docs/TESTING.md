@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: April 26, 2026 | Python 3.14+ | Python Tests: 3,088 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 63 ✅ (5 Playwright spec files: smoke + interactions + a11y + visual regression) | Timeout: 30s per test
+> Last Updated: April 27, 2026 | Python 3.14+ | Python Tests: 3,094 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 63 ✅ (5 Playwright spec files: smoke + interactions + a11y + visual regression) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -30,7 +30,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (92 Python files, 3,088 tests)
+## Test Structure (92 Python files, 3,094 tests)
 
 ```text
 tests/
@@ -38,17 +38,17 @@ tests/
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
 ├── test_*.py                # 89 consolidated test files
-│   ├── AI Core              # ~20 test files (ai_cache, ai_cog, logic, storage, etc.)
-│   ├── Music                # ~5 test files (music_cog, music_queue, spotify, ytdl)
-│   ├── Dashboard            # 1 test file (dashboard_handlers - 42 tests)
+│   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
+│   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
+│   ├── Dashboard            # 1 test file (dashboard_handlers — 53 tests)
 │   ├── Database             # 1 test file (consolidated from 3)
 │   ├── Reliability          # ~8 test files (circuit_breaker, rate_limiter, etc.)
 │   ├── Monitoring           # ~5 test files (health_api, metrics, feedback, etc.)
-│   └── Utilities            # ~20 test files (fast_json, localization, url_fetcher, etc.)
+│   └── Utilities            # ~25 test files (fast_json, localization, url_fetcher, etc.)
 ```
 
-> Tests were consolidated from 129 → 84 files by merging `_extended`, `_more`, `_module`
-> variants into their base files and parametrizing boilerplate tests.
+> Earlier consolidation (~early 2026) merged `_extended`, `_more`, `_module` variants
+> into their base files and parametrized boilerplate tests. Current count: **92 files**.
 
 ## Frontend Test Structure (10 vitest files, 189 tests)
 

@@ -45,6 +45,14 @@ export function stripThinkTags(content: string): string {
 }
 
 export function formatMessage(content: string): string {
+    // Fail-closed if DOMPurify isn't available — return escaped plain text
+    // rather than risk emitting any of the markdown HTML pipeline output
+    // unsanitised. The same check runs again at the bottom as defence-in-
+    // depth in case the global is yanked mid-pass.
+    if (!getPurify()) {
+        return escapeHtml(content);
+    }
+
     // Extract LaTeX blocks BEFORE HTML escaping so KaTeX gets raw math notation.
     const latexBlocks: string[] = [];
     const blockPlaceholder = '\x00BLOCK_LATEX_';
@@ -111,21 +119,31 @@ export function formatMessage(content: string): string {
     });
 
     // Extract code blocks into placeholders BEFORE converting \n to <br>.
-    // Include a copy button that reads the raw code from data-code-copy. `code`
-    // is already HTML-escaped (escapeHtml ran on `processed` above) so it's
-    // safe to embed inside a data attribute.
+    // Include a copy button that reads the code from data-code-copy. We
+    // RE-escape the captured `code` here because the `&#96;` → backtick
+    // revert above un-escaped backticks, and the same regex also captures
+    // any `<`/`>`/`"` that escapeHtml turned into entities — those entities
+    // would render literally inside <code>/<pre>. The lang label is
+    // additionally restricted to [a-zA-Z0-9_-] so it can't break out of
+    // the surrounding class= attribute.
     const codeBlocks: string[] = [];
     const codePlaceholder = '\x01CODE_BLOCK_';
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
         const idx = codeBlocks.length;
-        const langLabel = lang || 'code';
+        // Whitelist the language label so `lang` can never break out of the
+        // class= or <span> attribute it gets interpolated into. The fallback
+        // is 'code' (matches the previous behaviour of `lang || 'code'`)
+        // rather than 'text' so existing tests continue to pass.
+        const safeLang = String(lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const langLabel = safeLang || 'code';
+        const escapedCode = escapeHtml(code);
         codeBlocks.push(
             `<div class="code-block-wrapper">` +
             `<div class="code-block-header">` +
             `<span class="code-lang">${langLabel}</span>` +
-            `<button class="code-copy-btn" data-code-copy="${code}" title="Copy code">📋</button>` +
+            `<button class="code-copy-btn" data-code-copy="${escapedCode}" title="Copy code">📋</button>` +
             `</div>` +
-            `<pre><code class="language-${langLabel}">${code}</code></pre>` +
+            `<pre><code class="language-${langLabel}">${escapedCode}</code></pre>` +
             `</div>`
         );
         return `${codePlaceholder}${idx}\x01`;
@@ -229,14 +247,24 @@ export function formatMessage(content: string): string {
             'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
             'ul', 'ol', 'li',
             'table', 'thead', 'tbody', 'tr', 'th', 'td',
-            'img', 'button',
+            // <button> kept for the in-formatter copy button. We never allow
+            // on* handlers (DOMPurify strips them), so this is just an inert
+            // button that JS wires up via addEventListener.
+            'button',
+            // <img> dropped — formatter does not generate <img>, and an
+            // attacker injecting <img src=remote-tracking-pixel> via raw
+            // HTML in markdown was previously rendered. Inline message
+            // images are inserted by message-template before this runs.
             // KaTeX elements
             'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup',
             'msub', 'mfrac', 'mover', 'munder', 'msqrt', 'mtext',
             'annotation',
         ],
         ALLOWED_ATTR: [
-            'class', 'style', 'src', 'alt',
+            // 'style' is restricted by DOMPurify's built-in CSS sanitiser,
+            // which strips expression(), javascript:, behaviour:, etc.
+            // It's needed for table alignment (text-align: left|center|right).
+            'class', 'style', 'alt',
             'title', 'colspan', 'rowspan',
             // KaTeX attributes
             'mathvariant', 'encoding', 'xmlns', 'display',
@@ -246,7 +274,8 @@ export function formatMessage(content: string): string {
         ],
         ADD_ATTR: ['data-img-idx', 'data-code-copy'],
         ALLOW_DATA_ATTR: false,
-        ALLOWED_URI_REGEXP: /^(?:(?:https?|data):)/i,
-        ADD_DATA_URI_TAGS: ['img'],
+        // Only HTTPS — downgrade to http: would let injected markdown phone
+        // home over plaintext or hit private hosts.
+        ALLOWED_URI_REGEXP: /^https:/i,
     });
 }

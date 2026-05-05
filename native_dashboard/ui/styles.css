@@ -734,7 +734,7 @@ h2 {
 }
 
 .api-endpoint-item:hover {
-    border-color: var(--primary-color);
+    border-color: var(--accent-cyan);
     transform: translateY(-2px);
 }
 
@@ -802,13 +802,16 @@ h2 {
     background: rgba(20, 10, 40, 0.6);
     border-radius: 10px;
     font-size: 13px;
-    animation: fadeIn 0.3s ease;
+    animation: fadeInDown 0.3s ease;
 }
 
 .api-health-result .healthy { color: #22c55e; }
 .api-health-result .unhealthy { color: #ef4444; }
 
-@keyframes fadeIn {
+/* Renamed from a duplicate `fadeIn` at line ~811 — the second definition was
+ * overriding the global page fade-in (line 513) so every page entry animated
+ * with the wrong direction. Keep this one local to .api-health-result. */
+@keyframes fadeInDown {
     from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
 }
@@ -851,8 +854,9 @@ h2 {
     white-space: pre-wrap;
     word-break: break-all;
     position: relative;
-    overflow-y: auto;
-    height: 100%;
+    /* Removed nested `overflow-y: auto` + `height: 100%` — both this and the
+     * parent .log-container had their own scrollbars, so wheel events scrolled
+     * the wrong container. The parent already handles scrolling. */
 }
 
 /* Virtual Scroll Container */
@@ -1981,7 +1985,7 @@ h2 {
     height: 48px;
     border-radius: 50%;
     object-fit: cover;
-    border: 2px solid var(--primary);
+    border: 2px solid var(--accent-purple);
 }
 
 .ai-avatar-icon {
@@ -1991,7 +1995,7 @@ h2 {
     object-fit: cover;
     vertical-align: middle;
     margin-right: 12px;
-    border: 2px solid var(--primary);
+    border: 2px solid var(--accent-purple);
 }
 
 .chat-header-text h3 {
@@ -2345,7 +2349,7 @@ h2 {
 .copy-message-btn:hover,
 .edit-message-btn:hover,
 .delete-message-btn:hover {
-    background: var(--hover-color);
+    background: rgba(168, 85, 247, 0.12);
     color: var(--text-primary);
     border-color: var(--accent-purple);
 }
@@ -2436,7 +2440,7 @@ margin-left: 4px;
 
 .edit-cancel-btn:hover {
     color: var(--text-primary);
-    background: var(--hover-color);
+    background: rgba(168, 85, 247, 0.12);
 }
 
 /* AI Edit button in message actions */
@@ -2538,7 +2542,7 @@ margin-left: 4px;
 
 .ai-edit-cancel-btn:hover {
     color: var(--text-primary);
-    background: var(--hover-color);
+    background: rgba(168, 85, 247, 0.12);
 }
 
 .message-images {
@@ -3245,6 +3249,12 @@ mark.chat-search-hit.active {
     border-radius: 20px;
     width: 90%;
     max-width: 500px;
+    /* Cap height so a tall modal in a short Tauri window (DPI scaling, small
+     * laptop displays) can scroll its body instead of clipping the footer
+     * behind .modal-content's overflow:hidden (line ~5112). overflow-y:auto
+     * narrows the y-axis only — the noise ::before stays clipped at corners. */
+    max-height: 90vh;
+    overflow-y: auto;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     animation: modalIn 0.3s ease;
 }

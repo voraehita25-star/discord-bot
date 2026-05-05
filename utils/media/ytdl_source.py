@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any, TypedDict
 
 import discord
 import yt_dlp
 
+from .ffmpeg_path import get_ffmpeg_executable
+
+logger = logging.getLogger(__name__)
 
 class FFmpegOptions(TypedDict):
     """Kwargs accepted by `discord.FFmpegPCMAudio` we set here.
@@ -211,6 +212,61 @@ class YTDLSource(discord.PCMVolumeTransformer):
         """Create a player from a URL"""
         loop = loop or asyncio.get_running_loop()
 
+        # Restrict to safe URL schemes — yt-dlp accepts file://, ftp://,
+        # custom protocols, etc. that an attacker could use to read local
+        # files or hit internal services. Only http(s) is allowed here.
+        from urllib.parse import urlparse as _urlparse
+        try:
+            parsed = _urlparse(url)
+            scheme = parsed.scheme.lower()
+        except (ValueError, TypeError):
+            parsed = None
+            scheme = ""
+        if scheme not in ("http", "https"):
+            raise yt_dlp.DownloadError(
+                f"URL scheme '{scheme or '(unknown)'}' is not allowed; only http(s) accepted"
+            )
+
+        # SSRF guard: delegate to the shared helper in utils.web.url_fetcher.
+        # That helper covers more cases than our previous single-A-record
+        # ``gethostbyname`` lookup did: it walks all addrinfo entries (so
+        # AAAA + A pairs are both checked), unwraps IPv4-mapped IPv6
+        # (``::ffff:127.0.0.1``), and shares the same blocklist with the
+        # rest of the bot — so when ops decides to add a new private CIDR
+        # we don't have a second copy of the rules drifting out of date.
+        # Fall back to the local minimal check if the helper is unavailable
+        # for any reason (circular import during early bootstrap, etc.).
+        host = parsed.hostname if parsed is not None else None
+        if not host:
+            raise ValueError("URL has no hostname")
+        try:
+            from utils.web.url_fetcher import _is_private_url
+            if await _is_private_url(url):
+                raise ValueError(
+                    f"Refusing to fetch from private/internal IP for {host!r}"
+                )
+        except ImportError:
+            # Fallback: keep the old behaviour rather than silently disable
+            # SSRF protection.
+            import ipaddress
+            import socket
+            try:
+                ip_str = await loop.run_in_executor(None, socket.gethostbyname, host)
+                ip_obj = ipaddress.ip_address(ip_str)
+            except (socket.gaierror, ValueError) as exc:
+                raise ValueError(f"Could not resolve hostname {host!r}: {exc}") from exc
+            if (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+                or ip_obj.is_reserved
+                or ip_obj.is_unspecified
+            ):
+                raise ValueError(
+                    f"URL host {host!r} resolves to non-public IP {ip_str} — refusing"
+                )
+
         # Attempt 1: High Quality / Default (with runtime cookie check)
         try:
             logger.info("⬇️ Downloading: %s (Mode: HQ)", url)
@@ -265,10 +321,42 @@ class YTDLSource(discord.PCMVolumeTransformer):
         else:
             filename = ytdl_obj.prepare_filename(data)
 
+        # Validate the path/URL we are about to hand to ffmpeg as its input.
+        # Anything starting with '-' would be parsed as an ffmpeg flag (e.g.
+        # `-i /etc/passwd -y output.wav`), and a non-http(s) URL from a
+        # compromised yt-dlp extractor could request unintended schemes.
+        # Reject those rather than rely on ffmpeg to do the right thing.
+        if not isinstance(filename, str) or not filename:
+            raise ValueError("Invalid filename returned by yt-dlp")
+        if filename.startswith("-"):
+            raise ValueError("yt-dlp returned suspicious filename starting with '-'")
+        if stream and not filename.startswith(("http://", "https://")):
+            raise ValueError(
+                f"yt-dlp returned non-http(s) stream URL ({filename[:32]}...)"
+            )
+        # When downloading (stream=False), confirm yt-dlp wrote into the
+        # temp/ dir we configured via outtmpl. A compromised extractor that
+        # forges absolute paths (e.g. C:\Windows\System32\foo.opus) would
+        # otherwise let ffmpeg open arbitrary files for read or get fed
+        # back into Discord upload paths. resolve() canonicalises symlinks
+        # so a sneaky temp/../etc/passwd is collapsed before the check.
+        if not stream:
+            from pathlib import Path as _Path
+            try:
+                resolved = _Path(filename).resolve()
+                expected_root = _Path("temp").resolve()
+                # ``relative_to`` raises ValueError if resolved is not under
+                # expected_root — that's the signal we want.
+                resolved.relative_to(expected_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"yt-dlp wrote outside the temp/ download dir: {filename!r}"
+                ) from exc
+
         current_options = get_ffmpeg_options(stream=stream)
 
         return cls(
-            discord.FFmpegPCMAudio(filename, **current_options, executable="ffmpeg"),  # type: ignore[arg-type]
+            discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
             data=data,
             filename=filename,
         )
@@ -280,6 +368,18 @@ class YTDLSource(discord.PCMVolumeTransformer):
         """Search specifically for a song on YouTube"""
         loop = loop or asyncio.get_running_loop()
 
+        # If the input looks like a URL we used to forward it straight to
+        # yt-dlp, which would happily resolve file://, ftp://, custom
+        # protocols, etc. Reject anything that's not http(s) — non-URL
+        # queries flow through the search path unchanged.
+        from urllib.parse import urlparse as _urlparse
+        try:
+            scheme = _urlparse(query).scheme.lower() if query else ""
+        except (ValueError, TypeError):
+            scheme = ""
+        if scheme and scheme not in ("http", "https"):
+            logger.warning("Rejecting non-http(s) URL scheme in search: %s", scheme)
+            return None
         # Handle search query if not a URL
         if not query.startswith(("http://", "https://")):
             query = f"ytsearch:{query}"

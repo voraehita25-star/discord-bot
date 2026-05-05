@@ -2,6 +2,12 @@
 
 Reads the conversation from SQLite, calls build_user_context(), and shows the
 final prompt assembly so we can verify no foreign chat data is leaking in.
+
+By default this script prints only metadata (sizes, section counts) — passing
+``--full`` additionally prints the full prompt text. Be careful with --full:
+the prompt embeds persona, user-supplied memories, and full message history,
+which is generally sensitive data that you do not want to paste into an
+issue tracker or share unredacted.
 """
 from __future__ import annotations
 
@@ -15,33 +21,32 @@ sys.path.insert(0, str(ROOT))
 
 # Avoid the dashboard-CLI module pulling its full dep graph at import time
 # we just want build_user_context + the prompt builder.
-from cogs.ai_core.api.dashboard_common import build_user_context  # noqa: E402
-from cogs.ai_core.api.dashboard_chat_claude_cli import _build_full_prompt  # noqa: E402
-from cogs.ai_core.api.dashboard_config import DASHBOARD_ROLE_PRESETS  # noqa: E402
+from cogs.ai_core.api.dashboard_chat_claude_cli import _build_full_prompt
+from cogs.ai_core.api.dashboard_common import build_user_context
+from cogs.ai_core.api.dashboard_config import DASHBOARD_ROLE_PRESETS
 
 
-async def main(title_substr: str = "ไงงงงงง") -> None:
+async def main(title_substr: str = "", show_full: bool = False) -> None:
     db_path = ROOT / "data" / "bot_database.db"
-    raw = sqlite3.connect(db_path)
-    raw.row_factory = sqlite3.Row
-    row = raw.execute(
-        "SELECT id, title, role_preset FROM dashboard_conversations WHERE title LIKE ?",
-        (f"%{title_substr}%",),
-    ).fetchone()
-    if not row:
-        print(f"No conversation matching {title_substr!r}")
-        return
-    conv_id = row["id"]
-    print(f"Conversation : {row['title']}  ({conv_id})")
-    print(f"Preset       : {row['role_preset']}")
+    with sqlite3.connect(db_path) as raw:
+        raw.row_factory = sqlite3.Row
+        row = raw.execute(
+            "SELECT id, title, role_preset FROM dashboard_conversations WHERE title LIKE ?",
+            (f"%{title_substr}%",),
+        ).fetchone()
+        if not row:
+            print(f"No conversation matching {title_substr!r}")
+            return
+        conv_id = row["id"]
+        print(f"Conversation : {row['title']}  ({conv_id})")
+        print(f"Preset       : {row['role_preset']}")
 
-    msgs = raw.execute(
-        "SELECT id, role, content, created_at FROM dashboard_messages "
-        "WHERE conversation_id = ? ORDER BY id",
-        (conv_id,),
-    ).fetchall()
-    print(f"DB messages  : {len(msgs)}")
-    raw.close()
+        msgs = raw.execute(
+            "SELECT id, role, content, created_at FROM dashboard_messages "
+            "WHERE conversation_id = ? ORDER BY id",
+            (conv_id,),
+        ).fetchall()
+        print(f"DB messages  : {len(msgs)}")
 
     # build_user_context relies on the bot's get_db() singleton.
     user_context, memories_context, _ = await build_user_context(
@@ -69,13 +74,17 @@ async def main(title_substr: str = "ไงงงงงง") -> None:
 
     print()
     print("=" * 72)
-    print(f"FULL PROMPT (length: {len(prompt):,} chars)")
+    print(f"PROMPT (length: {len(prompt):,} chars)")
     print("=" * 72)
-    print(prompt)
-    print("=" * 72)
-    print()
+    if show_full:
+        print(prompt)
+        print("=" * 72)
+        print()
+    else:
+        print("(redacted — pass --full to print the prompt body)")
+        print()
 
-    # Sections breakdown
+    # Sections breakdown — always shown, contains no message bodies.
     parts = prompt.split("\n# ")
     print(f"Top-level sections: {len(parts)}")
     for p in parts:
@@ -84,4 +93,8 @@ async def main(title_substr: str = "ไงงงงงง") -> None:
         print(f"  # {first_line[:60]:60s}  ({size:,} chars)")
 
 
-asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "ไงงงงงง"))
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if a != "--full"]
+    full_flag = "--full" in sys.argv[1:]
+    arg = args[0] if args else "ไงงงงงง"
+    asyncio.run(main(arg, show_full=full_flag))

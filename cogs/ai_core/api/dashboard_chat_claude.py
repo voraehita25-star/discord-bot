@@ -12,14 +12,16 @@ import base64
 import io
 import logging
 
-logger = logging.getLogger(__name__)
 import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import anthropic
 from anthropic.types.message_param import MessageParam
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
@@ -110,12 +112,18 @@ def _apply_search_replace(original: str, ai_response: str) -> str:
         search_text = m.group(1)
         replace_text = m.group(2)
         if search_text in result:
+            if result.count(search_text) > 1:
+                logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                continue
             result = result.replace(search_text, replace_text, 1)
             applied += 1
         else:
             # Try with stripped whitespace as fallback
             search_stripped = search_text.strip()
             if search_stripped and search_stripped in result:
+                if result.count(search_stripped) > 1:
+                    logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                    continue
                 result = result.replace(search_stripped, replace_text.strip(), 1)
                 applied += 1
             else:
@@ -142,7 +150,6 @@ from ..claude_payloads import (
     CLAUDE_IMAGE_MEDIA_TYPES,
     ClaudeContentBlockParam,
     ClaudeMessageRole,
-    build_cached_system_prompt,
     build_claude_base64_image_block,
     build_claude_message,
     build_claude_pdf_document_block,
@@ -182,10 +189,19 @@ async def handle_chat_message_claude(
     max_documents: int = 5,
     max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
+    _failover_retry: bool = False,
 ) -> None:
-    """Handle incoming chat message and stream response via Claude."""
+    """Handle incoming chat message and stream response via Claude.
+
+    `_failover_retry` is a SERVER-internal flag used by the failover/retry
+    code paths. It must NEVER be honored from the client `data` dict — a
+    malicious client setting `_failover_retry: True` could bypass user
+    message persistence and document extraction (since both branches skip
+    those when this flag is True).
+    """
     conversation_id = data.get("conversation_id")
-    content = data.get("content", "").strip()
+    raw = data.get("content")
+    content = (raw if isinstance(raw, str) else "").strip()
     role_preset = data.get("role_preset", "general")
     thinking_enabled = data.get("thinking_enabled", False)
     unrestricted_mode_requested = data.get("unrestricted_mode", False)
@@ -193,11 +209,14 @@ async def handle_chat_message_claude(
     images = data.get("images", [])
     documents = data.get("documents", [])
     user_name = data.get("user_name", "User")
+    # is_regeneration IS legitimately client-controlled (the regenerate
+    # button) but we ignore _failover_retry from the wire — only honor the
+    # server-set parameter.
     is_regeneration = data.get("is_regeneration", False)
-    is_failover_retry = data.get("_failover_retry", False)
+    is_failover_retry = _failover_retry
 
     # Validate conversation_id format (defense in depth)
-    if conversation_id and (not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id)):
+    if conversation_id and (not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id)):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
 
@@ -228,6 +247,30 @@ async def handle_chat_message_claude(
 
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
+    # Validate client-supplied is_regeneration by checking that the last DB
+    # message is a user message with matching content. This stops a malicious
+    # client from setting is_regeneration=True to skip user-message persistence
+    # and document extraction. Server-set _failover_retry bypasses this check
+    # because the original turn already persisted things.
+    if is_regeneration and not is_failover_retry and DB_AVAILABLE and conversation_id:
+        try:
+            db = _get_db()
+            recent_msgs = await db.get_dashboard_messages(conversation_id)
+            last_msg = recent_msgs[-1] if recent_msgs else None
+            last_content = (last_msg or {}).get("content") or ""
+            # Strip any leading [timestamp] prefix saved by historical messages
+            last_content_stripped = strip_leading_timestamp(last_content) if last_content else ""
+            if not (last_msg and last_msg.get("role") == "user" and (
+                last_content == content or last_content_stripped == content
+            )):
+                logger.warning(
+                    "is_regeneration=True from client did not match last user msg; treating as new message",
+                )
+                is_regeneration = False
+        except Exception:
+            logger.warning("Failed to validate is_regeneration; treating as new message")
+            is_regeneration = False
+
     # Save user message to DB (skip for regeneration — the edited message already exists)
     user_msg_id: int = 0
     if DB_AVAILABLE and conversation_id and not is_regeneration:
@@ -241,7 +284,10 @@ async def handle_chat_message_claude(
     # text files so future turns see the content without re-upload. Claude
     # still gets the raw attachments as `document` blocks for THIS turn
     # (highest fidelity); the DB snapshot is the cross-conversation fallback.
-    if documents and DB_AVAILABLE and not is_regeneration:
+    # Skip extraction only when this is a SERVER-initiated failover retry —
+    # original turn already persisted them. A client-controlled is_regeneration
+    # MUST still trigger extraction in case a doc was uploaded again.
+    if documents and DB_AVAILABLE and not (is_regeneration and is_failover_retry):
         try:
             from .document_extractor import extract_and_persist
             db_inst = _get_db()
@@ -349,7 +395,7 @@ async def handle_chat_message_claude(
     for doc in documents:
         if not isinstance(doc, dict):
             continue
-        doc_name = str(doc.get("name", "attachment"))[:200]
+        doc_name = re.sub(r"[^A-Za-z0-9._\-\s]", "_", str(doc.get("name", "attachment")))[:200]
         doc_kind = doc.get("kind")
         doc_data = doc.get("data")
         if not isinstance(doc_data, str) or not doc_data:
@@ -403,8 +449,7 @@ async def handle_chat_message_claude(
 
     # Add text content — prefix with send timestamp so Claude sees when the
     # newly arrived message was sent, matching the [timestamp] prefix on
-    # historical messages above.
-    from zoneinfo import ZoneInfo
+    # historical messages above. ZoneInfo is imported at module scope.
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
     send_timestamp = bangkok_now_iso()
@@ -484,7 +529,6 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     api_kwargs: dict[str, Any] = {
         "model": CLAUDE_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
-        "cache_control": {"type": "ephemeral"},
         "system": build_split_cached_system_prompt(
             stable_system_prompt, volatile_system_prompt,
         ),
@@ -642,6 +686,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             # Save original messages to prevent accumulation on each retry
             original_messages = list(api_kwargs["messages"])
 
+            # Pre-bind so the asyncio.sleep(delay) at loop bottom never
+            # touches an unbound local. Both except branches reassign it
+            # before the sleep is reached, but a future edit could add a
+            # path that falls through unchanged.
+            delay = 1.0
             while attempt <= _MAX_STREAM_RETRIES:
                 try:
                     if stream_timeout > 0:
@@ -822,7 +871,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             if switched:
                 logger.info("🔀 Retrying with new endpoint after timeout failover...")
                 try:
-                    retry_data = {**data, "_failover_retry": True, "is_regeneration": True}
+                    # Pass _failover_retry as an explicit kwarg, not via data,
+                    # so a client cannot set it. Also force is_regeneration=True
+                    # via a dict copy so the user message we already saved on
+                    # the first attempt isn't duplicated.
+                    retry_data = {**data, "is_regeneration": True}
                     new_client = _api_failover.get_client()
                     await handle_chat_message_claude(
                         ws, retry_data, new_client,
@@ -830,7 +883,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         max_history_messages=max_history_messages,
                         max_images=max_images,
                         max_image_size_bytes=max_image_size_bytes,
+                        max_documents=max_documents,
+                        max_document_size_bytes=max_document_size_bytes,
                         stream_timeout=stream_timeout,
+                        _failover_retry=True,
                     )
                     return
                 except Exception as retry_err:
@@ -847,10 +903,28 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             logger.debug("WebSocket send failed during timeout handling, client may have disconnected")
     except Exception as e:
         error_str = str(e)
-        logger.exception("❌ Claude streaming error")
+        logger.error("❌ Claude streaming error: %s", type(e).__name__)
 
-        # Detect quota/billing limit — no point retrying or failing over
-        if "usage limits" in error_str or "billing" in error_str.lower():
+        # Detect quota/billing limit — no point retrying or failing over.
+        # Substring check is fragile (Anthropic wording can change) but the
+        # consequence of a miss is "we retry once more" which is acceptable.
+        # Also detect HTTP 429 explicitly via the SDK exception type so a
+        # rate-limit error is recognised even if the message wording shifts.
+        _err_lower = error_str.lower()
+        is_quota_error = (
+            "usage limits" in _err_lower
+            or "billing" in _err_lower
+            or "quota" in _err_lower
+            or "credit balance" in _err_lower
+        )
+        if not is_quota_error:
+            try:
+                import anthropic as _anthropic_mod
+                if isinstance(e, _anthropic_mod.APIStatusError) and getattr(e, "status_code", 0) == 429:
+                    is_quota_error = True
+            except Exception:
+                pass
+        if is_quota_error:
             try:
                 await ws.send_json({
                     "type": "error",
@@ -866,7 +940,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             if switched:
                 logger.info("🔀 Retrying with new endpoint after failover...")
                 try:
-                    retry_data = {**data, "_failover_retry": True, "is_regeneration": True}
+                    retry_data = {**data, "is_regeneration": True}
                     new_client = _api_failover.get_client()
                     await handle_chat_message_claude(
                         ws, retry_data, new_client,
@@ -874,7 +948,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         max_history_messages=max_history_messages,
                         max_images=max_images,
                         max_image_size_bytes=max_image_size_bytes,
+                        max_documents=max_documents,
+                        max_document_size_bytes=max_document_size_bytes,
                         stream_timeout=stream_timeout,
+                        _failover_retry=True,
                     )
                     return
                 except Exception as retry_err:
@@ -921,9 +998,14 @@ async def handle_ai_edit_message_claude(
 
     # Load target message from DB
     try:
+        target_message_id_int = int(target_message_id)
+    except (TypeError, ValueError):
+        await ws.send_json({"type": "error", "message": "Invalid target message ID"})
+        return
+    try:
         db = _get_db()
         all_msgs = await db.get_dashboard_messages(conversation_id)
-        target_msg = next((m for m in all_msgs if m.get("id") == int(target_message_id)), None)
+        target_msg = next((m for m in all_msgs if m.get("id") == target_message_id_int), None)
     except Exception:
         logger.exception("Failed to load target message for AI edit")
         await ws.send_json({"type": "error", "message": "Failed to load message"})
@@ -970,7 +1052,7 @@ async def handle_ai_edit_message_claude(
 
     # Build messages with conversation history for context
     messages: list[MessageParam] = []
-    target_idx = next((i for i, m in enumerate(all_msgs) if m.get("id") == int(target_message_id)), -1)
+    target_idx = next((i for i, m in enumerate(all_msgs) if m.get("id") == target_message_id_int), -1)
     if target_idx > 0:
         hist = all_msgs[:target_idx]
         if len(hist) > max_history_messages:
@@ -981,8 +1063,7 @@ async def handle_ai_edit_message_claude(
 
     messages.append(build_claude_message("user", edit_prompt))
 
-    # Build system prompt
-    from zoneinfo import ZoneInfo
+    # Build system prompt — ZoneInfo imported at module scope.
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
@@ -1009,7 +1090,6 @@ async def handle_ai_edit_message_claude(
     api_kwargs: dict[str, Any] = {
         "model": CLAUDE_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
-        "cache_control": {"type": "ephemeral"},
         "system": build_split_cached_system_prompt(
             stable_system_prompt, volatile_system_prompt,
         ),
@@ -1036,7 +1116,7 @@ async def handle_ai_edit_message_claude(
             "conversation_id": conversation_id,
             "mode": mode_str,
             "is_edit": True,
-            "target_message_id": int(target_message_id),
+            "target_message_id": target_message_id_int,
         })
 
         full_response = ""
@@ -1139,11 +1219,18 @@ async def handle_ai_edit_message_claude(
         # Apply search/replace patches if present, otherwise use full response
         final_content = _apply_search_replace(original_content, full_response) if full_response else ""
 
-        # Update the message in DB
+        # Update the message in DB. Pass conversation_id so the UPDATE only
+        # matches when the row is in the conversation the AI was editing —
+        # prevents an attacker (or a bug) from coercing this path into
+        # rewriting messages in a different conversation.
         if final_content:
             try:
                 db = _get_db()
-                await db.update_dashboard_message(int(target_message_id), final_content)
+                await db.update_dashboard_message(
+                    target_message_id_int,
+                    final_content,
+                    expected_conversation_id=conversation_id,
+                )
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
 
@@ -1153,7 +1240,7 @@ async def handle_ai_edit_message_claude(
             "full_response": final_content,
             "chunks_count": chunks_count,
             "is_edit": True,
-            "target_message_id": int(target_message_id),
+            "target_message_id": target_message_id_int,
         })
 
         if _FAILOVER_AVAILABLE:

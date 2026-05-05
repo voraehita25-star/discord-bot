@@ -283,8 +283,8 @@ class TestEditMessage:
         and replay the pre-edit assistant reply as if nothing changed —
         which is exactly the "old chat keeps coming back" symptom users hit.
         """
-        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
         from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
         cli_mod._CONVERSATION_SESSIONS["c1"] = "old-session-id"
         try:
             with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
@@ -301,8 +301,8 @@ class TestEditMessage:
     async def test_plain_edit_also_resets_cli_session(self, ws, mock_db):
         """Even without regenerate=True the DB content diverges from the
         Claude --resume transcript, so the session pointer must be dropped."""
-        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
         from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
         cli_mod._CONVERSATION_SESSIONS["c2"] = "stale"
         try:
             with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
@@ -346,8 +346,8 @@ class TestDeleteMessage:
         """Deleting a message in the middle of a conversation diverges the DB
         from the Claude --resume transcript — the session pointer must drop
         so the next CLI turn starts fresh."""
-        from cogs.ai_core.api.dashboard_handlers import handle_delete_message
         from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_delete_message
         mock_db.delete_dashboard_message.return_value = "c3"
         cli_mod._CONVERSATION_SESSIONS["c3"] = "stale-session"
         try:

@@ -345,8 +345,14 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 
     const values = data.map(d => d.value);
     // Use reduce instead of spread to prevent stack overflow with large arrays
-    const minVal = values.reduce((a, b) => Math.min(a, b), Infinity) * 0.9;
-    let maxVal = values.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1 || 1;
+    const rawMin = values.reduce((a, b) => Math.min(a, b), Infinity);
+    const rawMax = values.reduce((a, b) => Math.max(a, b), -Infinity);
+    // Padded versions are used for scaling so the line never grazes the
+    // chart edge; the raw values are shown as axis labels because a
+    // memory chart that never dipped below 42 MB shouldn't claim it
+    // bottomed out at 37.8 MB.
+    const minVal = rawMin * 0.9;
+    let maxVal = rawMax * 1.1 || 1;
     // Prevent division by zero when all values are identical
     if (maxVal === minVal) maxVal = minVal + 1;
 
@@ -410,8 +416,8 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(maxVal.toFixed(1), 5, padding + 10);
-    ctx.fillText(minVal.toFixed(1), 5, height - padding);
+    ctx.fillText(rawMax.toFixed(1), 5, padding + 10);
+    ctx.fillText(rawMin.toFixed(1), 5, height - padding);
 }
 
 function updateCharts(): void {
@@ -783,9 +789,16 @@ async function updateStatus(): Promise<void> {
         if (!cachedStatus) dataCache.set('status', status, 1500);
         if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
 
-        // Add to chart history
-        addChartDataPoint(memoryHistory, status.memory_mb);
-        addChartDataPoint(messagesHistory, dbStats.total_messages);
+        // Only chart fresh samples — adding a point on every call would
+        // duplicate the previous reading whenever updateStatus runs against
+        // a warm cache (e.g. Ctrl+R immediately followed by the interval
+        // tick), compressing the history into bunched-up clusters.
+        if (!cachedStatus) {
+            addChartDataPoint(memoryHistory, status.memory_mb);
+        }
+        if (!cachedDbStats) {
+            addChartDataPoint(messagesHistory, dbStats.total_messages);
+        }
 
         // Batch all DOM updates
         batchDOMUpdate([
@@ -1013,7 +1026,11 @@ async function loadLogs(): Promise<void> {
             container.textContent = 'No logs found.';
         }
 
-        if (logsAutoScrollEnabled && hasNewLogs) {
+        // Auto-scroll on new logs OR when the filter changes — switching from
+        // ERROR to ALL with auto-scroll on previously left the view on a
+        // mid-scroll position from the prior filter instead of snapping back
+        // to the bottom of the rebuilt list.
+        if (logsAutoScrollEnabled && (hasNewLogs || filterChanged)) {
             container.scrollTop = container.scrollHeight;
         }
     } catch (error) {
@@ -1316,7 +1333,11 @@ function loadSettingsUI(): void {
         if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
         if (avatarImage) {
-            avatarImage.src = '';
+            // Use a 1x1 transparent gif rather than '' — empty src triggers
+            // the browser's broken-image fallback even when the element
+            // itself is hidden via class, leaving a momentary glyph that
+            // bleeds through during page transitions.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1376,6 +1397,9 @@ let cropState = {
 let boundOnDrag: ((e: MouseEvent) => void) | null = null;
 let boundOnDragTouch: ((e: TouchEvent) => void) | null = null;
 let boundEndDrag: (() => void) | null = null;
+let boundStartDrag: ((e: MouseEvent) => void) | null = null;
+let boundStartDragTouch: ((e: TouchEvent) => void) | null = null;
+let cropListenersAttached = false;
 
 function openAvatarCropModal(imageUrl: string): void {
     cropState = {
@@ -1430,23 +1454,37 @@ function setupCropEventListeners(): void {
     const modal = document.getElementById('avatar-crop-modal');
     
     if (!cropArea || !zoomSlider || !saveBtn || !cancelBtn || !closeBtn || !modal) return;
-    
-    // Remove old listeners by cloning
-    const newCropArea = cropArea.cloneNode(true) as HTMLElement;
-    cropArea.parentNode?.replaceChild(newCropArea, cropArea);
-    
+
+    // Detach previously-bound handlers from the live elements rather than
+    // cloning the node (cloning silently drops every listener that was
+    // attached BEFORE this function ran, which leaks the document-level
+    // mousemove/touchmove/mouseup/touchend handlers from prior opens).
+    if (cropListenersAttached) {
+        if (boundStartDrag) cropArea.removeEventListener('mousedown', boundStartDrag);
+        if (boundStartDragTouch) cropArea.removeEventListener('touchstart', boundStartDragTouch);
+        if (boundOnDrag) document.removeEventListener('mousemove', boundOnDrag);
+        if (boundOnDragTouch) document.removeEventListener('touchmove', boundOnDragTouch);
+        if (boundEndDrag) {
+            document.removeEventListener('mouseup', boundEndDrag);
+            document.removeEventListener('touchend', boundEndDrag);
+        }
+    }
+
     // Create bound functions for proper cleanup
+    boundStartDrag = startDrag;
+    boundStartDragTouch = startDragTouch;
     boundOnDrag = onDrag;
     boundOnDragTouch = onDragTouch;
     boundEndDrag = endDrag;
-    
+
     // Mouse/touch drag
-    newCropArea.addEventListener('mousedown', startDrag);
-    newCropArea.addEventListener('touchstart', startDragTouch, { passive: false });
+    cropArea.addEventListener('mousedown', boundStartDrag);
+    cropArea.addEventListener('touchstart', boundStartDragTouch, { passive: false });
     document.addEventListener('mousemove', boundOnDrag);
     document.addEventListener('touchmove', boundOnDragTouch, { passive: false });
     document.addEventListener('mouseup', boundEndDrag);
     document.addEventListener('touchend', boundEndDrag);
+    cropListenersAttached = true;
     
     // Zoom
     zoomSlider.oninput = () => {
@@ -1463,10 +1501,15 @@ function setupCropEventListeners(): void {
     // Cancel/Close
     cancelBtn.onclick = closeCropModal;
     closeBtn.onclick = closeCropModal;
-    // Click on the .modal-overlay backdrop closes the modal. The overlay was added so
-    // the avatar crop modal gets the same dim+blur backdrop as other modals; before
-    // that, the modal content floated over an unblurred page.
-    modal.querySelector<HTMLElement>('[data-close-avatar-crop]')?.addEventListener('click', closeCropModal);
+    // Click on the .modal-overlay backdrop closes the modal. Guard with a
+    // dataset flag — without this every avatar-crop session would stack one
+    // more click listener and the overlay would call closeCropModal N times
+    // per click after N opens. The escape-key listener below already does
+    // this; the overlay listener was missing the same protection.
+    if (!modal.dataset.overlayCloseBound) {
+        modal.dataset.overlayCloseBound = '1';
+        modal.querySelector<HTMLElement>('[data-close-avatar-crop]')?.addEventListener('click', closeCropModal);
+    }
     // Fallback: clicking the modal element itself (outside both content + overlay)
     // also closes — keeps backwards compat with the previous click-target check.
     modal.onclick = (e) => {
@@ -1492,6 +1535,7 @@ function startDrag(e: MouseEvent): void {
 }
 
 function startDragTouch(e: TouchEvent): void {
+    if (!e.touches || e.touches.length === 0) return;
     e.preventDefault();
     cropState.isDragging = true;
     const touch = e.touches[0];
@@ -1508,6 +1552,7 @@ function onDrag(e: MouseEvent): void {
 
 function onDragTouch(e: TouchEvent): void {
     if (!cropState.isDragging) return;
+    if (!e.touches || e.touches.length === 0) return;
     e.preventDefault();
     const touch = e.touches[0];
     cropState.offsetX = touch.clientX - cropState.startX;
@@ -1643,7 +1688,9 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
         const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
         
         if (avatarImage) {
-            avatarImage.src = '';
+            // 1x1 transparent gif instead of empty src — empty triggers
+            // the browser's broken-image fallback even when hidden by class.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1659,7 +1706,9 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
         const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
         
         if (avatarImage) {
-            avatarImage.src = '';
+            // 1x1 transparent gif instead of empty src — empty triggers
+            // the browser's broken-image fallback even when hidden by class.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1755,15 +1804,17 @@ function initApiFailoverUI(): void {
     const origInitChat = (window as unknown as Record<string, unknown>)._apiFailoverRequested;
     if (!origInitChat) {
         (window as unknown as Record<string, unknown>)._apiFailoverRequested = true;
-        // Poll for chatManager readiness
+        // Poll for chatManager readiness. We extend the give-up window to 60s
+        // because slow first connects (cold WS auth, dev tools attached, etc.)
+        // can blow past the previous 30s ceiling and leave the failover panel
+        // stuck on "loading…" until the user reloads the page.
         const checkInterval = setInterval(() => {
             if (chatManager?.connected) {
                 chatManager.send({ type: 'get_api_endpoints' });
                 clearInterval(checkInterval);
             }
         }, 2000);
-        // Stop polling after 30s
-        setTimeout(() => clearInterval(checkInterval), 30000);
+        setTimeout(() => clearInterval(checkInterval), 60000);
     }
 }
 
@@ -1786,21 +1837,33 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
         item.className = 'api-endpoint-item' +
             (ep.active ? ' active' : '') +
             (!ep.healthy ? ' unhealthy' : '');
+        // Coerce numeric fields BEFORE interpolation. ?? 0 only catches
+        // null/undefined — a string from a misbehaving server (or compromised
+        // local backend) would be injected raw into innerHTML and execute.
+        const totalRequests = Number(ep.total_requests) || 0;
+        const failureRate = Number(ep.failure_rate) || 0;
+        // Coerce server-provided values to strings BEFORE calling string-only
+        // methods (.substring / .toUpperCase). `ep` is Record<string, unknown>,
+        // so a non-string value would otherwise throw TypeError and abort the
+        // entire endpoint render loop.
+        const epType = String(ep.type ?? '').toUpperCase();
+        const epLabel = String(ep.label ?? '') || epType;
+        const lastError = ep.last_error == null ? '' : String(ep.last_error).substring(0, 80);
         item.innerHTML = `
-            <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(ep.label as string || (ep.type as string).toUpperCase())}</div>
-            <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${ep.last_error ? ` — ${escapeHtml((ep.last_error as string).substring(0, 80))}` : ''}</div>
+            <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(epLabel)}</div>
+            <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${lastError ? ` — ${escapeHtml(lastError)}` : ''}</div>
             <span class="ep-badge ${ep.active ? '' : (ep.healthy ? 'healthy' : 'unhealthy-badge')}">${ep.active ? 'ACTIVE' : (ep.healthy ? 'standby' : 'down')}</span>
-            <div class="ep-stats">Requests: ${ep.total_requests ?? 0} | Fail rate: ${ep.failure_rate ?? 0}%</div>
+            <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate}%</div>
         `;
 
         // Click to switch
         if (!ep.active) {
             item.style.cursor = 'pointer';
-            item.title = `คลิกเพื่อสลับไปใช้ ${(ep.type as string).toUpperCase()}`;
+            item.title = `คลิกเพื่อสลับไปใช้ ${epType}`;
             item.addEventListener('click', () => {
                 if (chatManager?.connected) {
                     chatManager.send({ type: 'switch_api_endpoint', endpoint: ep.type });
-                    showToast(`🔀 Switching to ${(ep.type as string).toUpperCase()}...`, { type: 'info', duration: 2000 });
+                    showToast(`🔀 Switching to ${epType}...`, { type: 'info', duration: 2000 });
                 }
             });
         }
@@ -1819,13 +1882,20 @@ function renderHealthCheckResults(results: Array<Record<string, unknown>>): void
     const div = document.createElement('div');
     div.id = 'api-health-results';
     div.className = 'api-health-result';
-    div.innerHTML = results.map(r =>
-        `<div><strong>${escapeHtml(r.label as string || (r.endpoint as string))}</strong>: ` +
+    div.innerHTML = results.map(r => {
+        // Coerce latency to a number — escape the rest. r is Record<string, unknown>,
+        // so any string from a misbehaving WS frame would otherwise land in
+        // innerHTML unescaped. Also coerce label/error to string so a non-string
+        // value doesn't throw TypeError on .substring and break the whole list.
+        const latencyMs = Number(r.latency_ms) || 0;
+        const labelOrEndpoint = String(r.label ?? '') || String(r.endpoint ?? '');
+        const errorText = String(r.error ?? 'Failed').substring(0, 100);
+        return `<div><strong>${escapeHtml(labelOrEndpoint)}</strong>: ` +
         (r.healthy
-            ? `<span class="healthy">✅ Healthy (${r.latency_ms}ms)</span>`
-            : `<span class="unhealthy">❌ ${escapeHtml((r.error as string || 'Failed').substring(0, 100))}</span>`) +
-        '</div>'
-    ).join('');
+            ? `<span class="healthy">✅ Healthy (${latencyMs}ms)</span>`
+            : `<span class="unhealthy">❌ ${escapeHtml(errorText)}</span>`) +
+        '</div>';
+    }).join('');
     section.appendChild(div);
 
     // Auto-remove after 15s

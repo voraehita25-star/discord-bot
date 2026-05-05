@@ -2,9 +2,12 @@
 
 This directory contains high-performance native extensions written in Rust.
 
-> **Build Status:** ✅ Successfully built (April 2, 2026)  
-> **Rust Version:** stable  
-> **Output Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
+> **Build Status:** ✅ Successfully built (April 2, 2026)
+> **Rust Version:** stable (no MSRV pinned in `Cargo.toml`)
+> **Output Files:**
+>
+> - `cogs/ai_core/memory/rag_engine.pyd` (~653 KB)
+> - `utils/media/media_processor.pyd` (~1.6 MB)
 
 ## Components
 
@@ -54,9 +57,15 @@ High-performance image processing for Discord attachments.
 cd rust_extensions
 cargo build --release
 
-# Copy to Python paths
+# Copy to Python paths (Git Bash / WSL)
 cp target/release/rag_engine.dll ../cogs/ai_core/memory/rag_engine.pyd
 cp target/release/media_processor.dll ../utils/media/media_processor.pyd
+```
+
+```powershell
+# Copy to Python paths (PowerShell on Windows)
+Copy-Item target\release\rag_engine.dll ..\cogs\ai_core\memory\rag_engine.pyd -Force
+Copy-Item target\release\media_processor.dll ..\utils\media\media_processor.pyd -Force
 ```
 
 ## Usage from Python
@@ -65,9 +74,9 @@ cp target/release/media_processor.dll ../utils/media/media_processor.pyd
 
 ```python
 # Automatic fallback to pure Python if Rust not available
-from cogs.ai_core.memory.rag_rust import RagEngine
+from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
-engine = RagEngine(dimension=384, similarity_threshold=0.7)
+engine = RagEngineWrapper(dimension=384, similarity_threshold=0.7)
 
 # Add entries
 engine.add("id1", "Some text", embedding_vector, importance=1.0)

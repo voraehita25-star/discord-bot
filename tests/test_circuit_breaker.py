@@ -79,15 +79,22 @@ class TestCircuitBreakerStates:
         assert breaker.can_execute() is False  # Exceeds max
 
     def test_success_in_half_open_closes_circuit(self, breaker):
-        """Test that success in half-open state closes the circuit."""
+        """Closing requires half_open_max_calls successes (no premature flap).
+
+        The previous behaviour closed after the first success — that left any
+        remaining flying probes able to fail and immediately re-open the
+        circuit. We now require all admitted probes to confirm.
+        """
         # Force to half-open state
         for _ in range(3):
             breaker.record_failure()
         breaker._last_failure_time = time.time() - 10
         breaker._state = CircuitState.HALF_OPEN  # Force state
 
+        # First success is not enough — need half_open_max_calls (2 in this fixture)
         breaker.record_success()
-
+        assert breaker.state == CircuitState.HALF_OPEN
+        breaker.record_success()
         assert breaker.state == CircuitState.CLOSED
 
     def test_failure_in_half_open_reopens_circuit(self, breaker):

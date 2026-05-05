@@ -5,9 +5,13 @@ Script to clean empty AI responses from JSON history files.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
-DATA_DIR = Path("data")
+# Resolve DATA_DIR relative to THIS file rather than the caller's CWD.
+# `Path("data")` was relative-to-CWD, so running the script from a
+# different directory silently operated on the wrong (or no) files.
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 
 def clean_history_files() -> None:
@@ -57,6 +61,19 @@ def clean_history_files() -> None:
                 removed_count = len(history) - len(new_history)
                 total_removed += removed_count
                 files_affected += 1
+
+                # Make a sidecar backup of the original before rewriting —
+                # the atomic-replace below is crash-safe but doesn't help
+                # if the cleaning logic itself was buggy. Use a
+                # timestamped suffix so consecutive runs don't clobber
+                # each other's backups (the previous `.bak` overwrote the
+                # last clean copy on every re-run).
+                try:
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    bak_path = filepath.with_suffix(f"{filepath.suffix}.{ts}.bak")
+                    bak_path.write_bytes(filepath.read_bytes())
+                except OSError as e:
+                    print(f"Warning: could not back up {filepath}: {e}")
 
                 # Atomic write: tmp file + os.replace so a crash mid-write
                 # can never corrupt an existing history file.

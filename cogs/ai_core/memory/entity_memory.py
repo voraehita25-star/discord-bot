@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -22,6 +20,9 @@ try:
 except ImportError:
     db_manager = None  # type: ignore[assignment]
 
+
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class EntityFacts:
@@ -49,11 +50,18 @@ class EntityFacts:
     custom: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary, excluding None values."""
+        """Convert to dictionary, excluding None / empty container values."""
         result = {}
         for key, value in asdict(self).items():
-            if value is not None and value not in ({}, []):
-                result[key] = value
+            if value is None:
+                continue
+            # Skip empty containers — `value not in ({}, [])` was a buggy
+            # tuple membership test (an empty dict isn't equal to an empty
+            # set) so empty `relationships`/`custom` dicts always passed
+            # through and bloated the AI payload.
+            if isinstance(value, (dict, list, set, tuple)) and not value:
+                continue
+            result[key] = value
         return result
 
     @classmethod
@@ -111,9 +119,29 @@ class Entity:
     access_count: int = 0
 
     def to_prompt_text(self) -> str:
-        """Convert to text for prompt injection."""
+        """Convert to text for prompt injection.
+
+        Strips control characters and bracket-prefixed lines that look like
+        synthetic system markers (``[SYSTEM]``, ``[INST]``, ``ignore previous``)
+        — entity facts are derived from user/AI conversation and could be
+        used as a stored prompt-injection vector if echoed verbatim into
+        the model's prompt.
+        """
+        import re as _re
         facts_text = self.facts.to_prompt_text()
-        return f"[{self.entity_type.upper()}] {self.name}:\n{facts_text}"
+
+        def _scrub(s: str) -> str:
+            # Drop ASCII control chars except whitespace.
+            s = "".join(ch for ch in s if ch >= " " or ch in ("\n", "\t"))
+            # Neutralise leading bracketed system markers per line.
+            s = _re.sub(
+                r"(?im)^\s*\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*",
+                "[redacted]",
+                s,
+            )
+            return s
+
+        return f"[{self.entity_type.upper()}] {_scrub(self.name)}:\n{_scrub(facts_text)}"
 
 
 class EntityMemoryManager:
@@ -192,6 +220,18 @@ class EntityMemoryManager:
             facts_json = json.dumps(facts.to_dict(), ensure_ascii=False)
 
             async with db_manager.get_write_connection() as conn:
+                # BEGIN IMMEDIATE acquires the SQLite reserved-lock up front
+                # so the SELECT below can't see a phantom row inserted by a
+                # second writer between our check and our INSERT. The outer
+                # asyncio _write_lock already serializes writers, but this
+                # also protects against any path that bypasses it. Suppress
+                # "cannot start a transaction within a transaction" — aiosqlite
+                # may have already auto-begun on the prior commit; in that
+                # case the existing transaction is sufficient.
+                try:
+                    await conn.execute("BEGIN IMMEDIATE")
+                except aiosqlite.OperationalError:
+                    pass
                 # Explicit check for existing entity to handle NULL values
                 # in UNIQUE constraint (SQLite treats NULLs as distinct)
                 if channel_id is None and guild_id is None:
@@ -266,9 +306,19 @@ class EntityMemoryManager:
             return None
 
     async def get_entity(
-        self, name: str, channel_id: int | None = None, guild_id: int | None = None
+        self,
+        name: str,
+        channel_id: int | None = None,
+        guild_id: int | None = None,
+        update_access: bool = True,
     ) -> Entity | None:
-        """Get an entity by name."""
+        """Get an entity by name.
+
+        Args:
+            update_access: When True (default), bumps access_count for
+                ranking. Pass False on read-only paths (prompt assembly,
+                contradiction detection) to avoid write amplification.
+        """
         if not await self.initialize():
             return None
 
@@ -278,8 +328,33 @@ class EntityMemoryManager:
             return None
 
         try:
-            # Read query uses read connection to avoid blocking write pool
-            async with db_manager.get_connection() as conn:
+            if not update_access:
+                # Read-only fast path — no write connection, no UPDATE.
+                async with db_manager.get_connection() as conn:
+                    cursor = await conn.execute(
+                        """
+                        SELECT * FROM entity_memories
+                        WHERE name = ? AND (channel_id = ? OR channel_id IS NULL)
+                        AND (guild_id = ? OR guild_id IS NULL)
+                        ORDER BY (channel_id IS NULL), channel_id DESC,
+                                 (guild_id IS NULL), guild_id DESC
+                        LIMIT 1
+                        """,
+                        (name, channel_id, guild_id),
+                    )
+                    row = await cursor.fetchone()
+                    if not row:
+                        return None
+                    return self._row_to_entity(row)
+
+            # Run read + access_count bump in the SAME write connection so
+            # they share a transaction. Previously the read used the read
+            # pool and the bump used a fresh write connection, so a delete
+            # between them could yield a stale Entity object referencing
+            # an id no longer in the DB. Also avoids a write+commit per
+            # read on hot lookup paths (we COULD batch these in future,
+            # but keeping correctness wins over the WAL churn for now).
+            async with db_manager.get_write_connection() as conn:
                 cursor = await conn.execute(
                     """
                     SELECT * FROM entity_memories
@@ -292,19 +367,14 @@ class EntityMemoryManager:
                     (name, channel_id, guild_id),
                 )
                 row = await cursor.fetchone()
-
-            if row:
-                # Update access count with write connection
-                async with db_manager.get_write_connection() as wconn:
-                    await wconn.execute(
-                        "UPDATE entity_memories SET access_count = access_count + 1 WHERE id = ?",
-                        (row[0],),
-                    )
-                    await wconn.commit()
-
+                if not row:
+                    return None
+                await conn.execute(
+                    "UPDATE entity_memories SET access_count = access_count + 1 WHERE id = ?",
+                    (row[0],),
+                )
+                await conn.commit()
                 return self._row_to_entity(row)
-
-            return None
 
         except aiosqlite.Error:
             logger.exception("Failed to get entity %s", name)
@@ -383,13 +453,20 @@ class EntityMemoryManager:
             else:
                 updated_facts = EntityFacts.from_dict(new_facts)
 
+            # IMPORTANT: scope the upsert to the entity we actually loaded.
+            # get_entity does fuzzy NULL-matching (it can return a global/
+            # NULL-channel row when a per-channel one is absent), but
+            # add_entity's existence check is exact match. Passing the
+            # caller's channel_id/guild_id here would create a NEW per-channel
+            # row instead of updating the global one, leaving stale facts
+            # behind. Use entity.channel_id / entity.guild_id instead.
             return (
                 await self.add_entity(
                     name=name,
                     entity_type=entity.entity_type,
                     facts=updated_facts,
-                    channel_id=channel_id,
-                    guild_id=guild_id,
+                    channel_id=entity.channel_id,
+                    guild_id=entity.guild_id,
                     confidence=entity.confidence,
                     source=entity.source,
                 )
@@ -405,6 +482,8 @@ class EntityMemoryManager:
     ) -> bool:
         """Delete an entity from memory."""
         if not await self.initialize():
+            return False
+        if db_manager is None:
             return False
 
         try:
@@ -448,6 +527,8 @@ class EntityMemoryManager:
     ) -> list[Entity]:
         """Get all entities, optionally filtered."""
         if not await self.initialize():
+            return []
+        if db_manager is None:
             return []
 
         try:
@@ -506,7 +587,12 @@ class EntityMemoryManager:
         """Get formatted entity information for prompt injection."""
         entities = []
         for name in names:
-            entity = await self.get_entity(name, channel_id, guild_id)
+            # Skip access_count bump on the prompt-assembly hot path —
+            # this fires on every message and was generating a write per
+            # entity per turn.
+            entity = await self.get_entity(
+                name, channel_id, guild_id, update_access=False
+            )
             if entity:
                 entities.append(entity)
 

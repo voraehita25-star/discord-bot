@@ -7,6 +7,7 @@ Protects against malicious input in AI-controlled operations.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Regex patterns for validation
 _SAFE_CHANNEL_NAME = re.compile(r"[^a-zA-Z0-9\-_\u0E00-\u0E7F\s]")
@@ -67,8 +68,13 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     if content is None:
         return ""
 
-    # Escape dangerous mentions by inserting zero-width space (case-insensitive)
-    # NOTE: Sanitize BEFORE truncation to avoid splitting escape sequences
+    # Escape dangerous mentions by inserting zero-width space.
+    # Use NFKC-folded source so Unicode confusables like Cyrillic "\u0435" or
+    # full-width "\uff20" can't sneak past the literal `@everyone` regex \u2014
+    # Discord parses the rendered string after font-shaping, but we need
+    # to neutralise the raw bytes the AI produced.
+    content = unicodedata.normalize("NFKC", content)
+    # Sanitize BEFORE truncation to avoid splitting escape sequences.
     content = re.sub(r"@everyone", "@\u200beveryone", content, flags=re.IGNORECASE)
     content = re.sub(r"@here", "@\u200bhere", content, flags=re.IGNORECASE)
 

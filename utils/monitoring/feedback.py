@@ -68,6 +68,8 @@ class FeedbackStats:
     neutral_count: int = 0
     helpful_count: int = 0
     funny_count: int = 0
+    too_short_count: int = 0
+    too_long_count: int = 0
 
     @property
     def satisfaction_rate(self) -> float:
@@ -109,7 +111,11 @@ class FeedbackCollector:
 
     def __init__(self, max_tracked_messages: int = 1000):
         self._tracked_messages: OrderedDict[int, dict] = OrderedDict()  # message_id -> metadata
-        self._feedback: list[FeedbackEntry] = []
+        # deque(maxlen=...) gives O(1) trim instead of the previous
+        # ``self._feedback = self._feedback[-MAX:]`` rebuild which was
+        # O(n) per insertion at high feedback volume.
+        from collections import deque
+        self._feedback: deque[FeedbackEntry] = deque(maxlen=self.MAX_FEEDBACK_ENTRIES)
         self._max_tracked = max_tracked_messages
         self._callbacks: list[Callable[[FeedbackEntry], None]] = []
         self._lock = threading.RLock()  # Reentrant lock for callback safety
@@ -158,11 +164,9 @@ class FeedbackCollector:
                 context=metadata.get("preview"),
             )
 
+            # deque(maxlen=...) auto-evicts oldest on append — no manual
+            # rebuild needed.
             self._feedback.append(entry)
-
-            # Cleanup old entries to prevent memory growth
-            if len(self._feedback) > self.MAX_FEEDBACK_ENTRIES:
-                self._feedback = self._feedback[-self.MAX_FEEDBACK_ENTRIES:]
 
             # Take snapshot of callbacks to avoid race condition
             callbacks_snapshot = list(self._callbacks)
@@ -199,22 +203,28 @@ class FeedbackCollector:
         with self._lock:
             feedback_snapshot = list(self._feedback)
 
+        # Map FeedbackType → attribute name on FeedbackStats so a new
+        # reaction (e.g. LENGTH_TOO_SHORT, LENGTH_TOO_LONG) automatically
+        # gets tallied via the table below — previously two reactions
+        # were silently dropped because the if/elif ladder only covered
+        # five of seven types.
+        attr_map = {
+            FeedbackType.POSITIVE: "positive_count",
+            FeedbackType.NEGATIVE: "negative_count",
+            FeedbackType.NEUTRAL: "neutral_count",
+            FeedbackType.HELPFUL: "helpful_count",
+            FeedbackType.FUNNY: "funny_count",
+            FeedbackType.LENGTH_TOO_SHORT: "too_short_count",
+            FeedbackType.LENGTH_TOO_LONG: "too_long_count",
+        }
+
         for entry in feedback_snapshot:
             if entry.timestamp < cutoff:
                 continue
-
             stats.total_feedback += 1
-
-            if entry.feedback_type == FeedbackType.POSITIVE:
-                stats.positive_count += 1
-            elif entry.feedback_type == FeedbackType.NEGATIVE:
-                stats.negative_count += 1
-            elif entry.feedback_type == FeedbackType.NEUTRAL:
-                stats.neutral_count += 1
-            elif entry.feedback_type == FeedbackType.HELPFUL:
-                stats.helpful_count += 1
-            elif entry.feedback_type == FeedbackType.FUNNY:
-                stats.funny_count += 1
+            attr = attr_map.get(entry.feedback_type)
+            if attr is not None:
+                setattr(stats, attr, getattr(stats, attr) + 1)
 
         return stats
 
@@ -225,18 +235,30 @@ class FeedbackCollector:
         return sorted(negative, key=lambda x: x.timestamp, reverse=True)[:limit]
 
     def get_channel_stats(self, channel_id: int) -> FeedbackStats:
-        """Get stats for a specific channel (thread-safe)."""
+        """Get stats for a specific channel (thread-safe).
+
+        Tally ALL reaction types, not just positive/negative — the prior
+        implementation silently dropped neutral/helpful/funny/length
+        feedback for channel-scoped queries.
+        """
         with self._lock:
             channel_feedback = [f for f in self._feedback if f.channel_id == channel_id]
 
+        attr_map = {
+            FeedbackType.POSITIVE: "positive_count",
+            FeedbackType.NEGATIVE: "negative_count",
+            FeedbackType.NEUTRAL: "neutral_count",
+            FeedbackType.HELPFUL: "helpful_count",
+            FeedbackType.FUNNY: "funny_count",
+            FeedbackType.LENGTH_TOO_SHORT: "too_short_count",
+            FeedbackType.LENGTH_TOO_LONG: "too_long_count",
+        }
         stats = FeedbackStats()
         for entry in channel_feedback:
             stats.total_feedback += 1
-            if entry.feedback_type == FeedbackType.POSITIVE:
-                stats.positive_count += 1
-            elif entry.feedback_type == FeedbackType.NEGATIVE:
-                stats.negative_count += 1
-
+            attr = attr_map.get(entry.feedback_type)
+            if attr is not None:
+                setattr(stats, attr, getattr(stats, attr) + 1)
         return stats
 
     def export_stats(self) -> dict[str, Any]:
@@ -250,6 +272,8 @@ class FeedbackCollector:
             "neutral": stats.neutral_count,
             "helpful": stats.helpful_count,
             "funny": stats.funny_count,
+            "too_short": stats.too_short_count,
+            "too_long": stats.too_long_count,
             "recent_negative": [
                 {
                     "message_id": f.message_id,

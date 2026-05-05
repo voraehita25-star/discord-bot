@@ -59,6 +59,10 @@ def format_duration(seconds: int | float | None) -> str:
     Returns:
         Formatted duration string (e.g., "3:45" or "1:23:45").
     """
+    # 0 and None both render as "00:00" — for music tracks both mean
+    # "unknown duration" (live stream, malformed metadata). Tests pin
+    # this behaviour; callers that need to distinguish real 0-second
+    # content from "unknown" should check before formatting.
     if not seconds:
         return "00:00"
     seconds = int(seconds)

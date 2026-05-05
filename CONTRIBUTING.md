@@ -11,7 +11,7 @@ cd discord-bot
 python -m venv .venv
 .venv\Scripts\activate       # Windows
 pip install -r requirements.txt
-pip install pytest pytest-asyncio pytest-cov ruff mypy bandit[toml]
+pip install pytest pytest-asyncio pytest-cov ruff bandit[toml]
 
 # Install pre-commit hooks
 make install-hooks
@@ -80,7 +80,7 @@ docs: update database schema documentation
 
    ```bash
    make lint          # ruff check
-   make test          # pytest (3,088 Python tests) — also run `npm test` (189 vitest) and `npm run test:e2e` (63 Playwright) in native_dashboard/
+   make test          # pytest (3,094 Python tests) — also run `npm test` (189 vitest) and `npm run test:e2e` (63 Playwright) in native_dashboard/
    make build-rust    # cargo test + clippy
    make build-go      # go test + go vet
    ```

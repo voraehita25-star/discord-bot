@@ -38,6 +38,18 @@ HEALTH_API_PORT = os.getenv("GO_HEALTH_API_PORT") or (
 )
 HEALTH_API_URL = f"http://{HEALTH_API_HOST}:{HEALTH_API_PORT}"
 
+# Bearer token for write endpoints. Must match the Go sidecar's
+# HEALTH_API_TOKEN env var. When empty, write attempts will be rejected by
+# the sidecar with 503 — that's intentional, see the Go-side comment.
+HEALTH_API_TOKEN = os.getenv("HEALTH_API_TOKEN", "")
+
+
+def _auth_headers() -> dict[str, str]:
+    """Return Authorization headers if a token is configured, else empty dict."""
+    if HEALTH_API_TOKEN:
+        return {"Authorization": f"Bearer {HEALTH_API_TOKEN}"}
+    return {}
+
 
 class HealthAPIClient:
     """
@@ -98,12 +110,21 @@ class HealthAPIClient:
                 raise
 
     async def _periodic_flush(self) -> None:
-        """Flush metrics buffer every 30 seconds to avoid staleness during low traffic."""
+        """Flush metrics buffer every 30 seconds to avoid staleness during low traffic.
+
+        Wraps the body in a broad except so a transient flush error doesn't
+        kill the periodic task — previously any exception other than
+        CancelledError silently terminated the loop and metrics never flushed
+        again until the bot was restarted.
+        """
         try:
             while True:
                 await asyncio.sleep(30)
                 if self._session is not None:
-                    await self._flush_buffer()
+                    try:
+                        await self._flush_buffer()
+                    except Exception as e:
+                        logger.debug("Periodic flush failed (will retry): %s", e)
         except asyncio.CancelledError:
             pass
 
@@ -197,7 +218,8 @@ class HealthAPIClient:
         try:
             async with self._session.post(
                 f"{self.base_url}/health/service",
-                json={"name": name, "healthy": healthy}
+                json={"name": name, "healthy": healthy},
+                headers=_auth_headers(),
             ):
                 pass  # Response is auto-closed by async with
         except Exception as e:
@@ -250,14 +272,20 @@ class HealthAPIClient:
         try:
             async with self._session.post(
                 f"{self.base_url}/metrics/batch",
-                json=metrics
+                json=metrics,
+                headers=_auth_headers(),
             ):
                 pass  # Response is auto-closed by async with
         except Exception as e:
-            # Re-add to buffer on failure (limited)
+            # Re-add to buffer on failure but cap the buffer so a sustained
+            # outage can't grow the buffer without bound + cause OOM. Cap is
+            # on the *combined* size (existing buffer + this batch), not on
+            # this batch alone, which the original check missed.
             logger.debug("Failed to flush metrics batch: %s", e)
-            if len(metrics) < 100:
-                self._metrics_buffer.extend(metrics)
+            BUFFER_CAP = 1000
+            spare = max(0, BUFFER_CAP - len(self._metrics_buffer))
+            if spare:
+                self._metrics_buffer.extend(metrics[:spare])
 
     @property
     def is_available(self) -> bool:

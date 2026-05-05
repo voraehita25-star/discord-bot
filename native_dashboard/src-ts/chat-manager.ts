@@ -160,7 +160,11 @@ function reflowPdfText(text: string): string {
 function formatChatFileDate(iso: string): string {
     if (!iso) return '';
     try {
-        const d = new Date(iso);
+        // SQLite naive timestamps are UTC — append Z so JS doesn't misread
+        // them as local time (would render hours off in non-UTC zones).
+        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
+        const normalized = hasTzInfo ? iso : iso.replace(' ', 'T') + 'Z';
+        const d = new Date(normalized);
         if (Number.isNaN(d.getTime())) return iso;
         // Short absolute format — works in any locale without being verbose.
         // e.g. "Apr 24, 15:32". Users mainly care about "was this today".
@@ -243,7 +247,11 @@ export class MemoryManager {
 
     formatTime(isoString: string): string {
         try {
-            return new Date(isoString).toLocaleDateString('en-US', {
+            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(isoString);
+            const normalized = hasTzInfo
+                ? isoString
+                : isoString.replace(' ', 'T') + 'Z';
+            return new Date(normalized).toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',
@@ -251,7 +259,10 @@ export class MemoryManager {
                 minute: '2-digit'
             });
         } catch {
-            return isoString;
+            // Caller (renderMemories) interpolates this directly into
+            // innerHTML, so a server-supplied created_at containing HTML must
+            // not flow through unescaped on the parse-failure path.
+            return escapeHtml(isoString);
         }
     }
 
@@ -396,11 +407,26 @@ export class ChatManager {
         onDisconnect: () => {
             // Reset streaming state to prevent chat input from being permanently locked.
             if (this.isStreaming) {
+                const wasEditStreaming = this.isEditStreaming;
                 this.isStreaming = false;
                 this.isEditStreaming = false;
                 this.editTargetMessageId = null;
                 this.editStreamContent = '';
                 this.setInputEnabled(true);
+                if (wasEditStreaming) {
+                    // /edit stream uses an in-place .edit-streaming-text on an
+                    // existing message rather than #streaming-message, so the
+                    // generic stuckMsg.remove() below misses it. Restore the
+                    // affected message to its normal display state.
+                    document.querySelectorAll('.chat-message.streaming').forEach(el => {
+                        el.classList.remove('streaming');
+                        const actions = el.querySelector('.message-actions') as HTMLElement | null;
+                        if (actions) actions.style.display = '';
+                    });
+                    // Re-render to drop the typing indicator + restore original
+                    // content from `this.messages`.
+                    this.renderMessages();
+                }
                 const stuckMsg = document.getElementById('streaming-message');
                 if (stuckMsg) stuckMsg.remove();
             }
@@ -418,19 +444,20 @@ export class ChatManager {
         this.wsClient.connect();
     }
     disconnect(): void { this.wsClient.disconnect(); }
-    send(data: unknown): void { this.wsClient.send(data); }
+    send(data: unknown): boolean { return this.wsClient.send(data); }
 
     handleMessage(data: Record<string, unknown>): void {
         switch (data.type) {
             case 'connected':
                 this.presets = (data.presets as Record<string, RolePreset>) || {};
-                if (data.requires_auth) {
-                    if (!this.wsClient.token) {
-                        errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
-                        showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
-                        break;
-                    }
-                    this.send({ type: 'auth', token: this.wsClient.token });
+                // ws-client already sends `{type:'auth'}` in onopen — sending
+                // it a second time on the server's `connected` event was
+                // duplicative and could be interpreted as a protocol error.
+                // Just verify a token exists when the server requires auth.
+                if (data.requires_auth && !this.wsClient.token) {
+                    errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
+                    showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
+                    break;
                 }
                 // Update available AI providers from server
                 if (data.available_providers) {
@@ -573,6 +600,20 @@ export class ChatManager {
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
                     showToast('AI edit complete ✏️', { type: 'success' });
+                    break;
+                }
+                if (this.isEditStreaming) {
+                    // Server sent stream_end without is_edit while we were in
+                    // edit mode (protocol mismatch / failover). Don't fall
+                    // through to finalizeStreamingMessage — that would push a
+                    // phantom assistant bubble. Clear edit state, restore
+                    // original content, and surface the failure.
+                    this.isEditStreaming = false;
+                    this.editTargetMessageId = null;
+                    this.editStreamContent = '';
+                    this.setInputEnabled(true);
+                    this.renderMessages();
+                    showToast('AI edit was interrupted', { type: 'error' });
                     break;
                 }
                 this.finalizeStreamingMessage(data.full_response as string);
@@ -1091,7 +1132,7 @@ export class ChatManager {
             const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
             const userName = settings.userName || 'User';
 
-            this.send({
+            const editSendOk = this.send({
                 type: 'ai_edit_message',
                 conversation_id: this.currentConversation.id,
                 target_message_id: targetMsg.id,
@@ -1101,14 +1142,23 @@ export class ChatManager {
                 user_name: userName,
                 ai_provider: this.aiProvider,
             });
+            if (!editSendOk) {
+                // Drop the streaming gate so the user can retry once the WS
+                // reconnects — without this rollback, the input stays locked.
+                this.isStreaming = false;
+            }
             return;
         }
 
         // Get history BEFORE adding new message (backend will add it)
-        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
+        // but keep `created_at` so the backend can prefix each message with its
+        // send timestamp — without it the AI can't tell hours-long gaps from
+        // back-to-back replies.
         const historyToSend = this.messages.slice(-20).map(m => ({
             role: m.role,
             content: m.content,
+            created_at: m.created_at,
         }));
 
         // Add to local messages for display (include images)
@@ -1140,7 +1190,7 @@ export class ChatManager {
         // race with in-flight FileReaders still resolving their payload.
         const docs = this.attachedDocs;
 
-        this.send({
+        const sendOk = this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
             content,
@@ -1155,6 +1205,17 @@ export class ChatManager {
             user_name: userName,
             ai_provider: this.aiProvider,
         });
+
+        if (!sendOk) {
+            // Roll back the streaming gate so the user isn't locked out
+            // of sending further messages until the WS reconnects, and
+            // drop the user-message that was already pushed locally so
+            // it doesn't linger in the rendered list as a phantom turn.
+            this.isStreaming = false;
+            this.messages.pop();
+            this.renderMessages();
+            return;
+        }
 
         // Clear attached images + documents after sending
         this.imageAttach.clear();
@@ -1173,7 +1234,7 @@ export class ChatManager {
         const safeAi = safeAvatarUrl(settings.aiAvatar);
         const avatarHtml = safeAi
             ? `<img src="${safeAi}" alt="ai" class="user-avatar-img">`
-            : (this.currentConversation?.role_emoji || '\uD83E\uDD16');
+            : escapeHtml(this.currentConversation?.role_emoji || '\uD83E\uDD16');
         
         msgDiv.innerHTML = `
             <div class="message-avatar">${avatarHtml}</div>
@@ -1249,6 +1310,26 @@ export class ChatManager {
     }
 
     finalizeStreamingMessage(fullResponse: string): void {
+        // Push first so msgIdx is the actual post-trim index. The previous
+        // version captured `this.messages.length` BEFORE push, which was
+        // correct for indices < MAX_LOCAL_MESSAGES but went one past the end
+        // once trimLocalMessages started shifting the window.
+        const newMessage: ChatMessage = {
+            role: 'assistant',
+            content: fullResponse,
+            created_at: new Date().toISOString()
+        };
+        if (this.currentThinking) {
+            newMessage.thinking = this.currentThinking;
+            this.currentThinking = '';  // Reset for next message
+        }
+        if (this.currentMode) {
+            newMessage.mode = this.currentMode;
+            this.currentMode = '';  // Reset for next message
+        }
+        this.messages.push(newMessage);
+        this.trimLocalMessages();
+
         const streamingMsg = document.getElementById('streaming-message');
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
@@ -1260,19 +1341,22 @@ export class ChatManager {
                 void this.highlightCodeBlocks(content as HTMLElement);
             }
 
-            // Add action buttons (copy, edit, delete) at the bottom
+            // Add action buttons (copy, edit, delete) at the bottom. Resolve
+            // the index at click time via indexOf(newMessage) so subsequent
+            // trims/edits/deletes that shift the array don't desync the
+            // closures.
             const wrapper = streamingMsg.querySelector('.message-wrapper');
             if (wrapper && !wrapper.querySelector('.message-actions')) {
                 const actionsDiv = document.createElement('div');
                 actionsDiv.className = 'message-actions';
-                const msgIdx = this.messages.length; // Will be pushed below
+                const currentIdx = this.messages.indexOf(newMessage);
                 actionsDiv.innerHTML = `
                     <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">\uD83D\uDCCB Copy</button>
-                    <button class="edit-message-btn" data-msg-idx="${msgIdx}" title="Edit">\u270F\uFE0F Edit</button>
-                    <button class="delete-message-btn" data-msg-idx="${msgIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
+                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">\u270F\uFE0F Edit</button>
+                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
                 `;
                 wrapper.appendChild(actionsDiv);
-                
+
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
                     const btn = e.target as HTMLElement;
                     const contentAttr = btn.getAttribute('data-content') || '';
@@ -1289,32 +1373,18 @@ export class ChatManager {
                 });
 
                 actionsDiv.querySelector('.edit-message-btn')?.addEventListener('click', () => {
-                    this.startEditMessage(msgIdx);
+                    const idx = this.messages.indexOf(newMessage);
+                    if (idx >= 0) this.startEditMessage(idx);
                 });
 
                 actionsDiv.querySelector('.delete-message-btn')?.addEventListener('click', async () => {
                     const confirmed = await showConfirmDialog('Delete this message?');
-                    if (confirmed) this.deleteMessage(msgIdx);
+                    if (!confirmed) return;
+                    const idx = this.messages.indexOf(newMessage);
+                    if (idx >= 0) this.deleteMessage(idx);
                 });
             }
         }
-
-        // Store message with thinking and mode if available
-        const newMessage: ChatMessage = {
-            role: 'assistant',
-            content: fullResponse,
-            created_at: new Date().toISOString()
-        };
-        if (this.currentThinking) {
-            newMessage.thinking = this.currentThinking;
-            this.currentThinking = '';  // Reset for next message
-        }
-        if (this.currentMode) {
-            newMessage.mode = this.currentMode;
-            this.currentMode = '';  // Reset for next message
-        }
-        this.messages.push(newMessage);
-        this.trimLocalMessages();
 
         this.scrollToBottom();
     }
@@ -1337,7 +1407,9 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container) return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl) return;
 
         const contentEl = msgEl.querySelector('.message-content');
@@ -1435,6 +1507,7 @@ export class ChatManager {
         // Propagate the clamped window size back to ChatManager so subsequent
         // "show earlier" clicks grow from the correct baseline.
         this.visibleMessageCount = result.visibleMessageCount;
+        this.visibleStartIdx = result.startIdx;
         container.innerHTML = result.html;
 
         if (this.messages.length === 0) return;  // no events to bind on the welcome card
@@ -1466,9 +1539,12 @@ export class ChatManager {
             img.addEventListener('click', () => {
                 const src = (img as HTMLImageElement).src;
                 if (src) {
-                    // Open image in new window safely (no document.write XSS)
-                    const newWindow = window.open('', '_blank');
+                    // Open image in new window safely (no document.write XSS).
+                    // Use noopener,noreferrer + an explicit opener=null so the
+                    // popped window can't reach back into ours via window.opener.
+                    const newWindow = window.open('', '_blank', 'noopener,noreferrer');
                     if (newWindow) {
+                        try { newWindow.opener = null; } catch { /* cross-origin guard */ }
                         const doc = newWindow.document;
                         doc.title = 'Image Preview';
                         const style = doc.createElement('style');
@@ -1564,8 +1640,17 @@ export class ChatManager {
                 const el = btn as HTMLElement;
                 const msgId = el.dataset.msgId;
                 if (!msgId) return;
+                const messageId = parseInt(msgId, 10);
+                if (!Number.isFinite(messageId) || messageId <= 0) return;
                 const nextPinned = el.dataset.pinned !== '1';
-                this.send({ type: 'pin_message', message_id: parseInt(msgId), pinned: nextPinned });
+                // Send first; only flip locally if the WS is open. send()
+                // shows a toast on disconnected — without this guard the
+                // local state would drift from the server's view.
+                if (!this.connected) {
+                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                    return;
+                }
+                this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
                 // Optimistic local update — server confirmation will re-render.
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg) targetMsg.is_pinned = nextPinned;
@@ -1579,8 +1664,14 @@ export class ChatManager {
                 const el = btn as HTMLElement;
                 const msgId = el.dataset.msgId;
                 if (!msgId) return;
+                const messageId = parseInt(msgId, 10);
+                if (!Number.isFinite(messageId) || messageId <= 0) return;
                 const nextLiked = el.dataset.liked !== '1';
-                this.send({ type: 'like_message', message_id: parseInt(msgId), liked: nextLiked });
+                if (!this.connected) {
+                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                    return;
+                }
+                this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg) targetMsg.liked = nextLiked;
                 this.renderMessages();
@@ -1793,10 +1884,18 @@ export class ChatManager {
 
     formatTime(dateStr: string): string {
         try {
-            // JavaScript's Date constructor treats strings without Z suffix as local time,
-            // which is the desired behavior for our stored timestamps
-            const date = new Date(dateStr);
-            
+            // SQLite's CURRENT_TIMESTAMP stores UTC as a naive string
+            // (e.g. "2026-04-26 11:16:08"). JS's Date constructor would parse
+            // that as local time, which is wrong — a message sent at 18:16
+            // Bangkok would render as 11:16. Append "Z" for naive strings so
+            // they're parsed as UTC, then toLocaleTimeString below converts
+            // to the user's local timezone.
+            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(dateStr);
+            const normalized = hasTzInfo
+                ? dateStr
+                : dateStr.replace(' ', 'T') + 'Z';
+            const date = new Date(normalized);
+
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
             
@@ -1830,6 +1929,11 @@ export class ChatManager {
 
     // Virtualization state — thresholds themselves live in ./chat/message-template.ts.
     private visibleMessageCount: number = 0;
+    // Absolute index in `messages` of the first DOM element rendered. With
+    // virtualization (>150 messages) only the tail window is in the DOM, so
+    // querySelectorAll('.chat-message')[absoluteIdx] is wrong — callers must
+    // subtract this offset. Updated on every renderMessages().
+    private visibleStartIdx: number = 0;
 
     // Image attach manager — file picker, drag-drop, paste. Thin forwarders
     // keep the public method surface stable for callers (renderMessages uses
@@ -1914,15 +2018,20 @@ export class ChatManager {
                 d.file_kind.toUpperCase(),
                 formatChatFileDate(d.created_at),
             ].filter(Boolean).join(' · ');
+            // Escape the id even though it's typed `number` — values arrive
+            // from a WS frame parsed by JSON.parse, so a compromised server
+            // could send a non-numeric string with embedded quotes that
+            // would break out of the attribute.
+            const safeId = escapeHtml(String(d.id));
             return `
-                <div class="chat-file-row" data-id="${d.id}">
+                <div class="chat-file-row" data-id="${safeId}">
                     <span class="file-icon" aria-hidden="true">${icon}</span>
                     <div class="file-body">
                         <div class="file-name">${escapeHtml(d.filename)}</div>
                         <div class="file-meta">${escapeHtml(meta)}</div>
                     </div>
-                    <button class="file-edit" data-id="${d.id}" title="Edit contents">Edit</button>
-                    <button class="file-delete" data-id="${d.id}" title="Remove from memory">Delete</button>
+                    <button class="file-edit" data-id="${safeId}" title="Edit contents">Edit</button>
+                    <button class="file-delete" data-id="${safeId}" title="Remove from memory">Delete</button>
                 </div>
             `;
         }).join('');
@@ -2115,7 +2224,9 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container) return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl) return;
 
         const contentEl = msgEl.querySelector('.message-content');
@@ -2199,7 +2310,9 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container) return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl) return;
 
         const contentEl = msgEl.querySelector('.message-content');
@@ -2275,7 +2388,9 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container) return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl) return;
 
         const contentEl = msgEl.querySelector('.message-content');
@@ -2321,17 +2436,29 @@ export class ChatManager {
         if (!this.currentConversation) return;
 
         // Build history from messages before the edited message
-        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
+        // but keep `created_at` so the backend retains per-message timing.
         const editedIdx = this.messages.indexOf(editedMsg);
         const historyToSend = this.messages.slice(0, editedIdx).map(m => ({
             role: m.role,
             content: m.content,
+            created_at: m.created_at,
         }));
 
         const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
         const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
         const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
         const userName = settings.userName || 'User';
+
+        // Carry over the original message's images/documents so the
+        // regenerated reply still has the attachments to reason over.
+        // Without this, a regenerate on a turn that originally had a PDF
+        // attached would produce a reply written with no doc context.
+        const originalImages = (editedMsg.images && editedMsg.images.length > 0) ? editedMsg.images : [];
+        const originalDocs = ((editedMsg as ChatMessage & { documents?: unknown[] }).documents
+            && ((editedMsg as ChatMessage & { documents?: unknown[] }).documents as unknown[]).length > 0)
+            ? (editedMsg as ChatMessage & { documents?: unknown[] }).documents
+            : undefined;
 
         this.send({
             type: 'message',
@@ -2342,7 +2469,8 @@ export class ChatManager {
             history: historyToSend,
             use_search: searchToggle?.checked ?? true,
             unrestricted_mode: unrestrictedToggle?.checked || false,
-            images: [],
+            images: originalImages,
+            documents: originalDocs,
             user_name: userName,
             ai_provider: this.aiProvider,
             is_regeneration: true,  // Skip duplicate user message save in backend
@@ -2435,7 +2563,17 @@ export class ChatManager {
             ?.addEventListener('click', () => this.closeModal());
 
         document.querySelectorAll('.role-card').forEach(card => {
-            card.addEventListener('click', () => this.selectRole((card as HTMLElement).dataset.role || 'general'));
+            const select = () => this.selectRole((card as HTMLElement).dataset.role || 'general');
+            card.addEventListener('click', select);
+            // role-cards are <div role="button" tabindex="0">; without this
+            // they're focusable but Enter/Space don't activate them.
+            card.addEventListener('keydown', (e) => {
+                const ke = e as KeyboardEvent;
+                if (ke.key === 'Enter' || ke.key === ' ') {
+                    ke.preventDefault();
+                    select();
+                }
+            });
         });
 
         document.getElementById('modal-thinking')?.addEventListener('change', (e) => {
@@ -2494,9 +2632,14 @@ export class ChatManager {
             }
             const format = await this.promptExportFormat();
             if (!format) return;
-            this.conversations.forEach(conv => {
+            // Serialize: parallel forEach fires N export WS messages and N
+            // synthetic <a>.click() downloads in the same event tick. Browsers
+            // consolidate/block all but the first. Space them out so each
+            // download sees a fresh tick.
+            for (const conv of this.conversations) {
                 this.exportConversation(conv.id, format);
-            });
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
         });
         document.getElementById('btn-delete-chat')?.addEventListener('click', () => {
             if (this.currentConversation) {

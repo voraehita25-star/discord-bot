@@ -10,6 +10,11 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from ..data.constants import DEFAULT_MODEL
+
+logger = logging.getLogger(__name__)
 
 
 def _aware_now() -> datetime:
@@ -25,9 +30,6 @@ def _ensure_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
-from typing import Any
-
-from ..data.constants import DEFAULT_MODEL
 
 # Try to import database
 try:
@@ -67,6 +69,22 @@ class TokenUsage:
         - Gemini: https://ai.google.dev/pricing
         """
         model_lower = (self.model or "").lower()
+        # Explicit per-model rates checked by *prefix* so dated suffixes
+        # (e.g. ``claude-opus-4-7-20251001``) match the canonical id
+        # (``claude-opus-4-7``). Order matters: longer/more-specific
+        # prefixes must come first.
+        # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
+        _CLAUDE_PRICING: tuple[tuple[str, tuple[float, float]], ...] = (
+            ("claude-opus-4-7", (15.0, 75.0)),
+            ("claude-sonnet-4-6", (3.0, 15.0)),
+            ("claude-haiku-4-5", (0.80, 4.0)),
+        )
+        for _prefix, (_in, _out) in _CLAUDE_PRICING:
+            if model_lower.startswith(_prefix):
+                input_rate = _in / 1_000_000
+                output_rate = _out / 1_000_000
+                return self.input_tokens * input_rate + self.output_tokens * output_rate
+        # Family-level fallbacks for older / undated names.
         # Claude Opus 4.x family (~$15 input / $75 output per 1M tokens)
         if "opus" in model_lower:
             input_rate = 15.0 / 1_000_000
@@ -76,13 +94,34 @@ class TokenUsage:
             input_rate = 3.0 / 1_000_000
             output_rate = 15.0 / 1_000_000
         # Claude Haiku family (~$0.80 input / $4 output per 1M)
-        elif "haiku" in model_lower or "claude" in model_lower:
+        elif "haiku" in model_lower:
             input_rate = 0.80 / 1_000_000
             output_rate = 4.0 / 1_000_000
-        # Gemini (default fallback — cheapest tier)
-        else:
+        # Unknown Claude model — log a warning and conservatively use Sonnet
+        # rates so we don't silently undercharge an Opus-class request.
+        elif "claude" in model_lower:
+            logger.warning(
+                "Unrecognized Claude model %r — defaulting to Sonnet pricing for cost estimate",
+                self.model,
+            )
+            input_rate = 3.0 / 1_000_000
+            output_rate = 15.0 / 1_000_000
+        # Gemini explicitly — Flash tier rates
+        elif "gemini" in model_lower or "google" in model_lower:
             input_rate = 0.10 / 1_000_000
             output_rate = 0.40 / 1_000_000
+        # Unknown provider — log loudly. Prior behaviour silently billed
+        # OpenAI/o3/etc. at Gemini Flash rates (~100x under-report). Use a
+        # mid-tier rate (Sonnet-like) so the estimate at least flags as
+        # non-trivial cost while the operator investigates.
+        else:
+            logger.warning(
+                "Unknown AI model %r — token cost estimate will use generic mid-tier rate. "
+                "Add explicit pricing in cogs/ai_core/cache/token_tracker.py.",
+                self.model,
+            )
+            input_rate = 3.0 / 1_000_000
+            output_rate = 15.0 / 1_000_000
         return self.input_tokens * input_rate + self.output_tokens * output_rate
 
 
@@ -157,12 +196,17 @@ class TokenTracker:
         cutoff = _aware_now() - timedelta(hours=hours)
         try:
             async with db.get_connection() as conn:
+                # ORDER BY ASC so the trim-from-front logic at the end keeps
+                # the NEWEST records (the tail), matching the eviction
+                # semantics _record_usage relies on. Previously the DESC
+                # order combined with `[-MAX_RECORDS_PER_KEY:]` kept the
+                # oldest records, which is the opposite of intent.
                 cursor = await conn.execute(
                     """SELECT user_id, channel_id, guild_id, input_tokens,
                               output_tokens, model, cached, created_at
                        FROM token_usage
                        WHERE created_at >= ?
-                       ORDER BY created_at DESC
+                       ORDER BY created_at ASC
                        LIMIT ?""",
                     (cutoff.isoformat(), max_rows),
                 )
@@ -176,6 +220,16 @@ class TokenTracker:
 
         loaded = 0
         async with self._lock:
+            # Idempotency: clear existing entries within the replay window so
+            # repeated calls don't double-count the same DB rows. We rebuild
+            # only the windowed slice; older records (outside [cutoff, now])
+            # in the cache stay untouched in case _record_usage produced any
+            # in-memory entries in the meantime.
+            for cache_key in list(self._usage_cache.keys()):
+                self._usage_cache[cache_key] = [
+                    u for u in self._usage_cache[cache_key] if u.timestamp < cutoff
+                ]
+
             for row in rows:
                 try:
                     ts_raw = row[7]
@@ -266,8 +320,10 @@ class TokenTracker:
             if len(self._usage_cache[channel_key]) > self.MAX_RECORDS_PER_KEY:
                 self._usage_cache[channel_key] = self._usage_cache[channel_key][-self.MAX_RECORDS_PER_KEY:]
 
-            # Store by guild if available
-            if usage.guild_id:
+            # Store by guild if available. Use `is not None` because guild
+            # IDs are always positive Discord snowflakes, but `if usage.guild_id`
+            # would also drop a hypothetical 0 — better to be explicit.
+            if usage.guild_id is not None:
                 guild_key = f"guild:{usage.guild_id}"
                 self._usage_cache[guild_key].append(usage)
                 if len(self._usage_cache[guild_key]) > self.MAX_RECORDS_PER_KEY:
@@ -427,12 +483,14 @@ class TokenTracker:
             if guild_stats.total_tokens >= self.limits.daily_guild_tokens:
                 return False, "⚠️ เซิร์ฟเวอร์นี้ใช้โควต้าหมดแล้ววันนี้"
 
-        # Check for warning threshold
+        # Check for warning threshold. Treat daily_user_tokens<=0 as
+        # "unlimited" rather than crashing with ZeroDivisionError.
         warning = None
-        usage_ratio = daily_stats.total_tokens / self.limits.daily_user_tokens
-        if usage_ratio >= self.limits.warning_threshold:
-            remaining = self.limits.daily_user_tokens - daily_stats.total_tokens
-            warning = f"💡 เหลือโควต้าวันนี้ประมาณ {remaining:,} tokens"
+        if self.limits.daily_user_tokens > 0:
+            usage_ratio = daily_stats.total_tokens / self.limits.daily_user_tokens
+            if usage_ratio >= self.limits.warning_threshold:
+                remaining = self.limits.daily_user_tokens - daily_stats.total_tokens
+                warning = f"💡 เหลือโควต้าวันนี้ประมาณ {remaining:,} tokens"
 
         return True, warning
 

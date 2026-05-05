@@ -215,10 +215,16 @@ class PerformanceTracker:
         cutoff_key = cutoff.strftime("%Y-%m-%d-%H")
         removed = 0
 
-        for operation in self._hourly_stats:
-            old_keys = [k for k in self._hourly_stats[operation] if k < cutoff_key]
+        # Snapshot keys first so concurrent writers can't trigger
+        # "dictionary changed size during iteration" RuntimeError on the
+        # outer dict.
+        for operation in list(self._hourly_stats.keys()):
+            inner = self._hourly_stats.get(operation)
+            if not inner:
+                continue
+            old_keys = [k for k in list(inner.keys()) if k < cutoff_key]
             for key in old_keys:
-                del self._hourly_stats[operation][key]
+                inner.pop(key, None)
                 removed += 1
 
         if removed > 0:
@@ -283,18 +289,33 @@ try:
 
     _prom_registry = CollectorRegistry()
     _prom_histograms: dict[str, Histogram] = {}
+    # Lock guards _prom_histograms against double-create races. Without
+    # it, two threads measuring the same operation simultaneously could
+    # both pass the `not in` check and call Histogram(...), and the
+    # second call would raise ValueError("Duplicated timeseries in
+    # CollectorRegistry"), tanking the request that lost the race.
+    _histogram_lock = threading.Lock()
 
     def _get_or_create_histogram(operation: str) -> Histogram:
         """Get or create a Prometheus histogram for an operation."""
-        if operation not in _prom_histograms:
+        existing = _prom_histograms.get(operation)
+        if existing is not None:
+            return existing
+        with _histogram_lock:
+            # Re-check inside the lock — another thread may have created
+            # it while we were waiting.
+            existing = _prom_histograms.get(operation)
+            if existing is not None:
+                return existing
             safe_name = operation.replace(".", "_").replace("-", "_").replace(" ", "_").lower()
-            _prom_histograms[operation] = Histogram(
+            histogram = Histogram(
                 f"bot_{safe_name}_duration_seconds",
                 f"Duration of {operation} in seconds",
                 registry=_prom_registry,
                 buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
             )
-        return _prom_histograms[operation]
+            _prom_histograms[operation] = histogram
+            return histogram
 
     def record_to_prometheus(operation: str, duration: float) -> None:
         """Record a timing to both the internal tracker and Prometheus."""

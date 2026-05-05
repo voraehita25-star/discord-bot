@@ -10,7 +10,7 @@ are suppressed because discord.py's type stubs don't fully reflect runtime behav
 
 from __future__ import annotations
 
-import collections
+import contextlib
 from typing import TYPE_CHECKING, cast
 
 import discord
@@ -33,6 +33,12 @@ class MusicControlView(discord.ui.View):
         # Verify user is a guild Member (not a DM User)
         if not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ ใช้ได้เฉพาะในเซิร์ฟเวอร์", ephemeral=True)
+            return False
+        # If the bot isn't in a voice channel, controls have nothing to act on.
+        if not interaction.guild or not interaction.guild.voice_client:
+            await interaction.response.send_message(
+                "Bot is not connected to voice", ephemeral=True
+            )
             return False
         member = interaction.user
         if not member.voice:
@@ -62,12 +68,29 @@ class MusicControlView(discord.ui.View):
         voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
 
         if voice_client.is_paused():
-            voice_client.resume()
+            previous_emoji = button.emoji
             button.emoji = "⏸️"
+            try:
+                voice_client.resume()
+            except discord.ClientException as e:
+                # Restore the emoji and surface the failure to the user
+                button.emoji = previous_emoji
+                await interaction.response.send_message(
+                    f"❌ ไม่สามารถเล่นต่อได้: {e}", ephemeral=True
+                )
+                return
             await interaction.response.edit_message(view=self)
         elif voice_client.is_playing():
-            voice_client.pause()
+            previous_emoji = button.emoji
             button.emoji = "▶️"
+            try:
+                voice_client.pause()
+            except discord.ClientException as e:
+                button.emoji = previous_emoji
+                await interaction.response.send_message(
+                    f"❌ ไม่สามารถหยุดชั่วคราวได้: {e}", ephemeral=True
+                )
+                return
             await interaction.response.edit_message(view=self)
         else:
             await interaction.response.send_message("❌ ไม่มีเพลงให้หยุดชั่วคราว", ephemeral=True)
@@ -90,15 +113,32 @@ class MusicControlView(discord.ui.View):
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Stop playback and clear queue."""
-        self.cog._gs(self.guild_id).queue = collections.deque()
-        self.cog._gs(self.guild_id).loop = False
-        self.cog._gs(self.guild_id).current_track = None
+        # Mutate the existing deque in place — assigning a fresh deque
+        # would orphan the reference held by play_next(), and the in-flight
+        # track callback would keep operating on the abandoned object
+        # (treating the queue as still populated).
+        gs = self.cog._gs(self.guild_id)
+        gs.queue.clear()
+        gs.loop = False
+        gs.current_track = None
 
         if interaction.guild and interaction.guild.voice_client:
             voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
             voice_client.stop()
 
         await interaction.response.send_message("⏹️ หยุดเล่นและล้างคิวแล้ว", ephemeral=True)
+
+        # Disable all buttons in the view before stopping so the message
+        # reflects that the controls are no longer interactive.
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
         self.stop()  # Stop the view
 
     @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="music_loop")
@@ -107,14 +147,22 @@ class MusicControlView(discord.ui.View):
         current_loop = self.cog._gs(self.guild_id).loop
         self.cog._gs(self.guild_id).loop = not current_loop
 
-        if self.cog._gs(self.guild_id).loop:
-            button.style = discord.ButtonStyle.success
+        button.style = (
+            discord.ButtonStyle.success if self.cog._gs(self.guild_id).loop
+            else discord.ButtonStyle.secondary
+        )
+        # `edit_message` can raise NotFound (message deleted by user) or
+        # HTTPException (permissions changed). If it does, the interaction
+        # is no longer acknowledged, so a follow-up `followup.send` would
+        # also fail. Catch and bail cleanly.
+        try:
             await interaction.response.edit_message(view=self)
-            await interaction.followup.send("🔁 เปิดโหมดวนซ้ำ", ephemeral=True)
-        else:
-            button.style = discord.ButtonStyle.secondary
-            await interaction.response.edit_message(view=self)
-            await interaction.followup.send("➡️ ปิดโหมดวนซ้ำ", ephemeral=True)
+        except discord.HTTPException:
+            self.cog._gs(self.guild_id).loop = current_loop
+            return
+        msg = "🔁 เปิดโหมดวนซ้ำ" if self.cog._gs(self.guild_id).loop else "➡️ ปิดโหมดวนซ้ำ"
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.followup.send(msg, ephemeral=True)
 
     async def on_timeout(self):
         """Disable buttons on timeout."""
@@ -122,8 +170,8 @@ class MusicControlView(discord.ui.View):
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
         # Try to edit the message to show disabled buttons
-        if hasattr(self, "message") and self.message:
+        if self.message:
             try:
                 await self.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass  # Message may have been deleted or inaccessible
+            except (discord.NotFound, discord.HTTPException, AttributeError):
+                pass  # Message may have been deleted, inaccessible, or stale ref

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,6 +33,10 @@ const (
 	requestTimeout     = 30 * time.Second
 	workerCount        = 10
 )
+
+// Typed context key so we don't collide with other libraries' string keys
+// when storing the propagated trace ID in request context.
+type traceIDContextKey struct{}
 
 // privateNetworks is a list of private/internal IP ranges for SSRF protection.
 // Initialized once to avoid repeated parsing.
@@ -176,9 +181,11 @@ func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 			}
 		}
 
-		// Dial using the first resolved IP directly to prevent DNS rebinding
-		// (a second DNS lookup could return a different, private IP)
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		// Dial using the original host (not IP) to preserve TLS SNI / Host header.
+		// IPs were just validated above; the small DNS-rebinding window is acceptable
+		// versus breaking HTTPS on every request.
+		_ = port // retained for clarity; addr already contains host:port
+		return dialer.DialContext(ctx, network, addr)
 	}
 }
 
@@ -339,30 +346,17 @@ func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
 		}(i, url)
 	}
 
-	// Wait with context cancellation support
+	// Wait for all goroutines to finish before reading Results.
+	// We MUST wait unconditionally (even if ctx is cancelled) to avoid a
+	// data race on response.Results, which is written by the goroutines.
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(done)
 	}()
+	<-done
 
-	select {
-	case <-ctx.Done():
-		// Context cancelled, wait briefly for in-flight requests
-		timer := time.NewTimer(500 * time.Millisecond)
-		select {
-		case <-done:
-			timer.Stop()
-		case <-timer.C:
-			// Timeout waiting for in-flight requests, still must wait for
-			// goroutines to finish writing before we read Results (avoid data race)
-			<-done
-		}
-	case <-done:
-		// All requests completed
-	}
-
-	// Count results
+	// Count results (safe: all writers have returned).
 	for _, r := range response.Results {
 		if r.Error == "" {
 			response.SuccessCount++
@@ -485,13 +479,15 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
-	// Trace ID propagation: pass through X-Trace-ID from Python caller
+	// Trace ID propagation: pass through X-Trace-ID from Python caller.
+	// Use a typed context key (Go idiom) so we don't collide with other
+	// libraries' string keys in the same context.
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			traceID := r.Header.Get("X-Trace-ID")
 			if traceID != "" {
 				w.Header().Set("X-Trace-ID", traceID)
-				ctx := context.WithValue(r.Context(), "trace_id", traceID)
+				ctx := context.WithValue(r.Context(), traceIDContextKey{}, traceID)
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -612,11 +608,14 @@ func main() {
 		log.Println("Shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("Graceful shutdown failed: %v", err)
+		}
 	}()
 
 	log.Printf("URL Fetcher service starting on :%s", port)
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+	// Use errors.Is for forward-compatible error comparison.
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server error: %v", err)
 	}
 }

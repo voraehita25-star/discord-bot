@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import re
 from datetime import datetime
@@ -41,6 +39,15 @@ from .dashboard_config import (
     GENERAL_UNRESTRICTED_FRAMING,
 )
 
+logger = logging.getLogger(__name__)
+
+# Allowlist of MIME types we accept from the dashboard. Module-level so the
+# per-image validation loop doesn't reconstruct the set on every iteration.
+_ALLOWED_IMAGE_MIMES: frozenset[str] = frozenset({
+    "image/png", "image/jpeg", "image/gif",
+    "image/webp", "image/heic", "image/heif",
+})
+
 
 async def handle_chat_message(
     ws: WebSocketResponse,
@@ -55,7 +62,8 @@ async def handle_chat_message(
 ) -> None:
     """Handle incoming chat message and stream response."""
     conversation_id = data.get("conversation_id")
-    content = data.get("content", "").strip()
+    raw = data.get("content")
+    content = (raw if isinstance(raw, str) else "").strip()
     role_preset = data.get("role_preset", "general")
     thinking_enabled = data.get("thinking_enabled", False)
     use_search = data.get("use_search", True)  # Google Search enabled by default
@@ -66,7 +74,7 @@ async def handle_chat_message(
     is_regeneration = data.get("is_regeneration", False)
 
     # Validate conversation_id format (defense in depth)
-    if conversation_id and (not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id)):
+    if conversation_id and (not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id)):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
 
@@ -147,8 +155,9 @@ async def handle_chat_message(
                 b64_data = img_data
                 mime_type = "image/png"
 
-            # Validate MIME type against allowlist
-            _ALLOWED_IMAGE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/heif"}
+            # Validate MIME type against allowlist (constant lives at
+            # module scope — see top of file — so we don't rebuild the
+            # set on every image in a multi-attachment message).
             if mime_type not in _ALLOWED_IMAGE_MIMES:
                 logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
                 await ws.send_json({"type": "error", "message": f"Unsupported image type: {mime_type}"})
@@ -430,6 +439,24 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 contents.append(types.Content(role="model", parts=_model_parts))
 
             # Execute each tool call and build tool response content
+            # Fetch all dashboard messages ONCE, not per-tool-call. The
+            # previous code did `db.get_dashboard_messages(conversation_id)`
+            # inside the loop — N tool calls = N DB roundtrips for the same
+            # data.
+            _all_msgs_for_tools: list[dict[str, Any]] | None = None
+            if any(tc.name == "get_message_images" for tc in _tool_calls):
+                try:
+                    db = _get_db()
+                    _all_msgs_for_tools = await db.get_dashboard_messages(conversation_id)
+                except Exception as e:
+                    logger.warning("Failed to load conversation for tool calls: %s", e)
+                    _all_msgs_for_tools = []
+
+            # Per-image hard cap so a 50 MB historical image doesn't blow
+            # up the response payload to Gemini. Mirrors the limit on
+            # newly-attached images at upload time.
+            _MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
             _response_parts: list[types.Part] = []
             for tc in _tool_calls:
                 if tc.name == "get_message_images":
@@ -444,8 +471,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
                     logger.info("📷 Fetching historical images for message_id=%s", msg_id)
                     try:
-                        db = _get_db()
-                        all_msgs = await db.get_dashboard_messages(conversation_id)
+                        all_msgs = _all_msgs_for_tools or []
                         hist_msg = next((m for m in all_msgs if m.get("id") == msg_id), None)
                         if not hist_msg or not hist_msg.get("images"):
                             _response_parts.append(types.Part(function_response=types.FunctionResponse(
@@ -457,6 +483,8 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                                 name="get_message_images",
                                 response={"status": "success", "image_count": len(hist_msg["images"])},
                             )))
+                            kept = 0
+                            dropped_for_size = 0
                             for img_data in hist_msg["images"]:
                                 try:
                                     if "," in img_data:
@@ -466,12 +494,21 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                                         b64_data = img_data
                                         mime_type = "image/png"
                                     image_bytes = base64.b64decode(b64_data, validate=True)
+                                    if len(image_bytes) > _MAX_IMAGE_BYTES:
+                                        dropped_for_size += 1
+                                        continue
                                     _response_parts.append(types.Part(
                                         inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
                                     ))
+                                    kept += 1
                                 except Exception as img_err:
                                     logger.warning("Failed to decode historical image: %s", img_err)
-                            logger.info("📷 Retrieved %d image(s) for message_id=%s", len(hist_msg["images"]), msg_id)
+                            if dropped_for_size:
+                                logger.warning(
+                                    "📷 Dropped %d oversized image(s) (>%dB) for message_id=%s",
+                                    dropped_for_size, _MAX_IMAGE_BYTES, msg_id,
+                                )
+                            logger.info("📷 Retrieved %d image(s) for message_id=%s", kept, msg_id)
                     except Exception as e:
                         logger.warning("Failed to fetch images for message_id=%s: %s", msg_id, e)
                         _response_parts.append(types.Part(function_response=types.FunctionResponse(
@@ -600,7 +637,7 @@ async def handle_ai_edit_message(
         return
 
     # Validate conversation_id format (defense in depth)
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
 
@@ -622,9 +659,14 @@ async def handle_ai_edit_message(
 
     # Load target message from DB
     try:
+        target_message_id_int = int(target_message_id)
+    except (TypeError, ValueError):
+        await ws.send_json({"type": "error", "message": "Invalid target message ID"})
+        return
+    try:
         db = _get_db()
         all_msgs = await db.get_dashboard_messages(conversation_id)
-        target_msg = next((m for m in all_msgs if m.get("id") == int(target_message_id)), None)
+        target_msg = next((m for m in all_msgs if m.get("id") == target_message_id_int), None)
     except Exception:
         logger.exception("Failed to load target message for AI edit")
         await ws.send_json({"type": "error", "message": "Failed to load message"})
@@ -658,7 +700,7 @@ async def handle_ai_edit_message(
 
     # Build contents with conversation history for context (up to the target message)
     contents: list[Any] = []
-    target_idx = next((i for i, m in enumerate(all_msgs) if m.get("id") == int(target_message_id)), -1)
+    target_idx = next((i for i, m in enumerate(all_msgs) if m.get("id") == target_message_id_int), -1)
     if target_idx > 0:
         hist = all_msgs[:target_idx]
         if len(hist) > max_history_messages:
@@ -710,7 +752,7 @@ async def handle_ai_edit_message(
             "conversation_id": conversation_id,
             "mode": mode_str,
             "is_edit": True,
-            "target_message_id": int(target_message_id),
+            "target_message_id": target_message_id_int,
         })
 
         full_response = ""
@@ -768,11 +810,18 @@ async def handle_ai_edit_message(
 
         await asyncio.wait_for(_consume_edit_stream(), timeout=stream_timeout)
 
-        # Update the message in DB
+        # Update the message in DB. Pass conversation_id so the UPDATE only
+        # matches when the row is in the conversation the AI was editing —
+        # prevents an attacker (or a bug) from coercing this path into
+        # rewriting messages in a different conversation.
         if full_response:
             try:
                 db = _get_db()
-                await db.update_dashboard_message(int(target_message_id), full_response)
+                await db.update_dashboard_message(
+                    target_message_id_int,
+                    full_response,
+                    expected_conversation_id=conversation_id,
+                )
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
 
@@ -782,7 +831,7 @@ async def handle_ai_edit_message(
             "full_response": full_response,
             "chunks_count": chunks_count,
             "is_edit": True,
-            "target_message_id": int(target_message_id),
+            "target_message_id": target_message_id_int,
         })
 
     except TimeoutError:

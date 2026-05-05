@@ -1,11 +1,11 @@
 # AI Core Module
 
-> Last Updated: April 26, 2026
-> Version: 3.3.16
+> Last Updated: April 27, 2026
+> Version: 3.3.15
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.7 (ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
-## Structure (Reorganized v3.3.8)
+## Structure (Reorganized v3.3.7, deeper subdir split v3.3.8)
 
 ```text
 cogs/ai_core/
@@ -107,26 +107,26 @@ cogs/ai_core/
 | `EntityMemoryManager` | `memory/entity_memory.py` | Character facts storage |
 | `AICache` | `cache/ai_cache.py` | Response caching |
 | `AIAnalytics` | `cache/analytics.py` | Usage metrics |
-| `PerformanceTracker` | `performance.py` | 🆕 Performance metrics tracking |
-| `MessageQueue` | `message_queue.py` | 🆕 Message queue management |
-| `ContextBuilder` | `context_builder.py` | 🆕 AI context building |
-| `ResponseSender` | `response_sender.py` | 🆕 Response sending with webhooks |
+| `PerformanceTracker` | `core/performance.py` | Performance metrics tracking |
+| `MessageQueue` | `core/message_queue.py` | Message queue management |
+| `ContextBuilder` | `core/context_builder.py` | AI context building |
+| `ResponseSender` | `response/response_sender.py` | Response sending with webhooks |
 
-## 🆕 Modular Components Integration (v3.3.6)
+## Modular Components Integration
 
-**ChatManager now uses modular components internally:**
+**ChatManager (`logic.py`) uses modular components internally:**
 
-- `PerformanceTracker` - For metrics collection
-- `RequestDeduplicator` - For preventing duplicate requests
-- `MessageQueue` - For message queuing and merging
-- `ResponseSender` - For webhook and chunked responses
+- `PerformanceTracker` — metrics collection
+- `RequestDeduplicator` — prevents duplicate requests for the same channel+message
+- `MessageQueue` — pending-message buffering and per-channel lock
+- `ResponseSender` — webhook + chunked response delivery
 
-This reduces ChatManager from 1,224 to 999 lines (~18% reduction) while maintaining backward compatibility.
+`logic.py` is currently ~1,368 lines (verified `wc -l cogs/ai_core/logic.py`); each helper above lives in its own subpackage so the manager focuses on orchestration.
 
 ### Performance Tracking
 
 ```python
-from cogs.ai_core.performance import performance_tracker, request_deduplicator
+from cogs.ai_core.core.performance import performance_tracker, request_deduplicator
 
 # Track timing
 performance_tracker.record_timing("api_call", 0.5)
@@ -144,7 +144,7 @@ if not request_deduplicator.is_duplicate(key):
 ### Message Queue
 
 ```python
-from cogs.ai_core.message_queue import message_queue
+from cogs.ai_core.core.message_queue import message_queue
 
 # Queue messages for concurrent handling
 message_queue.queue_message(channel_id, channel, user, "Hello")
@@ -160,7 +160,7 @@ message_queue.release_lock(channel_id)
 ### Context Building
 
 ```python
-from cogs.ai_core.context_builder import ContextBuilder
+from cogs.ai_core.core.context_builder import ContextBuilder
 
 builder = ContextBuilder(
     memory_manager=rag_system,
@@ -175,7 +175,7 @@ system_context = ctx.build_system_context()
 ### Response Sending
 
 ```python
-from cogs.ai_core.response_sender import response_sender
+from cogs.ai_core.response.response_sender import response_sender
 
 result = await response_sender.send_response(
     channel=channel,
@@ -191,14 +191,14 @@ if result.success:
 
 AI Core รองรับ Rust extensions สำหรับ performance:
 
-> **Build Status:** ✅ Rust RAG engine built (January 20, 2026)  
-> **File:** `rag_engine.pyd` (651 KB) - SIMD cosine similarity, 10-25x faster
+> **Build Status:** ✅ Rust RAG engine built (April 2, 2026)
+> **File:** `cogs/ai_core/memory/rag_engine.pyd` (~653 KB) — SIMD cosine similarity, 10-25x faster
 
 ```python
 # Auto-selects Rust if available, else Python
-from cogs.ai_core.memory.rag_rust import RagEngine
+from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
-engine = RagEngine(dimension=384, similarity_threshold=0.7)
+engine = RagEngineWrapper(dimension=384, similarity_threshold=0.7)
 engine.add(entry)  # SIMD-optimized vector ops
 results = engine.search(query_embedding, top_k=5)
 
@@ -220,8 +220,9 @@ from cogs.ai_core.logic import ChatManager
 # Initialize
 chat_manager = ChatManager(bot)
 
-# Process message
-response = await chat_manager.process_chat(
+# Process a message — sends the response via webhook/channel as a side effect
+# (returns None; use response_sender / webhook_cache to inspect what went out).
+await chat_manager.process_chat(
     channel, user, message, attachments
 )
 ```
@@ -240,7 +241,7 @@ python -m pytest tests/test_webhooks.py -v
 
 ## Recent Updates
 
-### v3.3.16 — AI/Memory Audit (April 26, 2026)
+### v3.3.15 — AI/Memory Audit (April 27, 2026)
 
 Three rounds of audits surfaced 17 bugs; key behavioural fixes:
 

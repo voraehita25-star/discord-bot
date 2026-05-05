@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-
-logger = logging.getLogger(__name__)
 import re as _re
+import time
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 # Canonical timezone for all prompt-injected timestamps so the model sees a
 # consistent frame of reference regardless of how a timestamp was stored
@@ -148,8 +148,15 @@ def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
     value = _unicodedata.normalize("NFKC", value)
     value = _re.sub(r'[\x00-\x1f\x7f]', '', value)  # Remove control chars
     value = _re.sub(r'[\[\]{}`]', '', value)  # Strip brackets/braces/backticks to prevent instruction injection
-    # Remove patterns that could be used for prompt injection
-    value = _re.sub(r'(?i)\b(system|ignore|instruction|override|forget)\s*:', '', value)
+    # Neutralise common prompt-injection prefixes. Strip ONLY the
+    # ``keyword:`` punctuation marker — leaving the bare word lets the
+    # model still see what the user typed but breaks the colon-prefixed
+    # "system: do X" instruction shape.
+    value = _re.sub(
+        r'(?i)\b(system|ignore|instruction|override|forget|jailbreak|disregard\s+previous)\s*:',
+        r'\1',
+        value,
+    )
     return str(value[:max_len])
 
 
@@ -276,6 +283,7 @@ async def build_user_context(
                 # If users hit this, older docs get dropped from this turn
                 # but stay in DB for later.
                 MAX_INJECT_CHARS = 400_000
+                dropped_filenames: list[str] = []
                 for doc in docs:
                     text = doc.get("extracted_text") or ""
                     filename = doc.get("filename") or "document"
@@ -283,7 +291,10 @@ async def build_user_context(
                         continue
                     remaining = MAX_INJECT_CHARS - running_total
                     if remaining <= 0:
-                        break
+                        # Track every doc we dropped due to budget so the model
+                        # can tell the user which files weren't visible.
+                        dropped_filenames.append(filename)
+                        continue
                     snippet = text if len(text) <= remaining else text[:remaining] + "\n[... truncated in prompt]"
                     doc_sections.append(f"## {filename}\n{snippet}")
                     running_total += len(snippet)
@@ -293,6 +304,13 @@ async def build_user_context(
                         "The following documents were uploaded in past turns. "
                         "Treat them as reference material the user has shared with you:\n\n"
                         + "\n\n".join(doc_sections)
+                    )
+                if dropped_filenames:
+                    # Surface the trimmed list so the AI can mention them
+                    # explicitly rather than silently ignoring older docs.
+                    user_context += (
+                        "\n\n[Documents NOT shown this turn — dropped for context budget]\n"
+                        + "\n".join(f"- {fn}" for fn in dropped_filenames[:50])
                     )
         except Exception as e:
             logger.warning("Failed to load document memories: %s", e)

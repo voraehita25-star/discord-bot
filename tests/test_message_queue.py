@@ -89,8 +89,13 @@ class TestMessageQueueInit:
 class TestMessageQueueLock:
     """Tests for MessageQueue lock management."""
 
-    def test_get_lock_creates_lock(self):
-        """Test get_lock_sync creates a lock if not exists."""
+    async def test_get_lock_creates_lock(self):
+        """Test get_lock_sync creates a lock if not exists.
+
+        get_lock_sync now requires a running asyncio loop because the
+        asyncio.Lock it returns is only useful from coroutines on that loop.
+        Test is async to satisfy that contract.
+        """
         from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
@@ -100,7 +105,7 @@ class TestMessageQueueLock:
         assert isinstance(lock, asyncio.Lock)
         assert 12345 in queue.processing_locks
 
-    def test_get_lock_returns_same_lock(self):
+    async def test_get_lock_returns_same_lock(self):
         """Test get_lock_sync returns same lock for same channel."""
         from cogs.ai_core.core.message_queue import MessageQueue
 

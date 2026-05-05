@@ -164,15 +164,45 @@ class TestSetUserContext:
             sentry_integration.SENTRY_AVAILABLE = original
 
     def test_set_user_context_with_sdk(self):
-        """Test set_user_context with SDK available."""
+        """Test set_user_context writes to the isolation scope when available.
+
+        ``set_user_context`` was changed to honour its docstring — it now
+        targets the per-task isolation scope rather than the global one
+        when the installed sentry_sdk exposes ``get_isolation_scope``.
+        Falls back to the global ``sentry_sdk.set_user`` only on older SDKs.
+        """
+        import sentry_sdk
+
+        from utils.monitoring import sentry_integration
+
+        if not sentry_integration.SENTRY_AVAILABLE:
+            pytest.skip("Sentry SDK not available")
+
+        if hasattr(sentry_sdk, "get_isolation_scope"):
+            with patch("sentry_sdk.get_isolation_scope") as mock_iso:
+                sentry_integration.set_user_context(123, "testuser")
+                mock_iso.return_value.set_user.assert_called_once_with(
+                    {"id": "123", "username": "testuser"}
+                )
+        else:
+            with patch("sentry_sdk.set_user") as mock_set_user:
+                sentry_integration.set_user_context(123, "testuser")
+                mock_set_user.assert_called_once_with(
+                    {"id": "123", "username": "testuser"}
+                )
+
+    def test_set_user_global_with_sdk(self):
+        """Test set_user_global still writes to the global scope."""
         from utils.monitoring import sentry_integration
 
         if not sentry_integration.SENTRY_AVAILABLE:
             pytest.skip("Sentry SDK not available")
 
         with patch("sentry_sdk.set_user") as mock_set_user:
-            sentry_integration.set_user_context(123, "testuser")
-            mock_set_user.assert_called_once_with({"id": "123", "username": "testuser"})
+            sentry_integration.set_user_global(123, "testuser")
+            mock_set_user.assert_called_once_with(
+                {"id": "123", "username": "testuser"}
+            )
 
 
 class TestAddBreadcrumb:

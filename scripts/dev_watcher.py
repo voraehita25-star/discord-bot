@@ -19,6 +19,7 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+
 import os
 import signal
 import subprocess
@@ -30,9 +31,10 @@ from pathlib import Path
 
 import psutil
 
-# Change to project root directory (parent of tools/)
+# Project root (parent of scripts/). We do NOT chdir at import time —
+# importing this module from elsewhere (tests, other tools) would have
+# silently changed CWD for the whole process. Defer chdir to main().
 PROJECT_ROOT = Path(__file__).parent.parent
-os.chdir(PROJECT_ROOT)
 
 # Add project root to path for imports
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -223,6 +225,7 @@ except ImportError:
             Yellow = YELLOW
             Blue = BLUE
             Cyan = CYAN
+
 
 
 # =============================================================================
@@ -497,11 +500,16 @@ if WATCHDOG_AVAILABLE:
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                     )
                 else:
+                    # start_new_session=True puts the bot into its own
+                    # process group / session so SIGINT delivered to the
+                    # watcher's terminal doesn't also be sent to the bot
+                    # (we want the watcher to manage shutdown explicitly).
                     self.process = subprocess.Popen(
                         [sys.executable, "bot.py"],
                         stdout=sys.stdout,
                         stderr=sys.stderr,
                         cwd=str(PROJECT_ROOT),
+                        start_new_session=True,
                     )
 
                 # Play sound if enabled
@@ -591,16 +599,37 @@ if WATCHDOG_AVAILABLE:
                 return None
 
         def _should_ignore(self, path: str) -> bool:
-            """Check if path should be ignored."""
-            path_lower = path.lower()
+            """Check if path should be ignored.
 
-            # Check ignore patterns
+            Patterns are matched against path components (Path.parts) and
+            file extensions, NOT raw substrings. Substring matching used
+            to overmatch — e.g. pattern ``data`` ignored ``metadata.py``,
+            and ``.json`` ignored ``data/foo.jsonbackup``.
+            """
+            p = Path(path)
+            parts = {part.lower() for part in p.parts}
+            suffixes = {s.lower() for s in p.suffixes}
+            stem_lower = p.stem.lower()
+
             for pattern in self.config.ignore_patterns:
-                if pattern.lower() in path_lower:
+                pat = pattern.lower().strip()
+                if not pat:
+                    continue
+                # Extension pattern (e.g., ".json", ".log")
+                if pat.startswith(".") and pat in suffixes:
+                    return True
+                # Glob-like wildcards — fall back to fnmatch on basename
+                if any(ch in pat for ch in ("*", "?", "[")):
+                    import fnmatch as _fn
+                    if _fn.fnmatch(p.name.lower(), pat):
+                        return True
+                    continue
+                # Otherwise treat as a directory/file-name component match.
+                if pat in parts or pat == stem_lower or pat == p.name.lower():
                     return True
 
             # Check hidden directories
-            return bool(any(part.startswith(".") for part in Path(path).parts))
+            return bool(any(part.startswith(".") for part in p.parts if part not in ("", "/")))
 
         def _handle_change(self, event) -> None:
             """Handle file change events."""
@@ -627,19 +656,24 @@ if WATCHDOG_AVAILABLE:
             if not Path(event.src_path).exists():
                 return
 
-            # Hash-based change detection
+            # Hash-based change detection — file_hashes / stats are read by
+            # the main loop too, so guard the read-modify-write under
+            # self._lock (BotRestarter owns the lock used by start_bot)
+            # to prevent torn updates from concurrent watchdog observer
+            # events on different threads.
             current_hash = self._get_file_hash(event.src_path)
             if current_hash is None:
                 return
 
-            old_hash = self.file_hashes.get(event.src_path)
-            if old_hash == current_hash:
-                if self.config.debug_mode:
-                    print(f"{Colors.DIM}[DEBUG] Content unchanged{Colors.RESET}")
-                return
+            with self._lock:
+                old_hash = self.file_hashes.get(event.src_path)
+                if old_hash == current_hash:
+                    if self.config.debug_mode:
+                        print(f"{Colors.DIM}[DEBUG] Content unchanged{Colors.RESET}")
+                    return
 
-            self.file_hashes[event.src_path] = current_hash
-            self.stats.files_changed += 1
+                self.file_hashes[event.src_path] = current_hash
+                self.stats.files_changed += 1
 
             # Get relative path
             try:
@@ -672,9 +706,27 @@ class DevWatcherService:
 
     def __init__(self):
         self.shutdown_requested = False
+        # Set by SIGINT handler; main loop notices it and runs the y/n
+        # prompt on the main thread. Calling input() inside a signal
+        # handler is undefined per Python's signal docs — it can deadlock
+        # readline, corrupt buffered stdin, or skip the prompt entirely
+        # when running under non-interactive launchers (Windows services,
+        # the dashboard's hidden-console spawn, etc.).
+        self._confirm_pending = False
 
-    def graceful_shutdown(self, _signum, _frame) -> None:
-        """Handle shutdown signal."""
+    def confirm_shutdown(self, _signum, _frame) -> None:
+        """SIGINT handler: just flip a flag — the main loop runs the prompt."""
+        self._confirm_pending = True
+
+    def run_pending_confirm(self) -> None:
+        """Called from the main loop when ``_confirm_pending`` is set.
+
+        Prompts the operator on the main thread (where input() is safe) and
+        sets ``shutdown_requested`` if they confirm.
+        """
+        if not self._confirm_pending:
+            return
+        self._confirm_pending = False
         print()
         print(f"\n{Colors.BRIGHT_YELLOW}{'=' * 50}{Colors.RESET}")
         print(f"{Colors.BRIGHT_YELLOW}  Ctrl+C detected! Stop dev mode?{Colors.RESET}")
@@ -687,8 +739,18 @@ class DevWatcherService:
                 print(f"{Colors.GREEN}  Continuing...{Colors.RESET}")
                 print(f"{Colors.DIM}  (Watching for changes...){Colors.RESET}\n")
         except (EOFError, KeyboardInterrupt, OSError):
-            # Input interrupted or unavailable - continue running
+            # No tty / interrupted — fall back to the non-interactive path.
             print(f"{Colors.GREEN}  Continuing...{Colors.RESET}\n")
+
+    def immediate_shutdown(self, _signum, _frame) -> None:
+        """SIGTERM/SIGBREAK handler: shut down without prompting.
+
+        Calling input() from a SIGTERM handler hangs forever because
+        the operator has no terminal attached (`kill <pid>` is non-
+        interactive). Just flip the flag and let the main loop tear
+        everything down.
+        """
+        self.shutdown_requested = True
 
 
 # =============================================================================
@@ -698,6 +760,11 @@ class DevWatcherService:
 
 def main():
     """Main entry point."""
+    # Switch to project root only when actually running as the entry point.
+    # Doing this at import time used to silently change CWD for any tool
+    # that imported dev_watcher.
+    os.chdir(PROJECT_ROOT)
+
     # Check watchdog
     if not WATCHDOG_AVAILABLE:
         print(f"{Colors.RED}Error: watchdog module not found!{Colors.RESET}")
@@ -777,16 +844,28 @@ def main():
         )
     print()
 
-    # Setup signal handlers
+    # Setup signal handlers — also wire SIGTERM/SIGINT on POSIX so a kill
+    # signal triggers the graceful shutdown path (was Windows-only, which
+    # left the bot child orphaned on Linux/macOS).
     service = DevWatcherService()
     if sys.platform == "win32":
-        signal.signal(signal.SIGINT, service.graceful_shutdown)
-        signal.signal(signal.SIGBREAK, service.graceful_shutdown)
+        signal.signal(signal.SIGINT, service.confirm_shutdown)
+        # SIGBREAK is delivered for `taskkill` / window-close; treat as
+        # non-interactive so we don't hang on input().
+        signal.signal(signal.SIGBREAK, service.immediate_shutdown)
+    else:
+        signal.signal(signal.SIGINT, service.confirm_shutdown)
+        # SIGTERM has no controlling tty — input() would deadlock.
+        signal.signal(signal.SIGTERM, service.immediate_shutdown)
 
     # Main loop
     try:
         while not service.shutdown_requested:
             time.sleep(0.5)
+            # Run the y/n shutdown prompt here on the main thread when the
+            # SIGINT handler has flagged it. Doing it from the handler
+            # itself is undefined behaviour per Python's signal docs.
+            service.run_pending_confirm()
             # Check for crashes
             event_handler.check_for_crash()
     except (KeyboardInterrupt, SystemExit):

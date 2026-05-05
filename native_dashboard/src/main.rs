@@ -47,17 +47,11 @@ fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
     match state.bot_manager.try_lock() {
         Ok(mut manager) => Ok(manager.get_status()),
         Err(_) => {
-            // Lock is held by start/stop/restart — return busy status
-            // so the UI doesn't freeze waiting for the mutex.
-            // Note: is_running is unknown here since we can't check,
-            // the mode field signals the UI to show a loading state.
-            Ok(BotStatus {
-                is_running: true,
-                pid: None,
-                uptime: "...".to_string(),
-                memory_mb: 0.0,
-                mode: "Updating...".to_string(),
-            })
+            // Lock is held by start/stop/restart. Returning a fake "running"
+            // BotStatus would mislead the UI into showing the bot as healthy
+            // even when it might be mid-stop or mid-crash. Return a typed
+            // error so the frontend can render its own busy / loading state.
+            Err("busy".to_string())
         }
     }
 }
@@ -228,11 +222,23 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     if !path_obj.exists() {
         return Err(format!("Path does not exist: {}", path));
     }
-    
+
     // Canonicalize to resolve symlinks and .. traversal
     let canonical = path_obj.canonicalize()
         .map_err(|e| format!("Failed to resolve path: {}", e))?;
-    
+
+    // Symlink-safe directory check: reject paths whose final component is
+    // itself a symlink (canonicalize follows them, but we still want to
+    // refuse so an attacker can't park a symlink inside the bot dir that
+    // points elsewhere — the canonicalized target may pass starts_with
+    // because we evaluate it relative to the SAME canonicalized base
+    // below, but the original path's symlink-ness is the actual signal).
+    let symlink_meta = std::fs::symlink_metadata(&path)
+        .map_err(|e| format!("Failed to stat path: {}", e))?;
+    if symlink_meta.file_type().is_symlink() {
+        return Err("Access denied: symlinked paths are not allowed".to_string());
+    }
+
     // Only allow opening directories (not arbitrary files)
     if !canonical.is_dir() {
         return Err("Path is not a directory".to_string());
@@ -245,12 +251,31 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     if !canonical.starts_with(&base_path) {
         return Err("Access denied: path is outside the bot directory".to_string());
     }
-    
-    std::process::Command::new("explorer")
+    // Drop the manager guard before spawning a child process so a slow
+    // explorer launch doesn't keep the lock held longer than necessary.
+    drop(manager);
+
+    // Resolve an absolute path to explorer.exe under %SystemRoot% so a
+    // poisoned PATH entry (or an attacker-planted explorer.exe in the
+    // application directory) cannot get executed instead of the system one.
+    let explorer_path = if let Ok(root) = std::env::var("SystemRoot") {
+        format!("{}\\explorer.exe", root)
+    } else {
+        String::from("C:\\Windows\\explorer.exe")
+    };
+
+    // TOCTOU note: there is an inherent race between the canonicalize/check
+    // above and the spawn below — a local attacker with write access to a
+    // subdirectory could swap a folder for a symlink in this window. We
+    // pass the already-canonicalized path (rather than the user's input)
+    // so explorer.exe receives the resolved target string, but Windows
+    // filesystem lookup still happens at spawn time. Threat model is
+    // local-only and the user could already navigate there manually.
+    std::process::Command::new(&explorer_path)
         .arg(canonical.as_os_str())
         .spawn()
         .map_err(|e| format!("Failed to open folder: {}", e))?;
-    
+
     Ok(())
 }
 

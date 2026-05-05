@@ -165,17 +165,27 @@ class TestMusicControlViewInteractionCheck:
 
     @pytest.mark.asyncio
     async def test_interaction_check_with_voice(self):
-        """Test interaction_check returns True when user in voice."""
+        """Test interaction_check returns True when user in voice with bot.
+
+        interaction_check now also requires a connected voice_client and
+        that the user shares its channel — without this guard the music
+        controls would respond with stale state when the bot is no longer
+        in any voice channel.
+        """
         from cogs.music.cog import Music, MusicControlView
 
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
+        # Bot is in a voice channel and the user is in the same one.
+        shared_channel = MagicMock()
+        mock_voice_client = MagicMock(channel=shared_channel)
+
         mock_interaction = MagicMock()
         mock_interaction.user = MagicMock(spec=discord.Member)
         mock_interaction.user.voice = MagicMock()
-        mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
-        mock_interaction.guild.voice_client = None  # Bot not in voice
+        mock_interaction.user.voice.channel = shared_channel
+        mock_interaction.guild.voice_client = mock_voice_client
         mock_interaction.response.send_message = AsyncMock()
         mock_interaction.response.edit_message = AsyncMock()
 
@@ -286,17 +296,25 @@ class TestMusicControlViewBasic:
 
     @pytest.mark.asyncio
     async def test_interaction_check_in_voice(self):
-        """Test interaction_check when user is in voice."""
+        """Test interaction_check when user shares the bot's voice channel.
+
+        interaction_check now also returns False if the bot is not
+        connected to voice — having a connected voice_client is now a
+        prerequisite for the controls to be interactive.
+        """
         from cogs.music.cog import MusicControlView
 
         mock_cog = MagicMock()
         view = MusicControlView(mock_cog, guild_id=123456)
 
+        shared_channel = MagicMock()
+        mock_voice_client = MagicMock(channel=shared_channel)
+
         mock_interaction = MagicMock()
         mock_interaction.user = MagicMock(spec=discord.Member)
         mock_interaction.user.voice = MagicMock()
-        mock_interaction.user.voice.channel = MagicMock()  # User's voice channel
-        mock_interaction.guild.voice_client = None  # Bot not in voice
+        mock_interaction.user.voice.channel = shared_channel
+        mock_interaction.guild.voice_client = mock_voice_client
         mock_interaction.response.send_message = AsyncMock()
         mock_interaction.response.edit_message = AsyncMock()
 

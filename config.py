@@ -7,12 +7,11 @@ Uses dataclass for settings management with environment variable support.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 def _safe_int_env(key: str, default: int) -> int:
     """Safely parse integer from environment variable with fallback."""
@@ -129,7 +128,11 @@ class BotSettings:
             and not self.anthropic_api_key.startswith("sk-ant-")
             and not self.anthropic_base_url
         ):
-            errors.append("ANTHROPIC_API_KEY looks like a proxy key but ANTHROPIC_BASE_URL is not set")
+            errors.append(
+                "ANTHROPIC_API_KEY does not start with 'sk-ant-'. "
+                "If you're using a proxy, set ANTHROPIC_BASE_URL to its endpoint; "
+                "if you intended a direct Anthropic key, double-check the value."
+            )
         return errors
 
     def validate_optional_secrets(self) -> list[str]:

@@ -124,10 +124,17 @@ export class ErrorLogger {
             const error = this.errorQueue.shift();
             if (error) {
                 try {
-                    await invoke('log_frontend_error', {
-                        errorType: error.type,
-                        message: error.message,
-                        stack: error.stack || null
+                    // Defer the invoke onto a fresh task so any synchronous
+                    // console.error inside the IPC path can't recurse back
+                    // into this loop while we're still draining it.
+                    await new Promise<void>((resolve) => {
+                        setTimeout(() => {
+                            invoke('log_frontend_error', {
+                                errorType: error.type,
+                                message: error.message,
+                                stack: error.stack || null,
+                            }).then(() => resolve()).catch(() => resolve());
+                        }, 0);
                     });
                 } catch (e) {
                     // Silently fail if logging fails
@@ -180,12 +187,28 @@ export function isSafeAvatarUrl(url: string | undefined | null): boolean {
     if (!url || typeof url !== 'string') return false;
     const lower = url.trim().toLowerCase();
     if (!lower) return false;
+    // Tauri custom-protocol URLs need a stricter allowlist than http/https.
+    // Restrict the path portion to a known prefix so a tampered avatar string
+    // can't read arbitrary files on disk (e.g. ``asset://localhost/c:/...``).
+    if (lower.startsWith('asset://') || lower.startsWith('tauri://')) {
+        try {
+            const parsed = new URL(lower);
+            const path = parsed.pathname || '';
+            // Reject Windows drive letters, parent-dir traversal, and any
+            // host other than localhost. Only allow paths under ``avatars/``.
+            if (parsed.hostname && parsed.hostname !== 'localhost') return false;
+            if (/[a-z]:/i.test(path)) return false;
+            if (path.includes('..')) return false;
+            const stripped = path.replace(/^\/+/, '');
+            return stripped.startsWith('avatars/');
+        } catch {
+            return false;
+        }
+    }
     return (
         lower.startsWith('data:image/') ||
         lower.startsWith('http://') ||
         lower.startsWith('https://') ||
-        lower.startsWith('asset://') ||
-        lower.startsWith('tauri://') ||
         lower.startsWith('/') ||
         lower.startsWith('./') ||
         lower.startsWith('../')
@@ -457,7 +480,25 @@ function setupCardTilt(): void {
             });
         }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    // Scope the observer to the dynamic regions that actually render new
+    // role/status cards instead of the entire <body>. Observing all of
+    // document.body fires the callback on every chat re-render, every sakura
+    // petal append/remove, every toast, every log refresh — pure CPU waste
+    // that grows with session length. Falling back to body only if no
+    // narrower target is found.
+    const scope =
+        document.getElementById('role-cards-container') ||
+        document.getElementById('main-content') ||
+        document.body;
+    observer.observe(scope, { childList: true, subtree: true });
+
+    // Disconnect on unload so the observer + its closure aren't held for the
+    // page lifetime.
+    window.addEventListener(
+        'beforeunload',
+        () => observer.disconnect(),
+        { once: true },
+    );
 }
 
 /**

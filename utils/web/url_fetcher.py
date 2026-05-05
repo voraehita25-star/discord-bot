@@ -30,13 +30,34 @@ logger = logging.getLogger(__name__)
 
 # Shared session for connection pooling (lazily initialized)
 _shared_session: aiohttp.ClientSession | None = None
-_session_lock = asyncio.Lock()
+_session_lock: asyncio.Lock | None = None  # constructed on first use
 
 # URL content cache: url -> (title, content, timestamp)
 _url_cache: dict[str, tuple[str, str | None, float]] = {}
-_url_cache_lock = asyncio.Lock()
+_url_cache_lock: asyncio.Lock | None = None  # constructed on first use
 _URL_CACHE_TTL = 300.0  # 5 minutes
 _URL_CACHE_MAX_SIZE = 100
+
+
+def _get_session_lock() -> asyncio.Lock:
+    """Lazily construct the asyncio.Lock so it binds to the running loop.
+
+    Building it at module-import time can attach the lock to a stale loop
+    (or fail outright on Python ≤ 3.9) when this module is imported before
+    the bot's event loop starts.
+    """
+    global _session_lock
+    if _session_lock is None:
+        _session_lock = asyncio.Lock()
+    return _session_lock
+
+
+def _get_url_cache_lock() -> asyncio.Lock:
+    """Lazily construct the URL-cache lock — same rationale as session lock."""
+    global _url_cache_lock
+    if _url_cache_lock is None:
+        _url_cache_lock = asyncio.Lock()
+    return _url_cache_lock
 
 
 class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
@@ -84,26 +105,36 @@ class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
 
 
 async def _get_shared_session() -> aiohttp.ClientSession:
-    """Get or create a shared aiohttp session with connection pooling."""
+    """Get or create a shared aiohttp session with connection pooling.
+
+    The previous double-checked pattern (outer check before the lock,
+    re-check inside) had a subtle hole: between the outer ``closed`` check
+    returning False and the body returning ``_shared_session``, another
+    coroutine could call ``close_shared_session`` and close+null the
+    global, after which the caller would receive a closed session and
+    every request would raise. Performing the check + recreate + return
+    entirely inside the lock closes that window. The lock contention is
+    cheap because the body only runs work on the (rare) first/recreate
+    path; the common-case ``return`` is just a coroutine context switch.
+    """
     global _shared_session
-    if _shared_session is None or _shared_session.closed:
-        async with _session_lock:
-            if _shared_session is None or _shared_session.closed:
-                resolver = _SSRFSafeResolver(aiohttp.ThreadedResolver())
-                connector = aiohttp.TCPConnector(
-                    limit=20,
-                    ttl_dns_cache=300,
-                    enable_cleanup_closed=True,
-                    resolver=resolver,
-                )
-                _shared_session = aiohttp.ClientSession(connector=connector)
-    return _shared_session
+    async with _get_session_lock():
+        if _shared_session is None or _shared_session.closed:
+            resolver = _SSRFSafeResolver(aiohttp.ThreadedResolver())
+            connector = aiohttp.TCPConnector(
+                limit=20,
+                ttl_dns_cache=300,
+                enable_cleanup_closed=True,
+                resolver=resolver,
+            )
+            _shared_session = aiohttp.ClientSession(connector=connector)
+        return _shared_session
 
 
 async def close_shared_session() -> None:
     """Close the shared session. Call during bot shutdown."""
     global _shared_session
-    async with _session_lock:
+    async with _get_session_lock():
         if _shared_session is not None and not _shared_session.closed:
             await _shared_session.close()
         _shared_session = None
@@ -138,21 +169,65 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("10.0.0.0/8"),         # Private Class A
     ipaddress.ip_network("172.16.0.0/12"),      # Private Class B
     ipaddress.ip_network("192.168.0.0/16"),     # Private Class C
-    ipaddress.ip_network("169.254.0.0/16"),     # Link-local
+    ipaddress.ip_network("169.254.0.0/16"),     # Link-local + AWS/Azure/GCP metadata
     ipaddress.ip_network("0.0.0.0/8"),          # Current network
     ipaddress.ip_network("100.64.0.0/10"),      # Shared address space (CGN)
     ipaddress.ip_network("100.100.100.200/32"), # Alibaba Cloud metadata
+    ipaddress.ip_network("224.0.0.0/4"),        # IPv4 multicast
+    ipaddress.ip_network("240.0.0.0/4"),        # IPv4 reserved future
     ipaddress.ip_network("::1/128"),            # IPv6 loopback
     ipaddress.ip_network("fc00::/7"),           # IPv6 unique local
     ipaddress.ip_network("fe80::/10"),          # IPv6 link-local
+    # IPv4-mapped IPv6 covers ::ffff:0:0/96 — closes the bypass where an
+    # attacker-controlled DNS returns ::ffff:127.0.0.1 to dodge the IPv4
+    # blocks above. We additionally call ip.ipv4_mapped below as belt-and-
+    # suspenders in case ipaddress treats the mapped form differently across
+    # Python versions.
+    ipaddress.ip_network("::ffff:0:0/96"),
 ]
+
+# Allowlist of URL schemes the fetcher will follow. Anything else (file://,
+# gopher://, dict://, ldap://, ftp://, javascript:, data:) is rejected at
+# both the initial URL and at every redirect target.
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+
+
+def _ip_is_blocked(ip_str: str) -> bool:
+    """Return True if ``ip_str`` falls in any blocked network.
+
+    Handles IPv4-mapped IPv6 explicitly: ``::ffff:127.0.0.1`` is unwrapped
+    via ``ipv4_mapped`` and re-checked against the IPv4 blocklist so an
+    attacker can't bypass loopback/private-network blocks by serving
+    AAAA records pointing at the mapped form.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    for network in _BLOCKED_NETWORKS:
+        if ip in network:
+            return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        for network in _BLOCKED_NETWORKS:
+            if ip.ipv4_mapped in network:
+                return True
+    return False
 
 
 async def _is_private_url(url: str) -> bool:
-    """Check if a URL resolves to a private/internal IP address (SSRF protection)."""
+    """Check if a URL resolves to a private/internal IP address (SSRF protection).
+
+    Also enforces the scheme allowlist — only ``http``/``https`` URLs are
+    permitted. Returns True (block) for anything else so redirect chains
+    can't escape into ``file://``, ``gopher://``, ``dict://``, ``ldap://``,
+    ``ftp://``, ``javascript:``, or ``data:``.
+    """
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)
+        if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+            logger.warning("SSRF blocked: disallowed scheme %r in %s", parsed.scheme, url)
+            return True
         hostname = parsed.hostname
         if not hostname:
             return True
@@ -174,14 +249,9 @@ async def _is_private_url(url: str) -> bool:
 
         for _family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-                for network in _BLOCKED_NETWORKS:
-                    if ip in network:
-                        logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip_str)
-                        return True
-            except ValueError:
-                continue
+            if _ip_is_blocked(ip_str):
+                logger.warning("SSRF blocked: %s resolves to %s (blocked)", url, ip_str)
+                return True
 
         return False
     except Exception:
@@ -225,17 +295,27 @@ async def fetch_url_content(
 
     Args:
         url: URL to fetch
-        session: Optional aiohttp session to reuse
+        session: DEPRECATED — ignored. The function now always uses the
+            shared session (with SSRF-safe resolver). A caller-supplied
+            session may not have the resolver attached, opening a DNS
+            rebinding window between the static _is_private_url check and
+            the actual connect, so we no longer accept it.
         timeout: Request timeout in seconds
 
     Returns:
         Tuple of (title, content) - content is None if fetch failed
     """
+    if session is not None:
+        logger.debug(
+            "fetch_url_content: ignoring caller-supplied session; "
+            "using shared SSRF-safe session"
+        )
+        session = None
     try:
         # Check URL cache first (under lock to prevent duplicate fetches)
         import time as _time
 
-        async with _url_cache_lock:
+        async with _get_url_cache_lock():
             cached = _url_cache.get(url)
             if cached is not None:
                 title, content, ts = cached
@@ -256,14 +336,27 @@ async def fetch_url_content(
         headers = {"User-Agent": USER_AGENT}
 
         # Special handling for GitHub
-        if any(domain in url for domain in GITHUB_DOMAINS):
+        # Use parsed hostname (not substring) so attacker domains like
+        # `github.com.evil.com` don't trigger the API rewrite path.
+        from urllib.parse import urlparse as _urlparse
+        try:
+            _parsed_url = _urlparse(url)
+            _host = (_parsed_url.hostname or "").lower()
+        except (ValueError, TypeError):
+            _host = ""
+        if _host == "github.com" or _host.endswith(".github.com"):
             # Convert github.com URLs to raw content for README
-            if "github.com" in url and "/blob/" not in url and "/raw/" not in url:
+            if _host == "github.com" and "/blob/" not in url and "/raw/" not in url:
                 # Try to get README
                 if not url.endswith("/"):
                     url += "/"
-                # GitHub API for repo info
-                api_url = url.replace("github.com", "api.github.com/repos")
+                # GitHub API for repo info — rebuild via urlparse so we only
+                # touch the hostname, never a substring of the full URL.
+                _re_parsed = _urlparse(url)
+                api_url = _re_parsed._replace(
+                    netloc="api.github.com",
+                    path="/repos" + (_re_parsed.path or "/"),
+                ).geturl()
                 api_url = api_url.rstrip("/")
 
                 # Re-check SSRF on transformed URL
@@ -306,7 +399,7 @@ Default Branch: {data.get("default_branch", "main")}
 
                             result_content = content[:MAX_CONTENT_LENGTH]
                             # Cache GitHub result
-                            async with _url_cache_lock:
+                            async with _get_url_cache_lock():
                                 if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
                                     oldest_key = next(iter(_url_cache))
                                     del _url_cache[oldest_key]
@@ -315,129 +408,148 @@ Default Branch: {data.get("default_branch", "main")}
                 except Exception as e:
                     logger.debug("GitHub API failed for %s: %s", url, e)
 
-        # Standard webpage fetch — disable auto-redirects and check each target for SSRF
-        async with session.get(
-            url,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=False,
-        ) as response:
-            # Manually follow redirects with SSRF check on each target
-            final_response = response
+        # Standard webpage fetch — disable auto-redirects and check each
+        # target for SSRF. Each session.get() opens a connection that holds
+        # a slot in the pool until the response is closed; we collect every
+        # opened response in ``responses`` and close all of them in a
+        # ``finally`` block. The previous code closed the *previous*
+        # response just before issuing the next request, which left a
+        # window where an exception (TimeoutError, SSRF block, etc.) could
+        # leak the most recently opened response. Holding strong refs in
+        # one list and closing them all unconditionally eliminates that.
+        responses: list[aiohttp.ClientResponse] = []
+        try:
+            initial = await session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+            )
+            responses.append(initial)
+            final_response = initial
             redirect_count = 0
             visited_urls: set[str] = {url}
-            try:
-                while final_response.status in (301, 302, 303, 307, 308) and redirect_count < 5:
-                    redirect_url = final_response.headers.get("Location")
-                    if not redirect_url:
-                        break
-                    # Resolve relative URLs
-                    redirect_url = str(final_response.url.join(yarl.URL(redirect_url)))
-                    if redirect_url in visited_urls:
-                        logger.warning("Blocked circular redirect: %s", redirect_url)
-                        return url, None
-                    if await _is_private_url(redirect_url):
-                        logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
-                        return url, None
-                    visited_urls.add(redirect_url)
-                    redirect_count += 1
-                    # Close previous redirect response to avoid resource leak
-                    if final_response is not response:
-                        final_response.close()
-                    try:
-                        final_response = await session.get(
-                            redirect_url,
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=timeout),
-                            allow_redirects=False,
-                        )
-                    except Exception:
-                        # Reset to original so finally doesn't double-close
-                        final_response = response
-                        raise
 
-                if final_response.status != 200:
-                    logger.warning("URL fetch failed: %s (status %d)", url, final_response.status)
+            while final_response.status in (301, 302, 303, 307, 308) and redirect_count < 5:
+                redirect_url = final_response.headers.get("Location")
+                if not redirect_url:
+                    break
+                # Resolve relative URLs
+                redirect_url = str(final_response.url.join(yarl.URL(redirect_url)))
+                if redirect_url in visited_urls:
+                    logger.warning("Blocked circular redirect: %s", redirect_url)
                     return url, None
+                if await _is_private_url(redirect_url):
+                    logger.warning("Blocked SSRF: redirect to private URL: %s", redirect_url)
+                    return url, None
+                visited_urls.add(redirect_url)
+                redirect_count += 1
+                next_resp = await session.get(
+                    redirect_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                    allow_redirects=False,
+                )
+                responses.append(next_resp)
+                final_response = next_resp
 
-                content_type = final_response.headers.get("Content-Type", "")
+            if final_response.status != 200:
+                logger.warning("URL fetch failed: %s (status %d)", url, final_response.status)
+                return url, None
 
-                # Only process HTML/text content
-                if "text/html" not in content_type and "text/plain" not in content_type:
-                    return url, f"[Non-text content: {content_type}]"
+            content_type = final_response.headers.get("Content-Type", "")
 
-                # Early rejection if Content-Length exceeds limit (avoids wasting bandwidth)
-                content_length = final_response.headers.get("Content-Length")
-                if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_SIZE:
-                    logger.warning("URL content too large: %s (%s bytes)", url, content_length)
-                    return url, f"[Content too large: {content_length} bytes]"
+            # Only process HTML/text content
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return url, f"[Non-text content: {content_type}]"
 
-                # Handle encoding with fallback, size-limited to prevent memory exhaustion
+            # Early rejection if Content-Length exceeds limit (avoids wasting bandwidth)
+            content_length = final_response.headers.get("Content-Length")
+            if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_SIZE:
+                logger.warning("URL content too large: %s (%s bytes)", url, content_length)
+                return url, f"[Content too large: {content_length} bytes]"
+
+            # Handle encoding with fallback, size-limited to prevent memory exhaustion
+            raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
+            # Magic-byte check: even when the server claims text/html,
+            # the body may be binary (PDF, ZIP, image, executable). The
+            # latin-1 fallback would happily decode garbage and feed it
+            # to BeautifulSoup. Reject obvious binaries here.
+            if raw_bytes[:5] in (b"%PDF-",) or raw_bytes[:4] in (
+                b"PK\x03\x04",  # ZIP
+                b"\x7fELF",     # ELF
+                b"MZ\x90\x00",  # PE/COFF Windows .exe (partial)
+            ) or (len(raw_bytes) >= 2 and raw_bytes[:2] == b"MZ"):
+                return url, f"[Binary content despite Content-Type={content_type}]"
+            try:
+                encoding = final_response.get_encoding()
+                html = raw_bytes.decode(encoding or 'utf-8')
+            except (UnicodeDecodeError, LookupError):
+                # Fallback to latin-1 which accepts all byte values
+                html = raw_bytes.decode('latin-1', errors='replace')
+
+            # Parse HTML
+            soup = BeautifulSoup(html, "lxml")
+
+            # Get title
+            title_tag = soup.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else url
+
+            # Remove script, style, nav, footer elements
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+                tag.decompose()
+
+            # Try to find main content
+            main_content = None
+
+            # Look for main content containers
+            for selector in [
+                "article",
+                "main",
+                '[role="main"]',
+                ".content",
+                "#content",
+                ".post-content",
+            ]:
+                element = soup.select_one(selector)
+                if element:
+                    main_content = element.get_text(separator="\n", strip=True)
+                    break
+
+            # Fallback to body
+            if not main_content:
+                body = soup.find("body")
+                if body:
+                    main_content = body.get_text(separator="\n", strip=True)
+                else:
+                    main_content = soup.get_text(separator="\n", strip=True)
+
+            # Clean up whitespace
+            lines = [line.strip() for line in main_content.split("\n") if line.strip()]
+            cleaned_content = "\n".join(lines)
+
+            # Truncate if too long
+            if len(cleaned_content) > MAX_CONTENT_LENGTH:
+                cleaned_content = cleaned_content[:MAX_CONTENT_LENGTH] + "\n[Content truncated...]"
+
+            # Store in URL cache
+            async with _get_url_cache_lock():
+                if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
+                    # Evict oldest entry
+                    oldest_key = next(iter(_url_cache))
+                    del _url_cache[oldest_key]
+                _url_cache[url] = (title, cleaned_content, _time.time())
+
+            return title, cleaned_content
+        finally:
+            # Close every response we opened. ``ClientResponse.close()`` is
+            # idempotent and safe even if the connection has already been
+            # released, so closing the same response twice is a no-op.
+            for resp in responses:
                 try:
-                    raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
-                    encoding = final_response.get_encoding()
-                    html = raw_bytes.decode(encoding or 'utf-8')
-                except (UnicodeDecodeError, LookupError):
-                    # Fallback to latin-1 which accepts all byte values
-                    html = raw_bytes.decode('latin-1', errors='replace')
-
-                # Parse HTML
-                soup = BeautifulSoup(html, "lxml")
-
-                # Get title
-                title_tag = soup.find("title")
-                title = title_tag.get_text(strip=True) if title_tag else url
-
-                # Remove script, style, nav, footer elements
-                for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
-                    tag.decompose()
-
-                # Try to find main content
-                main_content = None
-
-                # Look for main content containers
-                for selector in [
-                    "article",
-                    "main",
-                    '[role="main"]',
-                    ".content",
-                    "#content",
-                    ".post-content",
-                ]:
-                    element = soup.select_one(selector)
-                    if element:
-                        main_content = element.get_text(separator="\n", strip=True)
-                        break
-
-                # Fallback to body
-                if not main_content:
-                    body = soup.find("body")
-                    if body:
-                        main_content = body.get_text(separator="\n", strip=True)
-                    else:
-                        main_content = soup.get_text(separator="\n", strip=True)
-
-                # Clean up whitespace
-                lines = [line.strip() for line in main_content.split("\n") if line.strip()]
-                cleaned_content = "\n".join(lines)
-
-                # Truncate if too long
-                if len(cleaned_content) > MAX_CONTENT_LENGTH:
-                    cleaned_content = cleaned_content[:MAX_CONTENT_LENGTH] + "\n[Content truncated...]"
-
-                # Store in URL cache
-                async with _url_cache_lock:
-                    if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
-                        # Evict oldest entry
-                        oldest_key = next(iter(_url_cache))
-                        del _url_cache[oldest_key]
-                    _url_cache[url] = (title, cleaned_content, _time.time())
-
-                return title, cleaned_content
-            finally:
-                # Ensure redirect responses (not managed by `async with`) are closed
-                if final_response is not response:
-                    final_response.close()
+                    resp.close()
+                except Exception:
+                    pass
 
     except TimeoutError:
         logger.warning("URL fetch timeout: %s", url)

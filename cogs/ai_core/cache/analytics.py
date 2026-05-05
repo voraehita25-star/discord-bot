@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,6 +16,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..data.constants import DEFAULT_MODEL
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env var with fallback on missing or invalid input."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+        return v if v > 0 else default
+    except ValueError:
+        return default
 
 # Try to import database
 try:
@@ -81,16 +95,27 @@ class AIAnalytics:
     - Cache effectiveness
     """
 
-    # Token estimation (rough)
-    CHARS_PER_TOKEN = 4
-
     # Limits to prevent memory growth
     MAX_HOURLY_KEYS = 168  # 7 days of hourly data
     MAX_INTENT_KEYS = 100  # Limit unique intents tracked
 
     def __init__(self):
         self.logger = logging.getLogger("AIAnalytics")
+        # Chars-per-token estimate read at instance construction time so a
+        # late env edit + bot reload picks up the new value (was a class
+        # attribute frozen at import time).
+        # 4.0 = OpenAI English rule of thumb but UNDER-counts Thai / CJK by
+        # ~30-40%. Default 2.5 for Thai-leaning servers — over-estimating is
+        # safer for budget alerts than under-estimating. Override via
+        # BOT_CHARS_PER_TOKEN.
+        self.CHARS_PER_TOKEN: float = _env_float("BOT_CHARS_PER_TOKEN", 2.5)
         self._stats_lock = asyncio.Lock()
+        # Sync-callable threading lock for sync mutators (log_response_quality,
+        # record_intent_feedback). Without it, compound check-then-modify ops
+        # would race against the async log_interaction even on a single event
+        # loop because awaits inside log_interaction yield between the check
+        # and the modify. Held briefly so it doesn't meaningfully block.
+        self._sync_stats_lock = threading.Lock()
 
         # In-memory stats for quick access. Heterogeneous values (int, float,
         # defaultdict, list) — kept as dict[str, Any] to satisfy type checker
@@ -151,8 +176,10 @@ class AIAnalytics:
             if error:
                 self._stats["errors"] += 1
 
-            # Track hourly (with cleanup to prevent unbounded growth)
-            hour_key = datetime.now().strftime("%Y-%m-%d-%H")
+            # Track hourly (with cleanup to prevent unbounded growth).
+            # Use UTC so the bucket key matches the UTC timestamps stored on
+            # InteractionLog rows (was naive local time, drifted across DST).
+            hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
             self._stats["hourly_counts"][hour_key] += 1
 
             # Cleanup old hourly keys if too many
@@ -298,70 +325,98 @@ class AIAnalytics:
         """
         Log response quality metrics.
 
-        Updates in-memory quality stats for aggregation.
-        Note: This is sync but only called from single event loop, so safe.
-
-        Args:
-            quality: ResponseQuality object
-            channel_id: Optional channel ID for per-channel tracking
+        Updates in-memory quality stats for aggregation. Synchronously safe
+        even when called concurrently with the async log_interaction path —
+        both update self._stats and the sync-stats lock makes the compound
+        "init-if-missing then mutate" sequence atomic relative to other
+        callers. Releases the lock before logging so debug output isn't
+        serialised.
         """
-        # Initialize quality stats if needed
-        if "quality_scores" not in self._stats:
-            self._stats["quality_scores"] = []
-            self._stats["quality_sum"] = 0.0
-            self._stats["quality_count"] = 0
-            self._stats["positive_reactions"] = 0
-            self._stats["negative_reactions"] = 0
+        with self._sync_stats_lock:
+            if "quality_scores" not in self._stats:
+                self._stats["quality_scores"] = []
+                self._stats["quality_sum"] = 0.0
+                self._stats["quality_count"] = 0
+                self._stats["positive_reactions"] = 0
+                self._stats["negative_reactions"] = 0
 
-        # Update stats atomically (single-threaded event loop)
-        scores = self._stats["quality_scores"]
-        scores.append(quality.score)
-        self._stats["quality_sum"] += quality.score
-        self._stats["quality_count"] += 1
+            scores = self._stats["quality_scores"]
+            scores.append(quality.score)
+            self._stats["quality_sum"] += quality.score
+            self._stats["quality_count"] += 1
 
-        if quality.user_reaction == "👍":
-            self._stats["positive_reactions"] += 1
-        elif quality.user_reaction == "👎":
-            self._stats["negative_reactions"] += 1
+            if quality.user_reaction == "👍":
+                self._stats["positive_reactions"] += 1
+            elif quality.user_reaction == "👎":
+                self._stats["negative_reactions"] += 1
 
-        # Keep only last 1000 scores for memory efficiency
-        if len(scores) > 1000:
-            self._stats["quality_scores"] = scores[-1000:]
-            # Recalculate sum from scratch to avoid floating-point drift
-            self._stats["quality_sum"] = sum(self._stats["quality_scores"])
-            self._stats["quality_count"] = len(self._stats["quality_scores"])
+            # Keep only last 1000 scores for memory efficiency
+            if len(scores) > 1000:
+                self._stats["quality_scores"] = scores[-1000:]
+                # Recalculate sum from scratch to avoid floating-point drift
+                self._stats["quality_sum"] = sum(self._stats["quality_scores"])
+                self._stats["quality_count"] = len(self._stats["quality_scores"])
 
         self.logger.debug("📊 Quality logged: %.2f (factors: %s)", quality.score, quality.factors)
 
     def get_quality_summary(self) -> dict:
         """Get summary of quality metrics."""
-        if "quality_count" not in self._stats or self._stats["quality_count"] == 0:
-            return {
-                "average_score": 0.0,
-                "total_ratings": 0,
-                "positive_reactions": 0,
-                "negative_reactions": 0,
-            }
-
+        # Snapshot quality fields under the sync lock so a concurrent
+        # log_response_quality / reset_stats can't tear values across the
+        # check-then-read sequence below.
+        with self._sync_stats_lock:
+            quality_count = self._stats.get("quality_count", 0)
+            if quality_count == 0:
+                return {
+                    "average_score": 0.0,
+                    "total_ratings": 0,
+                    "positive_reactions": 0,
+                    "negative_reactions": 0,
+                }
+            quality_sum = self._stats.get("quality_sum", 0.0)
+            positive = self._stats.get("positive_reactions", 0)
+            negative = self._stats.get("negative_reactions", 0)
         return {
-            "average_score": self._stats["quality_sum"] / self._stats["quality_count"],
-            "total_ratings": self._stats["quality_count"],
-            "positive_reactions": self._stats.get("positive_reactions", 0),
-            "negative_reactions": self._stats.get("negative_reactions", 0),
+            "average_score": quality_sum / quality_count,
+            "total_ratings": quality_count,
+            "positive_reactions": positive,
+            "negative_reactions": negative,
         }
 
     async def get_summary_async(self) -> AnalyticsSummary:
-        """Get summary of all analytics (async, lock-safe)."""
+        """Get summary of all analytics (async, lock-safe).
+
+        Also holds ``_sync_stats_lock`` so a concurrent ``reset_stats`` (which
+        only takes the sync lock) can't swap ``self._stats`` and reset
+        ``self._start_time`` mid-summary, producing nonsensical
+        ``interactions_per_hour`` (near-infinite when start_time is reset
+        but `total` still reflects the old stats reference).
+        """
         async with self._stats_lock:
-            return self._get_summary_unlocked()
+            with self._sync_stats_lock:
+                return self._get_summary_unlocked()
 
     def get_summary(self) -> AnalyticsSummary:
-        """Get summary of all analytics (sync, for non-async callers)."""
-        return self._get_summary_unlocked()
+        """Get summary of all analytics (sync, for non-async callers).
+
+        We can't acquire the asyncio lock from a sync context, so we hold
+        ``_sync_stats_lock`` instead. Other sync mutators
+        (``log_response_quality``, ``record_intent_feedback``,
+        ``reset_stats``) take the same lock, so this serialises against
+        them and prevents ``RuntimeError: dictionary changed size during
+        iteration`` on the intent_counts traversal inside
+        ``_get_summary_unlocked``.
+        """
+        with self._sync_stats_lock:
+            return self._get_summary_unlocked()
 
     def _get_summary_unlocked(self) -> AnalyticsSummary:
         """Internal: compute summary from current stats."""
-        total = self._stats["total_interactions"]
+        # Snapshot all fields up front so concurrent log_interaction calls
+        # can't trigger "dictionary changed size during iteration" on the
+        # intent_counts traversal below.
+        s = self._stats
+        total = s["total_interactions"]
 
         if total == 0:
             return AnalyticsSummary(
@@ -375,22 +430,31 @@ class AIAnalytics:
                 total_output_tokens=0,
             )
 
+        total_response_time_ms = s["total_response_time_ms"]
+        cache_hits = s["cache_hits"]
+        errors = s["errors"]
+        intent_items = list(s["intent_counts"].items())
+        total_input_chars = s["total_input_chars"]
+        total_output_chars = s["total_output_chars"]
+
         # Calculate averages
-        avg_response = self._stats["total_response_time_ms"] / total
-        cache_rate = self._stats["cache_hits"] / total
-        error_rate = self._stats["errors"] / total
+        avg_response = total_response_time_ms / total
+        cache_rate = cache_hits / total
+        error_rate = errors / total
 
         # Get top intents
-        intent_items = list(self._stats["intent_counts"].items())
         top_intents = sorted(intent_items, key=lambda x: x[1], reverse=True)[:5]
 
         # Calculate interactions per hour
         uptime_hours = (time.time() - self._start_time) / 3600
         per_hour = total / uptime_hours if uptime_hours > 0 else 0
 
-        # Estimate tokens
-        input_tokens = self._stats["total_input_chars"] // self.CHARS_PER_TOKEN
-        output_tokens = self._stats["total_output_chars"] // self.CHARS_PER_TOKEN
+        # Estimate tokens (use snapshotted values from above).
+        # CHARS_PER_TOKEN is a float (2.5), so `//` returns a float —
+        # cast to int to match the AnalyticsSummary type and avoid
+        # `TypeError: unsupported format string` from `:,` int specifiers.
+        input_tokens = int(total_input_chars // self.CHARS_PER_TOKEN)
+        output_tokens = int(total_output_chars // self.CHARS_PER_TOKEN)
 
         return AnalyticsSummary(
             total_interactions=total,
@@ -447,8 +511,9 @@ class AIAnalytics:
     async def get_hourly_trend(self, hours: int = 24) -> list[tuple[str, int]]:
         """Get interaction counts by hour."""
         if not DB_AVAILABLE:
-            # Use in-memory data
-            now = datetime.now()
+            # Use in-memory data — UTC to match the bucket keys produced in
+            # log_interaction, otherwise the keys would never line up.
+            now = datetime.now(timezone.utc)
             result = []
             for i in range(hours - 1, -1, -1):
                 hour = now - timedelta(hours=i)
@@ -491,7 +556,8 @@ class AIAnalytics:
     def reset_stats(self) -> None:
         """Reset in-memory statistics.
 
-        Note: Should only be called when no concurrent readers are active.
+        Lock-protected so concurrent writers don't lose updates against the
+        replaced dict reference.
         """
         new_stats = {
             "total_interactions": 0,
@@ -505,19 +571,26 @@ class AIAnalytics:
             "response_times": [],  # For percentile calculation
             "intent_feedback": [],  # For accuracy tracking
         }
-        self._stats = new_stats
-        self._start_time = time.time()
+        with self._sync_stats_lock:
+            self._stats = new_stats
+            self._start_time = time.time()
 
     def _record_response_time(self, response_time_ms: float) -> None:
-        """Record response time for percentile calculation."""
-        if "response_times" not in self._stats:
-            self._stats["response_times"] = []
+        """Record response time for percentile calculation.
 
-        self._stats["response_times"].append(response_time_ms)
+        Mutates a shared list; protected by ``_sync_stats_lock`` so a
+        concurrent ``get_latency_percentiles`` doesn't trip
+        ``RuntimeError: list changed size during iteration`` while sorting.
+        """
+        with self._sync_stats_lock:
+            if "response_times" not in self._stats:
+                self._stats["response_times"] = []
 
-        # Keep only last 1000 for memory efficiency
-        if len(self._stats["response_times"]) > 1000:
-            self._stats["response_times"] = self._stats["response_times"][-1000:]
+            self._stats["response_times"].append(response_time_ms)
+
+            # Keep only last 1000 for memory efficiency
+            if len(self._stats["response_times"]) > 1000:
+                self._stats["response_times"] = self._stats["response_times"][-1000:]
 
     def get_latency_percentiles(self, period: str = "all") -> dict:
         """
@@ -529,7 +602,9 @@ class AIAnalytics:
         Returns:
             Dictionary with p50, p95, p99 values in milliseconds
         """
-        response_times = self._stats.get("response_times", [])
+        # Snapshot under lock so the sort below sees a stable list.
+        with self._sync_stats_lock:
+            response_times = list(self._stats.get("response_times", []))
 
         if not response_times:
             return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "count": 0}
@@ -564,22 +639,29 @@ class AIAnalytics:
             actual_intent: What the correct intent was (from user feedback)
             user_id: Optional user ID for per-user accuracy tracking
         """
-        if "intent_feedback" not in self._stats:
-            self._stats["intent_feedback"] = []
+        # Hold the sync lock around the init-if-missing + append + trim
+        # sequence so concurrent callers (and reset_stats) can't tear the
+        # intent_feedback list.
+        with self._sync_stats_lock:
+            if "intent_feedback" not in self._stats:
+                self._stats["intent_feedback"] = []
 
-        self._stats["intent_feedback"].append(
-            {
-                "detected": detected_intent,
-                "actual": actual_intent,
-                "correct": detected_intent == actual_intent,
-                "user_id": user_id,
-                "timestamp": datetime.now().isoformat(),
-            }
-        )
+            self._stats["intent_feedback"].append(
+                {
+                    "detected": detected_intent,
+                    "actual": actual_intent,
+                    "correct": detected_intent == actual_intent,
+                    "user_id": user_id,
+                    # Use UTC to stay consistent with `log_interaction` —
+                    # naive local time can't be compared across DST or sorted
+                    # reliably with the rest of the analytics records.
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
 
-        # Keep only last 500 feedback entries
-        if len(self._stats["intent_feedback"]) > 500:
-            self._stats["intent_feedback"] = self._stats["intent_feedback"][-500:]
+            # Keep only last 500 feedback entries
+            if len(self._stats["intent_feedback"]) > 500:
+                self._stats["intent_feedback"] = self._stats["intent_feedback"][-500:]
 
         self.logger.debug(
             "Intent feedback: detected=%s, actual=%s, correct=%s",
@@ -595,7 +677,10 @@ class AIAnalytics:
         Returns:
             Dictionary with accuracy stats
         """
-        feedback = self._stats.get("intent_feedback", [])
+        # Snapshot under lock so a concurrent record_intent_feedback or
+        # reset_stats can't mutate the list mid-iteration below.
+        with self._sync_stats_lock:
+            feedback = list(self._stats.get("intent_feedback", []))
 
         if not feedback:
             return {"accuracy": 0.0, "total_feedback": 0, "confusion_matrix": {}}
