@@ -73,7 +73,10 @@ jobs:
     needs: [pre-commit]
     strategy:
       matrix:
-        python-version: ['3.14']
+        # Run on the project's required floor (3.14) and the previous
+        # supported release (3.13) so we catch regressions affecting
+        # callers who haven't bumped yet. 3.13 is supported until Oct 2028.
+        python-version: ['3.13', '3.14']
 
     steps:
     - uses: actions/checkout@v4
@@ -166,7 +169,10 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        # Track the current Go release. Go's support policy maintains
+        # only the two most recent versions, so 1.25 will be dropped
+        # when 1.27 ships (~Aug 2026).
+        go-version: '1.26'
         cache-dependency-path: go_services/go.sum
 
     - name: Run Go tests

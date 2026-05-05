@@ -8,14 +8,14 @@ python-dotenv==1.2.1          # Environment variable management (latest)
 aiohttp==3.13.4               # Async HTTP client (security fixes)
 psutil==7.2.2                 # Process and system utilities
 certifi>=2026.1.4             # SSL certificates (security updates)
-cryptography>=46.0.7          # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892
-requests>=2.33.0              # Transitive dep — pinned for CVE-2026-25645
+cryptography>=46.0.7,<47      # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892 (cap <47 so a major bump can't surprise the build)
+requests>=2.33.0,<3           # Transitive dep — pinned for CVE-2026-25645 (cap <3 for major-bump safety)
 tzdata>=2024.1                # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
 google-genai==1.67.0          # Google Gemini API (latest)
 anthropic>=0.87.0,<1.0        # Anthropic Claude API (CVE-2026-34450, CVE-2026-34452)
-Pillow==12.1.1                # Image processing
+Pillow==12.2.0                # Image processing — bumped for CVE-2026-40192 (FITS decompression bomb DoS)
 beautifulsoup4==4.14.3        # HTML parsing for URL content (latest)
 lxml==6.0.2                   # Fast HTML parser
 numpy==2.4.2                  # Numerical operations (for RAG embeddings, latest)
@@ -23,7 +23,7 @@ faiss-cpu==1.13.2             # Vector similarity search (latest)
 imageio[ffmpeg]==2.37.2       # GIF to video conversion for Gemini (latest)
 
 # ==================== Music ====================
-yt-dlp==2026.3.13             # YouTube downloader — IMPORTANT: old versions freeze on changed APIs
+yt-dlp==2026.3.17             # YouTube downloader — IMPORTANT: old versions freeze on changed APIs (latest 2026.03.17)
 spotipy==2.25.2               # Spotify API wrapper (latest)
 PyNaCl>=1.6.2,<2               # Voice encryption for discord.py voice
 
