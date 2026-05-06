@@ -30,9 +30,7 @@ class TestSaveQueueJson:
     def test_writes_json_for_non_empty_queue(self, tmp_data_dir):
         m = QueueManager()
         guild_id = 12345
-        m.queues[guild_id] = collections.deque(
-            [{"url": "https://yt/abc", "title": "Track A"}]
-        )
+        m.queues[guild_id] = collections.deque([{"url": "https://yt/abc", "title": "Track A"}])
         m.volumes[guild_id] = 0.7
         m.loops[guild_id] = True
         m.mode_247[guild_id] = False
@@ -160,9 +158,7 @@ class TestQueueOpsCoverage:
 
     def test_remove_track_valid_position(self):
         m = QueueManager()
-        m.queues[7] = collections.deque(
-            [{"url": "a"}, {"url": "b"}, {"url": "c"}]
-        )
+        m.queues[7] = collections.deque([{"url": "a"}, {"url": "b"}, {"url": "c"}])
         # Position is 1-indexed (UI-style), so position=2 removes "b".
         removed = m.remove_track(7, 2)
         assert removed == {"url": "b"}
