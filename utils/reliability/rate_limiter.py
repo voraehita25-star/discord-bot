@@ -718,7 +718,7 @@ def ai_ratelimit(
             # Could be (self, message), (self, ctx), etc.
             message_or_ctx = None
             for arg in args:
-                if isinstance(arg, (discord.Message, commands.Context)):
+                if isinstance(arg, discord.Message | commands.Context):
                     message_or_ctx = arg
                     break
 

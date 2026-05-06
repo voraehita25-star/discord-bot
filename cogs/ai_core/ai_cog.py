@@ -127,13 +127,13 @@ class AI(commands.Cog):
     def _as_chat_channel(
         channel: object,
     ) -> discord.TextChannel | discord.Thread | discord.DMChannel | None:
-        if isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel)):
+        if isinstance(channel, discord.TextChannel | discord.Thread | discord.DMChannel):
             return channel
         return None
 
     @staticmethod
     def _as_fetchable_channel(channel: object) -> discord.TextChannel | discord.Thread | None:
-        if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        if isinstance(channel, discord.TextChannel | discord.Thread):
             return channel
         return None
 
@@ -481,7 +481,7 @@ class AI(commands.Cog):
                     result = await result
                 if isinstance(result, str):
                     return (result,)
-                if isinstance(result, (list, tuple)):
+                if isinstance(result, list | tuple):
                     return tuple(str(item) for item in result)
                 return ("!",)
             except Exception:
@@ -1104,7 +1104,7 @@ class AI(commands.Cog):
             return
         if not isinstance(
             raw_channel,
-            (discord.TextChannel, discord.Thread, discord.DMChannel),
+            discord.TextChannel | discord.Thread | discord.DMChannel,
         ):
             await status_msg.edit(
                 content=f"❌ ช่อง output ไม่รองรับการส่งข้อความ ({type(raw_channel).__name__})"

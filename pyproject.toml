@@ -82,12 +82,21 @@ ignore = [
     "PLW0603", # global statement (singleton patterns)
     "PLW2901", # redefined loop variable (intentional)
     "RUF001",  # ambiguous unicode (Thai language support)
+    "RUF003",  # ambiguous unicode in comments (Thai + multiplication signs in math comments)
     "RUF012",  # mutable class default (dataclass patterns)
     "E402",    # module import not at top (sys.path manipulation)
     # Code style preferences (readability over brevity)
     "SIM102",  # collapsible-if (nested ifs often more readable)
     "SIM105",  # suppressible-exception (explicit try-except preferred)
+    "SIM108",  # ternary preferred (if/else block more readable here)
     "SIM117",  # multiple-with-statements (line length control)
+    # Pathlib migration deferred — os.path is fine and ubiquitous in the codebase
+    "PTH106",  # os.rmdir -> Path.rmdir
+    "PTH108",  # os.unlink -> Path.unlink
+    "PTH118",  # os.path.join -> /
+    "PTH119",  # os.path.basename -> Path.name
+    "PLR1714", # comparison merge (`x == a or x == b` -> `x in (a, b)`) — readable as-is
+    "B904",    # raise from (existing exception chains intentional)
     # RUF006 removed — dangling tasks now properly tracked in bot.py
     # RUF059 — added in newer ruff; safe to drop until pre-commit ruff is bumped
     "UP017",   # datetime-timezone-utc (timezone.utc compat for Python <3.11)

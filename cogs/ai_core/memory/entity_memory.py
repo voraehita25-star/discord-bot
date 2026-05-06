@@ -59,7 +59,7 @@ class EntityFacts:
             # tuple membership test (an empty dict isn't equal to an empty
             # set) so empty `relationships`/`custom` dicts always passed
             # through and bloated the AI payload.
-            if isinstance(value, (dict, list, set, tuple)) and not value:
+            if isinstance(value, dict | list | set | tuple) and not value:
                 continue
             result[key] = value
         return result

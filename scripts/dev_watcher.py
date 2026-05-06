@@ -13,6 +13,8 @@ Features:
 - File logging
 """
 
+from __future__ import annotations
+
 import contextlib
 import datetime
 import json

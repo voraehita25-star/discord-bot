@@ -1421,7 +1421,7 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
                     sanitized_prefs[key] = v if _math.isfinite(v) else 0.0
                 elif isinstance(v, list):
                     sanitized_prefs[key] = [
-                        str(i)[:200] for i in v[:20] if isinstance(i, (str, int, float, bool))
+                        str(i)[:200] for i in v[:20] if isinstance(i, str | int | float | bool)
                     ]
         await db.save_dashboard_user_profile(
             display_name=display_name,

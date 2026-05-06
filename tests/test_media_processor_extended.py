@@ -188,7 +188,7 @@ class TestAvatarKeywords:
             pytest.skip("media_processor not available")
             return
 
-        assert isinstance(AVATAR_KEYWORDS, (list, tuple))
+        assert isinstance(AVATAR_KEYWORDS, list | tuple)
         assert len(AVATAR_KEYWORDS) > 0
 
     def test_avatar_keywords_contains_thai(self):
