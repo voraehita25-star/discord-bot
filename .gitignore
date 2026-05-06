@@ -84,6 +84,10 @@ bot.pid
 dev_watcher.pid
 .cache
 
+# Vendored ffmpeg binary (302 MB; install separately or set FFMPEG_PATH env var,
+# resolution order is documented in utils/media/ffmpeg_path.py).
+ffmpeg/
+
 # Data files (keep structure but ignore content)
 data/brain_model.pkl
 data/players.db
