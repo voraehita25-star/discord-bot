@@ -916,15 +916,54 @@ async function startBot(): Promise<void> {
     try {
         setBotControlBusy(true);
         showToast('Starting bot...', { type: 'info', duration: 10000 });
-        const result = await invoke<string>('start_bot');
-        showToast(result, { type: 'success' });
-        dataCache.invalidate('status');
-        updateStatus();
+        // Backend now returns immediately after Command::spawn (~50ms) instead
+        // of holding the lock for up to 10s waiting on bot.pid. We pick up the
+        // Running transition ourselves with a tight 200ms poll below — total
+        // perceived latency on the happy path drops from ~1s to ~250ms.
+        await invoke<string>('start_bot');
+        await waitForRunning(/* timeoutMs */ 15000, /* intervalMs */ 200, 'started');
     } catch (error) {
         showToast(String(error), { type: 'error' });
     } finally {
         setBotControlBusy(false);
+        dataCache.invalidate('status');
+        updateStatus();
     }
+}
+
+/**
+ * Tight-poll get_status until is_running flips to ``expect`` (true → bot
+ * appeared, false → bot disappeared). Used by start/stop/restart so the
+ * UI surfaces the running/stopped transition the moment it actually
+ * happens instead of waiting for the next regular refresh tick. Caller
+ * is responsible for setBotControlBusy(true/false); we only emit the
+ * outcome toast and refresh the status badge once.
+ */
+async function waitForRunning(
+    timeoutMs: number,
+    intervalMs: number,
+    mode: 'started' | 'stopped',
+): Promise<void> {
+    const startTime = performance.now();
+    const want = mode === 'started';
+    while (performance.now() - startTime < timeoutMs) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+        dataCache.invalidate('status');
+        try {
+            const status = await invoke<BotStatus>('get_status');
+            if (Boolean(status?.is_running) === want) {
+                showToast(want ? 'Bot started' : 'Bot stopped', { type: 'success' });
+                return;
+            }
+        } catch {
+            // get_status returns Err("busy") while a command holds the lock.
+            // Just wait for the next tick — the lock releases quickly.
+        }
+    }
+    showToast(
+        want ? 'Bot start timed out — check logs' : 'Bot still running after stop — check logs',
+        { type: 'warning' },
+    );
 }
 
 async function stopBot(): Promise<void> {

@@ -101,6 +101,24 @@ _CLAUDE_CLI_WORKDIR = Path(__file__).resolve().parents[3] / "data" / "claude_cli
 # files in the workdir as project state).
 _SESSIONS_FILE = Path(__file__).resolve().parents[3] / "data" / "claude_cli_sessions.json"
 
+# Empty MCP config used with `--strict-mcp-config` to suppress every
+# globally-enabled MCP server / plugin-bundled MCP for dashboard chats.
+# Without this, the user's `~/.claude/settings.json` enabledPlugins
+# (serena, playwright, chrome-devtools-mcp, …) all spawn alongside every
+# turn — Serena in particular pops a web dashboard window each time,
+# which is unwanted noise in the dashboard's chat-with-AI use case.
+# We materialise the file lazily on first spawn so it lands next to the
+# rest of the CLI sidecar state.
+_EMPTY_MCP_CONFIG_FILE = Path(__file__).resolve().parents[3] / "data" / "claude_cli_empty_mcp.json"
+
+
+def _ensure_empty_mcp_config() -> Path:
+    """Write the empty MCP config if it doesn't exist yet, return its path."""
+    if not _EMPTY_MCP_CONFIG_FILE.exists():
+        _EMPTY_MCP_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _EMPTY_MCP_CONFIG_FILE.write_text('{"mcpServers": {}}', encoding="utf-8")
+    return _EMPTY_MCP_CONFIG_FILE
+
 
 def _encode_claude_project_dirname(path: Path) -> str:
     """Replicate Claude Code's path encoding for its session-log folder.
@@ -819,6 +837,15 @@ def _build_claude_argv(
         "--include-partial-messages",
         "--model",
         CLAUDE_MODEL,
+        # Suppress every globally-enabled MCP / plugin-bundled MCP — the
+        # user's enabledPlugins (serena, playwright, chrome-devtools-mcp,
+        # …) would otherwise spawn alongside this subprocess on every
+        # dashboard chat turn. Serena's web dashboard popping up was the
+        # original symptom that surfaced this. Empty config + strict mode
+        # = "use ONLY what I pass, ignore user/project/plugin sources."
+        "--mcp-config",
+        str(_ensure_empty_mcp_config()),
+        "--strict-mcp-config",
     ]
     if enable_thinking:
         argv.extend(["--effort", "max", "--betas", "interleaved-thinking"])

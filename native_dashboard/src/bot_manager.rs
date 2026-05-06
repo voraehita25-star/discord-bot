@@ -36,6 +36,11 @@ pub struct BotStatus {
 
 pub struct BotManager {
     base_path: PathBuf,
+    /// Process snapshot used by every is_running / get_status / orphan-kill
+    /// path. ⚠️ NEVER call `sys.refresh_processes(...)` directly on this —
+    /// always go through `Self::refresh_processes_with_cmd`. The plain
+    /// `refresh_processes` does NOT populate `process.cmd()` in sysinfo
+    /// 0.38, which silently breaks our PID-reuse defence (see helper doc).
     sys: System,
     python_cmd: String,
     /// Held Child handles so we can `wait()` on stop and avoid leaking
@@ -48,7 +53,7 @@ pub struct BotManager {
 impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
         let mut sys = System::new();
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        Self::refresh_processes_with_cmd(&mut sys);
         // Use PYTHON_CMD env var, or .venv/Scripts/python.exe if it exists, or "python"
         let python_cmd = std::env::var("PYTHON_CMD")
             .ok()
@@ -109,6 +114,50 @@ impl BotManager {
         self.base_path.join("bot.pid")
     }
 
+    /// **The only correct way to refresh processes in this module.**
+    ///
+    /// ## Why this exists (read before "simplifying"):
+    ///
+    /// `sysinfo::System::refresh_processes(ProcessesToUpdate::All, true)` —
+    /// the obvious one-liner you'd reach for — silently does NOT populate
+    /// `process.cmd()` in sysinfo 0.38. Its default `ProcessRefreshKind`
+    /// includes memory/cpu/exe/disk_usage/tasks but omits `cmd`.
+    ///
+    /// Every "is the bot still running?" path in this file relies on
+    /// inspecting `process.cmd()` to verify the cmdline contains
+    /// `bot.py` + `base_path` — this is our defence against Windows PID
+    /// reuse, where a recycled PID could otherwise be reported as our
+    /// bot. If `cmd()` returns the empty slice (which it does without
+    /// `with_cmd()`), the check fails *closed*: `is_running` returns
+    /// false, the dashboard shows "Bot starting... (taking longer than
+    /// usual)" forever, and the bot looks dead in the UI even when it's
+    /// running fine.
+    ///
+    /// This was a real regression introduced in PR #75 (audit-fixes,
+    /// 2026-05-06) when the cmdline check was added to is_running but
+    /// the matching refresh-kind change was not.
+    ///
+    /// ## Rules:
+    /// - Call `Self::refresh_processes_with_cmd(&mut self.sys)` (or
+    ///   `&mut sys` in the constructor) before any code that reads
+    ///   `process.cmd()`, `process.memory()`, or relies on the live
+    ///   process list reflecting reality.
+    /// - Do NOT call `self.sys.refresh_processes(...)` directly.
+    /// - Do NOT switch the `with_cmd` arg to `OnlyIfNotSet` — Windows
+    ///   PID reuse can hand the same PID to a different process between
+    ///   refreshes; we want the cmdline re-read every time.
+    fn refresh_processes_with_cmd(sys: &mut System) {
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing()
+                .with_memory()
+                .with_cpu()
+                .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+                .with_cmd(sysinfo::UpdateKind::Always),
+        );
+    }
+
     fn dev_watcher_pid_file(&self) -> PathBuf {
         self.base_path.join("dev_watcher.pid")
     }
@@ -124,7 +173,7 @@ impl BotManager {
     #[allow(dead_code)]
     fn is_dev_watcher_running(&mut self) -> bool {
         if let Some(pid) = self.get_dev_watcher_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
         } else {
             false
@@ -139,7 +188,7 @@ impl BotManager {
             // unrelated foreground program (browser, IDE, etc.). The
             // production stop() does the same name check; this path used
             // to skip it.
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             let is_python = self
                 .sys
                 .process(sysinfo::Pid::from_u32(pid))
@@ -167,7 +216,7 @@ impl BotManager {
     /// Scoped to THIS dashboard's project tree (self.base_path) so we never
     /// kill someone else's unrelated bot.py running on the same machine.
     fn kill_orphan_bot_processes(&mut self) {
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        Self::refresh_processes_with_cmd(&mut self.sys);
 
         // Ignore script file basenames (not substring-match on joined cmdline —
         // a user path like C:\Users\test_user\BOT\bot.py would falsely trip "test_").
@@ -322,7 +371,7 @@ impl BotManager {
         
         // Check if process exists and is not zombie
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 // Check memory > 0 indicates process is alive
                 return process.memory() > 0;
@@ -356,7 +405,7 @@ impl BotManager {
 
     pub fn is_running(&mut self) -> bool {
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 // PID alone is not enough — Windows recycles PIDs aggressively.
                 // Verify the cmdline references both bot.py AND our base_path
@@ -422,7 +471,7 @@ impl BotManager {
 
     pub fn get_memory_mb(&mut self) -> f64 {
         if let Some(pid) = self.get_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
                 return process.memory() as f64 / 1024.0 / 1024.0;
             }
@@ -433,7 +482,7 @@ impl BotManager {
     pub fn get_mode(&mut self) -> String {
         // Check if dev_watcher.pid exists and the watcher is running
         if let Some(pid) = self.get_dev_watcher_pid() {
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             if self.sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
                 return "Dev".to_string();
             }
@@ -447,7 +496,7 @@ impl BotManager {
 
     pub fn get_status(&mut self) -> BotStatus {
         // Single process refresh for all status fields (instead of 3-5 separate refreshes)
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        Self::refresh_processes_with_cmd(&mut self.sys);
 
         let pid = self.get_pid();
         // Mirror is_running()'s cmdline verification — pure PID existence is
@@ -524,37 +573,18 @@ impl BotManager {
         // Keep the Child handle so we can wait() on it during stop(). Dropping
         // it without waiting leaves a process descriptor on POSIX (zombie) and
         // leaks the Win32 process handle until our own dashboard exits.
-        let spawned_pid = child.id();
         // Reap any previously-tracked Child that already exited so the slot is empty.
         self.reap_finished_children();
         self.child = Some(child);
 
-        // Wait for bot to fully start (up to 10 seconds)
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            
-            // Check if PID file exists and bot is running
-            if self.pid_file().exists() && self.is_running() {
-                return Ok("Bot started successfully".to_string());
-            }
-            
-            // Check if spawned process died
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-            if self.sys.process(sysinfo::Pid::from_u32(spawned_pid)).is_none() {
-                // Process died - but check if bot.pid was written (bot may have restarted itself)
-                if self.is_running() {
-                    return Ok("Bot started successfully".to_string());
-                }
-                return Err("Bot process exited - check logs".to_string());
-            }
-        }
-
-        // After 10 seconds, check final state
-        if self.is_running() {
-            Ok("Bot started successfully".to_string())
-        } else {
-            Ok("Bot starting... (taking longer than usual)".to_string())
-        }
+        // Return as soon as spawn() succeeds. The previous design held the
+        // BotManager lock for up to 10s waiting for bot.py to write bot.pid,
+        // which made the UI freeze for ~1s on every Start click. The frontend
+        // now tight-polls `get_status` after the start invocation returns and
+        // surfaces the "Running" / failure transition itself — that path
+        // detects success within 100–300ms typical and reports failures via
+        // the same status poll without us holding the lock open.
+        Ok("Bot starting...".to_string())
     }
 
     pub fn start_dev(&mut self) -> Result<String, String> {
@@ -618,7 +648,7 @@ impl BotManager {
 
         // Verify PID still belongs to a Python/bot process before killing
         // to prevent killing an unrelated process after PID reuse
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        Self::refresh_processes_with_cmd(&mut self.sys);
         if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
             let name = process.name().to_string_lossy().to_lowercase();
             if !name.contains("python") {
@@ -643,7 +673,7 @@ impl BotManager {
         // Wait up to 3 seconds for exit
         for _ in 0..6 {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            Self::refresh_processes_with_cmd(&mut self.sys);
             if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
                 break;
             }
@@ -673,7 +703,7 @@ impl BotManager {
             if let Some(pid) = old_pid {
                 for _ in 0..10 {
                     std::thread::sleep(std::time::Duration::from_millis(500));
-                    self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                    Self::refresh_processes_with_cmd(&mut self.sys);
                     if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
                         break;
                     }

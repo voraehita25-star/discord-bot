@@ -5,7 +5,9 @@
 import { DEFAULT_AI_AVATAR } from './faust_avatar.js';
 // Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
 export const invoke = (cmd, args) => {
-    if (window.__TAURI__?.core?.invoke) {
+    // Guard `typeof window` — vitest can fire setTimeout callbacks after
+    // the JSDOM environment has been torn down, leaving `window` undefined.
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
         return window.__TAURI__.core.invoke(cmd, args);
     }
     console.warn('Tauri not available, using mock');
