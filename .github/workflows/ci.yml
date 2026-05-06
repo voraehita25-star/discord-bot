@@ -29,6 +29,12 @@ jobs:
         cache: 'pip'
 
     - name: Run pre-commit hooks
+      # Skip the local pytest-fast hook here — its `language: system` config
+      # depends on pytest being installed in the runner's Python env, which
+      # the pre-commit action doesn't do. The dedicated `python-test` job
+      # runs the full test suite with proper deps already.
+      env:
+        SKIP: pytest-fast
       uses: pre-commit/action@v3.0.1
 
   # ============================================================
