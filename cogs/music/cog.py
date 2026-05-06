@@ -1295,7 +1295,7 @@ class Music(commands.Cog):
 
         try:
             await channel.connect(timeout=30.0)
-        except (asyncio.TimeoutError, discord.ClientException) as e:
+        except (TimeoutError, discord.ClientException) as e:
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
             )
@@ -1365,7 +1365,7 @@ class Music(commands.Cog):
         if ctx.voice_client is None:
             try:
                 await channel.connect(timeout=30.0)
-            except (asyncio.TimeoutError, discord.ClientException) as e:
+            except (TimeoutError, discord.ClientException) as e:
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} เชื่อมต่อไม่สำเร็จ: {e}", color=Colors.ERROR
                 )
