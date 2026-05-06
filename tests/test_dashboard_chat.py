@@ -650,7 +650,7 @@ class TestErrorBranches:
     async def test_unrestricted_mode(self, ws):
         """Test unrestricted mode injection uses per-preset framing."""
         try:
-            import cogs.ai_core.data.roleplay_data  # noqa: F401
+            import cogs.ai_core.data.roleplay_data
         except ImportError:
             pytest.skip("roleplay_data not available — unrestricted preset depends on it")
 
