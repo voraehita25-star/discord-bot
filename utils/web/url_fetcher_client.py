@@ -345,9 +345,7 @@ class URLFetcherClient:
             return service_response  # type: ignore[no-any-return]
         except Exception as e:
             return {
-                "results": (
-                    [{"url": u, "error": str(e)} for u in safe_urls] + blocked_results
-                ),
+                "results": ([{"url": u, "error": str(e)} for u in safe_urls] + blocked_results),
                 "error_count": len(urls),
                 "success_count": 0,
             }
