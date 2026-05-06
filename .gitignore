@@ -101,6 +101,7 @@ history_*.json
 data/db_export/
 data/backups/
 data/claude_cli_workdir/
+data/tmp/
 
 # Assets (keep in repo)
 # assets/ directory is tracked
