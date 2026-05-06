@@ -37,10 +37,8 @@ def _looks_like_ffmpeg(p: Path) -> bool:
         return False
     if "ffmpeg" not in p.name.lower():
         return False
-    if not os.access(p, os.X_OK):
-        # On Windows, executable bit is implied by .exe; os.access works.
-        return False
-    return True
+    # On Windows, executable bit is implied by .exe; os.access works.
+    return os.access(p, os.X_OK)
 
 
 def get_ffmpeg_executable() -> str:
