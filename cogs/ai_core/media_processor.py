@@ -32,7 +32,7 @@ try:
     IMAGEIO_AVAILABLE = True
 except ImportError:
     IMAGEIO_AVAILABLE = False
-    iio = None  # type: ignore
+    iio = None
 
 
 logger = logging.getLogger(__name__)

@@ -53,9 +53,9 @@ try:
 
     DOCX_DISABLED = False
 except ImportError:
-    _defused_lxml = None  # type: ignore[assignment]
-    _defused_etree = None  # type: ignore[assignment]
-    EntitiesForbidden = Exception  # type: ignore[assignment, misc]
+    _defused_lxml = None
+    _defused_etree = None
+    EntitiesForbidden = Exception
     DOCX_DISABLED = True
     logger.critical(
         "defusedxml not installed — DOCX extraction is DISABLED to avoid XXE risk. "

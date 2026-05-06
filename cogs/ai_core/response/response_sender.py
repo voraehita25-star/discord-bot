@@ -16,7 +16,7 @@ import discord
 
 # Import constants
 try:
-    from ..data.constants import (  # type: ignore[attr-defined]
+    from ..data.constants import (
         MAX_DISCORD_LENGTH,
         WEBHOOK_SEND_TIMEOUT,
     )
