@@ -269,7 +269,7 @@ class RequestDeduplicator:
             # Find content after the status block
             status_end = content.rfind("\n\n")
             if status_end != -1:
-                content = content[status_end + 2:]
+                content = content[status_end + 2 :]
 
         # Strip command prefix (!chat, !c, etc.)
         content = content.lstrip()
@@ -280,9 +280,9 @@ class RequestDeduplicator:
         # share a long common prefix don't collide into a single dedup
         # key. errors="replace" guards against malformed surrogates that
         # would otherwise crash .encode() on attacker-controlled input.
-        msg_hash = hashlib.sha256(
-            (content or "").encode("utf-8", errors="replace")
-        ).hexdigest()[:16]
+        msg_hash = hashlib.sha256((content or "").encode("utf-8", errors="replace")).hexdigest()[
+            :16
+        ]
         return f"{channel_id}:{user_id}:{msg_hash}"
 
 

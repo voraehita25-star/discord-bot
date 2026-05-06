@@ -186,7 +186,9 @@ class Database:
         try:
             # Limit concurrent exports to prevent task proliferation
             if len(self._export_tasks) >= 20:
-                logger.warning("Too many pending export tasks (%d), skipping export", len(self._export_tasks))
+                logger.warning(
+                    "Too many pending export tasks (%d), skipping export", len(self._export_tasks)
+                )
                 self._export_pending_keys.discard(pending_key)
                 return
             task = asyncio.create_task(do_export())
@@ -227,7 +229,7 @@ class Database:
         """Export a single dashboard conversation to JSON file."""
         try:
             # Validate conversation_id to prevent path traversal
-            if not re.match(r'^[a-zA-Z0-9_\-]+$', conversation_id):
+            if not re.match(r"^[a-zA-Z0-9_\-]+$", conversation_id):
                 logger.warning("Invalid conversation_id rejected: %s", conversation_id[:50])
                 return
 
@@ -278,13 +280,13 @@ class Database:
         # Always run final export on shutdown to ensure data safety
         has_pending = (
             self._export_pending
-            or (hasattr(self, '_export_pending_keys') and self._export_pending_keys)
+            or (hasattr(self, "_export_pending_keys") and self._export_pending_keys)
             or self._dashboard_export_pending
         )
         if has_pending:
             logger.info("💾 Flushing pending database exports...")
             self._export_pending = False
-            if hasattr(self, '_export_pending_keys'):
+            if hasattr(self, "_export_pending_keys"):
                 self._export_pending_keys.clear()
             # Drain any remaining dashboard export keys synchronously so
             # the conversations they pointed at don't lose their final
@@ -296,7 +298,8 @@ class Database:
                     await self.export_dashboard_conversation_to_json(conv_id)
                 except Exception:
                     logger.exception(
-                        "Failed final dashboard export for conv %s", conv_id,
+                        "Failed final dashboard export for conv %s",
+                        conv_id,
                     )
 
         # Always export on shutdown for data safety
@@ -670,7 +673,9 @@ class Database:
 
             # Add ai_provider column if not exists (migration)
             try:
-                await conn.execute("ALTER TABLE dashboard_conversations ADD COLUMN ai_provider TEXT NOT NULL DEFAULT 'claude'")
+                await conn.execute(
+                    "ALTER TABLE dashboard_conversations ADD COLUMN ai_provider TEXT NOT NULL DEFAULT 'claude'"
+                )
             except aiosqlite.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     logger.warning("Unexpected error adding 'ai_provider' column: %s", e)
@@ -847,6 +852,7 @@ class Database:
                     get_current_version,
                     run_migrations,
                 )
+
                 current_ver = await get_current_version(conn)
                 pending = [(v, p) for v, p in discover_migrations() if v > current_ver]
                 if pending:
@@ -859,10 +865,13 @@ class Database:
                     )
                     backup_path = backup_dir / backup_name
                     import shutil
+
                     shutil.copy2(self.db_path, backup_path)
                     logger.info("💾 DB backup created before migration: %s", backup_name)
                     # Keep only last 5 backups
-                    backups = sorted(backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime)
+                    backups = sorted(
+                        backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime
+                    )
                     for old_backup in backups[:-5]:
                         old_backup.unlink(missing_ok=True)
                 applied = await run_migrations(conn)
@@ -982,6 +991,7 @@ class Database:
         except TimeoutError:
             try:
                 from utils.monitoring.metrics import metrics
+
                 metrics.increment_db_pool_timeouts()
             except ImportError:
                 pass
@@ -1005,7 +1015,9 @@ class Database:
                         await conn.close()
                     except Exception:
                         pass
-                    self._connection_count -= 1  # Fix: decrement counter for closed stale connection
+                    self._connection_count -= (
+                        1  # Fix: decrement counter for closed stale connection
+                    )
                     conn = None
             except asyncio.QueueEmpty:
                 pass
@@ -1084,6 +1096,7 @@ class Database:
             # releases).
             try:
                 from utils.monitoring.metrics import metrics
+
                 if metrics.enabled:
                     available = max(0, 32 - self._connection_count)
                     metrics.set_db_pool(32, available)
@@ -1247,7 +1260,9 @@ class Database:
                 released += 1
             logger.info(
                 "Replenished existing pool semaphore (target=%d, in_flight=%d, released=%d)",
-                POOL_TARGET, in_flight, released,
+                POOL_TARGET,
+                in_flight,
+                released,
             )
         elif self._connection_count == 0:
             self._pool_semaphore = asyncio.BoundedSemaphore(32)
@@ -1444,15 +1459,17 @@ class Database:
                 rows_to_insert = []
                 for msg in channel_messages:
                     msg["channel_id"] = channel_id
-                    rows_to_insert.append((
-                        channel_id,
-                        msg.get("user_id"),
-                        msg.get("role"),
-                        msg.get("content"),
-                        msg.get("message_id"),
-                        msg.get("timestamp"),
-                        next_local_id,
-                    ))
+                    rows_to_insert.append(
+                        (
+                            channel_id,
+                            msg.get("user_id"),
+                            msg.get("role"),
+                            msg.get("content"),
+                            msg.get("message_id"),
+                            msg.get("timestamp"),
+                            next_local_id,
+                        )
+                    )
                     next_local_id += 1
 
                 await conn.executemany(
@@ -1655,7 +1672,7 @@ class Database:
             # Defense-in-depth: validate column names are simple identifiers
             # even though they're already filtered by allowed_columns
             for col in safe_settings:
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", col):
                     logger.error("Invalid column name rejected in save_guild_settings: %s", col)
                     return
             columns = ["guild_id", *list(safe_settings.keys())]
@@ -1959,7 +1976,7 @@ class Database:
             # Defense-in-depth: validate column names are simple identifiers
             # even though they're already filtered by allowed_columns
             for col in safe_updates:
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", col):
                     logger.error("Invalid column name rejected: %s", col)
                     return False
             set_clause = ", ".join([f"[{k}] = ?" for k in safe_updates])
@@ -1992,7 +2009,7 @@ class Database:
     async def delete_dashboard_conversation(self, conversation_id: str) -> bool:
         """Delete a dashboard conversation and all its messages."""
         # Security: Validate conversation_id to prevent path traversal
-        if not re.match(r'^[a-zA-Z0-9_-]+$', conversation_id):
+        if not re.match(r"^[a-zA-Z0-9_-]+$", conversation_id):
             logger.warning("Rejected invalid conversation_id: %s", conversation_id[:50])
             return False
 
@@ -2084,6 +2101,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         """Get messages for a dashboard conversation."""
         import json
+
         async with self.get_connection() as conn:
             if limit:
                 cursor = await conn.execute(
@@ -2121,6 +2139,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         """Get the most recent N messages for a dashboard conversation."""
         import json
+
         async with self.get_connection() as conn:
             # Sub-select last N by DESC, then re-order ASC for display
             cursor = await conn.execute(
@@ -2152,6 +2171,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         """Get older messages before a given message ID (for pagination)."""
         import json
+
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 """SELECT * FROM (
@@ -2198,7 +2218,11 @@ class Database:
             return await cursor.fetchone() is not None
 
     async def update_dashboard_message(
-        self, message_id: int, content: str, *, expected_conversation_id: str | None = None,
+        self,
+        message_id: int,
+        content: str,
+        *,
+        expected_conversation_id: str | None = None,
     ) -> bool:
         """Update a dashboard message's content. Returns True if updated.
 
@@ -2220,10 +2244,12 @@ class Database:
                 )
             if cursor.rowcount > 0:
                 # Update conversation's updated_at (UTC via CURRENT_TIMESTAMP for consistency)
-                row = await (await conn.execute(
-                    "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
-                    (message_id,),
-                )).fetchone()
+                row = await (
+                    await conn.execute(
+                        "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                        (message_id,),
+                    )
+                ).fetchone()
                 if row:
                     await conn.execute(
                         "UPDATE dashboard_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -2309,10 +2335,12 @@ class Database:
         """Delete a single dashboard message. Returns the conversation_id if deleted."""
         async with self.get_write_connection() as conn:
             # Get conversation_id before deleting
-            row = await (await conn.execute(
-                "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
-                (message_id,),
-            )).fetchone()
+            row = await (
+                await conn.execute(
+                    "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                    (message_id,),
+                )
+            ).fetchone()
             if not row:
                 return None
             conv_id = row[0]
@@ -2368,6 +2396,7 @@ class Database:
 
         if export_format == "html":
             from html import escape as _esc
+
             title = _esc(conversation.get("title") or "Untitled Conversation")
             html_parts = [
                 "<!DOCTYPE html>",
@@ -2388,7 +2417,9 @@ class Database:
                 role = msg["role"]
                 role_label = "User" if role == "user" else "Assistant"
                 html_parts.append(f"<div class='msg {role}'>")
-                html_parts.append(f"<div class='meta'><strong>{role_label}</strong> · {_esc(str(msg.get('created_at') or ''))}</div>")
+                html_parts.append(
+                    f"<div class='meta'><strong>{role_label}</strong> · {_esc(str(msg.get('created_at') or ''))}</div>"
+                )
                 html_parts.append(f"<div>{_esc(msg['content']).replace(chr(10), '<br>')}</div>")
                 html_parts.append("</div>")
             html_parts.append("</body></html>")
@@ -2450,7 +2481,8 @@ class Database:
                 )
                 if safe_id.upper().split(".")[0] in _WINDOWS_RESERVED:
                     logger.warning(
-                        "Skipping reserved-filename conv_id: %s", conv_id,
+                        "Skipping reserved-filename conv_id: %s",
+                        conv_id,
                     )
                     continue
                 output_file = (dashboard_export_dir / f"{safe_id}.json").resolve()
@@ -2461,10 +2493,15 @@ class Database:
                 # turns the JSON serialise + disk write can stall the loop
                 # for hundreds of milliseconds per conversation.
                 serialised = json.dumps(
-                    export_data, ensure_ascii=False, indent=2, default=str,
+                    export_data,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
                 )
                 await asyncio.to_thread(
-                    output_file.write_text, serialised, encoding="utf-8",
+                    output_file.write_text,
+                    serialised,
+                    encoding="utf-8",
                 )
 
             logger.info("📤 Exported %d dashboard conversations", len(conversations))
@@ -2546,7 +2583,14 @@ class Database:
                 """INSERT INTO dashboard_document_memories
                    (filename, file_kind, extracted_text, char_count, page_count, source_conversation_id)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (filename, file_kind, extracted_text, char_count, page_count, source_conversation_id),
+                (
+                    filename,
+                    file_kind,
+                    extracted_text,
+                    char_count,
+                    page_count,
+                    source_conversation_id,
+                ),
             )
             rowid = cursor.lastrowid
             return int(rowid) if rowid is not None else 0
@@ -2680,9 +2724,7 @@ class Database:
     async def count_document_memories(self) -> int:
         """Fast count for limit enforcement (caps total document memories)."""
         async with self.get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM dashboard_document_memories"
-            )
+            cursor = await conn.execute("SELECT COUNT(*) FROM dashboard_document_memories")
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
 
@@ -2809,7 +2851,10 @@ class Database:
                             if data:
                                 output_file = ai_history_dir / f"{channel_id}.json"
                                 serialised = json.dumps(
-                                    data, ensure_ascii=False, indent=2, default=str,
+                                    data,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                    default=str,
                                 )
                                 await asyncio.to_thread(
                                     output_file.write_text,
@@ -2824,6 +2869,7 @@ class Database:
                     # Normal tables - export with validated table name
                     # Use a whitelist of known schema tables for defense-in-depth
                     from utils.database import KNOWN_TABLES
+
                     if table not in KNOWN_TABLES:
                         logger.warning("Skipping unknown table in export: %s", table)
                         continue
@@ -2831,9 +2877,7 @@ class Database:
                     # whitelist is later edited to include something with
                     # a stray quote/space, this assertion blocks the
                     # f-string interpolation from becoming an injection.
-                    assert table.replace("_", "").isalnum(), (
-                        f"Invalid table name {table!r}"
-                    )
+                    assert table.replace("_", "").isalnum(), f"Invalid table name {table!r}"
                     cursor = await conn.execute(f"SELECT * FROM [{table}]")  # nosec B608  # asserted alnum, bracket-quoted
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
@@ -2841,15 +2885,22 @@ class Database:
 
                     output_file = EXPORT_DIR / f"{table}.json"
                     serialised = json.dumps(
-                        data, ensure_ascii=False, indent=2, default=str,
+                        data,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
                     )
                     await asyncio.to_thread(
-                        output_file.write_text, serialised, encoding="utf-8",
+                        output_file.write_text,
+                        serialised,
+                        encoding="utf-8",
                     )
 
                 summary["exported_at"] = datetime.now(timezone.utc).isoformat()
                 summary_serialised = json.dumps(
-                    summary, ensure_ascii=False, indent=2,
+                    summary,
+                    ensure_ascii=False,
+                    indent=2,
                 )
                 await asyncio.to_thread(
                     (EXPORT_DIR / "_summary.json").write_text,
@@ -2894,7 +2945,9 @@ class Database:
                     # uses to_thread for the same reason.
                     payload = json.dumps(data, ensure_ascii=False, indent=2, default=str)
                     await asyncio.to_thread(
-                        output_file.write_text, payload, encoding="utf-8",
+                        output_file.write_text,
+                        payload,
+                        encoding="utf-8",
                     )
 
                     logger.debug("📤 Exported %d messages for channel %d", len(data), channel_id)

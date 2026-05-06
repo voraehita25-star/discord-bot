@@ -99,9 +99,7 @@ class CharacterStateTracker:
             if len(self._states) >= self.MAX_CHANNELS:
                 # Remove oldest channel by oldest access time (LRU)
                 # Filter out channels with empty states to avoid min() on empty sequence
-                channels_with_states = [
-                    cid for cid in self._states if self._states[cid]
-                ]
+                channels_with_states = [cid for cid in self._states if self._states[cid]]
                 if channels_with_states:
                     oldest_channel = min(
                         channels_with_states,
@@ -200,7 +198,8 @@ class CharacterStateTracker:
             )
             if location_match:
                 state_updates["location"] = _scrub_state_value(
-                    location_match.group(1), max_len=80,
+                    location_match.group(1),
+                    max_len=80,
                 )
 
             # Activity detection — same anchor + length tightening.
@@ -210,7 +209,8 @@ class CharacterStateTracker:
             )
             if activity_match:
                 state_updates["activity"] = _scrub_state_value(
-                    activity_match.group(1), max_len=120,
+                    activity_match.group(1),
+                    max_len=120,
                 )
 
             # Emotion detection
@@ -245,7 +245,8 @@ class CharacterStateTracker:
             action_match = re.search(r">\s*([^<\n]{10,150})", content)
             if action_match:
                 state_updates["last_action"] = _scrub_state_value(
-                    action_match.group(1), max_len=200,
+                    action_match.group(1),
+                    max_len=200,
                 )
 
             # Update state

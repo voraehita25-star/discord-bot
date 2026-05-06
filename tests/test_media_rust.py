@@ -48,6 +48,7 @@ class TestMediaProcessorWrapperResize:
 
         # Create a small test image
         from PIL import Image
+
         img = Image.new("RGB", (100, 100), color="red")
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
@@ -69,6 +70,7 @@ class TestMediaProcessorWrapperResize:
 
         # Create a large test image
         from PIL import Image
+
         img = Image.new("RGB", (2000, 1000), color="blue")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
@@ -93,6 +95,7 @@ class TestMediaProcessorWrapperThumbnail:
 
         # Create a test image
         from PIL import Image
+
         img = Image.new("RGB", (500, 500), color="green")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
@@ -117,6 +120,7 @@ class TestMediaProcessorWrapperIsAnimated:
 
         # Create a static image
         from PIL import Image
+
         img = Image.new("RGB", (100, 100), color="red")
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
@@ -149,6 +153,7 @@ class TestMediaProcessorWrapperGetDimensions:
 
         # Create a test image
         from PIL import Image
+
         img = Image.new("RGB", (300, 200), color="blue")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
@@ -236,6 +241,7 @@ class TestStandaloneFunctions:
         from PIL import Image
 
         from utils.media.media_rust import resize_image
+
         img = Image.new("RGB", (200, 200), color="red")
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
@@ -254,6 +260,7 @@ class TestStandaloneFunctions:
         from PIL import Image
 
         from utils.media.media_rust import is_animated_gif
+
         img = Image.new("RGB", (100, 100), color="blue")
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")

@@ -79,7 +79,9 @@ def discover_migrations() -> list[tuple[int, Path]]:
             continue
         # Prefer .sqlite.sql over .sql when both exist for the same version.
         existing = seen_versions.get(version)
-        if existing is None or (f.name.endswith(".sqlite.sql") and not existing.name.endswith(".sqlite.sql")):
+        if existing is None or (
+            f.name.endswith(".sqlite.sql") and not existing.name.endswith(".sqlite.sql")
+        ):
             seen_versions[version] = f
 
     return sorted(seen_versions.items(), key=lambda x: x[0])
@@ -125,7 +127,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                     if end == -1:
                         current.append(line)
                         continue
-                    stripped_line = stripped_line[end + 2:]
+                    stripped_line = stripped_line[end + 2 :]
                     in_block_comment = False
                 # Single-line comment
                 comment_pos = stripped_line.find("--")
@@ -140,7 +142,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                         in_block_comment = True
                         stripped_line = stripped_line[:start]
                     else:
-                        stripped_line = stripped_line[:start] + stripped_line[start + end + 2:]
+                        stripped_line = stripped_line[:start] + stripped_line[start + end + 2 :]
 
                 current.append(line)
                 candidate = "\n".join(current).strip()
@@ -155,7 +157,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                         e = s.find("*/")
                         if e == -1:
                             continue
-                        s = s[e + 2:]
+                        s = s[e + 2 :]
                         local_in_block = False
                     cp = s.find("--")
                     if cp != -1:
@@ -168,7 +170,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                             local_in_block = True
                             s = s[:bs]
                         else:
-                            s = s[:bs] + s[bs + be + 2:]
+                            s = s[:bs] + s[bs + be + 2 :]
                     check_lines.append(s)
                 check_candidate = "\n".join(check_lines).strip()
                 if check_candidate and sqlite3.complete_statement(check_candidate):

@@ -43,8 +43,7 @@ def _kill_authorized(authorized: bool) -> tuple[bool, str]:
     if env_val in ("1", "true", "yes", "on"):
         return True, f"{_KILL_AUTH_ENV_VAR}={env_val}"
     return False, (
-        f"Refusing bulk-kill: pass authorized=True or set "
-        f"{_KILL_AUTH_ENV_VAR}=1 to confirm."
+        f"Refusing bulk-kill: pass authorized=True or set {_KILL_AUTH_ENV_VAR}=1 to confirm."
     )
 
 
@@ -467,8 +466,7 @@ class SelfHealer:
             launcher_pids.add(parent.pid)
             self.log(
                 "info",
-                f"Found launcher: {parent_name} (PID {parent.pid}) "
-                f"for PID {proc_entry['pid']}",
+                f"Found launcher: {parent_name} (PID {parent.pid}) for PID {proc_entry['pid']}",
             )
 
         for bot in bots:

@@ -223,8 +223,7 @@ class SensitiveDataFilter(logging.Filter):
                 }
             elif isinstance(record.args, tuple):
                 record.args = tuple(
-                    _redact_sensitive(str(a)) if isinstance(a, str) else a
-                    for a in record.args
+                    _redact_sensitive(str(a)) if isinstance(a, str) else a for a in record.args
                 )
         if isinstance(record.msg, str):
             record.msg = _redact_sensitive(record.msg)

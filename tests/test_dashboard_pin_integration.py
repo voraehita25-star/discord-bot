@@ -64,6 +64,7 @@ async def fresh_db():
         instance._export_pending_keys = set()
         instance._dashboard_export_pending = set()
         import asyncio
+
         instance._export_lock = asyncio.Lock()
         instance._write_lock = None
 
@@ -140,13 +141,17 @@ async def test_pinned_partial_index_present(fresh_db):
 # Integration tests for #20b (liked) and #22 (conversation tags)
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_like_and_unlike_message_persists(fresh_db):
     db = fresh_db
     conv_id = "conv-like-test"
     await db.create_dashboard_conversation(
-        conv_id, title="Like test", role_preset="general",
-        system_instruction="", thinking_enabled=False,
+        conv_id,
+        title="Like test",
+        role_preset="general",
+        system_instruction="",
+        thinking_enabled=False,
     )
     msg_id = await db.save_dashboard_message(conv_id, "assistant", "a response")
 
@@ -167,8 +172,11 @@ async def test_conversation_tags_roundtrip(fresh_db):
     db = fresh_db
     conv_id = "conv-tag-test"
     await db.create_dashboard_conversation(
-        conv_id, title="Tag test", role_preset="general",
-        system_instruction="", thinking_enabled=False,
+        conv_id,
+        title="Tag test",
+        role_preset="general",
+        system_instruction="",
+        thinking_enabled=False,
     )
 
     # Starts with no tags.
@@ -198,8 +206,11 @@ async def test_tag_normalization_and_validation(fresh_db):
     db = fresh_db
     conv_id = "conv-tag-validate"
     await db.create_dashboard_conversation(
-        conv_id, title="x", role_preset="general",
-        system_instruction="", thinking_enabled=False,
+        conv_id,
+        title="x",
+        role_preset="general",
+        system_instruction="",
+        thinking_enabled=False,
     )
 
     # Whitespace stripped, case lowercased.
@@ -217,8 +228,11 @@ async def test_list_all_conversation_tags_counts(fresh_db):
     # Two conversations sharing one tag, one unique tag each.
     for cid, tags in [("c1", ["a", "b"]), ("c2", ["a", "c"])]:
         await db.create_dashboard_conversation(
-            cid, title=cid, role_preset="general",
-            system_instruction="", thinking_enabled=False,
+            cid,
+            title=cid,
+            role_preset="general",
+            system_instruction="",
+            thinking_enabled=False,
         )
         for t in tags:
             await db.add_conversation_tag(cid, t)
@@ -234,8 +248,11 @@ async def test_list_all_conversation_tags_counts(fresh_db):
 async def test_tags_cascade_delete_on_conversation_delete(fresh_db):
     db = fresh_db
     await db.create_dashboard_conversation(
-        "temp-conv", title="x", role_preset="general",
-        system_instruction="", thinking_enabled=False,
+        "temp-conv",
+        title="x",
+        role_preset="general",
+        system_instruction="",
+        thinking_enabled=False,
     )
     await db.add_conversation_tag("temp-conv", "cascades")
     assert await db.get_conversation_tags("temp-conv") == ["cascades"]
@@ -255,8 +272,11 @@ async def test_document_memories_cascade_delete_on_conversation_delete(fresh_db)
     """
     db = fresh_db
     await db.create_dashboard_conversation(
-        "doc-conv", title="x", role_preset="general",
-        system_instruction="", thinking_enabled=False,
+        "doc-conv",
+        title="x",
+        role_preset="general",
+        system_instruction="",
+        thinking_enabled=False,
     )
     await db.save_document_memory(
         filename="lore.txt",

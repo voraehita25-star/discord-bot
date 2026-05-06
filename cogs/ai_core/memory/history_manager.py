@@ -363,8 +363,8 @@ class HistoryManager:
 
         if current_tokens <= target_tokens:
             return list(history)  # Already within budget; return a copy so the
-                                 # caller can mutate it without surprising
-                                 # other callers that share the input list.
+            # caller can mutate it without surprising
+            # other callers that share the input list.
 
         self.logger.info("📊 Token trim needed: %d -> %d tokens", current_tokens, target_tokens)
 
@@ -379,7 +379,9 @@ class HistoryManager:
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
         # Pre-compute importance scores and build a min-heap for O(n log n) trimming
-        trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        trim_end = (
+            len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        )
         if trim_end > 0:
             # Build heap of (importance, original_index) for trimmable messages
             importance_heap = [
@@ -414,10 +416,7 @@ class HistoryManager:
             )
 
         # Build result excluding removed indices
-        working_history = [
-            msg for i, msg in enumerate(working_history)
-            if i not in removed_indices
-        ]
+        working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
 
         final_tokens = running_total
         self.logger.info(

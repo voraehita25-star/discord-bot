@@ -99,7 +99,7 @@ class AIDebug(commands.Cog):
             rag_stats = rag_system.get_stats()
             index_status = (
                 f"✅ {rag_stats['index_size']} vectors"
-                if rag_stats['index_built']
+                if rag_stats["index_built"]
                 else "❌ Not built"
             )
             rag_info = (
@@ -233,8 +233,8 @@ class AIDebug(commands.Cog):
         embed = discord.Embed(title="🔍 AI Request Trace", color=discord.Color.blue())
 
         # Basic info
-        thinking = '✅' if chat_data.get('thinking_enabled') else '❌'
-        streaming = '✅' if chat_data.get('streaming_enabled') else '❌'
+        thinking = "✅" if chat_data.get("thinking_enabled") else "❌"
+        streaming = "✅" if chat_data.get("streaming_enabled") else "❌"
         embed.add_field(
             name="📝 Session Info",
             value=(
@@ -255,8 +255,8 @@ class AIDebug(commands.Cog):
             embed.add_field(name="⏱️ Timing", value=f"```\n{timing_info}```", inline=True)
 
             # Tokens
-            input_tokens = last_trace.get('input_tokens', 'N/A')
-            output_tokens = last_trace.get('output_tokens', 'N/A')
+            input_tokens = last_trace.get("input_tokens", "N/A")
+            output_tokens = last_trace.get("output_tokens", "N/A")
             embed.add_field(
                 name="🔢 Tokens",
                 value=f"```\nInput: {input_tokens}\nOutput: {output_tokens}```",

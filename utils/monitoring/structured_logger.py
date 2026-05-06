@@ -192,6 +192,7 @@ class StructuredFormatter(logging.Formatter):
         # JSON log file unredacted — defeating the SensitiveDataFilter.
         try:
             from utils.monitoring.logger import _redact_sensitive
+
             output = _redact_sensitive(output)
         except Exception:  # pragma: no cover — never let logging crash
             pass
@@ -283,7 +284,15 @@ class StructuredLogger:
 
         try:
             # Only pass known LogContext fields; put the rest in 'extra'
-            known_fields = {"request_id", "correlation_id", "user_id", "channel_id", "guild_id", "command", "service"}
+            known_fields = {
+                "request_id",
+                "correlation_id",
+                "user_id",
+                "channel_id",
+                "guild_id",
+                "command",
+                "service",
+            }
             ctx_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
             extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_fields}
             if extra_kwargs:

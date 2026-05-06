@@ -31,6 +31,7 @@ def _ensure_aware(dt: datetime) -> datetime:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
+
 # Try to import database
 try:
     from utils.database import db
@@ -262,11 +263,9 @@ class TokenTracker:
             # MAX_RECORDS_PER_KEY rows for one user.
             for key in self._usage_cache:
                 if len(self._usage_cache[key]) > self.MAX_RECORDS_PER_KEY:
-                    self._usage_cache[key] = self._usage_cache[key][-self.MAX_RECORDS_PER_KEY:]
+                    self._usage_cache[key] = self._usage_cache[key][-self.MAX_RECORDS_PER_KEY :]
 
-        self.logger.info(
-            "📊 Token tracker pre-populated: %d records from last %dh", loaded, hours
-        )
+        self.logger.info("📊 Token tracker pre-populated: %d records from last %dh", loaded, hours)
         return loaded
 
     def stop_cleanup_task(self) -> None:
@@ -293,8 +292,7 @@ class TokenTracker:
         async with self._lock:
             for key in list(self._usage_cache.keys()):
                 self._usage_cache[key] = [
-                    u for u in self._usage_cache[key]
-                    if _ensure_aware(u.timestamp) > cutoff
+                    u for u in self._usage_cache[key] if _ensure_aware(u.timestamp) > cutoff
                 ]
                 if not self._usage_cache[key]:
                     del self._usage_cache[key]
@@ -312,13 +310,17 @@ class TokenTracker:
             user_key = f"user:{usage.user_id}"
             self._usage_cache[user_key].append(usage)
             if len(self._usage_cache[user_key]) > self.MAX_RECORDS_PER_KEY:
-                self._usage_cache[user_key] = self._usage_cache[user_key][-self.MAX_RECORDS_PER_KEY:]
+                self._usage_cache[user_key] = self._usage_cache[user_key][
+                    -self.MAX_RECORDS_PER_KEY :
+                ]
 
             # Store by channel
             channel_key = f"channel:{usage.channel_id}"
             self._usage_cache[channel_key].append(usage)
             if len(self._usage_cache[channel_key]) > self.MAX_RECORDS_PER_KEY:
-                self._usage_cache[channel_key] = self._usage_cache[channel_key][-self.MAX_RECORDS_PER_KEY:]
+                self._usage_cache[channel_key] = self._usage_cache[channel_key][
+                    -self.MAX_RECORDS_PER_KEY :
+                ]
 
             # Store by guild if available. Use `is not None` because guild
             # IDs are always positive Discord snowflakes, but `if usage.guild_id`
@@ -327,7 +329,9 @@ class TokenTracker:
                 guild_key = f"guild:{usage.guild_id}"
                 self._usage_cache[guild_key].append(usage)
                 if len(self._usage_cache[guild_key]) > self.MAX_RECORDS_PER_KEY:
-                    self._usage_cache[guild_key] = self._usage_cache[guild_key][-self.MAX_RECORDS_PER_KEY:]
+                    self._usage_cache[guild_key] = self._usage_cache[guild_key][
+                        -self.MAX_RECORDS_PER_KEY :
+                    ]
 
         # Persist to database if available
         if DB_AVAILABLE:

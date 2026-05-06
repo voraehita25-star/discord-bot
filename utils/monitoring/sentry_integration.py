@@ -24,7 +24,6 @@ except ImportError:
     logger.warning("⚠️ Sentry SDK not installed - error tracking disabled")
 
 
-
 def init_sentry(
     dsn: str | None = None,
     environment: str = "production",
@@ -54,6 +53,7 @@ def init_sentry(
     # audit — you can `rm data/telemetry_optout.flag` to re-enable.
     try:
         from pathlib import Path as _P
+
         if (_P("data") / "telemetry_optout.flag").exists():
             logger.info("🛡️ Sentry disabled by user (telemetry_optout.flag present)")
             return False
@@ -87,11 +87,14 @@ def init_sentry(
         _redact_sensitive: Callable[[str], str] | None
         try:
             from utils.monitoring.logger import _redact_sensitive as _redact_fn
+
             _redact_sensitive = _redact_fn
         except Exception:  # pragma: no cover - defense in depth
             _redact_sensitive = None
 
-        def _scrub_breadcrumb(crumb: dict[str, Any], _hint: dict[str, Any]) -> dict[str, Any] | None:
+        def _scrub_breadcrumb(
+            crumb: dict[str, Any], _hint: dict[str, Any]
+        ) -> dict[str, Any] | None:
             if _redact_sensitive is None:
                 return crumb
             try:

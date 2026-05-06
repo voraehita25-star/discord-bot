@@ -9,6 +9,7 @@ the prompt embeds persona, user-supplied memories, and full message history,
 which is generally sensitive data that you do not want to paste into an
 issue tracker or share unredacted.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,12 +51,13 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
 
     # build_user_context relies on the bot's get_db() singleton.
     user_context, memories_context, _ = await build_user_context(
-        "User", False, conversation_id=conv_id,
+        "User",
+        False,
+        conversation_id=conv_id,
     )
 
     history = [
-        {"role": m["role"], "content": m["content"], "created_at": m["created_at"]}
-        for m in msgs
+        {"role": m["role"], "content": m["content"], "created_at": m["created_at"]} for m in msgs
     ]
     preset = DASHBOARD_ROLE_PRESETS.get(row["role_preset"], DASHBOARD_ROLE_PRESETS["general"])
     persona = str(preset.get("system_instruction", ""))

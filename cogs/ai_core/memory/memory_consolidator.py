@@ -44,8 +44,8 @@ except ImportError:
     DB_AVAILABLE = False
 
 
-
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ConversationSummary:
@@ -162,8 +162,13 @@ class SummaryArchiver:
                 consecutive_errors += 1
                 # Cap exponent to prevent astronomical intermediate values
                 capped_errors = min(consecutive_errors, 10)
-                backoff = min(interval_hours * 3600, 60 * (2 ** capped_errors))
-                self.logger.error("Consolidation error (attempt %d, backoff %.0fs): %s", consecutive_errors, backoff, e)
+                backoff = min(interval_hours * 3600, 60 * (2**capped_errors))
+                self.logger.error(
+                    "Consolidation error (attempt %d, backoff %.0fs): %s",
+                    consecutive_errors,
+                    backoff,
+                    e,
+                )
                 await asyncio.sleep(backoff)
 
     async def consolidate_channel(
@@ -183,7 +188,9 @@ class SummaryArchiver:
             return None
 
         # Get old messages to consolidate
-        cutoff_time = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
+        cutoff_time = datetime.now(tz=timezone.utc) - timedelta(
+            hours=self.SUMMARY_AGE_THRESHOLD_HOURS
+        )
 
         async with db.get_connection() as conn:
             cursor = await conn.execute(
@@ -239,7 +246,9 @@ class SummaryArchiver:
         # AND deletion is explicitly enabled (opt-in) — extractive summaries can
         # lose information, so default is to keep originals and just record the summary.
         delete_originals = os.getenv("CONSOLIDATOR_DELETE_ORIGINALS", "0").lower() in (
-            "1", "true", "yes",
+            "1",
+            "true",
+            "yes",
         )
         if summary_id is not None and delete_originals:
             message_ids = [row["id"] for row in rows]
@@ -255,7 +264,9 @@ class SummaryArchiver:
                 self.logger.error(
                     "❌ Summary %d saved but delete of %d originals failed for "
                     "channel %d — re-run consolidation to clean up",
-                    summary_id, len(message_ids), channel_id,
+                    summary_id,
+                    len(message_ids),
+                    channel_id,
                     exc_info=True,
                 )
         elif summary_id is None:
@@ -503,8 +514,12 @@ class SummaryArchiver:
                     summary.channel_id,
                     summary.user_id,
                     summary.summary,
-                    json.dumps(summary.key_topics, ensure_ascii=False) if summary.key_topics else "[]",
-                    json.dumps(summary.key_decisions, ensure_ascii=False) if summary.key_decisions else "[]",
+                    json.dumps(summary.key_topics, ensure_ascii=False)
+                    if summary.key_topics
+                    else "[]",
+                    json.dumps(summary.key_decisions, ensure_ascii=False)
+                    if summary.key_decisions
+                    else "[]",
                     summary.start_time.isoformat() if summary.start_time else None,
                     summary.end_time.isoformat() if summary.end_time else None,
                     summary.message_count,

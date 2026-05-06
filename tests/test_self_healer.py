@@ -117,7 +117,7 @@ class TestFindAllBotProcesses:
                 "pid": 1234,
                 "name": "python",
                 "cmdline": ["python", "bot_manager.py"],
-                "create_time": 1000.0
+                "create_time": 1000.0,
             }
             mock_iter.return_value = [mock_proc]
 
@@ -389,7 +389,9 @@ class TestKillDuplicateWatchers:
 
         healer = SelfHealer()
 
-        single_watcher = [{"pid": 2001, "cmdline": "python dev_watcher.py", "create_time": time.time()}]
+        single_watcher = [
+            {"pid": 2001, "cmdline": "python dev_watcher.py", "create_time": time.time()}
+        ]
 
         with patch.object(healer, "find_all_dev_watchers", return_value=single_watcher):
             result = healer.kill_duplicate_watchers()
@@ -621,6 +623,7 @@ class TestKillAllBots:
         with patch.dict("os.environ", {}, clear=False):
             # Make sure the env gate is off for this test
             import os as _os
+
             _os.environ.pop("SELF_HEALER_ALLOW_KILL", None)
             with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
                 with patch.object(healer, "kill_process", return_value=True) as mock_kill:
@@ -867,6 +870,7 @@ class TestConstants:
 # Merged from test_self_healer_extended.py
 # ======================================================================
 
+
 class TestSelfHealerInit:
     """Tests for SelfHealer initialization."""
 
@@ -906,7 +910,7 @@ class TestSelfHealerInit:
 
         healer = SelfHealer()
 
-        assert hasattr(healer, 'logger')
+        assert hasattr(healer, "logger")
         assert isinstance(healer.logger, logging.Logger)
 
 
@@ -1001,7 +1005,7 @@ class TestFindAllBotProcesses:
 
         healer = SelfHealer()
 
-        with patch('psutil.process_iter', return_value=[]):
+        with patch("psutil.process_iter", return_value=[]):
             result = healer.find_all_bot_processes()
 
         assert isinstance(result, list)
@@ -1020,7 +1024,7 @@ class TestFindAllDevWatchers:
 
         healer = SelfHealer()
 
-        with patch('psutil.process_iter', return_value=[]):
+        with patch("psutil.process_iter", return_value=[]):
             result = healer.find_all_dev_watchers()
 
         assert isinstance(result, list)
@@ -1052,6 +1056,7 @@ class TestConstants:
 
 class TestModuleDocstring:
     """Tests for module documentation."""
+
 
 class TestActionsTaken:
     """Tests for actions_taken tracking."""
@@ -1123,6 +1128,7 @@ class TestLoggerConfiguration:
 # Merged from test_self_healer_module.py
 # ======================================================================
 
+
 class TestSelfHealerInit:
     """Tests for SelfHealer initialization."""
 
@@ -1130,7 +1136,7 @@ class TestSelfHealerInit:
         """Test creating SelfHealer."""
         from utils.reliability.self_healer import SelfHealer
 
-        with patch.object(SelfHealer, '_setup_logger', return_value=MagicMock()):
+        with patch.object(SelfHealer, "_setup_logger", return_value=MagicMock()):
             healer = SelfHealer("test_script.py")
 
             assert healer.caller_script == "test_script.py"
@@ -1140,7 +1146,7 @@ class TestSelfHealerInit:
         """Test SelfHealer with default caller."""
         from utils.reliability.self_healer import SelfHealer
 
-        with patch.object(SelfHealer, '_setup_logger', return_value=MagicMock()):
+        with patch.object(SelfHealer, "_setup_logger", return_value=MagicMock()):
             healer = SelfHealer()
 
             assert healer.caller_script == "unknown"
@@ -1151,7 +1157,7 @@ class TestSelfHealerInit:
 
         from utils.reliability.self_healer import SelfHealer
 
-        with patch.object(SelfHealer, '_setup_logger', return_value=MagicMock()):
+        with patch.object(SelfHealer, "_setup_logger", return_value=MagicMock()):
             healer = SelfHealer()
 
             assert healer.my_pid == os.getpid()
@@ -1165,7 +1171,7 @@ class TestLogMethod:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             healer.log("info", "Test message")
@@ -1177,7 +1183,7 @@ class TestLogMethod:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             healer.log("warning", "Warning message")
@@ -1190,7 +1196,7 @@ class TestLogMethod:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             healer.log("error", "Error message")
@@ -1207,10 +1213,10 @@ class TestFindProcesses:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch('psutil.process_iter', return_value=[]):
+            with patch("psutil.process_iter", return_value=[]):
                 result = healer.find_all_bot_processes()
 
                 assert result == []
@@ -1220,10 +1226,10 @@ class TestFindProcesses:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch('psutil.process_iter', return_value=[]):
+            with patch("psutil.process_iter", return_value=[]):
                 result = healer.find_all_dev_watchers()
 
                 assert result == []
@@ -1237,14 +1243,14 @@ class TestGetPidFromFile:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_path = MagicMock()
             mock_path.exists.return_value = True
             mock_path.read_text.return_value = "12345"
 
-            with patch('utils.reliability.self_healer.Path', return_value=mock_path):
+            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
                 result = healer.get_pid_from_file()
 
                 assert result == 12345
@@ -1254,13 +1260,13 @@ class TestGetPidFromFile:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_path = MagicMock()
             mock_path.exists.return_value = False
 
-            with patch('utils.reliability.self_healer.Path', return_value=mock_path):
+            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
                 result = healer.get_pid_from_file()
 
                 assert result is None
@@ -1270,14 +1276,14 @@ class TestGetPidFromFile:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_path = MagicMock()
             mock_path.exists.return_value = True
             mock_path.read_text.return_value = "not_a_number"
 
-            with patch('utils.reliability.self_healer.Path', return_value=mock_path):
+            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
                 result = healer.get_pid_from_file()
 
                 assert result is None
@@ -1291,12 +1297,12 @@ class TestDiagnose:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer("test.py")
 
-            with patch.object(healer, 'find_all_bot_processes', return_value=[]):
-                with patch.object(healer, 'find_all_dev_watchers', return_value=[]):
-                    with patch.object(healer, 'get_pid_from_file', return_value=None):
+            with patch.object(healer, "find_all_bot_processes", return_value=[]):
+                with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                    with patch.object(healer, "get_pid_from_file", return_value=None):
                         result = healer.diagnose()
 
                         assert "timestamp" in result
@@ -1310,12 +1316,12 @@ class TestDiagnose:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer("test.py")
 
-            with patch.object(healer, 'find_all_bot_processes', return_value=[]):
-                with patch.object(healer, 'find_all_dev_watchers', return_value=[]):
-                    with patch.object(healer, 'get_pid_from_file', return_value=None):
+            with patch.object(healer, "find_all_bot_processes", return_value=[]):
+                with patch.object(healer, "find_all_dev_watchers", return_value=[]):
+                    with patch.object(healer, "get_pid_from_file", return_value=None):
                         result = healer.diagnose()
 
                         assert result["issues"] == []
@@ -1329,14 +1335,14 @@ class TestHealingActions:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_path = MagicMock()
             mock_path.exists.return_value = True
             mock_path.unlink.return_value = None
 
-            with patch('utils.reliability.self_healer.Path', return_value=mock_path):
+            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
                 result = healer.clean_pid_file()
 
                 assert result is True
@@ -1346,13 +1352,13 @@ class TestHealingActions:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_path = MagicMock()
             mock_path.exists.return_value = False
 
-            with patch('utils.reliability.self_healer.Path', return_value=mock_path):
+            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
                 result = healer.clean_pid_file()
 
                 assert result is True
@@ -1362,10 +1368,10 @@ class TestHealingActions:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch.object(healer, 'find_all_bot_processes', return_value=[]):
+            with patch.object(healer, "find_all_bot_processes", return_value=[]):
                 result = healer.kill_duplicate_bots()
 
                 assert result == 0
@@ -1375,10 +1381,10 @@ class TestHealingActions:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch.object(healer, 'find_all_dev_watchers', return_value=[]):
+            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
                 result = healer.kill_duplicate_watchers()
 
                 assert result == 0
@@ -1393,14 +1399,14 @@ class TestKillProcess:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
             mock_proc = MagicMock()
             mock_proc.terminate.return_value = None
             mock_proc.wait.return_value = None
 
-            with patch('psutil.Process', return_value=mock_proc):
+            with patch("psutil.Process", return_value=mock_proc):
                 result = healer.kill_process(12345)
 
                 assert result is True
@@ -1412,10 +1418,10 @@ class TestKillProcess:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch('psutil.Process', side_effect=psutil.NoSuchProcess(12345)):
+            with patch("psutil.Process", side_effect=psutil.NoSuchProcess(12345)):
                 result = healer.kill_process(12345)
 
                 # NoSuchProcess means it's already gone, which is success
@@ -1428,10 +1434,10 @@ class TestKillProcess:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch('psutil.Process', side_effect=psutil.AccessDenied(12345)):
+            with patch("psutil.Process", side_effect=psutil.AccessDenied(12345)):
                 result = healer.kill_process(12345)
 
                 assert result is False
@@ -1445,10 +1451,12 @@ class TestAutoHeal:
         from utils.reliability.self_healer import SelfHealer
 
         mock_logger = MagicMock()
-        with patch.object(SelfHealer, '_setup_logger', return_value=mock_logger):
+        with patch.object(SelfHealer, "_setup_logger", return_value=mock_logger):
             healer = SelfHealer()
 
-            with patch.object(healer, 'diagnose', return_value={"issues": [], "recommendations": []}):
+            with patch.object(
+                healer, "diagnose", return_value={"issues": [], "recommendations": []}
+            ):
                 result = healer.auto_heal()
 
                 assert result["success"] is True
@@ -1476,10 +1484,12 @@ class TestModuleImports:
     def test_import_selfhealer(self):
         """Test importing SelfHealer."""
         from utils.reliability.self_healer import SelfHealer
+
         assert SelfHealer is not None
 
     def test_selfhealer_available(self):
         """Test SELF_HEALER_AVAILABLE can be True."""
         # If we can import, it's available
         from utils.reliability.self_healer import SelfHealer
+
         assert SelfHealer is not None

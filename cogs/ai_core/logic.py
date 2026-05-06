@@ -51,6 +51,7 @@ def _utc_now_iso() -> str:
     """
     return datetime.datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+
 # Import API handler module (direct subfolder import). Wrap the metrics
 # import in the same try/except pattern bot.py uses — every other optional
 # dependency in this codebase has a stub fallback, and a hard import here
@@ -59,6 +60,7 @@ def _utc_now_iso() -> str:
 try:
     from utils.monitoring.metrics import metrics
 except ImportError:
+
     class _NullMetrics:
         def __getattr__(self, name):
             return lambda *args, **kwargs: None
@@ -271,6 +273,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                 try:
                     loop = asyncio.get_running_loop()
                     from .storage import save_history
+
                     task = loop.create_task(save_history(self.bot, channel_id, chat_copy))
 
                     # Keep strong reference so task isn't GC'd before completion.
@@ -279,12 +282,16 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Capture channel_id and self per-iteration for the callback.
                     # Clean up channel data only after save succeeds to prevent data loss.
-                    def _handle_lru_save_result(t: asyncio.Task, _cid: int = channel_id, _mgr=self) -> None:
+                    def _handle_lru_save_result(
+                        t: asyncio.Task, _cid: int = channel_id, _mgr=self
+                    ) -> None:
                         if t.cancelled():
                             return
                         exc = t.exception()
                         if exc:
-                            logger.error("LRU save failed for channel %s, keeping in memory: %s", _cid, exc)
+                            logger.error(
+                                "LRU save failed for channel %s, keeping in memory: %s", _cid, exc
+                            )
                             return  # Don't delete if save failed — prevents data loss
                         # Save succeeded, now safe to clean up
                         _mgr.chats.pop(_cid, None)
@@ -301,7 +308,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                 except RuntimeError:
                     logger.warning("No event loop for LRU eviction save of channel %s", channel_id)
                 except Exception as e:
-                    logger.warning("Failed to save history before LRU eviction for %s: %s", channel_id, e)
+                    logger.warning(
+                        "Failed to save history before LRU eviction for %s: %s", channel_id, e
+                    )
             else:
                 # No chat data, safe to clean up immediately
                 self.last_accessed.pop(channel_id, None)
@@ -323,6 +332,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Try failover manager first (supports proxy/direct switching)
         try:
             from .api.api_failover import api_failover
+
             if not api_failover._initialized:
                 api_failover.initialize()
             if api_failover.active_config:
@@ -330,7 +340,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                 self.target_model = CLAUDE_MODEL
                 logger.info(
                     "Claude AI Initialized via failover (Model: %s, Endpoint: %s)",
-                    self.target_model, api_failover.active_endpoint.value,
+                    self.target_model,
+                    api_failover.active_endpoint.value,
                 )
                 memory_consolidator.initialize(api_failover.active_config.api_key)
                 return
@@ -597,7 +608,9 @@ class ChatManager(SessionMixin, ResponseMixin):
         MAX_MESSAGE_LENGTH = 100_000  # 100KB max
         if message and len(message) > MAX_MESSAGE_LENGTH:
             message = message[:MAX_MESSAGE_LENGTH] + "\n[... ข้อความถูกตัดเนื่องจากยาวเกินไป ...]"
-            logger.warning("Truncated oversized message from user %s (%d chars)", user.id, len(message))
+            logger.warning(
+                "Truncated oversized message from user %s (%d chars)", user.id, len(message)
+            )
 
         # Determine Context and Send channels
         context_channel = output_channel if output_channel else channel
@@ -818,7 +831,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Check if user is requesting specific channel history
                         requested_channel = self._extract_channel_id_request(display_message)
                         if requested_channel:
-                            history_data = await self._get_requested_history(requested_channel, requester_id=user.id)
+                            history_data = await self._get_requested_history(
+                                requested_channel, requester_id=user.id
+                            )
                             prompt_with_context = (
                                 f"[System Info] Current Time: {now} | "
                                 f"User: {user_name}{creator_tag}\n"
@@ -873,7 +888,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                     )
 
                     # 5. Build current user message parts
-                    current_parts: list[dict[str, Any] | ClaudeContentBlockParam | InlineDataPart] = []
+                    current_parts: list[
+                        dict[str, Any] | ClaudeContentBlockParam | InlineDataPart
+                    ] = []
                     for part in content_parts:
                         if isinstance(part, str):
                             current_parts.append({"text": part})
@@ -1054,12 +1071,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                             metrics.increment_search_intent("prefilter", result_label)
                         else:
                             # Uncertain — fall through to AI-based detection
-                            logger.info("🔎 Pre-filter: UNCERTAIN, using AI detection for: %s", display_message[:50])
+                            logger.info(
+                                "🔎 Pre-filter: UNCERTAIN, using AI detection for: %s",
+                                display_message[:50],
+                            )
                             use_search = await self._detect_search_intent(display_message)
                             result_label = "search" if use_search else "no_search"
-                            logger.info(
-                                "🔎 AI search intent result: %s", result_label.upper()
-                            )
+                            logger.info("🔎 AI search intent result: %s", result_label.upper())
                             metrics.increment_search_intent("ai", result_label)
 
                     config_params = self._build_api_config(
@@ -1166,9 +1184,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # worst case.
                                 try:
                                     result = await asyncio.wait_for(
-                                        execute_tool_call(
-                                            self.bot, send_channel, user, tool_call
-                                        ),
+                                        execute_tool_call(self.bot, send_channel, user, tool_call),
                                         timeout=30.0,
                                     )
                                 except TimeoutError:
@@ -1181,9 +1197,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                         "and was skipped."
                                     )
                             else:
-                                result = (
-                                    "Tool execution is only available in guild text channels."
-                                )
+                                result = "Tool execution is only available in guild text channels."
                             tool_outputs.append(f"🔧 Tool '{tool_call.name}': {result}")
 
                             # Sanitize tool result before persisting to history:
@@ -1194,8 +1208,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             if len(raw_result) > 4000:
                                 raw_result = raw_result[:4000] + "…[truncated]"
                             safe_result = "".join(
-                                ch for ch in raw_result
-                                if ch in {"\n", "\t"} or ord(ch) >= 0x20
+                                ch for ch in raw_result if ch in {"\n", "\t"} or ord(ch) >= 0x20
                             )
 
                             # Add tool usage to history (represented as system/model info)
@@ -1227,7 +1240,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 chat_data["history"] = trimmed
                                 logger.info(
                                     "📦 Auto-trimmed history for channel %s: %d -> %d",
-                                    channel_id, original_len, len(trimmed),
+                                    channel_id,
+                                    original_len,
+                                    len(trimmed),
                                 )
                                 # Persist the trimmed view immediately. Without
                                 # this, the in-memory trim is lost on next save
@@ -1299,7 +1314,9 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 10.5 Apply guardrails to sanitize response
                     if GUARDRAILS_AVAILABLE:
-                        _is_valid, sanitized, warnings = validate_response_for_channel(response_text, channel_id)
+                        _is_valid, sanitized, warnings = validate_response_for_channel(
+                            response_text, channel_id
+                        )
                         if warnings:
                             logger.info("🛡️ Guardrails applied: %s", warnings)
                         response_text = sanitized
@@ -1323,7 +1340,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                     if len(parts) > 60:
                         logger.warning(
                             "⚠️ Truncating {{Name}} blocks for channel %s: %d parts -> 60",
-                            channel_id, len(parts),
+                            channel_id,
+                            len(parts),
                         )
                         parts = parts[:60]
 
@@ -1373,18 +1391,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Thai combining marks (tone marks, vowel marks) cannot
                         # appear at the start of a chunk — splitting just
                         # before one would render as a stray ◌-form glyph.
-                        THAI_COMBINING = (
-                            set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
-                        )
+                        THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
                         remaining = response_text
                         while remaining:
                             if len(remaining) <= 2000:
                                 sent_message = await send_channel.send(remaining)
                                 break
                             # Find best split point near 2000 chars
-                            split_at = remaining.rfind('\n', 0, 2000)
+                            split_at = remaining.rfind("\n", 0, 2000)
                             if split_at == -1 or split_at < 1000:
-                                split_at = remaining.rfind(' ', 0, 2000)
+                                split_at = remaining.rfind(" ", 0, 2000)
                             if split_at == -1 or split_at < 1000:
                                 split_at = 2000
                             # Walk forward past Thai combining marks so they
@@ -1395,7 +1411,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             ):
                                 split_at += 1
                             sent_message = await send_channel.send(remaining[:split_at])
-                            remaining = remaining[split_at:].lstrip('\n')
+                            remaining = remaining[split_at:].lstrip("\n")
                     elif response_text:  # Only send if there is text left
                         sent_message = await send_channel.send(response_text)
 

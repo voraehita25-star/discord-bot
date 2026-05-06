@@ -86,10 +86,12 @@ class AI(commands.Cog):
 
     # Known proxy-bot user IDs used to verify Tupperbox/PluralKit webhooks.
     # Moved to class scope to avoid reallocating on every message event.
-    _ALLOWED_WEBHOOK_BOT_IDS: frozenset[int] = frozenset({
-        356950275044671499,  # Tupperbox
-        466378653216014359,  # PluralKit
-    })
+    _ALLOWED_WEBHOOK_BOT_IDS: frozenset[int] = frozenset(
+        {
+            356950275044671499,  # Tupperbox
+            466378653216014359,  # PluralKit
+        }
+    )
 
     # Pre-compiled pattern for {{Character}} resend splitting.
     _RESEND_CHARACTER_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
@@ -115,7 +117,12 @@ class AI(commands.Cog):
             return
         exc = task.exception()
         if exc:
-            logger.error("Background task %s failed: %s", task.get_name(), exc, extra={"event": "bg_task_failed", "task": task.get_name()})
+            logger.error(
+                "Background task %s failed: %s",
+                task.get_name(),
+                exc,
+                extra={"event": "bg_task_failed", "task": task.get_name()},
+            )
 
     @staticmethod
     def _as_chat_channel(
@@ -194,7 +201,9 @@ class AI(commands.Cog):
         except ImportError:
             pass
 
-        logger.info("🧠 AI Cog loaded successfully", extra={"event": "cog_loaded", "cog": "ai_core"})
+        logger.info(
+            "🧠 AI Cog loaded successfully", extra={"event": "cog_loaded", "cog": "ai_core"}
+        )
 
     async def cog_unload(self) -> None:
         """Called when the cog is unloaded - cleanup resources."""
@@ -273,7 +282,11 @@ class AI(commands.Cog):
                     cleanup_counter = 0
                     removed = cleanup_storage_cache()
                     if removed > 0:
-                        logger.debug("🧹 Storage cache cleanup: removed %d entries", removed, extra={"event": "cache_cleanup", "removed": removed})
+                        logger.debug(
+                            "🧹 Storage cache cleanup: removed %d entries",
+                            removed,
+                            extra={"event": "cache_cleanup", "removed": removed},
+                        )
 
                 # Run memory system cleanup every 30 minutes (every 30 iterations)
                 memory_cleanup_counter += 1
@@ -286,7 +299,8 @@ class AI(commands.Cog):
                         state_removed = state_tracker.cleanup_old_states()
                         if state_removed > 0:
                             logger.debug(
-                                "🧹 State tracker cleanup: removed %d channels", state_removed,
+                                "🧹 State tracker cleanup: removed %d channels",
+                                state_removed,
                                 extra={"event": "state_cleanup", "removed": state_removed},
                             )
 
@@ -526,6 +540,7 @@ class AI(commands.Cog):
 
         # Check cache first to avoid rate-limited webhook API calls
         import time as _time
+
         cached = self._webhook_verify_cache.get(webhook_id)
         if cached and cached[1] > _time.time():
             is_known_proxy = cached[0]
@@ -572,10 +587,7 @@ class AI(commands.Cog):
         # Restriction Logic
         allowed = False
         if (
-            (
-                message.guild.id == GUILD_ID_RESTRICTED
-                and message.channel.id == CHANNEL_ID_ALLOWED
-            )
+            (message.guild.id == GUILD_ID_RESTRICTED and message.channel.id == CHANNEL_ID_ALLOWED)
             or message.guild.id == GUILD_ID_MAIN
             or (
                 message.guild.id == GUILD_ID_RP
@@ -678,8 +690,11 @@ class AI(commands.Cog):
         # Generate trace ID for this request
         try:
             from utils.monitoring.tracing import new_trace_id
+
             trace_id = new_trace_id()
-            logger.debug("trace_id=%s user=%s channel=%s", trace_id, message.author.id, message.channel.id)
+            logger.debug(
+                "trace_id=%s user=%s channel=%s", trace_id, message.author.id, message.channel.id
+            )
         except ImportError:
             pass
 
@@ -1472,9 +1487,7 @@ class AI(commands.Cog):
         try:
             from cogs.ai_core.memory.history_manager import history_manager
 
-            lock = self.chat_manager.processing_locks.setdefault(
-                channel_id, asyncio.Lock()
-            )
+            lock = self.chat_manager.processing_locks.setdefault(channel_id, asyncio.Lock())
             async with lock:
                 # Use smart_trim_by_tokens
                 trimmed = await history_manager.smart_trim_by_tokens(

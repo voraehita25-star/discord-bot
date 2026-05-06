@@ -91,7 +91,8 @@ class SpotifyHandler:
         if self.sp is not None:
             old_session = getattr(self.sp, "_session", None) or (
                 getattr(self.sp.auth_manager, "_session", None)
-                if hasattr(self.sp, "auth_manager") else None
+                if hasattr(self.sp, "auth_manager")
+                else None
             )
             if old_session is not None:
                 try:
@@ -203,7 +204,7 @@ class SpotifyHandler:
                             logger.error("Failed to recreate Spotify client")
                             raise ConnectionError("Spotify client recreation failed") from None
                         # Re-bind func to the new client if it was a bound method
-                        if hasattr(func, '__self__') and isinstance(func.__self__, spotipy.Spotify):
+                        if hasattr(func, "__self__") and isinstance(func.__self__, spotipy.Spotify):
                             func = getattr(self.sp, func.__name__)
                 else:
                     logger.error("Spotify connection failed after %d attempts", self.MAX_RETRIES)
@@ -238,7 +239,13 @@ class SpotifyHandler:
                 await ctx.send(embed=embed)
                 return False
 
-        except (spotipy.SpotifyException, RequestsConnectionError, ReadTimeout, ConnectionError, OSError) as e:
+        except (
+            spotipy.SpotifyException,
+            RequestsConnectionError,
+            ReadTimeout,
+            ConnectionError,
+            OSError,
+        ) as e:
             # Catch a wider net so circuit-breaker ConnectionError + low-level
             # OSError surface as a friendly Spotify error instead of crashing
             # the command handler.
@@ -262,6 +269,7 @@ class SpotifyHandler:
         # Enforce queue size cap (the play command checks for non-Spotify
         # paths but the Spotify path used to bypass it).
         from cogs.music.queue import MAX_QUEUE_SIZE
+
         if len(queue) >= MAX_QUEUE_SIZE:
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)",
@@ -381,6 +389,7 @@ class SpotifyHandler:
         # paths but the Spotify path used to bypass it). Truncate the
         # incoming playlist so we never exceed MAX_QUEUE_SIZE.
         from cogs.music.queue import MAX_QUEUE_SIZE
+
         capacity_remaining = MAX_QUEUE_SIZE - len(queue)
         truncated = False
         if capacity_remaining <= 0:
@@ -470,7 +479,7 @@ class SpotifyHandler:
                 items.extend(results["items"])
 
         # Apply cap to prevent memory issues with huge albums
-        items = items[:self.MAX_PLAYLIST_TRACKS]
+        items = items[: self.MAX_PLAYLIST_TRACKS]
 
         if not items:
             embed = discord.Embed(description=f"{Emojis.CROSS} Album นี้ไม่มีเพลง", color=Colors.ERROR)
@@ -481,6 +490,7 @@ class SpotifyHandler:
         # paths but the Spotify path used to bypass it). Truncate the
         # incoming album so we never exceed MAX_QUEUE_SIZE.
         from cogs.music.queue import MAX_QUEUE_SIZE
+
         capacity_remaining = MAX_QUEUE_SIZE - len(queue)
         truncated = False
         if capacity_remaining <= 0:

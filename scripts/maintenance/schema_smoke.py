@@ -27,9 +27,13 @@ async def _init_schema() -> Path:
 
 def main() -> None:
     original_cwd = Path.cwd()
-    expected_version = len(list((REPO_ROOT / "scripts" / "maintenance" / "migrations").glob("*.sql")))
+    expected_version = len(
+        list((REPO_ROOT / "scripts" / "maintenance" / "migrations").glob("*.sql"))
+    )
 
-    with tempfile.TemporaryDirectory(prefix="schema-smoke-", ignore_cleanup_errors=True) as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="schema-smoke-", ignore_cleanup_errors=True
+    ) as temp_dir:
         try:
             os.chdir(temp_dir)
             db_path = asyncio.run(_init_schema())
@@ -55,9 +59,7 @@ def main() -> None:
         if len(tables) < 15:
             raise SystemExit(f"Expected >=15 tables, got {len(tables)}: {tables}")
         if current_version != expected_version:
-            raise SystemExit(
-                f"Expected schema_version {expected_version}, got {current_version}"
-            )
+            raise SystemExit(f"Expected schema_version {expected_version}, got {current_version}")
 
 
 if __name__ == "__main__":

@@ -600,10 +600,12 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock()
-        memory_manager.semantic_search = AsyncMock(return_value=[
-            {"text": "Memory 1", "score": 0.9},
-            {"text": "Memory 2", "score": 0.8},
-        ])
+        memory_manager.semantic_search = AsyncMock(
+            return_value=[
+                {"text": "Memory 1", "score": 0.9},
+                {"text": "Memory 2", "score": 0.8},
+            ]
+        )
 
         builder = ContextBuilder(memory_manager=memory_manager)
         ctx = await builder.build_context(
@@ -621,11 +623,13 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         avatar_manager = MagicMock()
-        avatar_manager.get_avatar = AsyncMock(return_value={
-            "name": "Faust",
-            "personality": "Mischievous",
-            "image_url": "https://example.com/faust.png",
-        })
+        avatar_manager.get_avatar = AsyncMock(
+            return_value={
+                "name": "Faust",
+                "personality": "Mischievous",
+                "image_url": "https://example.com/faust.png",
+            }
+        )
 
         guild = MagicMock()
 
@@ -659,9 +663,11 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         memory_manager = MagicMock(spec=["search"])
-        memory_manager.search = AsyncMock(return_value=[
-            {"content": "Result 1"},
-        ])
+        memory_manager.search = AsyncMock(
+            return_value=[
+                {"content": "Result 1"},
+            ]
+        )
 
         builder = ContextBuilder(memory_manager=memory_manager)
         result = await builder._get_rag_context(123, "query")
@@ -674,9 +680,11 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         entity_memory = MagicMock()
-        entity_memory.get_relevant = AsyncMock(return_value=[
-            {"name": "Alice", "info": "Likes coding"},
-        ])
+        entity_memory.get_relevant = AsyncMock(
+            return_value=[
+                {"name": "Alice", "info": "Likes coding"},
+            ]
+        )
 
         builder = ContextBuilder(entity_memory=entity_memory)
         result = await builder._get_entity_memory(123, 456, "message")

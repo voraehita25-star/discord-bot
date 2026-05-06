@@ -141,6 +141,7 @@ if PID_FILE.exists():
     except (ValueError, OSError):
         _old_pid = None
 
+
 # Write current PID only when running as main script
 # (not on import from tests/scripts)
 def _write_pid_file() -> None:
@@ -202,7 +203,9 @@ def basic_startup_check() -> bool:
         if proc_user != current_user:
             logger.warning(
                 "Old PID %s is owned by %s (current user %s); refusing to terminate",
-                _old_pid, proc_user, current_user,
+                _old_pid,
+                proc_user,
+                current_user,
             )
             return True
 
@@ -250,6 +253,7 @@ def basic_startup_check() -> bool:
 
 # NOTE: smart_startup_check() is called in __main__ block only,
 # to avoid running side effects (killing processes) on import.
+
 
 def bootstrap() -> None:
     """Run one-time startup side effects (directories, FFmpeg check, cache cleanup).
@@ -318,7 +322,8 @@ class MusicBot(commands.AutoShardedBot):
         loop = asyncio.get_running_loop()
         # Keep a reference so we can shut it down cleanly during graceful_shutdown.
         self._default_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=_thread_workers, thread_name_prefix="bot-worker",
+            max_workers=_thread_workers,
+            thread_name_prefix="bot-worker",
         )
         loop.set_default_executor(self._default_executor)
         logger.info("⚡ ThreadPoolExecutor set to %d workers", _thread_workers)
@@ -326,9 +331,7 @@ class MusicBot(commands.AutoShardedBot):
         # Setup signal handlers for graceful shutdown
         if sys.platform != "win32":
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(
-                    sig, lambda s=sig: self._schedule_shutdown(s)
-                )
+                loop.add_signal_handler(sig, lambda s=sig: self._schedule_shutdown(s))
             logger.info("🛡️ Signal handlers registered for graceful shutdown")
         else:
             # Windows: asyncio event loop does not support add_signal_handler.
@@ -341,7 +344,8 @@ class MusicBot(commands.AutoShardedBot):
                     return
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        graceful_shutdown(signal.SIGTERM), _loop,
+                        graceful_shutdown(signal.SIGTERM),
+                        _loop,
                     )
                 except RuntimeError:
                     # Loop closed concurrently between is_closed() and submit
@@ -470,9 +474,7 @@ class MusicBot(commands.AutoShardedBot):
                     logger.warning("Previous shutdown task ended with: %s", exc)
 
             prev.add_done_callback(_swallow)
-        self._shutdown_task = asyncio.create_task(
-            graceful_shutdown(sig, bot_instance=self)
-        )
+        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig, bot_instance=self))
 
     @staticmethod
     def _on_health_task_done(task: asyncio.Task) -> None:
@@ -528,7 +530,9 @@ class MusicBot(commands.AutoShardedBot):
             logger.info("🧠 Memory monitor activated (warning: 8GB, critical: 16GB)")
 
     async def on_command_error(  # pylint: disable=arguments-differ
-        self, ctx: commands.Context, error: commands.CommandError,
+        self,
+        ctx: commands.Context,
+        error: commands.CommandError,
     ) -> None:
         """Global error handler for all commands with Thai messages."""
         # Ignore command not found errors
@@ -612,12 +616,18 @@ class MusicBot(commands.AutoShardedBot):
                 f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
             )
         except discord.HTTPException:
-            logger.warning("Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id)
+            logger.warning(
+                "Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id
+            )
 
-    async def on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError) -> None:
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
+    ) -> None:
         """Global error handler for slash (app) commands with Thai messages."""
         error_id = uuid.uuid4().hex[:6].upper()
-        logger.error("App command error in %s (Error ID: %s): %s", interaction.command, error_id, error)
+        logger.error(
+            "App command error in %s (Error ID: %s): %s", interaction.command, error_id, error
+        )
 
         # Determine the response method (followup if already responded/deferred)
         async def respond(content: str) -> None:
@@ -627,7 +637,9 @@ class MusicBot(commands.AutoShardedBot):
                 else:
                     await interaction.response.send_message(content, ephemeral=True)
             except discord.HTTPException:
-                logger.warning("Could not send app command error to interaction (Error ID: %s)", error_id)
+                logger.warning(
+                    "Could not send app command error to interaction (Error ID: %s)", error_id
+                )
 
         original = getattr(error, "original", error)
 
@@ -638,7 +650,9 @@ class MusicBot(commands.AutoShardedBot):
             missing = ", ".join(original.missing_permissions)
             await respond(f"❌ **บอทไม่มีสิทธิ์เพียงพอ**\nกรุณาให้สิทธิ์ `{missing}` แก่บอท")
         elif isinstance(original, discord.app_commands.CommandOnCooldown):
-            await respond(f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที")
+            await respond(
+                f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที"
+            )
         else:
             await respond(f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง\n🔖 Error ID: `{error_id}`")
 
@@ -688,7 +702,9 @@ def create_bot() -> MusicBot:
         everyone=False, roles=False, users=True, replied_user=True
     )
     new_bot = MusicBot(
-        command_prefix="!", intents=intents, help_command=None,
+        command_prefix="!",
+        intents=intents,
+        help_command=None,
         allowed_mentions=safe_mentions,
     )
     new_bot._register_bot_commands()

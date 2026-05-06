@@ -1,4 +1,5 @@
 """Show what's stored in dashboard_memories — these are GLOBAL across every chat."""
+
 import sqlite3
 from pathlib import Path
 
@@ -30,7 +31,9 @@ with sqlite3.connect(DB) as conn:
     if not rows:
         print("(no memories saved)")
     else:
-        print(f"Top {len(rows)} memories (highest importance first — what gets injected each turn):")
+        print(
+            f"Top {len(rows)} memories (highest importance first — what gets injected each turn):"
+        )
         for r in rows:
             prev = r["preview"].replace("\n", " ")
             print(f"  #{r['id']:4d}  [{r['category']:15s}] imp={r['importance']}  {prev}")

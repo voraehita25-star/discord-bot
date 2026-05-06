@@ -14,9 +14,7 @@ import uuid
 logger = logging.getLogger(__name__)
 
 # Async-safe trace context
-_trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "trace_id", default=None
-)
+_trace_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("trace_id", default=None)
 
 TRACE_HEADER = "X-Trace-ID"
 

@@ -29,6 +29,7 @@ def json_dumps(obj, **kwargs):
         return json.dumps(obj, **kwargs)
     return orjson.dumps(obj).decode("utf-8")
 
+
 import asyncio
 import hashlib
 import logging
@@ -134,6 +135,7 @@ def _enforce_cache_size_limit() -> int:
         if len(_history_cache) > MAX_CACHE_SIZE:
             # Use heapq.nsmallest for O(n) instead of full sort O(n log n)
             import heapq
+
             excess = len(_history_cache) - MAX_CACHE_SIZE
             oldest_history: list[tuple[int, HistoryCacheEntry]] = heapq.nsmallest(
                 excess,
@@ -147,6 +149,7 @@ def _enforce_cache_size_limit() -> int:
         # Check metadata cache
         if len(_metadata_cache) > MAX_CACHE_SIZE:
             import heapq
+
             excess = len(_metadata_cache) - MAX_CACHE_SIZE
             oldest_metadata: list[tuple[int, MetadataCacheEntry]] = heapq.nsmallest(
                 excess,
@@ -269,7 +272,8 @@ async def save_history(
         except aiosqlite.Error as e:
             logger.error(
                 "Database save failed for channel %s: %s",
-                channel_id, e,
+                channel_id,
+                e,
                 extra={"event": "db_save_failed", "channel_id": channel_id},
             )
             return False
@@ -313,14 +317,16 @@ async def _replace_history_db(
             content = str(parts)
         if not content:
             continue
-        rows.append((
-            channel_id,
-            item.get("user_id"),
-            role,
-            content,
-            item.get("message_id"),
-            _normalize_history_timestamp(item.get("timestamp")),
-        ))
+        rows.append(
+            (
+                channel_id,
+                item.get("user_id"),
+                role,
+                content,
+                item.get("message_id"),
+                _normalize_history_timestamp(item.get("timestamp")),
+            )
+        )
 
     async with db.get_write_connection() as conn:
         await conn.execute("DELETE FROM ai_history WHERE channel_id = ?", (channel_id,))
@@ -342,7 +348,9 @@ async def _replace_history_db(
     invalidate_cache(channel_id)
     logger.info(
         "💾 Force-replaced %d messages for channel %s (limit=%d)",
-        len(rows), channel_id, limit,
+        len(rows),
+        channel_id,
+        limit,
     )
 
 
@@ -377,7 +385,8 @@ async def _save_history_db(
                 logger.error(
                     "❌ Refusing to dump full history for channel %s: db_history is empty "
                     "but chat_data was DB-loaded (history=%d items). Possible read failure.",
-                    channel_id, len(history),
+                    channel_id,
+                    len(history),
                 )
                 return
             new_messages = history
@@ -444,8 +453,13 @@ async def _save_history_db(
                             db_boundary_keys.add((db_role, db_content[:200]))
 
                     candidates = [
-                        m for m in history
-                        if (_parse_history_timestamp(m.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc)) >= last_db_dt
+                        m
+                        for m in history
+                        if (
+                            _parse_history_timestamp(m.get("timestamp"))
+                            or datetime.min.replace(tzinfo=timezone.utc)
+                        )
+                        >= last_db_dt
                     ]
                     new_messages = []
                     for m in candidates:
@@ -463,7 +477,9 @@ async def _save_history_db(
                 logger.error(
                     "❌ history dedup failed, position-based fallback disabled to prevent corruption "
                     "(channel %s, history=%d, db=%d)",
-                    channel_id, len(history), len(db_history),
+                    channel_id,
+                    len(history),
+                    len(db_history),
                 )
                 return
 
@@ -512,12 +528,16 @@ async def _save_history_db(
 
             # Skip if this exact content was just in DB (immediate duplicate)
             if last_db_content_hash and raw_hash == last_db_content_hash and role == last_db_role:
-                logger.warning("⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50])
+                logger.warning(
+                    "⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50]
+                )
                 continue
 
             # Skip if we've already seen this content in current batch
             if content_hash in seen_content_hashes:
-                logger.warning("⚠️ Skipping duplicate message (already in batch): %s...", content[:50])
+                logger.warning(
+                    "⚠️ Skipping duplicate message (already in batch): %s...", content[:50]
+                )
                 continue
 
             seen_content_hashes.add(content_hash)
@@ -535,7 +555,9 @@ async def _save_history_db(
         if batch_data:
             try:
                 await db.save_ai_messages_batch(batch_data)
-                logger.debug("💾 Batch saved %d messages for channel %s", len(batch_data), channel_id)
+                logger.debug(
+                    "💾 Batch saved %d messages for channel %s", len(batch_data), channel_id
+                )
             except aiosqlite.Error:
                 # Surface the failure so save_history can flip its return to False
                 # rather than reporting success while silently dropping messages.
@@ -639,7 +661,9 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
         if channel_id in _history_cache:
             cached_time, cached_data = _history_cache[channel_id]
             if now - cached_time < CACHE_TTL:
-                logger.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
+                logger.debug(
+                    "📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data)
+                )
                 # Use deep copy to prevent mutation of cached nested objects
                 return copy.deepcopy(cached_data)
 
@@ -876,15 +900,17 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
 
                 insert_rows = []
                 for role, content, message_id, timestamp in rows_to_insert:
-                    insert_rows.append((
-                        target_channel_id,
-                        None,  # user_id
-                        role,
-                        content,
-                        message_id,
-                        timestamp,
-                        next_local_id,
-                    ))
+                    insert_rows.append(
+                        (
+                            target_channel_id,
+                            None,  # user_id
+                            role,
+                            content,
+                            message_id,
+                            timestamp,
+                            next_local_id,
+                        )
+                    )
                     next_local_id += 1
 
                 await conn.executemany(
@@ -956,7 +982,8 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
         if existing > 0:
             logger.warning(
                 "Refusing move_history: target channel %s already has %d messages",
-                target_channel_id, existing,
+                target_channel_id,
+                existing,
             )
             return 0
 
@@ -971,9 +998,7 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
                 # Compensating action: roll back the copy we just made. Safe
                 # because we verified the target was empty above, so this
                 # only deletes the rows we just inserted.
-                logger.exception(
-                    "Source delete failed during move; rolling back target copy"
-                )
+                logger.exception("Source delete failed during move; rolling back target copy")
                 with contextlib.suppress(OSError, aiosqlite.Error):
                     await db.delete_ai_history(target_channel_id)
                 invalidate_cache(source_channel_id)

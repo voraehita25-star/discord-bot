@@ -43,6 +43,7 @@ if not HEALTH_API_TOKEN:
     # access from a sidecar/Grafana, but the failure mode is now
     # "401 Unauthorized" instead of "silently exposed".
     import secrets
+
     HEALTH_API_TOKEN = secrets.token_urlsafe(32)
     logger.warning(
         "⚠️ HEALTH_API_TOKEN not set; generated ephemeral token: %s "
@@ -66,17 +67,19 @@ else:
 HEARTBEAT_MAX_AGE_SECONDS = int(os.getenv("HEALTH_HEARTBEAT_MAX_AGE", "60"))
 MAX_LATENCY_MS = int(os.getenv("HEALTH_MAX_LATENCY_MS", "5000"))
 
+
 # External service URLs to health-check (validated to prevent SSRF)
 def _validate_service_url(url: str, name: str) -> str:
     """Validate service URL is a safe localhost HTTP URL."""
     from urllib.parse import urlparse
+
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             logger.warning("Invalid scheme for %s: %s — falling back to default", name, url)
             return ""
         # Block userinfo injection (e.g. http://127.0.0.1@attacker.com/)
-        if '@' in (parsed.netloc or ''):
+        if "@" in (parsed.netloc or ""):
             logger.warning("SSRF blocked: %s contains userinfo in URL", name)
             return ""
         if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
@@ -90,12 +93,19 @@ def _validate_service_url(url: str, name: str) -> str:
         logger.warning("Failed to parse URL for %s — falling back to default", name)
         return ""
 
-GO_HEALTH_API_URL = _validate_service_url(
-    os.getenv("GO_HEALTH_API_URL", "http://127.0.0.1:8082/health"), "GO_HEALTH_API_URL"
-) or "http://127.0.0.1:8082/health"
-GO_URL_FETCHER_URL = _validate_service_url(
-    os.getenv("GO_URL_FETCHER_URL", "http://127.0.0.1:8081/health"), "GO_URL_FETCHER_URL"
-) or "http://127.0.0.1:8081/health"
+
+GO_HEALTH_API_URL = (
+    _validate_service_url(
+        os.getenv("GO_HEALTH_API_URL", "http://127.0.0.1:8082/health"), "GO_HEALTH_API_URL"
+    )
+    or "http://127.0.0.1:8082/health"
+)
+GO_URL_FETCHER_URL = (
+    _validate_service_url(
+        os.getenv("GO_URL_FETCHER_URL", "http://127.0.0.1:8081/health"), "GO_URL_FETCHER_URL"
+    )
+    or "http://127.0.0.1:8081/health"
+)
 
 # Endpoints that require authentication (when HEALTH_API_TOKEN is set).
 # Anything that exposes guild names, user counts, cogs loaded, latency,
@@ -343,9 +353,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         # ensure_ascii=False: guild names / Discord usernames frequently
         # contain CJK / emoji / Thai characters; the default would
         # \u-escape them into garbage in the response body.
-        self.wfile.write(
-            json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
-        )
+        self.wfile.write(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
 
     def _send_text_response(self, text: str, status: int = 200) -> None:
         """Send plain text response."""
@@ -658,7 +666,9 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
         elif path in {"/health/live", "/livez"}:
             # Kubernetes liveness probe - is the process running?
-            self._send_json_response({"status": "alive", "timestamp": datetime.now(timezone.utc).isoformat()})
+            self._send_json_response(
+                {"status": "alive", "timestamp": datetime.now(timezone.utc).isoformat()}
+            )
 
         elif path in {"/health/ready", "/readyz"}:
             # Kubernetes readiness probe - is the bot fully healthy + ready?
@@ -828,7 +838,11 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
     def _perform_deep_health_check(self) -> dict[str, Any]:
         """Perform deep health check on all subsystems."""
-        checks: dict[str, Any] = {"timestamp": datetime.now(timezone.utc).isoformat(), "healthy": True, "checks": {}}
+        checks: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "healthy": True,
+            "checks": {},
+        }
 
         # 1. Bot status check
         checks["checks"]["bot"] = {
@@ -842,8 +856,14 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         # 2. Database check
         try:
             from utils.database import db
+
             # Execute the async health check in the main event loop
-            if health_data.bot and hasattr(health_data.bot, "loop") and isinstance(health_data.bot.loop, asyncio.AbstractEventLoop) and db:
+            if (
+                health_data.bot
+                and hasattr(health_data.bot, "loop")
+                and isinstance(health_data.bot.loop, asyncio.AbstractEventLoop)
+                and db
+            ):
                 fut = asyncio.run_coroutine_threadsafe(db.health_check(), health_data.bot.loop)
                 try:
                     is_healthy = fut.result(timeout=2.0)
@@ -858,7 +878,10 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                     checks["healthy"] = False
                 except Exception as e:
                     fut.cancel()
-                    checks["checks"]["database"] = {"status": "error", "error": f"DB Check Error: {e}"}
+                    checks["checks"]["database"] = {
+                        "status": "error",
+                        "error": f"DB Check Error: {e}",
+                    }
                     checks["healthy"] = False
             else:
                 # Fallback to file existence check if bot loop isn't ready
@@ -866,7 +889,10 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 if db_path.exists():
                     checks["checks"]["database"] = {"status": "ok", "type": "sqlite+aiosqlite"}
                 else:
-                    checks["checks"]["database"] = {"status": "warning", "error": "DB file not found"}
+                    checks["checks"]["database"] = {
+                        "status": "warning",
+                        "error": "DB file not found",
+                    }
         except Exception as e:
             checks["checks"]["database"] = {"status": "error", "error": str(e)[:100]}
             checks["healthy"] = False
@@ -878,7 +904,9 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         # try a prompt injection on the Claude path"). Report aggregate
         # presence instead.
         spotify_client_id = os.getenv("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
-        spotify_client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET")
+        spotify_client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or os.getenv(
+            "SPOTIFY_CLIENT_SECRET"
+        )
         api_keys = {
             "DISCORD_TOKEN": bool(os.getenv("DISCORD_TOKEN")),
             "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
@@ -916,6 +944,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         memory_mb = process.memory_info().rss / 1024 / 1024
         try:
             from utils.reliability.memory_manager import MemoryMonitor as _MM
+
             mem_warning = float(getattr(_MM, "DEFAULT_WARNING_MB", 8192))
         except Exception:
             mem_warning = 8192.0
@@ -1049,6 +1078,7 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
     # Import alert manager (optional)
     try:
         from utils.monitoring.alerting import alert_manager
+
         alerting_available = True
     except ImportError:
         alerting_available = False
@@ -1056,6 +1086,7 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
     # Import feature flags
     try:
         from config import feature_flags as _ff
+
         health_data.feature_flags = _ff.get_all()
     except ImportError:
         pass
@@ -1093,6 +1124,7 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                 # Update feature flags
                 try:
                     from config import feature_flags as _ff
+
                     health_data.feature_flags = _ff.get_all()
                 except ImportError:
                     pass

@@ -199,8 +199,7 @@ class TTLCache(Generic[K, V]):
             # Use monotonic for TTL math — see _is_expired docstring.
             now = time.monotonic()
             expired_keys = [
-                key for key, entry in self._cache.items()
-                if now - entry.created_at > self.ttl
+                key for key, entry in self._cache.items() if now - entry.created_at > self.ttl
             ]
 
             for key in expired_keys:
@@ -273,6 +272,7 @@ class WeakRefCache(Generic[K, V]):
 
     def _make_callback(self, key: K) -> Callable[[weakref.ref[V]], None]:
         """Create callback for when weak ref is collected."""
+
         def on_collected(ref: weakref.ref[V]) -> None:
             with self._lock:
                 # Only remove if the stored ref is the same one being collected,
@@ -281,6 +281,7 @@ class WeakRefCache(Generic[K, V]):
                     del self._cache[key]
                     self._collected += 1
             self.logger.debug("Object collected for key: %s", key)
+
         return on_collected
 
     def get(self, key: K) -> V | None:
@@ -334,10 +335,7 @@ class WeakRefCache(Generic[K, V]):
     def cleanup(self) -> int:
         """Remove dead references. Returns count removed."""
         with self._lock:
-            dead_keys = [
-                key for key, ref in self._cache.items()
-                if ref() is None
-            ]
+            dead_keys = [key for key, ref in self._cache.items() if ref() is None]
 
             for key in dead_keys:
                 self._cache.pop(key, None)
@@ -416,6 +414,7 @@ class MemoryMonitor:
         """Get current process memory usage in MB."""
         try:
             import psutil
+
             process = psutil.Process()
             return float(process.memory_info().rss / 1024 / 1024)
         except ImportError:
@@ -439,6 +438,7 @@ class MemoryMonitor:
             # should prefer ``_run_cleanups_async`` which runs full
             # gc.collect in a worker thread.
             import gc
+
             gc.collect(generation=0)
 
         return results
@@ -456,6 +456,7 @@ class MemoryMonitor:
             # individual call is short and the loop gets a chance to make
             # progress between them.
             import gc
+
             loop = asyncio.get_running_loop()
             for generation in (0, 1, 2):
                 await loop.run_in_executor(None, gc.collect, generation)
@@ -473,7 +474,8 @@ class MemoryMonitor:
                 if memory_mb >= self.critical_mb:
                     self.logger.warning(
                         "🚨 CRITICAL memory usage: %.1f MB (threshold: %.1f MB)",
-                        memory_mb, self.critical_mb
+                        memory_mb,
+                        self.critical_mb,
                     )
                     # Use async cleanup for aggressive mode to avoid blocking
                     results = await self._run_cleanups_async(aggressive=True)
@@ -481,13 +483,16 @@ class MemoryMonitor:
                     new_memory = self.get_memory_mb()
                     self.logger.info(
                         "🧹 Aggressive cleanup: removed %d items, memory: %.1f → %.1f MB",
-                        total_cleaned, memory_mb, new_memory
+                        total_cleaned,
+                        memory_mb,
+                        new_memory,
                     )
 
                 elif memory_mb >= self.warning_mb:
                     self.logger.info(
                         "⚠️ High memory usage: %.1f MB (threshold: %.1f MB)",
-                        memory_mb, self.warning_mb
+                        memory_mb,
+                        self.warning_mb,
                     )
                     results = self._run_cleanups(aggressive=False)
                     total_cleaned = sum(v for v in results.values() if v > 0)
@@ -526,7 +531,8 @@ class MemoryMonitor:
         self._running = True
         self.logger.info(
             "🧠 Memory monitor started (warning: %.0f MB, critical: %.0f MB)",
-            self.warning_mb, self.critical_mb
+            self.warning_mb,
+            self.critical_mb,
         )
 
     def stop(self) -> None:
@@ -614,6 +620,7 @@ def cached_with_ttl(
         of the object) rather than its momentary contents. Callers that
         need value-based keying should pass an explicit ``key_fn``.
         """
+
         def _coerce(v: Any) -> Any:
             try:
                 hash(v)
@@ -667,6 +674,7 @@ def cached_with_ttl(
 
         # Choose wrapper based on function type
         import inspect
+
         if inspect.iscoroutinefunction(func):
             async_wrapper.cache = cache  # type: ignore
             async_wrapper.cache_clear = cache.clear  # type: ignore
@@ -700,8 +708,8 @@ def _env_float(name: str, default: float) -> float:
 # and the bot would just get killed instead. Override per-host with
 # BOT_MEMORY_WARNING_MB / BOT_MEMORY_CRITICAL_MB / BOT_MEMORY_CHECK_INTERVAL.
 memory_monitor = MemoryMonitor(
-    warning_mb=_env_float("BOT_MEMORY_WARNING_MB", 1024.0),     # 1 GiB
-    critical_mb=_env_float("BOT_MEMORY_CRITICAL_MB", 1536.0),   # 1.5 GiB
+    warning_mb=_env_float("BOT_MEMORY_WARNING_MB", 1024.0),  # 1 GiB
+    critical_mb=_env_float("BOT_MEMORY_CRITICAL_MB", 1536.0),  # 1.5 GiB
     check_interval=_env_float("BOT_MEMORY_CHECK_INTERVAL", 30.0),
 )
 

@@ -20,12 +20,14 @@ type ClaudeImageMediaType = Literal[
 # typed as ``Any`` in the public alias to stay version-agnostic.
 type ClaudeContentBlockParam = TextBlockParam | ImageBlockParam | dict[str, Any]
 
-CLAUDE_IMAGE_MEDIA_TYPES = frozenset({
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp",
-})
+CLAUDE_IMAGE_MEDIA_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+    }
+)
 
 
 def normalize_claude_image_media_type(media_type: Any) -> ClaudeImageMediaType | None:

@@ -25,8 +25,8 @@ except ImportError:
     MAX_ENTITY_ITEMS = 3
 
 
-
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class AIContext:
@@ -150,7 +150,8 @@ class ContextBuilder:
             if len(task_names) != len(results):
                 logger.error(
                     "Context build task/result length mismatch: %d tasks vs %d results",
-                    len(task_names), len(results),
+                    len(task_names),
+                    len(results),
                 )
 
             for name, result in zip(task_names, results, strict=False):
@@ -405,7 +406,9 @@ class ContextBuilder:
                         if len(text_content) > max_content_length:
                             text_content = text_content[:max_content_length] + "..."
                         # Wrap in untrusted markers to prevent prompt injection from web content
-                        contents.append(f"[URL Content from {url} — external/untrusted]\n{text_content}\n[End URL Content]")
+                        contents.append(
+                            f"[URL Content from {url} — external/untrusted]\n{text_content}\n[End URL Content]"
+                        )
                 except Exception as e:
                     # `fetch_url` can raise anything from network errors to
                     # parser ValueErrors — none of them should abort the

@@ -30,8 +30,8 @@ except ImportError:
     gemini_circuit = None  # type: ignore[assignment]
 
 
-
 logger = logging.getLogger(__name__)
+
 
 class RateLimitType(Enum):
     """Types of rate limiting."""
@@ -282,11 +282,7 @@ class RateLimiter:
             snapshot_keys = list(self._buckets.keys())
             sorted_keys = sorted(
                 snapshot_keys,
-                key=lambda k: (
-                    self._buckets[k].last_update
-                    if k in self._buckets
-                    else float("inf")
-                ),
+                key=lambda k: self._buckets[k].last_update if k in self._buckets else float("inf"),
             )
             evicted = False
             for candidate_key in sorted_keys:
@@ -699,7 +695,12 @@ def ratelimit(
     return decorator
 
 
-def ai_ratelimit(per_user: bool = True, per_guild: bool = True, check_global: bool = True, send_message: bool = True):
+def ai_ratelimit(
+    per_user: bool = True,
+    per_guild: bool = True,
+    check_global: bool = True,
+    send_message: bool = True,
+):
     """
     Specialized decorator for AI/Gemini rate limiting.
     Checks per-user, per-guild, and global limits.
@@ -742,9 +743,7 @@ def ai_ratelimit(per_user: bool = True, per_guild: bool = True, check_global: bo
 
             # Check per-guild limit
             if per_guild and guild_id:
-                allowed, _retry, msg = await rate_limiter.check(
-                    "ai_guild", guild_id=guild_id
-                )
+                allowed, _retry, msg = await rate_limiter.check("ai_guild", guild_id=guild_id)
                 if not allowed:
                     if send_message and msg:
                         with contextlib.suppress(discord.HTTPException):

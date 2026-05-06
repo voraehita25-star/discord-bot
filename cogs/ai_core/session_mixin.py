@@ -92,7 +92,12 @@ class SessionMixin:
                 MAX_LORE_LENGTH = 8000
                 if len(lore) > MAX_LORE_LENGTH:
                     lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
-                    logger.warning("Truncated server lore for guild %s (%d -> %d chars)", guild_id, len(SERVER_LORE[guild_id]), MAX_LORE_LENGTH)
+                    logger.warning(
+                        "Truncated server lore for guild %s (%d -> %d chars)",
+                        guild_id,
+                        len(SERVER_LORE[guild_id]),
+                        MAX_LORE_LENGTH,
+                    )
                 system_instruction = system_instruction + "\n\n" + lore
                 logger.info("Applied server lore for guild %s", guild_id)
 
@@ -126,7 +131,9 @@ class SessionMixin:
                         lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
                         logger.warning(
                             "Truncated server lore for guild %s on cache fixup (%d -> %d chars)",
-                            guild_id, len(SERVER_LORE[guild_id]), MAX_LORE_LENGTH,
+                            guild_id,
+                            len(SERVER_LORE[guild_id]),
+                            MAX_LORE_LENGTH,
                         )
                     system_instruction = system_instruction + "\n\n" + lore
                 self.chats[channel_id]["system_instruction"] = system_instruction
@@ -147,6 +154,7 @@ class SessionMixin:
         # path never ran.
         try:
             from .processing.guardrails import is_unrestricted
+
             # Re-read AFTER any RP-fix branch above so we don't clobber its update.
             current_instruction = self.chats[channel_id].get("system_instruction", "")
             already_injected = bool(
@@ -162,8 +170,8 @@ class SessionMixin:
             # Remove unrestricted instruction if it was previously injected
             elif already_injected:
                 logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
-                self.chats[channel_id]["system_instruction"] = (
-                    current_instruction.replace(UNRESTRICTED_MODE_INSTRUCTION, "")
+                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
+                    UNRESTRICTED_MODE_INSTRUCTION, ""
                 )
         except ImportError:
             pass  # Guardrails not available, skip unrestricted injection

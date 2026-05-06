@@ -2,6 +2,7 @@
 
 Pass `--apply` to actually delete; default is dry-run.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,8 +45,7 @@ def main() -> int:
             raw = json.loads(SIDECAR.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             print(f"❌ Failed to read sidecar {SIDECAR}: {exc}")
-            print("   Refusing to proceed; a corrupt sidecar would mark every "
-                  "session as orphan.")
+            print("   Refusing to proceed; a corrupt sidecar would mark every session as orphan.")
             return 2
         if isinstance(raw, dict):
             # Expect dict[str, str] mapping conversation_id -> session_id.
@@ -124,15 +124,19 @@ def main() -> int:
     if WORKDIR.exists():
         for entry in WORKDIR.iterdir():
             if entry.is_file() and entry.suffix.lower() in _STRAY_ALLOWED_SUFFIXES:
-                print(f"  DELETE stray {WORKDIR / entry.name}  ({entry.stat().st_size / 1024:.1f} KB)")
+                print(
+                    f"  DELETE stray {WORKDIR / entry.name}  ({entry.stat().st_size / 1024:.1f} KB)"
+                )
                 if apply:
                     entry.unlink()
                 stray_files += 1
 
     print()
     mode = "APPLIED" if apply else "DRY RUN — re-run with --apply to actually delete"
-    print(f"[{mode}] {deleted_files} jsonl + {deleted_dirs} dir + {stray_files} stray; "
-          f"freed {deleted_bytes / (1024 * 1024):.1f} MB")
+    print(
+        f"[{mode}] {deleted_files} jsonl + {deleted_dirs} dir + {stray_files} stray; "
+        f"freed {deleted_bytes / (1024 * 1024):.1f} MB"
+    )
     return 0
 
 

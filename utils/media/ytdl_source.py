@@ -17,6 +17,7 @@ from .ffmpeg_path import get_ffmpeg_executable
 
 logger = logging.getLogger(__name__)
 
+
 class FFmpegOptions(TypedDict):
     """Kwargs accepted by `discord.FFmpegPCMAudio` we set here.
 
@@ -27,6 +28,7 @@ class FFmpegOptions(TypedDict):
 
     options: str
     before_options: str
+
 
 # --- MUSIC SYSTEM ---
 # Suppress bug reports
@@ -216,6 +218,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # custom protocols, etc. that an attacker could use to read local
         # files or hit internal services. Only http(s) is allowed here.
         from urllib.parse import urlparse as _urlparse
+
         try:
             parsed = _urlparse(url)
             scheme = parsed.scheme.lower()
@@ -241,15 +244,15 @@ class YTDLSource(discord.PCMVolumeTransformer):
             raise ValueError("URL has no hostname")
         try:
             from utils.web.url_fetcher import _is_private_url
+
             if await _is_private_url(url):
-                raise ValueError(
-                    f"Refusing to fetch from private/internal IP for {host!r}"
-                )
+                raise ValueError(f"Refusing to fetch from private/internal IP for {host!r}")
         except ImportError:
             # Fallback: keep the old behaviour rather than silently disable
             # SSRF protection.
             import ipaddress
             import socket
+
             try:
                 ip_str = await loop.run_in_executor(None, socket.gethostbyname, host)
                 ip_obj = ipaddress.ip_address(ip_str)
@@ -263,18 +266,14 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 or ip_obj.is_reserved
                 or ip_obj.is_unspecified
             ):
-                raise ValueError(
-                    f"URL host {host!r} resolves to non-public IP {ip_str} — refusing"
-                )
+                raise ValueError(f"URL host {host!r} resolves to non-public IP {ip_str} — refusing")
 
         # Attempt 1: High Quality / Default (with runtime cookie check)
         try:
             logger.info("⬇️ Downloading: %s (Mode: HQ)", url)
             ytdl_hq = get_ytdl_hq()
             data = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: ytdl_hq.extract_info(url, download=not stream)
-                ),
+                loop.run_in_executor(None, lambda: ytdl_hq.extract_info(url, download=not stream)),
                 timeout=cls.YTDL_TIMEOUT,
             )
             ytdl_obj = ytdl_hq
@@ -331,9 +330,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if filename.startswith("-"):
             raise ValueError("yt-dlp returned suspicious filename starting with '-'")
         if stream and not filename.startswith(("http://", "https://")):
-            raise ValueError(
-                f"yt-dlp returned non-http(s) stream URL ({filename[:32]}...)"
-            )
+            raise ValueError(f"yt-dlp returned non-http(s) stream URL ({filename[:32]}...)")
         # When downloading (stream=False), confirm yt-dlp wrote into the
         # temp/ dir we configured via outtmpl. A compromised extractor that
         # forges absolute paths (e.g. C:\Windows\System32\foo.opus) would
@@ -342,6 +339,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # so a sneaky temp/../etc/passwd is collapsed before the check.
         if not stream:
             from pathlib import Path as _Path
+
             try:
                 resolved = _Path(filename).resolve()
                 expected_root = _Path("temp").resolve()
@@ -373,6 +371,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # protocols, etc. Reject anything that's not http(s) — non-URL
         # queries flow through the search path unchanged.
         from urllib.parse import urlparse as _urlparse
+
         try:
             scheme = _urlparse(query).scheme.lower() if query else ""
         except (ValueError, TypeError):
@@ -387,9 +386,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         try:
             ytdl_hq = get_ytdl_hq()
             data = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: ytdl_hq.extract_info(query, download=False)
-                ),
+                loop.run_in_executor(None, lambda: ytdl_hq.extract_info(query, download=False)),
                 timeout=cls.YTDL_TIMEOUT,
             )
         except (TimeoutError, yt_dlp.DownloadError):

@@ -113,7 +113,8 @@ class TestSendAlert:
         mgr._session = mock_session
 
         result = await mgr.send_alert(
-            "Test", "desc",
+            "Test",
+            "desc",
             fields=[{"name": "Key", "value": "Val"}],
             severity="info",
         )

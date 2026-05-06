@@ -96,7 +96,7 @@ func TestFetchSafePage(t *testing.T) {
 	// This test verifies SSRF blocks localhost test servers as expected.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte("<html><head><title>Test</title></head><body><p>Hello World</p></body></html>"))
+		_, _ = w.Write([]byte("<html><head><title>Test</title></head><body><p>Hello World</p></body></html>"))
 	}))
 	defer ts.Close()
 

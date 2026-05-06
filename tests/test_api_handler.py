@@ -86,11 +86,7 @@ class TestDetectSearchIntent:
 
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(
-            mock_client,
-            "claude-opus-4-7",
-            "Tell me a joke"
-        )
+        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Tell me a joke")
 
         assert isinstance(result, bool)
 
@@ -109,9 +105,7 @@ class TestDetectSearchIntent:
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
         result = await detect_search_intent(
-            mock_client,
-            "claude-opus-4-7",
-            "What is the latest news?"
+            mock_client, "claude-opus-4-7", "What is the latest news?"
         )
 
         assert result is True
@@ -130,11 +124,7 @@ class TestDetectSearchIntent:
 
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(
-            mock_client,
-            "claude-opus-4-7",
-            "Tell me a story"
-        )
+        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Tell me a story")
 
         assert result is False
 
@@ -146,11 +136,7 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.messages.create = AsyncMock(side_effect=ValueError("API Error"))
 
-        result = await detect_search_intent(
-            mock_client,
-            "claude-opus-4-7",
-            "Test message"
-        )
+        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Test message")
 
         assert result is False
 
@@ -300,6 +286,7 @@ class TestGuardrailsIntegration:
 # Merged from test_api_handler_extended.py
 # ======================================================================
 
+
 class TestBuildApiConfig:
     """Tests for build_api_config function."""
 
@@ -311,16 +298,13 @@ class TestBuildApiConfig:
             pytest.skip("api_handler not available")
             return
 
-        chat_data = {
-            "system_instruction": "Test instruction",
-            "thinking_enabled": False
-        }
+        chat_data = {"system_instruction": "Test instruction", "thinking_enabled": False}
 
         result = build_api_config(chat_data)
 
-        assert 'system_instruction' in result
-        assert result['system_instruction'] == "Test instruction"
-        assert 'max_tokens' in result
+        assert "system_instruction" in result
+        assert result["system_instruction"] == "Test instruction"
+        assert "max_tokens" in result
 
     def test_build_api_config_max_tokens(self):
         """Test max_tokens in API config."""
@@ -334,9 +318,9 @@ class TestBuildApiConfig:
 
         result = build_api_config(chat_data)
 
-        assert 'max_tokens' in result
-        assert isinstance(result['max_tokens'], int)
-        assert result['max_tokens'] > 0
+        assert "max_tokens" in result
+        assert isinstance(result["max_tokens"], int)
+        assert result["max_tokens"] > 0
 
     def test_build_api_config_with_search(self):
         """Test API config with search enabled."""
@@ -351,8 +335,8 @@ class TestBuildApiConfig:
         result = build_api_config(chat_data, use_search=True)
 
         # Claude has no built-in search tool; use_search only logs
-        assert 'system_instruction' in result
-        assert 'thinking' not in result
+        assert "system_instruction" in result
+        assert "thinking" not in result
 
     def test_build_api_config_default_thinking(self):
         """Test API config defaults to thinking enabled."""
@@ -392,9 +376,7 @@ class TestDetectSearchIntent:
             return
 
         mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(
-            side_effect=ValueError("API Error")
-        )
+        mock_client.messages.create = AsyncMock(side_effect=ValueError("API Error"))
 
         result = await detect_search_intent(mock_client, "claude-opus-4-7", "test message")
 
@@ -424,7 +406,7 @@ class TestCircuitBreakerImport:
             return
 
         # gemini_circuit should be defined (may be None if import failed)
-        assert hasattr(api_handler, 'gemini_circuit')
+        assert hasattr(api_handler, "gemini_circuit")
 
 
 class TestPerfTrackerImport:
@@ -471,6 +453,7 @@ class TestGuardrailsImport:
 
 class TestModuleDocstring:
     """Tests for module documentation."""
+
 
 class TestFaustDataImport:
     """Tests for Faust data import."""
@@ -528,7 +511,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data)
 
-        assert result['system_instruction'] == ""
+        assert result["system_instruction"] == ""
 
     def test_build_config_none_guild_id(self):
         """Test config with None guild_id."""
@@ -542,7 +525,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data, guild_id=None)
 
-        assert 'system_instruction' in result
+        assert "system_instruction" in result
 
     def test_build_config_specific_guild_id(self):
         """Test config with specific guild_id."""
@@ -556,7 +539,7 @@ class TestApiBuildConfigEdgeCases:
 
         result = build_api_config(chat_data, guild_id=123456789)
 
-        assert 'system_instruction' in result
+        assert "system_instruction" in result
 
 
 class TestIsSilentBlockFallback:
@@ -589,8 +572,8 @@ class TestClaudeConfigStructure:
 
         result = build_api_config(chat_data)
 
-        assert 'system_instruction' in result
-        assert result['system_instruction'] == "Test"
+        assert "system_instruction" in result
+        assert result["system_instruction"] == "Test"
 
     def test_config_has_max_tokens(self):
         """Test config has max_tokens field."""
@@ -604,13 +587,14 @@ class TestClaudeConfigStructure:
 
         result = build_api_config(chat_data)
 
-        assert 'max_tokens' in result
-        assert isinstance(result['max_tokens'], int)
+        assert "max_tokens" in result
+        assert isinstance(result["max_tokens"], int)
 
 
 # ======================================================================
 # Merged from test_api_handler_module.py
 # ======================================================================
+
 
 class TestBuildApiConfig:
     """Tests for build_api_config function."""
@@ -694,7 +678,9 @@ class TestDetectSearchIntent:
         mock_client = MagicMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "What is today's weather?")
+        result = await detect_search_intent(
+            mock_client, "claude-opus-4-7", "What is today's weather?"
+        )
 
         assert result is True
 
@@ -723,21 +709,25 @@ class TestModuleImports:
     def test_import_build_api_config(self):
         """Test build_api_config can be imported."""
         from cogs.ai_core.api.api_handler import build_api_config
+
         assert build_api_config is not None
 
     def test_import_call_claude_api(self):
         """Test call_claude_api can be imported."""
         from cogs.ai_core.api.api_handler import call_claude_api
+
         assert call_claude_api is not None
 
     def test_import_call_claude_api_streaming(self):
         """Test call_claude_api_streaming can be imported."""
         from cogs.ai_core.api.api_handler import call_claude_api_streaming
+
         assert call_claude_api_streaming is not None
 
     def test_import_detect_search_intent(self):
         """Test detect_search_intent can be imported."""
         from cogs.ai_core.api.api_handler import detect_search_intent
+
         assert detect_search_intent is not None
 
 
@@ -780,18 +770,21 @@ class TestFaustData:
     def test_import_faust_instruction(self):
         """Test FAUST_INSTRUCTION can be imported."""
         from cogs.ai_core.data import FAUST_INSTRUCTION
+
         assert FAUST_INSTRUCTION is not None
         assert isinstance(FAUST_INSTRUCTION, str)
 
     def test_import_faust_dm_instruction(self):
         """Test FAUST_DM_INSTRUCTION can be imported."""
         from cogs.ai_core.data import FAUST_DM_INSTRUCTION
+
         assert FAUST_DM_INSTRUCTION is not None
         assert isinstance(FAUST_DM_INSTRUCTION, str)
 
     def test_import_escalation_framings(self):
         """Test ESCALATION_FRAMINGS can be imported."""
         from cogs.ai_core.data import ESCALATION_FRAMINGS
+
         assert ESCALATION_FRAMINGS is not None
 
 
@@ -801,6 +794,7 @@ class TestRoleplayData:
     def test_import_roleplay_assistant_instruction(self):
         """Test ROLEPLAY_ASSISTANT_INSTRUCTION can be imported."""
         from cogs.ai_core.data.roleplay_data import ROLEPLAY_ASSISTANT_INSTRUCTION
+
         assert ROLEPLAY_ASSISTANT_INSTRUCTION is not None
         assert isinstance(ROLEPLAY_ASSISTANT_INSTRUCTION, str)
 
@@ -851,6 +845,7 @@ class TestBuildApiConfigModes:
 # ======================================================================
 # Merged from test_api_handler_new.py
 # ======================================================================
+
 
 class TestBuildApiConfig:
     """Tests for build_api_config function."""
@@ -1226,7 +1221,9 @@ class TestClassifySearchIntent:
     def test_long_roleplay_with_asterisks(self):
         from cogs.ai_core.api.api_handler import classify_search_intent
 
-        result = classify_search_intent("*She looked up at the stars and whispered softly, remembering the ancient tales her grandmother used to tell*")
+        result = classify_search_intent(
+            "*She looked up at the stars and whispered softly, remembering the ancient tales her grandmother used to tell*"
+        )
         assert result is False
 
     def test_goodbye(self):

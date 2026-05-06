@@ -51,6 +51,7 @@ def _cleanup_db_pool_on_exit():
     yield
     try:
         from utils.database.database import Database
+
         Database().close_pool_sync()
     except Exception:
         pass

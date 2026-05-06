@@ -24,15 +24,14 @@ def _normalize_service_host(host: str | None) -> str:
         return "localhost"
     return host
 
+
 # Service configuration
 # Prefer GO_HEALTH_API_* so the Go sidecar does not collide with the Python
 # health server, which also uses HEALTH_API_*.
 _legacy_health_host = os.getenv("HEALTH_API_HOST")
 _legacy_health_port = os.getenv("HEALTH_API_PORT")
 
-HEALTH_API_HOST = _normalize_service_host(
-    os.getenv("GO_HEALTH_API_HOST") or _legacy_health_host
-)
+HEALTH_API_HOST = _normalize_service_host(os.getenv("GO_HEALTH_API_HOST") or _legacy_health_host)
 HEALTH_API_PORT = os.getenv("GO_HEALTH_API_PORT") or (
     _legacy_health_port if _legacy_health_port and _legacy_health_port != "8080" else "8082"
 )
@@ -94,9 +93,7 @@ class HealthAPIClient:
 
             session = None
             try:
-                session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=5)
-                )
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
                 self._session = session
                 await self._check_service()
                 # Start periodic flush task once connected
@@ -152,6 +149,7 @@ class HealthAPIClient:
         and a fixed 5-minute interval when available.
         """
         import time as _time
+
         now = _time.monotonic()
         elapsed = now - self._last_service_check
 
@@ -161,7 +159,7 @@ class HealthAPIClient:
                     return True
             else:
                 # Backoff: 30s * 2^retry_count, capped at 300s
-                backoff = min(30 * (2 ** self._retry_count), 300)
+                backoff = min(30 * (2**self._retry_count), 300)
                 if elapsed < backoff:
                     return False
 
@@ -337,7 +335,9 @@ async def close_health_client() -> None:
         _client = None
 
 
-async def push_request_metric(endpoint: str, status: str = "success", duration: float | None = None):
+async def push_request_metric(
+    endpoint: str, status: str = "success", duration: float | None = None
+):
     """Push request metrics."""
     client = await get_health_client()
     await client.push_counter("requests", 1, endpoint=endpoint, status=status)

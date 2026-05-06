@@ -23,7 +23,6 @@ except ImportError:
     db = None  # type: ignore[assignment]
 
 
-
 logger = logging.getLogger(__name__)
 
 # Maximum queue size to prevent memory issues
@@ -208,10 +207,7 @@ class QueueManager:
                 if queue:
                     # Reject malformed entries — a row with no url / falsy url
                     # would be stored unchanged and then crash play_next().
-                    valid = [
-                        item for item in queue
-                        if isinstance(item, dict) and item.get("url")
-                    ]
+                    valid = [item for item in queue if isinstance(item, dict) and item.get("url")]
                     self.queues[guild_id] = collections.deque(valid)
                     # The DB schema only stores the queue itself, not
                     # per-guild volume/loop/24-7 settings. If a leftover
@@ -226,15 +222,9 @@ class QueueManager:
                             )
                             settings_data = json.loads(content)
                             if isinstance(settings_data, dict):
-                                self.volumes[guild_id] = float(
-                                    settings_data.get("volume", 0.5)
-                                )
-                                self.loops[guild_id] = bool(
-                                    settings_data.get("loop", False)
-                                )
-                                self.mode_247[guild_id] = bool(
-                                    settings_data.get("mode_247", False)
-                                )
+                                self.volumes[guild_id] = float(settings_data.get("volume", 0.5))
+                                self.loops[guild_id] = bool(settings_data.get("loop", False))
+                                self.mode_247[guild_id] = bool(settings_data.get("mode_247", False))
                         except (OSError, json.JSONDecodeError, ValueError, TypeError):
                             logger.debug(
                                 "Settings sidecar unreadable for guild %s — using defaults",
@@ -242,7 +232,8 @@ class QueueManager:
                             )
                     logger.info(
                         "📂 Loaded queue (%d tracks, %d valid) from database",
-                        len(queue), len(valid),
+                        len(queue),
+                        len(valid),
                     )
                     return True
 
@@ -265,8 +256,7 @@ class QueueManager:
                     # Previously empty/None URLs were accepted because the
                     # check only required the key to exist.
                     valid_items = [
-                        item for item in queue[:500]
-                        if isinstance(item, dict) and item.get("url")
+                        item for item in queue[:500] if isinstance(item, dict) and item.get("url")
                     ]
                     if not valid_items:
                         # Nothing to migrate — leave the JSON file alone so a

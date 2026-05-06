@@ -187,9 +187,7 @@ class TestSetUserContext:
         else:
             with patch("sentry_sdk.set_user") as mock_set_user:
                 sentry_integration.set_user_context(123, "testuser")
-                mock_set_user.assert_called_once_with(
-                    {"id": "123", "username": "testuser"}
-                )
+                mock_set_user.assert_called_once_with({"id": "123", "username": "testuser"})
 
     def test_set_user_global_with_sdk(self):
         """Test set_user_global still writes to the global scope."""
@@ -200,9 +198,7 @@ class TestSetUserContext:
 
         with patch("sentry_sdk.set_user") as mock_set_user:
             sentry_integration.set_user_global(123, "testuser")
-            mock_set_user.assert_called_once_with(
-                {"id": "123", "username": "testuser"}
-            )
+            mock_set_user.assert_called_once_with({"id": "123", "username": "testuser"})
 
 
 class TestAddBreadcrumb:

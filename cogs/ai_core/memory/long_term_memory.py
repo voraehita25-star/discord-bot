@@ -425,9 +425,7 @@ class LongTermMemory:
                         await conn.commit()
 
                 if user_id in self._cache:
-                    self._cache[user_id] = [
-                        f for f in self._cache[user_id] if f.id != similar.id
-                    ]
+                    self._cache[user_id] = [f for f in self._cache[user_id] if f.id != similar.id]
 
             self.logger.info("Forgot fact: %s", similar.content[:50])
             return True
@@ -458,7 +456,8 @@ class LongTermMemory:
                     self.logger.warning(
                         "LTM cache near capacity (%d/%d) with DB unavailable — "
                         "next new user will evict oldest user's facts",
-                        len(self._cache), self.MAX_CACHE_USERS,
+                        len(self._cache),
+                        self.MAX_CACHE_USERS,
                     )
                 if user_id in self._cache:
                     self._cache.move_to_end(user_id)
@@ -574,8 +573,10 @@ class LongTermMemory:
             # treating arbitrary longer facts as duplicates.
             min_len = min(content_len, len(fact_lower))
             max_len = max(content_len, len(fact_lower))
-            if max_len > 0 and min_len * 2 >= max_len and (
-                content_lower in fact_lower or fact_lower in content_lower
+            if (
+                max_len > 0
+                and min_len * 2 >= max_len
+                and (content_lower in fact_lower or fact_lower in content_lower)
             ):
                 return fact
             # Word overlap (Jaccard-ish) — only meaningful when both
@@ -605,7 +606,8 @@ class LongTermMemory:
                         # need to see it.
                         self.logger.warning(
                             "Evicted LTM cache for user %s (capacity %d) — facts lost (DB unavailable)",
-                            oldest_uid, self.MAX_CACHE_USERS,
+                            oldest_uid,
+                            self.MAX_CACHE_USERS,
                         )
                     self._cache[fact.user_id] = []
                 else:

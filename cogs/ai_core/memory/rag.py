@@ -24,6 +24,7 @@ from google import genai
 
 try:
     from utils.database import db
+
     _DB_AVAILABLE = True
 except ImportError:
     db = None  # type: ignore[assignment]
@@ -206,17 +207,13 @@ class FAISSIndex:
         # Validate dimension up front so a wrong-shape vector raises a clear
         # error instead of producing an opaque FAISS native crash later.
         if vector.size != self.dimension:
-            raise ValueError(
-                f"add_single: vector dim {vector.size} != index dim {self.dimension}"
-            )
+            raise ValueError(f"add_single: vector dim {vector.size} != index dim {self.dimension}")
         # Reject zero-norm vectors loudly. Silently skipping them used to
         # leave the DB row in place with no matching FAISS entry, which made
         # the memory unfindable on any future search.
         norm = np.linalg.norm(vector)
         if norm == 0:
-            raise ValueError(
-                f"add_single: cannot add zero-norm vector for memory_id={memory_id}"
-            )
+            raise ValueError(f"add_single: cannot add zero-norm vector for memory_id={memory_id}")
         with self._lock:
             normalized = (vector / norm).reshape(1, -1).astype(np.float32)
             if not self._initialized:
@@ -416,7 +413,9 @@ class MemorySystem:
             if vec.size != EMBEDDING_DIM:
                 logger.warning(
                     "Embedding dim mismatch: expected %d, got %d (model %s)",
-                    EMBEDDING_DIM, vec.size, EMBEDDING_MODEL,
+                    EMBEDDING_DIM,
+                    vec.size,
+                    EMBEDDING_MODEL,
                 )
                 return None
             return vec
@@ -447,7 +446,8 @@ class MemorySystem:
         async def _embed_one(text: str):
             async with sem:
                 return await self.client.aio.models.embed_content(
-                    model=EMBEDDING_MODEL, contents=text,
+                    model=EMBEDDING_MODEL,
+                    contents=text,
                 )
 
         for i in range(0, len(texts), batch_size):
@@ -517,7 +517,8 @@ class MemorySystem:
                     # entries beyond the cap get pulled lazily on demand.
                     if _DB_AVAILABLE and db is not None:
                         all_memories = await asyncio.wait_for(
-                            db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT,
+                            db.get_all_rag_memories(None),
+                            timeout=_DB_QUERY_TIMEOUT,
                         )
                         eager_load_cap = max(self.MAX_CACHE_SIZE, 1000)
                         for mem in all_memories[:eager_load_cap]:
@@ -528,7 +529,8 @@ class MemorySystem:
                             logger.info(
                                 "RAG cache eager-load capped at %d entries "
                                 "(table has %d). Remainder loaded lazily.",
-                                eager_load_cap, len(all_memories),
+                                eager_load_cap,
+                                len(all_memories),
                             )
                         self._evict_cache_if_needed()
 
@@ -554,9 +556,7 @@ class MemorySystem:
                                     self._faiss_index.add_single(vec, mem_id)
                                     count += 1
                                 except (ValueError, TypeError, KeyError) as e:
-                                    logger.debug(
-                                        "Skipping unreconcilable memory %s: %s", mem_id, e
-                                    )
+                                    logger.debug("Skipping unreconcilable memory %s: %s", mem_id, e)
                             return count
 
                         reconciled = await asyncio.to_thread(_reconcile_sync)
@@ -576,14 +576,17 @@ class MemorySystem:
             if not _DB_AVAILABLE or db is None:
                 return
 
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT
+            )
             if not all_memories:
                 return
 
             if len(all_memories) > MAX_RAG_REBUILD:
                 logger.warning(
                     "RAG rebuild capped: %d rows in DB, only loading first %d",
-                    len(all_memories), MAX_RAG_REBUILD,
+                    len(all_memories),
+                    MAX_RAG_REBUILD,
                 )
                 all_memories = all_memories[:MAX_RAG_REBUILD]
 
@@ -716,7 +719,8 @@ class MemorySystem:
                         logger.warning(
                             "FAISS add_single failed for memory %s: %s "
                             "(scheduling rebuild on next access)",
-                            memory_id, e,
+                            memory_id,
+                            e,
                         )
                         self._index_built = False
                 else:
@@ -881,7 +885,9 @@ class MemorySystem:
 
         # Get all memories for keyword search
         try:
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
+            )
         except TimeoutError:
             logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
             return []
@@ -1027,6 +1033,7 @@ class MemorySystem:
                 # Drop NaN / Inf scores — a corrupted embedding can produce
                 # one and silently torpedo every later sort/threshold check.
                 import math as _math
+
                 if not _math.isfinite(similarity):
                     continue
 
@@ -1053,7 +1060,9 @@ class MemorySystem:
             return []
 
         try:
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
+            )
         except TimeoutError:
             logger.warning("⏱️ RAG linear_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
             return []

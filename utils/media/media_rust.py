@@ -43,9 +43,11 @@ except ImportError:
 # PIL fallback
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
 
 class MediaProcessorWrapper:
     """
@@ -100,6 +102,7 @@ class MediaProcessorWrapper:
         # in an inconsistent state — see _PIL_LOCK comment near the top of
         # this module.
         from PIL import Image as _PIL_Image
+
         with _PIL_LOCK:
             prev_max_pixels = _PIL_Image.MAX_IMAGE_PIXELS
             _PIL_Image.MAX_IMAGE_PIXELS = 100_000_000

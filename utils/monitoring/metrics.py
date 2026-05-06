@@ -24,6 +24,7 @@ except ImportError:
     PROMETHEUS_AVAILABLE = False
     logger.debug("prometheus_client not installed - metrics disabled")
 
+
 class BotMetrics:
     """Bot metrics collector for Prometheus."""
 
@@ -282,10 +283,32 @@ class BotMetrics:
     # Anything not in this set rolls up under "other" so an attacker
     # spamming variant command names can't blow up Prometheus cardinality.
     _COMMAND_LABEL_ALLOWLIST: ClassVar[set[str]] = {
-        "chat", "ask", "gemini", "play", "skip", "stop", "queue", "leave",
-        "join", "shuffle", "loop", "pause", "resume", "remove", "clear",
-        "volume", "seek", "fix", "help", "ping", "stats", "memories",
-        "remember", "forget", "view_memories", "memory_stats",
+        "chat",
+        "ask",
+        "gemini",
+        "play",
+        "skip",
+        "stop",
+        "queue",
+        "leave",
+        "join",
+        "shuffle",
+        "loop",
+        "pause",
+        "resume",
+        "remove",
+        "clear",
+        "volume",
+        "seek",
+        "fix",
+        "help",
+        "ping",
+        "stats",
+        "memories",
+        "remember",
+        "forget",
+        "view_memories",
+        "memory_stats",
     }
 
     # Same defence for circuit-breaker and rate-limiter labels. An
@@ -293,12 +316,24 @@ class BotMetrics:
     # mint one Prometheus series per breaker name and exhaust the
     # /metrics endpoint.
     _CIRCUIT_NAME_ALLOWLIST: ClassVar[set[str]] = {
-        "anthropic", "claude_cli", "gemini", "youtube", "spotify",
-        "discord", "db_write_lock_wait", "go_url_fetcher", "go_health_api",
+        "anthropic",
+        "claude_cli",
+        "gemini",
+        "youtube",
+        "spotify",
+        "discord",
+        "db_write_lock_wait",
+        "go_url_fetcher",
+        "go_health_api",
     }
     _RATE_LIMIT_CONFIG_ALLOWLIST: ClassVar[set[str]] = {
-        "ai_chat", "ai_image", "ai_global", "music", "command",
-        "dashboard", "default",
+        "ai_chat",
+        "ai_image",
+        "ai_global",
+        "music",
+        "command",
+        "dashboard",
+        "default",
     }
 
     def observe_command_latency(self, command: str, duration: float):
@@ -315,7 +350,6 @@ class BotMetrics:
         """Record AI response generation time."""
         if self.enabled:
             self.ai_response_time.observe(duration)
-
 
     def increment_search_intent(self, method: str, result: str):
         """Record a search intent classification.

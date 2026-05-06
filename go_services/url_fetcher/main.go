@@ -265,14 +265,14 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	result.StatusCode = resp.StatusCode
 	result.ContentType = resp.Header.Get("Content-Type")
 
 	if resp.StatusCode != http.StatusOK {
 		// Drain body to allow TCP connection reuse
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result

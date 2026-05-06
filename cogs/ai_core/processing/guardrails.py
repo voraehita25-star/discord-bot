@@ -42,7 +42,8 @@ def _load_unrestricted_channels() -> set[int]:
             if size > _UNRESTRICTED_MAX_BYTES:
                 logger.error(
                     "unrestricted_channels.json too large (%d bytes > %d) — ignoring",
-                    size, _UNRESTRICTED_MAX_BYTES,
+                    size,
+                    _UNRESTRICTED_MAX_BYTES,
                 )
                 return set()
             data = json.loads(_UNRESTRICTED_FILE.read_text(encoding="utf-8"))
@@ -440,7 +441,11 @@ class InputGuardrails:
         # Thai-language injection patterns
         (r"ไม่ต้อง(?:สนใจ|ทำตาม|ฟัง)(?:คำสั่ง|คำ)?(?:ก่อนหน้า|เดิม|ที่ผ่านมา)", "ignore_instructions_th", 0.9),
         (r"ลืม(?:คำสั่ง|ทุก(?:อย่าง|สิ่ง)|ที่(?:สอน|บอก|กำหนด))", "forget_instructions_th", 0.85),
-        (r"(?:ตอนนี้|ต่อจากนี้|จากนี้(?:ไป)?)\s*(?:คุณ|เธอ|นาย)\s*(?:คือ|เป็น|ต้อง)", "persona_change_th", 0.6),
+        (
+            r"(?:ตอนนี้|ต่อจากนี้|จากนี้(?:ไป)?)\s*(?:คุณ|เธอ|นาย)\s*(?:คือ|เป็น|ต้อง)",
+            "persona_change_th",
+            0.6,
+        ),
         (r"(?:แสดง|เปิดเผย|บอก|พิมพ์)(?:system\s*)?prompt", "prompt_leak_th", 0.6),
         (r"(?:ปิด|ยกเลิก|ข้าม|ปลด)(?:การ)?(?:ป้องกัน|กรอง|จำกัด|guardrail)", "bypass_safety_th", 0.85),
     ]
@@ -593,7 +598,8 @@ def validate_input_for_channel(
         if result.flags:
             logger.info(
                 "⚠️ Injection detected in unrestricted channel %s (allowed): %s",
-                channel_id, result.flags,
+                channel_id,
+                result.flags,
             )
         # Sanitize control characters even in unrestricted mode
         sanitized = user_input

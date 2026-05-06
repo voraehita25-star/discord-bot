@@ -35,7 +35,6 @@ except ImportError:
     iio = None  # type: ignore
 
 
-
 logger = logging.getLogger(__name__)
 
 # ==================== Image Caching ====================
@@ -128,8 +127,10 @@ load_cached_image_bytes.cache_clear = clear_image_cache  # type: ignore[attr-def
 # Backward-compatible cache_info for callers expecting lru_cache-style info
 _CacheInfo = namedtuple("_CacheInfo", ["hits", "misses", "maxsize", "currsize"])
 
+
 def _cache_info():
     return _CacheInfo(hits=0, misses=0, maxsize=IMAGE_CACHE_MAX_SIZE, currsize=len(_image_cache))
+
 
 load_cached_image_bytes.cache_info = _cache_info  # type: ignore[attr-defined]
 
@@ -246,7 +247,8 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
             if first_w * first_h > 1_500_000:
                 logger.warning(
                     "GIF too large to process: %sx%s",
-                    first_w, first_h,
+                    first_w,
+                    first_h,
                 )
                 return None
             frame_count = 0
@@ -254,7 +256,9 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
                 while True:
                     frame_count += 1
                     if frame_count > _MAX_GIF_FRAMES:
-                        logger.warning("GIF exceeds %d frames (checked via PIL), truncating", _MAX_GIF_FRAMES)
+                        logger.warning(
+                            "GIF exceeds %d frames (checked via PIL), truncating", _MAX_GIF_FRAMES
+                        )
                         break
                     pil_check.seek(pil_check.tell() + 1)
             except EOFError:
@@ -307,8 +311,10 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         # timeout without blocking the calling event loop (callers are async)
         # and without depending on Unix-only signal.alarm.
         import concurrent.futures
+
         video_buffer = io.BytesIO()
         try:
+
             def _encode():
                 iio.imwrite(
                     video_buffer,
@@ -611,9 +617,7 @@ async def process_attachments(
                         len(content),
                     )
             except (OSError, UnicodeDecodeError) as e:
-                logger.warning(
-                    "Failed to process text attachment '%s': %s", attachment.filename, e
-                )
+                logger.warning("Failed to process text attachment '%s': %s", attachment.filename, e)
             continue
 
         # Handle images
@@ -625,7 +629,8 @@ async def process_attachments(
                 if len(image_data) > MAX_ATTACHMENT_SIZE:
                     logger.warning(
                         "Skipping attachment '%s' — actual size %d exceeds limit",
-                        attachment.filename, len(image_data),
+                        attachment.filename,
+                        len(image_data),
                     )
                     continue
 

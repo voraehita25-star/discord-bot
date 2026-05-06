@@ -205,7 +205,7 @@ class ResponseSender:
             # max_length by ~10-20 chars and Discord rejects with HTTP 400.
             wrap_overhead = 0
             if open_fence_lang is not None:
-                wrap_overhead += len(open_fence_lang) + 4   # "```lang\n"
+                wrap_overhead += len(open_fence_lang) + 4  # "```lang\n"
             wrap_overhead += 4  # "\n```" close on this chunk if still open
             effective_max = max(1, max_length - wrap_overhead)
             split_at = self._find_split_point(remaining, effective_max)
@@ -400,7 +400,7 @@ class ResponseSender:
                     # better outcome than two copies of the same content.
                     chunks_sent += 1  # count the in-flight chunk as best-effort sent
                     return await self._send_remaining_direct(
-                        channel, chunks[i + 1:], reference, allowed_mentions, i + 1
+                        channel, chunks[i + 1 :], reference, allowed_mentions, i + 1
                     )
 
             elapsed = time.time() - start_time
@@ -602,7 +602,7 @@ class ResponseSender:
         content = "\n".join(line.rstrip() for line in content.split("\n"))
 
         # Remove excessive newlines (more than 2 in a row)
-        content = re.sub(r'\n{3,}', '\n\n', content)
+        content = re.sub(r"\n{3,}", "\n\n", content)
 
         return content.strip()
 

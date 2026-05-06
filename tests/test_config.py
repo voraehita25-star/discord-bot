@@ -164,6 +164,7 @@ class TestBotSettings:
         )
 
         from pathlib import Path
+
         assert Path(data_dir).exists()
         assert Path(temp_dir).exists()
         assert Path(logs_dir).exists()

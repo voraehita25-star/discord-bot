@@ -6,12 +6,12 @@ from pathlib import Path
 # empty DB next to the current dir and report "0 tables".
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-for db in ['data/bot_database.db', 'data/ai_cache_l2.db']:
+for db in ["data/bot_database.db", "data/ai_cache_l2.db"]:
     db_path = _PROJECT_ROOT / db
     try:
         with sqlite3.connect(db_path) as conn:
-            print(f'==== {db_path} ====')
+            print(f"==== {db_path} ====")
             for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table'"):
-                print(f'-- Table: {row[0]}\n{row[1]}\n')
+                print(f"-- Table: {row[0]}\n{row[1]}\n")
     except Exception as e:
-        print(f'Skipping {db_path}: {e}')
+        print(f"Skipping {db_path}: {e}")

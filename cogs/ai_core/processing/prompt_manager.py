@@ -20,8 +20,8 @@ except ImportError:
     YAML_AVAILABLE = False
 
 
-
 logger = logging.getLogger(__name__)
+
 
 class PromptManager:
     """
@@ -186,9 +186,7 @@ class PromptManager:
                 # Sanitize curly braces in user input to prevent format string injection
                 safe_name = str(user_name or "Unknown").replace("{", "{{").replace("}", "}}")
                 try:
-                    parts.append(
-                        user_info.format(user_name=safe_name, user_id=user_id or 0)
-                    )
+                    parts.append(user_info.format(user_name=safe_name, user_id=user_id or 0))
                 except (KeyError, IndexError) as exc:
                     logger.warning("user_info template formatting failed: %s", exc)
 

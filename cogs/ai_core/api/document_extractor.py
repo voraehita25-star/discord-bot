@@ -177,7 +177,9 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
     if page_count > MAX_DOC_PAGES:
         logger.warning(
             "Rejecting oversized PDF %s (%d pages > %d cap)",
-            filename, page_count, MAX_DOC_PAGES,
+            filename,
+            page_count,
+            MAX_DOC_PAGES,
         )
         return None
 
@@ -191,7 +193,8 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
         if time.monotonic() - start > 60:
             logger.warning(
                 "PDF extraction timeout for %s after page %d, returning partial result",
-                filename, idx,
+                filename,
+                idx,
             )
             break
         try:
@@ -212,7 +215,9 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
             try:
                 text = page.extract_text() or ""
             except Exception as e2:
-                logger.debug("pypdf plain-mode also failed on page %d of %s: %s", idx + 1, filename, e2)
+                logger.debug(
+                    "pypdf plain-mode also failed on page %d of %s: %s", idx + 1, filename, e2
+                )
                 continue
         # Order matters: rejoin BEFORE _normalise so paragraph collapse
         # runs on the fixed-up text. _normalise's \n{3,} → \n\n pass
@@ -268,6 +273,7 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
     # decompress every entry in 64 KiB chunks and abort the moment the
     # observed bytes exceed the cap. Cap is a hard 50 MiB aggregate.
     import zipfile
+
     _MAX_DOCX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MiB aggregate (real bytes)
     _CHUNK = 64 * 1024
     try:
@@ -282,9 +288,9 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
                         total += len(chunk)
                         if total > _MAX_DOCX_TOTAL_BYTES:
                             logger.warning(
-                                "DOCX %s exceeded %d-byte decompression cap "
-                                "(zip-bomb guard)",
-                                filename, _MAX_DOCX_TOTAL_BYTES,
+                                "DOCX %s exceeded %d-byte decompression cap (zip-bomb guard)",
+                                filename,
+                                _MAX_DOCX_TOTAL_BYTES,
                             )
                             return None
     except zipfile.BadZipFile:
@@ -362,15 +368,15 @@ def _normalise(text: str) -> str:
 # Thai / CJK text comes out as "คำ คำ คำ" (space between every word) which
 # reads as broken/pidgin in those languages.
 _CONTINUOUS_SCRIPT_RANGES = (
-    "฀-๿"      # Thai
-    "຀-໿"      # Lao
-    "ក-៿"      # Khmer
-    "぀-ヿ"      # Hiragana + Katakana
-    "ㇰ-ㇿ"      # Katakana phonetic extensions
-    "一-鿿"      # CJK Unified Ideographs
-    "㐀-䶿"      # CJK Extension A
-    "豈-﫿"      # CJK Compatibility Ideographs
-    "가-힯"      # Hangul Syllables
+    "฀-๿"  # Thai
+    "຀-໿"  # Lao
+    "ក-៿"  # Khmer
+    "぀-ヿ"  # Hiragana + Katakana
+    "ㇰ-ㇿ"  # Katakana phonetic extensions
+    "一-鿿"  # CJK Unified Ideographs
+    "㐀-䶿"  # CJK Extension A
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "가-힯"  # Hangul Syllables
 )
 _RE_CONTINUOUS_CHAR = re.compile(rf"[{_CONTINUOUS_SCRIPT_RANGES}]")
 _RE_SPACE_BETWEEN_CONTINUOUS = re.compile(
@@ -449,7 +455,11 @@ def _rejoin_pdf_lines(text: str) -> str:
             prev = result[-1]
             last_char = prev[-1] if prev else ""
             first_char = stripped[0]
-            if last_char and _RE_CONTINUOUS_CHAR.match(last_char) and _RE_CONTINUOUS_CHAR.match(first_char):
+            if (
+                last_char
+                and _RE_CONTINUOUS_CHAR.match(last_char)
+                and _RE_CONTINUOUS_CHAR.match(first_char)
+            ):
                 sep = ""
             else:
                 sep = " " if prev and not prev.endswith((" ", "\t")) else ""
@@ -601,6 +611,7 @@ def _get_persist_lock() -> Any:
     global _persist_lock
     if _persist_lock is None:
         import asyncio as _asyncio
+
         _persist_lock = _asyncio.Lock()
     return _persist_lock
 
@@ -633,6 +644,7 @@ async def extract_and_persist(
         return []
 
     import asyncio
+
     saved: list[dict[str, Any]] = []
 
     # Parallel extraction — CPU-bound work in separate threads, then await
@@ -647,7 +659,8 @@ async def extract_and_persist(
         if isinstance(extracted, BaseException):
             logger.warning(
                 "Extraction failed for document %d: %s",
-                idx, extracted,
+                idx,
+                extracted,
             )
             continue
         if extracted is None or not extracted.text.strip():
@@ -661,7 +674,9 @@ async def extract_and_persist(
         if extracted.char_count > MAX_TOTAL_CHARS:
             logger.warning(
                 "Single document %s exceeds total cap (%d > %d); rejecting",
-                extracted.filename, extracted.char_count, MAX_TOTAL_CHARS,
+                extracted.filename,
+                extracted.char_count,
+                MAX_TOTAL_CHARS,
             )
             continue
 
@@ -687,7 +702,9 @@ async def extract_and_persist(
                         # but keep the safety bail-out.
                         logger.warning(
                             "Dropping document %s: %d chars exceeds total cap %d",
-                            extracted.filename, extracted.char_count, MAX_TOTAL_CHARS,
+                            extracted.filename,
+                            extracted.char_count,
+                            MAX_TOTAL_CHARS,
                         )
                         break
             except Exception as e:
@@ -709,16 +726,20 @@ async def extract_and_persist(
                 logger.warning("Failed to save document memory for %s: %s", extracted.filename, e)
                 continue
 
-        saved.append({
-            "id": memory_id,
-            "filename": extracted.filename,
-            "kind": extracted.kind,
-            "char_count": extracted.char_count,
-            "page_count": extracted.page_count,
-        })
+        saved.append(
+            {
+                "id": memory_id,
+                "filename": extracted.filename,
+                "kind": extracted.kind,
+                "char_count": extracted.char_count,
+                "page_count": extracted.page_count,
+            }
+        )
         logger.info(
             "📎 Saved document memory: %s (%d chars, kind=%s)",
-            extracted.filename, extracted.char_count, extracted.kind,
+            extracted.filename,
+            extracted.char_count,
+            extracted.kind,
         )
 
     # If anything was actually persisted, drop the user_context cache so the
@@ -728,6 +749,7 @@ async def extract_and_persist(
     if saved:
         try:
             from .dashboard_common import invalidate_user_context_cache
+
             invalidate_user_context_cache(source_conversation_id)
         except ImportError:
             pass

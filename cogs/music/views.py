@@ -36,9 +36,7 @@ class MusicControlView(discord.ui.View):
             return False
         # If the bot isn't in a voice channel, controls have nothing to act on.
         if not interaction.guild or not interaction.guild.voice_client:
-            await interaction.response.send_message(
-                "Bot is not connected to voice", ephemeral=True
-            )
+            await interaction.response.send_message("Bot is not connected to voice", ephemeral=True)
             return False
         member = interaction.user
         if not member.voice:
@@ -75,9 +73,7 @@ class MusicControlView(discord.ui.View):
             except discord.ClientException as e:
                 # Restore the emoji and surface the failure to the user
                 button.emoji = previous_emoji
-                await interaction.response.send_message(
-                    f"❌ ไม่สามารถเล่นต่อได้: {e}", ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ ไม่สามารถเล่นต่อได้: {e}", ephemeral=True)
                 return
             await interaction.response.edit_message(view=self)
         elif voice_client.is_playing():
@@ -148,7 +144,8 @@ class MusicControlView(discord.ui.View):
         self.cog._gs(self.guild_id).loop = not current_loop
 
         button.style = (
-            discord.ButtonStyle.success if self.cog._gs(self.guild_id).loop
+            discord.ButtonStyle.success
+            if self.cog._gs(self.guild_id).loop
             else discord.ButtonStyle.secondary
         )
         # `edit_message` can raise NotFound (message deleted by user) or

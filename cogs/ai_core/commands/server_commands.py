@@ -23,39 +23,70 @@ def _fmt_http_error(e: discord.HTTPException) -> str:
     code = getattr(e, "code", 0)
     return f"(HTTP {status}, code {code})"
 
+
 # Allowlist of safe permissions that the AI is allowed to set.
 # Dangerous permissions (administrator, manage_guild, manage_roles, etc.) are excluded.
-_SAFE_PERMISSIONS: frozenset[str] = frozenset({
-    # Channel-level permissions
-    "view_channel", "read_messages",  # read_messages is alias for view_channel
-    "send_messages", "send_messages_in_threads",
-    "create_public_threads", "create_private_threads",
-    "embed_links", "attach_files", "add_reactions",
-    "use_external_emojis", "use_external_stickers",
-    "read_message_history", "connect", "speak",
-    "stream", "use_voice_activation",
-    "manage_threads",
-    "priority_speaker", "request_to_speak",
-    "use_application_commands", "use_embedded_activities",
-    "use_soundboard", "use_external_sounds",
-    "send_voice_messages", "send_polls",
-    "create_events", "manage_events",
-    # General non-dangerous permissions
-    "change_nickname", "manage_nicknames",
-    "create_instant_invite", "external_emojis",
-    "external_stickers",
-})
+_SAFE_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        # Channel-level permissions
+        "view_channel",
+        "read_messages",  # read_messages is alias for view_channel
+        "send_messages",
+        "send_messages_in_threads",
+        "create_public_threads",
+        "create_private_threads",
+        "embed_links",
+        "attach_files",
+        "add_reactions",
+        "use_external_emojis",
+        "use_external_stickers",
+        "read_message_history",
+        "connect",
+        "speak",
+        "stream",
+        "use_voice_activation",
+        "manage_threads",
+        "priority_speaker",
+        "request_to_speak",
+        "use_application_commands",
+        "use_embedded_activities",
+        "use_soundboard",
+        "use_external_sounds",
+        "send_voice_messages",
+        "send_polls",
+        "create_events",
+        "manage_events",
+        # General non-dangerous permissions
+        "change_nickname",
+        "manage_nicknames",
+        "create_instant_invite",
+        "external_emojis",
+        "external_stickers",
+    }
+)
 
 # Explicitly blocked dangerous permissions
-_DANGEROUS_PERMISSIONS: frozenset[str] = frozenset({
-    "administrator", "manage_guild", "manage_roles",
-    "manage_channels", "manage_webhooks", "manage_expressions",
-    "kick_members", "ban_members", "mention_everyone",
-    "view_audit_log", "view_guild_insights",
-    "moderate_members",
-    # Moved from _SAFE_PERMISSIONS: these are still risky for AI-controlled actions
-    "manage_messages", "mute_members", "deafen_members", "move_members",
-})
+_DANGEROUS_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        "administrator",
+        "manage_guild",
+        "manage_roles",
+        "manage_channels",
+        "manage_webhooks",
+        "manage_expressions",
+        "kick_members",
+        "ban_members",
+        "mention_everyone",
+        "view_audit_log",
+        "view_guild_insights",
+        "moderate_members",
+        # Moved from _SAFE_PERMISSIONS: these are still risky for AI-controlled actions
+        "manage_messages",
+        "mute_members",
+        "deafen_members",
+        "move_members",
+    }
+)
 
 # Import Audit Logger for tracking admin actions
 try:
@@ -69,8 +100,8 @@ except ImportError:
     log_admin_action = None  # type: ignore[assignment]
 
 
-
 logger = logging.getLogger(__name__)
+
 
 def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
     """Find a member by name, display_name, or partial match.
@@ -114,7 +145,9 @@ async def cmd_create_text(
         args: Additional arguments (optional category name)
         user: The user who triggered the command (for permission checks)
     """
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_channels", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
@@ -167,7 +200,9 @@ async def cmd_create_voice(
         args: Additional arguments (optional category name)
         user: The user who triggered the command (for permission checks)
     """
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_channels", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
@@ -220,7 +255,9 @@ async def cmd_create_category(
         _args: Unused arguments
         user: The user who triggered the command (for permission checks)
     """
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_channels", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
@@ -260,7 +297,9 @@ async def cmd_delete_channel(
         _args: Unused arguments
         user: The user who triggered the command (for permission checks)
     """
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_channels", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
@@ -308,7 +347,9 @@ async def cmd_create_role(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Create a role with optional color."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_roles", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
         return
 
@@ -368,7 +409,9 @@ async def cmd_delete_role(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Delete a role."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_roles", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
         return
 
@@ -414,7 +457,9 @@ async def cmd_add_role(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Add a role to a user."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_roles", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
         return
 
@@ -487,7 +532,9 @@ async def cmd_remove_role(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Remove a role from a user."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_roles", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
         return
 
@@ -514,8 +561,7 @@ async def cmd_remove_role(
             # cmd_add_role above. Otherwise the AI tool gets a generic
             # "user not found" and may try to create a duplicate operation.
             await origin_channel.send(
-                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน "
-                f"กรุณาระบุให้ชัดเจน"
+                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน กรุณาระบุให้ชัดเจน"
             )
             return
 
@@ -558,7 +604,9 @@ async def cmd_set_channel_perm(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Set permissions for a channel."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_channels", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_channels", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
         return
 
@@ -593,14 +641,11 @@ async def cmd_set_channel_perm(
         # Security: Only allow permissions in the safe allowlist
         if perm_name in _DANGEROUS_PERMISSIONS:
             await origin_channel.send(
-                f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
-                f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+                f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
             )
             return
         if perm_name not in _SAFE_PERMISSIONS:
-            await origin_channel.send(
-                f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
-            )
+            await origin_channel.send(f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต")
             return
 
         if hasattr(overwrite, perm_name):
@@ -637,7 +682,9 @@ async def cmd_set_role_perm(
     user: discord.Member | discord.User | None = None,
 ) -> None:
     """Set permissions for a role."""
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_roles", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_roles", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
         return
 
@@ -665,14 +712,11 @@ async def cmd_set_role_perm(
     # Security: Only allow permissions in the safe allowlist
     if perm_name in _DANGEROUS_PERMISSIONS:
         await origin_channel.send(
-            f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI "
-            f"(permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+            f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
         )
         return
     if perm_name not in _SAFE_PERMISSIONS:
-        await origin_channel.send(
-            f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต"
-        )
+        await origin_channel.send(f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต")
         return
 
     if hasattr(perms, perm_name):
@@ -831,7 +875,9 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     # Require manage_messages: cmd_edit_message can edit any bot-owned or
     # bot-controlled webhook message in the channel, so it needs the same
     # permission Discord requires for editing/managing messages.
-    if user is not None and not getattr(getattr(user, "guild_permissions", None), "manage_messages", False):
+    if user is not None and not getattr(
+        getattr(user, "guild_permissions", None), "manage_messages", False
+    ):
         await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Messages")
         return
 

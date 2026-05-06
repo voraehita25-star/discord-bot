@@ -16,6 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class CircuitState(Enum):
     """Circuit breaker states."""
 
@@ -91,7 +92,10 @@ class CircuitBreaker:
             if (
                 self._state == CircuitState.OPEN
                 and self._last_failure_time
-                and (time.time() - self._last_failure_time >= (self._current_reset_timeout or self.reset_timeout))
+                and (
+                    time.time() - self._last_failure_time
+                    >= (self._current_reset_timeout or self.reset_timeout)
+                )
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
             return self._state
@@ -119,7 +123,9 @@ class CircuitBreaker:
             self._current_reset_timeout = None
         elif new_state == CircuitState.OPEN:
             # Jitter the reset timeout to prevent thundering herd
-            self._current_reset_timeout = self.reset_timeout + random.uniform(0, self.reset_timeout * 0.3)
+            self._current_reset_timeout = self.reset_timeout + random.uniform(
+                0, self.reset_timeout * 0.3
+            )
 
         if old_state != new_state:
             logger.info(
@@ -139,7 +145,10 @@ class CircuitBreaker:
             if (
                 self._state == CircuitState.OPEN
                 and self._last_failure_time
-                and (now - self._last_failure_time >= (self._current_reset_timeout or self.reset_timeout))
+                and (
+                    now - self._last_failure_time
+                    >= (self._current_reset_timeout or self.reset_timeout)
+                )
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
 
@@ -237,7 +246,6 @@ class CircuitBreaker:
             self._last_failure_time = None
         logger.info("⚡ Circuit Breaker [%s]: Manually reset", self.name)
 
-
     def _get_async_lock(self) -> asyncio.Lock:
         """Lazily allocate the asyncio.Lock so we bind to the running loop."""
         if self._async_lock is None:
@@ -256,7 +264,10 @@ class CircuitBreaker:
             if (
                 self._state == CircuitState.OPEN
                 and self._last_failure_time
-                and (now - self._last_failure_time >= (self._current_reset_timeout or self.reset_timeout))
+                and (
+                    now - self._last_failure_time
+                    >= (self._current_reset_timeout or self.reset_timeout)
+                )
             ):
                 self._transition_to_unlocked(CircuitState.HALF_OPEN)
 

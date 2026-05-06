@@ -57,6 +57,7 @@ def normalize_timestamp_to_bangkok(raw: Any) -> str:
 def get_db():
     """Get a Database instance (lazy import to avoid circular deps)."""
     from .dashboard_config import Database
+
     return Database()
 
 
@@ -110,7 +111,7 @@ class LeadingTimestampStripper:
         # Try a full match against the buffered text.
         match = _LEADING_TIMESTAMP_RE.match(self._buffer)
         if match:
-            out = self._buffer[match.end():]
+            out = self._buffer[match.end() :]
             self._buffer = ""
             self._done = True
             return out
@@ -145,16 +146,19 @@ def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
     if not isinstance(value, str):
         value = str(value)
     import unicodedata as _unicodedata
+
     value = _unicodedata.normalize("NFKC", value)
-    value = _re.sub(r'[\x00-\x1f\x7f]', '', value)  # Remove control chars
-    value = _re.sub(r'[\[\]{}`]', '', value)  # Strip brackets/braces/backticks to prevent instruction injection
+    value = _re.sub(r"[\x00-\x1f\x7f]", "", value)  # Remove control chars
+    value = _re.sub(
+        r"[\[\]{}`]", "", value
+    )  # Strip brackets/braces/backticks to prevent instruction injection
     # Neutralise common prompt-injection prefixes. Strip ONLY the
     # ``keyword:`` punctuation marker — leaving the bare word lets the
     # model still see what the user typed but breaks the colon-prefixed
     # "system: do X" instruction shape.
     value = _re.sub(
-        r'(?i)\b(system|ignore|instruction|override|forget|jailbreak|disregard\s+previous)\s*:',
-        r'\1',
+        r"(?i)\b(system|ignore|instruction|override|forget|jailbreak|disregard\s+previous)\s*:",
+        r"\1",
         value,
     )
     return str(value[:max_len])
@@ -295,7 +299,11 @@ async def build_user_context(
                         # can tell the user which files weren't visible.
                         dropped_filenames.append(filename)
                         continue
-                    snippet = text if len(text) <= remaining else text[:remaining] + "\n[... truncated in prompt]"
+                    snippet = (
+                        text
+                        if len(text) <= remaining
+                        else text[:remaining] + "\n[... truncated in prompt]"
+                    )
                     doc_sections.append(f"## {filename}\n{snippet}")
                     running_total += len(snippet)
                 if doc_sections:

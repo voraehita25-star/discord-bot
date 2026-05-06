@@ -33,6 +33,7 @@ try:
         FAUST_SANDBOX,
         UNRESTRICTED_MODE_INSTRUCTION,
     )
+
     # Backward compatibility aliases
     try:
         from .faust_data import FAUST_DM_MODE, FAUST_PERSONA, FAUST_ROLEPLAY
@@ -51,6 +52,7 @@ except ImportError:
         FAUST_SANDBOX,
         UNRESTRICTED_MODE_INSTRUCTION,
     )
+
     FAUST_DM_MODE = FAUST_DM_INSTRUCTION
     FAUST_PERSONA = FAUST_INSTRUCTION
     FAUST_ROLEPLAY = FAUST_INSTRUCTION

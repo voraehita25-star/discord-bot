@@ -13,6 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 def _safe_int_env(key: str, default: int) -> int:
     """Safely parse integer from environment variable with fallback."""
     try:
@@ -42,14 +43,16 @@ class BotSettings:
     discord_token: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", ""), repr=False)
 
     # Claude AI (primary)
-    anthropic_api_key: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"), repr=False)
-    anthropic_base_url: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL"))
-    claude_model: str = field(
-        default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-7")
+    anthropic_api_key: str | None = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"), repr=False
     )
+    anthropic_base_url: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL"))
+    claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-7"))
 
     # Gemini AI (used for RAG embeddings only)
-    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False)
+    gemini_api_key: str | None = field(
+        default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False
+    )
 
     # Spotify
     spotipy_client_id: str | None = field(

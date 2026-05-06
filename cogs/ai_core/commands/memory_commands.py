@@ -18,7 +18,7 @@ from cogs.music.utils import Colors
 
 # Strip control characters except newline/tab — compiled once at module
 # load so `!remember` doesn't re-parse the pattern on every invocation.
-_CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class MemoryCommands(commands.Cog):
@@ -54,7 +54,7 @@ class MemoryCommands(commands.Cog):
         # Sanitize: strip control characters except newline/tab. Pattern is
         # compiled at module level (`_CONTROL_CHARS_RE`) to avoid re-parsing
         # the regex on every `!remember` invocation.
-        fact = _CONTROL_CHARS_RE.sub('', fact).strip()
+        fact = _CONTROL_CHARS_RE.sub("", fact).strip()
         if len(fact) < 3:
             await ctx.send("❌ ข้อความสั้นเกินไปหลังทำความสะอาด")
             return

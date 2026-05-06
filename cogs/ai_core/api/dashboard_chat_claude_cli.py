@@ -121,7 +121,9 @@ def _encode_claude_project_dirname(path: Path) -> str:
 
 def _claude_projects_folder() -> Path:
     """Folder where Claude Code writes .jsonl logs for our dedicated CWD."""
-    return Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
+    return (
+        Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
+    )
 
 
 def _load_persisted_sessions() -> None:
@@ -276,6 +278,7 @@ def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
     _CONVERSATION_LOCKS[conversation_id] = lock
     return lock
 
+
 # Where to drop temp image files Claude reads via the Read tool.
 _TEMP_IMAGE_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_images"
 
@@ -300,19 +303,70 @@ _SUPPORTED_IMAGE_MIME = {
 # in document-attach.ts should stay synchronised.
 _SUPPORTED_DOC_BINARY_EXT = {".pdf", ".docx"}
 _SUPPORTED_DOC_TEXT_EXT = {
-    ".txt", ".md", ".markdown", ".rst",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
     # NOTE: .env intentionally excluded — uploading .env files combined with
     # the CLI's Read-tool capability lets a malicious frontend exfiltrate
     # secrets via the AI response.
-    ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg",
-    ".csv", ".tsv", ".xml", ".log",
-    ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
-    ".rs", ".go", ".java", ".kt", ".scala", ".swift",
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx",
-    ".cs", ".rb", ".php", ".pl", ".r", ".lua",
-    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
-    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
-    ".sql", ".graphql", ".gql",
+    ".json",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".csv",
+    ".tsv",
+    ".xml",
+    ".log",
+    ".py",
+    ".pyi",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".rs",
+    ".go",
+    ".java",
+    ".kt",
+    ".scala",
+    ".swift",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".hxx",
+    ".cs",
+    ".rb",
+    ".php",
+    ".pl",
+    ".r",
+    ".lua",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".vue",
+    ".svelte",
+    ".sql",
+    ".graphql",
+    ".gql",
 }
 
 
@@ -418,7 +472,8 @@ def _save_inline_images(
         if len(data) > max_size_bytes:
             logger.warning(
                 "Dropping oversized image attachment (%d bytes > %d cap)",
-                len(data), max_size_bytes,
+                len(data),
+                max_size_bytes,
             )
             continue
         path = target_dir / f"{timestamp}_{idx}{ext}"
@@ -522,7 +577,9 @@ def _save_inline_documents(
             if len(decoded) > max_size_bytes:
                 logger.warning(
                     "Dropping oversized document %s (%d bytes > %d cap)",
-                    name, len(decoded), max_size_bytes,
+                    name,
+                    len(decoded),
+                    max_size_bytes,
                 )
                 continue
             path.write_bytes(decoded)
@@ -532,7 +589,9 @@ def _save_inline_documents(
             if len(encoded) > max_size_bytes:
                 logger.warning(
                     "Dropping oversized document %s (%d bytes > %d cap)",
-                    name, len(encoded), max_size_bytes,
+                    name,
+                    len(encoded),
+                    max_size_bytes,
                 )
                 continue
             path.write_bytes(encoded)
@@ -681,11 +740,28 @@ def _make_subprocess_env() -> dict[str, str]:
     # the subscription OAuth token and route through per-token billing.
     _ALLOWED_ENV_KEYS = {
         # OS / launcher fundamentals
-        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
-        "HOME", "USERPROFILE", "USERNAME", "USER", "LOGNAME",
-        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
-        "TEMP", "TMP", "TMPDIR",
-        "LANG", "LC_ALL", "LC_CTYPE", "LANGUAGE",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "HOME",
+        "USERPROFILE",
+        "USERNAME",
+        "USER",
+        "LOGNAME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LANGUAGE",
         "TZ",
         # Claude-CLI specific (auth + telemetry opt-out)
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -695,8 +771,12 @@ def _make_subprocess_env() -> dict[str, str]:
         "NODE_OPTIONS",
         "NPM_CONFIG_PREFIX",
         # Proxy plumbing (operator may need these to reach Anthropic)
-        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
     }
     env = {k: v for k, v in os.environ.items() if k in _ALLOWED_ENV_KEYS}
     return env
@@ -720,12 +800,16 @@ def _build_claude_argv(
     quality on hard questions.
     """
     argv: list[str] = [
-        claude_exe, "-p",
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
+        claude_exe,
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--model", CLAUDE_MODEL,
+        "--model",
+        CLAUDE_MODEL,
     ]
     if enable_thinking:
         argv.extend(["--effort", "max", "--betas", "interleaved-thinking"])
@@ -845,7 +929,8 @@ async def _run_claude_subprocess(
             if len(raw_line) > MAX_STDOUT_LINE_BYTES:
                 logger.warning(
                     "Dropping oversized stdout frame (%d bytes > %d cap)",
-                    len(raw_line), MAX_STDOUT_LINE_BYTES,
+                    len(raw_line),
+                    MAX_STDOUT_LINE_BYTES,
                 )
                 continue
             try:
@@ -984,8 +1069,16 @@ async def handle_chat_message_claude_cli(
     # could desync the on-disk session map (which sanitizes for filesystem
     # use) from the DB rows (which do not), or land in a SQL parameter
     # downstream as an unexpected shape.
-    if not isinstance(conversation_id, str) or not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id):
-        await ws.send_json({"type": "error", "message": "Invalid conversation ID", "conversation_id": conversation_id})
+    if not isinstance(conversation_id, str) or not re.match(
+        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+    ):
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Invalid conversation ID",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     raw_content = data.get("content", "")
@@ -1004,15 +1097,19 @@ async def handle_chat_message_claude_cli(
     documents_raw = data.get("documents") or []
 
     if not content:
-        await ws.send_json({"type": "error", "message": "Empty message", "conversation_id": conversation_id})
+        await ws.send_json(
+            {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
+        )
         return
 
     if len(content) > max_content_length:
-        await ws.send_json({
-            "type": "error",
-            "message": f"Message too long (>{max_content_length} chars)",
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": f"Message too long (>{max_content_length} chars)",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     ready, reason = is_cli_backend_ready()
@@ -1036,7 +1133,9 @@ async def handle_chat_message_claude_cli(
             # Don't pass `mode=` for user turns — SDK backend omits it too;
             # the mode badge is conceptually the assistant's reply attribute.
             user_msg_id = await db.save_dashboard_message(
-                conversation_id, "user", content,
+                conversation_id,
+                "user",
+                content,
                 images=capped_images if capped_images else None,
             )
         except Exception:
@@ -1047,7 +1146,10 @@ async def handle_chat_message_claude_cli(
     # event loop for hundreds of milliseconds.
     image_paths = (
         await asyncio.to_thread(
-            _save_inline_images, conversation_id or "default", capped_images, max_image_size_bytes,
+            _save_inline_images,
+            conversation_id or "default",
+            capped_images,
+            max_image_size_bytes,
         )
         if capped_images
         else []
@@ -1057,7 +1159,10 @@ async def handle_chat_message_claude_cli(
     capped_docs = documents_raw[:max_documents] if isinstance(documents_raw, list) else []
     doc_paths = (
         await asyncio.to_thread(
-            _save_inline_documents, conversation_id or "default", capped_docs, max_document_size_bytes,
+            _save_inline_documents,
+            conversation_id or "default",
+            capped_docs,
+            max_document_size_bytes,
         )
         if capped_docs
         else []
@@ -1071,19 +1176,24 @@ async def handle_chat_message_claude_cli(
     if capped_docs and DB_AVAILABLE:
         try:
             from .document_extractor import extract_and_persist
+
             db_inst = get_db()
             saved_docs = await extract_and_persist(
-                capped_docs, db=db_inst, source_conversation_id=conversation_id,
+                capped_docs,
+                db=db_inst,
+                source_conversation_id=conversation_id,
             )
             if saved_docs:
                 # Non-blocking UX feedback. Does not gate the chat response —
                 # the message continues regardless of whether the toast lands.
                 with contextlib.suppress(Exception):
-                    await ws.send_json({
-                        "type": "document_saved",
-                        "documents": saved_docs,
-                        "conversation_id": conversation_id,
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "document_saved",
+                            "documents": saved_docs,
+                            "conversation_id": conversation_id,
+                        }
+                    )
         except Exception:
             logger.exception("Document extraction/persistence failed (CLI backend)")
 
@@ -1113,11 +1223,7 @@ async def handle_chat_message_claude_cli(
             db_msgs = await db.get_dashboard_messages(conversation_id)
             # Drop the trailing user row when present — that's the message
             # we're about to answer, not part of the prior history.
-            hist_msgs = (
-                db_msgs[:-1]
-                if db_msgs and db_msgs[-1].get("role") == "user"
-                else db_msgs
-            )
+            hist_msgs = db_msgs[:-1] if db_msgs and db_msgs[-1].get("role") == "user" else db_msgs
             if hist_msgs:
                 history = hist_msgs
         except Exception:
@@ -1129,7 +1235,9 @@ async def handle_chat_message_claude_cli(
     # build_user_context() keeps the SQLite round trips cheap on chat bursts.
     try:
         user_context, memories_context, _unused = await build_user_context(
-            user_name, unrestricted_requested, conversation_id=conversation_id,
+            user_name,
+            unrestricted_requested,
+            conversation_id=conversation_id,
         )
     except Exception:
         logger.exception("build_user_context failed (CLI backend)")
@@ -1162,11 +1270,13 @@ async def handle_chat_message_claude_cli(
     if doc_paths:
         mode_info.append(f"📎 {len(doc_paths)} doc(s)")
     mode_label = " • ".join(mode_info)
-    await ws.send_json({
-        "type": "stream_start",
-        "mode": mode_label,
-        "conversation_id": conversation_id,
-    })
+    await ws.send_json(
+        {
+            "type": "stream_start",
+            "mode": mode_label,
+            "conversation_id": conversation_id,
+        }
+    )
 
     full_response = ""
     full_thinking = ""
@@ -1175,11 +1285,13 @@ async def handle_chat_message_claude_cli(
     async def on_text(text: str) -> None:
         nonlocal full_response
         full_response += text
-        await ws.send_json({
-            "type": "chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_text(text: str) -> None:
         # Only fires when Anthropic actually sends thinking content, which
@@ -1191,11 +1303,13 @@ async def handle_chat_message_claude_cli(
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
         full_thinking += text
-        await ws.send_json({
-            "type": "thinking_chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_block_start() -> None:
         # Fires when Claude opens a reasoning block, even in subscription
@@ -1226,9 +1340,7 @@ async def handle_chat_message_claude_cli(
     # using the same --resume id, racing on the server-side session state.
     # Lock is keyed by conversation_id so different conversations stay
     # parallel; anonymous conversations (no id) skip the lock entirely.
-    lock: asyncio.Lock | None = (
-        _get_conversation_lock(conversation_id) if conversation_id else None
-    )
+    lock: asyncio.Lock | None = _get_conversation_lock(conversation_id) if conversation_id else None
     # Track whether THIS task acquired the lock so we don't release it
     # on behalf of another task in the finally clause. asyncio.Lock.locked()
     # returns True for any holder, not just the current task — relying on
@@ -1256,7 +1368,8 @@ async def handle_chat_message_claude_cli(
                 if getattr(err, "is_stale_session", False) and session_id:
                     logger.info(
                         "Claude session %s is stale for conversation %s — retrying fresh",
-                        session_id, conversation_id,
+                        session_id,
+                        conversation_id,
                     )
                     if conversation_id:
                         reset_session(conversation_id)
@@ -1265,8 +1378,14 @@ async def handle_chat_message_claude_cli(
                     # a memory or profile in the meantime, the prompt we resend
                     # would otherwise carry the pre-mutation snapshot.
                     try:
-                        fresh_user_context, fresh_memories_context, _unused = await build_user_context(
-                            user_name, unrestricted_requested, conversation_id=conversation_id,
+                        (
+                            fresh_user_context,
+                            fresh_memories_context,
+                            _unused,
+                        ) = await build_user_context(
+                            user_name,
+                            unrestricted_requested,
+                            conversation_id=conversation_id,
                         )
                     except Exception:
                         logger.exception("build_user_context failed during stale-session retry")
@@ -1299,26 +1418,32 @@ async def handle_chat_message_claude_cli(
                 else:
                     raise
         except TimeoutError:
-            await ws.send_json({
-                "type": "error",
-                "message": f"Claude CLI timed out after {stream_timeout}s",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Claude CLI timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except RuntimeError as err:
-            await ws.send_json({
-                "type": "error",
-                "message": str(err),
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": str(err),
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except Exception:
             logger.exception("Claude CLI streaming failed")
-            await ws.send_json({
-                "type": "error",
-                "message": "Claude CLI backend failed. Check logs.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Claude CLI backend failed. Check logs.",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
     finally:
         if lock is not None and lock_acquired:
@@ -1346,11 +1471,13 @@ async def handle_chat_message_claude_cli(
                 "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
                 "see the full thought process."
             )
-        await ws.send_json({
-            "type": "thinking_end",
-            "full_thinking": full_thinking,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_end",
+                "full_thinking": full_thinking,
+                "conversation_id": conversation_id,
+            }
+        )
 
     full_response = strip_leading_timestamp(full_response)
 
@@ -1359,7 +1486,9 @@ async def handle_chat_message_claude_cli(
         try:
             db = get_db()
             assistant_msg_id = await db.save_dashboard_message(
-                conversation_id, "assistant", full_response,
+                conversation_id,
+                "assistant",
+                full_response,
                 thinking=full_thinking if full_thinking else None,
                 mode=mode_label,
             )
@@ -1368,11 +1497,13 @@ async def handle_chat_message_claude_cli(
                 title = content[:40].strip()
                 if title:
                     await db.update_dashboard_conversation(conversation_id, title=title)
-                    await ws.send_json({
-                        "type": "title_updated",
-                        "conversation_id": conversation_id,
-                        "title": title,
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "title_updated",
+                            "conversation_id": conversation_id,
+                            "title": title,
+                        }
+                    )
         except Exception:
             logger.exception("Failed to save assistant message (CLI backend)")
 
@@ -1399,22 +1530,24 @@ async def handle_chat_message_claude_cli(
     # `chunks_count` mirrors the SDK backend's payload — frontend doesn't
     # currently render it, but emitting it keeps the event shape parity so
     # future UI changes work uniformly across both backends.
-    await ws.send_json({
-        "type": "stream_end",
-        "conversation_id": conversation_id,
-        "full_response": full_response,
-        "user_message_id": user_msg_id,
-        "assistant_message_id": assistant_msg_id or None,
-        "chunks_count": len(full_response),
-        "token_usage": {
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
-            "context_window": CLAUDE_CONTEXT_WINDOW,
-            "cache_creation_input_tokens": cache_creation,
-            "cache_read_input_tokens": cache_read,
-        },
-    })
+    await ws.send_json(
+        {
+            "type": "stream_end",
+            "conversation_id": conversation_id,
+            "full_response": full_response,
+            "user_message_id": user_msg_id,
+            "assistant_message_id": assistant_msg_id or None,
+            "chunks_count": len(full_response),
+            "token_usage": {
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "total_tokens": in_tok + out_tok,
+                "context_window": CLAUDE_CONTEXT_WINDOW,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+            },
+        }
+    )
 
 
 # ============================================================================
@@ -1491,7 +1624,13 @@ async def handle_ai_edit_message_claude_cli(
     thinking_enabled = bool(data.get("thinking_enabled"))
 
     if not conversation_id or not target_message_id or not instruction:
-        await ws.send_json({"type": "error", "message": "Missing data for AI edit", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Missing data for AI edit",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     ready, reason = is_cli_backend_ready()
@@ -1500,7 +1639,9 @@ async def handle_ai_edit_message_claude_cli(
         return
 
     if not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Database unavailable", "conversation_id": conversation_id})
+        await ws.send_json(
+            {"type": "error", "message": "Database unavailable", "conversation_id": conversation_id}
+        )
         return
 
     # Look up the target message for the original content + sanity checks.
@@ -1511,14 +1652,32 @@ async def handle_ai_edit_message_claude_cli(
         target_msg = next((m for m in all_msgs if m.get("id") == target_id_int), None)
     except Exception:
         logger.exception("Failed to load target message for AI edit (CLI backend)")
-        await ws.send_json({"type": "error", "message": "Failed to load message", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Failed to load message",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     if not target_msg:
-        await ws.send_json({"type": "error", "message": "Target message not found", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Target message not found",
+                "conversation_id": conversation_id,
+            }
+        )
         return
     if target_msg.get("role") != "assistant":
-        await ws.send_json({"type": "error", "message": "Can only AI-edit assistant messages", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Can only AI-edit assistant messages",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     original_content = target_msg.get("content", "")
@@ -1527,7 +1686,9 @@ async def handle_ai_edit_message_claude_cli(
 
     try:
         user_context, memories_context, _ = await build_user_context(
-            user_name, False, conversation_id=conversation_id,
+            user_name,
+            False,
+            conversation_id=conversation_id,
         )
     except Exception:
         logger.exception("build_user_context failed (CLI edit)")
@@ -1566,13 +1727,15 @@ async def handle_ai_edit_message_claude_cli(
     if thinking_enabled:
         edit_mode_info.append("🧠 Thinking")
     mode_label = " • ".join(edit_mode_info)
-    await ws.send_json({
-        "type": "stream_start",
-        "mode": mode_label,
-        "is_edit": True,
-        "target_message_id": target_id_int,
-        "conversation_id": conversation_id,
-    })
+    await ws.send_json(
+        {
+            "type": "stream_start",
+            "mode": mode_label,
+            "is_edit": True,
+            "target_message_id": target_id_int,
+            "conversation_id": conversation_id,
+        }
+    )
 
     edit_response = ""
     edit_thinking = ""
@@ -1581,11 +1744,13 @@ async def handle_ai_edit_message_claude_cli(
     async def on_text(text: str) -> None:
         nonlocal edit_response
         edit_response += text
-        await ws.send_json({
-            "type": "chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_text(text: str) -> None:
         nonlocal edit_thinking, thinking_started
@@ -1595,11 +1760,13 @@ async def handle_ai_edit_message_claude_cli(
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
         edit_thinking += text
-        await ws.send_json({
-            "type": "thinking_chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_block_start() -> None:
         nonlocal thinking_started
@@ -1640,26 +1807,32 @@ async def handle_ai_edit_message_claude_cli(
                 timeout=stream_timeout,
             )
         except TimeoutError:
-            await ws.send_json({
-                "type": "error",
-                "message": f"Claude CLI edit timed out after {stream_timeout}s",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Claude CLI edit timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except RuntimeError as err:
-            await ws.send_json({
-                "type": "error",
-                "message": str(err),
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": str(err),
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except Exception:
             logger.exception("Claude CLI edit failed")
-            await ws.send_json({
-                "type": "error",
-                "message": "Claude CLI edit backend failed. Check logs.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Claude CLI edit backend failed. Check logs.",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
     finally:
         if edit_lock is not None and edit_lock_acquired:
@@ -1673,11 +1846,13 @@ async def handle_ai_edit_message_claude_cli(
                 "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
                 "see the full thought process."
             )
-        await ws.send_json({
-            "type": "thinking_end",
-            "full_thinking": edit_thinking,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_end",
+                "full_thinking": edit_thinking,
+                "conversation_id": conversation_id,
+            }
+        )
 
     new_content = _apply_search_replace(original_content, edit_response.strip())
 
@@ -1716,19 +1891,21 @@ async def handle_ai_edit_message_claude_cli(
         in_tok = max(1, len(edit_prompt) // 4)
         out_tok = max(1, len(edit_response) // 4)
 
-    await ws.send_json({
-        "type": "stream_end",
-        "conversation_id": conversation_id,
-        "full_response": new_content,
-        "is_edit": True,
-        "target_message_id": target_id_int,
-        "chunks_count": len(edit_response),
-        "token_usage": {
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
-            "context_window": CLAUDE_CONTEXT_WINDOW,
-            "cache_creation_input_tokens": cache_creation,
-            "cache_read_input_tokens": cache_read,
-        },
-    })
+    await ws.send_json(
+        {
+            "type": "stream_end",
+            "conversation_id": conversation_id,
+            "full_response": new_content,
+            "is_edit": True,
+            "target_message_id": target_id_int,
+            "chunks_count": len(edit_response),
+            "token_usage": {
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "total_tokens": in_tok + out_tok,
+                "context_window": CLAUDE_CONTEXT_WINDOW,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+            },
+        }
+    )

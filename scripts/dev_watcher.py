@@ -113,7 +113,9 @@ class DevWatcherConfig:
                         if isinstance(value, expected_type):
                             setattr(config, key, value)
                         else:
-                            print(f"  Warning: Ignoring config key '{key}': expected {expected_type.__name__}, got {type(value).__name__}")
+                            print(
+                                f"  Warning: Ignoring config key '{key}': expected {expected_type.__name__}, got {type(value).__name__}"
+                            )
 
                 print(f"  Loaded config from {filepath.name}")
             except (json.JSONDecodeError, OSError) as e:
@@ -194,6 +196,7 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
         # Minimal fallback inline Colors class
@@ -225,7 +228,6 @@ except ImportError:
             Yellow = YELLOW
             Blue = BLUE
             Cyan = CYAN
-
 
 
 # =============================================================================
@@ -556,7 +558,9 @@ if WATCHDOG_AVAILABLE:
                         self.logger.warning("Bot crashed with code %d", return_code)
 
                         print()
-                        print_status(f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]")
+                        print_status(
+                            f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]"
+                        )
 
                         # Auto-retry if enabled
                         if self.config.auto_retry_on_crash:
@@ -576,7 +580,9 @@ if WATCHDOG_AVAILABLE:
                                     "[STOP]",
                                 )
                                 print_status(
-                                    "Fix the error and save a file to restart", Colors.YELLOW, "  └─"
+                                    "Fix the error and save a file to restart",
+                                    Colors.YELLOW,
+                                    "  └─",
                                 )
 
                         return True
@@ -621,6 +627,7 @@ if WATCHDOG_AVAILABLE:
                 # Glob-like wildcards — fall back to fnmatch on basename
                 if any(ch in pat for ch in ("*", "?", "[")):
                     import fnmatch as _fn
+
                     if _fn.fnmatch(p.name.lower(), pat):
                         return True
                     continue

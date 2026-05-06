@@ -33,6 +33,7 @@ def main() -> None:
         # SECURITY NOTE: table names come from sqlite_master (trusted source).
         # We use a whitelist of known tables as defense-in-depth.
         from utils.database import KNOWN_TABLES
+
         summary: dict[str, int] = {}
         for table in tables:
             if table not in KNOWN_TABLES:

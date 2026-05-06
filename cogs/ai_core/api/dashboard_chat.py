@@ -43,10 +43,16 @@ logger = logging.getLogger(__name__)
 
 # Allowlist of MIME types we accept from the dashboard. Module-level so the
 # per-image validation loop doesn't reconstruct the set on every iteration.
-_ALLOWED_IMAGE_MIMES: frozenset[str] = frozenset({
-    "image/png", "image/jpeg", "image/gif",
-    "image/webp", "image/heic", "image/heif",
-})
+_ALLOWED_IMAGE_MIMES: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/heic",
+        "image/heif",
+    }
+)
 
 
 async def handle_chat_message(
@@ -74,13 +80,18 @@ async def handle_chat_message(
     is_regeneration = data.get("is_regeneration", False)
 
     # Validate conversation_id format (defense in depth)
-    if conversation_id and (not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id)):
+    if conversation_id and (
+        not isinstance(conversation_id, str)
+        or not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id)
+    ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
 
     # Enforce input size limits
     if len(content) > max_content_length:
-        await ws.send_json({"type": "error", "message": f"Message too long (max {max_content_length} characters)"})
+        await ws.send_json(
+            {"type": "error", "message": f"Message too long (max {max_content_length} characters)"}
+        )
         return
     if len(history) > max_history_messages:
         history = history[-max_history_messages:]
@@ -103,14 +114,18 @@ async def handle_chat_message(
     if DB_AVAILABLE and conversation_id and not is_regeneration:
         try:
             db = _get_db()
-            user_msg_id = await db.save_dashboard_message(conversation_id, "user", content, images=images or None)
+            user_msg_id = await db.save_dashboard_message(
+                conversation_id, "user", content, images=images or None
+            )
         except Exception as e:
             logger.warning("Failed to save user message: %s", e)
 
     # Build context with user identity and memories, scoped to this conversation
     # so uploaded documents don't leak between RP threads.
     user_context, memories_context, unrestricted_mode = await build_user_context(
-        user_name, unrestricted_mode_requested, conversation_id=conversation_id,
+        user_name,
+        unrestricted_mode_requested,
+        conversation_id=conversation_id,
     )
 
     # Build conversation contents
@@ -140,7 +155,9 @@ async def handle_chat_message(
     if not _db_history_loaded:
         for msg in history:
             role = "user" if msg.get("role") == "user" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))]))
+            contents.append(
+                types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))])
+            )
 
     # Build current message parts
     current_parts = []
@@ -160,25 +177,45 @@ async def handle_chat_message(
             # set on every image in a multi-attachment message).
             if mime_type not in _ALLOWED_IMAGE_MIMES:
                 logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
-                await ws.send_json({"type": "error", "message": f"Unsupported image type: {mime_type}"})
+                await ws.send_json(
+                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
+                )
                 continue
 
             # Validate base64 string length BEFORE decoding to prevent memory exhaustion
             # base64 encodes 3 bytes into 4 chars, so decoded size ≈ len * 3/4
             estimated_size = len(b64_data) * 3 // 4
             if estimated_size > max_image_size_bytes:
-                logger.warning("Rejected image: estimated %s bytes exceeds %s limit", estimated_size, max_image_size_bytes)
-                await ws.send_json({"type": "error", "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)"})
+                logger.warning(
+                    "Rejected image: estimated %s bytes exceeds %s limit",
+                    estimated_size,
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
                 continue
 
             image_bytes = base64.b64decode(b64_data, validate=True)
             if len(image_bytes) > max_image_size_bytes:
-                logger.warning("Rejected image: %s bytes exceeds %s limit", len(image_bytes), max_image_size_bytes)
-                await ws.send_json({"type": "error", "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)"})
+                logger.warning(
+                    "Rejected image: %s bytes exceeds %s limit",
+                    len(image_bytes),
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
                 continue
-            current_parts.append(types.Part(
-                inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
-            ))
+            current_parts.append(
+                types.Part(inline_data=types.Blob(mime_type=mime_type, data=image_bytes))
+            )
             logger.info("📷 Added image to message (%s bytes)", len(image_bytes))
         except Exception as e:
             logger.warning("Failed to process image: %s", e)
@@ -187,6 +224,7 @@ async def handle_chat_message(
     # the newly arrived message was sent, matching the [timestamp] prefix we
     # inject on historical messages above.
     from zoneinfo import ZoneInfo
+
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
     send_timestamp = bangkok_now_iso()
@@ -199,10 +237,18 @@ async def handle_chat_message(
 
     # Build unrestricted mode injection if enabled
     unrestricted_injection = ""
-    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in ("1", "true", "yes")
+    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if unrestricted_mode and allow_unrestricted:
         # Use the preset's own unrestricted framing; fall back to GENERAL if not defined
-        framing = preset.get("unrestricted_framing") or GENERAL_UNRESTRICTED_FRAMING or ENI_ESCALATION_FRAMING
+        framing = (
+            preset.get("unrestricted_framing")
+            or GENERAL_UNRESTRICTED_FRAMING
+            or ENI_ESCALATION_FRAMING
+        )
         if framing:
             unrestricted_injection = f"\n\n[Session Mode]\n{framing}\n"
         logger.info("🔓 Unrestricted Mode: ENABLED")
@@ -240,25 +286,27 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Image retrieval tool: lets AI request historical images from DB on demand
     _function_tools: list[types.FunctionDeclaration] = []
     if DB_AVAILABLE and conversation_id:
-        _function_tools.append(types.FunctionDeclaration(
-            name="get_message_images",
-            description=(
-                "Retrieve images from a previous message in this conversation. "
-                "Call this when the user references an image they shared earlier, "
-                "or when you need to see a previously sent image to answer their question. "
-                "The message_id is shown as [message_id=X] in the conversation history."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",  # type: ignore[arg-type]
-                properties={
-                    "message_id": types.Schema(
-                        type="INTEGER",  # type: ignore[arg-type]
-                        description="The numeric ID of the message that contains the images",
-                    )
-                },
-                required=["message_id"],
-            ),
-        ))
+        _function_tools.append(
+            types.FunctionDeclaration(
+                name="get_message_images",
+                description=(
+                    "Retrieve images from a previous message in this conversation. "
+                    "Call this when the user references an image they shared earlier, "
+                    "or when you need to see a previously sent image to answer their question. "
+                    "The message_id is shown as [message_id=X] in the conversation history."
+                ),
+                parameters=types.Schema(
+                    type="OBJECT",  # type: ignore[arg-type]
+                    properties={
+                        "message_id": types.Schema(
+                            type="INTEGER",  # type: ignore[arg-type]
+                            description="The numeric ID of the message that contains the images",
+                        )
+                    },
+                    required=["message_id"],
+                ),
+            )
+        )
 
     _custom_tools = types.Tool(function_declarations=_function_tools) if _function_tools else None
 
@@ -271,10 +319,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         # Custom function tools — only when search and thinking are off
         config.tools = [_custom_tools]
     if thinking_enabled:
-        config.thinking_config = types.ThinkingConfig(
-            thinking_budget=22000,
-            include_thoughts=True
-        )
+        config.thinking_config = types.ThinkingConfig(thinking_budget=22000, include_thoughts=True)
         mode_info.append("🧠 Thinking")
         logger.info("🧠 Thinking Mode: ENABLED (includeThoughts=True)")
     if unrestricted_mode:
@@ -286,7 +331,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     logger.info("📍 Using model: %s, Thinking: %s", GEMINI_MODEL, thinking_enabled)
 
     # Build model display name (e.g. "gemini-3.1-pro-preview" -> "Gemini 3.1 Pro")
-    _model_display = GEMINI_MODEL.replace("gemini-", "Gemini ").replace("-preview", "").replace("-", " ").title()
+    _model_display = (
+        GEMINI_MODEL.replace("gemini-", "Gemini ").replace("-preview", "").replace("-", " ").title()
+    )
     mode_info.insert(0, f"🤖 {_model_display}")
 
     # Store mode string for saving to DB
@@ -294,11 +341,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
     # Stream response (loop handles function-calling tool rounds)
     try:
-        await ws.send_json({
-            "type": "stream_start",
-            "conversation_id": conversation_id,
-            "mode": mode_str
-        })
+        await ws.send_json(
+            {"type": "stream_start", "conversation_id": conversation_id, "mode": mode_str}
+        )
 
         full_response = ""
         thinking_content = ""
@@ -329,9 +374,17 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             if stream is None:
                 raise ValueError("Failed to start streaming - no response from AI")
 
-            async def _consume_stream(stream=stream, _tool_calls=_tool_calls, _model_parts=_model_parts):
+            async def _consume_stream(
+                stream=stream, _tool_calls=_tool_calls, _model_parts=_model_parts
+            ):
                 """Consume the stream, collecting text/thinking chunks and any tool calls."""
-                nonlocal full_response, thinking_content, chunks_count, is_thinking, input_tokens, output_tokens
+                nonlocal \
+                    full_response, \
+                    thinking_content, \
+                    chunks_count, \
+                    is_thinking, \
+                    input_tokens, \
+                    output_tokens
 
                 async for chunk in stream:
                     chunk_text = ""
@@ -352,32 +405,51 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                                         if fc is not None:
                                             _tool_calls.append(fc)
                                             _model_parts.append(part)
-                                            logger.info("🔧 Tool call requested: %s(%s)", fc.name, dict(fc.args or {}))
+                                            logger.info(
+                                                "🔧 Tool call requested: %s(%s)",
+                                                fc.name,
+                                                dict(fc.args or {}),
+                                            )
                                             continue
 
-                                        thought_val = getattr(part, 'thought', None)
-                                        text_val = getattr(part, 'text', None)
+                                        thought_val = getattr(part, "thought", None)
+                                        text_val = getattr(part, "text", None)
                                         if thought_val is not None or chunks_count < 3:
-                                            logger.info("🔍 Chunk#%s Part: thought=%s, text=%r", chunks_count, thought_val, text_val[:50] if text_val else None)
+                                            logger.info(
+                                                "🔍 Chunk#%s Part: thought=%s, text=%r",
+                                                chunks_count,
+                                                thought_val,
+                                                text_val[:50] if text_val else None,
+                                            )
 
                                         thought_text = ""
                                         is_thought_part = False
 
-                                        thought_flag = getattr(part, 'thought', None)
+                                        thought_flag = getattr(part, "thought", None)
 
                                         if thought_flag is True:
                                             is_thought_part = True
-                                            if hasattr(part, 'text') and part.text:
+                                            if hasattr(part, "text") and part.text:
                                                 thought_text = part.text
-                                                logger.info("💭 Found thought part: %s chars", len(thought_text))
+                                                logger.info(
+                                                    "💭 Found thought part: %s chars",
+                                                    len(thought_text),
+                                                )
                                         elif thought_flag and isinstance(thought_flag, str):
                                             is_thought_part = True
                                             thought_text = thought_flag
-                                            logger.info("💭 Found thought string: %s chars", len(thought_text))
+                                            logger.info(
+                                                "💭 Found thought string: %s chars",
+                                                len(thought_text),
+                                            )
 
                                         if thought_text:
                                             chunk_thinking += thought_text
-                                        elif not is_thought_part and hasattr(part, "text") and part.text:
+                                        elif (
+                                            not is_thought_part
+                                            and hasattr(part, "text")
+                                            and part.text
+                                        ):
                                             chunk_text += part.text
                                             _model_parts.append(part)
                     elif hasattr(chunk, "text") and chunk.text:
@@ -388,35 +460,43 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     if chunk_thinking and thinking_enabled:
                         if not is_thinking:
                             is_thinking = True
-                            await ws.send_json({
-                                "type": "thinking_start",
-                                "conversation_id": conversation_id,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "thinking_start",
+                                    "conversation_id": conversation_id,
+                                }
+                            )
                         thinking_content += chunk_thinking
-                        await ws.send_json({
-                            "type": "thinking_chunk",
-                            "content": chunk_thinking,
-                            "conversation_id": conversation_id,
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "thinking_chunk",
+                                "content": chunk_thinking,
+                                "conversation_id": conversation_id,
+                            }
+                        )
 
                     # Send response content
                     if chunk_text:
                         if is_thinking:
                             is_thinking = False
-                            await ws.send_json({
-                                "type": "thinking_end",
-                                "conversation_id": conversation_id,
-                                "full_thinking": thinking_content,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "thinking_end",
+                                    "conversation_id": conversation_id,
+                                    "full_thinking": thinking_content,
+                                }
+                            )
                         safe_text = ts_stripper.feed(chunk_text)
                         if safe_text:
                             full_response += safe_text
                             chunks_count += 1
-                            await ws.send_json({
-                                "type": "chunk",
-                                "content": safe_text,
-                                "conversation_id": conversation_id,
-                            })
+                            await ws.send_json(
+                                {
+                                    "type": "chunk",
+                                    "content": safe_text,
+                                    "conversation_id": conversation_id,
+                                }
+                            )
 
                     # Extract token usage from Gemini usage_metadata
                     usage_meta = getattr(chunk, "usage_metadata", None)
@@ -463,10 +543,14 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     try:
                         msg_id = int((tc.args or {}).get("message_id", 0))
                     except (TypeError, ValueError):
-                        _response_parts.append(types.Part(function_response=types.FunctionResponse(
-                            name="get_message_images",
-                            response={"error": "Invalid message_id argument"},
-                        )))
+                        _response_parts.append(
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    name="get_message_images",
+                                    response={"error": "Invalid message_id argument"},
+                                )
+                            )
+                        )
                         continue
 
                     logger.info("📷 Fetching historical images for message_id=%s", msg_id)
@@ -474,22 +558,39 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         all_msgs = _all_msgs_for_tools or []
                         hist_msg = next((m for m in all_msgs if m.get("id") == msg_id), None)
                         if not hist_msg or not hist_msg.get("images"):
-                            _response_parts.append(types.Part(function_response=types.FunctionResponse(
-                                name="get_message_images",
-                                response={"error": f"No images found for message_id={msg_id}"},
-                            )))
+                            _response_parts.append(
+                                types.Part(
+                                    function_response=types.FunctionResponse(
+                                        name="get_message_images",
+                                        response={
+                                            "error": f"No images found for message_id={msg_id}"
+                                        },
+                                    )
+                                )
+                            )
                         else:
-                            _response_parts.append(types.Part(function_response=types.FunctionResponse(
-                                name="get_message_images",
-                                response={"status": "success", "image_count": len(hist_msg["images"])},
-                            )))
+                            _response_parts.append(
+                                types.Part(
+                                    function_response=types.FunctionResponse(
+                                        name="get_message_images",
+                                        response={
+                                            "status": "success",
+                                            "image_count": len(hist_msg["images"]),
+                                        },
+                                    )
+                                )
+                            )
                             kept = 0
                             dropped_for_size = 0
                             for img_data in hist_msg["images"]:
                                 try:
                                     if "," in img_data:
                                         header, b64_data = img_data.split(",", 1)
-                                        mime_type = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
+                                        mime_type = (
+                                            header.split(";")[0].split(":")[1]
+                                            if ":" in header
+                                            else "image/png"
+                                        )
                                     else:
                                         b64_data = img_data
                                         mime_type = "image/png"
@@ -497,29 +598,43 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                                     if len(image_bytes) > _MAX_IMAGE_BYTES:
                                         dropped_for_size += 1
                                         continue
-                                    _response_parts.append(types.Part(
-                                        inline_data=types.Blob(mime_type=mime_type, data=image_bytes)
-                                    ))
+                                    _response_parts.append(
+                                        types.Part(
+                                            inline_data=types.Blob(
+                                                mime_type=mime_type, data=image_bytes
+                                            )
+                                        )
+                                    )
                                     kept += 1
                                 except Exception as img_err:
                                     logger.warning("Failed to decode historical image: %s", img_err)
                             if dropped_for_size:
                                 logger.warning(
                                     "📷 Dropped %d oversized image(s) (>%dB) for message_id=%s",
-                                    dropped_for_size, _MAX_IMAGE_BYTES, msg_id,
+                                    dropped_for_size,
+                                    _MAX_IMAGE_BYTES,
+                                    msg_id,
                                 )
                             logger.info("📷 Retrieved %d image(s) for message_id=%s", kept, msg_id)
                     except Exception as e:
                         logger.warning("Failed to fetch images for message_id=%s: %s", msg_id, e)
-                        _response_parts.append(types.Part(function_response=types.FunctionResponse(
-                            name="get_message_images",
-                            response={"error": str(e)},
-                        )))
+                        _response_parts.append(
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    name="get_message_images",
+                                    response={"error": str(e)},
+                                )
+                            )
+                        )
                 else:
-                    _response_parts.append(types.Part(function_response=types.FunctionResponse(
-                        name=tc.name,
-                        response={"error": "Unknown tool"},
-                    )))
+                    _response_parts.append(
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=tc.name,
+                                response={"error": "Unknown tool"},
+                            )
+                        )
+                    )
 
             if not _response_parts:
                 break
@@ -531,11 +646,13 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         if tail:
             full_response += tail
             chunks_count += 1
-            await ws.send_json({
-                "type": "chunk",
-                "content": tail,
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "chunk",
+                    "content": tail,
+                    "conversation_id": conversation_id,
+                }
+            )
         full_response = strip_leading_timestamp(full_response)
 
         # Fallback: estimate tokens from content if API didn't return usage
@@ -558,62 +675,76 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             try:
                 db = _get_db()
                 assistant_msg_id = await db.save_dashboard_message(
-                    conversation_id, "assistant", full_response,
+                    conversation_id,
+                    "assistant",
+                    full_response,
                     thinking=thinking_content if thinking_content else None,
-                    mode=mode_str
+                    mode=mode_str,
                 )
 
                 # Auto-set title from first user message
                 conv = await db.get_dashboard_conversation(conversation_id)
-                if conv and (not conv.get('title') or conv.get('title') == 'New Conversation'):
+                if conv and (not conv.get("title") or conv.get("title") == "New Conversation"):
                     title = content[:40].strip()
                     if title:
                         await db.update_dashboard_conversation(conversation_id, title=title)
-                        await ws.send_json({
-                            "type": "title_updated",
-                            "conversation_id": conversation_id,
-                            "title": title,
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "title_updated",
+                                "conversation_id": conversation_id,
+                                "title": title,
+                            }
+                        )
                         logger.info("📝 Set title from user message: %s", title)
 
             except Exception as e:
                 logger.warning("Failed to save assistant message: %s", e)
 
-        await ws.send_json({
-            "type": "stream_end",
-            "conversation_id": conversation_id,
-            "full_response": full_response,
-            "chunks_count": chunks_count,
-            "user_message_id": user_msg_id or None,
-            "assistant_message_id": assistant_msg_id or None,
-            "token_usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-                "context_window": GEMINI_CONTEXT_WINDOW,
-            },
-        })
+        await ws.send_json(
+            {
+                "type": "stream_end",
+                "conversation_id": conversation_id,
+                "full_response": full_response,
+                "chunks_count": chunks_count,
+                "user_message_id": user_msg_id or None,
+                "assistant_message_id": assistant_msg_id or None,
+                "token_usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "context_window": GEMINI_CONTEXT_WINDOW,
+                },
+            }
+        )
 
     except TimeoutError:
         logger.error("❌ Streaming timeout after %ss", stream_timeout)
         try:
-            await ws.send_json({
-                "type": "error",
-                "message": "Response timed out. Please try again.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Response timed out. Please try again.",
+                    "conversation_id": conversation_id,
+                }
+            )
         except Exception:
-            logger.debug("WebSocket send failed during timeout handling, client may have disconnected")
+            logger.debug(
+                "WebSocket send failed during timeout handling, client may have disconnected"
+            )
     except Exception:
         logger.exception("❌ Streaming error")
         try:
-            await ws.send_json({
-                "type": "error",
-                "message": "An internal error occurred while processing your request.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "An internal error occurred while processing your request.",
+                    "conversation_id": conversation_id,
+                }
+            )
         except Exception:
-            logger.debug("WebSocket send failed during error handling, client may have disconnected")
+            logger.debug(
+                "WebSocket send failed during error handling, client may have disconnected"
+            )
 
 
 async def handle_ai_edit_message(
@@ -637,14 +768,21 @@ async def handle_ai_edit_message(
         return
 
     # Validate conversation_id format (defense in depth)
-    if not isinstance(conversation_id, str) or not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', conversation_id):
+    if not isinstance(conversation_id, str) or not re.match(
+        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+    ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
 
     # Enforce input size limits
     max_instruction_length = 10_000
     if len(instruction) > max_instruction_length:
-        await ws.send_json({"type": "error", "message": f"Instruction too long (max {max_instruction_length} characters)"})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": f"Instruction too long (max {max_instruction_length} characters)",
+            }
+        )
         return
     if user_name and len(str(user_name)) > 200:
         user_name = str(user_name)[:200]
@@ -686,7 +824,9 @@ async def handle_ai_edit_message(
     # Build context — scoped to this conversation so /edit sees the same
     # document library the original reply had access to.
     user_context, memories_context, _ = await build_user_context(
-        user_name, False, conversation_id=conversation_id,
+        user_name,
+        False,
+        conversation_id=conversation_id,
     )
 
     # Build edit prompt
@@ -700,19 +840,24 @@ async def handle_ai_edit_message(
 
     # Build contents with conversation history for context (up to the target message)
     contents: list[Any] = []
-    target_idx = next((i for i, m in enumerate(all_msgs) if m.get("id") == target_message_id_int), -1)
+    target_idx = next(
+        (i for i, m in enumerate(all_msgs) if m.get("id") == target_message_id_int), -1
+    )
     if target_idx > 0:
         hist = all_msgs[:target_idx]
         if len(hist) > max_history_messages:
             hist = hist[-max_history_messages:]
         for msg in hist:
             role = "user" if msg["role"] == "user" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))]))
+            contents.append(
+                types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))])
+            )
 
     contents.append(types.Content(role="user", parts=[types.Part(text=edit_prompt)]))
 
     # Build config
     from zoneinfo import ZoneInfo
+
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
@@ -738,7 +883,9 @@ async def handle_ai_edit_message(
 
     # Build mode info
     mode_info: list[str] = []
-    _model_display = GEMINI_MODEL.replace("gemini-", "Gemini ").replace("-preview", "").replace("-", " ").title()
+    _model_display = (
+        GEMINI_MODEL.replace("gemini-", "Gemini ").replace("-preview", "").replace("-", " ").title()
+    )
     mode_info.append(f"🤖 {_model_display}")
     mode_info.append("✏️ AI Edit")
     if thinking_enabled:
@@ -747,13 +894,15 @@ async def handle_ai_edit_message(
 
     # Stream response
     try:
-        await ws.send_json({
-            "type": "stream_start",
-            "conversation_id": conversation_id,
-            "mode": mode_str,
-            "is_edit": True,
-            "target_message_id": target_message_id_int,
-        })
+        await ws.send_json(
+            {
+                "type": "stream_start",
+                "conversation_id": conversation_id,
+                "mode": mode_str,
+                "is_edit": True,
+                "target_message_id": target_message_id_int,
+            }
+        )
 
         full_response = ""
         thinking_content = ""
@@ -785,8 +934,8 @@ async def handle_ai_edit_message(
                             parts = getattr(candidate.content, "parts", None)
                             if parts:
                                 for part in parts:
-                                    thought_flag = getattr(part, 'thought', None)
-                                    if thought_flag is True and hasattr(part, 'text') and part.text:
+                                    thought_flag = getattr(part, "thought", None)
+                                    if thought_flag is True and hasattr(part, "text") and part.text:
                                         chunk_thinking += part.text
                                     elif not thought_flag and hasattr(part, "text") and part.text:
                                         chunk_text += part.text
@@ -796,17 +945,33 @@ async def handle_ai_edit_message(
                 if chunk_thinking and thinking_enabled:
                     if not is_thinking:
                         is_thinking = True
-                        await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
+                        await ws.send_json(
+                            {"type": "thinking_start", "conversation_id": conversation_id}
+                        )
                     thinking_content += chunk_thinking
-                    await ws.send_json({"type": "thinking_chunk", "content": chunk_thinking, "conversation_id": conversation_id})
+                    await ws.send_json(
+                        {
+                            "type": "thinking_chunk",
+                            "content": chunk_thinking,
+                            "conversation_id": conversation_id,
+                        }
+                    )
 
                 if chunk_text:
                     if is_thinking:
                         is_thinking = False
-                        await ws.send_json({"type": "thinking_end", "conversation_id": conversation_id, "full_thinking": thinking_content})
+                        await ws.send_json(
+                            {
+                                "type": "thinking_end",
+                                "conversation_id": conversation_id,
+                                "full_thinking": thinking_content,
+                            }
+                        )
                     full_response += chunk_text
                     chunks_count += 1
-                    await ws.send_json({"type": "chunk", "content": chunk_text, "conversation_id": conversation_id})
+                    await ws.send_json(
+                        {"type": "chunk", "content": chunk_text, "conversation_id": conversation_id}
+                    )
 
         await asyncio.wait_for(_consume_edit_stream(), timeout=stream_timeout)
 
@@ -825,24 +990,38 @@ async def handle_ai_edit_message(
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
 
-        await ws.send_json({
-            "type": "stream_end",
-            "conversation_id": conversation_id,
-            "full_response": full_response,
-            "chunks_count": chunks_count,
-            "is_edit": True,
-            "target_message_id": target_message_id_int,
-        })
+        await ws.send_json(
+            {
+                "type": "stream_end",
+                "conversation_id": conversation_id,
+                "full_response": full_response,
+                "chunks_count": chunks_count,
+                "is_edit": True,
+                "target_message_id": target_message_id_int,
+            }
+        )
 
     except TimeoutError:
         logger.error("❌ AI edit streaming timeout")
         try:
-            await ws.send_json({"type": "error", "message": "Edit timed out. Please try again.", "conversation_id": conversation_id})
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Edit timed out. Please try again.",
+                    "conversation_id": conversation_id,
+                }
+            )
         except Exception:
             logger.debug("WebSocket send failed during AI edit timeout handling")
     except Exception:
         logger.exception("❌ AI edit streaming error")
         try:
-            await ws.send_json({"type": "error", "message": "Failed to edit message.", "conversation_id": conversation_id})
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Failed to edit message.",
+                    "conversation_id": conversation_id,
+                }
+            )
         except Exception:
             logger.debug("WebSocket send failed during AI edit error handling")

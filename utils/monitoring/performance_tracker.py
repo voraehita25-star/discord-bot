@@ -238,6 +238,7 @@ class PerformanceTracker:
         Args:
             interval: Cleanup interval in seconds (default: 1 hour)
         """
+
         async def _cleanup_loop():
             while True:
                 try:

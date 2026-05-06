@@ -116,4 +116,5 @@ async def setup(bot):
     registers.
     """
     from .ai_cog import setup as _ai_cog_setup
+
     await _ai_cog_setup(bot)

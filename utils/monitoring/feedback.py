@@ -115,6 +115,7 @@ class FeedbackCollector:
         # ``self._feedback = self._feedback[-MAX:]`` rebuild which was
         # O(n) per insertion at high feedback volume.
         from collections import deque
+
         self._feedback: deque[FeedbackEntry] = deque(maxlen=self.MAX_FEEDBACK_ENTRIES)
         self._max_tracked = max_tracked_messages
         self._callbacks: list[Callable[[FeedbackEntry], None]] = []

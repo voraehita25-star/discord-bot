@@ -54,24 +54,32 @@ class TestClaudeCoreRetry:
 
         client = MagicMock()
         client.messages = MagicMock()
-        client.messages.create = AsyncMock(side_effect=[
-            TimeoutError("timeout-1"),
-            TimeoutError("timeout-2"),
-            TimeoutError("timeout-3"),
-            TimeoutError("timeout-4"),
-            TimeoutError("timeout-5"),
-            TimeoutError("timeout-6"),
-            FakeClaudeResponse("Recovered text"),
-        ])
+        client.messages.create = AsyncMock(
+            side_effect=[
+                TimeoutError("timeout-1"),
+                TimeoutError("timeout-2"),
+                TimeoutError("timeout-3"),
+                TimeoutError("timeout-4"),
+                TimeoutError("timeout-5"),
+                TimeoutError("timeout-6"),
+                FakeClaudeResponse("Recovered text"),
+            ]
+        )
         sleep_mock = AsyncMock()
 
-        with patch(
-            "cogs.ai_core.api.api_handler.convert_to_claude_messages",
-            return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
-        ), patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False), patch(
-            "cogs.ai_core.api.api_handler.ERROR_RECOVERY_AVAILABLE",
-            False,
-        ), patch("cogs.ai_core.api.api_handler.PERF_TRACKER_AVAILABLE", False), patch("cogs.ai_core.api.api_handler.asyncio.sleep", new=sleep_mock):
+        with (
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.api_handler.ERROR_RECOVERY_AVAILABLE",
+                False,
+            ),
+            patch("cogs.ai_core.api.api_handler.PERF_TRACKER_AVAILABLE", False),
+            patch("cogs.ai_core.api.api_handler.asyncio.sleep", new=sleep_mock),
+        ):
             result = await call_claude_api(
                 client,
                 "claude-opus-4-7",
@@ -81,7 +89,14 @@ class TestClaudeCoreRetry:
 
         assert result[0] == "Recovered text"
         assert client.messages.create.await_count == 7
-        assert [call.args[0] for call in sleep_mock.await_args_list] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
+        assert [call.args[0] for call in sleep_mock.await_args_list] == [
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+            30.0,
+        ]
 
     @pytest.mark.asyncio
     async def test_call_claude_api_streaming_retries_then_falls_back(self):
@@ -106,12 +121,16 @@ class TestClaudeCoreRetry:
         fallback_mock = AsyncMock(return_value=("fallback text", "", []))
         sleep_mock = AsyncMock()
 
-        with patch(
-            "cogs.ai_core.api.api_handler.convert_to_claude_messages",
-            return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
-        ), patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False), patch(
-            "cogs.ai_core.api.api_handler.asyncio.sleep",
-            new=sleep_mock,
+        with (
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.api_handler.asyncio.sleep",
+                new=sleep_mock,
+            ),
         ):
             result = await call_claude_api_streaming(
                 client,
@@ -134,11 +153,13 @@ class TestClaudeCoreRetry:
 
         client = MagicMock()
         client.messages = MagicMock()
-        client.messages.stream = MagicMock(side_effect=[
-            OSError("busy-1"),
-            OSError("busy-2"),
-            FakeStreamContext(["Recovered via stream"]),
-        ])
+        client.messages.stream = MagicMock(
+            side_effect=[
+                OSError("busy-1"),
+                OSError("busy-2"),
+                FakeStreamContext(["Recovered via stream"]),
+            ]
+        )
 
         placeholder = MagicMock()
         placeholder.edit = AsyncMock()
@@ -148,12 +169,16 @@ class TestClaudeCoreRetry:
         fallback_mock = AsyncMock(side_effect=AssertionError("fallback should not run"))
         sleep_mock = AsyncMock()
 
-        with patch(
-            "cogs.ai_core.api.api_handler.convert_to_claude_messages",
-            return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
-        ), patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False), patch(
-            "cogs.ai_core.api.api_handler.asyncio.sleep",
-            new=sleep_mock,
+        with (
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.api_handler.asyncio.sleep",
+                new=sleep_mock,
+            ),
         ):
             result = await call_claude_api_streaming(
                 client,

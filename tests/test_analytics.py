@@ -354,6 +354,7 @@ class TestModuleImports:
 # Merged from test_analytics_extended.py
 # ======================================================================
 
+
 class TestInteractionLog:
     """Tests for InteractionLog dataclass."""
 
@@ -373,7 +374,7 @@ class TestInteractionLog:
             output_length=200,
             response_time_ms=150.5,
             intent="question",
-            model="gemini-1.5-flash"
+            model="gemini-1.5-flash",
         )
 
         assert log.user_id == 123
@@ -401,7 +402,7 @@ class TestInteractionLog:
             output_length=100,
             response_time_ms=100.0,
             intent="chat",
-            model="test"
+            model="test",
         )
 
         assert log.tool_calls == 0
@@ -426,7 +427,7 @@ class TestInteractionLog:
             response_time_ms=500.0,
             intent="chat",
             model="test",
-            error="Timeout error"
+            error="Timeout error",
         )
 
         assert log.error == "Timeout error"
@@ -451,7 +452,7 @@ class TestAnalyticsSummary:
             error_rate=0.02,
             interactions_per_hour=50.0,
             total_input_tokens=10000,
-            total_output_tokens=20000
+            total_output_tokens=20000,
         )
 
         assert summary.total_interactions == 1000
@@ -496,7 +497,7 @@ class TestResponseQuality:
             user_reaction="👍",
             guardrail_triggered=False,
             response_length=500,
-            factors={"relevance": 0.95, "fluency": 0.85}
+            factors={"relevance": 0.95, "fluency": 0.85},
         )
 
         assert quality.score == 0.9
@@ -518,9 +519,9 @@ class TestAIAnalyticsInit:
 
         analytics = AIAnalytics()
 
-        assert hasattr(analytics, 'logger')
-        assert hasattr(analytics, '_stats')
-        assert hasattr(analytics, '_start_time')
+        assert hasattr(analytics, "logger")
+        assert hasattr(analytics, "_stats")
+        assert hasattr(analytics, "_start_time")
 
     def test_ai_analytics_initial_stats(self):
         """Test AIAnalytics initial stats are zero."""
@@ -572,6 +573,7 @@ class TestDatabaseAvailable:
 class TestModuleDocstring:
     """Tests for module documentation."""
 
+
 class TestInteractionLogTimestamp:
     """Tests for InteractionLog timestamp handling."""
 
@@ -585,9 +587,14 @@ class TestInteractionLogTimestamp:
 
         before = datetime.now(timezone.utc)
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test"
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
         )
         after = datetime.now(timezone.utc)
 
@@ -603,10 +610,15 @@ class TestInteractionLogTimestamp:
 
         custom_time = datetime(2024, 1, 1, 12, 0, 0)
         log = InteractionLog(
-            user_id=1, channel_id=2, guild_id=3,
-            input_length=10, output_length=20,
-            response_time_ms=50.0, intent="test", model="test",
-            timestamp=custom_time
+            user_id=1,
+            channel_id=2,
+            guild_id=3,
+            input_length=10,
+            output_length=20,
+            response_time_ms=50.0,
+            intent="test",
+            model="test",
+            timestamp=custom_time,
         )
 
         assert log.timestamp == custom_time
@@ -657,7 +669,7 @@ class TestAnalyticsSummaryTopIntents:
             error_rate=0.01,
             interactions_per_hour=10.0,
             total_input_tokens=1000,
-            total_output_tokens=2000
+            total_output_tokens=2000,
         )
 
         assert isinstance(summary.top_intents, list)
@@ -668,6 +680,7 @@ class TestAnalyticsSummaryTopIntents:
 # ======================================================================
 # Merged from test_analytics_module.py
 # ======================================================================
+
 
 class TestDbAvailable:
     """Test DB_AVAILABLE flag."""
@@ -697,7 +710,7 @@ class TestInteractionLog:
             output_length=200,
             response_time_ms=500.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert log.user_id == 123
@@ -721,7 +734,7 @@ class TestInteractionLog:
             output_length=100,
             response_time_ms=200.0,
             intent="question",
-            model="gemini"
+            model="gemini",
         )
 
         assert log.tool_calls == 0
@@ -742,7 +755,7 @@ class TestInteractionLog:
             response_time_ms=1000.0,
             intent="unknown",
             model="gemini",
-            error="API rate limited"
+            error="API rate limited",
         )
 
         assert log.error == "API rate limited"
@@ -766,7 +779,7 @@ class TestAnalyticsSummary:
             error_rate=0.05,
             interactions_per_hour=10.5,
             total_input_tokens=5000,
-            total_output_tokens=10000
+            total_output_tokens=10000,
         )
 
         assert summary.total_interactions == 100
@@ -807,7 +820,7 @@ class TestResponseQuality:
             user_reaction="👍",
             guardrail_triggered=True,
             response_length=500,
-            factors={"retry_penalty": -0.2}
+            factors={"retry_penalty": -0.2},
         )
 
         assert quality.score == 0.7
@@ -831,8 +844,8 @@ class TestAIAnalyticsInit:
         analytics = AIAnalytics()
 
         assert analytics is not None
-        assert hasattr(analytics, 'logger')
-        assert hasattr(analytics, '_stats')
+        assert hasattr(analytics, "logger")
+        assert hasattr(analytics, "_stats")
 
     def test_init_stats_structure(self):
         """Test initial stats structure."""
@@ -881,7 +894,7 @@ class TestLogInteraction:
             output_text="Hi there!",
             response_time_ms=250.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert analytics._stats["total_interactions"] == 1
@@ -903,7 +916,7 @@ class TestLogInteraction:
             response_time_ms=10.0,
             intent="greeting",
             model="gemini",
-            cache_hit=True
+            cache_hit=True,
         )
 
         assert analytics._stats["cache_hits"] == 1
@@ -923,7 +936,7 @@ class TestLogInteraction:
             response_time_ms=5000.0,
             intent="unknown",
             model="gemini",
-            error="Rate limited"
+            error="Rate limited",
         )
 
         assert analytics._stats["errors"] == 1
@@ -939,10 +952,10 @@ class TestLogInteraction:
             channel_id=456,
             guild_id=789,
             input_text="Hello World",  # 11 chars
-            output_text="Hi there!",     # 9 chars
+            output_text="Hi there!",  # 9 chars
             response_time_ms=100.0,
             intent="greeting",
-            model="gemini"
+            model="gemini",
         )
 
         assert analytics._stats["total_input_chars"] == 11
@@ -966,7 +979,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         assert quality.score == 1.0
@@ -982,7 +995,7 @@ class TestCalculateQualityScore:
             retry_count=2,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.2 for 2 retries
@@ -1000,7 +1013,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=True,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.2 for edit
@@ -1018,7 +1031,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction="👍",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # Clamped to 1.0 even with +0.1 bonus
@@ -1036,7 +1049,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction="👎",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.3 for negative reaction
@@ -1054,7 +1067,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=True
+            guardrail_triggered=True,
         )
 
         # -0.2 for guardrail
@@ -1072,7 +1085,7 @@ class TestCalculateQualityScore:
             retry_count=0,
             was_edited=False,
             user_reaction=None,
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.1 for short response
@@ -1087,10 +1100,10 @@ class TestCalculateQualityScore:
 
         quality = analytics.calculate_quality_score(
             response="Bad",  # short
-            retry_count=3,   # max penalty -0.3
+            retry_count=3,  # max penalty -0.3
             was_edited=True,  # -0.2
             user_reaction="👎",  # -0.3
-            guardrail_triggered=True  # -0.2
+            guardrail_triggered=True,  # -0.2
         )
 
         # Total penalties exceed 1.0, should be clamped to 0.0
@@ -1200,21 +1213,36 @@ class TestIntentCounts:
         analytics = AIAnalytics()
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Hi", output_text="Hello",
-            response_time_ms=100.0, intent="greeting", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Hi",
+            output_text="Hello",
+            response_time_ms=100.0,
+            intent="greeting",
+            model="gemini",
         )
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="What's 2+2?", output_text="4",
-            response_time_ms=150.0, intent="question", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="What's 2+2?",
+            output_text="4",
+            response_time_ms=150.0,
+            intent="question",
+            model="gemini",
         )
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Hello again", output_text="Hi again!",
-            response_time_ms=120.0, intent="greeting", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Hello again",
+            output_text="Hi again!",
+            response_time_ms=120.0,
+            intent="greeting",
+            model="gemini",
         )
 
         assert analytics._stats["intent_counts"]["greeting"] == 2
@@ -1235,9 +1263,14 @@ class TestHourlyCounts:
         analytics = AIAnalytics()
 
         await analytics.log_interaction(
-            user_id=1, channel_id=1, guild_id=1,
-            input_text="Test", output_text="Response",
-            response_time_ms=100.0, intent="test", model="gemini"
+            user_id=1,
+            channel_id=1,
+            guild_id=1,
+            input_text="Test",
+            output_text="Response",
+            response_time_ms=100.0,
+            intent="test",
+            model="gemini",
         )
 
         # Should have at least one hourly entry
@@ -1261,7 +1294,7 @@ class TestConfusionReaction:
             retry_count=0,
             was_edited=False,
             user_reaction="❓",
-            guardrail_triggered=False
+            guardrail_triggered=False,
         )
 
         # -0.1 for confusion reaction
@@ -1272,6 +1305,7 @@ class TestConfusionReaction:
 # ======================================================================
 # Merged from test_analytics_more.py
 # ======================================================================
+
 
 class TestAIAnalyticsLogInteraction:
     """Tests for AIAnalytics.log_interaction method."""
@@ -1284,7 +1318,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["total_interactions"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1304,7 +1338,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["total_response_time_ms"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1324,7 +1358,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["cache_hits"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1345,7 +1379,7 @@ class TestAIAnalyticsLogInteraction:
         analytics = AIAnalytics()
         initial = analytics._stats["errors"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1367,7 +1401,7 @@ class TestAIAnalyticsLogInteraction:
         initial_input = analytics._stats["total_input_chars"]
         initial_output = analytics._stats["total_output_chars"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1451,7 +1485,7 @@ class TestAIAnalyticsIntentCounts:
 
         analytics = AIAnalytics()
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1479,9 +1513,10 @@ class TestAIAnalyticsHourlyCounts:
         # Hourly bucket key is now UTC (was naive local time, which drifted
         # vs the UTC timestamps stored on InteractionLog rows).
         from datetime import timezone as _tz
+
         hour_key = datetime.now(_tz.utc).strftime("%Y-%m-%d-%H")
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1505,7 +1540,7 @@ class TestAIAnalyticsNoCacheHit:
         analytics = AIAnalytics()
         initial = analytics._stats["cache_hits"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,
@@ -1530,7 +1565,7 @@ class TestAIAnalyticsNoError:
         analytics = AIAnalytics()
         initial = analytics._stats["errors"]
 
-        with patch.object(analytics, '_save_to_db', new_callable=AsyncMock):
+        with patch.object(analytics, "_save_to_db", new_callable=AsyncMock):
             await analytics.log_interaction(
                 user_id=123,
                 channel_id=456,

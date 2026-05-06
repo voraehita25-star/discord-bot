@@ -27,6 +27,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class ShutdownPhase(Enum):
     """Phases of shutdown process."""
 
@@ -41,10 +42,10 @@ class ShutdownPhase(Enum):
 class Priority(Enum):
     """Cleanup callback priority levels."""
 
-    CRITICAL = 0    # Run first (e.g., save state)
-    HIGH = 10       # Important (e.g., flush queues)
-    NORMAL = 50     # Standard cleanup
-    LOW = 90        # Can be skipped if timeout
+    CRITICAL = 0  # Run first (e.g., save state)
+    HIGH = 10  # Important (e.g., flush queues)
+    NORMAL = 50  # Standard cleanup
+    LOW = 90  # Can be skipped if timeout
     BACKGROUND = 100  # Background tasks
 
 
@@ -198,6 +199,7 @@ class ShutdownManager:
             required: Whether failure should be logged as error
         """
         import inspect
+
         is_async = inspect.iscoroutinefunction(callback)
 
         handler = CleanupHandler(
@@ -214,7 +216,9 @@ class ShutdownManager:
 
         self.logger.debug(
             "Registered cleanup handler: %s (priority: %s, timeout: %.1fs)",
-            name, priority.name, timeout
+            name,
+            priority.name,
+            timeout,
         )
 
     def unregister(self, name: str) -> bool:
@@ -242,16 +246,12 @@ class ShutdownManager:
             self.logger.info("🔄 Running cleanup: %s", handler.name)
 
             if handler.is_async:
-                await asyncio.wait_for(
-                    handler.callback(),
-                    timeout=effective_timeout
-                )
+                await asyncio.wait_for(handler.callback(), timeout=effective_timeout)
             else:
                 # Run sync callback in executor.
                 loop = asyncio.get_running_loop()
                 await asyncio.wait_for(
-                    loop.run_in_executor(None, handler.callback),
-                    timeout=effective_timeout
+                    loop.run_in_executor(None, handler.callback), timeout=effective_timeout
                 )
 
             self.logger.info("✅ Cleanup complete: %s", handler.name)
@@ -316,10 +316,7 @@ class ShutdownManager:
 
         for phase, priorities in phases:
             self._state.phase = phase
-            phase_handlers = [
-                h for h in self._handlers
-                if h.priority in priorities
-            ]
+            phase_handlers = [h for h in self._handlers if h.priority in priorities]
 
             if not phase_handlers:
                 continue
@@ -408,6 +405,7 @@ class ShutdownManager:
             def _schedule() -> None:
                 task = asyncio.create_task(self.shutdown(signal_name))
                 self._pending_shutdown_task = task
+
             try:
                 loop.call_soon_threadsafe(_schedule)
             except RuntimeError:
@@ -469,7 +467,8 @@ class ShutdownManager:
                                 "is still running; daemon thread will be killed "
                                 "by interpreter shutdown — external state may "
                                 "be left inconsistent.",
-                                name, timeout,
+                                name,
+                                timeout,
                             )
                     except Exception as join_err:
                         logger.debug("Shutdown join error (ignored): %s", join_err)
@@ -500,11 +499,10 @@ class ShutdownManager:
 
         def _make_handler(sig_value: int):
             def _handler() -> None:
-                task = asyncio.create_task(
-                    self.shutdown(signal.Signals(sig_value).name)
-                )
+                task = asyncio.create_task(self.shutdown(signal.Signals(sig_value).name))
                 self._signal_tasks.add(task)
                 task.add_done_callback(self._signal_tasks.discard)
+
             return _handler
 
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -580,6 +578,7 @@ def on_shutdown(
         async def cleanup_cache():
             await cache.flush()
     """
+
     def decorator(func: Callable) -> Callable:
         shutdown_manager.register(
             name=func.__name__,
@@ -589,4 +588,5 @@ def on_shutdown(
             required=required,
         )
         return func
+
     return decorator

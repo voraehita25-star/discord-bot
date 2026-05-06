@@ -395,6 +395,7 @@ class TestModuleImports:
 # Merged from test_context_builder_extended.py
 # ======================================================================
 
+
 class TestAIContextDataclass:
     """Tests for AIContext dataclass."""
 
@@ -582,10 +583,12 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_memory = MagicMock()
-        mock_memory.search = AsyncMock(return_value=[
-            {"text": "Result 1", "score": 0.9},
-            {"text": "Result 2", "score": 0.8},
-        ])
+        mock_memory.search = AsyncMock(
+            return_value=[
+                {"text": "Result 1", "score": 0.9},
+                {"text": "Result 2", "score": 0.8},
+            ]
+        )
 
         builder = ContextBuilder(memory_manager=mock_memory)
         await builder.build_context(
@@ -658,10 +661,12 @@ class TestContextBuilder:
         from cogs.ai_core.core.context_builder import ContextBuilder
 
         mock_avatar = MagicMock()
-        mock_avatar.get_avatar = AsyncMock(return_value={
-            "name": "TestBot",
-            "personality": "Friendly",
-        })
+        mock_avatar.get_avatar = AsyncMock(
+            return_value={
+                "name": "TestBot",
+                "personality": "Friendly",
+            }
+        )
 
         mock_guild = MagicMock()
 
@@ -841,6 +846,7 @@ class TestModuleConstants:
 # Merged from test_context_builder_module.py
 # ======================================================================
 
+
 class TestAIContextDataclass:
     """Tests for AIContext dataclass."""
 
@@ -983,16 +989,19 @@ class TestModuleImports:
     def test_import_ai_context(self):
         """Test AIContext can be imported."""
         from cogs.ai_core.core.context_builder import AIContext
+
         assert AIContext is not None
 
     def test_import_context_builder(self):
         """Test ContextBuilder can be imported."""
         from cogs.ai_core.core.context_builder import ContextBuilder
+
         assert ContextBuilder is not None
 
     def test_import_context_builder_singleton(self):
         """Test context_builder singleton can be imported."""
         from cogs.ai_core.core.context_builder import context_builder
+
         assert context_builder is not None
 
 
@@ -1058,5 +1067,5 @@ class TestContextBuilderWithMocks:
 
         builder = ContextBuilder()
 
-        assert hasattr(builder, 'build_context')
+        assert hasattr(builder, "build_context")
         assert callable(builder.build_context)

@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 # WebSocket Dashboard Server
 # ============================================================================
 
+
 class DashboardWebSocketServer:
     """WebSocket server for dashboard AI chat."""
 
@@ -110,16 +111,18 @@ class DashboardWebSocketServer:
     # Read-only / housekeeping message types that bypass rate limiting.
     # Hoisted to a class-level constant so adding a new lightweight op
     # is a one-line change instead of editing the body of the read loop.
-    RATE_EXEMPT_MESSAGE_TYPES: ClassVar[frozenset[str]] = frozenset({
-        "ping",
-        "auth",
-        "list_conversations",
-        "load_conversation",
-        "get_memories",
-        "get_profile",
-        "list_all_tags",
-        "list_conversation_documents",
-    })
+    RATE_EXEMPT_MESSAGE_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "ping",
+            "auth",
+            "list_conversations",
+            "load_conversation",
+            "get_memories",
+            "get_profile",
+            "list_all_tags",
+            "list_conversation_documents",
+        }
+    )
     # Raised from 50K → 200K: matches the direct-API backend ceiling and lets
     # users paste large RP context (character sheets / world bibles / full
     # scenes) in a single message. Claude Opus 4.7 1M context window has
@@ -154,8 +157,8 @@ class DashboardWebSocketServer:
         # older than ``_AUTH_FAIL_WINDOW`` before checking, and rejects
         # with 429 once the bucket reaches ``_AUTH_FAIL_THRESHOLD``.
         self._auth_failures: dict[str, list[float]] = {}
-        self._AUTH_FAIL_WINDOW = 60.0   # seconds
-        self._AUTH_FAIL_THRESHOLD = 5    # fails in window before lockout
+        self._AUTH_FAIL_WINDOW = 60.0  # seconds
+        self._AUTH_FAIL_THRESHOLD = 5  # fails in window before lockout
         self._AUTH_FAIL_LOCKOUT = 300.0  # seconds locked out after threshold
         # Long-running handlers (chat, ai_edit) are dispatched as background
         # tasks so the read loop stays responsive to pings + other messages
@@ -186,10 +189,12 @@ class DashboardWebSocketServer:
                 logger.warning("⚠️ Dashboard WS: failover init failed: %s, falling back", e)
                 if CLAUDE_API_KEY:
                     import anthropic
+
                     self.claude_client = anthropic.AsyncAnthropic(api_key=CLAUDE_API_KEY)
         elif CLAUDE_API_KEY:
             try:
                 import anthropic
+
                 self.claude_client = anthropic.AsyncAnthropic(api_key=CLAUDE_API_KEY)
                 logger.info("🟣 Dashboard WS: Claude client initialized")
             except ImportError:
@@ -217,16 +222,17 @@ class DashboardWebSocketServer:
             # Create TCPSite with reuse_address for faster restart
             # Note: reuse_port is only supported on Linux, not Windows
             import sys
-            site_kwargs: dict[str, Any] = {
-                'reuse_address': True,  # Allow port reuse after close
-            }
-            if sys.platform != 'win32':
-                site_kwargs['reuse_port'] = True  # Linux only
 
-            scheme = 'ws'
+            site_kwargs: dict[str, Any] = {
+                "reuse_address": True,  # Allow port reuse after close
+            }
+            if sys.platform != "win32":
+                site_kwargs["reuse_port"] = True  # Linux only
+
+            scheme = "ws"
             if WS_REQUIRE_TLS:
-                tls_cert_path = os.getenv('WS_TLS_CERT_PATH', '').strip()
-                tls_key_path = os.getenv('WS_TLS_KEY_PATH', '').strip()
+                tls_cert_path = os.getenv("WS_TLS_CERT_PATH", "").strip()
+                tls_key_path = os.getenv("WS_TLS_KEY_PATH", "").strip()
                 if not tls_cert_path or not tls_key_path:
                     logger.error(
                         "❌ WS_REQUIRE_TLS is enabled but WS_TLS_CERT_PATH / WS_TLS_KEY_PATH are not set"
@@ -238,19 +244,16 @@ class DashboardWebSocketServer:
                 ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
                 ssl_context.load_cert_chain(tls_cert_path, tls_key_path)
-                site_kwargs['ssl_context'] = ssl_context
-                scheme = 'wss'
+                site_kwargs["ssl_context"] = ssl_context
+                scheme = "wss"
 
-            self.site = web.TCPSite(
-                self.runner,
-                WS_HOST,
-                WS_PORT,
-                **site_kwargs
-            )
+            self.site = web.TCPSite(self.runner, WS_HOST, WS_PORT, **site_kwargs)
             await self.site.start()
 
             self._running = True
-            logger.info("🚀 Dashboard WebSocket server started on %s://%s:%s", scheme, WS_HOST, WS_PORT)
+            logger.info(
+                "🚀 Dashboard WebSocket server started on %s://%s:%s", scheme, WS_HOST, WS_PORT
+            )
             return True
 
         except Exception:
@@ -297,7 +300,8 @@ class DashboardWebSocketServer:
             logger.warning(
                 "⚠️ Port %s still in use after %ss wait. "
                 "If this is an old bot instance, please stop it manually.",
-                WS_PORT, max_wait
+                WS_PORT,
+                max_wait,
             )
 
     async def stop(self) -> None:
@@ -422,7 +426,7 @@ class DashboardWebSocketServer:
         expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
         peername = request.transport.get_extra_info("peername") if request.transport else None
         # Resolve the bucket key once. peername is (ip, port[, ...]); take ip.
-        client_ip = (peername[0] if isinstance(peername, tuple) and peername else "unknown")
+        client_ip = peername[0] if isinstance(peername, tuple) and peername else "unknown"
 
         if not expected_token:
             logger.error(
@@ -476,10 +480,14 @@ class DashboardWebSocketServer:
                     parts = auth_header.split(" ", 1)
                     if len(parts) == 2 and parts[0].lower() == "bearer":
                         auth_match = hmac.compare_digest(parts[1], expected_token)
-                token_match = hmac.compare_digest(query_token, expected_token) if query_token else False
+                token_match = (
+                    hmac.compare_digest(query_token, expected_token) if query_token else False
+                )
                 if not auth_match and not token_match:
                     self._auth_failures.setdefault(client_ip, []).append(now)
-                    logger.warning("⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername)
+                    logger.warning(
+                        "⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername
+                    )
                     return web.Response(status=401, text="Unauthorized: Invalid token")
                 else:
                     _upgrade_authenticated = True
@@ -522,12 +530,18 @@ class DashboardWebSocketServer:
         host_allowed = _is_safe_host(host)
 
         if not origin_allowed and not host_allowed:
-            logger.warning("⚠️ Rejected WebSocket connection from origin: %s, host: %s", origin, host)
-            return web.Response(status=403, text="Forbidden: Connection only allowed from localhost")
+            logger.warning(
+                "⚠️ Rejected WebSocket connection from origin: %s, host: %s", origin, host
+            )
+            return web.Response(
+                status=403, text="Forbidden: Connection only allowed from localhost"
+            )
 
         # Enforce max concurrent connections
         if len(self.clients) >= self.MAX_CLIENTS:
-            logger.warning("⚠️ Rejected WebSocket connection: max clients (%s) reached", self.MAX_CLIENTS)
+            logger.warning(
+                "⚠️ Rejected WebSocket connection: max clients (%s) reached", self.MAX_CLIENTS
+            )
             return web.Response(status=503, text="Service Unavailable: Too many connections")
 
         # Frame cap derived from the per-attachment limits the handler itself
@@ -592,7 +606,12 @@ class DashboardWebSocketServer:
                         break
                     if deadline_msg.type != WSMsgType.TEXT:
                         # Non-text (close, error) — exit loop.
-                        if deadline_msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
+                        if deadline_msg.type in (
+                            WSMsgType.CLOSE,
+                            WSMsgType.CLOSING,
+                            WSMsgType.CLOSED,
+                            WSMsgType.ERROR,
+                        ):
                             break
                         continue
                     # Pre-auth message size cap. The connection-wide
@@ -602,7 +621,8 @@ class DashboardWebSocketServer:
                     if isinstance(deadline_msg.data, str) and len(deadline_msg.data) > 4096:
                         logger.warning(
                             "⚠️ Pre-auth message from %s exceeds 4 KiB cap (%d bytes)",
-                            client_id, len(deadline_msg.data),
+                            client_id,
+                            len(deadline_msg.data),
                         )
                         break
                     try:
@@ -637,8 +657,14 @@ class DashboardWebSocketServer:
                         break
 
                 if not auth_received:
-                    logger.warning("⚠️ Client %s failed to authenticate within %.0fs deadline", client_id, self._auth_deadline)
-                    await ws.send_json({"type": "error", "message": "Authentication required. Connection closing."})
+                    logger.warning(
+                        "⚠️ Client %s failed to authenticate within %.0fs deadline",
+                        client_id,
+                        self._auth_deadline,
+                    )
+                    await ws.send_json(
+                        {"type": "error", "message": "Authentication required. Connection closing."}
+                    )
                     await ws.close(code=4001, message=b"Authentication deadline exceeded")
                     return ws
 
@@ -658,16 +684,29 @@ class DashboardWebSocketServer:
                             times = [t for t in times if now - t < 60]
                             self._client_message_times[client_id] = times
                             if len(times) >= self.RATE_LIMIT_MESSAGES_PER_MINUTE:
-                                await ws.send_json({"type": "error", "message": "Rate limit exceeded. Please wait."})
+                                await ws.send_json(
+                                    {
+                                        "type": "error",
+                                        "message": "Rate limit exceeded. Please wait.",
+                                    }
+                                )
                                 continue
                             times.append(now)
                         logger.debug(
                             "WS msg client=%s msg=%s type=%s",
-                            client_id, msg_id, data.get("type", "?"),
+                            client_id,
+                            msg_id,
+                            data.get("type", "?"),
                         )
                         # Verify authentication for every request (except auth/ping)
-                        if msg_type not in ("auth", "ping") and expected_token and client_id not in self._authenticated_clients:
-                            await ws.send_json({"type": "error", "message": "Authentication required"})
+                        if (
+                            msg_type not in ("auth", "ping")
+                            and expected_token
+                            and client_id not in self._authenticated_clients
+                        ):
+                            await ws.send_json(
+                                {"type": "error", "message": "Authentication required"}
+                            )
                             continue
                         # Long-running AI ops are dispatched as background tasks so
                         # the read loop keeps draining pings + other messages while
@@ -723,7 +762,9 @@ class DashboardWebSocketServer:
 
         return ws
 
-    async def handle_message(self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "", msg_id: str = "") -> None:
+    async def handle_message(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "", msg_id: str = ""
+    ) -> None:
         """Handle incoming WebSocket messages."""
         msg_type = data.get("type")
 
@@ -733,17 +774,21 @@ class DashboardWebSocketServer:
             # Enforce concurrency limit per client
             inflight = self._client_inflight.get(client_id, 0)
             if inflight >= 2:
-                await ws.send_json({
-                    "type": "error",
-                    "message": "Too many concurrent requests. Please wait for the current response to finish.",
-                })
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "Too many concurrent requests. Please wait for the current response to finish.",
+                    }
+                )
                 return
             self._client_inflight[client_id] = inflight + 1
             try:
                 logger.debug("WS chat start client=%s msg=%s", client_id, msg_id)
                 await self.handle_chat_message(ws, data)
             finally:
-                self._client_inflight[client_id] = max(0, self._client_inflight.get(client_id, 1) - 1)
+                self._client_inflight[client_id] = max(
+                    0, self._client_inflight.get(client_id, 1) - 1
+                )
         elif msg_type == "list_conversations":
             await self.handle_list_conversations(ws)
         elif msg_type == "load_conversation":
@@ -762,16 +807,20 @@ class DashboardWebSocketServer:
             # AI self-edit: AI rewrites its own message based on user instruction
             inflight = self._client_inflight.get(client_id, 0)
             if inflight >= 2:
-                await ws.send_json({
-                    "type": "error",
-                    "message": "Too many concurrent requests. Please wait for the current response to finish.",
-                })
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "Too many concurrent requests. Please wait for the current response to finish.",
+                    }
+                )
                 return
             self._client_inflight[client_id] = inflight + 1
             try:
                 await self.handle_ai_edit_message(ws, data)
             finally:
-                self._client_inflight[client_id] = max(0, self._client_inflight.get(client_id, 1) - 1)
+                self._client_inflight[client_id] = max(
+                    0, self._client_inflight.get(client_id, 1) - 1
+                )
         elif msg_type == "delete_message":
             await handle_delete_message(ws, data)
         elif msg_type == "pin_message":
@@ -856,17 +905,19 @@ class DashboardWebSocketServer:
             except Exception:
                 logger.exception("Failed to save conversation to DB")
 
-        await ws.send_json({
-            "type": "conversation_created",
-            "id": conversation_id,
-            "role_preset": role_preset,
-            "role_name": preset["name"],
-            "role_emoji": preset["emoji"],
-            "role_color": preset["color"],
-            "thinking_enabled": thinking_enabled,
-            "ai_provider": ai_provider,
-            "created_at": datetime.now(tz=timezone.utc).isoformat(),
-        })
+        await ws.send_json(
+            {
+                "type": "conversation_created",
+                "id": conversation_id,
+                "role_preset": role_preset,
+                "role_name": preset["name"],
+                "role_emoji": preset["emoji"],
+                "role_color": preset["color"],
+                "thinking_enabled": thinking_enabled,
+                "ai_provider": ai_provider,
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            }
+        )
 
     async def handle_chat_message(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Handle incoming chat message and stream response.
@@ -880,7 +931,9 @@ class DashboardWebSocketServer:
             if _CLAUDE_BACKEND == "cli":
                 # Subscription-based path: no SDK client needed.
                 await _handle_chat_message_claude_cli(
-                    ws, data, None,
+                    ws,
+                    data,
+                    None,
                     max_content_length=self.MAX_CONTENT_LENGTH,
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     max_images=self.MAX_IMAGES,
@@ -895,7 +948,9 @@ class DashboardWebSocketServer:
                 if API_FAILOVER_AVAILABLE:
                     self.claude_client = api_failover.get_client()
                 await _handle_chat_message_claude(
-                    ws, data, self.claude_client,
+                    ws,
+                    data,
+                    self.claude_client,
                     max_content_length=self.MAX_CONTENT_LENGTH,
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     max_images=self.MAX_IMAGES,
@@ -909,7 +964,9 @@ class DashboardWebSocketServer:
             # to Gemini so the user still gets a reply instead of silent failure.
 
         await _handle_chat_message(
-            ws, data, self.gemini_client,
+            ws,
+            data,
+            self.gemini_client,
             max_content_length=self.MAX_CONTENT_LENGTH,
             max_history_messages=self.MAX_HISTORY_MESSAGES,
             max_images=self.MAX_IMAGES,
@@ -928,21 +985,27 @@ class DashboardWebSocketServer:
                 # CLI backend supports AI edit via the same SEARCH/REPLACE
                 # patch protocol as the SDK backend.
                 await _handle_ai_edit_message_claude_cli(
-                    ws, data, None,
+                    ws,
+                    data,
+                    None,
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return
             if self.claude_client:
                 await _handle_ai_edit_message_claude(
-                    ws, data, self.claude_client,
+                    ws,
+                    data,
+                    self.claude_client,
                     max_history_messages=self.MAX_HISTORY_MESSAGES,
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return
 
         await _handle_ai_edit_message(
-            ws, data, self.gemini_client,
+            ws,
+            data,
+            self.gemini_client,
             max_history_messages=self.MAX_HISTORY_MESSAGES,
             stream_timeout=self.STREAM_TIMEOUT,
         )
@@ -1002,16 +1065,20 @@ class DashboardWebSocketServer:
         conversation_id = data.get("conversation_id")
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
         if ai_provider not in ("gemini", "claude"):
-            await ws.send_json({
-                "type": "error",
-                "message": f"Invalid ai_provider: {ai_provider!r} (expected 'gemini' or 'claude')",
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Invalid ai_provider: {ai_provider!r} (expected 'gemini' or 'claude')",
+                }
+            )
             return
         if not conversation_id:
-            await ws.send_json({
-                "type": "error",
-                "message": "conversation_id is required to update provider",
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "conversation_id is required to update provider",
+                }
+            )
             return
         if DB_AVAILABLE:
             try:
@@ -1021,11 +1088,13 @@ class DashboardWebSocketServer:
                 logger.exception("Failed to update provider")
                 await ws.send_json({"type": "error", "message": "Failed to update provider"})
                 return
-        await ws.send_json({
-            "type": "provider_updated",
-            "conversation_id": conversation_id,
-            "ai_provider": ai_provider,
-        })
+        await ws.send_json(
+            {
+                "type": "provider_updated",
+                "conversation_id": conversation_id,
+                "ai_provider": ai_provider,
+            }
+        )
 
     # ========================================================================
     # API Endpoint Failover handlers
@@ -1057,15 +1126,21 @@ class DashboardWebSocketServer:
         if success:
             # Recreate Claude client with new endpoint
             self.claude_client = api_failover.get_client()
-            await ws.send_json({
-                "type": "api_endpoint_switched",
-                "endpoint": api_failover.active_endpoint.value,
-                **api_failover.get_status(),
-            })
+            await ws.send_json(
+                {
+                    "type": "api_endpoint_switched",
+                    "endpoint": api_failover.active_endpoint.value,
+                    **api_failover.get_status(),
+                }
+            )
         else:
-            await ws.send_json({"type": "error", "message": f"Cannot switch to {target}: not configured"})
+            await ws.send_json(
+                {"type": "error", "message": f"Cannot switch to {target}: not configured"}
+            )
 
-    async def handle_health_check_endpoint(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    async def handle_health_check_endpoint(
+        self, ws: WebSocketResponse, data: dict[str, Any]
+    ) -> None:
         """Run a health check on a specific or all endpoints."""
         if not API_FAILOVER_AVAILABLE:
             await ws.send_json({"type": "error", "message": "API failover not available"})

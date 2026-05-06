@@ -4,6 +4,7 @@ Surveys every Claude Code project folder under ~/.claude/projects/ that could
 hold dashboard-spawned sessions, plus the bot's sidecar tracking JSON, and
 flags mismatches (e.g. the encoder bug where `_` is not replaced by `-`).
 """
+
 from __future__ import annotations
 
 import json

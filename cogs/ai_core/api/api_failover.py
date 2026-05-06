@@ -26,6 +26,7 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
+
 class EndpointType(StrEnum):
     DIRECT = "direct"
     PROXY = "proxy"
@@ -265,9 +266,13 @@ class APIFailoverManager:
                     other_health = self._health.get(other)
                     # Don't switch to an endpoint that also recently failed
                     if other_health and not other_health.is_healthy:
-                        cooldown_elapsed = (time.monotonic() - other_health.last_failure_time) > self.RECOVERY_COOLDOWN
+                        cooldown_elapsed = (
+                            time.monotonic() - other_health.last_failure_time
+                        ) > self.RECOVERY_COOLDOWN
                         if not cooldown_elapsed:
-                            logger.warning("⚠️ Both API endpoints unhealthy, staying on %s", self._active.value)
+                            logger.warning(
+                                "⚠️ Both API endpoints unhealthy, staying on %s", self._active.value
+                            )
                             return False
                     # Perform switch inside the lock to avoid TOCTOU race condition
                     switched_reason = f"auto-failover after {failure_count} failures: {last_error}"
@@ -327,7 +332,9 @@ class APIFailoverManager:
 
         logger.info(
             "🔀 API endpoint switched: %s → %s (reason: %s)",
-            old.value, target.value, reason,
+            old.value,
+            target.value,
+            reason,
         )
 
     async def _notify_listeners(self, target: EndpointType, reason: str) -> None:
@@ -339,7 +346,9 @@ class APIFailoverManager:
             except Exception:
                 logger.exception("Failover listener error")
 
-    def add_listener(self, callback: Callable[[EndpointType, str], Coroutine[Any, Any, None]]) -> None:
+    def add_listener(
+        self, callback: Callable[[EndpointType, str], Coroutine[Any, Any, None]]
+    ) -> None:
         """Register a callback for endpoint change events."""
         self._listeners.append(callback)
 
@@ -405,16 +414,18 @@ class APIFailoverManager:
         endpoints_info = []
         for ep_type, config in self._endpoints.items():
             health = self._health.get(ep_type, EndpointHealth())
-            endpoints_info.append({
-                "type": ep_type.value,
-                "label": config.display_name,
-                "active": ep_type == self._active,
-                "healthy": health.is_healthy,
-                "consecutive_failures": health.consecutive_failures,
-                "last_error": health.last_error,
-                "total_requests": health.total_requests,
-                "failure_rate": round(health.failure_rate * 100, 1),
-            })
+            endpoints_info.append(
+                {
+                    "type": ep_type.value,
+                    "label": config.display_name,
+                    "active": ep_type == self._active,
+                    "healthy": health.is_healthy,
+                    "consecutive_failures": health.consecutive_failures,
+                    "last_error": health.last_error,
+                    "total_requests": health.total_requests,
+                    "failure_rate": round(health.failure_rate * 100, 1),
+                }
+            )
 
         return {
             "active_endpoint": self._active.value,

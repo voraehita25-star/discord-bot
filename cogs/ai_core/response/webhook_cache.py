@@ -101,18 +101,14 @@ def webhook_cache_healthcheck(bot=None) -> bool:
     """
     with _webhook_task_lock:
         task_alive = (
-            _webhook_cache_cleanup_task is not None
-            and not _webhook_cache_cleanup_task.done()
+            _webhook_cache_cleanup_task is not None and not _webhook_cache_cleanup_task.done()
         )
     if task_alive:
         return True
     logger.info("🩺 Webhook cache cleanup not running — attempting restart")
     start_webhook_cache_cleanup(bot)
     with _webhook_task_lock:
-        return (
-            _webhook_cache_cleanup_task is not None
-            and not _webhook_cache_cleanup_task.done()
-        )
+        return _webhook_cache_cleanup_task is not None and not _webhook_cache_cleanup_task.done()
 
 
 async def stop_webhook_cache_cleanup() -> None:

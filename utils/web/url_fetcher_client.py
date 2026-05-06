@@ -42,9 +42,7 @@ class URLFetcherClient:
         self._service_check_time: float = 0
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.timeout)
-        )
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
         await self._check_service()
         return self
 
@@ -69,7 +67,9 @@ class URLFetcherClient:
             return False
 
         try:
-            async with self._session.get(f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+            async with self._session.get(
+                f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)
+            ) as resp:
                 self._service_available = resp.status == 200
                 self._service_check_time = now
                 if self._service_available:
@@ -120,6 +120,7 @@ class URLFetcherClient:
             headers: dict[str, str] = {}
             try:
                 from utils.monitoring.tracing import trace_headers
+
                 headers = trace_headers()
             except ImportError:
                 pass
@@ -144,6 +145,7 @@ class URLFetcherClient:
         # SSRF Protection: Block private/internal IPs
         try:
             from utils.web.url_fetcher import _is_private_url
+
             if await _is_private_url(url):
                 result["error"] = "SSRF blocked: URL resolves to private/internal address"
                 result["fetch_time_ms"] = int((time.time() - start) * 1000)
@@ -178,9 +180,7 @@ class URLFetcherClient:
                 # SOCK_STREAM the resolver returns the family pair we'd
                 # actually use to dial, so AAAA + A both get checked.
                 loop = _asyncio.get_running_loop()
-                addr_infos = await loop.getaddrinfo(
-                    hostname, None, type=_socket.SOCK_STREAM
-                )
+                addr_infos = await loop.getaddrinfo(hostname, None, type=_socket.SOCK_STREAM)
                 for _family, _, _, _, sockaddr in addr_infos:
                     ip_str = sockaddr[0]
                     try:
@@ -192,7 +192,9 @@ class URLFetcherClient:
                             or addr.is_link_local
                             or addr.is_unspecified  # 0.0.0.0 / ::
                         ):
-                            result["error"] = "SSRF blocked: URL resolves to private/internal address"
+                            result["error"] = (
+                                "SSRF blocked: URL resolves to private/internal address"
+                            )
                             result["fetch_time_ms"] = int((time.time() - start) * 1000)
                             return result
                     except ValueError:
@@ -227,7 +229,9 @@ class URLFetcherClient:
                 # silently following to a possibly-private target.
                 if 300 <= resp.status < 400:
                     result["status_code"] = resp.status
-                    result["error"] = f"Redirect not followed (SSRF guard): {resp.headers.get('Location', '')}"
+                    result["error"] = (
+                        f"Redirect not followed (SSRF guard): {resp.headers.get('Location', '')}"
+                    )
                     result["fetch_time_ms"] = int((time.time() - start) * 1000)
                     return result
                 result["status_code"] = resp.status
@@ -280,7 +284,9 @@ class URLFetcherClient:
             return await self._fetch_batch_via_service(urls, timeout)
         return await self._fetch_batch_fallback(urls)
 
-    async def _fetch_batch_via_service(self, urls: list[str], timeout: int | None) -> dict[str, Any]:
+    async def _fetch_batch_via_service(
+        self, urls: list[str], timeout: int | None
+    ) -> dict[str, Any]:
         """Batch fetch via Go service.
 
         Per-URL SSRF check BEFORE forwarding to the Go side. Without this,
@@ -328,10 +334,7 @@ class URLFetcherClient:
 
             if self._session is None:
                 raise RuntimeError("URLFetcherClient must be used as an async context manager")
-            async with self._session.post(
-                f"{self.base_url}/fetch/batch",
-                json=payload
-            ) as resp:
+            async with self._session.post(f"{self.base_url}/fetch/batch", json=payload) as resp:
                 service_response = await resp.json()
             # Merge blocked entries back in so callers see a 1:1 mapping
             # with their original input list.
@@ -339,8 +342,8 @@ class URLFetcherClient:
                 merged_results = list(service_response.get("results", []))
                 merged_results.extend(blocked_results)
                 service_response["results"] = merged_results
-                service_response["error_count"] = (
-                    service_response.get("error_count", 0) + len(blocked_results)
+                service_response["error_count"] = service_response.get("error_count", 0) + len(
+                    blocked_results
                 )
             return service_response  # type: ignore[no-any-return]
         except Exception as e:

@@ -35,6 +35,7 @@ except ImportError:
     # Direct import if shared module not available
     try:
         from utils.media.colors import Colors, enable_windows_ansi
+
         enable_windows_ansi()
     except ImportError:
         # Minimal fallback inline Colors class
@@ -562,12 +563,17 @@ def stop_process_list(pids, name="process", graceful_timeout=5):
             # On Windows, SIGINT doesn't work well, so we use terminate
             if sys.platform != "win32":
                 import signal
+
                 try:
                     proc.send_signal(signal.SIGINT)
-                    print(f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}")
+                    print(
+                        f"{Colors.YELLOW}  Sending graceful shutdown signal to {name} (PID: {pid})...{Colors.RESET}"
+                    )
                     try:
                         proc.wait(timeout=graceful_timeout)
-                        print(f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}")
+                        print(
+                            f"{Colors.GREEN}  {name} stopped gracefully (PID: {pid}){Colors.RESET}"
+                        )
                         count += 1
                         continue
                     except psutil.TimeoutExpired:
@@ -623,7 +629,13 @@ def auto_stop_existing_bot(status, *, assume_yes: bool = False):
             f"(PIDs: {pids}). Stop it before starting a new one?{Colors.RESET}"
         )
         try:
-            answer = input(f"{Colors.BRIGHT_CYAN}Type 'yes' to stop, anything else to abort:{Colors.RESET} ").strip().lower()
+            answer = (
+                input(
+                    f"{Colors.BRIGHT_CYAN}Type 'yes' to stop, anything else to abort:{Colors.RESET} "
+                )
+                .strip()
+                .lower()
+            )
         except (EOFError, KeyboardInterrupt):
             print(f"{Colors.YELLOW}Aborted.{Colors.RESET}")
             return False

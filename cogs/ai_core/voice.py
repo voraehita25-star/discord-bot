@@ -27,6 +27,7 @@ def _is_voice_like_channel(channel: object) -> TypeGuard[_VoiceLikeChannel]:
     """Return True when the object behaves like a Discord voice/stage channel."""
     return all(hasattr(channel, attr) for attr in ("connect", "guild", "name", "id"))
 
+
 # Channel ID extraction pattern
 PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 

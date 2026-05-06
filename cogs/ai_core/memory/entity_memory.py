@@ -21,8 +21,8 @@ except ImportError:
     db_manager = None  # type: ignore[assignment]
 
 
-
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class EntityFacts:
@@ -128,6 +128,7 @@ class Entity:
         the model's prompt.
         """
         import re as _re
+
         facts_text = self.facts.to_prompt_text()
 
         def _scrub(s: str) -> str:
@@ -565,7 +566,9 @@ class EntityMemoryManager:
         try:
             facts_dict = json.loads(row[3]) if row[3] else {}
         except (json.JSONDecodeError, TypeError):
-            logger.exception("Corrupted JSON in entity row id=%s; falling back to empty facts", row[0])
+            logger.exception(
+                "Corrupted JSON in entity row id=%s; falling back to empty facts", row[0]
+            )
             facts_dict = {}
         return Entity(
             entity_id=row[0],
@@ -590,9 +593,7 @@ class EntityMemoryManager:
             # Skip access_count bump on the prompt-assembly hot path —
             # this fires on every message and was generating a write per
             # entity per turn.
-            entity = await self.get_entity(
-                name, channel_id, guild_id, update_access=False
-            )
+            entity = await self.get_entity(name, channel_id, guild_id, update_access=False)
             if entity:
                 entities.append(entity)
 

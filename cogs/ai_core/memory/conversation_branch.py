@@ -103,9 +103,7 @@ class ConversationBranchManager:
                 # No running event loop — caller invoked this from a sync
                 # context before the bot's async setup. Skip; the task
                 # will be (re)started when called again from on_ready.
-                self.logger.warning(
-                    "Branch cleanup task not started (no running loop): %s", e
-                )
+                self.logger.warning("Branch cleanup task not started (no running loop): %s", e)
 
     async def stop_cleanup_task(self) -> None:
         """Stop the cleanup task gracefully."""
@@ -195,7 +193,7 @@ class ConversationBranchManager:
         # Bound the snapshot to the trailing CHECKPOINT_HISTORY_LIMIT messages to
         # keep memory usage sane on very long channels.
         snapshot_source = (
-            history[-self.CHECKPOINT_HISTORY_LIMIT:]
+            history[-self.CHECKPOINT_HISTORY_LIMIT :]
             if len(history) > self.CHECKPOINT_HISTORY_LIMIT
             else history
         )
@@ -378,7 +376,9 @@ class ConversationBranchManager:
             self._active_branch[channel_id] = branch_id
             history_snapshot = [copy.deepcopy(msg) for msg in branch.history]
 
-        self.logger.info("🌿 Switched to branch: %s (%d messages)", branch_id, len(history_snapshot))
+        self.logger.info(
+            "🌿 Switched to branch: %s (%d messages)", branch_id, len(history_snapshot)
+        )
         return history_snapshot
 
     def get_active_branch(self, channel_id: int) -> str | None:
@@ -405,7 +405,7 @@ class ConversationBranchManager:
         # this, every turn deep-copied the entire (potentially huge) history
         # into the branch, causing GC pressure + memory blow-up.
         bounded = (
-            history[-self.CHECKPOINT_HISTORY_LIMIT:]
+            history[-self.CHECKPOINT_HISTORY_LIMIT :]
             if len(history) > self.CHECKPOINT_HISTORY_LIMIT
             else history
         )

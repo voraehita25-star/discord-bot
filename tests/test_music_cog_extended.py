@@ -145,7 +145,7 @@ class TestMusicControlViewInteractionCheck:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'interaction_check')
+        assert hasattr(view, "interaction_check")
 
     @pytest.mark.asyncio
     async def test_interaction_check_no_voice(self):
@@ -215,7 +215,7 @@ class TestAsyncioImport:
         from cogs.music import cog
 
         # Module should have asyncio-related code
-        assert 'asyncio' in dir(cog) or hasattr(cog, 'asyncio')
+        assert "asyncio" in dir(cog) or hasattr(cog, "asyncio")
 
 
 class TestMusicControlViewAttributes:
@@ -229,7 +229,7 @@ class TestMusicControlViewAttributes:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'cog')
+        assert hasattr(view, "cog")
 
     @pytest.mark.asyncio
     async def test_has_guild_id_attribute(self):
@@ -239,12 +239,13 @@ class TestMusicControlViewAttributes:
         mock_cog = MagicMock(spec=Music)
         view = MusicControlView(cog=mock_cog, guild_id=12345)
 
-        assert hasattr(view, 'guild_id')
+        assert hasattr(view, "guild_id")
 
 
 # ======================================================================
 # Merged from test_music_cog_module.py
 # ======================================================================
+
 
 class TestMusicControlViewBasic:
     """Basic tests for MusicControlView class without event loop."""
@@ -252,6 +253,7 @@ class TestMusicControlViewBasic:
     def test_music_control_view_import(self):
         """Test MusicControlView can be imported."""
         from cogs.music.cog import MusicControlView
+
         assert MusicControlView is not None
 
     @pytest.mark.asyncio
@@ -419,6 +421,7 @@ class TestMusicCogUnload:
         cog = Music(mock_bot)
 
         import collections
+
         cog._gs(123).queue = collections.deque(["song1", "song2"])
         cog._gs(456).loop = True
 
@@ -440,6 +443,7 @@ class TestMusicCogCleanupGuildData:
 
         guild_id = 12345
         import collections
+
         cog._gs(guild_id).queue = collections.deque(["song1"])
 
         # Mock save_queue
@@ -518,7 +522,7 @@ class TestMusicCogSaveQueue:
         guild_id = 12345
         # queue is already empty by default via _gs()
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.clear_music_queue = AsyncMock()
             await cog.save_queue(guild_id)
             mock_db.clear_music_queue.assert_called_once_with(guild_id)
@@ -533,10 +537,11 @@ class TestMusicCogSaveQueue:
 
         guild_id = 12345
         import collections
+
         queue = [{"title": "song1"}, {"title": "song2"}]
         cog._gs(guild_id).queue = collections.deque(queue)
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.save_music_queue = AsyncMock()
             await cog.save_queue(guild_id)
             mock_db.save_music_queue.assert_called_once_with(guild_id, queue)
@@ -555,7 +560,7 @@ class TestMusicCogSaveQueueJson:
         guild_id = 12345
         # queue is already empty by default via _gs()
 
-        with patch('pathlib.Path.exists') as mock_exists:
+        with patch("pathlib.Path.exists") as mock_exists:
             mock_exists.return_value = False
             cog._save_queue_json_sync(guild_id)
             # Should not raise
@@ -569,12 +574,13 @@ class TestMusicCogSaveQueueJson:
 
         guild_id = 12345
         import collections
+
         cog._gs(guild_id).queue = collections.deque([{"title": "song1"}])
         cog._gs(guild_id).volume = 0.5
         cog._gs(guild_id).loop = False
         cog._gs(guild_id).mode_247 = False
 
-        with patch('pathlib.Path.write_text') as mock_write:
+        with patch("pathlib.Path.write_text") as mock_write:
             cog._save_queue_json_sync(guild_id)
             mock_write.assert_called_once()
 
@@ -592,7 +598,7 @@ class TestMusicCogLoadQueue:
 
         guild_id = 12345
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.load_music_queue = AsyncMock(return_value=[{"title": "song1"}])
             result = await cog.load_queue(guild_id)
 
@@ -609,10 +615,10 @@ class TestMusicCogLoadQueue:
 
         guild_id = 12345
 
-        with patch('utils.database.db') as mock_db:
+        with patch("utils.database.db") as mock_db:
             mock_db.load_music_queue = AsyncMock(return_value=None)
 
-            with patch('pathlib.Path.exists') as mock_exists:
+            with patch("pathlib.Path.exists") as mock_exists:
                 mock_exists.return_value = False
                 result = await cog.load_queue(guild_id)
 
@@ -646,21 +652,25 @@ class TestMusicCogUtils:
     def test_import_colors(self):
         """Test Colors can be imported."""
         from cogs.music.utils import Colors
+
         assert Colors is not None
 
     def test_import_emojis(self):
         """Test Emojis can be imported."""
         from cogs.music.utils import Emojis
+
         assert Emojis is not None
 
     def test_import_create_progress_bar(self):
         """Test create_progress_bar can be imported."""
         from cogs.music.utils import create_progress_bar
+
         assert create_progress_bar is not None
 
     def test_import_format_duration(self):
         """Test format_duration can be imported."""
         from cogs.music.utils import format_duration
+
         assert format_duration is not None
 
 
@@ -757,6 +767,7 @@ class TestMusicButtonStates:
 
         # Add to queue
         import collections
+
         cog._gs(guild_id).queue = collections.deque(["song1", "song2", "song3"])
         assert len(cog._gs(guild_id).queue) == 3
 
@@ -798,7 +809,7 @@ class TestMusicButtonStates:
         cog._gs(guild_id).current_track = {
             "title": "Test Song",
             "duration": 180,
-            "url": "https://example.com"
+            "url": "https://example.com",
         }
 
         assert cog._gs(guild_id).current_track["title"] == "Test Song"

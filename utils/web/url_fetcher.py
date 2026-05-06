@@ -93,11 +93,10 @@ class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
                 if ip in network:
                     logger.warning(
                         "SSRF blocked at connect time: %s -> private IP %s",
-                        host, ip_str,
+                        host,
+                        ip_str,
                     )
-                    raise OSError(
-                        f"SSRF blocked: {host} resolves to private IP {ip_str}"
-                    )
+                    raise OSError(f"SSRF blocked: {host} resolves to private IP {ip_str}")
         return addrs
 
     async def close(self) -> None:
@@ -165,19 +164,19 @@ GITHUB_DOMAINS = ("github.com", "raw.githubusercontent.com")
 
 # Blocked private/internal IP ranges for SSRF protection
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
-    ipaddress.ip_network("10.0.0.0/8"),         # Private Class A
-    ipaddress.ip_network("172.16.0.0/12"),      # Private Class B
-    ipaddress.ip_network("192.168.0.0/16"),     # Private Class C
-    ipaddress.ip_network("169.254.0.0/16"),     # Link-local + AWS/Azure/GCP metadata
-    ipaddress.ip_network("0.0.0.0/8"),          # Current network
-    ipaddress.ip_network("100.64.0.0/10"),      # Shared address space (CGN)
-    ipaddress.ip_network("100.100.100.200/32"), # Alibaba Cloud metadata
-    ipaddress.ip_network("224.0.0.0/4"),        # IPv4 multicast
-    ipaddress.ip_network("240.0.0.0/4"),        # IPv4 reserved future
-    ipaddress.ip_network("::1/128"),            # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),           # IPv6 unique local
-    ipaddress.ip_network("fe80::/10"),          # IPv6 link-local
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # Private Class A
+    ipaddress.ip_network("172.16.0.0/12"),  # Private Class B
+    ipaddress.ip_network("192.168.0.0/16"),  # Private Class C
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local + AWS/Azure/GCP metadata
+    ipaddress.ip_network("0.0.0.0/8"),  # Current network
+    ipaddress.ip_network("100.64.0.0/10"),  # Shared address space (CGN)
+    ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
+    ipaddress.ip_network("224.0.0.0/4"),  # IPv4 multicast
+    ipaddress.ip_network("240.0.0.0/4"),  # IPv4 reserved future
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
     # IPv4-mapped IPv6 covers ::ffff:0:0/96 — closes the bypass where an
     # attacker-controlled DNS returns ::ffff:127.0.0.1 to dodge the IPv4
     # blocks above. We additionally call ip.ipv4_mapped below as belt-and-
@@ -224,6 +223,7 @@ async def _is_private_url(url: str) -> bool:
     """
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
             logger.warning("SSRF blocked: disallowed scheme %r in %s", parsed.scheme, url)
@@ -307,8 +307,7 @@ async def fetch_url_content(
     """
     if session is not None:
         logger.debug(
-            "fetch_url_content: ignoring caller-supplied session; "
-            "using shared SSRF-safe session"
+            "fetch_url_content: ignoring caller-supplied session; using shared SSRF-safe session"
         )
         session = None
     try:
@@ -339,6 +338,7 @@ async def fetch_url_content(
         # Use parsed hostname (not substring) so attacker domains like
         # `github.com.evil.com` don't trigger the API rewrite path.
         from urllib.parse import urlparse as _urlparse
+
         try:
             _parsed_url = _urlparse(url)
             _host = (_parsed_url.hostname or "").lower()
@@ -361,7 +361,9 @@ async def fetch_url_content(
 
                 # Re-check SSRF on transformed URL
                 if await _is_private_url(api_url):
-                    logger.warning("Blocked SSRF attempt on transformed GitHub API URL: %s", api_url)
+                    logger.warning(
+                        "Blocked SSRF attempt on transformed GitHub API URL: %s", api_url
+                    )
                     return url, None
 
                 try:
@@ -465,7 +467,11 @@ Default Branch: {data.get("default_branch", "main")}
 
             # Early rejection if Content-Length exceeds limit (avoids wasting bandwidth)
             content_length = final_response.headers.get("Content-Length")
-            if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_SIZE:
+            if (
+                content_length
+                and content_length.isdigit()
+                and int(content_length) > MAX_RESPONSE_SIZE
+            ):
                 logger.warning("URL content too large: %s (%s bytes)", url, content_length)
                 return url, f"[Content too large: {content_length} bytes]"
 
@@ -475,18 +481,23 @@ Default Branch: {data.get("default_branch", "main")}
             # the body may be binary (PDF, ZIP, image, executable). The
             # latin-1 fallback would happily decode garbage and feed it
             # to BeautifulSoup. Reject obvious binaries here.
-            if raw_bytes[:5] in (b"%PDF-",) or raw_bytes[:4] in (
-                b"PK\x03\x04",  # ZIP
-                b"\x7fELF",     # ELF
-                b"MZ\x90\x00",  # PE/COFF Windows .exe (partial)
-            ) or (len(raw_bytes) >= 2 and raw_bytes[:2] == b"MZ"):
+            if (
+                raw_bytes[:5] in (b"%PDF-",)
+                or raw_bytes[:4]
+                in (
+                    b"PK\x03\x04",  # ZIP
+                    b"\x7fELF",  # ELF
+                    b"MZ\x90\x00",  # PE/COFF Windows .exe (partial)
+                )
+                or (len(raw_bytes) >= 2 and raw_bytes[:2] == b"MZ")
+            ):
                 return url, f"[Binary content despite Content-Type={content_type}]"
             try:
                 encoding = final_response.get_encoding()
-                html = raw_bytes.decode(encoding or 'utf-8')
+                html = raw_bytes.decode(encoding or "utf-8")
             except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values
-                html = raw_bytes.decode('latin-1', errors='replace')
+                html = raw_bytes.decode("latin-1", errors="replace")
 
             # Parse HTML
             soup = BeautifulSoup(html, "lxml")

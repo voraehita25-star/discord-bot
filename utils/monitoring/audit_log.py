@@ -22,7 +22,6 @@ except ImportError:
     DB_AVAILABLE = False
 
 
-
 logger = logging.getLogger(__name__)
 
 # Fallback JSONL file used when the DB layer is unavailable. We append-only
@@ -46,6 +45,7 @@ async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
     rotating-logs sweeper holding a Path lock could collide with the
     next write. Using ``with`` makes close deterministic.
     """
+
     def _do_write(line: str) -> None:
         with _FALLBACK_LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line)
@@ -59,6 +59,7 @@ async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
     except Exception:
         logger.exception("Audit fallback write failed; entry lost")
         return False
+
 
 class AuditLogger:
     """Async-compatible logger for tracking administrative actions."""

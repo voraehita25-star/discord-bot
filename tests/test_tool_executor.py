@@ -72,7 +72,7 @@ class TestExecuteToolCall:
         tool_call.name = "remember"
         tool_call.args = {"content": "Remember this important fact"}
 
-        with patch('cogs.ai_core.tools.tool_executor.rag_system') as mock_rag:
+        with patch("cogs.ai_core.tools.tool_executor.rag_system") as mock_rag:
             mock_rag.add_memory = AsyncMock()
             result = await execute_tool_call(bot, channel, user, tool_call)
 
@@ -220,7 +220,7 @@ class TestSendAsWebhook:
         mock_webhook = MagicMock()
         mock_webhook.send = AsyncMock(return_value=MagicMock())
 
-        with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
+        with patch("cogs.ai_core.tools.tool_executor.get_cached_webhook") as mock_get:
             mock_get.return_value = mock_webhook
 
             await send_as_webhook(bot, channel, "TestChar", "Hello!")
@@ -245,7 +245,7 @@ class TestSendAsWebhook:
         mock_webhook = MagicMock()
         mock_webhook.send = AsyncMock(return_value=MagicMock())
 
-        with patch('cogs.ai_core.tools.tool_executor.get_cached_webhook') as mock_get:
+        with patch("cogs.ai_core.tools.tool_executor.get_cached_webhook") as mock_get:
             mock_get.return_value = mock_webhook
 
             long_message = "A" * 3000  # Over 2000 limit
@@ -567,8 +567,12 @@ class TestExecuteToolCallMoreFunctions:
         tool_call.name = "read_channel"
         tool_call.args = {"channel_name": "general", "limit": 50}
 
-        with patch("cogs.ai_core.tools.tool_executor.cmd_read_channel", new_callable=AsyncMock), \
-             patch("cogs.ai_core.tools.tool_executor.discord.utils.get", return_value=target_channel):
+        with (
+            patch("cogs.ai_core.tools.tool_executor.cmd_read_channel", new_callable=AsyncMock),
+            patch(
+                "cogs.ai_core.tools.tool_executor.discord.utils.get", return_value=target_channel
+            ),
+        ):
             result = await execute_tool_call(bot, channel, user, tool_call)
 
         assert "Requested reading channel" in result

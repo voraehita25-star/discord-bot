@@ -78,9 +78,7 @@ class AlertManager:
                     pass
                 self._session = None
             if self._session is None:
-                self._session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=10)
-                )
+                self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
             return self._session
 
     def _can_send(self, alert_type: str) -> bool:
@@ -120,7 +118,9 @@ class AlertManager:
                 # very-old so it gets evicted first instead of crashing.
                 oldest_key = min(
                     self._last_alert_times,
-                    key=lambda k: self._last_alert_times[k] if self._last_alert_times[k] is not None else 0.0,
+                    key=lambda k: (
+                        self._last_alert_times[k] if self._last_alert_times[k] is not None else 0.0
+                    ),
                 )
                 self._last_alert_times.pop(oldest_key, None)
             self._last_alert_times[alert_type] = now
@@ -157,8 +157,8 @@ class AlertManager:
             return False
 
         color_map = {
-            "info": 0x3498DB,      # Blue
-            "warning": 0xF39C12,   # Orange
+            "info": 0x3498DB,  # Blue
+            "warning": 0xF39C12,  # Orange
             "critical": 0xE74C3C,  # Red
         }
         icon_map = {
@@ -216,7 +216,7 @@ class AlertManager:
         return await self.send_alert(
             title=f"Circuit Breaker OPEN: {breaker_name}",
             description=f"The `{breaker_name}` circuit breaker has tripped. "
-                        f"API calls are being blocked to prevent cascading failures.",
+            f"API calls are being blocked to prevent cascading failures.",
             alert_type=f"circuit_breaker_{breaker_name}",
             severity="critical",
         )
@@ -226,7 +226,7 @@ class AlertManager:
         return await self.send_alert(
             title="Memory Usage Warning",
             description=f"Memory usage is **{current_mb:.0f} MB** "
-                        f"(threshold: {threshold_mb:.0f} MB)",
+            f"(threshold: {threshold_mb:.0f} MB)",
             alert_type="memory_threshold",
             severity="warning",
             fields=[
@@ -240,7 +240,7 @@ class AlertManager:
         return await self.send_alert(
             title=f"Health Check Failed: {service}",
             description=f"Service `{service}` has failed {consecutive_failures} "
-                        f"consecutive health checks.",
+            f"consecutive health checks.",
             alert_type=f"health_{service}",
             severity="critical" if consecutive_failures >= 5 else "warning",
         )

@@ -48,6 +48,7 @@ except ImportError:
     def format_url_content_for_context(fetched_urls: list[tuple[str, str, str | None]]) -> str:
         return ""
 
+
 # ==========================================
 # 2. AI Enhancements & Processing
 # ==========================================
@@ -97,6 +98,7 @@ except ImportError:
 
     def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
         return bool(not response or not response.strip())  # Only flag truly empty responses
+
 
 try:
     from .processing.intent_detector import Intent, detect_intent

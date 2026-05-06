@@ -30,7 +30,6 @@ except ImportError:
     NUMPY_AVAILABLE = False
 
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +37,7 @@ logger = logging.getLogger(__name__)
 # very long ones tend to be session-specific and dilute the hit rate.
 _CACHE_MIN_RESPONSE_CHARS = 10
 _CACHE_MAX_RESPONSE_CHARS = 1500
+
 
 # Using slots=True for ~30% memory reduction and faster attribute access
 @dataclass(slots=True)
@@ -367,7 +367,8 @@ class AICache:
                         self._hits += 1
                         self.logger.debug(
                             "Cache hit (exact, post-fuzzy): %s... (hits: %d)",
-                            key[:8], exact_fresh.hits,
+                            key[:8],
+                            exact_fresh.hits,
                         )
                         return exact_fresh.response
                     # Re-verify entry still exists AND is not expired after
@@ -384,7 +385,9 @@ class AICache:
                         # semantic. Track it under a separate counter so the
                         # `semantic_hits` stat isn't inflated.
                         self._fuzzy_hits += 1
-                        self.logger.debug("Cache hit (fuzzy %.2f): %s...", similarity, similar_key[:8])
+                        self.logger.debug(
+                            "Cache hit (fuzzy %.2f): %s...", similarity, similar_key[:8]
+                        )
                         return fresh.response
 
         with self._cache_lock:
@@ -416,7 +419,8 @@ class AICache:
         if len(response) > _CACHE_MAX_RESPONSE_CHARS:
             self.logger.debug(
                 "Skipping cache.set: response %d chars > %d cap",
-                len(response), _CACHE_MAX_RESPONSE_CHARS,
+                len(response),
+                _CACHE_MAX_RESPONSE_CHARS,
             )
             return
 
@@ -518,9 +522,7 @@ class AICache:
         a min/max clamp).
         """
         with self._cache_lock:
-            expired_keys = [
-                key for key, entry in self.cache.items() if self._is_expired(entry)
-            ]
+            expired_keys = [key for key, entry in self.cache.items() if self._is_expired(entry)]
             for key in expired_keys:
                 del self.cache[key]
             if expired_keys:
@@ -647,6 +649,7 @@ def _load_resource_config() -> dict:
 
 # ==================== L2 Persistent Cache ====================
 
+
 class L2SqliteCache:
     """
     SQLite-backed persistent cache layer (L2).
@@ -718,7 +721,9 @@ class L2SqliteCache:
             except sqlite3.DatabaseError as e:
                 logger.debug("L2 store failed: %s", e)
 
-    def load_recent(self, limit: int = 1000, max_age: float = 86400) -> list[tuple[str, CacheEntry]]:
+    def load_recent(
+        self, limit: int = 1000, max_age: float = 86400
+    ) -> list[tuple[str, CacheEntry]]:
         """Load recent entries for L1 warm-up."""
         if self._conn is None:
             return []

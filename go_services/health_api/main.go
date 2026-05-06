@@ -610,7 +610,9 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("Health API server shutdown error: %v", err)
+		}
 	}()
 
 	log.Printf("Health API service starting on %s:%s", bindHost, port)

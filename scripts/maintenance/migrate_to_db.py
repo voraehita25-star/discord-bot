@@ -85,6 +85,7 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
     impossible to tell which rows had been applied during a re-run.
     """
     from datetime import datetime, timezone
+
     try:
         history = json.loads(filepath.read_text(encoding="utf-8"))
 
@@ -105,6 +106,7 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
             timestamp = item.get("timestamp")
 
             if isinstance(parts, list):
+
                 def _extract_text(part: Any) -> str:
                     if isinstance(part, str):
                         return part
@@ -112,6 +114,7 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
                         text = part["text"]
                         return text if isinstance(text, str) else str(text)
                     return str(part)
+
                 content = "\n".join(_extract_text(p) for p in parts if p)
             else:
                 content = str(parts)

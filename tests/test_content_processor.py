@@ -97,9 +97,7 @@ class TestIsAnimatedGif:
             Image.new("RGB", (10, 10), color="blue"),
         ]
         buffer = io.BytesIO()
-        frames[0].save(
-            buffer, format="GIF", save_all=True, append_images=frames[1:], duration=100
-        )
+        frames[0].save(buffer, format="GIF", save_all=True, append_images=frames[1:], duration=100)
         buffer.seek(0)
 
         result = is_animated_gif(buffer.getvalue())
@@ -171,9 +169,7 @@ class TestProcessAttachments:
         """Test processing None attachments."""
         from cogs.ai_core.media_processor import process_attachments
 
-        image_parts, video_parts, text_parts = await process_attachments(
-            None, "TestUser"
-        )
+        image_parts, video_parts, text_parts = await process_attachments(None, "TestUser")
 
         assert image_parts == []
         assert video_parts == []
@@ -184,9 +180,7 @@ class TestProcessAttachments:
         """Test processing empty attachment list."""
         from cogs.ai_core.media_processor import process_attachments
 
-        image_parts, video_parts, text_parts = await process_attachments(
-            [], "TestUser"
-        )
+        image_parts, video_parts, text_parts = await process_attachments([], "TestUser")
 
         assert image_parts == []
         assert video_parts == []
@@ -242,7 +236,7 @@ class TestProcessAttachments:
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "large.txt"
         mock_attachment.size = 20000
-        mock_attachment.read = AsyncMock(return_value=large_content.encode('utf-8'))
+        mock_attachment.read = AsyncMock(return_value=large_content.encode("utf-8"))
 
         image_parts, video_parts, text_parts = await process_attachments(
             [mock_attachment], "TestUser"
@@ -312,9 +306,9 @@ class TestPrepareUserAvatar:
         mock_user.id = 123456789
 
         # Create mock avatar
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         mock_avatar = MagicMock()
         mock_avatar.with_format = MagicMock(return_value=mock_avatar)
@@ -325,13 +319,7 @@ class TestPrepareUserAvatar:
         chat_data = {}  # No history key
         seen_users = {}
 
-        await prepare_user_avatar(
-            mock_user,
-            "Hello",
-            chat_data,
-            12345,
-            seen_users
-        )
+        await prepare_user_avatar(mock_user, "Hello", chat_data, 12345, seen_users)
 
         # Channel should be initialized in seen_users
         assert 12345 in seen_users
@@ -347,9 +335,9 @@ class TestPrepareUserAvatar:
         mock_user.id = 123456789
 
         # Create mock avatar
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         mock_avatar = MagicMock()
         mock_avatar.with_format = MagicMock(return_value=mock_avatar)
@@ -362,11 +350,7 @@ class TestPrepareUserAvatar:
 
         # Use keyword "appearance" to trigger avatar
         result = await prepare_user_avatar(
-            mock_user,
-            "What does my face look like?",
-            chat_data,
-            12345,
-            seen_users
+            mock_user, "What does my face look like?", chat_data, 12345, seen_users
         )
 
         # Should return an image due to keyword "face"
@@ -376,6 +360,7 @@ class TestPrepareUserAvatar:
 # ======================================================================
 # Merged from test_content_processor_module.py
 # ======================================================================
+
 
 class TestLoadCachedImageBytes:
     """Tests for load_cached_image_bytes function."""
@@ -391,6 +376,7 @@ class TestLoadCachedImageBytes:
     def test_load_cached_image_bytes_function_exists(self):
         """Test load_cached_image_bytes function exists."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert callable(load_cached_image_bytes)
 
 
@@ -402,7 +388,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (100, 100), color='red')
+        img = Image.new("RGB", (100, 100), color="red")
 
         result = pil_to_inline_data(img)
 
@@ -418,7 +404,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (50, 50), color='blue')
+        img = Image.new("RGB", (50, 50), color="blue")
 
         result = pil_to_inline_data(img)
 
@@ -432,7 +418,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create RGBA image
-        img = Image.new('RGBA', (100, 100), color=(255, 0, 0, 128))
+        img = Image.new("RGBA", (100, 100), color=(255, 0, 0, 128))
 
         result = pil_to_inline_data(img)
 
@@ -457,9 +443,9 @@ class TestPrepareUserAvatar:
         mock_avatar.with_size.return_value = mock_avatar
 
         # Create valid PNG bytes
-        img = Image.new('RGB', (256, 256), color='red')
+        img = Image.new("RGB", (256, 256), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
 
         mock_user.display_avatar = mock_avatar
@@ -467,9 +453,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": []}  # Empty history
         seen_users = {}
 
-        result = await prepare_user_avatar(
-            mock_user, "Hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "Hello", chat_data, 123, seen_users)
 
         assert result is not None
         assert isinstance(result, Image.Image)
@@ -489,9 +473,9 @@ class TestPrepareUserAvatar:
         mock_avatar.with_size.return_value = mock_avatar
 
         # Create valid PNG bytes
-        img = Image.new('RGB', (256, 256), color='green')
+        img = Image.new("RGB", (256, 256), color="green")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         mock_avatar.read = AsyncMock(return_value=buffer.getvalue())
 
         mock_user.display_avatar = mock_avatar
@@ -519,9 +503,7 @@ class TestPrepareUserAvatar:
         seen_users = {123: {"12345_TestUser"}}  # Already seen
 
         # No keyword trigger
-        result = await prepare_user_avatar(
-            mock_user, "Hello there!", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "Hello there!", chat_data, 123, seen_users)
 
         assert result is None
 
@@ -598,26 +580,31 @@ class TestModuleImports:
     def test_import_media_processor(self):
         """Test media_processor module can be imported."""
         from cogs.ai_core import media_processor
+
         assert media_processor is not None
 
     def test_import_load_cached_image_bytes(self):
         """Test load_cached_image_bytes can be imported."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert load_cached_image_bytes is not None
 
     def test_import_pil_to_inline_data(self):
         """Test pil_to_inline_data can be imported."""
         from cogs.ai_core.media_processor import pil_to_inline_data
+
         assert pil_to_inline_data is not None
 
     def test_import_prepare_user_avatar(self):
         """Test prepare_user_avatar can be imported."""
         from cogs.ai_core.media_processor import prepare_user_avatar
+
         assert prepare_user_avatar is not None
 
     def test_import_process_attachments(self):
         """Test process_attachments can be imported."""
         from cogs.ai_core.media_processor import process_attachments
+
         assert process_attachments is not None
 
 
@@ -637,6 +624,7 @@ class TestServerCharacters:
     def test_import_server_characters(self):
         """Test SERVER_CHARACTERS can be imported."""
         from cogs.ai_core.data.roleplay_data import SERVER_CHARACTERS
+
         assert SERVER_CHARACTERS is not None
         assert isinstance(SERVER_CHARACTERS, list)
 
@@ -644,6 +632,7 @@ class TestServerCharacters:
 # ======================================================================
 # Merged from test_content_processor_more.py
 # ======================================================================
+
 
 class TestLoadCachedImageBytesFunction:
     """Tests for load_cached_image_bytes function."""
@@ -662,13 +651,13 @@ class TestLoadCachedImageBytesFunction:
         # Use a path within the project base directory so path validation passes.
         # Patch ``stat`` (for the mtime check) AND ``read_bytes`` because the
         # cache validates files via ``st_mtime_ns`` to detect on-disk changes.
-        test_path = str(_BASE_DIR / 'assets' / 'test_image.png')
+        test_path = str(_BASE_DIR / "assets" / "test_image.png")
         fake_stat = MagicMock(st_mtime_ns=1234567890)
-        with patch('pathlib.Path.stat', return_value=fake_stat):
-            with patch('pathlib.Path.read_bytes', return_value=b'test_image_data'):
+        with patch("pathlib.Path.stat", return_value=fake_stat):
+            with patch("pathlib.Path.read_bytes", return_value=b"test_image_data"):
                 result = load_cached_image_bytes(test_path)
 
-        assert result == b'test_image_data'
+        assert result == b"test_image_data"
 
     def test_load_cached_image_bytes_not_exists(self):
         """Test loading image bytes when file does not exist."""
@@ -682,8 +671,8 @@ class TestLoadCachedImageBytesFunction:
 
         # ``stat`` raises FileNotFoundError for a missing file — that's what
         # the cache uses to short-circuit the read.
-        with patch('pathlib.Path.stat', side_effect=FileNotFoundError):
-            result = load_cached_image_bytes('/nonexistent/image.png')
+        with patch("pathlib.Path.stat", side_effect=FileNotFoundError):
+            result = load_cached_image_bytes("/nonexistent/image.png")
 
         assert result is None
 
@@ -697,10 +686,10 @@ class TestLoadCachedImageBytesFunction:
 
         load_cached_image_bytes.cache_clear()
 
-        test_path = str(_BASE_DIR / 'assets' / 'error_image.png')
+        test_path = str(_BASE_DIR / "assets" / "error_image.png")
         fake_stat = MagicMock(st_mtime_ns=42)
-        with patch('pathlib.Path.stat', return_value=fake_stat):
-            with patch('pathlib.Path.read_bytes', side_effect=OSError("Read error")):
+        with patch("pathlib.Path.stat", return_value=fake_stat):
+            with patch("pathlib.Path.read_bytes", side_effect=OSError("Read error")):
                 result = load_cached_image_bytes(test_path)
 
         assert result is None
@@ -719,12 +708,12 @@ class TestPilToInlineData:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGB', (10, 10), color='blue')
+        img = Image.new("RGB", (10, 10), color="blue")
         result = pil_to_inline_data(img)
 
-        assert 'inline_data' in result
-        assert 'mime_type' in result['inline_data']
-        assert 'data' in result['inline_data']
+        assert "inline_data" in result
+        assert "mime_type" in result["inline_data"]
+        assert "data" in result["inline_data"]
 
     def test_pil_to_inline_data_mime_type(self):
         """Test pil_to_inline_data returns PNG mime type."""
@@ -736,10 +725,10 @@ class TestPilToInlineData:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGB', (10, 10), color='green')
+        img = Image.new("RGB", (10, 10), color="green")
         result = pil_to_inline_data(img)
 
-        assert result['inline_data']['mime_type'] == 'image/png'
+        assert result["inline_data"]["mime_type"] == "image/png"
 
     def test_pil_to_inline_data_valid_base64(self):
         """Test pil_to_inline_data returns valid base64."""
@@ -751,11 +740,11 @@ class TestPilToInlineData:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGB', (5, 5), color='red')
+        img = Image.new("RGB", (5, 5), color="red")
         result = pil_to_inline_data(img)
 
         # Try to decode base64
-        decoded = base64.b64decode(result['inline_data']['data'])
+        decoded = base64.b64decode(result["inline_data"]["data"])
         assert len(decoded) > 0
 
 
@@ -791,6 +780,7 @@ class TestServerCharactersImport:
 class TestModuleDocstring:
     """Tests for module documentation."""
 
+
 class TestCacheFunction:
     """Tests for cache functionality."""
 
@@ -803,8 +793,8 @@ class TestCacheFunction:
             return
 
         # Check for cache_info method (added by lru_cache)
-        assert hasattr(load_cached_image_bytes, 'cache_info')
-        assert hasattr(load_cached_image_bytes, 'cache_clear')
+        assert hasattr(load_cached_image_bytes, "cache_info")
+        assert hasattr(load_cached_image_bytes, "cache_clear")
 
     def test_cache_clear_works(self):
         """Test cache_clear works."""
@@ -831,10 +821,10 @@ class TestPilImageConversion:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGBA', (10, 10), color=(255, 0, 0, 128))
+        img = Image.new("RGBA", (10, 10), color=(255, 0, 0, 128))
         result = pil_to_inline_data(img)
 
-        assert 'inline_data' in result
+        assert "inline_data" in result
 
     def test_convert_grayscale_image(self):
         """Test converting grayscale image."""
@@ -846,10 +836,10 @@ class TestPilImageConversion:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('L', (10, 10), color=128)
+        img = Image.new("L", (10, 10), color=128)
         result = pil_to_inline_data(img)
 
-        assert 'inline_data' in result
+        assert "inline_data" in result
 
 
 class TestInlineDataFormat:
@@ -865,10 +855,10 @@ class TestInlineDataFormat:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGB', (5, 5), color='yellow')
+        img = Image.new("RGB", (5, 5), color="yellow")
         result = pil_to_inline_data(img)
 
-        assert isinstance(result['inline_data']['data'], str)
+        assert isinstance(result["inline_data"]["data"], str)
 
     def test_mime_type_is_string(self):
         """Test mime_type field is a string."""
@@ -880,7 +870,7 @@ class TestInlineDataFormat:
             pytest.skip("content_processor or PIL not available")
             return
 
-        img = Image.new('RGB', (5, 5), color='cyan')
+        img = Image.new("RGB", (5, 5), color="cyan")
         result = pil_to_inline_data(img)
 
-        assert isinstance(result['inline_data']['mime_type'], str)
+        assert isinstance(result["inline_data"]["mime_type"], str)

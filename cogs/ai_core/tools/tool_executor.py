@@ -43,6 +43,7 @@ from ..response.webhook_cache import (
 
 logger = logging.getLogger(__name__)
 
+
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     """Split a message into chunks without breaking mid-line or mid-Unicode.
 
@@ -70,7 +71,9 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
             # Hard split at limit, but ensure we don't break a surrogate pair
             split_at = limit
             # Back up if we're in the middle of a surrogate pair
-            while split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff":
+            while (
+                split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff"
+            ):
                 split_at -= 1
             if split_at <= 0:
                 split_at = limit  # Fallback: force forward progress
@@ -104,7 +107,9 @@ async def execute_tool_call(
     guild = origin_channel.guild
 
     # Input validation helper
-    def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
+    def validate_name(
+        name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH
+    ) -> tuple[bool, str]:
         """Validate channel/category name from AI input.
 
         Args:
@@ -140,7 +145,7 @@ async def execute_tool_call(
         "get_user_info",
         "read_channel",
     }
-    if not hasattr(user, 'guild_permissions'):
+    if not hasattr(user, "guild_permissions"):
         return f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} has no guild membership."
     is_admin = user.guild_permissions.administrator
     is_read_only = fname in _READ_ONLY_TOOLS
@@ -156,20 +161,24 @@ async def execute_tool_call(
     # `is_admin` is True via a derived role flag but the user's *intent*
     # is constrained by missing manage_channels / manage_roles bits.
     _CHANNEL_MUTATION_TOOLS = {
-        "create_text_channel", "create_voice_channel", "create_category",
-        "delete_channel", "set_channel_permission",
+        "create_text_channel",
+        "create_voice_channel",
+        "create_category",
+        "delete_channel",
+        "set_channel_permission",
     }
     _ROLE_MUTATION_TOOLS = {
-        "create_role", "delete_role", "add_role", "remove_role",
+        "create_role",
+        "delete_role",
+        "add_role",
+        "remove_role",
         "set_role_permission",
     }
     if fname in _CHANNEL_MUTATION_TOOLS and not (
         user.guild_permissions.manage_channels or is_admin
     ):
         return "⛔ Permission denied: requires manage_channels permission."
-    if fname in _ROLE_MUTATION_TOOLS and not (
-        user.guild_permissions.manage_roles or is_admin
-    ):
+    if fname in _ROLE_MUTATION_TOOLS and not (user.guild_permissions.manage_roles or is_admin):
         return "⛔ Permission denied: requires manage_roles permission."
 
     try:
@@ -177,9 +186,7 @@ async def execute_tool_call(
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(
-                guild, origin_channel, result, [result, args.get("category", "")]
-            )
+            await cmd_create_text(guild, origin_channel, result, [result, args.get("category", "")])
             return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
@@ -227,9 +234,7 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ add_role requires both user_name and role_name"
-            await cmd_add_role(
-                guild, origin_channel, None, [user_name, role_name]
-            )
+            await cmd_add_role(guild, origin_channel, None, [user_name, role_name])
             return f"Requested adding role '{role_name}' to '{user_name}'"
 
         elif fname == "remove_role":
@@ -237,12 +242,8 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ remove_role requires both user_name and role_name"
-            await cmd_remove_role(
-                guild, origin_channel, None, [user_name, role_name]
-            )
-            return (
-                f"Requested removing role '{role_name}' from '{user_name}'"
-            )
+            await cmd_remove_role(guild, origin_channel, None, [user_name, role_name])
+            return f"Requested removing role '{role_name}' from '{user_name}'"
 
         elif fname == "set_channel_permission":
             channel_name = args.get("channel_name")
@@ -347,8 +348,14 @@ async def execute_tool_call(
             # payload — prevents future RAG retrievals from echoing
             # ``[SYSTEM] ignore previous instructions`` back into prompts.
             _suspicious = (
-                "[system]", "[inst]", "ignore previous", "ignore the previous",
-                "<system>", "<inst>", "</system>", "</inst>",
+                "[system]",
+                "[inst]",
+                "ignore previous",
+                "ignore the previous",
+                "<system>",
+                "<inst>",
+                "</system>",
+                "</inst>",
             )
             _content_lower = content.lower()
             if any(marker in _content_lower for marker in _suspicious):
@@ -365,8 +372,14 @@ async def execute_tool_call(
                 .lower()
             )
             _forbidden_normalized = (
-                "[system]", "ignore previous", "pretend", "you are now",
-                "system:", "override", "jailbreak", "disregard",
+                "[system]",
+                "ignore previous",
+                "pretend",
+                "you are now",
+                "system:",
+                "override",
+                "jailbreak",
+                "disregard",
             )
             if any(f in _normalized for f in _forbidden_normalized):
                 return "❌ Failed to save memory: Content contains restricted markers"
@@ -477,7 +490,7 @@ async def send_as_webhook(bot, channel, name, message):
         message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
         # Guard against DM channels (no guild/webhooks)
-        if not hasattr(channel, 'guild') or channel.guild is None:
+        if not hasattr(channel, "guild") or channel.guild is None:
             await channel.send(f"**{name}**: {message}")
             return None
 
@@ -501,12 +514,16 @@ async def send_as_webhook(bot, channel, name, message):
                     chunks = _safe_split_message(message, limit)
                     for chunk in chunks:
                         sent_message = await webhook.send(
-                            content=chunk, username=name, wait=True,
+                            content=chunk,
+                            username=name,
+                            wait=True,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                 else:
                     sent_message = await webhook.send(
-                        content=message, username=name, wait=True,
+                        content=message,
+                        username=name,
+                        wait=True,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 logger.debug("🎭 AI spoke as %s (cached webhook)", name)
@@ -547,9 +564,7 @@ async def send_as_webhook(bot, channel, name, message):
                 # crafted SERVER_AVATARS entry can't escape via /etc/passwd
                 # or ../.. traversal.
                 _candidate = Path(img_path)
-                if _candidate.is_absolute() or any(
-                    p == ".." for p in _candidate.parts
-                ):
+                if _candidate.is_absolute() or any(p == ".." for p in _candidate.parts):
                     logger.error("Rejecting suspicious avatar path: %s", img_path)
                     full_path = None
                 else:
@@ -573,7 +588,9 @@ async def send_as_webhook(bot, channel, name, message):
                             logger.warning(
                                 "Avatar file too large (%d bytes > %d cap): %s — "
                                 "webhook will be created without avatar",
-                                file_size, AVATAR_CAP, full_path,
+                                file_size,
+                                AVATAR_CAP,
+                                full_path,
                             )
                         else:
                             avatar_bytes = full_path.read_bytes()
@@ -625,12 +642,16 @@ async def send_as_webhook(bot, channel, name, message):
                 chunks = _safe_split_message(message, limit)
                 for chunk in chunks:
                     sent_message = await webhook.send(
-                        content=chunk, username=name, wait=True,
+                        content=chunk,
+                        username=name,
+                        wait=True,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
             else:
                 sent_message = await webhook.send(
-                    content=message, username=name, wait=True,
+                    content=message,
+                    username=name,
+                    wait=True,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             logger.info("🎭 AI spoke as %s", name)

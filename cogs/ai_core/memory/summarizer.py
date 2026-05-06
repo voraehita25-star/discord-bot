@@ -113,7 +113,7 @@ class ConversationSummarizer:
                     last_error = e
                     if attempt < max_retries - 1:
                         # Exponential backoff base 2 capped at 30s to respect Anthropic 429 retry guidance.
-                        backoff = min(30.0, float(2 ** attempt))
+                        backoff = min(30.0, float(2**attempt))
                         await asyncio.sleep(backoff)
                         logger.warning("Summarization attempt %d failed: %s", attempt + 1, e)
                     continue
@@ -133,11 +133,13 @@ class ConversationSummarizer:
                         "ServiceUnavailableError",
                     } or err_name.startswith("APIStatus")
                     if is_retryable and attempt < max_retries - 1:
-                        backoff = min(30.0, float(2 ** attempt))
+                        backoff = min(30.0, float(2**attempt))
                         await asyncio.sleep(backoff)
                         logger.warning(
                             "Summarization attempt %d failed (Anthropic %s): %s",
-                            attempt + 1, err_name, e,
+                            attempt + 1,
+                            err_name,
+                            e,
                         )
                         continue
                     logger.exception("Unexpected summarization error (no retry)")

@@ -16,6 +16,7 @@ from ..data.constants import LOCK_TIMEOUT, MAX_CHANNELS, MAX_PENDING_PER_CHANNEL
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class PendingMessage:
     """Represents a pending message in the queue."""
@@ -133,25 +134,28 @@ class MessageQueue:
                     # nothing is evictable, refuse the new channel rather
                     # than corrupt state.
                     candidates = [
-                        cid for cid in self.pending_messages
+                        cid
+                        for cid in self.pending_messages
                         if not (
-                            cid in self.processing_locks
-                            and self.processing_locks[cid].locked()
+                            cid in self.processing_locks and self.processing_locks[cid].locked()
                         )
                     ]
                     if not candidates:
                         logger.warning(
                             "🧹 Message queue at limit (%d) but every channel "
                             "is currently locked — refusing new channel %s",
-                            MAX_CHANNELS, channel_id,
+                            MAX_CHANNELS,
+                            channel_id,
                         )
                         return
+
                     def _evict_key(cid: int) -> tuple[int, float]:
                         msgs = self.pending_messages[cid]
                         return (
-                            0 if not msgs else 1,         # empty first
+                            0 if not msgs else 1,  # empty first
                             msgs[0].timestamp if msgs else 0.0,
                         )
+
                     oldest_channel = min(candidates, key=_evict_key)
                     del self.pending_messages[oldest_channel]
                     self.cancel_flags.pop(oldest_channel, None)
@@ -342,7 +346,8 @@ class MessageQueue:
             # is not the owner. Log so silent ownership bugs surface.
             logger.warning(
                 "release_lock skipped for channel %s (not owner): %s",
-                channel_id, exc,
+                channel_id,
+                exc,
             )
 
     def get_lock_time(self, channel_id: int) -> float | None:
@@ -372,7 +377,9 @@ class MessageQueue:
         """
         now = time.time()
         with self._queue_lock:
-            stale = [cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age]
+            stale = [
+                cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age
+            ]
         for channel_id in stale:
             # Only log warning - do not force-release as the task may still be running
             logger.warning(

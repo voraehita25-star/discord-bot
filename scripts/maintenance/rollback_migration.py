@@ -52,7 +52,9 @@ def _ensure_backup_dir() -> None:
 
 def _list_backups() -> list[Path]:
     _ensure_backup_dir()
-    return sorted(BACKUP_DIR.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(
+        BACKUP_DIR.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
 
 
 def _get_schema_version(db: Path) -> int | None:
@@ -95,7 +97,9 @@ def cmd_list(_args: argparse.Namespace) -> int:
         return 0
 
     current_version = _get_schema_version(DB_PATH) if DB_PATH.exists() else None
-    print(f"Current DB: {DB_PATH} (version {current_version if current_version is not None else 'unknown'})")
+    print(
+        f"Current DB: {DB_PATH} (version {current_version if current_version is not None else 'unknown'})"
+    )
     print(f"Backups under {BACKUP_DIR}:\n")
     print(f"  {'Filename':<50}  {'Size':>10}  {'Modified':<19}  Restorable")
     print(f"  {'-' * 50}  {'-' * 10}  {'-' * 19}  ----------")
@@ -104,7 +108,9 @@ def cmd_list(_args: argparse.Namespace) -> int:
         mtime = datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         version = _get_schema_version(b)
         restorable = version is not None
-        print(f"  {b.name:<50}  {size:>10,}  {mtime}  {'v' + str(version) if restorable else 'CORRUPT'}")
+        print(
+            f"  {b.name:<50}  {size:>10,}  {mtime}  {'v' + str(version) if restorable else 'CORRUPT'}"
+        )
     return 0
 
 
@@ -175,8 +181,10 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if not args.yes:
         print(f"About to restore: {backup}")
         print(f"  onto: {DB_PATH}")
-        print("\nThe current DB will first be copied to a `pre_rollback_*.db` file so the\n"
-              "rollback itself is undoable. Make sure the bot is STOPPED.")
+        print(
+            "\nThe current DB will first be copied to a `pre_rollback_*.db` file so the\n"
+            "rollback itself is undoable. Make sure the bot is STOPPED."
+        )
         resp = input("Type YES to continue: ").strip()
         if resp != "YES":
             print("Aborted.")
@@ -228,8 +236,9 @@ def main() -> int:
 
     p_restore = sub.add_parser("restore", help="Restore the DB from a backup.")
     p_restore.add_argument("backup", help="Backup filename (as shown by `list`).")
-    p_restore.add_argument("--yes", action="store_true",
-                           help="Skip the interactive 'type YES' confirmation.")
+    p_restore.add_argument(
+        "--yes", action="store_true", help="Skip the interactive 'type YES' confirmation."
+    )
 
     args = parser.parse_args()
     if args.cmd == "list":

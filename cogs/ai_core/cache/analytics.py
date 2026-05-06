@@ -29,6 +29,7 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
 
+
 # Try to import database
 try:
     from utils.database import db

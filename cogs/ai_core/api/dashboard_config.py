@@ -113,6 +113,7 @@ else:
 
 try:
     from ..data import ENI_ESCALATION_FRAMING, FAUST_INSTRUCTION, UNRESTRICTED_MODE_INSTRUCTION
+
     FAUST_AVAILABLE = True
 except ImportError:
     FAUST_AVAILABLE = False
@@ -126,6 +127,7 @@ except ImportError:
 
 try:
     from utils.database import Database
+
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
@@ -162,13 +164,19 @@ Be concise, helpful, and friendly.
 For simple questions, give brief answers (1-3 sentences).
 For complex topics, provide detailed but well-organized responses.""",
         "color": "#22d3ee",  # Cyan
-        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION if FAUST_AVAILABLE else GENERAL_UNRESTRICTED_FRAMING,
+        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION
+        if FAUST_AVAILABLE
+        else GENERAL_UNRESTRICTED_FRAMING,
     },
     "faust": {
         "name": "Faust",
         "emoji": "👻",
-        "system_instruction": FAUST_INSTRUCTION if FAUST_AVAILABLE else "You are Faust, a genius AI assistant who speaks in third person.",
+        "system_instruction": FAUST_INSTRUCTION
+        if FAUST_AVAILABLE
+        else "You are Faust, a genius AI assistant who speaks in third person.",
         "color": "#ffb1b4",  # Cerebral Pink
-        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION if FAUST_AVAILABLE else GENERAL_UNRESTRICTED_FRAMING,
+        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION
+        if FAUST_AVAILABLE
+        else GENERAL_UNRESTRICTED_FRAMING,
     },
 }

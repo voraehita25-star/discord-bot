@@ -95,6 +95,7 @@ class Music(commands.Cog):
     async def _periodic_temp_cleanup(self) -> None:
         """Periodically clean up stale files in temp directory."""
         import time as _time
+
         temp_dir = Path("temp")
         stale_threshold = 3600  # 1 hour
 
@@ -340,6 +341,7 @@ class Music(commands.Cog):
         try:
             # Use run_in_executor to avoid blocking the event loop on file I/O
             import asyncio as _asyncio
+
             raw = await _asyncio.get_running_loop().run_in_executor(
                 None, filepath.read_text, "utf-8"
             )
@@ -371,6 +373,7 @@ class Music(commands.Cog):
                     db_queue: list = []
                     try:
                         from utils.database import db as _db
+
                         db_queue = await _db.load_music_queue(guild_id)
                     except ImportError:
                         # No DB layer available — keep the JSON as the
@@ -480,9 +483,7 @@ class Music(commands.Cog):
                 if task is not None:
                     task.cancel()
                     self._gs(guild_id).auto_disconnect_task = None
-                    logger.info(
-                        "✅ Cancelled auto-disconnect for guild %s - user joined", guild_id
-                    )
+                    logger.info("✅ Cancelled auto-disconnect for guild %s - user joined", guild_id)
 
     async def _auto_disconnect(self, guild_id: int, voice_client: discord.VoiceClient) -> None:
         """Auto-disconnect after delay when alone in voice channel."""
@@ -572,13 +573,14 @@ class Music(commands.Cog):
                 return
             except PermissionError:
                 # Exponential backoff: 1s, 2s, 4s, 4s, 4s... (capped at 4s)
-                delay = min(2 ** attempt, 4.0)
+                delay = min(2**attempt, 4.0)
                 if attempt < 7:
                     await asyncio.sleep(delay)
                 else:
                     logger.warning(
                         "❌ Could not delete %s after %d retries (PermissionError)",
-                        filename, attempt + 1,
+                        filename,
+                        attempt + 1,
                     )
             except OSError as e:
                 logger.warning("Failed to delete %s: %s", filename, e)
@@ -789,7 +791,8 @@ class Music(commands.Cog):
                     self._schedule_queue_save(guild_id)
                     logger.warning(
                         "Dropped queue entry without URL for guild %s: %r",
-                        guild_id, item,
+                        guild_id,
+                        item,
                     )
                     return False
                 queue.popleft()
@@ -813,15 +816,15 @@ class Music(commands.Cog):
                                 url, loop=asyncio.get_running_loop()
                             )
                             if not search_info or not search_info.get("webpage_url"):
-                                logger.warning(
-                                    "Search resolution failed for queue item: %r", item
-                                )
+                                logger.warning("Search resolution failed for queue item: %r", item)
                                 _retry_next = True
                                 return _retry_next
                             play_url = search_info["webpage_url"]
 
                         # Use Download Mode (stream=False)
-                        player = await YTDLSource.from_url(play_url, loop=asyncio.get_running_loop(), stream=False)
+                        player = await YTDLSource.from_url(
+                            play_url, loop=asyncio.get_running_loop(), stream=False
+                        )
 
                         # Apply stored volume to new track
                         player.volume = self._gs(guild_id).volume
@@ -930,9 +933,7 @@ class Music(commands.Cog):
 
                     # Loop Status
                     loop_status = (
-                        f"{Emojis.LOOP} On"
-                        if self._gs(ctx.guild.id).loop
-                        else f"{Emojis.LOOP} Off"
+                        f"{Emojis.LOOP} On" if self._gs(ctx.guild.id).loop else f"{Emojis.LOOP} Off"
                     )
                     embed.add_field(name="Loop", value=f"`{loop_status}`", inline=True)
 
@@ -1002,7 +1003,9 @@ class Music(commands.Cog):
                 # Only update global presence if bot has no other active voice clients
                 if len(self.bot.voice_clients) <= 1:
                     await self.bot.change_presence(
-                        activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
+                        activity=discord.Activity(
+                            type=discord.ActivityType.listening, name="คำสั่งเพลง"
+                        )
                     )
         finally:
             # Always release the lock
@@ -1049,7 +1052,7 @@ class Music(commands.Cog):
             self._gs(ctx.guild.id).pause_start = time.time()
 
             # Get current track info for embed
-            track_info = (self._gs(ctx.guild.id).current_track or {})
+            track_info = self._gs(ctx.guild.id).current_track or {}
             title = track_info.get("title", "Unknown Track")
 
             embed = discord.Embed(
@@ -1089,7 +1092,7 @@ class Music(commands.Cog):
             ctx.voice_client.resume()
 
             # Get current track info for embed
-            track_info = (self._gs(ctx.guild.id).current_track or {})
+            track_info = self._gs(ctx.guild.id).current_track or {}
             title = track_info.get("title", "Unknown Track")
 
             embed = discord.Embed(
@@ -1168,7 +1171,9 @@ class Music(commands.Cog):
             current_options = get_ffmpeg_options(stream=False, start_time=elapsed)
 
             player = YTDLSource(
-                discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
+                discord.FFmpegPCMAudio(
+                    filename, **current_options, executable=get_ffmpeg_executable()
+                ),
                 data=data,
                 filename=filename,
             )
@@ -1229,13 +1234,17 @@ class Music(commands.Cog):
 
         except discord.DiscordException as e:
             error_embed = discord.Embed(
-                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง", color=Colors.ERROR
+                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ",
+                description="เกิดข้อผิดพลาดในการเชื่อมต่อใหม่ กรุณาลองอีกครั้ง",
+                color=Colors.ERROR,
             )
             await fix_msg.edit(embed=error_embed)
             logger.error("Fix failed (Discord): %s", e)
         except OSError as e:
             error_embed = discord.Embed(
-                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ", description="เกิดข้อผิดพลาดกับไฟล์เสียง กรุณาลองอีกครั้ง", color=Colors.ERROR
+                title=f"{Emojis.CROSS} แก้ไขไม่สำเร็จ",
+                description="เกิดข้อผิดพลาดกับไฟล์เสียง กรุณาลองอีกครั้ง",
+                color=Colors.ERROR,
             )
             await fix_msg.edit(embed=error_embed)
             logger.error("Fix failed (audio/file): %s", e)
@@ -1372,13 +1381,13 @@ class Music(commands.Cog):
         # substring so attacker URLs like "https://evil.com/?ref=open.spotify.com"
         # don't get treated as Spotify links.
         from urllib.parse import urlparse as _urlparse
+
         try:
             _spotify_host = _urlparse(query).hostname or ""
         except (ValueError, TypeError):
             _spotify_host = ""
-        is_spotify_url = (
-            _spotify_host == "open.spotify.com"
-            or _spotify_host.endswith(".spotify.com")
+        is_spotify_url = _spotify_host == "open.spotify.com" or _spotify_host.endswith(
+            ".spotify.com"
         )
         if is_spotify_url and self.spotify.is_available():
             success = await self.spotify.process_spotify_url(ctx, query, queue)  # type: ignore[arg-type]
@@ -1451,21 +1460,27 @@ class Music(commands.Cog):
                         return
                 except discord.DiscordException as e:
                     embed = discord.Embed(
-                        title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่", color=Colors.ERROR
+                        title=f"{Emojis.CROSS} Error",
+                        description="เกิดข้อผิดพลาดในการค้นหา กรุณาลองใหม่",
+                        color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
                     logger.error("Search error (Discord): %s", e)
                     return
                 except OSError as e:
                     embed = discord.Embed(
-                        title=f"{Emojis.CROSS} Error", description="เกิดข้อผิดพลาดกับไฟล์ กรุณาลองใหม่", color=Colors.ERROR
+                        title=f"{Emojis.CROSS} Error",
+                        description="เกิดข้อผิดพลาดกับไฟล์ กรุณาลองใหม่",
+                        color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
                     logger.error("Search error (file): %s", e)
                     return
                 except yt_dlp.DownloadError as e:
                     embed = discord.Embed(
-                        title=f"{Emojis.CROSS} Error", description="ไม่สามารถดาวน์โหลดได้ กรุณาลองใหม่", color=Colors.ERROR
+                        title=f"{Emojis.CROSS} Error",
+                        description="ไม่สามารถดาวน์โหลดได้ กรุณาลองใหม่",
+                        color=Colors.ERROR,
                     )
                     await ctx.send(embed=embed)
                     logger.error("Search error (download): %s", e)
@@ -1519,7 +1534,7 @@ class Music(commands.Cog):
             embed = discord.Embed(title=f"{Emojis.QUEUE} คิวเพลง", color=Colors.QUEUE)
 
             # Now Playing
-            current = (self._gs(ctx.guild.id).current_track or {})
+            current = self._gs(ctx.guild.id).current_track or {}
             if current:
                 now_playing = current.get("title", "Unknown")
                 embed.add_field(
@@ -1808,7 +1823,9 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        if not ctx.voice_client or (not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()):
+        if not ctx.voice_client or (
+            not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()
+        ):
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Nothing is playing", color=Colors.ERROR
             )
@@ -1884,6 +1901,7 @@ class Music(commands.Cog):
             # would silently produce no audio and the user just sees the
             # "playing" UI without sound. Surface the issue instead.
             from pathlib import Path as _P
+
             if not filename or not _P(filename).exists():
                 self._gs(guild_id).fixing = False
                 embed = discord.Embed(
@@ -1900,7 +1918,9 @@ class Music(commands.Cog):
             current_options = get_ffmpeg_options(stream=False, start_time=seek_time)
 
             player = YTDLSource(
-                discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
+                discord.FFmpegPCMAudio(
+                    filename, **current_options, executable=get_ffmpeg_executable()
+                ),
                 data=data,
                 filename=filename,
             )
