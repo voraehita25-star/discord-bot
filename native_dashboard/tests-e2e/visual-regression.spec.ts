@@ -13,7 +13,14 @@ import { installDashboardMocks } from './_fixtures/mock-tauri';
  * Threshold tuning: 'maxDiffPixelRatio' lets <0.5% of pixels differ,
  * forgiving the chromium subpixel rendering jitter without missing real
  * layout regressions.
+ *
+ * Snapshots are platform-specific (chromium-win32 vs chromium-linux), and
+ * baselines are only committed for Windows since the dashboard targets
+ * Windows + WebView2 exclusively. Skip these tests on non-Windows CI runners
+ * so first-run-on-Linux doesn't fail the build with "snapshot doesn't exist".
  */
+test.skip(process.platform !== 'win32' && !process.env.UPDATE_VISUAL_BASELINE,
+    'visual baselines committed for Windows only');
 
 const SNAP_OPTS = {
     maxDiffPixelRatio: 0.005,

@@ -199,7 +199,7 @@ class URLFetcherClient:
                             return result
                     except ValueError:
                         continue
-            except (OSError, _socket.gaierror, _asyncio.TimeoutError):
+            except (TimeoutError, OSError, _socket.gaierror):
                 # DNS resolution failed — block for safety. Catching the
                 # broad ``Exception`` here used to swallow ``KeyboardInterrupt``
                 # cousins in some Python versions and made debugging
