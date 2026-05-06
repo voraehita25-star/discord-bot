@@ -7,12 +7,13 @@ Extracted from logic.py for better modularity.
 from __future__ import annotations
 
 import logging
-logger = logging.getLogger(__name__)
 import re
 from typing import TYPE_CHECKING
 
-from ..data.roleplay_data import SERVER_CHARACTER_NAMES
+from ..data import SERVER_CHARACTER_NAMES
 from ..storage import get_all_channels_summary, get_channel_history_preview
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -24,17 +25,42 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 
 # Keywords for history requests
 HISTORY_KEYWORDS = [
-    "ประวัติ", "history", "ดู", "อ่าน", "ข้อความ",
-    "แชท", "chat", "memory", "ความจำ", "channel",
-    "ช่อง", "log", "ดึง", "โชว์", "show",
+    "ประวัติ",
+    "history",
+    "ดู",
+    "อ่าน",
+    "ข้อความ",
+    "แชท",
+    "chat",
+    "memory",
+    "ความจำ",
+    "channel",
+    "ช่อง",
+    "log",
+    "ดึง",
+    "โชว์",
+    "show",
 ]
 
 # Keywords for channel list requests
 LIST_KEYWORDS = [
-    "มีช่องไหน", "channel ไหน", "ช่องไหนบ้าง", "มี channel",
-    "รายการ", "list", "ทั้งหมด", "all channel", "ดูรายการ",
-    "มีประวัติ", "มี history", "ความจำมี", "memory มี",
-    "ช่องที่มี", "channel ที่มี", "ดู channel", "โชว์ channel",
+    "มีช่องไหน",
+    "channel ไหน",
+    "ช่องไหนบ้าง",
+    "มี channel",
+    "รายการ",
+    "list",
+    "ทั้งหมด",
+    "all channel",
+    "ดูรายการ",
+    "มีประวัติ",
+    "มี history",
+    "ความจำมี",
+    "memory มี",
+    "ช่องที่มี",
+    "channel ที่มี",
+    "ดู channel",
+    "โชว์ channel",
 ]
 
 
@@ -193,9 +219,10 @@ class ResponseMixin:
                 # DM channels have no guild — deny cross-user history access entirely.
                 # Only the DM participant may view their own DM history, but that path
                 # goes through a different handler; here we refuse.
-                if not hasattr(channel, "guild") or channel.guild is None:
+                guild = getattr(channel, "guild", None)
+                if guild is None:
                     return f"❌ ไม่สามารถดูประวัติแชทของ DM channel {channel_id} ผ่านทางนี้ได้"
-                member = channel.guild.get_member(requester_id)
+                member = guild.get_member(requester_id)
                 if member is not None:
                     perms = channel.permissions_for(member)  # type: ignore[union-attr]
                     if not perms.read_messages:
@@ -259,9 +286,16 @@ class ResponseMixin:
             char_names.sort(key=len, reverse=True)
             for char_name in char_names:
                 pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"
-                replacement = f"{{{{{char_name}}}}}"
+                # Use a callable replacement so re.sub doesn't interpret
+                # any character in the name as a backref/escape (`\1`,
+                # `\g<name>`, `&` in some flavours). The previous
+                # `.replace("\\", r"\\")` only handled backslashes.
+                replacement_text = f"{{{{{char_name}}}}}"
                 response_text = re.sub(
-                    pattern, replacement, response_text, flags=re.MULTILINE | re.IGNORECASE
+                    pattern,
+                    lambda _m, rep=replacement_text: rep,
+                    response_text,
+                    flags=re.MULTILINE | re.IGNORECASE,
                 )
 
         # Prepend search indicator

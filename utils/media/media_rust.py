@@ -10,8 +10,16 @@ import base64
 import importlib
 import io
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
+
+# Serializes mutations of PIL's module-global ``Image.MAX_IMAGE_PIXELS``.
+# Without this, two threads concurrently entering ``_pil_resize`` would
+# race on the global: thread A sets the cap, thread B saves+sets, thread
+# A restores B's saved value, thread B never restores — leaving the global
+# permanently raised (or lowered) for the rest of the process.
+_PIL_LOCK = threading.Lock()
 
 # Try to import Rust extension dynamically to avoid Pylance warnings
 RUST_AVAILABLE = False
@@ -35,6 +43,7 @@ except ImportError:
 # PIL fallback
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -84,35 +93,57 @@ class MediaProcessorWrapper:
         if not PIL_AVAILABLE:
             raise RuntimeError("Neither Rust extension nor PIL is available")
 
-        img = Image.open(io.BytesIO(data))
-        try:
-            orig_w, orig_h = img.size
+        # Decompression-bomb guard: 100 MP cap matches the Rust extension's
+        # threshold and is well above any legitimate Discord attachment.
+        # Without this, PIL's default warns at 89 MP but still decodes huge
+        # crafted images, exhausting RAM.
+        # The MAX_IMAGE_PIXELS save/set/restore is wrapped in _PIL_LOCK so
+        # concurrent callers can't race on the module-global and leave it
+        # in an inconsistent state — see _PIL_LOCK comment near the top of
+        # this module.
+        from PIL import Image as _PIL_Image
 
-            # Calculate new dimensions
-            ratio = min(max_w / orig_w, max_h / orig_h)
-            if ratio >= 1.0:
-                return data, orig_w, orig_h
+        with _PIL_LOCK:
+            prev_max_pixels = _PIL_Image.MAX_IMAGE_PIXELS
+            _PIL_Image.MAX_IMAGE_PIXELS = 100_000_000
+            try:
+                img = Image.open(io.BytesIO(data))
+                try:
+                    orig_w, orig_h = img.size
 
-            new_w = int(orig_w * ratio)
-            new_h = int(orig_h * ratio)
+                    # Calculate new dimensions
+                    ratio = min(max_w / orig_w, max_h / orig_h)
+                    if ratio >= 1.0:
+                        return data, orig_w, orig_h
 
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)  # type: ignore[assignment]
+                    new_w = int(orig_w * ratio)
+                    new_h = int(orig_h * ratio)
 
-            # Save to bytes
-            output = io.BytesIO()
-            if img.mode == "RGBA":
-                format_str = "PNG"
-                save_kwargs = {}
-            else:
-                format_str = "JPEG"
-                save_kwargs = {"quality": self.jpeg_quality}
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")  # type: ignore[assignment]
+                    # Reject zero/negative dimensions before handing them
+                    # to PIL — Image.resize raises an opaque ValueError on
+                    # 0-size, and very small ratios can round to zero.
+                    if new_w < 1 or new_h < 1:
+                        return data, orig_w, orig_h
 
-            img.save(output, format=format_str, **save_kwargs)
-            return output.getvalue(), new_w, new_h
-        finally:
-            img.close()
+                    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)  # type: ignore[assignment]
+
+                    # Save to bytes
+                    output = io.BytesIO()
+                    if img.mode == "RGBA":
+                        format_str = "PNG"
+                        save_kwargs = {}
+                    else:
+                        format_str = "JPEG"
+                        save_kwargs = {"quality": self.jpeg_quality}
+                        if img.mode not in ("RGB", "L"):
+                            img = img.convert("RGB")  # type: ignore[assignment]
+
+                    img.save(output, format=format_str, **save_kwargs)
+                    return output.getvalue(), new_w, new_h
+                finally:
+                    img.close()
+            finally:
+                _PIL_Image.MAX_IMAGE_PIXELS = prev_max_pixels
 
     def thumbnail(self, data: bytes, size: int = 128) -> tuple[bytes, int, int]:
         """Create a thumbnail."""

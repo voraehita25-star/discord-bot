@@ -47,14 +47,17 @@ class TestSanitizeProfileField:
 
     def test_empty_string(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         assert _sanitize_profile_field("") == ""
 
     def test_none_value(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         assert _sanitize_profile_field(None) == ""
 
     def test_removes_control_chars(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         result = _sanitize_profile_field("hello\x00world\x1f")
         assert "\x00" not in result
         assert "\x1f" not in result
@@ -62,6 +65,7 @@ class TestSanitizeProfileField:
 
     def test_neutralizes_brackets(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         result = _sanitize_profile_field("[SYSTEM] override")
         assert "[" not in result
         assert "]" not in result
@@ -69,11 +73,13 @@ class TestSanitizeProfileField:
 
     def test_truncates_to_max_len(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         result = _sanitize_profile_field("a" * 500, max_len=100)
         assert len(result) == 100
 
     def test_default_max_len_200(self):
         from cogs.ai_core.api.dashboard_chat import _sanitize_profile_field
+
         result = _sanitize_profile_field("x" * 300)
         assert len(result) == 200
 
@@ -87,14 +93,18 @@ class TestChatInputValidation:
     @pytest.mark.asyncio
     async def test_empty_message(self, ws):
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
         await handle_chat_message(ws, {"content": "", "images": []}, MagicMock())
         assert any("Empty" in m["message"] for m in ws.find("error"))
 
     @pytest.mark.asyncio
     async def test_too_long_content(self, ws):
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
         await handle_chat_message(
-            ws, {"content": "x" * 60000}, MagicMock(),
+            ws,
+            {"content": "x" * 60000},
+            MagicMock(),
             max_content_length=50000,
         )
         assert any("too long" in m["message"].lower() for m in ws.find("error"))
@@ -102,8 +112,11 @@ class TestChatInputValidation:
     @pytest.mark.asyncio
     async def test_too_many_images(self, ws):
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
         await handle_chat_message(
-            ws, {"content": "hi", "images": ["img"] * 15}, MagicMock(),
+            ws,
+            {"content": "hi", "images": ["img"] * 15},
+            MagicMock(),
             max_images=10,
         )
         assert any("too many" in m["message"].lower() for m in ws.find("error"))
@@ -111,6 +124,7 @@ class TestChatInputValidation:
     @pytest.mark.asyncio
     async def test_no_gemini_client(self, ws):
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
         await handle_chat_message(ws, {"content": "hello"}, None)
         assert any("not available" in m["message"].lower() for m in ws.find("error"))
 
@@ -120,6 +134,7 @@ class TestChatInputValidation:
 # ---------------------------------------------------------------------------
 class FakeChunk:
     """Fake Gemini streaming chunk."""
+
     def __init__(self, text: str = "", thought: bool | None = None):
         part = genai_types.Part(text=text or None, thought=thought)
         content = genai_types.Content(role="model", parts=[part])
@@ -130,6 +145,7 @@ class FakeChunk:
 
 class FakeStream:
     """Fake async iterator for Gemini streaming."""
+
     def __init__(self, chunks: list):
         self._chunks = chunks
         self._idx = 0
@@ -164,12 +180,17 @@ class TestChatStreaming:
         """Test basic text streaming."""
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
-        client = self._make_client([
-            FakeChunk(text="Hello "),
-            FakeChunk(text="world!"),
-        ])
+        client = self._make_client(
+            [
+                FakeChunk(text="Hello "),
+                FakeChunk(text="world!"),
+            ]
+        )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "hi", "conversation_id": "test-conv"},
@@ -194,11 +215,17 @@ class TestChatStreaming:
         first_chunk = FakeChunk(text="Let me think...", thought=True)
         client = self._make_client([first_chunk, FakeChunk(text="Answer")])
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
-                {"content": "think about this", "conversation_id": "test-conv",
-                 "thinking_enabled": True},
+                {
+                    "content": "think about this",
+                    "conversation_id": "test-conv",
+                    "thinking_enabled": True,
+                },
                 client,
             )
 
@@ -219,8 +246,10 @@ class TestChatStreaming:
         mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "test msg", "conversation_id": "conv-1"},
@@ -244,8 +273,10 @@ class TestChatStreaming:
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "New Conversation"})
         mock_db.update_dashboard_conversation = AsyncMock()
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "What is Python?", "conversation_id": "conv-1"},
@@ -270,6 +301,7 @@ class TestChatStreaming:
         class SlowIter:
             def __aiter__(self):
                 return self
+
             async def __anext__(self):
                 await asyncio.sleep(100)
                 raise StopAsyncIteration
@@ -279,7 +311,10 @@ class TestChatStreaming:
 
         client.aio.models.generate_content_stream = slow_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -302,7 +337,10 @@ class TestChatStreaming:
 
         client.aio.models.generate_content_stream = broken_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -328,9 +366,14 @@ class TestImageProcessing:
         img_data = "data:image/png;base64," + base64.b64encode(b"\x89PNG" + b"\x00" * 10).decode()
 
         client = MagicMock()
-        client.aio.models.generate_content_stream = AsyncMock(return_value=FakeStream([FakeChunk(text="Nice image")]))
+        client.aio.models.generate_content_stream = AsyncMock(
+            return_value=FakeStream([FakeChunk(text="Nice image")])
+        )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "look at this", "conversation_id": "conv-1", "images": [img_data]},
@@ -349,9 +392,14 @@ class TestImageProcessing:
         big_data = base64.b64encode(b"\x00" * (2 * 1024 * 1024)).decode()
 
         client = MagicMock()
-        client.aio.models.generate_content_stream = AsyncMock(return_value=FakeStream([FakeChunk(text="ok")]))
+        client.aio.models.generate_content_stream = AsyncMock(
+            return_value=FakeStream([FakeChunk(text="ok")])
+        )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "look", "conversation_id": "conv-1", "images": [big_data]},
@@ -376,23 +424,31 @@ class TestContextBuilding:
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
         client = MagicMock()
-        client.aio.models.generate_content_stream = AsyncMock(return_value=FakeStream([FakeChunk(text="Hi!")]))
+        client.aio.models.generate_content_stream = AsyncMock(
+            return_value=FakeStream([FakeChunk(text="Hi!")])
+        )
 
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock()
-        mock_db.get_dashboard_user_profile = AsyncMock(return_value={
-            "display_name": "TestUser",
-            "bio": "I love Python",
-            "preferences": "Respond in English",
-            "is_creator": True,
-        })
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[
-            {"content": "User likes coffee"},
-        ])
+        mock_db.get_dashboard_user_profile = AsyncMock(
+            return_value={
+                "display_name": "TestUser",
+                "bio": "I love Python",
+                "preferences": "Respond in English",
+                "is_creator": True,
+            }
+        )
+        mock_db.get_dashboard_memories = AsyncMock(
+            return_value=[
+                {"content": "User likes coffee"},
+            ]
+        )
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Chat"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -416,7 +472,10 @@ class TestContextBuilding:
 
         client.aio.models.generate_content_stream = capture_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {
@@ -444,6 +503,7 @@ class TestErrorBranches:
     async def test_get_db_function(self):
         """Test _get_db imports and returns Database singleton (lines 34-35)."""
         from cogs.ai_core.api.dashboard_chat import _get_db
+
         with patch("cogs.ai_core.api.dashboard_config.Database", return_value="mock_db"):
             result = _get_db()
             assert result == "mock_db"
@@ -464,7 +524,10 @@ class TestErrorBranches:
 
         long_history = [{"role": "user", "content": f"msg {i}"} for i in range(150)]
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "latest", "conversation_id": "c1", "history": long_history},
@@ -491,10 +554,14 @@ class TestErrorBranches:
         mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Chat"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
-                ws, {"content": "hi", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hi", "conversation_id": "c1"},
+                client,
             )
 
         # Should still complete streaming despite save error
@@ -516,10 +583,14 @@ class TestErrorBranches:
         mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
-                ws, {"content": "hello", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hello", "conversation_id": "c1"},
+                client,
             )
 
         assert len(ws.find("stream_end")) == 1
@@ -540,10 +611,14 @@ class TestErrorBranches:
         mock_db.get_dashboard_memories = AsyncMock(side_effect=RuntimeError("mem err"))
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
-                ws, {"content": "hello", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hello", "conversation_id": "c1"},
+                client,
             )
 
         assert len(ws.find("stream_end")) == 1
@@ -558,11 +633,13 @@ class TestErrorBranches:
             return_value=FakeStream([FakeChunk(text="ok")])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
-                {"content": "look", "conversation_id": "c1",
-                 "images": ["not_valid_base64!!!"]},
+                {"content": "look", "conversation_id": "c1", "images": ["not_valid_base64!!!"]},
                 client,
             )
 
@@ -572,6 +649,11 @@ class TestErrorBranches:
     @pytest.mark.asyncio
     async def test_unrestricted_mode(self, ws):
         """Test unrestricted mode injection uses per-preset framing."""
+        try:
+            import cogs.ai_core.data.roleplay_data
+        except ImportError:
+            pytest.skip("roleplay_data not available — unrestricted preset depends on it")
+
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
 
         client = MagicMock()
@@ -583,13 +665,17 @@ class TestErrorBranches:
 
         client.aio.models.generate_content_stream = capture_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db") as mock_db, \
-             patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db") as mock_db,
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             db_instance = MagicMock()
             mock_db.return_value = db_instance
             # Provide is_creator so unrestricted_mode is allowed
-            db_instance.get_dashboard_user_profile = AsyncMock(return_value={"is_creator": 1, "display_name": "TestUser"})
+            db_instance.get_dashboard_user_profile = AsyncMock(
+                return_value={"is_creator": 1, "display_name": "TestUser"}
+            )
             db_instance.save_dashboard_message = AsyncMock(return_value=1)
             db_instance.get_dashboard_memories = AsyncMock(return_value=[])
             db_instance.update_dashboard_conversation = AsyncMock(return_value=True)
@@ -618,9 +704,14 @@ class TestErrorBranches:
 
         client.aio.models.generate_content_stream = null_stream
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
-                ws, {"content": "hello", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hello", "conversation_id": "c1"},
+                client,
             )
 
         errors = ws.find("error")
@@ -634,6 +725,7 @@ class TestErrorBranches:
         from types import SimpleNamespace as _NS
 
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
         part = _NS(text=None, thought="I am reasoning...", function_call=None)
         content = _NS(parts=[part])
         candidate = _NS(content=content)
@@ -647,7 +739,10 @@ class TestErrorBranches:
             return_value=FakeStream([chunk, text_chunk])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
                 ws,
                 {"content": "think", "conversation_id": "c1", "thinking_enabled": True},
@@ -678,9 +773,14 @@ class TestErrorBranches:
             return_value=FakeStream([BareChunk("Bare text")])
         )
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             await handle_chat_message(
-                ws, {"content": "hi", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hi", "conversation_id": "c1"},
+                client,
             )
 
         chunks = ws.find("chunk")
@@ -710,10 +810,14 @@ class TestErrorBranches:
         mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+        ):
             await handle_chat_message(
-                ws, {"content": "hi", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hi", "conversation_id": "c1"},
+                client,
             )
 
         # Should still complete stream_end despite save error
@@ -731,6 +835,7 @@ class TestErrorBranches:
         class SlowIter:
             def __aiter__(self):
                 return self
+
             async def __anext__(self):
                 await asyncio.sleep(100)
                 raise StopAsyncIteration
@@ -753,10 +858,15 @@ class TestErrorBranches:
 
         ws.send_json = fail_on_error
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             # Should not raise despite inner exception
             await handle_chat_message(
-                ws, {"content": "hi", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hi", "conversation_id": "c1"},
+                client,
                 stream_timeout=1,
             )
 
@@ -773,6 +883,7 @@ class TestErrorBranches:
         client.aio.models.generate_content_stream = broken_stream
 
         original_send = ws.send_json
+
         async def fail_on_error(data):
             if data.get("type") == "error":
                 raise ConnectionResetError("WS closed")
@@ -780,8 +891,13 @@ class TestErrorBranches:
 
         ws.send_json = fail_on_error
 
-        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False), patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False),
+            patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+        ):
             # Should not raise despite inner exception
             await handle_chat_message(
-                ws, {"content": "hi", "conversation_id": "c1"}, client,
+                ws,
+                {"content": "hi", "conversation_id": "c1"},
+                client,
             )

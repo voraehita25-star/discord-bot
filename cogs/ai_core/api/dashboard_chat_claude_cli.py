@@ -40,14 +40,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
 import json
 import logging
-logger = logging.getLogger(__name__)
 import os
 import re
 import shutil
+import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -60,6 +62,7 @@ from .dashboard_common import (
     bangkok_now_iso,
     build_user_context,
     get_db,
+    normalize_timestamp_to_bangkok,
     strip_leading_timestamp,
 )
 from .dashboard_config import (
@@ -69,6 +72,8 @@ from .dashboard_config import (
     DB_AVAILABLE,
 )
 
+logger = logging.getLogger(__name__)
+
 # Per-conversation Claude session id. Loaded from _SESSIONS_FILE at import
 # time and re-saved on every change — persistence lets us find and delete the
 # right .jsonl when the user deletes a Dashboard conversation after a restart.
@@ -77,6 +82,12 @@ _CONVERSATION_SESSIONS: dict[str, str] = {}
 # Bound the conversation→session map so a long-running bot doesn't accumulate
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
+
+# Strong refs to in-flight sidecar-persistence tasks. Without this set the
+# tasks scheduled by ``_save_persisted_sessions`` are only weakly referenced
+# by the event loop and can be garbage-collected mid-write — losing the
+# session map on disk and orphaning the .jsonl file the user just touched.
+_PERSIST_TASKS: set[asyncio.Task[None]] = set()
 
 # Dedicated working directory for every `claude -p` invocation. Claude Code
 # logs each session as a .jsonl under `~/.claude/projects/<encoded-cwd>/`, so
@@ -95,19 +106,24 @@ def _encode_claude_project_dirname(path: Path) -> str:
     """Replicate Claude Code's path encoding for its session-log folder.
 
     Claude Code stores `~/.claude/projects/<encoded>/<session-id>.jsonl`
-    where `<encoded>` replaces `:`, `\\`, `/`, and space with `-`:
-        `c:\\Users\\ME\\BOT Discord`  →  `c--Users-ME-BOT-Discord`
-    We need the same encoding to locate the session file to delete.
+    where `<encoded>` replaces `:`, `\\`, `/`, space, and `_` with `-`:
+        `c:\\Users\\ME\\BOT Discord\\data\\claude_cli_workdir`
+            →  `c--Users-ME-BOT-Discord-data-claude-cli-workdir`
+    We need the same encoding to locate the session file to delete —
+    missing the `_` substitution silently breaks `delete_session_file()`
+    so deleted dashboard conversations leave orphan .jsonl behind.
     """
     s = str(path)
-    for ch in (":", "\\", "/", " "):
+    for ch in (":", "\\", "/", " ", "_"):
         s = s.replace(ch, "-")
     return s
 
 
 def _claude_projects_folder() -> Path:
     """Folder where Claude Code writes .jsonl logs for our dedicated CWD."""
-    return Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
+    return (
+        Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
+    )
 
 
 def _load_persisted_sessions() -> None:
@@ -130,35 +146,92 @@ def _load_persisted_sessions() -> None:
         logger.exception("Failed to load persisted Claude CLI session map")
 
 
-def _save_persisted_sessions() -> None:
-    """Atomically rewrite the sidecar JSON.
-
-    Failure is non-fatal — persistence is a nice-to-have, not critical.
-    """
+def _save_persisted_sessions_sync() -> None:
+    """Atomically rewrite the sidecar JSON (blocking)."""
     try:
         _SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _SESSIONS_FILE.with_suffix(".json.tmp")
+        # Per-call unique temp filename — on Windows two writers racing on
+        # the same `.tmp` path collide because the loser's open handle
+        # blocks the winner's `replace()`. uuid4 keeps each writer's
+        # temp file distinct.
+        tmp = _SESSIONS_FILE.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(_CONVERSATION_SESSIONS, indent=2), encoding="utf-8")
         tmp.replace(_SESSIONS_FILE)
     except Exception:
         logger.exception("Failed to save Claude CLI session map")
 
 
-def delete_session_file(conversation_id: str) -> bool:
+def _save_persisted_sessions() -> None:
+    """Persist the sidecar JSON.
+
+    When we have a running event loop (the common case — _track_session is
+    invoked from the chat handler on the bot loop), dispatch the disk I/O
+    to a worker thread so an mkdir + write_text + replace doesn't stall the
+    event loop on Windows where file-lock contention is stricter. If no
+    loop is running (CLI invocation, tests, shutdown path), fall back to
+    a direct synchronous write.
+
+    Failure is non-fatal — persistence is a nice-to-have, not critical.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _save_persisted_sessions_sync()
+        return
+    # Snapshot the dict under no-await window so the worker writes a stable
+    # copy even if more updates land while it's running.
+    snapshot = dict(_CONVERSATION_SESSIONS)
+
+    def _write_snapshot(payload: dict[str, str]) -> None:
+        try:
+            _SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            # Per-call unique temp filename so concurrent persist tasks
+            # (track + delete in quick succession) don't collide on the
+            # same .tmp path under Windows file-locking.
+            tmp = _SESSIONS_FILE.with_suffix(f".json.tmp.{uuid.uuid4().hex}")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(_SESSIONS_FILE)
+        except Exception:
+            logger.exception("Failed to save Claude CLI session map")
+
+    task = loop.create_task(asyncio.to_thread(_write_snapshot, snapshot))
+    _PERSIST_TASKS.add(task)
+    task.add_done_callback(_PERSIST_TASKS.discard)
+
+
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+async def delete_session_file(conversation_id: str) -> bool:
     """Remove the Claude Code .jsonl for a dashboard conversation.
 
     Called from the delete-conversation handler so the CLI session log
     doesn't linger after the user deletes the chat in the dashboard.
     Returns True if a file was actually deleted.
     """
+    # Wait for any in-flight track-saves so this delete's save is the
+    # last write to land — otherwise an older snapshot containing this
+    # conv would overwrite our deletion.
+    if _PERSIST_TASKS:
+        await asyncio.gather(*_PERSIST_TASKS, return_exceptions=True)
     session_id = _CONVERSATION_SESSIONS.pop(conversation_id, None)
     _save_persisted_sessions()
+    # Wait for our own save to land before returning so the test (and any
+    # caller relying on disk state) sees the deletion reflected.
+    if _PERSIST_TASKS:
+        await asyncio.gather(*_PERSIST_TASKS, return_exceptions=True)
     if not session_id:
+        return False
+    # Defense-in-depth: refuse anything that doesn't look like the UUID/hex
+    # session id we stored. Prevents path traversal if persisted JSON is ever
+    # tampered with (e.g. session_id == "../../../something").
+    if not _SESSION_ID_PATTERN.match(session_id):
+        logger.warning("Refusing to delete session file with suspicious id %r", session_id)
         return False
     try:
         target = _claude_projects_folder() / f"{session_id}.jsonl"
         if target.exists():
-            target.unlink()
+            await asyncio.to_thread(target.unlink, missing_ok=True)
             logger.info("Deleted Claude CLI session file for conv %s", conversation_id)
             return True
     except Exception:
@@ -176,18 +249,53 @@ _load_persisted_sessions()
 # — the lock is keyed by conversation_id, not global. Cleaned up alongside
 # session ids when a conversation is reset/deleted.
 _CONVERSATION_LOCKS: dict[str, asyncio.Lock] = {}
+_MAX_TRACKED_LOCKS = 500  # cap parallel to _MAX_TRACKED_SESSIONS
 
 
 def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
-    """Return (creating if needed) the per-conversation send lock."""
+    """Return (creating if needed) the per-conversation send lock.
+
+    Bound the dict size on insert: a long-running bot that sees thousands of
+    distinct conversation ids would otherwise leak Lock objects forever — the
+    sessions dict has the same cap (_MAX_TRACKED_SESSIONS), which is a
+    natural reference point. Eviction picks the oldest unheld lock so we
+    never yank one out from under an in-flight subprocess.
+    """
     lock = _CONVERSATION_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _CONVERSATION_LOCKS[conversation_id] = lock
+    if lock is not None:
+        return lock
+    if len(_CONVERSATION_LOCKS) >= _MAX_TRACKED_LOCKS:
+        # Pop a candidate, re-check while holding the outer dict access; if a
+        # racing coroutine acquired it between checks, put it back and try
+        # the next candidate. Bound iterations so we never spin.
+        attempts = 0
+        for old_id, old_lock in list(_CONVERSATION_LOCKS.items()):
+            if attempts >= 10:
+                break
+            attempts += 1
+            if old_lock.locked():
+                continue
+            popped = _CONVERSATION_LOCKS.pop(old_id, None)
+            if popped is None:
+                continue
+            if popped.locked():
+                # Raced — put it back and try another.
+                _CONVERSATION_LOCKS[old_id] = popped
+                continue
+            break
+    lock = asyncio.Lock()
+    _CONVERSATION_LOCKS[conversation_id] = lock
     return lock
+
 
 # Where to drop temp image files Claude reads via the Read tool.
 _TEMP_IMAGE_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_images"
+
+# Where to drop non-image attachments (PDFs, text, code) — Claude Code reads
+# them via its Read tool the same way it reads images. Kept separate from
+# _TEMP_IMAGE_ROOT for easier cleanup + debugging, but both directories are
+# safe to nuke at any time (files are regenerated on the next turn if needed).
+_TEMP_DOCS_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_docs"
 
 # Allowed image MIME types — must match what the SDK backend accepts so users
 # don't get inconsistent behavior across the toggle.
@@ -197,6 +305,77 @@ _SUPPORTED_IMAGE_MIME = {
     "image/jpg": ".jpg",
     "image/gif": ".gif",
     "image/webp": ".webp",
+}
+
+# Safe extensions for document attachments. Binary (.pdf/.docx) is written
+# from base64; everything else is treated as UTF-8 text. Frontend whitelist
+# in document-attach.ts should stay synchronised.
+_SUPPORTED_DOC_BINARY_EXT = {".pdf", ".docx"}
+_SUPPORTED_DOC_TEXT_EXT = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
+    # NOTE: .env intentionally excluded — uploading .env files combined with
+    # the CLI's Read-tool capability lets a malicious frontend exfiltrate
+    # secrets via the AI response.
+    ".json",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".csv",
+    ".tsv",
+    ".xml",
+    ".log",
+    ".py",
+    ".pyi",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".rs",
+    ".go",
+    ".java",
+    ".kt",
+    ".scala",
+    ".swift",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".hxx",
+    ".cs",
+    ".rb",
+    ".php",
+    ".pl",
+    ".r",
+    ".lua",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".vue",
+    ".svelte",
+    ".sql",
+    ".graphql",
+    ".gql",
 }
 
 
@@ -294,7 +473,7 @@ def _save_inline_images(
             continue
         try:
             data = base64.b64decode(payload, validate=True)
-        except (ValueError, base64.binascii.Error):
+        except (ValueError, binascii.Error):
             continue
         # Enforce per-image size cap to mirror the SDK backend's safety net.
         # Without this an attacker (or a misclick) could push a 100 MB image
@@ -302,7 +481,8 @@ def _save_inline_images(
         if len(data) > max_size_bytes:
             logger.warning(
                 "Dropping oversized image attachment (%d bytes > %d cap)",
-                len(data), max_size_bytes,
+                len(data),
+                max_size_bytes,
             )
             continue
         path = target_dir / f"{timestamp}_{idx}{ext}"
@@ -312,18 +492,149 @@ def _save_inline_images(
 
 
 def _cleanup_image_dir(conversation_id: str) -> None:
-    """Best-effort cleanup of the per-conversation temp image dir."""
+    """Best-effort cleanup of the per-conversation temp image dir.
+
+    Skips files newer than 60 seconds so a concurrent next-turn that just
+    wrote fresh attachments doesn't get its files yanked mid-flight.
+    """
     if not conversation_id:
         return
     safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
     target_dir = _TEMP_IMAGE_ROOT / safe_conv
+    cutoff = time.time() - 60
     with contextlib.suppress(Exception):
         if target_dir.exists():
+            remaining = 0
             for p in target_dir.iterdir():
+                try:
+                    if p.stat().st_mtime > cutoff:
+                        remaining += 1
+                        continue
+                except Exception:
+                    remaining += 1
+                    continue
                 with contextlib.suppress(Exception):
                     p.unlink()
-            with contextlib.suppress(Exception):
-                target_dir.rmdir()
+            if remaining == 0:
+                with contextlib.suppress(Exception):
+                    target_dir.rmdir()
+
+
+def _save_inline_documents(
+    conversation_id: str,
+    documents: list[Any],
+    max_size_bytes: int,
+) -> list[Path]:
+    """Decode dashboard document payloads (PDF / text / code) to a temp dir.
+
+    Payload shape from the frontend's DocumentAttachManager::
+        {name, mime, kind: 'binary'|'text', data, size_bytes}
+
+    Binary kind: ``data`` is a ``data:<mime>;base64,...`` URL — decoded and
+    written as bytes.
+
+    Text kind: ``data`` is a decoded UTF-8 string — written directly.
+
+    Files with unsafe extensions (anything outside the allowlist) are
+    silently skipped so a compromised frontend can't push ``.exe`` / ``.bat``
+    into a directory Claude's Read tool later points at.
+    """
+    if not documents or not conversation_id:
+        return []
+
+    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    target_dir = _TEMP_DOCS_ROOT / safe_conv
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    timestamp = int(time.time() * 1000)
+    for idx, raw in enumerate(documents):
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name", ""))[:200]
+        kind = raw.get("kind")
+        data_field = raw.get("data")
+        if not name or not isinstance(data_field, str):
+            continue
+
+        # Derive a safe extension from the filename. We do NOT trust the
+        # caller's `mime` field for routing — extension is a stronger signal
+        # (the browser sometimes lies about MIME for niche files).
+        ext_match = re.search(r"\.[A-Za-z0-9]+$", name)
+        ext = ext_match.group(0).lower() if ext_match else ""
+
+        is_binary_ext = ext in _SUPPORTED_DOC_BINARY_EXT
+        is_text_ext = ext in _SUPPORTED_DOC_TEXT_EXT
+        if not (is_binary_ext or is_text_ext):
+            logger.warning("Dropping document with disallowed extension: %s", name)
+            continue
+
+        # Preserve the user's filename (sanitised) so Claude sees meaningful
+        # names — makes prompt output more coherent than `doc_0.pdf`.
+        safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)[:80] or f"doc_{idx}{ext}"
+        path = target_dir / f"{timestamp}_{idx}_{safe_name}"
+
+        if kind == "binary" or is_binary_ext:
+            # Binary: expect data URL format
+            if "," not in data_field or not data_field.startswith("data:"):
+                continue
+            _header, _, payload = data_field.partition(",")
+            try:
+                decoded = base64.b64decode(payload, validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            if len(decoded) > max_size_bytes:
+                logger.warning(
+                    "Dropping oversized document %s (%d bytes > %d cap)",
+                    name,
+                    len(decoded),
+                    max_size_bytes,
+                )
+                continue
+            path.write_bytes(decoded)
+        else:
+            # Text: UTF-8 string. Size check against raw byte length.
+            encoded = data_field.encode("utf-8", errors="replace")
+            if len(encoded) > max_size_bytes:
+                logger.warning(
+                    "Dropping oversized document %s (%d bytes > %d cap)",
+                    name,
+                    len(encoded),
+                    max_size_bytes,
+                )
+                continue
+            path.write_bytes(encoded)
+        written.append(path)
+    return written
+
+
+def _cleanup_docs_dir(conversation_id: str) -> None:
+    """Best-effort cleanup of the per-conversation temp documents dir.
+
+    Skips files newer than 60 seconds so a concurrent next-turn that just
+    wrote fresh attachments doesn't get its files yanked mid-flight.
+    """
+    if not conversation_id:
+        return
+    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    target_dir = _TEMP_DOCS_ROOT / safe_conv
+    cutoff = time.time() - 60
+    with contextlib.suppress(Exception):
+        if target_dir.exists():
+            remaining = 0
+            for p in target_dir.iterdir():
+                try:
+                    if p.stat().st_mtime > cutoff:
+                        remaining += 1
+                        continue
+                except Exception:
+                    remaining += 1
+                    continue
+                with contextlib.suppress(Exception):
+                    p.unlink()
+            if remaining == 0:
+                with contextlib.suppress(Exception):
+                    target_dir.rmdir()
 
 
 def _build_full_prompt(
@@ -334,31 +645,60 @@ def _build_full_prompt(
     history_limit: int,
     current_message: str,
     image_paths: list[Path],
+    doc_paths: list[Path] | None,
     is_resumed_session: bool,
 ) -> str:
     """Compose the prompt body sent to ``claude -p`` via stdin.
 
-    When ``is_resumed_session`` is True the persona/history headers are
-    omitted because Claude already has them in the resumed session — sending
-    them again would waste the prompt cache and inflate token usage.
+    Persona + user context + memories are sent on EVERY turn — matching the
+    SDK backend's behavior so updates to role preset, profile, or long-term
+    memories take effect immediately instead of being frozen at the session's
+    first turn. Without this, a memory the user adds mid-conversation would
+    not surface until they started a new chat.
+
+    The conversation history block is the one piece we still skip on resumed
+    turns: Claude already has the prior messages server-side via ``--resume``,
+    and re-injecting them here would make the model see the same exchange
+    twice (once in the session log, once in the prompt body).
     """
     parts: list[str] = []
 
+    parts.append(f"# Persona\n{persona}")
+    parts.append(
+        "# Timestamp convention\n"
+        "User messages (both historical and the current one) are prefixed "
+        "with timestamps like `[2026-04-27T05:27:13+07:00]`. These are "
+        "system-injected metadata indicating when each message was sent. "
+        "Use them to understand elapsed time between turns — a multi-hour "
+        "or multi-day gap should shape how you respond (e.g. acknowledge "
+        "the user has been away). Do NOT include such timestamp prefixes "
+        "in your own responses."
+    )
+    if user_context:
+        parts.append(f"# Context\n{user_context}{memories_context}")
     if not is_resumed_session:
-        parts.append(f"# Persona\n{persona}")
-        if user_context:
-            parts.append(f"# Context\n{user_context}{memories_context}")
         history_block = _build_history_block(history, history_limit)
         if history_block:
             parts.append(f"# Conversation so far\n{history_block}")
 
     if image_paths:
-        path_lines = "\n".join(f"- {p}" for p in image_paths)
+        path_lines = "\n".join(f"- {Path(p).name}" for p in image_paths)
         parts.append(
             "# Attached images\n"
             "The user attached the following image file(s). Use the Read tool "
             "to view them as needed before answering.\n"
             f"{path_lines}"
+        )
+
+    if doc_paths:
+        doc_lines = "\n".join(f"- {Path(p).name}" for p in doc_paths)
+        parts.append(
+            "# Attached documents\n"
+            "The user attached the following document file(s) (PDF, text, code, "
+            "markdown, etc.). Use the Read tool to view their contents as needed "
+            "before answering. PDFs are parsed natively — you can see both text "
+            "and any embedded images.\n"
+            f"{doc_lines}"
         )
 
     # Inject the timestamp inline so Claude knows when the message was sent
@@ -370,7 +710,13 @@ def _build_full_prompt(
 
 
 def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
-    """Render at most ``limit`` recent messages as plain text."""
+    """Render at most ``limit`` recent messages as plain text.
+
+    Each message gets a ``[ISO-timestamp]`` prefix when ``created_at`` is
+    present, so the model can perceive elapsed time between turns. Without
+    this, a multi-hour gap between messages reads to Claude as "just now"
+    and it answers as if the user only paused for a few minutes.
+    """
     if not history:
         return ""
     recent = history[-limit:]
@@ -379,20 +725,69 @@ def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
         role = msg.get("role", "user")
         text = str(msg.get("content", ""))
         speaker = "User" if role == "user" else "Assistant"
-        lines.append(f"{speaker}: {text}")
+        created_at = msg.get("created_at")
+        if created_at:
+            ts = normalize_timestamp_to_bangkok(created_at)
+            lines.append(f"{speaker}: [{ts}] {text}")
+        else:
+            lines.append(f"{speaker}: {text}")
     return "\n".join(lines)
 
 
 def _make_subprocess_env() -> dict[str, str]:
-    """Build the env for the `claude` subprocess.
+    """Build the env for the `claude` subprocess using a strict allowlist.
 
-    Strip ANTHROPIC_API_KEY: the CLI's auth-resolution order puts the API key
-    ahead of the subscription OAuth token, so leaving it in would silently
-    fall back to per-token billing — defeating the whole point of CLI mode.
+    Why allowlist (not blocklist): the CLI is given Read tool access. If a
+    malicious frontend or a prompt-injected document tells Claude to read
+    `~/.env` / `~/.config/...`, every secret in the parent process env
+    would be exposed via the AI response. The previous blocklist only
+    stripped ANTHROPIC_*; DISCORD_TOKEN, SPOTIFY_CLIENT_SECRET,
+    DASHBOARD_WS_TOKEN, etc. remained inheritable.
     """
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Variables `claude` (and its OS launcher) genuinely needs to function.
+    # ANTHROPIC_API_KEY is intentionally omitted — leaving it would override
+    # the subscription OAuth token and route through per-token billing.
+    _ALLOWED_ENV_KEYS = {
+        # OS / launcher fundamentals
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "HOME",
+        "USERPROFILE",
+        "USERNAME",
+        "USER",
+        "LOGNAME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LANGUAGE",
+        "TZ",
+        # Claude-CLI specific (auth + telemetry opt-out)
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_DISABLE_TELEMETRY",
+        # Node runtime tuning (claude binary is Node-based)
+        "NODE_OPTIONS",
+        "NPM_CONFIG_PREFIX",
+        # Proxy plumbing (operator may need these to reach Anthropic)
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+    env = {k: v for k, v in os.environ.items() if k in _ALLOWED_ENV_KEYS}
     return env
 
 
@@ -414,12 +809,16 @@ def _build_claude_argv(
     quality on hard questions.
     """
     argv: list[str] = [
-        claude_exe, "-p",
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
+        claude_exe,
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--model", CLAUDE_MODEL,
+        "--model",
+        CLAUDE_MODEL,
     ]
     if enable_thinking:
         argv.extend(["--effort", "max", "--betas", "interleaved-thinking"])
@@ -428,7 +827,14 @@ def _build_claude_argv(
     # Tools allow-list: zero by default (pure chat — fastest, no surprises).
     # Images require Read so Claude can view the temp files. /edit also uses
     # zero tools — Claude just emits SEARCH/REPLACE text in its reply.
-    del allow_edit_tools  # currently identical to default; kept for future expansion
+    # `allow_edit_tools` is reserved for future expansion. Today both
+    # branches yield the same tool list, so warn instead of silently
+    # ignoring an opt-in caller.
+    if allow_edit_tools:
+        logger.debug(
+            "allow_edit_tools=True is reserved for future expansion; "
+            "current build uses the same minimal tool list either way."
+        )
     tools = "Read" if allow_read_for_images else ""
     argv.extend(["--allowedTools", tools])
     return argv
@@ -465,6 +871,16 @@ async def _run_claude_subprocess(
     # land in their own `~/.claude/projects/<encoded-cwd>/` folder instead
     # of mixing with the user's own Claude Code sessions for the bot repo.
     _CLAUDE_CLI_WORKDIR.mkdir(parents=True, exist_ok=True)
+    # Detach the child into its own process group so a Ctrl+C / SIGTERM
+    # delivered to the parent doesn't propagate to claude (we already
+    # send a clean kill ourselves on cleanup). On POSIX this requires
+    # start_new_session; on Windows we use CREATE_NEW_PROCESS_GROUP.
+    spawn_kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        # 0x00000200 = CREATE_NEW_PROCESS_GROUP
+        spawn_kwargs["creationflags"] = 0x00000200
+    else:
+        spawn_kwargs["start_new_session"] = True
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE,
@@ -472,6 +888,7 @@ async def _run_claude_subprocess(
         stderr=asyncio.subprocess.PIPE,
         env=env,
         cwd=str(_CLAUDE_CLI_WORKDIR),
+        **spawn_kwargs,
     )
 
     # stream-json input format expects one JSON message per line on stdin.
@@ -482,7 +899,10 @@ async def _run_claude_subprocess(
             "content": [{"type": "text", "text": stdin_payload}],
         },
     }
-    assert proc.stdin is not None
+    if proc.stdin is None:
+        # Defensive: with stdin=PIPE, stdin should always exist; raise a
+        # real error rather than relying on `assert` (stripped under -O).
+        raise RuntimeError("Subprocess stdin pipe is unexpectedly None")
     try:
         proc.stdin.write((json.dumps(user_msg) + "\n").encode("utf-8"))
         await proc.stdin.drain()
@@ -493,10 +913,35 @@ async def _run_claude_subprocess(
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
 
+    # Hard cap on a single NDJSON line — claude shouldn't produce more
+    # than a few MB per event; anything larger is either a runaway model
+    # or a malformed binary blob. Without this, asyncio's StreamReader
+    # default of 64 KiB raises LimitOverrunError on the first oversized
+    # frame and aborts the whole stream.
+    MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
+
+    # Track which content-block indices are thinking blocks so the
+    # `content_block_stop` handler only fires `on_thinking_block_stop` for
+    # those (text/tool block stops would otherwise spuriously close the
+    # thinking-panel UI state).
+    thinking_block_indices: set[int] = set()
+
     async def consume_stdout() -> None:
         nonlocal final_session_id, final_usage
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
+        # Drop the per-line buffer cap so model JSON deltas with embedded
+        # base64 / long text aren't truncated. We still bound below.
+        with contextlib.suppress(AttributeError):
+            proc.stdout._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
         async for raw_line in proc.stdout:
+            if len(raw_line) > MAX_STDOUT_LINE_BYTES:
+                logger.warning(
+                    "Dropping oversized stdout frame (%d bytes > %d cap)",
+                    len(raw_line),
+                    MAX_STDOUT_LINE_BYTES,
+                )
+                continue
             try:
                 line = raw_line.decode("utf-8", errors="replace").strip()
             except Exception:
@@ -536,18 +981,24 @@ async def _run_claude_subprocess(
             # content_block_start / _stop tell us when a thinking block opens
             # and closes — useful to drive a "Claude is reasoning…" UI even
             # when the actual thinking text is redacted by Anthropic's
-            # subscription policy.
+            # subscription policy. Track the index of any thinking block so a
+            # `content_block_stop` for an unrelated text/tool block doesn't
+            # fire a spurious `thinking_end` and break the UI state machine.
             if inner_type == "content_block_start":
                 cb = inner.get("content_block") or {}
-                if isinstance(cb, dict) and cb.get("type") == "thinking" and on_thinking_block_start is not None:
-                    await on_thinking_block_start()
+                idx = inner.get("index")
+                if isinstance(cb, dict) and cb.get("type") == "thinking":
+                    if isinstance(idx, int):
+                        thinking_block_indices.add(idx)
+                    if on_thinking_block_start is not None:
+                        await on_thinking_block_start()
                 continue
             if inner_type == "content_block_stop":
-                # We don't know which block stopped without tracking indices,
-                # but for chat we never have multiple thinking blocks in one
-                # turn, so any stop after a thinking_start is fine.
-                if on_thinking_block_stop is not None:
-                    await on_thinking_block_stop()
+                idx = inner.get("index")
+                if isinstance(idx, int) and idx in thinking_block_indices:
+                    thinking_block_indices.discard(idx)
+                    if on_thinking_block_stop is not None:
+                        await on_thinking_block_stop()
                 continue
 
             delta = inner.get("delta")
@@ -614,31 +1065,60 @@ async def handle_chat_message_claude_cli(
     max_history_messages: int = 100,
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
+    max_documents: int = 5,
+    max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
 ) -> None:
     """Stream a dashboard chat reply via ``claude -p`` (subscription billing)."""
     del claude_client  # signature parity only
 
     conversation_id = data.get("conversation_id")
+    # Match the same alphanumeric/-/_ allowlist used by the Gemini and SDK
+    # backends. Without this, a control char or weird Unicode in the id
+    # could desync the on-disk session map (which sanitizes for filesystem
+    # use) from the DB rows (which do not), or land in a SQL parameter
+    # downstream as an unexpected shape.
+    if not isinstance(conversation_id, str) or not re.match(
+        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+    ):
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Invalid conversation ID",
+                "conversation_id": conversation_id,
+            }
+        )
+        return
+
     raw_content = data.get("content", "")
     content = (raw_content if isinstance(raw_content, str) else "").strip()
     role_preset = data.get("role_preset", "general")
     history = data.get("history") or []
     user_name = data.get("user_name", "User")
-    unrestricted_requested = bool(data.get("unrestricted_mode"))
+    # Honor DASHBOARD_ALLOW_UNRESTRICTED so the CLI backend matches the SDK +
+    # Gemini paths. Without this gate the operator's safety control was
+    # silently bypassed under CLAUDE_BACKEND=cli.
+    _unrestricted_env = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower()
+    _unrestricted_allowed = _unrestricted_env in ("1", "true", "yes", "on")
+    unrestricted_requested = bool(data.get("unrestricted_mode")) and _unrestricted_allowed
     thinking_enabled = bool(data.get("thinking_enabled"))
     images_raw = data.get("images") or []
+    documents_raw = data.get("documents") or []
 
     if not content:
-        await ws.send_json({"type": "error", "message": "Empty message", "conversation_id": conversation_id})
+        await ws.send_json(
+            {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
+        )
         return
 
     if len(content) > max_content_length:
-        await ws.send_json({
-            "type": "error",
-            "message": f"Message too long (>{max_content_length} chars)",
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": f"Message too long (>{max_content_length} chars)",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     ready, reason = is_cli_backend_ready()
@@ -662,18 +1142,69 @@ async def handle_chat_message_claude_cli(
             # Don't pass `mode=` for user turns — SDK backend omits it too;
             # the mode badge is conceptually the assistant's reply attribute.
             user_msg_id = await db.save_dashboard_message(
-                conversation_id, "user", content,
+                conversation_id,
+                "user",
+                content,
                 images=capped_images if capped_images else None,
             )
         except Exception:
             logger.exception("Failed to save user message (CLI backend)")
 
     # Decode + persist images to disk so Claude can Read them by path.
+    # Run sync I/O in a worker thread so a 50 MB image set can't stall the
+    # event loop for hundreds of milliseconds.
     image_paths = (
-        _save_inline_images(conversation_id or "default", capped_images, max_image_size_bytes)
+        await asyncio.to_thread(
+            _save_inline_images,
+            conversation_id or "default",
+            capped_images,
+            max_image_size_bytes,
+        )
         if capped_images
         else []
     )
+
+    # Cap + save document attachments (PDF / text / code) the same way.
+    capped_docs = documents_raw[:max_documents] if isinstance(documents_raw, list) else []
+    doc_paths = (
+        await asyncio.to_thread(
+            _save_inline_documents,
+            conversation_id or "default",
+            capped_docs,
+            max_document_size_bytes,
+        )
+        if capped_docs
+        else []
+    )
+
+    # Persistent document memory — extract text from every attached document
+    # and save it to the DB so future turns (in any conversation) see the
+    # content without the user re-uploading. This runs alongside the temp
+    # file save above: Claude still reads the full binary THIS turn for
+    # maximum fidelity; the DB snapshot is a text-only fallback for later.
+    if capped_docs and DB_AVAILABLE:
+        try:
+            from .document_extractor import extract_and_persist
+
+            db_inst = get_db()
+            saved_docs = await extract_and_persist(
+                capped_docs,
+                db=db_inst,
+                source_conversation_id=conversation_id,
+            )
+            if saved_docs:
+                # Non-blocking UX feedback. Does not gate the chat response —
+                # the message continues regardless of whether the toast lands.
+                with contextlib.suppress(Exception):
+                    await ws.send_json(
+                        {
+                            "type": "document_saved",
+                            "documents": saved_docs,
+                            "conversation_id": conversation_id,
+                        }
+                    )
+        except Exception:
+            logger.exception("Document extraction/persistence failed (CLI backend)")
 
     # Build the prompt
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
@@ -686,22 +1217,44 @@ async def handle_chat_message_claude_cli(
     session_id = _CONVERSATION_SESSIONS.get(conversation_id or "") if conversation_id else None
     is_resumed = bool(session_id)
 
-    # Skip the user-context DB query on resumed turns — the persona/context
-    # block is only injected on the first turn of a session, so the lookup
-    # would be wasted work (and an extra round trip to SQLite) otherwise.
-    if is_resumed:
-        user_context, memories_context = "", ""
-    else:
+    # Prefer the DB as the source of truth for history when we have a
+    # conversation id — it carries ``created_at`` for every row, which the
+    # frontend payload often omits (older dashboard builds, stale webview
+    # state). Without per-row timestamps the AI can't perceive elapsed time
+    # between turns and answers as if the user only paused for a few minutes,
+    # even when hours have passed. We load even for resumed sessions so that
+    # the stale-session retry path (which falls back to is_resumed_session=
+    # False and rebuilds the history block) has timestamps available too.
+    # Falls back to the frontend-supplied history if the DB load fails.
+    if DB_AVAILABLE and conversation_id:
         try:
-            user_context, memories_context, _unused = await build_user_context(
-                user_name, unrestricted_requested,
-            )
+            db = get_db()
+            db_msgs = await db.get_dashboard_messages(conversation_id)
+            # Drop the trailing user row when present — that's the message
+            # we're about to answer, not part of the prior history.
+            hist_msgs = db_msgs[:-1] if db_msgs and db_msgs[-1].get("role") == "user" else db_msgs
+            if hist_msgs:
+                history = hist_msgs
         except Exception:
-            logger.exception("build_user_context failed (CLI backend)")
-            user_context, memories_context = f"Name: {user_name}", ""
+            logger.exception("Failed to load DB history for CLI prompt; using frontend payload")
 
-    # Inject a persona+history header only on the first turn of the session.
-    # Resumed sessions already have everything cached on the Claude side.
+    # Always rebuild the user context (profile + long-term memories + per-conv
+    # docs) so changes the user makes mid-conversation take effect on the very
+    # next turn, the same way they do in the SDK backend. The 60s TTL cache in
+    # build_user_context() keeps the SQLite round trips cheap on chat bursts.
+    try:
+        user_context, memories_context, _unused = await build_user_context(
+            user_name,
+            unrestricted_requested,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        logger.exception("build_user_context failed (CLI backend)")
+        user_context, memories_context = f"Name: {user_name}", ""
+
+    # Persona + context go in every turn now (matches API behavior); only the
+    # raw conversation history stays gated on the first turn because Claude
+    # carries it server-side via --resume.
     full_prompt = _build_full_prompt(
         persona=persona,
         user_context=user_context,
@@ -710,6 +1263,7 @@ async def handle_chat_message_claude_cli(
         history_limit=max_history_messages,
         current_message=content,
         image_paths=image_paths,
+        doc_paths=doc_paths,
         is_resumed_session=is_resumed,
     )
 
@@ -722,12 +1276,16 @@ async def handle_chat_message_claude_cli(
         mode_info.append("🔓 Unrestricted")
     if image_paths:
         mode_info.append(f"🖼️ {len(image_paths)} image(s)")
+    if doc_paths:
+        mode_info.append(f"📎 {len(doc_paths)} doc(s)")
     mode_label = " • ".join(mode_info)
-    await ws.send_json({
-        "type": "stream_start",
-        "mode": mode_label,
-        "conversation_id": conversation_id,
-    })
+    await ws.send_json(
+        {
+            "type": "stream_start",
+            "mode": mode_label,
+            "conversation_id": conversation_id,
+        }
+    )
 
     full_response = ""
     full_thinking = ""
@@ -736,11 +1294,13 @@ async def handle_chat_message_claude_cli(
     async def on_text(text: str) -> None:
         nonlocal full_response
         full_response += text
-        await ws.send_json({
-            "type": "chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_text(text: str) -> None:
         # Only fires when Anthropic actually sends thinking content, which
@@ -752,11 +1312,13 @@ async def handle_chat_message_claude_cli(
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
         full_thinking += text
-        await ws.send_json({
-            "type": "thinking_chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_block_start() -> None:
         # Fires when Claude opens a reasoning block, even in subscription
@@ -769,10 +1331,14 @@ async def handle_chat_message_claude_cli(
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
 
     claude_exe = _resolve_claude_executable() or "claude"
+    # The Read tool must be enabled whenever Claude needs to open any attached
+    # file — images AND documents both live on disk. `allow_read_for_images`
+    # is kept as the argv flag name for compatibility but covers both.
+    need_read = bool(image_paths) or bool(doc_paths)
     argv = _build_claude_argv(
         claude_exe,
         session_id=session_id,
-        allow_read_for_images=bool(image_paths),
+        allow_read_for_images=need_read,
         enable_thinking=thinking_enabled,
     )
 
@@ -783,12 +1349,16 @@ async def handle_chat_message_claude_cli(
     # using the same --resume id, racing on the server-side session state.
     # Lock is keyed by conversation_id so different conversations stay
     # parallel; anonymous conversations (no id) skip the lock entirely.
-    lock: asyncio.Lock | None = (
-        _get_conversation_lock(conversation_id) if conversation_id else None
-    )
+    lock: asyncio.Lock | None = _get_conversation_lock(conversation_id) if conversation_id else None
+    # Track whether THIS task acquired the lock so we don't release it
+    # on behalf of another task in the finally clause. asyncio.Lock.locked()
+    # returns True for any holder, not just the current task — relying on
+    # it to gate release() risked corrupting the lock state.
+    lock_acquired = False
     try:
         if lock is not None:
             await lock.acquire()
+            lock_acquired = True
         try:
             try:
                 new_session_id, usage = await _run_claude_subprocess(
@@ -807,24 +1377,43 @@ async def handle_chat_message_claude_cli(
                 if getattr(err, "is_stale_session", False) and session_id:
                     logger.info(
                         "Claude session %s is stale for conversation %s — retrying fresh",
-                        session_id, conversation_id,
+                        session_id,
+                        conversation_id,
                     )
                     if conversation_id:
                         reset_session(conversation_id)
+                    # Refetch context for the retry. The original build happened
+                    # before the stale-session error fired; if the user mutated
+                    # a memory or profile in the meantime, the prompt we resend
+                    # would otherwise carry the pre-mutation snapshot.
+                    try:
+                        (
+                            fresh_user_context,
+                            fresh_memories_context,
+                            _unused,
+                        ) = await build_user_context(
+                            user_name,
+                            unrestricted_requested,
+                            conversation_id=conversation_id,
+                        )
+                    except Exception:
+                        logger.exception("build_user_context failed during stale-session retry")
+                        fresh_user_context, fresh_memories_context = user_context, memories_context
                     fresh_prompt = _build_full_prompt(
                         persona=persona,
-                        user_context=user_context,
-                        memories_context=memories_context,
+                        user_context=fresh_user_context,
+                        memories_context=fresh_memories_context,
                         history=history,
                         history_limit=max_history_messages,
                         current_message=content,
                         image_paths=image_paths,
+                        doc_paths=doc_paths,
                         is_resumed_session=False,
                     )
                     fresh_argv = _build_claude_argv(
                         claude_exe,
                         session_id=None,
-                        allow_read_for_images=bool(image_paths),
+                        allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
                     )
                     new_session_id, usage = await _run_claude_subprocess(
@@ -838,33 +1427,42 @@ async def handle_chat_message_claude_cli(
                 else:
                     raise
         except TimeoutError:
-            await ws.send_json({
-                "type": "error",
-                "message": f"Claude CLI timed out after {stream_timeout}s",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Claude CLI timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except RuntimeError as err:
-            await ws.send_json({
-                "type": "error",
-                "message": str(err),
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": str(err),
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except Exception:
             logger.exception("Claude CLI streaming failed")
-            await ws.send_json({
-                "type": "error",
-                "message": "Claude CLI backend failed. Check logs.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Claude CLI backend failed. Check logs.",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
     finally:
-        if lock is not None and lock.locked():
+        if lock is not None and lock_acquired:
             lock.release()
-        # Temp images aren't needed once the subprocess has been drained.
+        # Temp attachments aren't needed once the subprocess has been drained.
+        # Run cleanup in a worker thread for the same reason as the writes.
         if image_paths and conversation_id:
-            _cleanup_image_dir(conversation_id)
+            await asyncio.to_thread(_cleanup_image_dir, conversation_id)
+        if doc_paths and conversation_id:
+            await asyncio.to_thread(_cleanup_docs_dir, conversation_id)
 
     # Save session id for next turn so Claude keeps context server-side.
     if conversation_id and new_session_id:
@@ -882,11 +1480,13 @@ async def handle_chat_message_claude_cli(
                 "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
                 "see the full thought process."
             )
-        await ws.send_json({
-            "type": "thinking_end",
-            "full_thinking": full_thinking,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_end",
+                "full_thinking": full_thinking,
+                "conversation_id": conversation_id,
+            }
+        )
 
     full_response = strip_leading_timestamp(full_response)
 
@@ -895,7 +1495,9 @@ async def handle_chat_message_claude_cli(
         try:
             db = get_db()
             assistant_msg_id = await db.save_dashboard_message(
-                conversation_id, "assistant", full_response,
+                conversation_id,
+                "assistant",
+                full_response,
                 thinking=full_thinking if full_thinking else None,
                 mode=mode_label,
             )
@@ -904,11 +1506,13 @@ async def handle_chat_message_claude_cli(
                 title = content[:40].strip()
                 if title:
                     await db.update_dashboard_conversation(conversation_id, title=title)
-                    await ws.send_json({
-                        "type": "title_updated",
-                        "conversation_id": conversation_id,
-                        "title": title,
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "title_updated",
+                            "conversation_id": conversation_id,
+                            "title": title,
+                        }
+                    )
         except Exception:
             logger.exception("Failed to save assistant message (CLI backend)")
 
@@ -935,22 +1539,24 @@ async def handle_chat_message_claude_cli(
     # `chunks_count` mirrors the SDK backend's payload — frontend doesn't
     # currently render it, but emitting it keeps the event shape parity so
     # future UI changes work uniformly across both backends.
-    await ws.send_json({
-        "type": "stream_end",
-        "conversation_id": conversation_id,
-        "full_response": full_response,
-        "user_message_id": user_msg_id,
-        "assistant_message_id": assistant_msg_id or None,
-        "chunks_count": len(full_response),
-        "token_usage": {
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
-            "context_window": CLAUDE_CONTEXT_WINDOW,
-            "cache_creation_input_tokens": cache_creation,
-            "cache_read_input_tokens": cache_read,
-        },
-    })
+    await ws.send_json(
+        {
+            "type": "stream_end",
+            "conversation_id": conversation_id,
+            "full_response": full_response,
+            "user_message_id": user_msg_id,
+            "assistant_message_id": assistant_msg_id or None,
+            "chunks_count": len(full_response),
+            "token_usage": {
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "total_tokens": in_tok + out_tok,
+                "context_window": CLAUDE_CONTEXT_WINDOW,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+            },
+        }
+    )
 
 
 # ============================================================================
@@ -980,11 +1586,17 @@ def _apply_search_replace(original: str, ai_response: str) -> str:
         search_text = m.group(1)
         replace_text = m.group(2)
         if search_text in result:
+            if result.count(search_text) > 1:
+                logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                continue
             result = result.replace(search_text, replace_text, 1)
             applied += 1
         else:
             stripped = search_text.strip()
             if stripped and stripped in result:
+                if result.count(stripped) > 1:
+                    logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                    continue
                 result = result.replace(stripped, replace_text.strip(), 1)
                 applied += 1
             else:
@@ -1021,7 +1633,13 @@ async def handle_ai_edit_message_claude_cli(
     thinking_enabled = bool(data.get("thinking_enabled"))
 
     if not conversation_id or not target_message_id or not instruction:
-        await ws.send_json({"type": "error", "message": "Missing data for AI edit", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Missing data for AI edit",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     ready, reason = is_cli_backend_ready()
@@ -1030,7 +1648,9 @@ async def handle_ai_edit_message_claude_cli(
         return
 
     if not DB_AVAILABLE:
-        await ws.send_json({"type": "error", "message": "Database unavailable", "conversation_id": conversation_id})
+        await ws.send_json(
+            {"type": "error", "message": "Database unavailable", "conversation_id": conversation_id}
+        )
         return
 
     # Look up the target message for the original content + sanity checks.
@@ -1041,14 +1661,32 @@ async def handle_ai_edit_message_claude_cli(
         target_msg = next((m for m in all_msgs if m.get("id") == target_id_int), None)
     except Exception:
         logger.exception("Failed to load target message for AI edit (CLI backend)")
-        await ws.send_json({"type": "error", "message": "Failed to load message", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Failed to load message",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     if not target_msg:
-        await ws.send_json({"type": "error", "message": "Target message not found", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Target message not found",
+                "conversation_id": conversation_id,
+            }
+        )
         return
     if target_msg.get("role") != "assistant":
-        await ws.send_json({"type": "error", "message": "Can only AI-edit assistant messages", "conversation_id": conversation_id})
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Can only AI-edit assistant messages",
+                "conversation_id": conversation_id,
+            }
+        )
         return
 
     original_content = target_msg.get("content", "")
@@ -1056,7 +1694,11 @@ async def handle_ai_edit_message_claude_cli(
     persona = str(preset.get("system_instruction", ""))
 
     try:
-        user_context, memories_context, _ = await build_user_context(user_name, False)
+        user_context, memories_context, _ = await build_user_context(
+            user_name,
+            False,
+            conversation_id=conversation_id,
+        )
     except Exception:
         logger.exception("build_user_context failed (CLI edit)")
         user_context, memories_context = f"Name: {user_name}", ""
@@ -1094,13 +1736,15 @@ async def handle_ai_edit_message_claude_cli(
     if thinking_enabled:
         edit_mode_info.append("🧠 Thinking")
     mode_label = " • ".join(edit_mode_info)
-    await ws.send_json({
-        "type": "stream_start",
-        "mode": mode_label,
-        "is_edit": True,
-        "target_message_id": target_id_int,
-        "conversation_id": conversation_id,
-    })
+    await ws.send_json(
+        {
+            "type": "stream_start",
+            "mode": mode_label,
+            "is_edit": True,
+            "target_message_id": target_id_int,
+            "conversation_id": conversation_id,
+        }
+    )
 
     edit_response = ""
     edit_thinking = ""
@@ -1109,11 +1753,13 @@ async def handle_ai_edit_message_claude_cli(
     async def on_text(text: str) -> None:
         nonlocal edit_response
         edit_response += text
-        await ws.send_json({
-            "type": "chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_text(text: str) -> None:
         nonlocal edit_thinking, thinking_started
@@ -1123,11 +1769,13 @@ async def handle_ai_edit_message_claude_cli(
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
         edit_thinking += text
-        await ws.send_json({
-            "type": "thinking_chunk",
-            "content": text,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_chunk",
+                "content": text,
+                "conversation_id": conversation_id,
+            }
+        )
 
     async def on_thinking_block_start() -> None:
         nonlocal thinking_started
@@ -1150,9 +1798,14 @@ async def handle_ai_edit_message_claude_cli(
     # Serialize against concurrent chat sends in the same conversation: an
     # edit and a chat reply both spawn `claude -p` and would otherwise race.
     edit_lock = _get_conversation_lock(conversation_id) if conversation_id else None
+    # Track whether THIS task acquired the lock; ``edit_lock.locked()`` is
+    # True for any holder, so using it to gate ``release()`` could release
+    # a different task's lock if our acquire() raised (e.g. CancelledError).
+    edit_lock_acquired = False
     try:
         if edit_lock is not None:
             await edit_lock.acquire()
+            edit_lock_acquired = True
         try:
             _new_sid, usage = await _run_claude_subprocess(
                 argv,
@@ -1163,29 +1816,35 @@ async def handle_ai_edit_message_claude_cli(
                 timeout=stream_timeout,
             )
         except TimeoutError:
-            await ws.send_json({
-                "type": "error",
-                "message": f"Claude CLI edit timed out after {stream_timeout}s",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": f"Claude CLI edit timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except RuntimeError as err:
-            await ws.send_json({
-                "type": "error",
-                "message": str(err),
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": str(err),
+                    "conversation_id": conversation_id,
+                }
+            )
             return
         except Exception:
             logger.exception("Claude CLI edit failed")
-            await ws.send_json({
-                "type": "error",
-                "message": "Claude CLI edit backend failed. Check logs.",
-                "conversation_id": conversation_id,
-            })
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "Claude CLI edit backend failed. Check logs.",
+                    "conversation_id": conversation_id,
+                }
+            )
             return
     finally:
-        if edit_lock is not None and edit_lock.locked():
+        if edit_lock is not None and edit_lock_acquired:
             edit_lock.release()
 
     if thinking_started:
@@ -1196,20 +1855,39 @@ async def handle_ai_edit_message_claude_cli(
                 "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
                 "see the full thought process."
             )
-        await ws.send_json({
-            "type": "thinking_end",
-            "full_thinking": edit_thinking,
-            "conversation_id": conversation_id,
-        })
+        await ws.send_json(
+            {
+                "type": "thinking_end",
+                "full_thinking": edit_thinking,
+                "conversation_id": conversation_id,
+            }
+        )
 
     new_content = _apply_search_replace(original_content, edit_response.strip())
 
-    # Persist the rewritten message
-    try:
-        db = get_db()
-        await db.update_dashboard_message(target_id_int, new_content)
-    except Exception:
-        logger.exception("Failed to update AI-edited message (CLI backend)")
+    # Guard against blanking the original message: if the patcher returned
+    # an empty/whitespace-only result (no SEARCH/REPLACE blocks matched and
+    # the model produced nothing useful) we keep the original rather than
+    # silently destroying user content.
+    if not new_content or not new_content.strip():
+        logger.warning(
+            "AI edit produced empty content for message %d — keeping original",
+            target_id_int,
+        )
+    else:
+        # Persist the rewritten message. Pass conversation_id so the UPDATE only
+        # matches when the row is in the conversation the AI was editing —
+        # prevents an attacker (or a bug) from coercing this path into
+        # rewriting messages in a different conversation.
+        try:
+            db = get_db()
+            await db.update_dashboard_message(
+                target_id_int,
+                new_content,
+                expected_conversation_id=conversation_id,
+            )
+        except Exception:
+            logger.exception("Failed to update AI-edited message (CLI backend)")
 
     if usage:
         cache_creation = int(usage.get("cache_creation_input_tokens", 0))
@@ -1222,19 +1900,21 @@ async def handle_ai_edit_message_claude_cli(
         in_tok = max(1, len(edit_prompt) // 4)
         out_tok = max(1, len(edit_response) // 4)
 
-    await ws.send_json({
-        "type": "stream_end",
-        "conversation_id": conversation_id,
-        "full_response": new_content,
-        "is_edit": True,
-        "target_message_id": target_id_int,
-        "chunks_count": len(edit_response),
-        "token_usage": {
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
-            "context_window": CLAUDE_CONTEXT_WINDOW,
-            "cache_creation_input_tokens": cache_creation,
-            "cache_read_input_tokens": cache_read,
-        },
-    })
+    await ws.send_json(
+        {
+            "type": "stream_end",
+            "conversation_id": conversation_id,
+            "full_response": new_content,
+            "is_edit": True,
+            "target_message_id": target_id_int,
+            "chunks_count": len(edit_response),
+            "token_usage": {
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "total_tokens": in_tok + out_tok,
+                "context_window": CLAUDE_CONTEXT_WINDOW,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+            },
+        }
+    )

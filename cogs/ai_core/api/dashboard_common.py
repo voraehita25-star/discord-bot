@@ -6,12 +6,15 @@ Centralizes duplicated logic: sanitization, DB helpers, profile/memory context.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-logger = logging.getLogger(__name__)
 import re as _re
+import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 # Canonical timezone for all prompt-injected timestamps so the model sees a
 # consistent frame of reference regardless of how a timestamp was stored
@@ -54,6 +57,7 @@ def normalize_timestamp_to_bangkok(raw: Any) -> str:
 def get_db():
     """Get a Database instance (lazy import to avoid circular deps)."""
     from .dashboard_config import Database
+
     return Database()
 
 
@@ -107,7 +111,7 @@ class LeadingTimestampStripper:
         # Try a full match against the buffered text.
         match = _LEADING_TIMESTAMP_RE.match(self._buffer)
         if match:
-            out = self._buffer[match.end():]
+            out = self._buffer[match.end() :]
             self._buffer = ""
             self._done = True
             return out
@@ -136,30 +140,104 @@ def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
     function works when callers pass dict/list/int profile fields. Unicode is
     normalized (NFKC) so that lookalike attacks like ``sуstem:`` (Cyrillic ``у``)
     cannot bypass the keyword filter.
-    """  # noqa: RUF002
+    """  # noqa: RUF002 - intentional Cyrillic example in docstring
     if value is None or value == "":
         return ""
     if not isinstance(value, str):
         value = str(value)
     import unicodedata as _unicodedata
+
     value = _unicodedata.normalize("NFKC", value)
-    value = _re.sub(r'[\x00-\x1f\x7f]', '', value)  # Remove control chars
-    value = _re.sub(r'[\[\]{}`]', '', value)  # Strip brackets/braces/backticks to prevent instruction injection
-    # Remove patterns that could be used for prompt injection
-    value = _re.sub(r'(?i)\b(system|ignore|instruction|override|forget)\s*:', '', value)
-    return value[:max_len]
+    value = _re.sub(r"[\x00-\x1f\x7f]", "", value)  # Remove control chars
+    value = _re.sub(
+        r"[\[\]{}`]", "", value
+    )  # Strip brackets/braces/backticks to prevent instruction injection
+    # Neutralise common prompt-injection prefixes. Strip ONLY the
+    # ``keyword:`` punctuation marker — leaving the bare word lets the
+    # model still see what the user typed but breaks the colon-prefixed
+    # "system: do X" instruction shape.
+    value = _re.sub(
+        r"(?i)\b(system|ignore|instruction|override|forget|jailbreak|disregard\s+previous)\s*:",
+        r"\1",
+        value,
+    )
+    return str(value[:max_len])
+
+
+class _UserContextCacheEntry(TypedDict):
+    """Cached user_context payload — see ``build_user_context``."""
+
+    expires_at: float
+    user_context: str
+    memories_context: str
+    profile_is_creator: bool
+
+
+# Per-conversation cache for build_user_context. Each AI turn used to re-query
+# profile + 20 documents from SQLite and rebuild a ~400 KB string; with the
+# cache we skip both work items unless the conversation's documents changed.
+# Invalidation is explicit (see ``invalidate_user_context_cache``) — TTL is a
+# safety net so callers that forget to invalidate still see fresh data within
+# 60 s. user_name is NOT part of the key because it's only the fallback when
+# the DB profile lacks a display_name; same conversation has the same fallback.
+_USER_CONTEXT_CACHE: dict[str | None, _UserContextCacheEntry] = {}
+_USER_CONTEXT_CACHE_TTL = 60.0  # seconds
+_USER_CONTEXT_CACHE_MAX_ENTRIES = 64
+_user_context_lock: asyncio.Lock | None = None
+
+
+def _get_user_context_lock() -> asyncio.Lock:
+    """Lazily create the cache lock to avoid event-loop binding at import time."""
+    global _user_context_lock
+    if _user_context_lock is None:
+        _user_context_lock = asyncio.Lock()
+    return _user_context_lock
+
+
+def invalidate_user_context_cache(conversation_id: str | None = None) -> None:
+    """Drop the cached ``user_context`` so the next AI turn rebuilds it.
+
+    Pass a conversation id to clear only that conversation's entry. Pass
+    ``None`` to clear *all* entries (use after profile updates, since the
+    profile is shared across every conversation). This is fire-and-forget —
+    a missing key is silently ignored so callers don't have to care whether
+    the cache had been populated yet.
+    """
+    if conversation_id is None:
+        _USER_CONTEXT_CACHE.clear()
+    else:
+        _USER_CONTEXT_CACHE.pop(conversation_id, None)
 
 
 async def build_user_context(
     user_name: str,
     unrestricted_mode_requested: bool,
+    conversation_id: str | None = None,
 ) -> tuple[str, str, bool]:
     """Build user profile context and load memories from DB.
+
+    ``conversation_id`` scopes the document-memory lookup: each conversation
+    has its own library of uploaded PDFs/text files, so documents attached
+    in conversation A don't leak into conversation B. ``None`` falls back to
+    the unscoped behaviour (all documents visible) — kept for callers that
+    don't have a conversation context, e.g. persona refresh paths.
+
+    Results are cached per-conversation for ``_USER_CONTEXT_CACHE_TTL`` seconds
+    or until ``invalidate_user_context_cache`` is called. The cache stores
+    ``profile_is_creator`` separately so toggling ``unrestricted_mode_requested``
+    between turns doesn't require a rebuild — we re-AND it on every lookup.
 
     Returns:
         (user_context, memories_context, unrestricted_mode)
     """
     from .dashboard_config import DB_AVAILABLE
+
+    cache_key = conversation_id
+    now = time.monotonic()
+    cached = _USER_CONTEXT_CACHE.get(cache_key)
+    if cached is not None and cached["expires_at"] > now:
+        unrestricted = unrestricted_mode_requested and cached["profile_is_creator"]
+        return cached["user_context"], cached["memories_context"], unrestricted
 
     user_profile: dict[str, Any] = {}
     if DB_AVAILABLE:
@@ -172,12 +250,13 @@ async def build_user_context(
     profile_name = sanitize_profile_field(user_profile.get("display_name") or user_name)
     profile_info_parts = [f"Name: {profile_name}"]
 
-    if user_profile.get("is_creator"):
+    profile_is_creator = bool(user_profile.get("is_creator"))
+    if profile_is_creator:
         profile_info_parts.append(
             "Role: Creator/Developer of this bot (treat with special respect, they made you!)"
         )
 
-    unrestricted_mode = unrestricted_mode_requested and bool(user_profile.get("is_creator"))
+    unrestricted_mode = unrestricted_mode_requested and profile_is_creator
 
     if user_profile.get("bio"):
         profile_info_parts.append(f"About: {sanitize_profile_field(user_profile['bio'], 500)}")
@@ -187,6 +266,62 @@ async def build_user_context(
         )
 
     user_context = "[User Profile]\n" + "\n".join(profile_info_parts)
+
+    # Persistent document memories — text extracted from PDF / DOCX / text
+    # files the user has uploaded in THIS conversation. Scoped per-conversation
+    # so each RP thread keeps its own library; attachments from one conversation
+    # don't bleed into another. Auto-injected on every turn so users don't
+    # re-upload the same character sheet. Newest first, trimmed for prompt.
+    if DB_AVAILABLE:
+        try:
+            db = get_db()
+            docs = await db.get_document_memories(limit=20, conversation_id=conversation_id)
+            if docs:
+                doc_sections: list[str] = []
+                running_total = 0
+                # Hard cap the injection so one big PDF can't eat the whole
+                # prompt budget. Sized for Opus/Sonnet 1M-context: 400K chars
+                # ≈ ~120-150K tokens, enough to fit a single near-max-extract
+                # PDF (MAX_EXTRACTED_CHARS = 500K) almost in full while leaving
+                # ample room for chat history, system prompt, and response.
+                # If users hit this, older docs get dropped from this turn
+                # but stay in DB for later.
+                MAX_INJECT_CHARS = 400_000
+                dropped_filenames: list[str] = []
+                for doc in docs:
+                    text = doc.get("extracted_text") or ""
+                    filename = doc.get("filename") or "document"
+                    if not text:
+                        continue
+                    remaining = MAX_INJECT_CHARS - running_total
+                    if remaining <= 0:
+                        # Track every doc we dropped due to budget so the model
+                        # can tell the user which files weren't visible.
+                        dropped_filenames.append(filename)
+                        continue
+                    snippet = (
+                        text
+                        if len(text) <= remaining
+                        else text[:remaining] + "\n[... truncated in prompt]"
+                    )
+                    doc_sections.append(f"## {filename}\n{snippet}")
+                    running_total += len(snippet)
+                if doc_sections:
+                    user_context += (
+                        "\n\n[Attached Documents (persistent)]\n"
+                        "The following documents were uploaded in past turns. "
+                        "Treat them as reference material the user has shared with you:\n\n"
+                        + "\n\n".join(doc_sections)
+                    )
+                if dropped_filenames:
+                    # Surface the trimmed list so the AI can mention them
+                    # explicitly rather than silently ignoring older docs.
+                    user_context += (
+                        "\n\n[Documents NOT shown this turn — dropped for context budget]\n"
+                        + "\n".join(f"- {fn}" for fn in dropped_filenames[:50])
+                    )
+        except Exception as e:
+            logger.warning("Failed to load document memories: %s", e)
 
     # Load long-term memories
     memories_context = ""
@@ -201,5 +336,28 @@ async def build_user_context(
                 memories_context = f"\n\n[Long-term Memories about User]\n{memories_text}"
         except Exception as e:
             logger.warning("Failed to load memories: %s", e)
+
+    # Populate the cache before returning. We don't need the lock for the dict
+    # write itself (CPython dict assignment is atomic), but we DO need it for
+    # the over-capacity trim so two concurrent rebuilds can't both decide to
+    # evict the same entry and leave the cache empty.
+    async with _get_user_context_lock():
+        if (
+            cache_key not in _USER_CONTEXT_CACHE
+            and len(_USER_CONTEXT_CACHE) >= _USER_CONTEXT_CACHE_MAX_ENTRIES
+        ):
+            # Evict the entry with the soonest expiry (effectively LRU since
+            # every lookup that misses refreshes expires_at).
+            oldest = min(
+                _USER_CONTEXT_CACHE,
+                key=lambda k: _USER_CONTEXT_CACHE[k]["expires_at"],
+            )
+            _USER_CONTEXT_CACHE.pop(oldest, None)
+        _USER_CONTEXT_CACHE[cache_key] = {
+            "expires_at": now + _USER_CONTEXT_CACHE_TTL,
+            "user_context": user_context,
+            "memories_context": memories_context,
+            "profile_is_creator": profile_is_creator,
+        }
 
     return user_context, memories_context, unrestricted_mode

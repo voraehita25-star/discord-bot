@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import logging
 import random
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+from typing import ClassVar
 
 # Try to import intent detector for intent-based fallbacks
 try:
@@ -127,9 +129,41 @@ class FallbackSystem:
             response = fallback.get_by_reason(FallbackReason.CIRCUIT_OPEN)
     """
 
+    # Track the last few messages shown per (user_id, intent) so the same
+    # user doesn't see identical fallback strings on back-to-back errors.
+    # Keyed by ``(user_id, intent_key)`` — ``None`` user maps to a single
+    # global rotation pool. Bounded with maxlen so the dict only ever holds
+    # the recent N entries per key.
+    _RECENT_HISTORY_LEN: ClassVar[int] = 3
+    # Cap how many distinct (user, intent) pairs we track to keep memory
+    # bounded — past this we drop the oldest pair when adding a new one.
+    _RECENT_HISTORY_MAX_KEYS: ClassVar[int] = 1000
+
     def __init__(self):
         self.logger = logging.getLogger("FallbackSystem")
         self._fallback_count = 0
+        self._recent: dict[tuple[int | None, str], deque[str]] = defaultdict(
+            lambda: deque(maxlen=self._RECENT_HISTORY_LEN),
+        )
+        # Insertion-order list of keys for LRU-style eviction when over capacity.
+        self._recent_order: deque[tuple[int | None, str]] = deque()
+
+    def _remember_fallback(self, key: tuple[int | None, str], message: str) -> None:
+        """Record that ``message`` was shown for ``key`` and evict if over capacity."""
+        # `key not in self._recent` is the right check, but
+        # `self._recent[key].append(...)` below is a defaultdict access that
+        # auto-creates the entry — so a key seen before but evicted from
+        # `_recent` would NOT trigger the order-list append, leaving it in
+        # `_recent_order` only as the prior (now stale) entry. Use explicit
+        # contains check + create to keep `_recent_order` in lockstep with
+        # `_recent` membership.
+        if key not in self._recent:
+            self._recent_order.append(key)
+            # Bound dict size — drop the oldest tracked pair.
+            while len(self._recent_order) > self._RECENT_HISTORY_MAX_KEYS:
+                evict = self._recent_order.popleft()
+                self._recent.pop(evict, None)
+        self._recent[key].append(message)
 
     def should_use_fallback(self) -> bool:
         """Check if fallback should be used based on circuit breaker state."""
@@ -138,7 +172,10 @@ class FallbackSystem:
         return False
 
     def get_by_intent(
-        self, intent: str, reason: FallbackReason = FallbackReason.UNKNOWN
+        self,
+        intent: str,
+        reason: FallbackReason = FallbackReason.UNKNOWN,
+        user_id: int | None = None,
     ) -> FallbackResponse:
         """
         Get a fallback response based on detected intent.
@@ -146,6 +183,10 @@ class FallbackSystem:
         Args:
             intent: Intent string (e.g., 'greeting', 'question')
             reason: Reason for fallback
+            user_id: Optional user id. When supplied, the same user won't
+                see the same fallback twice in a row (we track the last
+                ``_RECENT_HISTORY_LEN`` messages per user/intent and pick
+                from the unseen pool first).
 
         Returns:
             FallbackResponse with appropriate message
@@ -154,7 +195,22 @@ class FallbackSystem:
 
         # Try intent-specific fallback first
         messages = INTENT_FALLBACKS.get(intent_key, INTENT_FALLBACKS["casual"])
-        message = random.choice(messages)
+
+        # Filter out anything we've shown this user recently. If the entire
+        # pool has been seen (smaller than _RECENT_HISTORY_LEN, or user
+        # hammering the same intent), fall back to the full list rather than
+        # erroring or returning empty.
+        history_key = (user_id, intent_key)
+        recent = self._recent.get(history_key)
+        if recent:
+            available = [m for m in messages if m not in recent]
+            if not available:
+                available = messages
+        else:
+            available = messages
+
+        message = random.choice(available)
+        self._remember_fallback(history_key, message)
 
         self._fallback_count += 1
         self.logger.info(
@@ -165,19 +221,40 @@ class FallbackSystem:
             message=message, reason=reason, should_retry=True, retry_after_seconds=5.0
         )
 
-    def get_by_reason(self, reason: FallbackReason, **kwargs) -> FallbackResponse:
+    def get_by_reason(
+        self,
+        reason: FallbackReason,
+        *,
+        user_id: int | None = None,
+        **kwargs,
+    ) -> FallbackResponse:
         """
         Get a fallback response based on failure reason.
 
         Args:
             reason: Reason for fallback
+            user_id: Optional user id for per-user rotation (avoids showing
+                the same message back-to-back to the same user).
             **kwargs: Format arguments (e.g., seconds=30 for rate limit)
 
         Returns:
             FallbackResponse with appropriate message
         """
         messages = REASON_FALLBACKS.get(reason, REASON_FALLBACKS[FallbackReason.UNKNOWN])
-        message = random.choice(messages)
+
+        # Per-user rotation — same scheme as ``get_by_intent``. We rotate by
+        # the *raw* template (pre-format) so two requests with different
+        # ``seconds=`` kwargs don't both count as the same shown message.
+        history_key = (user_id, f"reason:{reason.value}")
+        recent = self._recent.get(history_key)
+        if recent:
+            available = [m for m in messages if m not in recent]
+            if not available:
+                available = messages
+        else:
+            available = messages
+        message = random.choice(available)
+        self._remember_fallback(history_key, message)
 
         # Format message with kwargs (provide defaults to avoid raw placeholders)
         try:
@@ -227,7 +304,11 @@ fallback_system = FallbackSystem()
 
 
 def get_fallback_response(
-    intent: str | None = None, reason: FallbackReason = FallbackReason.UNKNOWN, **kwargs
+    intent: str | None = None,
+    reason: FallbackReason = FallbackReason.UNKNOWN,
+    *,
+    user_id: int | None = None,
+    **kwargs,
 ) -> str:
     """
     Convenience function to get a fallback response message.
@@ -235,11 +316,14 @@ def get_fallback_response(
     Args:
         intent: Optional intent for intent-based fallback
         reason: Reason for fallback
+        user_id: Optional user id — passed through to enable per-user
+            rotation so the same user doesn't see the same message twice
+            in a row.
         **kwargs: Format arguments
 
     Returns:
         Fallback message string
     """
     if intent:
-        return fallback_system.get_by_intent(intent, reason).message
-    return fallback_system.get_by_reason(reason, **kwargs).message
+        return fallback_system.get_by_intent(intent, reason, user_id=user_id).message
+    return fallback_system.get_by_reason(reason, user_id=user_id, **kwargs).message

@@ -72,11 +72,14 @@ class HistoryManager:
         (r"\{\{[^}]+\}\}", "character", 1.4),
     ]
 
-    # Default settings - optimized for Gemini 2M context window
+    # Default settings — sized for the smaller of Claude/Gemini current context
+    # windows (1M each). Reserve ~40% for system prompt, response, and tool
+    # outputs so a default trim never blows past either provider's limit. If
+    # you want a tighter target, pass max_tokens explicitly to smart_trim_by_tokens.
     DEFAULT_KEEP_RECENT = 200  # Always keep last N messages
     DEFAULT_MAX_HISTORY = 10000  # Max messages after trimming
     DEFAULT_COMPRESS_THRESHOLD = 2000  # Start compressing after this
-    DEFAULT_MAX_TOKENS = 1200000  # 1.2M tokens for history (60% of 2M)
+    DEFAULT_MAX_TOKENS = 600_000  # ~60% of 1M context window
     TOKENS_PER_MESSAGE_ESTIMATE = 50  # Fallback rough estimate
 
     def __init__(
@@ -359,7 +362,9 @@ class HistoryManager:
         current_tokens = self.estimate_tokens(history)
 
         if current_tokens <= target_tokens:
-            return history  # Already within budget
+            return list(history)  # Already within budget; return a copy so the
+            # caller can mutate it without surprising
+            # other callers that share the input list.
 
         self.logger.info("📊 Token trim needed: %d -> %d tokens", current_tokens, target_tokens)
 
@@ -374,7 +379,9 @@ class HistoryManager:
         protected_count = min(self.keep_recent, len(working_history) // 2)
 
         # Pre-compute importance scores and build a min-heap for O(n log n) trimming
-        trim_end = len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        trim_end = (
+            len(working_history) - protected_count if protected_count > 0 else len(working_history)
+        )
         if trim_end > 0:
             # Build heap of (importance, original_index) for trimmable messages
             importance_heap = [
@@ -387,18 +394,16 @@ class HistoryManager:
 
         removed_indices: set[int] = set()
 
-        while running_total > target_tokens:
+        while running_total > target_tokens and importance_heap:
             if len(working_history) - len(removed_indices) <= protected_count + 1:
                 self.logger.warning("Cannot trim further without losing recent context")
                 break
 
-            # Pop lowest importance from heap, skip already-removed indices
-            while importance_heap:
-                importance, remove_idx = heapq.heappop(importance_heap)
-                if remove_idx not in removed_indices:
-                    break
-            else:
-                break  # Heap exhausted
+            importance, remove_idx = heapq.heappop(importance_heap)
+            if remove_idx in removed_indices:
+                # Already removed by an earlier iteration; skip without
+                # double-subtracting from running_total.
+                continue
 
             removed_indices.add(remove_idx)
             running_total -= message_tokens[remove_idx]
@@ -411,10 +416,7 @@ class HistoryManager:
             )
 
         # Build result excluding removed indices
-        working_history = [
-            msg for i, msg in enumerate(working_history)
-            if i not in removed_indices
-        ]
+        working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
 
         final_tokens = running_total
         self.logger.info(
@@ -438,8 +440,11 @@ class HistoryManager:
             "rules": [],
         }
 
+        # Cap the captured name at 50 chars so adversarial input with no
+        # punctuation can't blow up cache size by appending a 10 KB
+        # "name" to facts["names"].
         name_pattern = re.compile(
-            r"(?:ชื่อ|name)\s*(?:ของ)?(?:ฉัน|ผม|my)?\s*(?:คือ|is|เป็น)?\s*[:\s]*([^\s,\.]+)",
+            r"(?:ชื่อ|name)\s*(?:ของ)?(?:ฉัน|ผม|my)?\s*(?:คือ|is|เป็น)?\s*[:\s]*([^\s,\.]{1,50})",
             re.IGNORECASE,
         )
 

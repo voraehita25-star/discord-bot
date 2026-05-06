@@ -1,6 +1,26 @@
 """
-Memory Consolidation Module.
-Summarizes long conversations into compact memory chunks.
+Conversation Summary Archiver.
+
+Archives long-running conversation history into compact summary rows in
+the ``conversation_summaries`` table, with optional opt-in deletion of the
+originals (``CONSOLIDATOR_DELETE_ORIGINALS=1``). The summary itself is
+extractive (key-sentence + topic-keyword) rather than LLM-generated; for
+abstractive summaries see :mod:`cogs.ai_core.memory.summarizer`.
+
+This module is **distinct** from :mod:`cogs.ai_core.memory.consolidator`:
+
+  * ``consolidator.py`` extracts structured *facts* about characters from
+    recent turns and feeds them into ``entity_memory`` to fight
+    hallucinations. It is fact-oriented and runs every N messages.
+  * ``memory_consolidator.py`` (this file) trims the *raw history* itself,
+    rolling old turns into a one-line summary so the chat history table
+    doesn't grow unboundedly. It is storage-oriented and runs every few
+    hours.
+
+Both files used to expose ``MemoryConsolidator``/``memory_consolidator``
+as legacy aliases — those have been removed in favour of the explicit
+:class:`SummaryArchiver` / :data:`summary_archiver` names so callers can
+no longer accidentally grab the wrong subsystem.
 """
 
 from __future__ import annotations
@@ -9,7 +29,6 @@ import asyncio
 import contextlib
 import json
 import logging
-logger = logging.getLogger(__name__)
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -23,6 +42,9 @@ try:
 except ImportError:
     db = None  # type: ignore
     DB_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,15 +81,19 @@ class ConversationSummary:
         return "\n".join(parts)
 
 
-class ConversationSummarizer:
+class SummaryArchiver:
     """
-    Consolidates conversation history into summaries.
+    Archives old conversation history into compact summary rows.
 
     Features:
     - Summarizes old conversations to save context space
     - Preserves key topics and decisions
     - Periodic background consolidation
     - Tiered memory (recent > summary > archived)
+
+    For abstractive (LLM-generated) summaries, see :class:`ConversationSummarizer`
+    in :mod:`.summarizer` — this class only does extractive summarization
+    (first/last user line + keyword topics) so it can run without an API key.
     """
 
     # Configuration
@@ -76,7 +102,7 @@ class ConversationSummarizer:
     MAX_SUMMARY_LENGTH = 500
 
     def __init__(self):
-        self.logger = logging.getLogger("ConversationSummarizer")
+        self.logger = logging.getLogger("SummaryArchiver")
         self._consolidation_task: asyncio.Task | None = None
 
     async def init_schema(self) -> None:
@@ -136,8 +162,13 @@ class ConversationSummarizer:
                 consecutive_errors += 1
                 # Cap exponent to prevent astronomical intermediate values
                 capped_errors = min(consecutive_errors, 10)
-                backoff = min(interval_hours * 3600, 60 * (2 ** capped_errors))
-                self.logger.error("Consolidation error (attempt %d, backoff %.0fs): %s", consecutive_errors, backoff, e)
+                backoff = min(interval_hours * 3600, 60 * (2**capped_errors))
+                self.logger.error(
+                    "Consolidation error (attempt %d, backoff %.0fs): %s",
+                    consecutive_errors,
+                    backoff,
+                    e,
+                )
                 await asyncio.sleep(backoff)
 
     async def consolidate_channel(
@@ -157,7 +188,9 @@ class ConversationSummarizer:
             return None
 
         # Get old messages to consolidate
-        cutoff_time = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
+        cutoff_time = datetime.now(tz=timezone.utc) - timedelta(
+            hours=self.SUMMARY_AGE_THRESHOLD_HOURS
+        )
 
         async with db.get_connection() as conn:
             cursor = await conn.execute(
@@ -213,11 +246,29 @@ class ConversationSummarizer:
         # AND deletion is explicitly enabled (opt-in) — extractive summaries can
         # lose information, so default is to keep originals and just record the summary.
         delete_originals = os.getenv("CONSOLIDATOR_DELETE_ORIGINALS", "0").lower() in (
-            "1", "true", "yes",
+            "1",
+            "true",
+            "yes",
         )
         if summary_id is not None and delete_originals:
             message_ids = [row["id"] for row in rows]
-            await self._delete_consolidated_messages(message_ids)
+            # If delete fails after the summary commit, the summary row
+            # already references content that still lives in ai_history —
+            # not catastrophic, but log loudly so an operator can replay
+            # the cleanup. A crash between save and delete is recoverable
+            # the same way (re-run consolidate_channel will skip already-
+            # summarized rows on next pass).
+            try:
+                await self._delete_consolidated_messages(message_ids)
+            except Exception:
+                self.logger.error(
+                    "❌ Summary %d saved but delete of %d originals failed for "
+                    "channel %d — re-run consolidation to clean up",
+                    summary_id,
+                    len(message_ids),
+                    channel_id,
+                    exc_info=True,
+                )
         elif summary_id is None:
             self.logger.warning(
                 "⚠️ Summary save failed for channel %d — keeping original messages",
@@ -242,11 +293,15 @@ class ConversationSummarizer:
         cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=self.SUMMARY_AGE_THRESHOLD_HOURS)
 
         async with db.get_connection() as conn:
+            # Compare timestamps as raw strings (ISO-8601 sorts lexically)
+            # so SQLite can use the timestamp index directly. Wrapping the
+            # column in datetime() forced a full-table scan even when the
+            # column was indexed.
             cursor = await conn.execute(
                 """
                 SELECT channel_id, COUNT(*) as count
                 FROM ai_history
-                WHERE datetime(timestamp) < datetime(?)
+                WHERE timestamp < ?
                 GROUP BY channel_id
                 HAVING count >= ?
             """,
@@ -281,6 +336,17 @@ class ConversationSummarizer:
             )
             rows = list(await cursor.fetchall())
 
+        def _safe_dt(val: Any) -> datetime | None:
+            # Defensive parse: a malformed timestamp in DB shouldn't take
+            # down the whole get_channel_summaries call. Mirror the
+            # _parse_ts pattern used elsewhere in this module.
+            if not val:
+                return None
+            try:
+                return datetime.fromisoformat(val)
+            except (TypeError, ValueError):
+                return None
+
         summaries = []
         for row in rows:
             summary = ConversationSummary(
@@ -289,10 +355,10 @@ class ConversationSummarizer:
                 summary=row["summary"],
                 key_topics=self._load_json_list(row["key_topics"]),
                 key_decisions=self._load_json_list(row["key_decisions"]),
-                start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
-                end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+                start_time=_safe_dt(row["start_time"]),
+                end_time=_safe_dt(row["end_time"]),
                 message_count=row["message_count"],
-                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+                created_at=_safe_dt(row["created_at"]),
             )
             summaries.append(summary)
 
@@ -448,8 +514,12 @@ class ConversationSummarizer:
                     summary.channel_id,
                     summary.user_id,
                     summary.summary,
-                    json.dumps(summary.key_topics, ensure_ascii=False) if summary.key_topics else "[]",
-                    json.dumps(summary.key_decisions, ensure_ascii=False) if summary.key_decisions else "[]",
+                    json.dumps(summary.key_topics, ensure_ascii=False)
+                    if summary.key_topics
+                    else "[]",
+                    json.dumps(summary.key_decisions, ensure_ascii=False)
+                    if summary.key_decisions
+                    else "[]",
                     summary.start_time.isoformat() if summary.start_time else None,
                     summary.end_time.isoformat() if summary.end_time else None,
                     summary.message_count,
@@ -463,18 +533,26 @@ class ConversationSummarizer:
         if not DB_AVAILABLE or db is None or not message_ids:
             return
 
-        # Batch into chunks of 900 to avoid SQLite variable limit (default 999)
+        # Batch into chunks of 900 to avoid SQLite variable limit (default 999).
+        # Wrap the whole thing in a single transaction so a partial failure
+        # rolls back instead of leaving the table half-deleted while the
+        # corresponding summary row is already committed.
         batch_size = 900
         async with db.get_write_connection() as conn:
-            for i in range(0, len(message_ids), batch_size):
-                batch = message_ids[i : i + batch_size]
-                placeholders = ",".join("?" * len(batch))
-                await conn.execute(f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch)
+            try:
+                for i in range(0, len(message_ids), batch_size):
+                    batch = message_ids[i : i + batch_size]
+                    placeholders = ",".join("?" * len(batch))
+                    await conn.execute(
+                        f"DELETE FROM ai_history WHERE id IN ({placeholders})",  # nosec B608  # placeholders is '?,?,...'; values via batch
+                        batch,
+                    )
+                await conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                raise
 
 
 # Global instance
-conversation_summarizer = ConversationSummarizer()
-
-# Backward-compatible aliases
-MemoryConsolidator = ConversationSummarizer
-memory_consolidator = conversation_summarizer
+summary_archiver = SummaryArchiver()

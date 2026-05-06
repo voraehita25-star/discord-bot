@@ -446,7 +446,9 @@ class TestAdaptiveMultipliers:
         # HALF_OPEN should be reduced
         assert RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"] < 1.0
         # OPEN should be minimal
-        assert RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        assert (
+            RateLimiter.ADAPTIVE_MULTIPLIERS["OPEN"] < RateLimiter.ADAPTIVE_MULTIPLIERS["HALF_OPEN"]
+        )
 
 
 class TestRateLimitBucketAdaptive:
@@ -476,6 +478,7 @@ class TestRateLimitBucketAdaptive:
 class TestGlobalRateLimiter:
     """Tests for global rate limiter instance."""
 
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
@@ -483,6 +486,7 @@ if __name__ == "__main__":
 # ======================================================================
 # Merged from test_rate_limiter_extended.py
 # ======================================================================
+
 
 class TestRateLimitType:
     """Tests for RateLimitType enum."""
@@ -541,7 +545,7 @@ class TestRateLimitConfig:
             limit_type=RateLimitType.GUILD,
             cooldown_message="Slow down!",
             silent=True,
-            adaptive=True
+            adaptive=True,
         )
 
         assert config.requests == 10
@@ -559,12 +563,7 @@ class TestRateLimitBucket:
         """Test creating bucket."""
         from utils.reliability.rate_limiter import RateLimitBucket
 
-        bucket = RateLimitBucket(
-            tokens=5.0,
-            last_update=time.time(),
-            window=60.0,
-            max_tokens=5
-        )
+        bucket = RateLimitBucket(tokens=5.0, last_update=time.time(), window=60.0, max_tokens=5)
 
         assert bucket.tokens == 5.0
         assert bucket.max_tokens == 5
@@ -573,12 +572,7 @@ class TestRateLimitBucket:
         """Test consuming when tokens available."""
         from utils.reliability.rate_limiter import RateLimitBucket
 
-        bucket = RateLimitBucket(
-            tokens=5.0,
-            last_update=time.time(),
-            window=60.0,
-            max_tokens=5
-        )
+        bucket = RateLimitBucket(tokens=5.0, last_update=time.time(), window=60.0, max_tokens=5)
 
         success, retry_after = bucket.consume()
 
@@ -590,12 +584,7 @@ class TestRateLimitBucket:
         """Test consuming when no tokens."""
         from utils.reliability.rate_limiter import RateLimitBucket
 
-        bucket = RateLimitBucket(
-            tokens=0.0,
-            last_update=time.time(),
-            window=60.0,
-            max_tokens=5
-        )
+        bucket = RateLimitBucket(tokens=0.0, last_update=time.time(), window=60.0, max_tokens=5)
 
         success, retry_after = bucket.consume()
 
@@ -610,7 +599,7 @@ class TestRateLimitBucket:
             tokens=0.0,
             last_update=time.time() - 60,  # 60 seconds ago
             window=60.0,
-            max_tokens=5
+            max_tokens=5,
         )
 
         success, _ = bucket.consume()
@@ -634,14 +623,14 @@ class TestRateLimiterInit:
         from utils.reliability.rate_limiter import RateLimiter
 
         limiter = RateLimiter()
-        assert hasattr(limiter, '_buckets')
+        assert hasattr(limiter, "_buckets")
 
     def test_limiter_has_stats(self):
         """Test limiter initializes stats."""
         from utils.reliability.rate_limiter import RateLimiter
 
         limiter = RateLimiter()
-        assert hasattr(limiter, '_stats')
+        assert hasattr(limiter, "_stats")
 
 
 class TestRateLimiterCheckRateLimit:
@@ -716,7 +705,7 @@ class TestRateLimiterCleanup:
 
         limiter = RateLimiter()
 
-        if hasattr(limiter, 'cleanup_old_buckets'):
+        if hasattr(limiter, "cleanup_old_buckets"):
             await limiter.cleanup_old_buckets()
             # Should complete without error
 
@@ -726,5 +715,5 @@ class TestRateLimiterCleanup:
 
         limiter = RateLimiter()
 
-        if hasattr(limiter, '_cleanup_interval'):
+        if hasattr(limiter, "_cleanup_interval"):
             assert limiter._cleanup_interval > 0

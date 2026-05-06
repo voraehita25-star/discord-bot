@@ -3,11 +3,9 @@ Tests for utils.localization module.
 """
 
 
-
-
-
 class TestLocalizationModule:
     """Tests for localization module."""
+
 
 class TestLanguageEnum:
     """Tests for Language enum."""
@@ -252,6 +250,7 @@ class TestAllMessages:
 # ======================================================================
 # Merged from test_localization_module.py
 # ======================================================================
+
 
 class TestLanguageEnum:
     """Tests for Language enum."""

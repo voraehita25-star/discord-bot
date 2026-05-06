@@ -10,6 +10,12 @@ pub struct VectorIndex {
     id_to_idx: HashMap<String, usize>,
     /// Index to ID mapping
     idx_to_id: Vec<String>,
+    /// Indices freed by `remove()` that are available for reuse on the next
+    /// `add()`. Without this, the previous implementation marked deleted
+    /// slots empty but never reclaimed them — `idx_to_id` grew monotonically
+    /// and a long-running engine that added/removed many entries leaked memory
+    /// proportional to total churn.
+    free_slots: Vec<usize>,
 }
 
 impl VectorIndex {
@@ -18,6 +24,7 @@ impl VectorIndex {
             keyword_index: HashMap::new(),
             id_to_idx: HashMap::new(),
             idx_to_id: Vec::new(),
+            free_slots: Vec::new(),
         }
     }
 
@@ -42,8 +49,17 @@ impl VectorIndex {
             return existing_idx;
         }
 
-        let idx = self.idx_to_id.len();
-        self.idx_to_id.push(id.to_string());
+        // Reuse a previously-removed slot when one is available; only fall
+        // back to growing `idx_to_id` when there are no free slots. This
+        // keeps memory proportional to live entries instead of total churn.
+        let idx = if let Some(slot) = self.free_slots.pop() {
+            self.idx_to_id[slot] = id.to_string();
+            slot
+        } else {
+            let idx = self.idx_to_id.len();
+            self.idx_to_id.push(id.to_string());
+            idx
+        };
         self.id_to_idx.insert(id.to_string(), idx);
 
         // Index keywords (simple tokenization)
@@ -63,18 +79,21 @@ impl VectorIndex {
     /// Remove an entry from the index
     pub fn remove(&mut self, id: &str) -> Option<usize> {
         let idx = self.id_to_idx.remove(id)?;
-        
+
         // Mark as removed in idx_to_id and clean keyword references
         if idx < self.idx_to_id.len() {
             self.idx_to_id[idx] = String::new();
+            // Make the slot available for the next add() so we don't leak
+            // unbounded growth on add/remove churn.
+            self.free_slots.push(idx);
         }
-        
+
         // Remove stale keyword references for this index
         self.keyword_index.retain(|_, indices| {
             indices.retain(|&i| i != idx);
             !indices.is_empty()
         });
-        
+
         Some(idx)
     }
 
@@ -123,6 +142,7 @@ impl VectorIndex {
         self.keyword_index.clear();
         self.id_to_idx.clear();
         self.idx_to_id.clear();
+        self.free_slots.clear();
     }
 }
 

@@ -11,8 +11,131 @@ import { WebSocketClient } from './chat/ws-client.js';
 import { renderMessagesHtml, VIRT_WINDOW_SIZE } from './chat/message-template.js';
 import { ConversationList } from './chat/conversation-list.js';
 import { ImageAttachManager } from './chat/image-attach.js';
+import { DocumentAttachManager } from './chat/document-attach.js';
 import { ContextWindowIndicator } from './chat/context-window.js';
 import { ConversationModals } from './chat/conversation-modals.js';
+function chatFileIconFor(kind, name) {
+    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    if (ext === 'pdf')
+        return '📕';
+    if (ext === 'docx')
+        return '📘';
+    if (kind === 'text') {
+        if (['json', 'yaml', 'yml', 'toml'].includes(ext))
+            return '🧩';
+        if (['md', 'markdown'].includes(ext))
+            return '📝';
+        if (['csv', 'tsv', 'xml'].includes(ext))
+            return '📊';
+    }
+    return '📄';
+}
+/** Conservative PDF reflow: merges only obvious per-glyph orphan lines
+ * (1-4 Thai / 1-3 Latin chars sandwiched between longer lines). Mirrors
+ * the Python backend's `_rejoin_pdf_lines` which now runs alongside
+ * `extraction_mode="layout"` — the combination preserves real line
+ * breaks from the PDF while cleaning up orphan glyphs.
+ *
+ * Intentionally NOT aggressive: the previous implementation merged
+ * every prose line into long paragraphs and stripped all spaces between
+ * Thai characters, which destroyed the layout-mode output the backend
+ * now produces. If a user's file really has legacy-mangled data, they
+ * should delete the document memory entry and re-upload — the fresh
+ * extraction with layout mode will produce correct output.
+ */
+function reflowPdfText(text) {
+    if (!text)
+        return text;
+    const CONTINUOUS = '฀-๿຀-໿ក-៿぀-ヿㇰ-ㇿ一-鿿㐀-䶿豈-﫿가-힯';
+    const reContinuous = new RegExp('[' + CONTINUOUS + ']');
+    const reHeading = /^#{1,6}\s/;
+    const reList = /^(?:[-*•◦▪■]\s|\d+[.)]\s|>\s?)/;
+    const reSeparator = /^[\s\-⎯—━═*._=·‧…]+$/;
+    const reHasSepChar = /[\-⎯—━═_=]/;
+    const isStructural = (line) => {
+        const s = line.trim();
+        if (!s)
+            return false;
+        if (reHeading.test(s))
+            return true;
+        if (reList.test(s))
+            return true;
+        if (reSeparator.test(s) && reHasSepChar.test(s))
+            return true;
+        return false;
+    };
+    const isShortOrphan = (stripped, resultSoFar, allLines, idx) => {
+        if (isStructural(stripped))
+            return false;
+        const first = stripped[0];
+        const maxLen = reContinuous.test(first) ? 4 : 3;
+        if (stripped.length > maxLen)
+            return false;
+        if (!resultSoFar.length || !resultSoFar[resultSoFar.length - 1].trim())
+            return false;
+        const prevStripped = resultSoFar[resultSoFar.length - 1].trim();
+        if (isStructural(prevStripped))
+            return false;
+        if (prevStripped.length <= maxLen)
+            return false;
+        if (idx + 1 >= allLines.length)
+            return true;
+        const nextStripped = allLines[idx + 1].trim();
+        if (!nextStripped)
+            return true;
+        if (isStructural(nextStripped))
+            return false;
+        return nextStripped.length > maxLen;
+    };
+    const lines = text.split('\n');
+    const result = [];
+    for (let i = 0; i < lines.length; i++) {
+        const current = lines[i];
+        const stripped = current.trim();
+        if (!stripped) {
+            result.push('');
+            continue;
+        }
+        if (isShortOrphan(stripped, result, lines, i)) {
+            const prev = result[result.length - 1];
+            const last = prev[prev.length - 1] || '';
+            const first = stripped[0];
+            let sep = '';
+            if (!(reContinuous.test(last) && reContinuous.test(first))) {
+                sep = (prev && !prev.endsWith(' ') && !prev.endsWith('	')) ? ' ' : '';
+            }
+            result[result.length - 1] = prev + sep + stripped;
+        }
+        else {
+            result.push(current);
+        }
+    }
+    let out = result.join('\n');
+    out = out.replace(/\n{3,}/g, '\n\n');
+    return out.trim();
+}
+function formatChatFileDate(iso) {
+    if (!iso)
+        return '';
+    try {
+        // SQLite naive timestamps are UTC — append Z so JS doesn't misread
+        // them as local time (would render hours off in non-UTC zones).
+        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
+        const normalized = hasTzInfo ? iso : iso.replace(' ', 'T') + 'Z';
+        const d = new Date(normalized);
+        if (Number.isNaN(d.getTime()))
+            return iso;
+        // Short absolute format — works in any locale without being verbose.
+        // e.g. "Apr 24, 15:32". Users mainly care about "was this today".
+        return d.toLocaleString(undefined, {
+            month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+        });
+    }
+    catch {
+        return iso;
+    }
+}
 // ============================================================================
 // Memory Manager
 // ============================================================================
@@ -76,7 +199,11 @@ export class MemoryManager {
     }
     formatTime(isoString) {
         try {
-            return new Date(isoString).toLocaleDateString('en-US', {
+            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(isoString);
+            const normalized = hasTzInfo
+                ? isoString
+                : isoString.replace(' ', 'T') + 'Z';
+            return new Date(normalized).toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',
@@ -85,7 +212,10 @@ export class MemoryManager {
             });
         }
         catch {
-            return isoString;
+            // Caller (renderMemories) interpolates this directly into
+            // innerHTML, so a server-supplied created_at containing HTML must
+            // not flow through unescaped on the parse-failure path.
+            return escapeHtml(isoString);
         }
     }
     showModal() {
@@ -169,11 +299,27 @@ export class ChatManager {
             onDisconnect: () => {
                 // Reset streaming state to prevent chat input from being permanently locked.
                 if (this.isStreaming) {
+                    const wasEditStreaming = this.isEditStreaming;
                     this.isStreaming = false;
                     this.isEditStreaming = false;
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
+                    if (wasEditStreaming) {
+                        // /edit stream uses an in-place .edit-streaming-text on an
+                        // existing message rather than #streaming-message, so the
+                        // generic stuckMsg.remove() below misses it. Restore the
+                        // affected message to its normal display state.
+                        document.querySelectorAll('.chat-message.streaming').forEach(el => {
+                            el.classList.remove('streaming');
+                            const actions = el.querySelector('.message-actions');
+                            if (actions)
+                                actions.style.display = '';
+                        });
+                        // Re-render to drop the typing indicator + restore original
+                        // content from `this.messages`.
+                        this.renderMessages();
+                    }
                     const stuckMsg = document.getElementById('streaming-message');
                     if (stuckMsg)
                         stuckMsg.remove();
@@ -213,10 +359,22 @@ export class ChatManager {
         this.chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
         // Virtualization state — thresholds themselves live in ./chat/message-template.ts.
         this.visibleMessageCount = 0;
+        // Absolute index in `messages` of the first DOM element rendered. With
+        // virtualization (>150 messages) only the tail window is in the DOM, so
+        // querySelectorAll('.chat-message')[absoluteIdx] is wrong — callers must
+        // subtract this offset. Updated on every renderMessages().
+        this.visibleStartIdx = 0;
         // Image attach manager — file picker, drag-drop, paste. Thin forwarders
         // keep the public method surface stable for callers (renderMessages uses
         // `this.attachedImages` inside template strings; sendMessage snapshots it).
         this.imageAttach = new ImageAttachManager();
+        this.docAttach = new DocumentAttachManager();
+        // ========================================================================
+        // Chat File Editor — filename + extracted_text edit view
+        // ========================================================================
+        /** Currently-editing document id. Stored on the instance so the
+         * `document_memory_content` WS frame knows which row to hydrate. */
+        this.editingDocId = null;
     }
     enrichConversation(conversation) {
         const preset = this.presets[conversation.role_preset] || {};
@@ -275,18 +433,19 @@ export class ChatManager {
         this.wsClient.connect();
     }
     disconnect() { this.wsClient.disconnect(); }
-    send(data) { this.wsClient.send(data); }
+    send(data) { return this.wsClient.send(data); }
     handleMessage(data) {
         switch (data.type) {
             case 'connected':
                 this.presets = data.presets || {};
-                if (data.requires_auth) {
-                    if (!this.wsClient.token) {
-                        errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
-                        showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
-                        break;
-                    }
-                    this.send({ type: 'auth', token: this.wsClient.token });
+                // ws-client already sends `{type:'auth'}` in onopen — sending
+                // it a second time on the server's `connected` event was
+                // duplicative and could be interpreted as a protocol error.
+                // Just verify a token exists when the server requires auth.
+                if (data.requires_auth && !this.wsClient.token) {
+                    errorLogger.log('WEBSOCKET_AUTH_MISSING', 'Server requires dashboard auth but no token was loaded');
+                    showToast('AI chat auth token is missing. Check DASHBOARD_WS_TOKEN.', { type: 'error' });
+                    break;
                 }
                 // Update available AI providers from server
                 if (data.available_providers) {
@@ -349,6 +508,12 @@ export class ChatManager {
                     this.restoreContextWindowIndicator(this.currentConversation.id);
                 }
                 this.renderConversationList();
+                // Refresh the 📎 badge count for the newly-opened conversation.
+                // A fresh list request is cheap (metadata-only SQL + WS frame)
+                // and keeps the badge accurate without adding payload to the
+                // conversation_loaded frame itself.
+                this.updateChatFilesBadge(0);
+                this.refreshChatFilesBadge();
                 break;
             case 'stream_start':
                 this.isStreaming = true;
@@ -426,6 +591,20 @@ export class ChatManager {
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
                     showToast('AI edit complete ✏️', { type: 'success' });
+                    break;
+                }
+                if (this.isEditStreaming) {
+                    // Server sent stream_end without is_edit while we were in
+                    // edit mode (protocol mismatch / failover). Don't fall
+                    // through to finalizeStreamingMessage — that would push a
+                    // phantom assistant bubble. Clear edit state, restore
+                    // original content, and surface the failure.
+                    this.isEditStreaming = false;
+                    this.editTargetMessageId = null;
+                    this.editStreamContent = '';
+                    this.setInputEnabled(true);
+                    this.renderMessages();
+                    showToast('AI edit was interrupted', { type: 'error' });
                     break;
                 }
                 this.finalizeStreamingMessage(data.full_response);
@@ -639,6 +818,61 @@ export class ChatManager {
             case 'profile_saved':
                 showToast('Profile saved! AI will remember you.', { type: 'success' });
                 break;
+            case 'document_saved':
+                // Server confirmed a document's text was extracted + persisted
+                // to the document memory store. Show a short toast summarising
+                // what was saved so the user knows the upload will persist
+                // across restarts (scoped to this conversation only).
+                {
+                    const docs = data.documents || [];
+                    if (docs.length === 1) {
+                        const d = docs[0];
+                        showToast(`📎 Saved "${d.filename}" to this conversation (${d.char_count.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
+                    }
+                    else if (docs.length > 1) {
+                        const totalChars = docs.reduce((s, d) => s + d.char_count, 0);
+                        showToast(`📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`, { type: 'success', duration: 3500 });
+                    }
+                    // Refresh the files badge count — pulls the fresh list
+                    // from the server rather than optimistically incrementing
+                    // so the badge stays in sync even on reconnect races.
+                    this.refreshChatFilesBadge();
+                }
+                break;
+            case 'conversation_documents':
+                // Populate the 📎 Files modal with the conversation-scoped
+                // document list. Also updates the chat-header badge so the
+                // count stays accurate.
+                this.renderChatFilesModal(data.conversation_id, data.documents || []);
+                break;
+            case 'document_memory_deleted':
+                // Server confirmed a delete. Drop the row locally without
+                // a full refetch — faster than round-tripping list again.
+                this.removeChatFileRow(data.id);
+                this.refreshChatFilesBadge();
+                showToast('🗑️ Deleted', { type: 'info', duration: 1800 });
+                break;
+            case 'document_memory_content':
+                // Full content arrived for the document currently being
+                // edited — populate the editor form.
+                this.hydrateChatFileEditor(data.document);
+                break;
+            case 'document_memory_updated':
+                // Server ack for a save. Close editor, refetch the list
+                // (so filename / char-count in the list row reflect the
+                // new values), and nudge with a toast.
+                this.closeChatFileEditor();
+                if (!data.noop) {
+                    showToast('✓ Saved', { type: 'success', duration: 1800 });
+                    // Refresh the list + badge to pick up new metadata.
+                    if (this.currentConversation) {
+                        this.send({
+                            type: 'list_conversation_documents',
+                            conversation_id: this.currentConversation.id,
+                        });
+                    }
+                }
+                break;
             // API Failover handlers
             case 'api_endpoints':
                 window.dispatchEvent(new CustomEvent('api-failover-status', { detail: data }));
@@ -785,18 +1019,34 @@ export class ChatManager {
     }
     sendMessage() {
         const input = document.getElementById('chat-input');
-        const content = input?.value?.trim();
-        if (!content || this.isStreaming)
+        const rawContent = input?.value?.trim() ?? '';
+        // A message is sendable if it has text OR attached images OR attached
+        // docs. Sending attachments with no text is a legitimate pattern
+        // ("here, look at this PDF") — the old check required text too, which
+        // blocked that flow entirely.
+        const hasAttachments = this.attachedImages.length > 0 || this.attachedDocs.length > 0;
+        if ((!rawContent && !hasAttachments) || this.isStreaming)
             return;
         if (!this.currentConversation) {
             showToast('Please start a conversation first', { type: 'warning' });
             return;
         }
+        // Set the streaming gate immediately so a second send (e.g. Enter + Send-button
+        // click in the same frame, or a fast double-tap) cannot slip through before
+        // the backend's `stream_start` frame arrives and sets it. The disconnect
+        // handler resets isStreaming on WS errors, so this won't strand the UI.
+        this.isStreaming = true;
+        // When only attachments are sent, substitute a short default prompt
+        // so the backend (which treats empty content as an error) has
+        // something to anchor the turn on. Claude reads the attached files
+        // anyway, so "please take a look" works as a neutral nudge.
+        const content = rawContent || '[attached file(s) for you to review]';
         // Detect /edit command: AI rewrites its last message based on user instruction
         if (content.startsWith('/edit ')) {
             const instruction = content.substring(6).trim();
             if (!instruction) {
                 showToast('Usage: /edit <instruction>', { type: 'warning' });
+                this.isStreaming = false; // release gate set above
                 return;
             }
             // Find last assistant message with a DB ID
@@ -809,6 +1059,7 @@ export class ChatManager {
             }
             if (!targetMsg || !targetMsg.id) {
                 showToast('No AI message to edit', { type: 'warning' });
+                this.isStreaming = false; // release gate set above
                 return;
             }
             if (input) {
@@ -817,7 +1068,7 @@ export class ChatManager {
             }
             const thinkingToggle = document.getElementById('thinking-toggle');
             const userName = settings.userName || 'User';
-            this.send({
+            const editSendOk = this.send({
                 type: 'ai_edit_message',
                 conversation_id: this.currentConversation.id,
                 target_message_id: targetMsg.id,
@@ -827,13 +1078,22 @@ export class ChatManager {
                 user_name: userName,
                 ai_provider: this.aiProvider,
             });
+            if (!editSendOk) {
+                // Drop the streaming gate so the user can retry once the WS
+                // reconnects — without this rollback, the input stays locked.
+                this.isStreaming = false;
+            }
             return;
         }
         // Get history BEFORE adding new message (backend will add it)
-        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
+        // but keep `created_at` so the backend can prefix each message with its
+        // send timestamp — without it the AI can't tell hours-long gaps from
+        // back-to-back replies.
         const historyToSend = this.messages.slice(-20).map(m => ({
             role: m.role,
             content: m.content,
+            created_at: m.created_at,
         }));
         // Add to local messages for display (include images)
         this.messages.push({
@@ -857,7 +1117,10 @@ export class ChatManager {
         const searchToggle = document.getElementById('chat-use-search');
         const unrestrictedToggle = document.getElementById('chat-unrestricted');
         const userName = settings.userName || 'User';
-        this.send({
+        // Snapshot both attachment types before the send so clear() can't
+        // race with in-flight FileReaders still resolving their payload.
+        const docs = this.attachedDocs;
+        const sendOk = this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
             content,
@@ -868,11 +1131,23 @@ export class ChatManager {
             use_search: searchToggle?.checked ?? true,
             unrestricted_mode: unrestrictedToggle?.checked || false,
             images: this.attachedImages,
+            documents: docs.length > 0 ? docs : undefined,
             user_name: userName,
             ai_provider: this.aiProvider,
         });
-        // Clear attached images after sending
+        if (!sendOk) {
+            // Roll back the streaming gate so the user isn't locked out
+            // of sending further messages until the WS reconnects, and
+            // drop the user-message that was already pushed locally so
+            // it doesn't linger in the rendered list as a phantom turn.
+            this.isStreaming = false;
+            this.messages.pop();
+            this.renderMessages();
+            return;
+        }
+        // Clear attached images + documents after sending
         this.imageAttach.clear();
+        this.docAttach.clear();
     }
     appendStreamingMessage(mode = '') {
         const container = document.getElementById('chat-messages');
@@ -885,7 +1160,7 @@ export class ChatManager {
         const safeAi = safeAvatarUrl(settings.aiAvatar);
         const avatarHtml = safeAi
             ? `<img src="${safeAi}" alt="ai" class="user-avatar-img">`
-            : (this.currentConversation?.role_emoji || '\uD83E\uDD16');
+            : escapeHtml(this.currentConversation?.role_emoji || '\uD83E\uDD16');
         msgDiv.innerHTML = `
             <div class="message-avatar">${avatarHtml}</div>
             <div class="message-wrapper">
@@ -950,6 +1225,25 @@ export class ChatManager {
         }
     }
     finalizeStreamingMessage(fullResponse) {
+        // Push first so msgIdx is the actual post-trim index. The previous
+        // version captured `this.messages.length` BEFORE push, which was
+        // correct for indices < MAX_LOCAL_MESSAGES but went one past the end
+        // once trimLocalMessages started shifting the window.
+        const newMessage = {
+            role: 'assistant',
+            content: fullResponse,
+            created_at: new Date().toISOString()
+        };
+        if (this.currentThinking) {
+            newMessage.thinking = this.currentThinking;
+            this.currentThinking = ''; // Reset for next message
+        }
+        if (this.currentMode) {
+            newMessage.mode = this.currentMode;
+            this.currentMode = ''; // Reset for next message
+        }
+        this.messages.push(newMessage);
+        this.trimLocalMessages();
         const streamingMsg = document.getElementById('streaming-message');
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
@@ -959,16 +1253,19 @@ export class ChatManager {
                 content.innerHTML = this.formatMessage(this.stripThinkTags(fullResponse));
                 void this.highlightCodeBlocks(content);
             }
-            // Add action buttons (copy, edit, delete) at the bottom
+            // Add action buttons (copy, edit, delete) at the bottom. Resolve
+            // the index at click time via indexOf(newMessage) so subsequent
+            // trims/edits/deletes that shift the array don't desync the
+            // closures.
             const wrapper = streamingMsg.querySelector('.message-wrapper');
             if (wrapper && !wrapper.querySelector('.message-actions')) {
                 const actionsDiv = document.createElement('div');
                 actionsDiv.className = 'message-actions';
-                const msgIdx = this.messages.length; // Will be pushed below
+                const currentIdx = this.messages.indexOf(newMessage);
                 actionsDiv.innerHTML = `
                     <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">\uD83D\uDCCB Copy</button>
-                    <button class="edit-message-btn" data-msg-idx="${msgIdx}" title="Edit">\u270F\uFE0F Edit</button>
-                    <button class="delete-message-btn" data-msg-idx="${msgIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
+                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">\u270F\uFE0F Edit</button>
+                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
                 `;
                 wrapper.appendChild(actionsDiv);
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
@@ -987,31 +1284,20 @@ export class ChatManager {
                     }
                 });
                 actionsDiv.querySelector('.edit-message-btn')?.addEventListener('click', () => {
-                    this.startEditMessage(msgIdx);
+                    const idx = this.messages.indexOf(newMessage);
+                    if (idx >= 0)
+                        this.startEditMessage(idx);
                 });
                 actionsDiv.querySelector('.delete-message-btn')?.addEventListener('click', async () => {
                     const confirmed = await showConfirmDialog('Delete this message?');
-                    if (confirmed)
-                        this.deleteMessage(msgIdx);
+                    if (!confirmed)
+                        return;
+                    const idx = this.messages.indexOf(newMessage);
+                    if (idx >= 0)
+                        this.deleteMessage(idx);
                 });
             }
         }
-        // Store message with thinking and mode if available
-        const newMessage = {
-            role: 'assistant',
-            content: fullResponse,
-            created_at: new Date().toISOString()
-        };
-        if (this.currentThinking) {
-            newMessage.thinking = this.currentThinking;
-            this.currentThinking = ''; // Reset for next message
-        }
-        if (this.currentMode) {
-            newMessage.mode = this.currentMode;
-            this.currentMode = ''; // Reset for next message
-        }
-        this.messages.push(newMessage);
-        this.trimLocalMessages();
         this.scrollToBottom();
     }
     trimLocalMessages() {
@@ -1031,7 +1317,9 @@ export class ChatManager {
         if (!container)
             return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl)
             return;
         const contentEl = msgEl.querySelector('.message-content');
@@ -1113,6 +1401,7 @@ export class ChatManager {
         // Propagate the clamped window size back to ChatManager so subsequent
         // "show earlier" clicks grow from the correct baseline.
         this.visibleMessageCount = result.visibleMessageCount;
+        this.visibleStartIdx = result.startIdx;
         container.innerHTML = result.html;
         if (this.messages.length === 0)
             return; // no events to bind on the welcome card
@@ -1141,9 +1430,15 @@ export class ChatManager {
             img.addEventListener('click', () => {
                 const src = img.src;
                 if (src) {
-                    // Open image in new window safely (no document.write XSS)
-                    const newWindow = window.open('', '_blank');
+                    // Open image in new window safely (no document.write XSS).
+                    // Use noopener,noreferrer + an explicit opener=null so the
+                    // popped window can't reach back into ours via window.opener.
+                    const newWindow = window.open('', '_blank', 'noopener,noreferrer');
                     if (newWindow) {
+                        try {
+                            newWindow.opener = null;
+                        }
+                        catch { /* cross-origin guard */ }
                         const doc = newWindow.document;
                         doc.title = 'Image Preview';
                         const style = doc.createElement('style');
@@ -1238,8 +1533,18 @@ export class ChatManager {
                 const msgId = el.dataset.msgId;
                 if (!msgId)
                     return;
+                const messageId = parseInt(msgId, 10);
+                if (!Number.isFinite(messageId) || messageId <= 0)
+                    return;
                 const nextPinned = el.dataset.pinned !== '1';
-                this.send({ type: 'pin_message', message_id: parseInt(msgId), pinned: nextPinned });
+                // Send first; only flip locally if the WS is open. send()
+                // shows a toast on disconnected — without this guard the
+                // local state would drift from the server's view.
+                if (!this.connected) {
+                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                    return;
+                }
+                this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
                 // Optimistic local update — server confirmation will re-render.
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg)
@@ -1254,8 +1559,15 @@ export class ChatManager {
                 const msgId = el.dataset.msgId;
                 if (!msgId)
                     return;
+                const messageId = parseInt(msgId, 10);
+                if (!Number.isFinite(messageId) || messageId <= 0)
+                    return;
                 const nextLiked = el.dataset.liked !== '1';
-                this.send({ type: 'like_message', message_id: parseInt(msgId), liked: nextLiked });
+                if (!this.connected) {
+                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                    return;
+                }
+                this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg)
                     targetMsg.liked = nextLiked;
@@ -1399,12 +1711,17 @@ export class ChatManager {
     stepChatSearch(direction) { this.chatSearch.step(direction); }
     setupChatSearchHandlers() { this.chatSearch.setup(); }
     setupScrollListener() {
-        // Piggy-back: also bind the chat search handlers once, since both are
-        // wired up after the chat DOM is available.
-        this.setupChatSearchHandlers();
         const container = document.getElementById('chat-messages');
         if (!container)
             return;
+        // Guard: setupScrollListener() is called from both init() and renderMessages().
+        // Without this flag the scroll listener stacks N times after N renders, turning
+        // each scroll into N callbacks and causing FAB flicker / UI jank on long chats.
+        if (container.dataset.scrollBound === '1')
+            return;
+        container.dataset.scrollBound = '1';
+        // setupChatSearchHandlers() also lives here so it binds once on the same gate.
+        this.setupChatSearchHandlers();
         const FAB_THRESHOLD = 200; // px from bottom to show FAB
         const AUTO_SCROLL_THRESHOLD = 150; // px from bottom to keep auto-scroll
         container.addEventListener('scroll', () => {
@@ -1420,22 +1737,31 @@ export class ChatManager {
             }
             this.updateScrollFab(shouldShow);
         });
-        // Click FAB → smooth scroll to bottom
+        // Click FAB → smooth scroll to bottom. Mark flag BEFORE addEventListener
+        // so a re-entrant call cannot slip through between check and bind.
         const fab = document.getElementById('scroll-to-bottom-fab');
         if (fab && !fab.dataset.fabBound) {
+            fab.dataset.fabBound = '1';
             fab.addEventListener('click', () => {
                 container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
                 this.newMessagesWhileScrolledUp = 0;
                 this.updateScrollFab(false);
             });
-            fab.dataset.fabBound = '1';
         }
     }
     formatTime(dateStr) {
         try {
-            // JavaScript's Date constructor treats strings without Z suffix as local time,
-            // which is the desired behavior for our stored timestamps
-            const date = new Date(dateStr);
+            // SQLite's CURRENT_TIMESTAMP stores UTC as a naive string
+            // (e.g. "2026-04-26 11:16:08"). JS's Date constructor would parse
+            // that as local time, which is wrong — a message sent at 18:16
+            // Bangkok would render as 11:16. Append "Z" for naive strings so
+            // they're parsed as UTC, then toLocaleTimeString below converts
+            // to the user's local timezone.
+            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(dateStr);
+            const normalized = hasTzInfo
+                ? dateStr
+                : dateStr.replace(' ', 'T') + 'Z';
+            const date = new Date(normalized);
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
             const timeStr = date.toLocaleTimeString('th-TH', {
@@ -1466,10 +1792,264 @@ export class ChatManager {
         }
     }
     get attachedImages() { return this.imageAttach.get(); }
+    get attachedDocs() { return this.docAttach.get(); }
     attachImage(file) { this.imageAttach.attach(file); }
     removeImage(index) { this.imageAttach.remove(index); }
     renderAttachedImages() { this.imageAttach.renderPreview(); }
-    setupImageUpload() { this.imageAttach.setup(); }
+    /** Bind the shared file picker + drop zone. Document manager is passed
+     * to the image manager so non-image files (PDF, text, code) are routed
+     * to it automatically rather than rejected. */
+    setupImageUpload() { this.imageAttach.setup(this.docAttach); }
+    // ========================================================================
+    // Chat Files Modal — per-conversation document list (📎 button)
+    // ========================================================================
+    /** Open the "Attached Files" modal for the active conversation and
+     * request a fresh list from the server. */
+    openChatFilesModal() {
+        if (!this.currentConversation) {
+            showToast('Open a conversation first', { type: 'warning' });
+            return;
+        }
+        const modal = document.getElementById('chat-files-modal');
+        const subtitle = document.getElementById('chat-files-subtitle');
+        const list = document.getElementById('chat-files-list');
+        const empty = document.getElementById('chat-files-empty');
+        if (!modal)
+            return;
+        if (subtitle)
+            subtitle.textContent = 'Loading…';
+        if (list)
+            list.innerHTML = '';
+        if (empty)
+            empty.classList.add('hidden');
+        modal.classList.add('active');
+        this.send({
+            type: 'list_conversation_documents',
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    closeChatFilesModal() {
+        const modal = document.getElementById('chat-files-modal');
+        modal?.classList.remove('active');
+    }
+    /** Handler for the `conversation_documents` WS frame. Renders the list
+     * or shows the empty state. */
+    renderChatFilesModal(conversationId, docs) {
+        // Drop the frame if the user already switched to a different
+        // conversation (request race) — we don't want to show stale data.
+        if (!this.currentConversation || conversationId !== this.currentConversation.id)
+            return;
+        const subtitle = document.getElementById('chat-files-subtitle');
+        const list = document.getElementById('chat-files-list');
+        const empty = document.getElementById('chat-files-empty');
+        // Update the badge on the header button regardless of modal state.
+        this.updateChatFilesBadge(docs.length);
+        if (!list)
+            return;
+        if (docs.length === 0) {
+            if (subtitle)
+                subtitle.textContent = '';
+            list.innerHTML = '';
+            empty?.classList.remove('hidden');
+            return;
+        }
+        empty?.classList.add('hidden');
+        if (subtitle) {
+            const totalChars = docs.reduce((s, d) => s + (d.char_count || 0), 0);
+            subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
+        }
+        list.innerHTML = docs.map(d => {
+            const icon = chatFileIconFor(d.file_kind, d.filename);
+            const meta = [
+                `${(d.char_count || 0).toLocaleString()} chars`,
+                d.page_count ? `${d.page_count} page(s)` : null,
+                d.file_kind.toUpperCase(),
+                formatChatFileDate(d.created_at),
+            ].filter(Boolean).join(' · ');
+            // Escape the id even though it's typed `number` — values arrive
+            // from a WS frame parsed by JSON.parse, so a compromised server
+            // could send a non-numeric string with embedded quotes that
+            // would break out of the attribute.
+            const safeId = escapeHtml(String(d.id));
+            return `
+                <div class="chat-file-row" data-id="${safeId}">
+                    <span class="file-icon" aria-hidden="true">${icon}</span>
+                    <div class="file-body">
+                        <div class="file-name">${escapeHtml(d.filename)}</div>
+                        <div class="file-meta">${escapeHtml(meta)}</div>
+                    </div>
+                    <button class="file-edit" data-id="${safeId}" title="Edit contents">Edit</button>
+                    <button class="file-delete" data-id="${safeId}" title="Remove from memory">Delete</button>
+                </div>
+            `;
+        }).join('');
+        list.querySelectorAll('.file-edit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.currentTarget.dataset.id || '0');
+                if (!id || !this.currentConversation)
+                    return;
+                this.openChatFileEditor(id);
+            });
+        });
+        list.querySelectorAll('.file-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.currentTarget.dataset.id || '0');
+                if (!id || !this.currentConversation)
+                    return;
+                this.send({
+                    type: 'delete_document_memory',
+                    id,
+                    conversation_id: this.currentConversation.id,
+                });
+            });
+        });
+    }
+    /** Switch the files modal into editor view and request the full content
+     * for the given id. The textarea fills in once `document_memory_content`
+     * arrives — avoids shipping the full text in the list frame. Also
+     * flips the `.editing` class on the modal-content so CSS can widen the
+     * box from the compact list size to a roomy editing surface. */
+    openChatFileEditor(docId) {
+        if (!this.currentConversation)
+            return;
+        this.editingDocId = docId;
+        const modalContent = document.querySelector('.chat-files-modal-content');
+        const listView = document.getElementById('chat-files-list-view');
+        const editView = document.getElementById('chat-files-edit-view');
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        const counter = document.getElementById('chat-files-edit-counter');
+        if (nameInput)
+            nameInput.value = '';
+        if (textInput) {
+            textInput.value = '';
+            textInput.placeholder = 'Loading…';
+        }
+        if (counter)
+            counter.textContent = '0 chars';
+        listView?.classList.add('hidden');
+        editView?.classList.remove('hidden');
+        modalContent?.classList.add('editing');
+        this.send({
+            type: 'get_document_memory_content',
+            id: docId,
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    /** Populate the edit form from a `document_memory_content` WS frame. */
+    hydrateChatFileEditor(doc) {
+        if (this.editingDocId !== doc.id)
+            return; // stale frame
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        if (nameInput)
+            nameInput.value = doc.filename || '';
+        if (textInput) {
+            textInput.placeholder = '';
+            textInput.value = doc.extracted_text || '';
+            textInput.focus();
+        }
+        this.updateChatFileEditorCounter();
+    }
+    closeChatFileEditor() {
+        this.editingDocId = null;
+        document.getElementById('chat-files-edit-view')?.classList.add('hidden');
+        document.getElementById('chat-files-list-view')?.classList.remove('hidden');
+        // Shrink the modal back to the compact list size — the CSS
+        // transition makes this feel smooth rather than popping.
+        document.querySelector('.chat-files-modal-content')?.classList.remove('editing');
+    }
+    /** Refresh the char counter under the textarea. */
+    updateChatFileEditorCounter() {
+        const textInput = document.getElementById('chat-files-edit-text');
+        const counter = document.getElementById('chat-files-edit-counter');
+        if (!textInput || !counter)
+            return;
+        counter.textContent = `${textInput.value.length.toLocaleString()} / 500,000 chars`;
+    }
+    /** Reflow broken per-glyph newlines in the current editor textarea.
+     *
+     * Old PDFs uploaded before the extraction fix have `\n` between every
+     * few characters — renders as vertically-stacked text in the editor.
+     * This button re-applies the same join algorithm the backend now uses
+     * on fresh uploads: single newlines become spaces, double newlines
+     * stay as paragraph breaks, runs of spaces collapse.
+     *
+     * Kept as an explicit button rather than running automatically so the
+     * user can choose whether to keep intentional line breaks (e.g. in a
+     * text file with bulleted lists) or reflow a genuinely broken extract.
+     */
+    reflowChatFileEditor() {
+        const textInput = document.getElementById('chat-files-edit-text');
+        if (!textInput)
+            return;
+        const original = textInput.value;
+        if (!original)
+            return;
+        const joined = reflowPdfText(original);
+        if (joined === original) {
+            showToast('Nothing to reflow — already looks clean', { type: 'info', duration: 2000 });
+            return;
+        }
+        textInput.value = joined;
+        this.updateChatFileEditorCounter();
+        textInput.focus();
+        showToast(`🔀 Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`, { type: 'success', duration: 3000 });
+    }
+    /** Submit edit — server patches both fields in one UPDATE, then we pop
+     * back to the list view and request a fresh list so the row shows the
+     * new char count / filename. */
+    saveChatFileEditor() {
+        if (!this.editingDocId || !this.currentConversation)
+            return;
+        const nameInput = document.getElementById('chat-files-edit-name');
+        const textInput = document.getElementById('chat-files-edit-text');
+        const filename = nameInput?.value.trim() || '';
+        const extractedText = textInput?.value ?? '';
+        if (!filename) {
+            showToast('Filename cannot be empty', { type: 'warning' });
+            nameInput?.focus();
+            return;
+        }
+        this.send({
+            type: 'update_document_memory',
+            id: this.editingDocId,
+            conversation_id: this.currentConversation.id,
+            filename,
+            extracted_text: extractedText,
+        });
+    }
+    /** Remove a single row from the modal (called after delete ack). */
+    removeChatFileRow(id) {
+        const row = document.querySelector(`.chat-file-row[data-id="${id}"]`);
+        row?.remove();
+        // If that was the last row, flip to empty state.
+        const list = document.getElementById('chat-files-list');
+        if (list && list.children.length === 0) {
+            document.getElementById('chat-files-empty')?.classList.remove('hidden');
+            const subtitle = document.getElementById('chat-files-subtitle');
+            if (subtitle)
+                subtitle.textContent = '';
+        }
+    }
+    /** Fire-and-forget badge refresh: asks the server for the current count
+     * without opening the modal. Called after upload + delete. */
+    refreshChatFilesBadge() {
+        if (!this.currentConversation || !this.connected)
+            return;
+        this.send({
+            type: 'list_conversation_documents',
+            conversation_id: this.currentConversation.id,
+        });
+    }
+    /** Set the 📎 badge count on the chat-header button. Hidden when 0. */
+    updateChatFilesBadge(count) {
+        const badge = document.getElementById('chat-files-badge');
+        if (!badge)
+            return;
+        badge.textContent = String(count);
+        badge.classList.toggle('hidden', count <= 0);
+    }
     // ========================================================================
     // Message Edit / Delete
     // ========================================================================
@@ -1483,7 +2063,9 @@ export class ChatManager {
         if (!container)
             return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl)
             return;
         const contentEl = msgEl.querySelector('.message-content');
@@ -1565,7 +2147,9 @@ export class ChatManager {
         if (!container)
             return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl)
             return;
         const contentEl = msgEl.querySelector('.message-content');
@@ -1637,7 +2221,9 @@ export class ChatManager {
         if (!container)
             return;
         const msgElements = container.querySelectorAll('.chat-message');
-        const msgEl = msgElements[msgIdx];
+        // With virtualization the DOM only contains messages.slice(visibleStartIdx);
+        // translate the absolute index into the local DOM index.
+        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl)
             return;
         const contentEl = msgEl.querySelector('.message-content');
@@ -1683,16 +2269,27 @@ export class ChatManager {
         if (!this.currentConversation)
             return;
         // Build history from messages before the edited message
-        // Strip unnecessary fields (images/thinking/mode) to reduce payload size
+        // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
+        // but keep `created_at` so the backend retains per-message timing.
         const editedIdx = this.messages.indexOf(editedMsg);
         const historyToSend = this.messages.slice(0, editedIdx).map(m => ({
             role: m.role,
             content: m.content,
+            created_at: m.created_at,
         }));
         const thinkingToggle = document.getElementById('thinking-toggle');
         const searchToggle = document.getElementById('chat-use-search');
         const unrestrictedToggle = document.getElementById('chat-unrestricted');
         const userName = settings.userName || 'User';
+        // Carry over the original message's images/documents so the
+        // regenerated reply still has the attachments to reason over.
+        // Without this, a regenerate on a turn that originally had a PDF
+        // attached would produce a reply written with no doc context.
+        const originalImages = (editedMsg.images && editedMsg.images.length > 0) ? editedMsg.images : [];
+        const originalDocs = (editedMsg.documents
+            && editedMsg.documents.length > 0)
+            ? editedMsg.documents
+            : undefined;
         this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
@@ -1702,7 +2299,8 @@ export class ChatManager {
             history: historyToSend,
             use_search: searchToggle?.checked ?? true,
             unrestricted_mode: unrestrictedToggle?.checked || false,
-            images: [],
+            images: originalImages,
+            documents: originalDocs,
             user_name: userName,
             ai_provider: this.aiProvider,
             is_regeneration: true, // Skip duplicate user message save in backend
@@ -1786,7 +2384,17 @@ export class ChatManager {
         document.getElementById('new-chat-modal')?.querySelector('.modal-overlay')
             ?.addEventListener('click', () => this.closeModal());
         document.querySelectorAll('.role-card').forEach(card => {
-            card.addEventListener('click', () => this.selectRole(card.dataset.role || 'general'));
+            const select = () => this.selectRole(card.dataset.role || 'general');
+            card.addEventListener('click', select);
+            // role-cards are <div role="button" tabindex="0">; without this
+            // they're focusable but Enter/Space don't activate them.
+            card.addEventListener('keydown', (e) => {
+                const ke = e;
+                if (ke.key === 'Enter' || ke.key === ' ') {
+                    ke.preventDefault();
+                    select();
+                }
+            });
         });
         document.getElementById('modal-thinking')?.addEventListener('change', (e) => {
             this.thinkingEnabled = e.target.checked;
@@ -1840,13 +2448,54 @@ export class ChatManager {
             const format = await this.promptExportFormat();
             if (!format)
                 return;
-            this.conversations.forEach(conv => {
+            // Serialize: parallel forEach fires N export WS messages and N
+            // synthetic <a>.click() downloads in the same event tick. Browsers
+            // consolidate/block all but the first. Space them out so each
+            // download sees a fresh tick.
+            for (const conv of this.conversations) {
                 this.exportConversation(conv.id, format);
-            });
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
         });
         document.getElementById('btn-delete-chat')?.addEventListener('click', () => {
             if (this.currentConversation) {
                 this.deleteConversation(this.currentConversation.id);
+            }
+        });
+        // Attached files modal — opens per-conversation document list
+        document.getElementById('btn-chat-files')?.addEventListener('click', () => {
+            this.openChatFilesModal();
+        });
+        document.querySelectorAll('[data-close-files]').forEach(el => {
+            el.addEventListener('click', () => {
+                // Closing from editor view should bail editing too, not
+                // just re-hide the modal with the editor still "open".
+                this.closeChatFileEditor();
+                this.closeChatFilesModal();
+            });
+        });
+        // Chat-file editor controls
+        document.getElementById('chat-files-edit-back')?.addEventListener('click', () => {
+            this.closeChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-cancel')?.addEventListener('click', () => {
+            this.closeChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-save')?.addEventListener('click', () => {
+            this.saveChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-reflow')?.addEventListener('click', () => {
+            this.reflowChatFileEditor();
+        });
+        document.getElementById('chat-files-edit-text')?.addEventListener('input', () => {
+            this.updateChatFileEditorCounter();
+        });
+        // Ctrl/Cmd+S inside the editor textarea = save, same as RP Notes.
+        document.getElementById('chat-files-edit-text')?.addEventListener('keydown', (e) => {
+            const ev = e;
+            if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') {
+                ev.preventDefault();
+                this.saveChatFileEditor();
             }
         });
         // Delete confirmation modal handlers

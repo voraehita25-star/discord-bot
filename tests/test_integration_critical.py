@@ -21,8 +21,15 @@ import pytest
 class TestWebSocketAuth:
     """Tests for WebSocket authentication enforcement."""
 
-    def _make_request(self, *, origin: str = "http://localhost:3000", host: str = "localhost:8765",
-                      token: str = "", auth_header: str = "", query_token: str = "") -> MagicMock:
+    def _make_request(
+        self,
+        *,
+        origin: str = "http://localhost:3000",
+        host: str = "localhost:8765",
+        token: str = "",
+        auth_header: str = "",
+        query_token: str = "",
+    ) -> MagicMock:
         """Create a mock aiohttp request."""
         request = MagicMock()
         request.headers = {
@@ -71,6 +78,11 @@ class TestWebSocketAuth:
         server._client_message_times = {}
         server._client_inflight = {}
         server._auth_deadline = 5.0
+        # Per-IP failed-auth tracker (added for H5 brute-force backoff)
+        server._auth_failures = {}
+        server._AUTH_FAIL_WINDOW = 60.0
+        server._AUTH_FAIL_THRESHOLD = 5
+        server._AUTH_FAIL_LOCKOUT = 300.0
 
         request = self._make_request(auth_header="Bearer wrong-token")
 
@@ -87,6 +99,10 @@ class TestWebSocketAuth:
         server.clients = set()
         server.MAX_CLIENTS = 20
         server._authenticated_clients = set()
+        server._auth_failures = {}
+        server._AUTH_FAIL_WINDOW = 60.0
+        server._AUTH_FAIL_THRESHOLD = 5
+        server._AUTH_FAIL_LOCKOUT = 300.0
 
         request = self._make_request(origin="https://evil.com", host="evil.com")
 
@@ -172,12 +188,15 @@ class TestGracefulShutdown:
         mock_bot.close = AsyncMock()
         mock_bot._health_task = None
 
-        with patch("bot.bot", mock_bot), \
-             patch("bot.DASHBOARD_WS_AVAILABLE", False), \
-             patch("bot.stop_dashboard_ws_server", None), \
-             patch("utils.database.db", mock_db):
+        with (
+            patch("bot.bot", mock_bot),
+            patch("bot.DASHBOARD_WS_AVAILABLE", False),
+            patch("bot.stop_dashboard_ws_server", None),
+            patch("utils.database.db", mock_db),
+        ):
             # Import after patching
             from bot import graceful_shutdown
+
             await graceful_shutdown()
 
         mock_db.flush_pending_exports.assert_awaited_once()
@@ -187,6 +206,7 @@ class TestGracefulShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_cancels_health_task(self):
         """Shutdown should properly cancel and await the health task."""
+
         # Create a real cancellable task
         async def _dummy():
             await asyncio.sleep(999)
@@ -198,10 +218,13 @@ class TestGracefulShutdown:
         mock_bot.close = AsyncMock()
         mock_bot._health_task = health_task
 
-        with patch("bot.bot", mock_bot), \
-             patch("bot.DASHBOARD_WS_AVAILABLE", False), \
-             patch("bot.stop_dashboard_ws_server", None):
+        with (
+            patch("bot.bot", mock_bot),
+            patch("bot.DASHBOARD_WS_AVAILABLE", False),
+            patch("bot.stop_dashboard_ws_server", None),
+        ):
             from bot import graceful_shutdown
+
             await graceful_shutdown()
 
         assert health_task.cancelled()

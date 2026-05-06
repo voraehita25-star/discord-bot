@@ -12,6 +12,8 @@ Usage:
 """
 
 import logging
+from typing import ClassVar
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -71,8 +73,26 @@ class BotMetrics:
                 "discord_bot_voice_clients", "Number of active voice connections"
             )
 
-            self.queue_size = Gauge(
-                "discord_bot_queue_size", "Music queue size per guild", ["guild_id"]
+            # Aggregate queue-size metrics. The previous per-guild label
+            # exploded series count for popular bots (one series per guild,
+            # each at a default 8192 sample limit) and could push tens of MB
+            # of cardinality into Prometheus. We instead track:
+            #   - queue_size_total: sum of all guild queue depths
+            #   - queue_size_max:   the largest single queue
+            #   - queues_active:    how many guilds have non-empty queues
+            # The set_queue_size / remove_queue_size helpers update these
+            # aggregates from the per-guild numbers the cog already tracks.
+            self.queue_size_total = Gauge(
+                "discord_bot_queue_size_total",
+                "Aggregate music queue depth across all guilds",
+            )
+            self.queue_size_max = Gauge(
+                "discord_bot_queue_size_max",
+                "Largest single music queue depth across guilds",
+            )
+            self.queues_active = Gauge(
+                "discord_bot_queues_active",
+                "Number of guilds with a non-empty music queue",
             )
 
             self.memory_bytes = Gauge("discord_bot_memory_bytes", "Memory usage in bytes")
@@ -160,7 +180,22 @@ class BotMetrics:
             return True
 
         try:
-            self._server, self._server_thread = start_http_server(port, addr="127.0.0.1")
+            # prometheus_client's start_http_server signature changed: newer
+            # versions return (server, thread); older versions return None.
+            # Handle both so we don't crash on `cannot unpack None`.
+            try:
+                result = start_http_server(port, addr="127.0.0.1")
+            except TypeError:
+                # Pre-0.20 build: start_http_server has no addr= and the
+                # server can't be retained for graceful shutdown.
+                start_http_server(port)
+                result = None
+
+            if isinstance(result, tuple) and len(result) == 2:
+                self._server, self._server_thread = result
+            else:
+                self._server, self._server_thread = None, None
+
             self._server_started = True
             logger.info("📊 Prometheus metrics server started on 127.0.0.1:%d", port)
             return True
@@ -212,31 +247,109 @@ class BotMetrics:
         if self.enabled:
             self.voice_clients_count.set(count)
 
+    # Per-guild snapshot used to recompute aggregates without keeping a
+    # per-guild Prometheus series (which would blow up cardinality).
+    _guild_queue_sizes: ClassVar[dict[int, int]] = {}
+
+    def _recompute_queue_aggregates(self) -> None:
+        if not self.enabled:
+            return
+        sizes = list(self._guild_queue_sizes.values())
+        non_empty = [s for s in sizes if s > 0]
+        self.queue_size_total.set(sum(non_empty))
+        self.queue_size_max.set(max(non_empty) if non_empty else 0)
+        self.queues_active.set(len(non_empty))
+
     def set_queue_size(self, guild_id: int, size: int):
-        """Set queue size for a guild."""
-        if self.enabled:
-            self.queue_size.labels(guild_id=str(guild_id)).set(size)
+        """Update per-guild queue size and refresh aggregates."""
+        if not self.enabled:
+            return
+        self._guild_queue_sizes[guild_id] = size
+        self._recompute_queue_aggregates()
 
     def remove_queue_size(self, guild_id: int):
-        """Remove queue size metric for a guild (call when bot leaves a guild)."""
-        if self.enabled:
-            self.queue_size.remove(str(guild_id))
+        """Forget a guild's queue size (call when the bot leaves the guild)."""
+        if not self.enabled:
+            return
+        self._guild_queue_sizes.pop(guild_id, None)
+        self._recompute_queue_aggregates()
 
     def set_memory(self, bytes_used: int):
         """Set current memory usage."""
         if self.enabled:
             self.memory_bytes.set(bytes_used)
 
+    # Allowlist of commands we're willing to label-explode metrics by.
+    # Anything not in this set rolls up under "other" so an attacker
+    # spamming variant command names can't blow up Prometheus cardinality.
+    _COMMAND_LABEL_ALLOWLIST: ClassVar[set[str]] = {
+        "chat",
+        "ask",
+        "gemini",
+        "play",
+        "skip",
+        "stop",
+        "queue",
+        "leave",
+        "join",
+        "shuffle",
+        "loop",
+        "pause",
+        "resume",
+        "remove",
+        "clear",
+        "volume",
+        "seek",
+        "fix",
+        "help",
+        "ping",
+        "stats",
+        "memories",
+        "remember",
+        "forget",
+        "view_memories",
+        "memory_stats",
+    }
+
+    # Same defence for circuit-breaker and rate-limiter labels. An
+    # untrusted caller (or a typo in a new feature) could otherwise
+    # mint one Prometheus series per breaker name and exhaust the
+    # /metrics endpoint.
+    _CIRCUIT_NAME_ALLOWLIST: ClassVar[set[str]] = {
+        "anthropic",
+        "claude_cli",
+        "gemini",
+        "youtube",
+        "spotify",
+        "discord",
+        "db_write_lock_wait",
+        "go_url_fetcher",
+        "go_health_api",
+    }
+    _RATE_LIMIT_CONFIG_ALLOWLIST: ClassVar[set[str]] = {
+        "ai_chat",
+        "ai_image",
+        "ai_global",
+        "music",
+        "command",
+        "dashboard",
+        "default",
+    }
+
     def observe_command_latency(self, command: str, duration: float):
         """Record command execution duration."""
-        if self.enabled:
-            self.command_latency.labels(command=command).observe(duration)
+        if not self.enabled:
+            return
+        # Cap label cardinality — a misbehaving caller (or attacker) feeding
+        # a unique command name per call would otherwise create one Prometheus
+        # series per name and exhaust the metrics endpoint.
+        safe_label = command if command in self._COMMAND_LABEL_ALLOWLIST else "other"
+        self.command_latency.labels(command=safe_label).observe(duration)
 
     def observe_ai_response_time(self, duration: float):
         """Record AI response generation time."""
         if self.enabled:
             self.ai_response_time.observe(duration)
-
 
     def increment_search_intent(self, method: str, result: str):
         """Record a search intent classification.
@@ -272,17 +385,20 @@ class BotMetrics:
     def set_circuit_breaker_state(self, name: str, state: int):
         """Set circuit breaker state gauge (0=closed, 1=half_open, 2=open)."""
         if self.enabled:
-            self.circuit_breaker_state.labels(name=name).set(state)
+            safe = name if name in self._CIRCUIT_NAME_ALLOWLIST else "other"
+            self.circuit_breaker_state.labels(name=safe).set(state)
 
     def increment_circuit_breaker_failure(self, name: str):
         """Record a circuit breaker failure."""
         if self.enabled:
-            self.circuit_breaker_failures.labels(name=name).inc()
+            safe = name if name in self._CIRCUIT_NAME_ALLOWLIST else "other"
+            self.circuit_breaker_failures.labels(name=safe).inc()
 
     def increment_rate_limit_blocked(self, config: str):
         """Record a rate-limited request."""
         if self.enabled:
-            self.rate_limit_blocked.labels(config=config).inc()
+            safe = config if config in self._RATE_LIMIT_CONFIG_ALLOWLIST else "other"
+            self.rate_limit_blocked.labels(config=safe).inc()
 
 
 # Global metrics instance

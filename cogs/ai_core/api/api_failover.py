@@ -12,9 +12,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-logger = logging.getLogger(__name__)
 import os
+import threading
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from enum import StrEnum
 from typing import Any
 
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 
 class EndpointType(StrEnum):
@@ -61,21 +64,29 @@ class EndpointHealth:
         return self.total_failures / self.total_requests
 
 
-# Errors that indicate the endpoint itself is down (not user error)
-_FAILOVER_ERRORS = (
-    anthropic.APIConnectionError,
-    anthropic.InternalServerError,
-    anthropic.APIStatusError,
-)
-
-# Errors that should NOT trigger failover (user-side issues)
+# Status codes that should NOT trigger failover. 429 belongs here: rate
+# limits are usually account-wide and ALSO apply to the proxy endpoint, so
+# a per-token rate cap would otherwise oscillate the active endpoint
+# back and forth on every retry. The retry/backoff logic at the call-site
+# is the right place to handle 429.
 # NOTE: 401/403 ARE failover-worthy because they indicate a bad/expired key
 # on that specific endpoint, not a user error.
-_NON_FAILOVER_CODES = {400, 404, 422}
+_NON_FAILOVER_CODES = {400, 404, 422, 429}
 
 
 def _should_failover(error: Exception) -> bool:
     """Determine if an error warrants failover to another endpoint."""
+    # OSError covers raw network-stack failures (DNS resolution, connection
+    # refused, socket reset) that the SDK surfaces directly without wrapping
+    # in APIConnectionError. Check before anything else so plain network
+    # outages reliably trigger failover.
+    if isinstance(error, OSError):
+        return True
+    # RateLimitError is a subclass of APIStatusError; check it explicitly
+    # so the intent reads correctly even if its status_code attribute
+    # ever changes shape.
+    if isinstance(error, anthropic.RateLimitError):
+        return False
     if isinstance(error, anthropic.APIStatusError):
         # Don't failover for client errors (bad request, not found, etc)
         return error.status_code not in _NON_FAILOVER_CODES
@@ -102,11 +113,19 @@ class APIFailoverManager:
         self._active: EndpointType = EndpointType.DIRECT
         self._clients: dict[EndpointType, anthropic.AsyncAnthropic] = {}
         self._lock = asyncio.Lock()
+        # Sync lock for the sync get_client() path — keeps concurrent
+        # callers from racing on _clients dict mutations.
+        self._sync_clients_lock = threading.Lock()
         self._listeners: list[Callable[[EndpointType, str], Coroutine[Any, Any, None]]] = []
         self._initialized = False
+        # Strong references to in-flight client.close() tasks so an
+        # endpoint switch's fire-and-forget task isn't GC'd mid-close.
+        self._pending_close_tasks: set[asyncio.Task[Any]] = set()
 
     def initialize(self) -> None:
         """Load endpoint configs from environment variables."""
+        if self._initialized:
+            return
         direct_key = os.getenv("ANTHROPIC_DIRECT_API_KEY", "")
         proxy_key = os.getenv("ANTHROPIC_PROXY_API_KEY", "")
         proxy_base = os.getenv("ANTHROPIC_PROXY_BASE_URL", "")
@@ -179,20 +198,23 @@ class APIFailoverManager:
         if not self._initialized:
             self.initialize()
 
-        if self._active in self._clients:
-            return self._clients[self._active]
+        # Serialize the read-create-write sequence so two threads can't both
+        # see "no client" and each create one (leaking the loser).
+        with self._sync_clients_lock:
+            if self._active in self._clients:
+                return self._clients[self._active]
 
-        config = self._endpoints.get(self._active)
-        if not config:
-            raise RuntimeError("No API endpoint configured")
+            config = self._endpoints.get(self._active)
+            if not config:
+                raise RuntimeError("No API endpoint configured")
 
-        kwargs: dict[str, Any] = {"api_key": config.api_key}
-        if config.base_url:
-            kwargs["base_url"] = config.base_url
+            kwargs: dict[str, Any] = {"api_key": config.api_key}
+            if config.base_url:
+                kwargs["base_url"] = config.base_url
 
-        client = anthropic.AsyncAnthropic(**kwargs)
-        self._clients[self._active] = client
-        return client
+            client = anthropic.AsyncAnthropic(**kwargs)
+            self._clients[self._active] = client
+            return client
 
     def _get_other_endpoint(self) -> EndpointType | None:
         """Get the other endpoint type (for failover)."""
@@ -212,6 +234,8 @@ class APIFailoverManager:
 
     async def record_failure(self, error: Exception) -> bool:
         """Record a failed API call. Returns True if failover was triggered."""
+        switched_to: EndpointType | None = None
+        switched_reason: str = ""
         async with self._lock:
             health = self._health.get(self._active)
             if health:
@@ -242,14 +266,24 @@ class APIFailoverManager:
                     other_health = self._health.get(other)
                     # Don't switch to an endpoint that also recently failed
                     if other_health and not other_health.is_healthy:
-                        cooldown_elapsed = (time.monotonic() - other_health.last_failure_time) > self.RECOVERY_COOLDOWN
+                        cooldown_elapsed = (
+                            time.monotonic() - other_health.last_failure_time
+                        ) > self.RECOVERY_COOLDOWN
                         if not cooldown_elapsed:
-                            logger.warning("⚠️ Both API endpoints unhealthy, staying on %s", self._active.value)
+                            logger.warning(
+                                "⚠️ Both API endpoints unhealthy, staying on %s", self._active.value
+                            )
                             return False
                     # Perform switch inside the lock to avoid TOCTOU race condition
-                    await self._switch_to_locked(other, reason=f"auto-failover after {failure_count} failures: {last_error}")
-                    return True
+                    switched_reason = f"auto-failover after {failure_count} failures: {last_error}"
+                    await self._switch_to_locked(other, reason=switched_reason)
+                    switched_to = other
 
+        if switched_to is not None:
+            # Notify outside the lock so slow listeners don't block other
+            # failover/health operations.
+            await self._notify_listeners(switched_to, switched_reason)
+            return True
         return False
 
     async def switch_endpoint(self, target: EndpointType, *, reason: str = "manual") -> bool:
@@ -266,29 +300,55 @@ class APIFailoverManager:
         """Internal: switch active endpoint and notify listeners."""
         async with self._lock:
             await self._switch_to_locked(target, reason)
+        # Listeners run OUTSIDE the lock so a slow callback (e.g. dashboard
+        # broadcast to many WS clients) can't block other failover/health
+        # operations.
+        await self._notify_listeners(target, reason)
 
     async def _switch_to_locked(self, target: EndpointType, reason: str) -> None:
-        """Internal: switch active endpoint (caller must already hold self._lock)."""
+        """Internal: switch active endpoint (caller must already hold self._lock).
+
+        Note: this does NOT dispatch listeners — the public _switch_to wrapper
+        runs them after releasing the lock. Callers that hold the lock
+        themselves should call _notify_listeners after release.
+        """
         old = self._active
         self._active = target
 
-        # Clear old client so a new one is created on next get_client()
-        self._clients.pop(old, None)
-        self._clients.pop(target, None)
+        # Clear old client so a new one is created on next get_client().
+        # Schedule .close() on each popped client so its httpx connection
+        # pool is released; otherwise endpoint switches leak sockets.
+        # Keep a strong reference so the close task can't be GC'd before
+        # the actual close completes (an unawaited fire-and-forget task is
+        # eligible for collection mid-run).
+        old_client = self._clients.pop(old, None)
+        target_client = self._clients.pop(target, None)
+        for popped in (old_client, target_client):
+            if popped is not None:
+                with contextlib.suppress(Exception):
+                    task = asyncio.create_task(popped.close())
+                    self._pending_close_tasks.add(task)
+                    task.add_done_callback(self._pending_close_tasks.discard)
 
         logger.info(
             "🔀 API endpoint switched: %s → %s (reason: %s)",
-            old.value, target.value, reason,
+            old.value,
+            target.value,
+            reason,
         )
 
-        # Notify listeners (dashboard WS, etc.)
-        for listener in self._listeners:
+    async def _notify_listeners(self, target: EndpointType, reason: str) -> None:
+        """Run all registered listeners (caller must NOT hold self._lock)."""
+        # Snapshot the list so listener registration during dispatch is safe.
+        for listener in list(self._listeners):
             try:
                 await listener(target, reason)
             except Exception:
                 logger.exception("Failover listener error")
 
-    def add_listener(self, callback: Callable[[EndpointType, str], Coroutine[Any, Any, None]]) -> None:
+    def add_listener(
+        self, callback: Callable[[EndpointType, str], Coroutine[Any, Any, None]]
+    ) -> None:
         """Register a callback for endpoint change events."""
         self._listeners.append(callback)
 
@@ -354,16 +414,18 @@ class APIFailoverManager:
         endpoints_info = []
         for ep_type, config in self._endpoints.items():
             health = self._health.get(ep_type, EndpointHealth())
-            endpoints_info.append({
-                "type": ep_type.value,
-                "label": config.display_name,
-                "active": ep_type == self._active,
-                "healthy": health.is_healthy,
-                "consecutive_failures": health.consecutive_failures,
-                "last_error": health.last_error,
-                "total_requests": health.total_requests,
-                "failure_rate": round(health.failure_rate * 100, 1),
-            })
+            endpoints_info.append(
+                {
+                    "type": ep_type.value,
+                    "label": config.display_name,
+                    "active": ep_type == self._active,
+                    "healthy": health.is_healthy,
+                    "consecutive_failures": health.consecutive_failures,
+                    "last_error": health.last_error,
+                    "total_requests": health.total_requests,
+                    "failure_rate": round(health.failure_rate * 100, 1),
+                }
+            )
 
         return {
             "active_endpoint": self._active.value,

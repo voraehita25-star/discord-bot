@@ -1,12 +1,13 @@
 """
 Tests for utils.monitoring.health_api module.
 """
+
 from __future__ import annotations
 
 import asyncio
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -24,6 +25,7 @@ class TestHealthApiConstants:
             import importlib
 
             import utils.monitoring.health_api
+
             importlib.reload(utils.monitoring.health_api)
 
             # Default port should be 8080
@@ -43,9 +45,9 @@ class TestBotHealthData:
         """Test initialization sets start time."""
         from utils.monitoring.health_api import BotHealthData
 
-        before = datetime.now()
+        before = datetime.now(timezone.utc)
         health = BotHealthData()
-        after = datetime.now()
+        after = datetime.now(timezone.utc)
 
         assert before <= health.start_time <= after
 
@@ -114,7 +116,7 @@ class TestBotHealthData:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(seconds=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(seconds=30)
 
         result = health.get_uptime_str()
         assert "s" in result
@@ -124,7 +126,7 @@ class TestBotHealthData:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(minutes=5, seconds=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=30)
 
         result = health.get_uptime_str()
         assert "m" in result
@@ -134,7 +136,7 @@ class TestBotHealthData:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(hours=2, minutes=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(hours=2, minutes=30)
 
         result = health.get_uptime_str()
         assert "h" in result
@@ -144,7 +146,7 @@ class TestBotHealthData:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(days=3, hours=5)
+        health.start_time = datetime.now(timezone.utc) - timedelta(days=3, hours=5)
 
         result = health.get_uptime_str()
         assert "d" in result
@@ -258,6 +260,7 @@ class TestHealthDataSingleton:
 # ======================================================================
 # Merged from test_health_api_extended.py
 # ======================================================================
+
 
 class TestBotHealthData:
     """Tests for BotHealthData class."""
@@ -380,7 +383,7 @@ class TestBotHealthData:
 
         health = BotHealthData()
         health.is_ready = True
-        health.last_heartbeat = datetime.now() - timedelta(seconds=120)
+        health.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
 
         assert health.is_healthy() is False
 
@@ -400,7 +403,7 @@ class TestBotHealthData:
 
         health = BotHealthData()
         health.is_ready = True
-        health.last_heartbeat = datetime.now()
+        health.last_heartbeat = datetime.now(timezone.utc)
         health.latency_ms = 100
 
         assert health.is_healthy() is True
@@ -475,31 +478,37 @@ class TestModuleImports:
     def test_import_bot_health_data(self):
         """Test importing BotHealthData."""
         from utils.monitoring.health_api import BotHealthData
+
         assert BotHealthData is not None
 
     def test_import_health_data(self):
         """Test importing health_data."""
         from utils.monitoring.health_api import health_data
+
         assert health_data is not None
 
     def test_import_setup_health_hooks(self):
         """Test importing setup_health_hooks."""
         from utils.monitoring.health_api import setup_health_hooks
+
         assert setup_health_hooks is not None
 
     def test_import_start_health_api(self):
         """Test importing start_health_api."""
         from utils.monitoring.health_api import start_health_api
+
         assert start_health_api is not None
 
     def test_import_stop_health_api(self):
         """Test importing stop_health_api."""
         from utils.monitoring.health_api import stop_health_api
+
         assert stop_health_api is not None
 
     def test_import_update_health_loop(self):
         """Test importing update_health_loop."""
         from utils.monitoring.health_api import update_health_loop
+
         assert update_health_loop is not None
 
 
@@ -525,7 +534,7 @@ class TestUptimeFormatting:
 
         health = BotHealthData()
         # Set start time to now for ~0 seconds uptime
-        health.start_time = datetime.now()
+        health.start_time = datetime.now(timezone.utc)
 
         uptime_str = health.get_uptime_str()
 
@@ -536,7 +545,7 @@ class TestUptimeFormatting:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(minutes=5, seconds=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=30)
 
         uptime_str = health.get_uptime_str()
 
@@ -547,7 +556,7 @@ class TestUptimeFormatting:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(hours=2, minutes=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(hours=2, minutes=30)
 
         uptime_str = health.get_uptime_str()
 
@@ -558,7 +567,7 @@ class TestUptimeFormatting:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(days=3, hours=5)
+        health.start_time = datetime.now(timezone.utc) - timedelta(days=3, hours=5)
 
         uptime_str = health.get_uptime_str()
 
@@ -568,6 +577,7 @@ class TestUptimeFormatting:
 # ======================================================================
 # Merged from test_health_api_handlers.py
 # ======================================================================
+
 
 def _make_handler(path: str = "/health", auth_header: str = "") -> Any:
     """Create a HealthRequestHandler with a fake request."""
@@ -683,6 +693,7 @@ class TestDoGETRoutes:
 
     def test_readyz_ready(self):
         from utils.monitoring.health_api import health_data
+
         old_ready = health_data.is_ready
         health_data.is_ready = True
         try:
@@ -697,6 +708,7 @@ class TestDoGETRoutes:
 
     def test_readyz_not_ready(self):
         from utils.monitoring.health_api import health_data
+
         old_ready = health_data.is_ready
         health_data.is_ready = False
         try:
@@ -711,6 +723,7 @@ class TestDoGETRoutes:
 
     def test_health_ready(self):
         from utils.monitoring.health_api import health_data
+
         old_ready = health_data.is_ready
         health_data.is_ready = True
         try:
@@ -723,9 +736,10 @@ class TestDoGETRoutes:
 
     def test_health_status_ok(self):
         from utils.monitoring.health_api import health_data
+
         old_ready = health_data.is_ready
         health_data.is_ready = True
-        health_data.last_heartbeat = datetime.now()
+        health_data.last_heartbeat = datetime.now(timezone.utc)
         health_data.latency_ms = 50.0
         try:
             h = _make_handler("/health/status")
@@ -737,6 +751,7 @@ class TestDoGETRoutes:
 
     def test_health_status_unhealthy(self):
         from utils.monitoring.health_api import health_data
+
         old_ready = health_data.is_ready
         health_data.is_ready = False
         try:
@@ -788,8 +803,10 @@ class TestDoGETRoutes:
 
     def test_ai_stats_json(self):
         h = _make_handler("/ai/stats/json")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
-             patch("utils.monitoring.health_api.health_data") as mock_hd:
+        with (
+            patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""),
+            patch("utils.monitoring.health_api.health_data") as mock_hd,
+        ):
             mock_hd.get_ai_performance_stats.return_value = {"error": "AI cog not available"}
             h.do_GET()
         body = json.loads(_handler_body(h))
@@ -861,31 +878,35 @@ class TestIsHealthy:
 
     def test_healthy(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         hd.is_ready = True
-        hd.last_heartbeat = datetime.now()
+        hd.last_heartbeat = datetime.now(timezone.utc)
         hd.latency_ms = 50.0
         assert hd.is_healthy() is True
 
     def test_not_ready(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         hd.is_ready = False
         assert hd.is_healthy() is False
 
     def test_stale_heartbeat(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         hd.is_ready = True
-        hd.last_heartbeat = datetime.now() - timedelta(seconds=120)
+        hd.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
         hd.latency_ms = 50.0
         assert hd.is_healthy() is False
 
     def test_high_latency(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         hd.is_ready = True
-        hd.last_heartbeat = datetime.now()
+        hd.last_heartbeat = datetime.now(timezone.utc)
         hd.latency_ms = 10000.0  # Over threshold
         assert hd.is_healthy() is False
 
@@ -898,22 +919,27 @@ class TestAIPerformanceStats:
 
     def test_no_bot(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         result = hd.get_ai_performance_stats()
         assert "error" in result
 
     def test_with_ai_cog(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         mock_bot = MagicMock()
         mock_bot.cogs = {"AI": MagicMock()}
-        mock_bot.cogs["AI"].chat_manager.get_performance_stats.return_value = {"total": {"count": 5}}
+        mock_bot.cogs["AI"].chat_manager.get_performance_stats.return_value = {
+            "total": {"count": 5}
+        }
         hd.bot = mock_bot
         result = hd.get_ai_performance_stats()
         assert result["total"]["count"] == 5
 
     def test_with_exception(self):
         from utils.monitoring.health_api import BotHealthData
+
         hd = BotHealthData()
         mock_bot = MagicMock()
         mock_bot.cogs = {"AI": MagicMock()}
@@ -931,22 +957,27 @@ class TestDeepHealthCheck:
 
     def test_deep_check_with_db(self):
         h = _make_handler("/health/deep")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
-             patch.object(Path, "exists", return_value=True):
+        with (
+            patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""),
+            patch.object(Path, "exists", return_value=True),
+        ):
             h.do_GET()
         body = json.loads(_handler_body(h))
         assert body["checks"]["database"]["status"] == "ok"
 
     def test_deep_check_no_db(self):
         h = _make_handler("/health/deep")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
-             patch.object(Path, "exists", return_value=False):
+        with (
+            patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""),
+            patch.object(Path, "exists", return_value=False),
+        ):
             h.do_GET()
         body = json.loads(_handler_body(h))
         assert body["checks"]["database"]["status"] == "warning"
 
     def test_deep_check_bot_not_ready(self):
         from utils.monitoring.health_api import health_data
+
         old = health_data.is_ready
         health_data.is_ready = False
         try:
@@ -968,14 +999,21 @@ class TestHTMLGenerators:
     def test_health_html_contains_status(self):
         h = _make_handler()
         from utils.monitoring.health_api import health_data
+
         data = health_data.to_dict()
         html_str = h._generate_health_html(data)
         assert "Bot Health" in html_str
 
     def test_stats_html(self):
         h = _make_handler()
-        data = {"uptime": "1h 5m", "messages": 10, "commands": 3,
-                "errors": 0, "guilds": 2, "latency_ms": 50.0}
+        data = {
+            "uptime": "1h 5m",
+            "messages": 10,
+            "commands": 3,
+            "errors": 0,
+            "guilds": 2,
+            "latency_ms": 50.0,
+        }
         html_str = h._generate_stats_html(data)
         assert "Quick Stats" in html_str
 
@@ -1026,18 +1064,21 @@ class TestHealthAPIServer:
 
     def test_init(self):
         from utils.monitoring.health_api import HealthAPIServer
+
         srv = HealthAPIServer("127.0.0.1", 0)
         assert srv.host == "127.0.0.1"
         assert srv.running is False
 
     def test_start_already_running(self):
         from utils.monitoring.health_api import HealthAPIServer
+
         srv = HealthAPIServer("127.0.0.1", 0)
         srv.running = True
         assert srv.start() is True
 
     def test_start_and_stop(self):
         from utils.monitoring.health_api import HealthAPIServer
+
         srv = HealthAPIServer("127.0.0.1", 0)  # port 0 = random available
         assert srv.start() is True
         assert srv.running is True
@@ -1049,6 +1090,7 @@ class TestHealthAPIServer:
         import socket
 
         from utils.monitoring.health_api import HealthAPIServer
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -1061,12 +1103,14 @@ class TestHealthAPIServer:
 
     def test_stop_when_no_server(self):
         from utils.monitoring.health_api import HealthAPIServer
+
         srv = HealthAPIServer("127.0.0.1", 0)
         # Should not raise
         srv.stop()
 
     def test_run_server_with_none(self):
         from utils.monitoring.health_api import HealthAPIServer
+
         srv = HealthAPIServer("127.0.0.1", 0)
         srv.server = None
         # Should not raise
@@ -1081,6 +1125,7 @@ class TestModuleFunctions:
 
     def test_start_health_api(self):
         import utils.monitoring.health_api as mod
+
         old = mod._health_server
         mod._health_server = None
         try:
@@ -1093,6 +1138,7 @@ class TestModuleFunctions:
 
     def test_stop_health_api(self):
         import utils.monitoring.health_api as mod
+
         mock_server = MagicMock()
         old = mod._health_server
         mod._health_server = mock_server
@@ -1105,6 +1151,7 @@ class TestModuleFunctions:
 
     def test_stop_health_api_when_none(self):
         import utils.monitoring.health_api as mod
+
         old = mod._health_server
         mod._health_server = None
         try:
@@ -1156,9 +1203,11 @@ class TestUpdateHealthLoop:
                 raise asyncio.CancelledError()
             await original_sleep(0)
 
-        with patch("asyncio.sleep", side_effect=limited_sleep), \
-             patch("utils.monitoring.health_api.GO_HEALTH_API_URL", "http://127.0.0.1:1/h"), \
-             patch("utils.monitoring.health_api.GO_URL_FETCHER_URL", "http://127.0.0.1:1/h"):
+        with (
+            patch("asyncio.sleep", side_effect=limited_sleep),
+            patch("utils.monitoring.health_api.GO_HEALTH_API_URL", "http://127.0.0.1:1/h"),
+            patch("utils.monitoring.health_api.GO_URL_FETCHER_URL", "http://127.0.0.1:1/h"),
+        ):
             await update_health_loop(mock_bot, interval=0)
 
     @pytest.mark.asyncio
@@ -1196,8 +1245,10 @@ class TestSetupHealthHooks:
         from utils.monitoring.health_api import setup_health_hooks
 
         mock_bot = MagicMock()
-        mock_bot._health_on_message_set = False
-        del mock_bot._health_on_message_set  # hasattr will be False
+        # New idempotency flag is `_health_hooks_registered`. MagicMock's
+        # default getattr returns a Mock truthy object, so we must set
+        # the attribute to False explicitly.
+        mock_bot._health_hooks_registered = False
 
         setup_health_hooks(mock_bot)
 
@@ -1208,12 +1259,12 @@ class TestSetupHealthHooks:
         from utils.monitoring.health_api import setup_health_hooks
 
         mock_bot = MagicMock()
-        mock_bot._health_on_message_set = True
+        mock_bot._health_hooks_registered = True
 
         setup_health_hooks(mock_bot)
 
-        # Only on_ready listener should be registered (message/command skipped)
-        assert mock_bot.listen.call_count == 1
+        # Already registered → nothing new should be added.
+        assert mock_bot.listen.call_count == 0
 
     @pytest.mark.asyncio
     async def test_on_ready_callback(self):
@@ -1225,7 +1276,9 @@ class TestSetupHealthHooks:
         mock_bot.latency = 0.01
         mock_bot.guilds = []
         mock_bot.cogs.keys.return_value = []
-        del mock_bot._health_on_message_set  # ensure hasattr is False
+        # New idempotency flag is `_health_hooks_registered`; force False
+        # so setup_health_hooks doesn't early-return.
+        mock_bot._health_hooks_registered = False
 
         callbacks = {}
 
@@ -1233,6 +1286,7 @@ class TestSetupHealthHooks:
             def decorator(func):
                 callbacks[event_name] = func
                 return func
+
             return decorator
 
         mock_bot.listen = capture_listen
@@ -1249,7 +1303,8 @@ class TestSetupHealthHooks:
         from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
-        del mock_bot._health_on_message_set
+        # New idempotency flag is `_health_hooks_registered`.
+        mock_bot._health_hooks_registered = False
 
         callbacks = {}
 
@@ -1257,6 +1312,7 @@ class TestSetupHealthHooks:
             def decorator(func):
                 callbacks[event_name] = func
                 return func
+
             return decorator
 
         mock_bot.listen = capture_listen
@@ -1272,7 +1328,8 @@ class TestSetupHealthHooks:
         from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
-        del mock_bot._health_on_message_set
+        # New idempotency flag is `_health_hooks_registered`.
+        mock_bot._health_hooks_registered = False
 
         callbacks = {}
 
@@ -1280,6 +1337,7 @@ class TestSetupHealthHooks:
             def decorator(func):
                 callbacks[event_name] = func
                 return func
+
             return decorator
 
         mock_bot.listen = capture_listen
@@ -1295,7 +1353,8 @@ class TestSetupHealthHooks:
         from utils.monitoring.health_api import health_data, setup_health_hooks
 
         mock_bot = MagicMock()
-        del mock_bot._health_on_message_set
+        # New idempotency flag is `_health_hooks_registered`.
+        mock_bot._health_hooks_registered = False
 
         callbacks = {}
 
@@ -1303,6 +1362,7 @@ class TestSetupHealthHooks:
             def decorator(func):
                 callbacks[event_name] = func
                 return func
+
             return decorator
 
         mock_bot.listen = capture_listen
@@ -1337,14 +1397,17 @@ class TestServiceHealthChecks:
         class FakeCtx:
             async def __aenter__(self):
                 return mock_resp
+
             async def __aexit__(self, *args):
                 return False
 
         class FakeSession:
             def get(self, url, **kw):
                 return FakeCtx()
+
             async def __aenter__(self):
                 return self
+
             async def __aexit__(self, *args):
                 return False
 
@@ -1356,8 +1419,10 @@ class TestServiceHealthChecks:
             if call_count >= 1:
                 raise asyncio.CancelledError()
 
-        with patch("asyncio.sleep", side_effect=limited_sleep), \
-             patch("aiohttp.ClientSession", return_value=FakeSession()):
+        with (
+            patch("asyncio.sleep", side_effect=limited_sleep),
+            patch("aiohttp.ClientSession", return_value=FakeSession()),
+        ):
             await update_health_loop(mock_bot, interval=0)
 
         # Service should be marked healthy
@@ -1381,14 +1446,17 @@ class TestServiceHealthChecks:
         class FakeCtx:
             async def __aenter__(self):
                 return mock_resp
+
             async def __aexit__(self, *args):
                 return False
 
         class FakeSession:
             def get(self, url, **kw):
                 return FakeCtx()
+
             async def __aenter__(self):
                 return self
+
             async def __aexit__(self, *args):
                 return False
 
@@ -1400,8 +1468,10 @@ class TestServiceHealthChecks:
             if call_count >= 1:
                 raise asyncio.CancelledError()
 
-        with patch("asyncio.sleep", side_effect=limited_sleep), \
-             patch("aiohttp.ClientSession", return_value=FakeSession()):
+        with (
+            patch("asyncio.sleep", side_effect=limited_sleep),
+            patch("aiohttp.ClientSession", return_value=FakeSession()),
+        ):
             await update_health_loop(mock_bot, interval=0)
 
         for svc in health_data.service_health.values():
@@ -1417,8 +1487,10 @@ class TestDeepHealthCheckEdge:
     def test_deep_check_db_exception(self):
         """Test database check exception path (lines 687-689)."""
         h = _make_handler("/health/deep")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
-             patch("pathlib.Path.exists", side_effect=PermissionError("no access")):
+        with (
+            patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""),
+            patch("pathlib.Path.exists", side_effect=PermissionError("no access")),
+        ):
             h.do_GET()
         body = json.loads(_handler_body(h))
         assert body["checks"]["database"]["status"] == "error"
@@ -1426,8 +1498,10 @@ class TestDeepHealthCheckEdge:
     def test_deep_check_filesystem_error(self):
         """Test filesystem check exception path (lines 712-713)."""
         h = _make_handler("/health/deep")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""), \
-             patch("pathlib.Path.mkdir", side_effect=PermissionError("read-only")):
+        with (
+            patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""),
+            patch("pathlib.Path.mkdir", side_effect=PermissionError("read-only")),
+        ):
             h.do_GET()
         body = json.loads(_handler_body(h))
         assert body["checks"]["filesystem"]["status"] == "error"
@@ -1437,16 +1511,18 @@ class TestDeepHealthCheckEdge:
 # Merged from test_health_api_module.py
 # ======================================================================
 
+
 class TestHealthApiConstants:
     """Test module constants."""
 
     def test_health_api_port_default(self):
         """Test default health API port."""
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             # Force reimport with cleared env
             import importlib
 
             import utils.monitoring.health_api as health_api_module
+
             importlib.reload(health_api_module)
 
             # Default should be 8080
@@ -1454,10 +1530,11 @@ class TestHealthApiConstants:
 
     def test_health_api_host_default(self):
         """Test default health API host."""
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             import importlib
 
             import utils.monitoring.health_api as health_api_module
+
             importlib.reload(health_api_module)
 
             # Default should be 127.0.0.1 (localhost only for security)
@@ -1490,9 +1567,9 @@ class TestBotHealthDataInit:
         """Test BotHealthData has start time."""
         from utils.monitoring.health_api import BotHealthData
 
-        before = datetime.now()
+        before = datetime.now(timezone.utc)
         health = BotHealthData()
-        after = datetime.now()
+        after = datetime.now(timezone.utc)
 
         assert before <= health.start_time <= after
 
@@ -1500,9 +1577,9 @@ class TestBotHealthDataInit:
         """Test BotHealthData has last heartbeat."""
         from utils.monitoring.health_api import BotHealthData
 
-        before = datetime.now()
+        before = datetime.now(timezone.utc)
         health = BotHealthData()
-        after = datetime.now()
+        after = datetime.now(timezone.utc)
 
         assert before <= health.last_heartbeat <= after
 
@@ -1536,6 +1613,7 @@ class TestBotHealthDataUpdateFromBot:
         mock_bot.is_ready.return_value = False
 
         import time
+
         time.sleep(0.01)
         health.update_from_bot(mock_bot)
 
@@ -1627,7 +1705,7 @@ class TestBotHealthDataUptime:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(seconds=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(seconds=30)
 
         uptime_str = health.get_uptime_str()
 
@@ -1639,7 +1717,7 @@ class TestBotHealthDataUptime:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(minutes=5, seconds=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=30)
 
         uptime_str = health.get_uptime_str()
 
@@ -1651,7 +1729,7 @@ class TestBotHealthDataUptime:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(hours=2, minutes=30)
+        health.start_time = datetime.now(timezone.utc) - timedelta(hours=2, minutes=30)
 
         uptime_str = health.get_uptime_str()
 
@@ -1663,7 +1741,7 @@ class TestBotHealthDataUptime:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.start_time = datetime.now() - timedelta(days=3, hours=5)
+        health.start_time = datetime.now(timezone.utc) - timedelta(days=3, hours=5)
 
         uptime_str = health.get_uptime_str()
 
@@ -1683,7 +1761,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 10.5
             mock_proc.return_value.memory_info.return_value.rss = 100 * 1024 * 1024
             mock_proc.return_value.num_threads.return_value = 4
@@ -1698,7 +1776,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -1714,7 +1792,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -1735,7 +1813,7 @@ class TestBotHealthDataToDict:
         health.command_count = 50
         health.error_count = 5
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -1753,7 +1831,7 @@ class TestBotHealthDataToDict:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 25.5
             mock_proc.return_value.memory_info.return_value.rss = 512 * 1024 * 1024
             mock_proc.return_value.num_threads.return_value = 8
@@ -1788,7 +1866,7 @@ class TestBotHealthDataIsHealthy:
         health = BotHealthData()
         health.is_ready = True
         health.latency_ms = 50
-        health.last_heartbeat = datetime.now() - timedelta(seconds=120)
+        health.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=120)
 
         assert health.is_healthy() is False
 
@@ -1799,7 +1877,7 @@ class TestBotHealthDataIsHealthy:
         health = BotHealthData()
         health.is_ready = True
         health.latency_ms = 6000  # 6 seconds
-        health.last_heartbeat = datetime.now()
+        health.last_heartbeat = datetime.now(timezone.utc)
 
         assert health.is_healthy() is False
 
@@ -1810,7 +1888,7 @@ class TestBotHealthDataIsHealthy:
         health = BotHealthData()
         health.is_ready = True
         health.latency_ms = 50
-        health.last_heartbeat = datetime.now()
+        health.last_heartbeat = datetime.now(timezone.utc)
 
         assert health.is_healthy() is True
 
@@ -1852,7 +1930,7 @@ class TestBotHealthDataGetAiPerformanceStats:
         mock_ai_cog = MagicMock()
         mock_ai_cog.chat_manager.get_performance_stats.return_value = {
             "total_requests": 100,
-            "avg_response_time": 1.5
+            "avg_response_time": 1.5,
         }
         mock_bot.cogs = {"AI": mock_ai_cog}
         health.bot = mock_bot
@@ -1948,7 +2026,7 @@ class TestHealthyStatus:
         health = BotHealthData()
         health.is_ready = False
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -1964,7 +2042,7 @@ class TestHealthyStatus:
         health = BotHealthData()
         health.is_ready = True
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -1986,7 +2064,7 @@ class TestTimestamp:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -2003,7 +2081,7 @@ class TestTimestamp:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -2027,7 +2105,7 @@ class TestHeartbeat:
 
         health = BotHealthData()
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -2043,9 +2121,9 @@ class TestHeartbeat:
         from utils.monitoring.health_api import BotHealthData
 
         health = BotHealthData()
-        health.last_heartbeat = datetime.now() - timedelta(seconds=30)
+        health.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=30)
 
-        with patch('utils.monitoring.health_api.psutil.Process') as mock_proc:
+        with patch("utils.monitoring.health_api.psutil.Process") as mock_proc:
             mock_proc.return_value.cpu_percent.return_value = 0
             mock_proc.return_value.memory_info.return_value.rss = 0
             mock_proc.return_value.num_threads.return_value = 1
@@ -2059,6 +2137,7 @@ class TestHeartbeat:
 # ======================================================================
 # Merged from test_health_api_more.py
 # ======================================================================
+
 
 class TestBotHealthDataCounters:
     """Additional tests for BotHealthData counters."""
@@ -2239,7 +2318,11 @@ class TestBotHealthDataGuilds:
         mock_bot = MagicMock()
         mock_bot.is_ready.return_value = True
         mock_bot.latency = 0.05
-        mock_bot.guilds = [MagicMock(member_count=50), MagicMock(member_count=100), MagicMock(member_count=25)]
+        mock_bot.guilds = [
+            MagicMock(member_count=50),
+            MagicMock(member_count=100),
+            MagicMock(member_count=25),
+        ]
         mock_bot.cogs = {}
 
         health.update_from_bot(mock_bot)
@@ -2260,7 +2343,7 @@ class TestBotHealthDataUptimeEdgeCases:
             return
 
         health = BotHealthData()
-        health.start_time = datetime.now()
+        health.start_time = datetime.now(timezone.utc)
 
         uptime_str = health.get_uptime_str()
 

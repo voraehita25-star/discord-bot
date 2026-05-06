@@ -5,7 +5,6 @@ Comprehensive tests for IntentDetector and related classes.
 """
 
 
-
 class TestIntentEnum:
     """Tests for Intent enum."""
 
@@ -262,9 +261,7 @@ class TestIntentDetectorHelpers:
 
         detector = IntentDetector()
         # Use a longer complex message that doesn't start with greeting
-        result = detector.is_simple_greeting(
-            "นี่คือคำถามที่ยาวมากเกี่ยวกับหัวข้อที่ซับซ้อนซึ่งต้องการคำตอบที่ละเอียด"
-        )
+        result = detector.is_simple_greeting("นี่คือคำถามที่ยาวมากเกี่ยวกับหัวข้อที่ซับซ้อนซึ่งต้องการคำตอบที่ละเอียด")
 
         assert result is False
 

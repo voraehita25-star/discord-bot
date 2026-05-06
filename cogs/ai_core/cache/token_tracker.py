@@ -9,10 +9,28 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..data.constants import DEFAULT_MODEL
+
+logger = logging.getLogger(__name__)
+
+
+def _aware_now() -> datetime:
+    """Tz-aware UTC now. Naive datetime.now() compared against tz-aware
+    timestamps loaded from the DB raises TypeError, which silently breaks
+    rolling-window queries — use this everywhere instead."""
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(dt: datetime) -> datetime:
+    """Promote a naive datetime to UTC. Used for legacy DB rows that may not
+    carry an offset."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 
 # Try to import database
 try:
@@ -52,6 +70,22 @@ class TokenUsage:
         - Gemini: https://ai.google.dev/pricing
         """
         model_lower = (self.model or "").lower()
+        # Explicit per-model rates checked by *prefix* so dated suffixes
+        # (e.g. ``claude-opus-4-7-20251001``) match the canonical id
+        # (``claude-opus-4-7``). Order matters: longer/more-specific
+        # prefixes must come first.
+        # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
+        _CLAUDE_PRICING: tuple[tuple[str, tuple[float, float]], ...] = (
+            ("claude-opus-4-7", (15.0, 75.0)),
+            ("claude-sonnet-4-6", (3.0, 15.0)),
+            ("claude-haiku-4-5", (0.80, 4.0)),
+        )
+        for _prefix, (_in, _out) in _CLAUDE_PRICING:
+            if model_lower.startswith(_prefix):
+                input_rate = _in / 1_000_000
+                output_rate = _out / 1_000_000
+                return self.input_tokens * input_rate + self.output_tokens * output_rate
+        # Family-level fallbacks for older / undated names.
         # Claude Opus 4.x family (~$15 input / $75 output per 1M tokens)
         if "opus" in model_lower:
             input_rate = 15.0 / 1_000_000
@@ -61,13 +95,34 @@ class TokenUsage:
             input_rate = 3.0 / 1_000_000
             output_rate = 15.0 / 1_000_000
         # Claude Haiku family (~$0.80 input / $4 output per 1M)
-        elif "haiku" in model_lower or "claude" in model_lower:
+        elif "haiku" in model_lower:
             input_rate = 0.80 / 1_000_000
             output_rate = 4.0 / 1_000_000
-        # Gemini (default fallback — cheapest tier)
-        else:
+        # Unknown Claude model — log a warning and conservatively use Sonnet
+        # rates so we don't silently undercharge an Opus-class request.
+        elif "claude" in model_lower:
+            logger.warning(
+                "Unrecognized Claude model %r — defaulting to Sonnet pricing for cost estimate",
+                self.model,
+            )
+            input_rate = 3.0 / 1_000_000
+            output_rate = 15.0 / 1_000_000
+        # Gemini explicitly — Flash tier rates
+        elif "gemini" in model_lower or "google" in model_lower:
             input_rate = 0.10 / 1_000_000
             output_rate = 0.40 / 1_000_000
+        # Unknown provider — log loudly. Prior behaviour silently billed
+        # OpenAI/o3/etc. at Gemini Flash rates (~100x under-report). Use a
+        # mid-tier rate (Sonnet-like) so the estimate at least flags as
+        # non-trivial cost while the operator investigates.
+        else:
+            logger.warning(
+                "Unknown AI model %r — token cost estimate will use generic mid-tier rate. "
+                "Add explicit pricing in cogs/ai_core/cache/token_tracker.py.",
+                self.model,
+            )
+            input_rate = 3.0 / 1_000_000
+            output_rate = 15.0 / 1_000_000
         return self.input_tokens * input_rate + self.output_tokens * output_rate
 
 
@@ -123,6 +178,96 @@ class TokenTracker:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self.logger.info("📊 Token tracker cleanup task started")
 
+    async def init_from_db(self, hours: int = 24, max_rows: int = 10_000) -> int:
+        """Pre-populate the in-memory cache from the ``token_usage`` table.
+
+        Quotas are enforced against ``_usage_cache``, which is empty after a
+        process restart — so without this call, ``check_limits`` would let a
+        user blow past their hourly limit until enough new requests refilled
+        the cache. We replay the last ``hours`` worth of recorded usage so
+        post-restart quotas line up with what was already spent.
+
+        Returns the number of records loaded. Called from bot startup; safe
+        to call multiple times (each call re-reads from DB, replacing any
+        records currently in the same time window).
+        """
+        if not DB_AVAILABLE or db is None:
+            return 0
+
+        cutoff = _aware_now() - timedelta(hours=hours)
+        try:
+            async with db.get_connection() as conn:
+                # ORDER BY ASC so the trim-from-front logic at the end keeps
+                # the NEWEST records (the tail), matching the eviction
+                # semantics _record_usage relies on. Previously the DESC
+                # order combined with `[-MAX_RECORDS_PER_KEY:]` kept the
+                # oldest records, which is the opposite of intent.
+                cursor = await conn.execute(
+                    """SELECT user_id, channel_id, guild_id, input_tokens,
+                              output_tokens, model, cached, created_at
+                       FROM token_usage
+                       WHERE created_at >= ?
+                       ORDER BY created_at ASC
+                       LIMIT ?""",
+                    (cutoff.isoformat(), max_rows),
+                )
+                rows = await cursor.fetchall()
+        except Exception as e:
+            self.logger.warning("Failed to load token_usage history: %s", e)
+            return 0
+
+        if not rows:
+            return 0
+
+        loaded = 0
+        async with self._lock:
+            # Idempotency: clear existing entries within the replay window so
+            # repeated calls don't double-count the same DB rows. We rebuild
+            # only the windowed slice; older records (outside [cutoff, now])
+            # in the cache stay untouched in case _record_usage produced any
+            # in-memory entries in the meantime.
+            for cache_key in list(self._usage_cache.keys()):
+                self._usage_cache[cache_key] = [
+                    u for u in self._usage_cache[cache_key] if u.timestamp < cutoff
+                ]
+
+            for row in rows:
+                try:
+                    ts_raw = row[7]
+                    ts = (
+                        _ensure_aware(datetime.fromisoformat(ts_raw))
+                        if isinstance(ts_raw, str)
+                        else _aware_now()
+                    )
+                    usage = TokenUsage(
+                        user_id=int(row[0]),
+                        channel_id=int(row[1]),
+                        guild_id=int(row[2]) if row[2] is not None else None,
+                        input_tokens=int(row[3] or 0),
+                        output_tokens=int(row[4] or 0),
+                        model=row[5] or DEFAULT_MODEL,
+                        cached=bool(row[6]),
+                        timestamp=ts,
+                    )
+                except (TypeError, ValueError) as e:
+                    self.logger.debug("Skipping malformed token_usage row: %s", e)
+                    continue
+
+                self._usage_cache[f"user:{usage.user_id}"].append(usage)
+                self._usage_cache[f"channel:{usage.channel_id}"].append(usage)
+                if usage.guild_id is not None:
+                    self._usage_cache[f"guild:{usage.guild_id}"].append(usage)
+                loaded += 1
+
+            # Trim each key to the cap in case the DB had more than
+            # MAX_RECORDS_PER_KEY rows for one user.
+            for key in self._usage_cache:
+                if len(self._usage_cache[key]) > self.MAX_RECORDS_PER_KEY:
+                    self._usage_cache[key] = self._usage_cache[key][-self.MAX_RECORDS_PER_KEY :]
+
+        self.logger.info("📊 Token tracker pre-populated: %d records from last %dh", loaded, hours)
+        return loaded
+
     def stop_cleanup_task(self) -> None:
         """Stop the cleanup task."""
         if self._cleanup_task and not self._cleanup_task.done():
@@ -143,10 +288,12 @@ class TokenTracker:
 
     async def _cleanup_old_records(self) -> None:
         """Remove records older than 7 days from memory cache."""
-        cutoff = datetime.now() - timedelta(days=7)
+        cutoff = _aware_now() - timedelta(days=7)
         async with self._lock:
             for key in list(self._usage_cache.keys()):
-                self._usage_cache[key] = [u for u in self._usage_cache[key] if u.timestamp > cutoff]
+                self._usage_cache[key] = [
+                    u for u in self._usage_cache[key] if _ensure_aware(u.timestamp) > cutoff
+                ]
                 if not self._usage_cache[key]:
                     del self._usage_cache[key]
         self.logger.debug("🧹 Cleaned up old token usage records")
@@ -163,20 +310,28 @@ class TokenTracker:
             user_key = f"user:{usage.user_id}"
             self._usage_cache[user_key].append(usage)
             if len(self._usage_cache[user_key]) > self.MAX_RECORDS_PER_KEY:
-                self._usage_cache[user_key] = self._usage_cache[user_key][-self.MAX_RECORDS_PER_KEY:]
+                self._usage_cache[user_key] = self._usage_cache[user_key][
+                    -self.MAX_RECORDS_PER_KEY :
+                ]
 
             # Store by channel
             channel_key = f"channel:{usage.channel_id}"
             self._usage_cache[channel_key].append(usage)
             if len(self._usage_cache[channel_key]) > self.MAX_RECORDS_PER_KEY:
-                self._usage_cache[channel_key] = self._usage_cache[channel_key][-self.MAX_RECORDS_PER_KEY:]
+                self._usage_cache[channel_key] = self._usage_cache[channel_key][
+                    -self.MAX_RECORDS_PER_KEY :
+                ]
 
-            # Store by guild if available
-            if usage.guild_id:
+            # Store by guild if available. Use `is not None` because guild
+            # IDs are always positive Discord snowflakes, but `if usage.guild_id`
+            # would also drop a hypothetical 0 — better to be explicit.
+            if usage.guild_id is not None:
                 guild_key = f"guild:{usage.guild_id}"
                 self._usage_cache[guild_key].append(usage)
                 if len(self._usage_cache[guild_key]) > self.MAX_RECORDS_PER_KEY:
-                    self._usage_cache[guild_key] = self._usage_cache[guild_key][-self.MAX_RECORDS_PER_KEY:]
+                    self._usage_cache[guild_key] = self._usage_cache[guild_key][
+                        -self.MAX_RECORDS_PER_KEY :
+                    ]
 
         # Persist to database if available
         if DB_AVAILABLE:
@@ -220,10 +375,10 @@ class TokenTracker:
 
     def _get_usage_in_period(self, key: str, period: timedelta) -> list[TokenUsage]:
         """Get usage records within a time period (returns snapshot, caller should use with lock if needed)."""
-        cutoff = datetime.now() - period
+        cutoff = _aware_now() - period
         # Return a copy to avoid modification during iteration
         records = self._usage_cache.get(key, [])
-        return [u for u in records if u.timestamp > cutoff]
+        return [u for u in records if _ensure_aware(u.timestamp) > cutoff]
 
     async def get_usage_in_period_safe(self, key: str, period: timedelta) -> list[TokenUsage]:
         """Thread-safe version of _get_usage_in_period."""
@@ -332,12 +487,14 @@ class TokenTracker:
             if guild_stats.total_tokens >= self.limits.daily_guild_tokens:
                 return False, "⚠️ เซิร์ฟเวอร์นี้ใช้โควต้าหมดแล้ววันนี้"
 
-        # Check for warning threshold
+        # Check for warning threshold. Treat daily_user_tokens<=0 as
+        # "unlimited" rather than crashing with ZeroDivisionError.
         warning = None
-        usage_ratio = daily_stats.total_tokens / self.limits.daily_user_tokens
-        if usage_ratio >= self.limits.warning_threshold:
-            remaining = self.limits.daily_user_tokens - daily_stats.total_tokens
-            warning = f"💡 เหลือโควต้าวันนี้ประมาณ {remaining:,} tokens"
+        if self.limits.daily_user_tokens > 0:
+            usage_ratio = daily_stats.total_tokens / self.limits.daily_user_tokens
+            if usage_ratio >= self.limits.warning_threshold:
+                remaining = self.limits.daily_user_tokens - daily_stats.total_tokens
+                warning = f"💡 เหลือโควต้าวันนี้ประมาณ {remaining:,} tokens"
 
         return True, warning
 

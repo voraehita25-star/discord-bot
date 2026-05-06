@@ -68,13 +68,17 @@ def mock_db():
 # Conversation handlers
 # ===================================================================
 
+
 class TestListConversations:
     @pytest.mark.asyncio
     async def test_list_conversations_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_list_conversations
+
         mock_db.get_dashboard_conversations.return_value = [{"id": "c1", "title": "Test"}]
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_list_conversations(ws)
         assert ws.last()["type"] == "conversations_list"
         assert len(ws.last()["conversations"]) == 1
@@ -82,6 +86,7 @@ class TestListConversations:
     @pytest.mark.asyncio
     async def test_list_conversations_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_list_conversations
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
             await handle_list_conversations(ws)
         assert ws.last()["type"] == "conversations_list"
@@ -90,9 +95,12 @@ class TestListConversations:
     @pytest.mark.asyncio
     async def test_list_conversations_db_error(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_list_conversations
+
         mock_db.get_dashboard_conversations.side_effect = RuntimeError("DB error")
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_list_conversations(ws)
         assert ws.last()["type"] == "error"
         assert ws.last()["code"] == "INTERNAL_ERROR"
@@ -102,30 +110,38 @@ class TestLoadConversation:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
         await handle_load_conversation(ws, {})
         assert ws.last()["code"] == "MISSING_ID"
 
     @pytest.mark.asyncio
     async def test_invalid_id_format(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
         await handle_load_conversation(ws, {"id": "conv!@#$"})
         assert ws.last()["code"] == "INVALID_ID"
 
     @pytest.mark.asyncio
     async def test_conversation_not_found(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_load_conversation(ws, {"id": "nonexistent"})
         assert ws.last()["code"] == "CONV_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_load_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
         mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
         mock_db.get_dashboard_messages.return_value = [{"content": "hello"}]
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_load_conversation(ws, {"id": "c1"})
         assert ws.last()["type"] == "conversation_loaded"
 
@@ -134,6 +150,7 @@ class TestDeleteConversation:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_conversation
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_delete_conversation(ws, {})
         assert ws.last()["code"] == "CANNOT_DELETE"
@@ -141,6 +158,7 @@ class TestDeleteConversation:
     @pytest.mark.asyncio
     async def test_invalid_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_conversation
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_delete_conversation(ws, {"id": "bad!id"})
         assert ws.last()["code"] == "INVALID_ID"
@@ -148,8 +166,11 @@ class TestDeleteConversation:
     @pytest.mark.asyncio
     async def test_delete_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_conversation
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_delete_conversation(ws, {"id": "c1"})
         assert ws.last()["type"] == "conversation_deleted"
 
@@ -158,6 +179,7 @@ class TestStarConversation:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_star_conversation
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_star_conversation(ws, {})
         assert ws.last()["code"] == "CANNOT_UPDATE"
@@ -165,8 +187,11 @@ class TestStarConversation:
     @pytest.mark.asyncio
     async def test_star_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_star_conversation
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_star_conversation(ws, {"id": "c1", "starred": True})
         assert ws.last()["type"] == "conversation_starred"
         assert ws.last()["starred"] is True
@@ -176,6 +201,7 @@ class TestRenameConversation:
     @pytest.mark.asyncio
     async def test_missing_fields(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_rename_conversation
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_rename_conversation(ws, {"id": "c1"})
         assert ws.last()["code"] == "CANNOT_RENAME"
@@ -183,6 +209,7 @@ class TestRenameConversation:
     @pytest.mark.asyncio
     async def test_title_too_long(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_rename_conversation
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_rename_conversation(ws, {"id": "c1", "title": "A" * 201})
         assert ws.last()["code"] == "TITLE_TOO_LONG"
@@ -190,8 +217,11 @@ class TestRenameConversation:
     @pytest.mark.asyncio
     async def test_rename_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_rename_conversation
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_rename_conversation(ws, {"id": "c1", "title": "New Title"})
         assert ws.last()["type"] == "conversation_renamed"
         assert ws.last()["title"] == "New Title"
@@ -199,8 +229,11 @@ class TestRenameConversation:
     @pytest.mark.asyncio
     async def test_title_strips_non_printable(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_rename_conversation
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_rename_conversation(ws, {"id": "c1", "title": "Good\x00Title"})
         assert ws.last()["title"] == "GoodTitle"
 
@@ -209,15 +242,19 @@ class TestExportConversation:
     @pytest.mark.asyncio
     async def test_invalid_format(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_export_conversation
+
         await handle_export_conversation(ws, {"id": "c1", "format": "xml"})
         assert ws.last()["code"] == "INVALID_FORMAT"
 
     @pytest.mark.asyncio
     async def test_export_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_export_conversation
+
         mock_db.export_dashboard_conversation.return_value = {"messages": []}
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_export_conversation(ws, {"id": "c1", "format": "json"})
         assert ws.last()["type"] == "conversation_exported"
 
@@ -226,10 +263,12 @@ class TestExportConversation:
 # Message handlers
 # ===================================================================
 
+
 class TestEditMessage:
     @pytest.mark.asyncio
     async def test_missing_data(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_edit_message(ws, {})
         assert ws.last()["code"] == "CANNOT_EDIT"
@@ -237,6 +276,7 @@ class TestEditMessage:
     @pytest.mark.asyncio
     async def test_content_too_long(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_edit_message(ws, {"message_id": "1", "content": "A" * 50_001})
         assert ws.last()["code"] == "CONTENT_TOO_LONG"
@@ -244,6 +284,7 @@ class TestEditMessage:
     @pytest.mark.asyncio
     async def test_invalid_message_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_edit_message(ws, {"message_id": "abc", "content": "test"})
         assert ws.last()["code"] == "INVALID_ID"
@@ -251,36 +292,102 @@ class TestEditMessage:
     @pytest.mark.asyncio
     async def test_message_not_found(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
         mock_db.update_dashboard_message.return_value = False
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_edit_message(ws, {"message_id": "1", "content": "new"})
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_edit_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_edit_message(ws, {"message_id": "1", "content": "updated"})
         assert ws.last()["type"] == "message_edited"
 
     @pytest.mark.asyncio
     async def test_edit_with_regenerate(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
         mock_db.delete_dashboard_messages_after.return_value = 3
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_edit_message(ws, {
-                "message_id": "1", "content": "edit", "regenerate": True, "conversation_id": "c1"
-            })
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_edit_message(
+                ws,
+                {"message_id": "1", "content": "edit", "regenerate": True, "conversation_id": "c1"},
+            )
         assert ws.last()["deleted_after"] == 3
+
+    @pytest.mark.asyncio
+    async def test_edit_resets_cli_session_so_resume_does_not_replay_old(self, ws, mock_db):
+        """Save & Regenerate must drop the Claude CLI session pointer.
+        Without this, the next CLI turn would --resume the original .jsonl
+        and replay the pre-edit assistant reply as if nothing changed —
+        which is exactly the "old chat keeps coming back" symptom users hit.
+        """
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "old-session-id"
+        try:
+            with (
+                patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+                patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            ):
+                await handle_edit_message(
+                    ws,
+                    {
+                        "message_id": "1",
+                        "content": "edit",
+                        "regenerate": True,
+                        "conversation_id": "c1",
+                    },
+                )
+            assert "c1" not in cli_mod._CONVERSATION_SESSIONS
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+
+    @pytest.mark.asyncio
+    async def test_plain_edit_also_resets_cli_session(self, ws, mock_db):
+        """Even without regenerate=True the DB content diverges from the
+        Claude --resume transcript, so the session pointer must be dropped."""
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_edit_message
+
+        cli_mod._CONVERSATION_SESSIONS["c2"] = "stale"
+        try:
+            with (
+                patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+                patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            ):
+                await handle_edit_message(
+                    ws,
+                    {
+                        "message_id": "5",
+                        "content": "fix typo",
+                        "regenerate": False,
+                        "conversation_id": "c2",
+                    },
+                )
+            assert "c2" not in cli_mod._CONVERSATION_SESSIONS
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c2", None)
 
 
 class TestDeleteMessage:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_delete_message(ws, {})
         assert ws.last()["code"] == "CANNOT_DELETE"
@@ -288,28 +395,57 @@ class TestDeleteMessage:
     @pytest.mark.asyncio
     async def test_message_not_found(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_message
+
         mock_db.delete_dashboard_message.return_value = None
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_delete_message(ws, {"message_id": "999"})
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_delete_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_delete_message(ws, {"message_id": "1"})
         assert ws.last()["type"] == "message_deleted"
 
     @pytest.mark.asyncio
+    async def test_delete_resets_cli_session(self, ws, mock_db):
+        """Deleting a message in the middle of a conversation diverges the DB
+        from the Claude --resume transcript — the session pointer must drop
+        so the next CLI turn starts fresh."""
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+        from cogs.ai_core.api.dashboard_handlers import handle_delete_message
+
+        mock_db.delete_dashboard_message.return_value = "c3"
+        cli_mod._CONVERSATION_SESSIONS["c3"] = "stale-session"
+        try:
+            with (
+                patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+                patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            ):
+                await handle_delete_message(ws, {"message_id": "1"})
+            assert "c3" not in cli_mod._CONVERSATION_SESSIONS
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c3", None)
+
+    @pytest.mark.asyncio
     async def test_delete_with_pair(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_delete_message(ws, {
-                "message_id": "1", "delete_pair": True, "pair_message_id": "2"
-            })
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_delete_message(
+                ws, {"message_id": "1", "delete_pair": True, "pair_message_id": "2"}
+            )
         assert ws.last()["pair_message_id"] == "2"
 
 
@@ -319,6 +455,7 @@ class TestPinMessage:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_pin_message(ws, {})
         assert ws.last()["code"] == "CANNOT_PIN"
@@ -326,14 +463,18 @@ class TestPinMessage:
     @pytest.mark.asyncio
     async def test_invalid_id_format(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "not-a-number"})
         assert ws.last()["code"] == "INVALID_ID"
 
     @pytest.mark.asyncio
     async def test_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
             await handle_pin_message(ws, {"message_id": "1", "pinned": True})
         assert ws.last()["code"] == "CANNOT_PIN"
@@ -341,17 +482,23 @@ class TestPinMessage:
     @pytest.mark.asyncio
     async def test_message_not_found(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
         mock_db.update_dashboard_message_pin.return_value = False
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "999", "pinned": True})
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_pin_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "42", "pinned": True})
         last = ws.last()
         assert last["type"] == "message_pinned"
@@ -362,8 +509,11 @@ class TestPinMessage:
     @pytest.mark.asyncio
     async def test_unpin_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "42", "pinned": False})
         assert ws.last()["pinned"] is False
         mock_db.update_dashboard_message_pin.assert_awaited_once_with(42, False)
@@ -372,17 +522,23 @@ class TestPinMessage:
     async def test_defaults_to_pinned_true_when_omitted(self, ws, mock_db):
         """If the client omits the `pinned` field, handler defaults to pinning."""
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "42"})
         mock_db.update_dashboard_message_pin.assert_awaited_once_with(42, True)
 
     @pytest.mark.asyncio
     async def test_db_error(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
         mock_db.update_dashboard_message_pin.side_effect = RuntimeError("boom")
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_pin_message(ws, {"message_id": "42", "pinned": True})
         assert ws.last()["code"] == "INTERNAL_ERROR"
 
@@ -391,10 +547,12 @@ class TestPinMessage:
 # Memory handlers
 # ===================================================================
 
+
 class TestSaveMemory:
     @pytest.mark.asyncio
     async def test_empty_content(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_save_memory
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_save_memory(ws, {"content": ""})
         assert ws.last()["code"] == "CANNOT_SAVE_MEMORY"
@@ -402,6 +560,7 @@ class TestSaveMemory:
     @pytest.mark.asyncio
     async def test_content_too_long(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_save_memory
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_save_memory(ws, {"content": "A" * 2001})
         assert ws.last()["code"] == "CONTENT_TOO_LONG"
@@ -409,6 +568,7 @@ class TestSaveMemory:
     @pytest.mark.asyncio
     async def test_category_too_long(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_save_memory
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_save_memory(ws, {"content": "test", "category": "A" * 51})
         assert ws.last()["code"] == "CATEGORY_TOO_LONG"
@@ -416,8 +576,11 @@ class TestSaveMemory:
     @pytest.mark.asyncio
     async def test_save_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_save_memory
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_save_memory(ws, {"content": "Remember this", "category": "notes"})
         assert ws.last()["type"] == "memory_saved"
         assert ws.last()["content"] == "Remember this"
@@ -427,6 +590,7 @@ class TestGetMemories:
     @pytest.mark.asyncio
     async def test_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_get_memories
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
             await handle_get_memories(ws, {})
         assert ws.last()["type"] == "memories"
@@ -435,9 +599,12 @@ class TestGetMemories:
     @pytest.mark.asyncio
     async def test_get_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_get_memories
+
         mock_db.get_dashboard_memories.return_value = [{"id": 1, "content": "test"}]
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_get_memories(ws, {})
         assert len(ws.last()["memories"]) == 1
 
@@ -446,6 +613,7 @@ class TestDeleteMemory:
     @pytest.mark.asyncio
     async def test_missing_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_delete_memory(ws, {})
         assert ws.last()["code"] == "CANNOT_DELETE_MEMORY"
@@ -453,6 +621,7 @@ class TestDeleteMemory:
     @pytest.mark.asyncio
     async def test_invalid_id(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
             await handle_delete_memory(ws, {"id": "abc"})
         assert ws.last()["code"] == "INVALID_ID"
@@ -460,8 +629,11 @@ class TestDeleteMemory:
     @pytest.mark.asyncio
     async def test_delete_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_delete_memory(ws, {"id": 1})
         assert ws.last()["type"] == "memory_deleted"
 
@@ -470,10 +642,12 @@ class TestDeleteMemory:
 # Profile handlers
 # ===================================================================
 
+
 class TestGetProfile:
     @pytest.mark.asyncio
     async def test_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_get_profile
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
             await handle_get_profile(ws)
         assert ws.last()["type"] == "profile"
@@ -482,9 +656,12 @@ class TestGetProfile:
     @pytest.mark.asyncio
     async def test_get_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_get_profile
+
         mock_db.get_dashboard_user_profile.return_value = {"display_name": "User"}
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_get_profile(ws)
         assert ws.last()["profile"]["display_name"] == "User"
 
@@ -493,6 +670,7 @@ class TestSaveProfile:
     @pytest.mark.asyncio
     async def test_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
             await handle_save_profile(ws, {"profile": {}})
         assert ws.last()["code"] == "DB_UNAVAILABLE"
@@ -500,16 +678,22 @@ class TestSaveProfile:
     @pytest.mark.asyncio
     async def test_save_success(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_save_profile
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_save_profile(ws, {"profile": {"display_name": "New Name"}})
         assert ws.last()["type"] == "profile_saved"
 
     @pytest.mark.asyncio
     async def test_save_db_error(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
         mock_db.save_dashboard_user_profile.side_effect = RuntimeError("DB error")
-        with patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db), \
-             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
             await handle_save_profile(ws, {"profile": {"display_name": "Test"}})
         assert ws.last()["code"] == "INTERNAL_ERROR"

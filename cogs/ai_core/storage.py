@@ -6,6 +6,7 @@ Optimized with in-memory caching for better performance.
 
 from __future__ import annotations
 
+import contextlib
 import copy  # For deep copy of cached data
 
 # ==================== Performance: Faster JSON ====================
@@ -28,12 +29,13 @@ def json_dumps(obj, **kwargs):
         return json.dumps(obj, **kwargs)
     return orjson.dumps(obj).decode("utf-8")
 
+
 import asyncio
 import hashlib
 import logging
-logger = logging.getLogger(__name__)
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,7 +49,10 @@ from .data.constants import (
     HISTORY_LIMIT_DEFAULT,
     HISTORY_LIMIT_MAIN,
     HISTORY_LIMIT_RP,
+    MAX_HISTORY_ITEMS,
 )
+
+logger = logging.getLogger(__name__)
 
 # Import database module
 try:
@@ -84,7 +89,6 @@ if os.environ.get("BOT_RUNNING"):
 # ==================== In-Memory Cache ====================
 # TTL cache for history to reduce database reads
 # Optimized for single-user high-RAM setup (32GB+)
-import threading
 
 _history_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[int, tuple[float, dict[str, Any]]] = {}
@@ -131,6 +135,7 @@ def _enforce_cache_size_limit() -> int:
         if len(_history_cache) > MAX_CACHE_SIZE:
             # Use heapq.nsmallest for O(n) instead of full sort O(n log n)
             import heapq
+
             excess = len(_history_cache) - MAX_CACHE_SIZE
             oldest_history: list[tuple[int, HistoryCacheEntry]] = heapq.nsmallest(
                 excess,
@@ -144,6 +149,7 @@ def _enforce_cache_size_limit() -> int:
         # Check metadata cache
         if len(_metadata_cache) > MAX_CACHE_SIZE:
             import heapq
+
             excess = len(_metadata_cache) - MAX_CACHE_SIZE
             oldest_metadata: list[tuple[int, MetadataCacheEntry]] = heapq.nsmallest(
                 excess,
@@ -225,34 +231,127 @@ async def save_history(
     channel_id: int,
     chat_data: dict[str, Any],
     new_entries: list[dict[str, Any]] | None = None,
-) -> None:
-    """Save chat history to database."""
+    force: bool = False,
+) -> bool:
+    """Save chat history to database.
+
+    Returns True if persistence succeeded, False otherwise. Callers that
+    rely on save success to evict in-memory state (e.g. cleanup_inactive_sessions)
+    must check this return value — otherwise a silent DB failure would cause
+    the in-memory data to be discarded while never having been persisted.
+
+    When ``force`` is True, the in-memory ``chat_data["history"]`` is treated
+    as the canonical view and the persisted DB rows are replaced wholesale
+    (used by auto-trim, which mutates history in place and needs to commit
+    that view immediately).
+    """
     if not chat_data:
-        return
+        return True
 
+    # Determine limit based on Guild (optimized for memory). Bot.get_channel /
+    # channel.guild access is best-effort — failures here don't make the save
+    # fail, we just fall back to the default limit.
+    limit = HISTORY_LIMIT_DEFAULT
     try:
-        # Determine limit based on Guild (optimized for memory)
-        limit = HISTORY_LIMIT_DEFAULT
-
         channel = bot.get_channel(channel_id)
         if channel and hasattr(channel, "guild") and channel.guild:
             if channel.guild.id == GUILD_ID_MAIN:
                 limit = HISTORY_LIMIT_MAIN
             elif channel.guild.id == GUILD_ID_RP:
                 limit = HISTORY_LIMIT_RP
-
-        if DATABASE_AVAILABLE:
-            # Use database storage
-            try:
-                await _save_history_db(channel_id, chat_data, limit, new_entries)
-            except aiosqlite.Error as e:
-                logger.error("Database save failed for channel %s: %s", channel_id, e, extra={"event": "db_save_failed", "channel_id": channel_id})
-        else:
-            # Fallback to JSON
-            await _save_history_json(bot, channel_id, chat_data, limit)
-
     except Exception:
-        logger.exception("Failed to save history")
+        logger.debug("Failed to resolve guild for channel %s", channel_id)
+
+    if DATABASE_AVAILABLE:
+        try:
+            if force:
+                await _replace_history_db(channel_id, chat_data, limit)
+            else:
+                await _save_history_db(channel_id, chat_data, limit, new_entries)
+            return True
+        except aiosqlite.Error as e:
+            logger.error(
+                "Database save failed for channel %s: %s",
+                channel_id,
+                e,
+                extra={"event": "db_save_failed", "channel_id": channel_id},
+            )
+            return False
+        except Exception:
+            logger.exception("Unexpected save_history failure for channel %s", channel_id)
+            return False
+
+    try:
+        await _save_history_json(bot, channel_id, chat_data, limit)
+        return True
+    except Exception:
+        logger.exception("JSON history save failed for channel %s", channel_id)
+        return False
+
+
+async def _replace_history_db(
+    channel_id: int,
+    chat_data: dict[str, Any],
+    limit: int,
+) -> None:
+    """Replace the persisted DB history for a channel with the in-memory view.
+
+    Used by save_history(force=True) after auto-trim mutates history.
+    Runs as a single transaction: delete-all then bulk-insert.
+    """
+    history = chat_data.get("history", [])
+
+    # Apply the same cap auto-trim already enforces.
+    if len(history) > MAX_HISTORY_ITEMS:
+        history = history[-MAX_HISTORY_ITEMS:]
+
+    rows: list[tuple[Any, ...]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role", "user")
+        parts = item.get("parts", [])
+        if isinstance(parts, list):
+            content = "\n".join(str(p) for p in parts if p)
+        else:
+            content = str(parts)
+        if not content:
+            continue
+        rows.append(
+            (
+                channel_id,
+                item.get("user_id"),
+                role,
+                content,
+                item.get("message_id"),
+                _normalize_history_timestamp(item.get("timestamp")),
+            )
+        )
+
+    async with db.get_write_connection() as conn:
+        await conn.execute("DELETE FROM ai_history WHERE channel_id = ?", (channel_id,))
+        if rows:
+            insert_rows = []
+            for i, (ch, uid, role, content, mid, ts) in enumerate(rows, start=1):
+                insert_rows.append((ch, uid, role, content, mid, ts, i))
+            await conn.executemany(
+                """INSERT INTO ai_history
+                   (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                insert_rows,
+            )
+        await conn.commit()
+
+    # Save metadata
+    thinking_enabled = chat_data.get("thinking_enabled", True)
+    await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
+    invalidate_cache(channel_id)
+    logger.info(
+        "💾 Force-replaced %d messages for channel %s (limit=%d)",
+        len(rows),
+        channel_id,
+        limit,
+    )
 
 
 async def _save_history_db(
@@ -266,7 +365,7 @@ async def _save_history_db(
     # Fetch enough messages from DB for reliable duplicate checking
     # Using a small limit caused missed duplicates when history was long
     history = chat_data.get("history", [])
-    dedup_limit = max(50, len(history)) if history else 50
+    dedup_limit = max(50, MAX_HISTORY_ITEMS or 5000) if history else 50
     db_history = await db.get_ai_history(channel_id, limit=dedup_limit)
 
     # Use explicitly provided new entries if available
@@ -278,6 +377,18 @@ async def _save_history_db(
         history = chat_data.get("history", [])
 
         if not db_history:
+            # Refuse to dump entire history if chat_data was previously loaded
+            # from DB. Without this, an empty fetch (transient DB read failure
+            # or post-prune race) would re-insert the whole in-memory history,
+            # creating massive duplicate runs.
+            if history and chat_data.get("_db_loaded"):
+                logger.error(
+                    "❌ Refusing to dump full history for channel %s: db_history is empty "
+                    "but chat_data was DB-loaded (history=%d items). Possible read failure.",
+                    channel_id,
+                    len(history),
+                )
+                return
             new_messages = history
         elif not history:
             new_messages = []
@@ -287,22 +398,41 @@ async def _save_history_db(
             last_db_ts = _normalize_history_timestamp(last_db_msg.get("timestamp"))
             last_db_dt = _parse_history_timestamp(last_db_msg.get("timestamp"))
 
-            # Look for this message in history (iterate backwards)
+            # Look for this message in history (iterate backwards). Match
+            # on timestamp + role + content-prefix so two assistant messages
+            # sent in the same second (same timestamp, same role) don't get
+            # collapsed into one. Without the content check, the second
+            # message would be silently dropped on the next save.
+            def _content_key(item: dict) -> str:
+                parts = item.get("parts") or []
+                if not parts:
+                    return ""
+                first = parts[0]
+                if isinstance(first, str):
+                    return first[:200]
+                if isinstance(first, dict):
+                    return str(first.get("text", ""))[:200]
+                return str(first)[:200]
+
+            last_db_content_key = _content_key(last_db_msg)
             found_idx = -1
             for i in range(len(history) - 1, -1, -1):
                 item = history[i]
-                # Compare timestamps (primary) and role/content (secondary)
-                if _normalize_history_timestamp(item.get("timestamp")) == last_db_ts:
-                    if item.get("role") == last_db_msg.get("role"):
-                        found_idx = i
-                        break
+                if (
+                    _normalize_history_timestamp(item.get("timestamp")) == last_db_ts
+                    and item.get("role") == last_db_msg.get("role")
+                    and _content_key(item) == last_db_content_key
+                ):
+                    found_idx = i
+                    break
 
             if found_idx != -1:
                 # We found the overlap, everything after is new
                 if found_idx < len(history) - 1:
                     new_messages = history[found_idx + 1 :]
             # No overlap found? This implies disjoint history or different timestamps.
-            # Fallback to appending everything that has a timestamp > last_db_ts
+            # Fallback to appending everything that has a timestamp >= last_db_ts,
+            # using a content-key set to dedupe within the same-second boundary.
             elif last_db_dt is not None:
                 if last_db_ts is None:
                     logger.warning(
@@ -312,22 +442,46 @@ async def _save_history_db(
                     )
                     new_messages = []
                 else:
-                    new_messages = [
-                        m for m in history
-                        if (_parse_history_timestamp(m.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc)) > last_db_dt
+                    # Build dedupe set from DB entries that share the boundary timestamp
+                    # so we don't re-insert messages already persisted in the same second.
+                    db_boundary_keys: set[tuple[str, str]] = set()
+                    for db_item in db_history:
+                        db_dt = _parse_history_timestamp(db_item.get("timestamp"))
+                        if db_dt is not None and db_dt >= last_db_dt:
+                            db_role = db_item.get("role") or "user"
+                            db_content = db_item.get("content") or ""
+                            db_boundary_keys.add((db_role, db_content[:200]))
+
+                    candidates = [
+                        m
+                        for m in history
+                        if (
+                            _parse_history_timestamp(m.get("timestamp"))
+                            or datetime.min.replace(tzinfo=timezone.utc)
+                        )
+                        >= last_db_dt
                     ]
-            # Dangerous fallback, but better than nothing
-            # If DB exists but we can't sync, we might duplicate or lose data.
-            # Assuming history > db_history in size is a proxy (old buggy behavior but safer
-            # than duplicating all)
-            elif len(history) > len(db_history):
-                new_messages = history[len(db_history) :]
-                logger.warning(
-                    "⚠️ Using position-based history diff for channel %s "
-                    "(no timestamp overlap found). May cause duplicates. "
-                    "history=%d, db=%d",
-                    channel_id, len(history), len(db_history),
+                    new_messages = []
+                    for m in candidates:
+                        m_role = m.get("role") or "user"
+                        m_key = _content_key(m)
+                        if (m_role, m_key) in db_boundary_keys:
+                            continue
+                        db_boundary_keys.add((m_role, m_key))
+                        new_messages.append(m)
+            else:
+                # Position-based diff is unsafe — it slices the wrong region
+                # whenever history and db_history don't have aligned positions
+                # (e.g. after a prune). Refuse to write rather than risk
+                # corrupting persisted history with duplicates.
+                logger.error(
+                    "❌ history dedup failed, position-based fallback disabled to prevent corruption "
+                    "(channel %s, history=%d, db=%d)",
+                    channel_id,
+                    len(history),
+                    len(db_history),
                 )
+                return
 
     # Process new messages
     if new_messages:
@@ -336,12 +490,16 @@ async def _save_history_db(
         seen_content_hashes: set[str] = set()  # Track content to prevent duplicates
 
         # Get last message from DB to check for duplicates
-        # Use SHA-256 hash for reliable duplicate detection (avoids prefix collisions)
-        HASH_LENGTH = 500
+        # Hash the full content (not just a prefix) so two messages that share
+        # a long prefix but diverge later don't get falsely flagged as
+        # duplicates and silently dropped. SHA-256 is fast enough that 500-char
+        # vs full-content makes no measurable difference for chat-sized payloads.
         last_db_content_hash = None
         last_db_role = None
         if db_history:
-            last_db_content_hash = hashlib.sha256(db_history[-1].get("content", "")[:HASH_LENGTH].encode()).hexdigest()
+            last_db_content_hash = hashlib.sha256(
+                db_history[-1].get("content", "").encode()
+            ).hexdigest()
             last_db_role = db_history[-1].get("role")
 
         for item in new_messages:
@@ -362,17 +520,24 @@ async def _save_history_db(
             if not content:
                 continue
 
-            # Create content hash for duplicate detection
-            content_hash = f"{role}:{hashlib.sha256(content[:HASH_LENGTH].encode()).hexdigest()}"
+            # Hash the content once; reuse for both the per-batch dedupe key
+            # and the just-in-DB comparison. Recomputing twice was wasteful on
+            # long messages and trivially fixable.
+            raw_hash = hashlib.sha256(content.encode()).hexdigest()
+            content_hash = f"{role}:{raw_hash}"
 
             # Skip if this exact content was just in DB (immediate duplicate)
-            if last_db_content_hash and hashlib.sha256(content[:HASH_LENGTH].encode()).hexdigest() == last_db_content_hash and role == last_db_role:
-                logger.warning("⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50])
+            if last_db_content_hash and raw_hash == last_db_content_hash and role == last_db_role:
+                logger.warning(
+                    "⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50]
+                )
                 continue
 
             # Skip if we've already seen this content in current batch
             if content_hash in seen_content_hashes:
-                logger.warning("⚠️ Skipping duplicate message (already in batch): %s...", content[:50])
+                logger.warning(
+                    "⚠️ Skipping duplicate message (already in batch): %s...", content[:50]
+                )
                 continue
 
             seen_content_hashes.add(content_hash)
@@ -390,13 +555,25 @@ async def _save_history_db(
         if batch_data:
             try:
                 await db.save_ai_messages_batch(batch_data)
-                logger.debug("💾 Batch saved %d messages for channel %s", len(batch_data), channel_id)
+                logger.debug(
+                    "💾 Batch saved %d messages for channel %s", len(batch_data), channel_id
+                )
             except aiosqlite.Error:
-                logger.exception("❌ Failed to batch save %d messages for channel %s", len(batch_data), channel_id)
+                # Surface the failure so save_history can flip its return to False
+                # rather than reporting success while silently dropping messages.
+                logger.exception(
+                    "❌ Failed to batch save %d messages for channel %s",
+                    len(batch_data),
+                    channel_id,
+                )
+                raise
 
-    # Prune if over limit
+    # Prune if over limit. Add a 50-message buffer to avoid count/prune
+    # thrashing under concurrent writes — without this, two near-simultaneous
+    # saves can each see "count > limit" and both call prune, doubling the
+    # write cost and racing on the same rows.
     total_count = await db.get_ai_history_count(channel_id)
-    if total_count > limit:
+    if total_count > limit + 50:
         await db.prune_ai_history(channel_id, limit)
         logger.info("🧹 Pruned history for channel %s to %d messages", channel_id, limit)
 
@@ -462,7 +639,15 @@ async def _save_history_json(
     def _write_meta():
         _ensure_data_dirs()
         filepath = CONFIG_DIR / f"ai_metadata_{channel_id}.json"
-        filepath.write_text(json_dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Atomic write: temp file + rename, mirroring the history JSON path
+        # above. A direct write_text() truncates the target before writing,
+        # so a process kill mid-write leaves a zero-byte metadata file with
+        # no recovery path.
+        temp_filepath = filepath.with_suffix(".tmp")
+        temp_filepath.write_text(
+            json_dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temp_filepath.replace(filepath)
 
     await loop.run_in_executor(None, _write_meta)
 
@@ -476,7 +661,9 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
         if channel_id in _history_cache:
             cached_time, cached_data = _history_cache[channel_id]
             if now - cached_time < CACHE_TTL:
-                logger.debug("📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data))
+                logger.debug(
+                    "📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data)
+                )
                 # Use deep copy to prevent mutation of cached nested objects
                 return copy.deepcopy(cached_data)
 
@@ -484,10 +671,23 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
         # Try database
         db_history = await db.get_ai_history(channel_id)
         if db_history:
-            # Convert DB format {role, content} to API format {role, parts: [...]}
+            # Convert DB format {role, content, timestamp, message_id, ...}
+            # to API format. Preserve timestamp/message_id/user_id so the
+            # next save's overlap detection (timestamp+role+content match)
+            # has the data it needs — without these, save_history's
+            # _normalize_history_timestamp returns None on every row and
+            # forces the "dangerous fallback" position-based slice path.
             history = []
             for item in db_history:
-                converted = {"role": item.get("role", "user"), "parts": [item.get("content", "")]}
+                converted: dict[str, Any] = {
+                    "role": item.get("role", "user"),
+                    "parts": [item.get("content", "")],
+                }
+                # Carry forward bookkeeping fields if present so the round
+                # trip is lossless.
+                for k in ("timestamp", "message_id", "user_id"):
+                    if item.get(k) is not None:
+                        converted[k] = item[k]
                 history.append(converted)
 
             # Update cache with converted format (thread-safe)
@@ -555,7 +755,12 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
 
 
 async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
-    """Load session metadata from database or JSON file with caching."""
+    """Load session metadata from database or JSON file with caching.
+
+    Always returns a deep copy: callers mutating the returned dict (e.g.
+    setting last_user_id) used to corrupt the cached entry on hits and not
+    on misses, depending on path.
+    """
     now = time.time()
 
     # Check cache first (thread-safe)
@@ -564,7 +769,7 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
             cached_time, cached_data = _metadata_cache[channel_id]
             if now - cached_time < CACHE_TTL:
                 logger.debug("📋 Cache hit for metadata channel %s", channel_id)
-                return cached_data.copy()
+                return copy.deepcopy(cached_data)
 
     if DATABASE_AVAILABLE:
         metadata = await db.get_ai_metadata(channel_id)
@@ -572,14 +777,14 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
             with _cache_lock:
                 _metadata_cache[channel_id] = (now, metadata)
             logger.info("📋 Loaded metadata from database for channel %s", channel_id)
-            return metadata
+            return copy.deepcopy(metadata)
 
     # Fallback to JSON file
     metadata = await _load_metadata_json(bot, channel_id)
     if metadata:
         with _cache_lock:
             _metadata_cache[channel_id] = (now, metadata)
-    return metadata
+    return copy.deepcopy(metadata) if metadata else metadata
 
 
 async def _load_metadata_json(bot: Bot, channel_id: int) -> dict[str, Any]:
@@ -609,7 +814,10 @@ async def delete_history(channel_id: int) -> bool:
     success: bool = False
 
     if DATABASE_AVAILABLE:
-        success = await db.delete_ai_history(channel_id)  # type: ignore[assignment]
+        try:
+            success = await db.delete_ai_history(channel_id)  # type: ignore[assignment]
+        except aiosqlite.Error:
+            logger.exception("Database delete failed for channel %s", channel_id)
 
     # Also try to delete JSON files (for cleanup)
     try:
@@ -620,20 +828,33 @@ async def delete_history(channel_id: int) -> bool:
     except OSError:
         logger.exception("Failed to delete JSON history file")
 
-    # Invalidate cache
+    # Invalidate cache regardless of DB outcome — stale entries shouldn't
+    # outlive a delete attempt; the next read will re-populate from DB.
     invalidate_cache(channel_id)
 
     return success
 
 
 async def update_message_id(channel_id: int, message_id: int) -> None:
-    """Update message ID for the last model response."""
+    """Update message ID for the last model response.
+
+    Invalidates _history_cache so the next load picks up the new message_id;
+    without this, readers within the 15-min TTL window would see message_id=None
+    even after this update returned, breaking edit/resend round-trips.
+    """
     if DATABASE_AVAILABLE:
         await db.update_message_id(channel_id, message_id)
+        invalidate_cache(channel_id)
 
 
 async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
     """Copy chat history from source channel to target channel.
+
+    The full copy is performed inside a single write transaction so that a
+    mid-copy failure leaves the target channel completely empty rather than
+    partially populated. Without this, an interrupted copy left the target
+    in an inconsistent state that the caller (move_history's rollback) would
+    then mishandle.
 
     Returns the number of messages copied.
     """
@@ -649,8 +870,8 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             logger.warning("No history found in source channel %s", source_channel_id)
             return 0
 
-        # Copy messages in batch for performance instead of one-by-one
-        batch_messages = []
+        # Build all rows up-front so the write transaction below is brief.
+        rows_to_insert = []
         for item in source_history:
             if not isinstance(item, dict):
                 continue
@@ -662,18 +883,44 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             timestamp = item.get("timestamp")
 
             if content:
-                batch_messages.append({
-                    "channel_id": target_channel_id,
-                    "role": role,
-                    "content": content,
-                    "message_id": message_id,
-                    "timestamp": timestamp,
-                    "user_id": None,
-                })
+                rows_to_insert.append((role, content, message_id, timestamp))
 
         copied = 0
-        if batch_messages:
-            copied = await db.save_ai_messages_batch(batch_messages)
+        if rows_to_insert:
+            # Single transaction for the entire copy: grab MAX(local_id) once,
+            # assign sequential ids, executemany, commit. If any step raises,
+            # the connection's implicit rollback leaves the target untouched.
+            async with db.get_write_connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(local_id), 0) FROM ai_history WHERE channel_id = ?",
+                    (target_channel_id,),
+                )
+                row = await cursor.fetchone()
+                next_local_id = (row[0] if row else 0) + 1
+
+                insert_rows = []
+                for role, content, message_id, timestamp in rows_to_insert:
+                    insert_rows.append(
+                        (
+                            target_channel_id,
+                            None,  # user_id
+                            role,
+                            content,
+                            message_id,
+                            timestamp,
+                            next_local_id,
+                        )
+                    )
+                    next_local_id += 1
+
+                await conn.executemany(
+                    """INSERT INTO ai_history
+                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    insert_rows,
+                )
+                await conn.commit()
+                copied = len(insert_rows)
 
         logger.info(
             "📋 Copied %d messages from channel %s to %s",
@@ -687,7 +934,7 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
 
         return copied
 
-    except OSError:
+    except (OSError, aiosqlite.Error):
         logger.exception("Failed to copy history")
         return 0
 
@@ -708,19 +955,55 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
     """Move chat history from source channel to target channel.
 
     This will DELETE the source history after copying.
-    Returns the number of messages moved.
+    Returns the number of messages moved (0 if any step failed).
+
+    Refuses the move if the target channel already has history — the previous
+    behaviour copied into a non-empty target and, if the source delete then
+    failed, called ``delete_ai_history(target_channel_id)`` as a "rollback"
+    which would destroy the pre-existing target rows along with the copies.
+    Requiring an empty target makes the operation safe regardless of failure
+    point.
     """
     if not DATABASE_AVAILABLE:
         logger.error("Database not available for move_history")
         return 0
 
+    copied = 0
     try:
+        # Refuse to move into a channel that already has history. Without this
+        # check, a rollback after a failed source-delete would wipe the
+        # pre-existing target rows (the rollback used delete_ai_history which
+        # is unconditional). Callers should clear the target explicitly first.
+        try:
+            existing = await db.get_ai_history_count(target_channel_id)
+        except (OSError, aiosqlite.Error):
+            logger.exception("Failed to read target history count for move")
+            return 0
+        if existing > 0:
+            logger.warning(
+                "Refusing move_history: target channel %s already has %d messages",
+                target_channel_id,
+                existing,
+            )
+            return 0
+
         # First copy the history
         copied = await copy_history(source_channel_id, target_channel_id)
 
         if copied > 0:
-            # Delete source history
-            await db.delete_ai_history(source_channel_id)
+            try:
+                # Delete source history
+                await db.delete_ai_history(source_channel_id)
+            except (OSError, aiosqlite.Error):
+                # Compensating action: roll back the copy we just made. Safe
+                # because we verified the target was empty above, so this
+                # only deletes the rows we just inserted.
+                logger.exception("Source delete failed during move; rolling back target copy")
+                with contextlib.suppress(OSError, aiosqlite.Error):
+                    await db.delete_ai_history(target_channel_id)
+                invalidate_cache(source_channel_id)
+                invalidate_cache(target_channel_id)
+                return 0
 
             # Invalidate cache for both channels
             invalidate_cache(source_channel_id)
@@ -735,7 +1018,7 @@ async def move_history(source_channel_id: int, target_channel_id: int) -> int:
 
         return copied
 
-    except OSError:
+    except (OSError, aiosqlite.Error):
         logger.exception("Failed to move history")
         return 0
 

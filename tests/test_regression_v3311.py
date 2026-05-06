@@ -2,6 +2,7 @@
 Regression tests for bugs fixed in v3.3.11.
 Ensures these specific bugs don't reoccur.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +13,7 @@ import pytest
 # ============================================================================
 # Bug #1: get_ai_history with limit returned OLDEST instead of NEWEST
 # ============================================================================
+
 
 class TestGetAiHistoryLimit:
     """Regression: get_ai_history(limit=N) must return the NEWEST N messages."""
@@ -42,16 +44,19 @@ class TestGetAiHistoryLimit:
             await conn.commit()
 
             # Query with limit=3 — should get msg_8, msg_9, msg_10 (newest)
-            cursor = await conn.execute("""
+            cursor = await conn.execute(
+                """
                 SELECT id, role, content FROM (
                     SELECT id, role, content FROM ai_history
                     WHERE channel_id = ? ORDER BY id DESC LIMIT ?
                 ) sub ORDER BY id ASC
-            """, (100, 3))
+            """,
+                (100, 3),
+            )
             rows = await cursor.fetchall()
 
             assert len(rows) == 3
-            assert rows[0][2] == "msg_8"   # oldest of the 3 newest
+            assert rows[0][2] == "msg_8"  # oldest of the 3 newest
             assert rows[1][2] == "msg_9"
             assert rows[2][2] == "msg_10"  # newest
 
@@ -59,6 +64,7 @@ class TestGetAiHistoryLimit:
 # ============================================================================
 # Bug #3: Guild state defaults — _gs() returns correct defaults
 # ============================================================================
+
 
 class TestGuildStateDefaults:
     """Regression: _gs() must return correct defaults for all fields."""
@@ -92,6 +98,7 @@ class TestGuildStateDefaults:
 # ============================================================================
 # Bug #6: test_pool_semaphore_created — lazy init
 # ============================================================================
+
 
 class TestDatabaseLazyInit:
     """Regression: pool semaphore must work via lazy getter."""

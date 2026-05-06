@@ -118,6 +118,7 @@ SERVER_SCHEMAS: dict[str, dict] = {
 # Schema validation helpers
 # ============================================================================
 
+
 def validate_message(msg: dict, schemas: dict[str, dict]) -> list[str]:
     """
     Validate a message against the schema registry.
@@ -153,6 +154,7 @@ def validate_message(msg: dict, schemas: dict[str, dict]) -> list[str]:
 # ============================================================================
 # Contract tests
 # ============================================================================
+
 
 class TestClientToServerContracts:
     """Validate client → server message schemas."""

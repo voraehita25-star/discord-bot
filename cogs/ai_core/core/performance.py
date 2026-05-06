@@ -8,7 +8,6 @@ from __future__ import annotations
 import collections
 import hashlib
 import logging
-logger = logging.getLogger(__name__)
 import threading
 import time
 from typing import Any
@@ -23,6 +22,9 @@ try:
 except ImportError:
     _PROMETHEUS_AVAILABLE = False
     _prom_metrics = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 # Map internal step names to Prometheus metric methods
 _STEP_METRIC_MAP = {
@@ -267,15 +269,20 @@ class RequestDeduplicator:
             # Find content after the status block
             status_end = content.rfind("\n\n")
             if status_end != -1:
-                content = content[status_end + 2:]
+                content = content[status_end + 2 :]
 
         # Strip command prefix (!chat, !c, etc.)
         content = content.lstrip()
         if content.startswith(("!chat ", "!c ", "!ถาม ")):
             content = content.split(" ", 1)[-1] if " " in content else ""
 
-        # Use hashlib for deterministic hashing across Python restarts
-        msg_hash = hashlib.sha256((content[:100] if content else "").encode()).hexdigest()[:16]
+        # Hash the FULL content (was content[:100]) so two requests that
+        # share a long common prefix don't collide into a single dedup
+        # key. errors="replace" guards against malformed surrogates that
+        # would otherwise crash .encode() on attacker-controlled input.
+        msg_hash = hashlib.sha256((content or "").encode("utf-8", errors="replace")).hexdigest()[
+            :16
+        ]
         return f"{channel_id}:{user_id}:{msg_hash}"
 
 

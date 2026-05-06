@@ -6,14 +6,14 @@
 
 | Database          | Tables | Purpose                                         |
 | ----------------- | ------ | ----------------------------------------------- |
-| `bot_database.db` | 19     | Main database (AI, music, dashboard, analytics) |
+| `bot_database.db` | 21     | Main database (AI, music, dashboard, analytics) — 19 created at init + `conversation_summaries` (lazy) + `schema_version` (migrations) |
 | `ai_cache_l2.db`  | 1      | Persistent L2 cache (survives restarts)         |
 
 Connection Pool: 32 concurrent connections, 16-slot reuse queue, 30s acquire timeout
 
 ---
 
-## bot_database.db (19 Tables)
+## bot_database.db (21 Tables)
 
 ### AI Chat
 
@@ -104,7 +104,11 @@ Indexes: `idx_user_facts_user(user_id, is_active)`, `idx_user_facts_category(use
 | access_count | INTEGER | DEFAULT 0                 |
 
 UNIQUE: `(name, channel_id, guild_id)`
-Indexes: `idx_entity_name(name)`, `idx_entity_type(entity_type)`, `idx_entity_channel(channel_id)`, `idx_entity_guild(guild_id)`
+Indexes:
+
+- `idx_entity_name(guild_id, name)` — primary lookup by guild+name
+- `idx_entity_guild_channel(guild_id, channel_id)` — channel-scoped retrieval
+- `idx_entity_updated_at(updated_at DESC)` — recency-ordered listing
 
 #### conversation_summaries
 
@@ -163,7 +167,12 @@ Indexes: `idx_knowledge_domain(domain)`, `idx_knowledge_category(category)`, `id
 | updated_at         | DATETIME | DEFAULT CURRENT_TIMESTAMP   |
 | is_starred         | BOOLEAN  | DEFAULT 0                   |
 
-Indexes: `idx_dashboard_conv_updated(updated_at DESC)`, `idx_dashboard_conv_starred(is_starred, updated_at DESC)`
+Indexes:
+
+- `idx_dashboard_conv_updated(updated_at DESC)`
+- `idx_dashboard_conv_starred(is_starred, updated_at DESC)`
+- `idx_dashboard_conv_role(role_preset, updated_at DESC)`
+- `idx_dashboard_conv_provider(ai_provider, updated_at DESC)`
 
 #### dashboard_messages
 
@@ -175,10 +184,28 @@ Indexes: `idx_dashboard_conv_updated(updated_at DESC)`, `idx_dashboard_conv_star
 | content         | TEXT     | NOT NULL                                                     |
 | thinking        | TEXT     |                                                              |
 | mode            | TEXT     |                                                              |
-| images          | TEXT     |                                                              |
+| images          | TEXT     | JSON array of base64 image strings                           |
+| is_pinned       | INTEGER  | NOT NULL DEFAULT 0 — user-marked important (migration 013)   |
+| liked           | INTEGER  | NOT NULL DEFAULT 0 — user-marked liked reaction (migration 014) |
 | created_at      | DATETIME | DEFAULT CURRENT_TIMESTAMP                                    |
 
-Index: `idx_dashboard_msg_conv(conversation_id, created_at ASC)`
+Indexes:
+
+- `idx_dashboard_msg_conv(conversation_id, created_at ASC)` — conversation history scan
+- `idx_dashboard_messages_pinned(conversation_id, is_pinned) WHERE is_pinned = 1` — partial index for "fetch pinned only"
+
+#### dashboard_conversation_tags
+
+Free-form tag labels per conversation (migration 014).
+
+| Column          | Type | Constraints                                                  |
+| --------------- | ---- | ------------------------------------------------------------ |
+| conversation_id | TEXT | NOT NULL, FK → dashboard_conversations(id) ON DELETE CASCADE |
+| tag             | TEXT | NOT NULL                                                     |
+
+Composite primary key `(conversation_id, tag)`.
+
+Indexes: `idx_dashboard_tags_conv(conversation_id)`, `idx_dashboard_tags_tag(tag)`
 
 #### dashboard_user_profile
 
@@ -203,6 +230,40 @@ Index: `idx_dashboard_msg_conv(conversation_id, created_at ASC)`
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
 Index: `idx_dashboard_memories_category(category, importance DESC)`
+
+#### dashboard_document_memories
+
+Text extracted from PDFs / DOCX / text+code files the user attached via
+the dashboard chat. Scoped per-conversation (via `source_conversation_id`)
+so each RP thread keeps its own document library. Auto-injected into the
+system prompt on every AI turn by `build_user_context()`.
+
+Binary PDFs live in a tmp dir only during the upload turn (full fidelity
+for Claude's multimodal read), then get deleted. This row keeps the
+extracted plain text forever — that's how persistence survives bot
+restarts without ballooning DB size with megabytes of binary data.
+
+| Column                   | Type     | Constraints                                     |
+| ------------------------ | -------- | ----------------------------------------------- |
+| id                       | INTEGER  | PRIMARY KEY AUTOINCREMENT                       |
+| filename                 | TEXT     | NOT NULL                                        |
+| file_kind                | TEXT     | NOT NULL — `'pdf' \| 'docx' \| 'text'`          |
+| extracted_text           | TEXT     | NOT NULL                                        |
+| char_count               | INTEGER  | NOT NULL                                        |
+| page_count               | INTEGER  | nullable (populated for PDFs only)              |
+| source_conversation_id   | TEXT     | nullable — scopes prompt injection to this chat |
+| created_at               | DATETIME | DEFAULT CURRENT_TIMESTAMP                       |
+
+Indexes:
+
+- `idx_dashboard_document_memories_created(created_at DESC)` — newest-first LRU eviction
+- `idx_dashboard_document_memories_conversation(source_conversation_id, created_at DESC)` — per-conversation lookup on every AI turn
+
+Hard caps enforced in `cogs/ai_core/api/document_extractor.py`:
+
+- `MAX_EXTRACTED_CHARS = 500_000` per file
+- `MAX_TOTAL_CHARS = 20_000_000` across all rows (LRU-evict oldest)
+- `MAX_ROWS = 200` (LRU-evict oldest)
 
 ### Guild & User
 
@@ -268,7 +329,7 @@ Index: `idx_music_queue_guild(guild_id, position)`
 | output_length    | INTEGER  |                           |
 | response_time_ms | REAL     |                           |
 | intent           | TEXT     |                           |
-| model            | TEXT     | DEFAULT 'gemini'          |
+| model            | TEXT     | DEFAULT 'claude-opus-4-7' (was `'gemini'`, bumped via migration 012) |
 | tool_calls       | INTEGER  | DEFAULT 0                 |
 | cache_hit        | BOOLEAN  | DEFAULT 0                 |
 | error            | TEXT     |                           |
@@ -362,9 +423,9 @@ Max entries: 20,000 (LRU eviction)
 
 | Metric                 | Count                                            |
 | ---------------------- | ------------------------------------------------ |
-| Total tables           | 20                                               |
-| Total indexes          | 33+                                              |
-| Foreign keys           | 1 (dashboard_messages → dashboard_conversations) |
-| Composite primary keys | 1 (user_stats)                                   |
-| Unique constraints     | 1 (entity_memories)                              |
+| Total tables           | 21 (19 created at init + lazy `conversation_summaries` + migrations `schema_version`) |
+| Total indexes          | 38+ (incl. partial `idx_dashboard_messages_pinned`, tag indexes, entity multi-column) |
+| Foreign keys           | 2 (dashboard_messages → dashboard_conversations; dashboard_conversation_tags → dashboard_conversations) |
+| Composite primary keys | 2 (user_stats, dashboard_conversation_tags) |
+| Unique constraints     | 1 (entity_memories) |
 | WAL mode               | Both databases                                   |

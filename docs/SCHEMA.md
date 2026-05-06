@@ -7,7 +7,7 @@ SQLite database at `data/bot_database.db` — WAL mode, aiosqlite.
 ### ai_history — AI Chat History
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | local_id | INTEGER | |
 | channel_id | INTEGER | NOT NULL |
@@ -23,7 +23,7 @@ Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel
 ### ai_metadata — AI Session Metadata
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | channel_id | INTEGER | PRIMARY KEY |
 | thinking_enabled | BOOLEAN | DEFAULT 1 |
 | system_instruction | TEXT | |
@@ -34,7 +34,7 @@ Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel
 ### guild_settings
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | guild_id | INTEGER | PRIMARY KEY |
 | prefix | TEXT | DEFAULT '!' |
 | ai_enabled | BOOLEAN | DEFAULT 1 |
@@ -47,7 +47,7 @@ Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel
 ### user_stats
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | user_id | INTEGER | NOT NULL, PK |
 | guild_id | INTEGER | NOT NULL, PK |
 | messages_count | INTEGER | DEFAULT 0 |
@@ -60,7 +60,7 @@ Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel
 ### music_queue
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | guild_id | INTEGER | NOT NULL |
 | position | INTEGER | NOT NULL |
@@ -74,7 +74,7 @@ Index: `idx_music_queue_guild(guild_id, position)`
 ### error_logs
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | error_type | TEXT | NOT NULL |
 | error_message | TEXT | |
@@ -87,10 +87,42 @@ Index: `idx_music_queue_guild(guild_id, position)`
 
 Indexes: `idx_error_logs_type(error_type, created_at DESC)`, `idx_error_logs_created(created_at DESC)`
 
+### entity_memories — Per-channel character/entity facts
+
+| Column | Type | Constraints |
+| -------- | ------ | ------------- |
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| guild_id | INTEGER | NOT NULL |
+| channel_id | INTEGER | |
+| name | TEXT | NOT NULL |
+| facts | TEXT | NOT NULL — JSON dict |
+| confidence | REAL | DEFAULT 1.0 |
+| source | TEXT | |
+| access_count | INTEGER | DEFAULT 0 |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+| updated_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
+Indexes: `idx_entity_name(guild_id, name)`, `idx_entity_guild_channel(guild_id, channel_id)`, `idx_entity_updated_at(updated_at DESC)`
+
+### conversation_summaries — Lazily-created (memory_consolidator)
+
+Created on first write by `cogs/ai_core/memory/memory_consolidator.py`, not at schema-init time.
+
+| Column | Type | Constraints |
+| -------- | ------ | ------------- |
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| channel_id | INTEGER | NOT NULL |
+| start_timestamp | DATETIME | NOT NULL |
+| end_timestamp | DATETIME | NOT NULL |
+| summary | TEXT | NOT NULL |
+| message_count | INTEGER | NOT NULL |
+| topics | TEXT | DEFAULT '[]' |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
 ### ai_long_term_memory — RAG Vector Store
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | channel_id | INTEGER | |
 | content | TEXT | NOT NULL |
@@ -100,7 +132,7 @@ Indexes: `idx_error_logs_type(error_type, created_at DESC)`, `idx_error_logs_cre
 ### knowledge_entries — Structured Knowledge (RAG)
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | domain | TEXT | NOT NULL |
 | category | TEXT | NOT NULL |
@@ -120,7 +152,7 @@ Indexes: `idx_knowledge_domain(domain)`, `idx_knowledge_category(category)`, `id
 ### audit_log
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | action_type | TEXT | NOT NULL |
 | guild_id | INTEGER | |
@@ -134,7 +166,7 @@ Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id
 ### ai_analytics
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | user_id | INTEGER | NOT NULL |
 | channel_id | INTEGER | NOT NULL |
@@ -154,7 +186,7 @@ Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_gu
 ### token_usage
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | user_id | INTEGER | NOT NULL |
 | channel_id | INTEGER | NOT NULL |
@@ -170,7 +202,7 @@ Indexes: `idx_token_usage_user(user_id, created_at DESC)`, `idx_token_usage_chan
 ### dashboard_conversations
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | TEXT | PRIMARY KEY |
 | title | TEXT | |
 | role_preset | TEXT | NOT NULL, DEFAULT 'general' |
@@ -186,7 +218,7 @@ Indexes: `idx_dashboard_conv_updated(updated_at DESC)`, `idx_dashboard_conv_star
 ### dashboard_messages
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | conversation_id | TEXT | NOT NULL, FK → dashboard_conversations ON DELETE CASCADE |
 | role | TEXT | NOT NULL, CHECK('user','assistant') |
@@ -195,6 +227,7 @@ Indexes: `idx_dashboard_conv_updated(updated_at DESC)`, `idx_dashboard_conv_star
 | mode | TEXT | |
 | images | TEXT | JSON array of base64 image strings |
 | is_pinned | INTEGER | NOT NULL DEFAULT 0 — user-marked important message (migration 013) |
+| liked | INTEGER | NOT NULL DEFAULT 0 — user-marked "liked" reaction (migration 014) |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
 Indexes:
@@ -202,10 +235,21 @@ Indexes:
 - `idx_dashboard_msg_conv(conversation_id, created_at ASC)` — conversation history scan
 - `idx_dashboard_messages_pinned(conversation_id, is_pinned) WHERE is_pinned = 1` — partial index for fast "fetch pinned only" queries
 
+### dashboard_conversation_tags — Free-form tag labels (migration 014)
+
+| Column | Type | Constraints |
+| -------- | ------ | ------------- |
+| conversation_id | TEXT | NOT NULL, FK → dashboard_conversations(id) ON DELETE CASCADE |
+| tag | TEXT | NOT NULL |
+
+Composite primary key `(conversation_id, tag)`.
+
+Indexes: `idx_dashboard_tags_conv(conversation_id)`, `idx_dashboard_tags_tag(tag)`
+
 ### dashboard_user_profile — Singleton
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY CHECK (id = 1) |
 | display_name | TEXT | DEFAULT 'User' |
 | bio | TEXT | |
@@ -217,7 +261,7 @@ Indexes:
 ### dashboard_memories
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | content | TEXT | NOT NULL |
 | category | TEXT | DEFAULT 'general' |
@@ -226,10 +270,40 @@ Indexes:
 
 Index: `idx_dashboard_memories_category(category, importance DESC)`
 
+### dashboard_document_memories — Persistent doc text per conversation
+
+Text extracted from PDF / DOCX / text / code files uploaded via the
+dashboard. Scoped to the conversation that received the upload so each
+RP thread has its own document library. The raw binary file is NOT kept
+— only extracted text, which makes storage linear in content length
+rather than file size.
+
+| Column | Type | Constraints |
+| -------- | ------ | ------------- |
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| filename | TEXT | NOT NULL |
+| file_kind | TEXT | NOT NULL — `'pdf'` / `'docx'` / `'text'` |
+| extracted_text | TEXT | NOT NULL |
+| char_count | INTEGER | NOT NULL |
+| page_count | INTEGER | nullable (PDF only) |
+| source_conversation_id | TEXT | nullable (scopes injection) |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
+Indexes:
+
+- `idx_dashboard_document_memories_created(created_at DESC)` — LRU eviction
+- `idx_dashboard_document_memories_conversation(source_conversation_id, created_at DESC)` — per-conversation lookup
+
+Caps (enforced by `document_extractor.extract_and_persist`):
+
+- 500,000 chars per file (truncated on extract)
+- 20,000,000 chars total across all rows (oldest evicted)
+- 200 rows max (oldest evicted)
+
 ### user_facts — Per-user Memory
 
 | Column | Type | Constraints |
-| -------- | ------ | ------------- ||| -------- | ------ | ------------- |
+| -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | user_id | INTEGER | NOT NULL |
 | channel_id | INTEGER | |
@@ -277,3 +351,4 @@ File extension is `.sqlite.sql` (not `.sql`) — the VS Code mssql extension fla
 | 011_fix_ai_analytics_default.sqlite.sql | Rebuild ai_analytics with model DEFAULT 'claude-opus-4-6' |
 | 012_bump_default_model_opus_4_7.sqlite.sql | Bump default model to claude-opus-4-7 on token_usage + ai_analytics |
 | 013_dashboard_pin_message.sqlite.sql | Record is_pinned column + partial index for dashboard_messages |
+| 014_dashboard_tags_and_likes.sqlite.sql | Add `liked` column to dashboard_messages + new `dashboard_conversation_tags` table |

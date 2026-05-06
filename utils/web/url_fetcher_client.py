@@ -42,9 +42,7 @@ class URLFetcherClient:
         self._service_check_time: float = 0
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.timeout)
-        )
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
         await self._check_service()
         return self
 
@@ -69,7 +67,9 @@ class URLFetcherClient:
             return False
 
         try:
-            async with self._session.get(f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+            async with self._session.get(
+                f"{self.base_url}/health", timeout=aiohttp.ClientTimeout(total=2)
+            ) as resp:
                 self._service_available = resp.status == 200
                 self._service_check_time = now
                 if self._service_available:
@@ -89,26 +89,38 @@ class URLFetcherClient:
         Returns:
             Dict with: url, title, content, description, error, status_code, fetch_time_ms
         """
+        # Re-check service availability when we have a real session so we
+        # don't keep routing to a Go service that has died after the last
+        # check. _check_service has its own backoff. If there's no session
+        # at all we keep the previously-set flag so callers that fake it
+        # for tests still see the expected route.
+        if self._session is not None:
+            await self._check_service()
         if self._service_available:
             return await self._fetch_via_service(url)
         return await self._fetch_fallback(url)
 
     async def _fetch_via_service(self, url: str) -> dict[str, Any]:
         """Fetch via Go service."""
-        # SSRF check before forwarding to Go service
+        # SSRF check before forwarding to Go service. Hard-fail the request if
+        # the SSRF helper isn't importable: silently trusting the Go side to
+        # re-validate is a posture decision the Python side shouldn't make.
         try:
             from utils.web.url_fetcher import _is_private_url
-            if await _is_private_url(url):
-                return {"url": url, "error": "SSRF blocked: URL resolves to private/internal address"}
-        except ImportError:
-            pass  # url_fetcher unavailable — Go service should have its own SSRF protection
+        except ImportError as exc:
+            logger.error("url_fetcher SSRF helper unavailable; refusing to fetch %s", url)
+            return {"url": url, "error": f"SSRF helper missing: {exc}"}
+        if await _is_private_url(url):
+            return {"url": url, "error": "SSRF blocked: URL resolves to private/internal address"}
 
         try:
-            assert self._session is not None
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
             # Propagate trace ID to Go service
             headers: dict[str, str] = {}
             try:
                 from utils.monitoring.tracing import trace_headers
+
                 headers = trace_headers()
             except ImportError:
                 pass
@@ -133,6 +145,7 @@ class URLFetcherClient:
         # SSRF Protection: Block private/internal IPs
         try:
             from utils.web.url_fetcher import _is_private_url
+
             if await _is_private_url(url):
                 result["error"] = "SSRF blocked: URL resolves to private/internal address"
                 result["fetch_time_ms"] = int((time.time() - start) * 1000)
@@ -141,39 +154,86 @@ class URLFetcherClient:
             # url_fetcher not available — apply basic SSRF protection with DNS resolution
             import asyncio as _asyncio
             import ipaddress
+            import socket as _socket
             from urllib.parse import urlparse
 
             try:
-                hostname = urlparse(url).hostname or ""
-                # Resolve hostname to IP addresses for proper SSRF protection
-                # Use non-blocking async DNS resolution instead of socket.getaddrinfo
+                parsed = urlparse(url)
+                # Enforce http(s) scheme up front. Without this an attacker
+                # could craft `file:///etc/passwd` and our hostname-based
+                # SSRF check would silently no-op (hostname is None) — only
+                # the eventual DNS-failure branch would catch it. Reject
+                # other schemes explicitly so the failure mode is clear.
+                if parsed.scheme not in ("http", "https"):
+                    result["error"] = f"SSRF blocked: unsupported scheme '{parsed.scheme}'"
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
+                hostname = parsed.hostname or ""
+                if not hostname:
+                    result["error"] = "SSRF blocked: URL has no hostname"
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
+                # Resolve hostname to IP addresses for proper SSRF protection.
+                # Use SOCK_STREAM rather than 0 for the type filter — passing
+                # 0 ("any") will, on some platforms, return only one address
+                # family, leaking the SSRF check past the other family. With
+                # SOCK_STREAM the resolver returns the family pair we'd
+                # actually use to dial, so AAAA + A both get checked.
                 loop = _asyncio.get_running_loop()
-                addr_infos = await loop.getaddrinfo(hostname, None, type=0)
+                addr_infos = await loop.getaddrinfo(hostname, None, type=_socket.SOCK_STREAM)
                 for _family, _, _, _, sockaddr in addr_infos:
                     ip_str = sockaddr[0]
                     try:
                         addr = ipaddress.ip_address(ip_str)
-                        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
-                            result["error"] = "SSRF blocked: URL resolves to private/internal address"
+                        if (
+                            addr.is_private
+                            or addr.is_loopback
+                            or addr.is_reserved
+                            or addr.is_link_local
+                            or addr.is_unspecified  # 0.0.0.0 / ::
+                        ):
+                            result["error"] = (
+                                "SSRF blocked: URL resolves to private/internal address"
+                            )
                             result["fetch_time_ms"] = int((time.time() - start) * 1000)
                             return result
                     except ValueError:
                         continue
-            except (OSError, Exception):
-                # DNS resolution failed — block for safety
+            except (TimeoutError, OSError, _socket.gaierror):
+                # DNS resolution failed — block for safety. Catching the
+                # broad ``Exception`` here used to swallow ``KeyboardInterrupt``
+                # cousins in some Python versions and made debugging
+                # genuine programming errors (e.g. NameError) inside the
+                # try-block impossible. Restrict the catch to actual
+                # network/DNS failures.
                 result["error"] = "SSRF blocked: DNS resolution failed"
                 result["fetch_time_ms"] = int((time.time() - start) * 1000)
                 return result
 
         try:
-            assert self._session is not None
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
+            # allow_redirects=False closes the SSRF redirect-bypass window: the
+            # initial host was checked above, but a 302 pointing at 169.254.169.254
+            # or 127.0.0.1 would otherwise be followed by aiohttp's default
+            # redirect chaser without re-resolving through the private-IP guard.
             async with self._session.get(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                }
+                },
+                allow_redirects=False,
             ) as resp:
+                # If we got a redirect, surface it as an error rather than
+                # silently following to a possibly-private target.
+                if 300 <= resp.status < 400:
+                    result["status_code"] = resp.status
+                    result["error"] = (
+                        f"Redirect not followed (SSRF guard): {resp.headers.get('Location', '')}"
+                    )
+                    result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                    return result
                 result["status_code"] = resp.status
                 result["content_type"] = resp.headers.get("Content-Type", "")
 
@@ -224,22 +284,71 @@ class URLFetcherClient:
             return await self._fetch_batch_via_service(urls, timeout)
         return await self._fetch_batch_fallback(urls)
 
-    async def _fetch_batch_via_service(self, urls: list[str], timeout: int | None) -> dict[str, Any]:
-        """Batch fetch via Go service."""
+    async def _fetch_batch_via_service(
+        self, urls: list[str], timeout: int | None
+    ) -> dict[str, Any]:
+        """Batch fetch via Go service.
+
+        Per-URL SSRF check BEFORE forwarding to the Go side. Without this,
+        the Go service would receive a list of arbitrary URLs and any URL
+        that bypasses the Go-side check (or any future config drift between
+        the two sides) becomes an SSRF. Doing it here guarantees the
+        Python-side policy is the floor; the Go side can be stricter but
+        never more permissive.
+        """
+        # Filter the batch through the SSRF helper. Failed URLs are turned
+        # into per-URL error entries in the response so callers can still
+        # match results back to inputs by index/URL.
         try:
-            payload: dict[str, Any] = {"urls": urls}
+            from utils.web.url_fetcher import _is_private_url
+        except ImportError as exc:
+            logger.error("url_fetcher SSRF helper unavailable; refusing batch fetch")
+            return {
+                "results": [{"url": u, "error": f"SSRF helper missing: {exc}"} for u in urls],
+                "error_count": len(urls),
+                "success_count": 0,
+            }
+
+        safe_urls: list[str] = []
+        blocked_results: list[dict[str, Any]] = []
+        for u in urls:
+            if await _is_private_url(u):
+                blocked_results.append(
+                    {"url": u, "error": "SSRF blocked: URL resolves to private/internal address"}
+                )
+            else:
+                safe_urls.append(u)
+
+        # If everything was blocked, short-circuit without touching the Go side.
+        if not safe_urls:
+            return {
+                "results": blocked_results,
+                "error_count": len(blocked_results),
+                "success_count": 0,
+            }
+
+        try:
+            payload: dict[str, Any] = {"urls": safe_urls}
             if timeout:
                 payload["timeout"] = timeout
 
-            assert self._session is not None
-            async with self._session.post(
-                f"{self.base_url}/fetch/batch",
-                json=payload
-            ) as resp:
-                return await resp.json()  # type: ignore[no-any-return]
+            if self._session is None:
+                raise RuntimeError("URLFetcherClient must be used as an async context manager")
+            async with self._session.post(f"{self.base_url}/fetch/batch", json=payload) as resp:
+                service_response = await resp.json()
+            # Merge blocked entries back in so callers see a 1:1 mapping
+            # with their original input list.
+            if blocked_results:
+                merged_results = list(service_response.get("results", []))
+                merged_results.extend(blocked_results)
+                service_response["results"] = merged_results
+                service_response["error_count"] = service_response.get("error_count", 0) + len(
+                    blocked_results
+                )
+            return service_response  # type: ignore[no-any-return]
         except Exception as e:
             return {
-                "results": [{"url": u, "error": str(e)} for u in urls],
+                "results": ([{"url": u, "error": str(e)} for u in safe_urls] + blocked_results),
                 "error_count": len(urls),
                 "success_count": 0,
             }

@@ -12,14 +12,17 @@
                 "title": "디스코드 봇 대시보드",
                 "width": 1200,
                 "height": 800,
+                "minWidth": 800,
+                "minHeight": 600,
                 "resizable": true,
                 "fullscreen": false,
                 "decorations": true,
-                "devtools": false
+                "devtools": false,
+                "dragDropEnabled": false
             }
         ],
         "security": {
-            "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; object-src 'none'; frame-ancestors 'none'"
+            "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 wss://localhost:8765 wss://127.0.0.1:8765; object-src 'none'; frame-ancestors 'none'"
         }
     },
     "bundle": {

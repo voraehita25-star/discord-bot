@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: April 24, 2026 | Python 3.14+ | Python Tests: 3,088 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) | Timeout: 30s per test
+> Last Updated: April 27, 2026 | Python 3.14+ | Python Tests: 3,094 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 63 ✅ (5 Playwright spec files: smoke + interactions + a11y + visual regression) | Timeout: 30s per test
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -30,7 +30,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (91 Python files, 3,071 tests)
+## Test Structure (92 Python files, 3,094 tests)
 
 ```text
 tests/
@@ -38,17 +38,17 @@ tests/
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
 ├── test_*.py                # 89 consolidated test files
-│   ├── AI Core              # ~20 test files (ai_cache, ai_cog, logic, storage, etc.)
-│   ├── Music                # ~5 test files (music_cog, music_queue, spotify, ytdl)
-│   ├── Dashboard            # 1 test file (dashboard_handlers - 42 tests)
+│   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
+│   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
+│   ├── Dashboard            # 1 test file (dashboard_handlers — 53 tests)
 │   ├── Database             # 1 test file (consolidated from 3)
 │   ├── Reliability          # ~8 test files (circuit_breaker, rate_limiter, etc.)
 │   ├── Monitoring           # ~5 test files (health_api, metrics, feedback, etc.)
-│   └── Utilities            # ~20 test files (fast_json, localization, url_fetcher, etc.)
+│   └── Utilities            # ~25 test files (fast_json, localization, url_fetcher, etc.)
 ```
 
-> Tests were consolidated from 129 → 84 files by merging `_extended`, `_more`, `_module`
-> variants into their base files and parametrizing boilerplate tests.
+> Earlier consolidation (~early 2026) merged `_extended`, `_more`, `_module` variants
+> into their base files and parametrized boilerplate tests. Current count: **92 files**.
 
 ## Frontend Test Structure (10 vitest files, 189 tests)
 
@@ -77,6 +77,38 @@ npm test                 # Run all vitest suites once
 npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage report
 ```
+
+## Headless E2E Tests (5 Playwright files, 63 tests)
+
+Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
+served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
+(`tests-e2e/_fixtures/mock-tauri.ts`) that mocks `window.__TAURI__.core.invoke` and the WebSocket
+stream — so no Tauri runtime, no bot process, no Discord token needed.
+
+```text
+native_dashboard/tests-e2e/
+├── _fixtures/
+│   └── mock-tauri.ts            # Tauri IPC shim + WS mock + page-error tracker
+├── dashboard-smoke.spec.ts      # 18 smoke tests covering recent UI fixes
+├── interactions.spec.ts         # 16 user-flow tests (click/type/keyboard)
+├── a11y.spec.ts                 # 8 axe-core audits — zero critical/serious WCAG 2.1 AA violations
+├── visual-regression.spec.ts    # 8 baselines — pages, themes, modals
+├── visual-regression.spec.ts-snapshots/  # PNG baselines (chromium-win32, in git)
+└── screenshots.spec.ts          # 13 manual-inspection captures
+```
+
+Run from `native_dashboard/`:
+
+```bash
+npm run test:e2e                 # All 63 tests, headless Chromium
+npm run test:e2e:ui              # Interactive UI mode for debugging
+npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
+npm run test:e2e:screenshots     # Just the screenshot captures
+```
+
+CI: the `dashboard-test` job in `.github/workflows/ci.yml` runs vitest then Playwright.
+On failure, `playwright-report/` and `test-results/` are uploaded as artifacts (7-day retention)
+so the diff is debuggable without re-running locally.
 
 ## Test Categories
 
@@ -119,18 +151,18 @@ start htmlcov/index.html
 ```python
 class TestMyFeature:
     """Test my feature functionality."""
-    
+
     def test_basic_case(self) -> None:
         """Test the basic case."""
         result = my_function(input_value)
         assert result == expected_value
-    
+
     @pytest.mark.asyncio
     async def test_async_function(self) -> None:
         """Test an async function."""
         result = await my_async_function()
         assert result is not None
-    
+
     @pytest.mark.slow
     def test_slow_operation(self) -> None:
         """Test that takes a long time."""

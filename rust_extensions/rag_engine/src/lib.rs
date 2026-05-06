@@ -62,6 +62,38 @@ pub struct SearchResult {
     pub timestamp: f64,
 }
 
+/// Reject path-traversal attempts on user-supplied save/load paths.
+///
+/// Kept as a free function rather than a method because pyo3's `#[pymethods]`
+/// can't expose `&Path`-taking methods, but we still want the Path-based
+/// component walk for correctness on Windows drive prefixes (`C:foo`) which
+/// `Path::is_absolute()` reports as relative.
+fn validate_relative_path(p: &std::path::Path) -> PyResult<()> {
+    use std::path::Component;
+    if p.is_absolute() {
+        return Err(PyValueError::new_err(
+            "Path traversal blocked: absolute paths not allowed",
+        ));
+    }
+    for component in p.components() {
+        match component {
+            Component::ParentDir => {
+                return Err(PyValueError::new_err(
+                    "Path traversal blocked: '..' not allowed",
+                ));
+            }
+            Component::Prefix(_) => {
+                // Windows drive letter / UNC prefix — disallowed on relative paths
+                return Err(PyValueError::new_err(
+                    "Path traversal blocked: drive prefix not allowed",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Main RAG Engine class
 #[pyclass]
 pub struct RagEngine {
@@ -95,7 +127,15 @@ impl RagEngine {
         if !entry.importance.is_finite() {
             return Err(PyValueError::new_err("importance must be a finite number"));
         }
-        
+        // Embedding values must also be finite — a single NaN/Inf in the
+        // vector would later make save() fail (serde_json refuses non-finite
+        // floats) and silently degrades cosine similarity at query time.
+        if entry.embedding.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "embedding contains non-finite values (NaN/Inf)",
+            ));
+        }
+
         let mut entries = self.entries.write();
         entries.insert(entry.id.clone(), entry);
         Ok(())
@@ -105,14 +145,17 @@ impl RagEngine {
     fn add_batch(&self, entries_list: Vec<MemoryEntry>) -> PyResult<usize> {
         let mut entries = self.entries.write();
         let mut added = 0;
-        
+
         for entry in entries_list {
-            if entry.embedding.len() == self.dimension && entry.importance.is_finite() {
+            if entry.embedding.len() == self.dimension
+                && entry.importance.is_finite()
+                && entry.embedding.iter().all(|v| v.is_finite())
+            {
                 entries.insert(entry.id.clone(), entry);
                 added += 1;
             }
         }
-        
+
         Ok(added)
     }
 
@@ -131,6 +174,16 @@ impl RagEngine {
                 self.dimension,
                 query_embedding.len()
             )));
+        }
+        // Validate query is finite — match add()'s guarantees so we never
+        // silently let a NaN slip into cosine_similarity. The threshold filter
+        // below would catch NaN scores by accident (NaN >= x is false), but
+        // an Inf in the query produces an Inf score that passes the filter
+        // and torpedoes the rank order.
+        if query_embedding.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "query_embedding contains non-finite values (NaN/Inf)",
+            ));
         }
 
         // Clone data under read lock so we can release GIL during computation
@@ -154,7 +207,7 @@ impl RagEngine {
                 .par_iter()
                 .map(|entry| {
                     let base_score = cosine_similarity(&query_embedding, &entry.embedding);
-                    
+
                     // Apply time decay if factor > 0
                     let final_score = if time_decay_factor > 0.0 {
                         // Clamp age to >= 0 to prevent score inflation for future timestamps
@@ -221,20 +274,12 @@ impl RagEngine {
 
     /// Save to JSON file (atomic write via temp file + rename)
     fn save(&self, path: &str) -> PyResult<()> {
-        // Path traversal protection: reject ".." components and absolute paths
+        // Path traversal protection: reject ".." components, absolute paths,
+        // and Windows drive prefixes (Component::Prefix) — the previous check
+        // missed Prefix, so on Windows a relative path starting with a drive
+        // letter (e.g. "C:foo") could escape the project root.
         let save_path = std::path::Path::new(path);
-        if save_path.is_absolute() {
-            return Err(PyValueError::new_err(
-                "Path traversal blocked: absolute paths not allowed in save path"
-            ));
-        }
-        for component in save_path.components() {
-            if matches!(component, std::path::Component::ParentDir) {
-                return Err(PyValueError::new_err(
-                    "Path traversal blocked: '..' not allowed in save path"
-                ));
-            }
-        }
+        validate_relative_path(save_path)?;
 
         let entries = self.entries.read();
         let data: Vec<_> = entries.values().map(|e| {
@@ -249,16 +294,60 @@ impl RagEngine {
 
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
-        // Atomic write: write to temp file, then rename
-        let temp_path = format!("{}.tmp", path);
-        std::fs::write(&temp_path, &json)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
-        // rename may fail on Windows if file is locked; fall back to copy+delete
+
+        // Atomic write: write to a *unique* temp file, then rename. The
+        // previous implementation always used `<path>.tmp`, so two save()
+        // calls racing on the same path would clobber each other's temp file
+        // mid-write, producing a corrupt JSON. We append the OS PID and the
+        // process-startup-relative nanos so two concurrent savers — even on
+        // the same process — never share a temp name.
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let temp_path = format!("{}.tmp.{}.{}", path, pid, nanos);
+
+        // Write + fsync the temp file before renaming. Without sync_all(),
+        // the bytes may live only in the OS page cache; a power loss after
+        // the rename leaves the live file truncated/empty because the
+        // rename was atomic on the directory entry but the data pages were
+        // never flushed to stable storage. Use the explicit File API so we
+        // can call sync_all() on the handle.
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&temp_path)
+                .map_err(|e| PyValueError::new_err(format!("create temp: {}", e)))?;
+            f.write_all(json.as_bytes())
+                .map_err(|e| PyValueError::new_err(format!("write temp: {}", e)))?;
+            f.sync_all()
+                .map_err(|e| PyValueError::new_err(format!("fsync temp: {}", e)))?;
+        }
+
+        // rename may fail on Windows if file is locked; fall back to copy+delete.
         if let Err(rename_err) = std::fs::rename(&temp_path, path) {
             match std::fs::copy(&temp_path, path) {
                 Ok(_) => {
+                    // copy() does NOT fsync the destination. fsync the
+                    // destination file before deleting the temp so the new
+                    // bytes are durable; otherwise a crash here can leave
+                    // both copies present but the destination empty.
+                    {
+                        match std::fs::OpenOptions::new().write(true).open(path) {
+                            Ok(f) => {
+                                if let Err(e) = f.sync_all() {
+                                    return Err(PyValueError::new_err(format!(
+                                        "fsync after copy failed: {}", e
+                                    )));
+                                }
+                            }
+                            Err(e) => {
+                                return Err(PyValueError::new_err(format!(
+                                    "open dest for fsync failed: {}", e
+                                )));
+                            }
+                        }
+                    }
                     let _ = std::fs::remove_file(&temp_path);
                 }
                 Err(copy_err) => {
@@ -269,41 +358,58 @@ impl RagEngine {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Load from JSON file (replaces all existing entries)
     fn load(&self, path: &str) -> PyResult<usize> {
-        // Path traversal protection: reject ".." components and absolute paths
         let load_path = std::path::Path::new(path);
-        if load_path.is_absolute() {
-            return Err(PyValueError::new_err(
-                "Path traversal blocked: absolute paths not allowed in load path"
-            ));
-        }
-        for component in load_path.components() {
-            if matches!(component, std::path::Component::ParentDir) {
-                return Err(PyValueError::new_err(
-                    "Path traversal blocked: '..' not allowed in load path"
-                ));
-            }
-        }
+        validate_relative_path(load_path)?;
 
         // Size limit (256 MiB) to prevent OOM from malicious/corrupt files.
         // RAG dumps are expected to be small (few MB); 256 MiB is a generous cap.
         const MAX_LOAD_BYTES: u64 = 256 * 1024 * 1024;
-        let metadata = std::fs::metadata(path)
+
+        // Use ``symlink_metadata`` rather than ``metadata`` so we can refuse
+        // to follow symlinks — combined with the path-component check above,
+        // a relative ``subdir/symlink_to_outside`` would otherwise pass the
+        // traversal check and resolve to anywhere on disk via stat.
+        let symlink_meta = std::fs::symlink_metadata(path)
             .map_err(|e| PyValueError::new_err(format!("stat failed: {}", e)))?;
-        if metadata.len() > MAX_LOAD_BYTES {
+        if symlink_meta.file_type().is_symlink() {
+            return Err(PyValueError::new_err(
+                "Path traversal blocked: symlinked load path not allowed",
+            ));
+        }
+        if symlink_meta.len() > MAX_LOAD_BYTES {
             return Err(PyValueError::new_err(format!(
                 "File too large to load: {} bytes (max {})",
-                metadata.len(), MAX_LOAD_BYTES
+                symlink_meta.len(), MAX_LOAD_BYTES
             )));
         }
 
-        let data = std::fs::read_to_string(path)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        // Read with an explicit byte cap rather than ``read_to_string``, so a
+        // file that grows between the size check above and this read can't
+        // silently exceed our cap (a TOCTOU window). Reading one extra byte
+        // beyond the cap lets us detect attempted overflow and reject it.
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| PyValueError::new_err(format!("open failed: {}", e)))?;
+        let mut buf = Vec::with_capacity((symlink_meta.len() as usize).min(MAX_LOAD_BYTES as usize));
+        let read_cap = MAX_LOAD_BYTES.saturating_add(1);
+        file.by_ref()
+            .take(read_cap)
+            .read_to_end(&mut buf)
+            .map_err(|e| PyValueError::new_err(format!("read failed: {}", e)))?;
+        if buf.len() as u64 > MAX_LOAD_BYTES {
+            return Err(PyValueError::new_err(format!(
+                "File grew past size cap mid-read (max {} bytes)",
+                MAX_LOAD_BYTES
+            )));
+        }
+        let data = String::from_utf8(buf)
+            .map_err(|e| PyValueError::new_err(format!("file is not UTF-8: {}", e)))?;
 
         let entries_data: Vec<serde_json::Value> = serde_json::from_str(&data)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -326,7 +432,7 @@ impl RagEngine {
                         if val.is_finite() { Some(val) } else { None }
                     }))
                     .collect();
-                
+
                 if emb.len() == self.dimension {
                     let imp = importance as f32;
                     if !imp.is_finite() {
@@ -366,10 +472,10 @@ fn rag_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RagEngine>()?;
     m.add_class::<MemoryEntry>()?;
     m.add_class::<SearchResult>()?;
-    
+
     // Version info
     m.add("__version__", "0.1.0")?;
     m.add("__author__", "voraehita25-star")?;
-    
+
     Ok(())
 }

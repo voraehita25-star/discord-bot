@@ -7,6 +7,7 @@ integration tests elsewhere — these tests run without any `claude` binary.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -58,10 +59,16 @@ class TestEncodeProjectDirname:
         p = Path("/tmp/foo/bar")
         assert cli_mod._encode_claude_project_dirname(p) == "-tmp-foo-bar"
 
-    def test_preserves_underscores_and_letters(self):
+    def test_underscores_replaced_with_dash_to_match_claude_code(self):
+        # Claude Code's actual encoder replaces `_` with `-` along with
+        # `:`, `\`, `/`, and space. If we don't, delete_session_file()
+        # looks for the file in a folder Claude never wrote to, leaving
+        # orphan .jsonl behind on every dashboard conversation delete.
         p = Path("/opt/claude_cli_workdir")
         result = cli_mod._encode_claude_project_dirname(p)
-        assert "claude_cli_workdir" in result
+        assert "claude_cli_workdir" not in result
+        assert "claude-cli-workdir" in result
+        assert "_" not in result
 
 
 # ============================================================================
@@ -171,28 +178,39 @@ class TestDeleteSessionFile:
         path.write_text('{"type":"init"}\n', encoding="utf-8")
         return path
 
-    def test_removes_jsonl_when_session_tracked(self):
+    @pytest.mark.asyncio
+    async def test_removes_jsonl_when_session_tracked(self):
         target = self._make_session_file("sess-xyz")
         cli_mod._track_session("conv-42", "sess-xyz")
 
-        removed = cli_mod.delete_session_file("conv-42")
+        removed = await cli_mod.delete_session_file("conv-42")
 
         assert removed is True
         assert not target.exists()
         assert "conv-42" not in cli_mod._CONVERSATION_SESSIONS
 
-    def test_unknown_conversation_is_noop(self):
-        assert cli_mod.delete_session_file("never-existed") is False
+    @pytest.mark.asyncio
+    async def test_unknown_conversation_is_noop(self):
+        assert await cli_mod.delete_session_file("never-existed") is False
 
-    def test_tracked_session_without_file_still_drops_map_entry(self):
+    @pytest.mark.asyncio
+    async def test_tracked_session_without_file_still_drops_map_entry(self):
         # Session id was tracked but no .jsonl on disk (e.g. file already
         # deleted manually). Cleanup should still remove the in-memory entry.
         cli_mod._track_session("conv-ghost", "sess-nofile")
-        assert cli_mod.delete_session_file("conv-ghost") is False
+        assert await cli_mod.delete_session_file("conv-ghost") is False
         assert "conv-ghost" not in cli_mod._CONVERSATION_SESSIONS
 
-    def test_persists_removal_to_disk(self):
+    @pytest.mark.asyncio
+    async def test_persists_removal_to_disk(self):
         cli_mod._track_session("conv-p", "sess-p")
-        cli_mod.delete_session_file("conv-p")
+        await cli_mod.delete_session_file("conv-p")
+        # _save_persisted_sessions dispatches the actual disk I/O to a
+        # worker thread via asyncio.to_thread when called from a running
+        # loop (which is our case here under pytest-asyncio). Wait for any
+        # in-flight persist tasks before reading the file, otherwise the
+        # write may not have landed yet and the read raises FileNotFound.
+        if cli_mod._PERSIST_TASKS:
+            await asyncio.gather(*cli_mod._PERSIST_TASKS, return_exceptions=True)
         saved = json.loads(cli_mod._SESSIONS_FILE.read_text(encoding="utf-8"))
         assert "conv-p" not in saved

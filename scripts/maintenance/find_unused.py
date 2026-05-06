@@ -7,7 +7,9 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-PROJECT_ROOT = Path()
+# Anchor PROJECT_ROOT to this script's location instead of CWD so the tool
+# works no matter where it's invoked from.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXCLUDE_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules", "data"}
 
 
@@ -100,12 +102,18 @@ def main():
         if filepath in entry_points:
             continue
 
+        # Use parts so the check works on Windows (\) and POSIX (/) alike.
+        try:
+            rel_parts = filepath.relative_to(PROJECT_ROOT).parts
+        except ValueError:
+            rel_parts = filepath.parts
+
         # Skip scripts (they're meant to be run directly)
-        if str(filepath).startswith("scripts"):
+        if rel_parts and rel_parts[0] == "scripts":
             continue
 
         # Skip tools (they're meant to be run directly)
-        if str(filepath).startswith("tools"):
+        if rel_parts and rel_parts[0] == "tools":
             continue
 
         # Skip __init__.py files (they're package markers)

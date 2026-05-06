@@ -16,6 +16,7 @@ import datetime
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -25,6 +26,25 @@ import psutil
 # Constants
 PID_FILE = "bot.pid"
 HEALER_LOG_FILE = "logs/self_healer.log"
+
+# Authorization gate for bulk-kill operations. Without this, a stray
+# `import utils.reliability.self_healer; kill_everything()` from any module
+# (or a third-party plugin) could nuke the running bot tree without consent.
+# Callers must either pass ``authorized=True`` explicitly or set
+# SELF_HEALER_ALLOW_KILL=1 in the environment.
+_KILL_AUTH_ENV_VAR = "SELF_HEALER_ALLOW_KILL"
+
+
+def _kill_authorized(authorized: bool) -> tuple[bool, str]:
+    """Return (allowed, reason) for a bulk-kill operation."""
+    if authorized:
+        return True, "explicit authorized=True"
+    env_val = os.environ.get(_KILL_AUTH_ENV_VAR, "").strip().lower()
+    if env_val in ("1", "true", "yes", "on"):
+        return True, f"{_KILL_AUTH_ENV_VAR}={env_val}"
+    return False, (
+        f"Refusing bulk-kill: pass authorized=True or set {_KILL_AUTH_ENV_VAR}=1 to confirm."
+    )
 
 
 class SelfHealer:
@@ -66,7 +86,17 @@ class SelfHealer:
     # ==================== DETECTION ====================
 
     def find_all_bot_processes(self) -> list[dict]:
-        """Find ALL bot.py processes with details"""
+        """Find ALL bot.py processes with details.
+
+        Handles races where a process exits between ``process_iter`` yielding
+        it and our calls back into psutil. The catch lists cover every
+        psutil-raised condition we've actually observed in the wild
+        (NoSuchProcess on exit; AccessDenied on protected procs;
+        ZombieProcess on Linux when a child has exited but not been reaped;
+        and the generic psutil.Error catch-all for transient platform
+        errors). Without these, a single process exit during enumeration
+        propagates out and aborts the whole sweep.
+        """
         bot_processes = []
 
         for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
@@ -93,15 +123,26 @@ class SelfHealer:
                         break
 
                 if is_bot and not any(x in cmdline_str for x in ignore_list):
+                    # ``psutil.Process(pid)`` itself can raise NoSuchProcess
+                    # if the process exited between ``process_iter`` yielding
+                    # us its info dict and this call.
+                    try:
+                        proc_handle = psutil.Process(proc.info["pid"])
+                    except psutil.NoSuchProcess:
+                        continue
                     bot_processes.append(
                         {
                             "pid": proc.info["pid"],
                             "cmdline": cmdline_str,
                             "create_time": proc.info.get("create_time", 0),
-                            "process": psutil.Process(proc.info["pid"]),
+                            "process": proc_handle,
                         }
                     )
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except psutil.Error:
+                # Any other transient psutil error — skip this process,
+                # don't abort the enumeration.
                 continue
 
         # Sort by creation time (oldest first)
@@ -119,8 +160,13 @@ class SelfHealer:
                     ppid = psutil.Process(b["pid"]).ppid()
                     if ppid in bot_pids:
                         launcher_pids.add(ppid)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # Process exited between enumeration and ppid lookup —
+                    # safe to skip, the row will simply not be flagged as
+                    # a launcher.
+                    continue
+                except psutil.Error:
+                    continue
             if launcher_pids:
                 bot_processes = [b for b in bot_processes if b["pid"] not in launcher_pids]
 
@@ -136,12 +182,21 @@ class SelfHealer:
                 cmdline_str = " ".join(cmdline).lower()
 
                 if "python" in cmdline_str and "dev_watcher" in cmdline_str:
+                    # Wrap the late `psutil.Process(pid)` lookup in the same
+                    # NoSuchProcess guard as `find_all_bot_processes`; if
+                    # the watcher exits between `process_iter` yielding it
+                    # and our follow-up call, NoSuchProcess would otherwise
+                    # bubble up and abort the entire scan.
+                    try:
+                        proc_obj = psutil.Process(proc.info["pid"])
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
                     watchers.append(
                         {
                             "pid": proc.info["pid"],
                             "cmdline": cmdline_str,
                             "create_time": proc.info.get("create_time", 0),
-                            "process": psutil.Process(proc.info["pid"]),
+                            "process": proc_obj,
                         }
                     )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -270,9 +325,35 @@ class SelfHealer:
             self.log("error", f"Failed to stop PID {pid}: {e}")
             return False
 
-    def clean_pid_file(self) -> bool:
-        """Remove stale PID file"""
+    def clean_pid_file(self, *, force: bool = False) -> bool:
+        """Remove stale PID file.
+
+        Refuses to unlink when the file points at a *live* process that is
+        not us — without this, a second importer of this module could wipe
+        the running bot's PID file and break the duplicate-detection guard.
+        Pass ``force=True`` after an authorized bulk-kill to override.
+        """
         pid_path = Path(PID_FILE)
+        if not pid_path.exists():
+            return True
+
+        if not force:
+            try:
+                stored_pid: int | None = int(pid_path.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                stored_pid = None
+            if (
+                stored_pid is not None
+                and stored_pid != self.my_pid
+                and psutil.pid_exists(stored_pid)
+            ):
+                self.log(
+                    "warning",
+                    f"Refusing to clean PID file: PID {stored_pid} is alive "
+                    "and not our process. Pass force=True to override.",
+                )
+                return False
+
         try:
             pid_path.unlink(missing_ok=True)
             self.log("info", "Cleaned up PID file")
@@ -385,8 +466,7 @@ class SelfHealer:
             launcher_pids.add(parent.pid)
             self.log(
                 "info",
-                f"Found launcher: {parent_name} (PID {parent.pid}) "
-                f"for PID {proc_entry['pid']}",
+                f"Found launcher: {parent_name} (PID {parent.pid}) for PID {proc_entry['pid']}",
             )
 
         for bot in bots:
@@ -396,8 +476,17 @@ class SelfHealer:
 
         return list(launcher_pids)
 
-    def kill_all_bots(self, kill_launchers: bool = True) -> int:
-        """Kill ALL bot instances and their launcher processes"""
+    def kill_all_bots(self, kill_launchers: bool = True, *, authorized: bool = False) -> int:
+        """Kill ALL bot instances and their launcher processes.
+
+        Destructive — gated by ``_kill_authorized`` (pass ``authorized=True``
+        or set ``SELF_HEALER_ALLOW_KILL=1``). Returns 0 when the gate denies.
+        """
+        ok, reason = _kill_authorized(authorized)
+        if not ok:
+            self.log("error", reason)
+            return 0
+
         bots = self.find_all_bot_processes()
         killed = 0
 
@@ -414,11 +503,20 @@ class SelfHealer:
             if bot["pid"] != self.my_pid and self.kill_process(bot["pid"]):
                 killed += 1
 
-        self.clean_pid_file()
+        # force=True is safe here: we just authorized killing every bot.
+        self.clean_pid_file(force=True)
         return killed
 
-    def kill_all_watchers(self) -> int:
-        """Kill ALL dev_watcher instances"""
+    def kill_all_watchers(self, *, authorized: bool = False) -> int:
+        """Kill ALL dev_watcher instances.
+
+        Destructive — gated by ``_kill_authorized``.
+        """
+        ok, reason = _kill_authorized(authorized)
+        if not ok:
+            self.log("error", reason)
+            return 0
+
         watchers = self.find_all_dev_watchers()
         killed = 0
 
@@ -468,8 +566,10 @@ class SelfHealer:
             try:
                 if rec == "KILL_DUPLICATE_BOTS":
                     if aggressive:
-                        # Kill all except the one that will start fresh
-                        killed_count = self.kill_all_bots()
+                        # ``aggressive=True`` is the caller's explicit consent
+                        # to nuke every instance, so we forward that as the
+                        # bulk-kill authorization.
+                        killed_count = self.kill_all_bots(authorized=True)
                         action_result["details"] = f"Killed all {killed_count} bot instances"
                     else:
                         # Keep oldest, kill duplicates
@@ -607,13 +707,22 @@ def get_system_status(caller: str = "unknown") -> str:
     return healer_obj.get_status_report()
 
 
-def kill_everything(caller: str = "unknown") -> dict:
-    """Nuclear option - kill all bot-related processes"""
+def kill_everything(caller: str = "unknown", *, authorized: bool = False) -> dict:
+    """Nuclear option - kill all bot-related processes.
+
+    Destructive — gated by ``_kill_authorized``. Returns zeroed counters
+    when the gate denies, so accidental imports cannot trigger the kill.
+    """
     healer_obj = SelfHealer(caller)
 
-    bots_killed = healer_obj.kill_all_bots()
-    watchers_killed = healer_obj.kill_all_watchers()
-    healer_obj.clean_pid_file()
+    ok, reason = _kill_authorized(authorized)
+    if not ok:
+        healer_obj.log("error", reason)
+        return {"bots_killed": 0, "watchers_killed": 0, "success": False, "reason": reason}
+
+    bots_killed = healer_obj.kill_all_bots(authorized=True)
+    watchers_killed = healer_obj.kill_all_watchers(authorized=True)
+    healer_obj.clean_pid_file(force=True)
 
     return {"bots_killed": bots_killed, "watchers_killed": watchers_killed, "success": True}
 
@@ -630,6 +739,11 @@ def main():
     parser.add_argument("--aggressive", action="store_true", help="Aggressive healing (kill all)")
     parser.add_argument("--status", action="store_true", help="Show status report")
     parser.add_argument("--kill-all", action="store_true", help="Kill all bot processes")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the y/N confirmation prompt for --kill-all (use with care)",
+    )
 
     args = parser.parse_args()
 
@@ -665,11 +779,28 @@ def main():
             )
 
     elif args.kill_all:
-        kill_result = kill_everything("cli")
-        print(
-            f"Killed {kill_result['bots_killed']} bots "
-            f"and {kill_result['watchers_killed']} watchers"
-        )
+        if not args.force:
+            print(
+                "[!] WARNING: This will terminate ALL bot, watcher, and "
+                "launcher processes on this host."
+            )
+            try:
+                answer = input("    Type 'yes' to proceed: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("Aborted.")
+                sys.exit(1)
+            if answer != "yes":
+                print("Aborted.")
+                sys.exit(0)
+        kill_result = kill_everything("cli", authorized=True)
+        if kill_result.get("success"):
+            print(
+                f"Killed {kill_result['bots_killed']} bots "
+                f"and {kill_result['watchers_killed']} watchers"
+            )
+        else:
+            print(f"Refused: {kill_result.get('reason', 'authorization denied')}")
+            sys.exit(1)
 
     else:
         # Default: show status

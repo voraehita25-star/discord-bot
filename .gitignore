@@ -118,3 +118,14 @@ assets/RP/
 
 # Visual Studio
 .vs/
+
+# Claude Code / RuFlo (per-user runtime state, never commit)
+.claude/settings.local.json
+.claude/settings.json.pre-ruflo-init.bak
+.claude/settings.local.json.pre-ruflo-init.bak
+.claude/worktrees/
+.claude/helpers/
+.claude/memory.db
+.claude-flow/
+.swarm/
+claude-flow.config.json

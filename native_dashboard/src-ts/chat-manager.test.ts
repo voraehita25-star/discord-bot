@@ -140,12 +140,18 @@ describe('handleMessage — connected frame', () => {
         expect(cm.presets.faust).toEqual({ name: 'Faust', emoji: '👻', color: '#ffb1b4' });
     });
 
-    it('sends an auth frame when the server requires auth and a token is present', () => {
+    it('does NOT re-send an auth frame on the connected event when a token is present', () => {
+        // ws-client already sends `{type:'auth'}` in onopen — the previous
+        // double-send was a protocol-violation hazard. The connected event
+        // should now be a no-op for auth (just verify token presence).
         const cm = mountDomAndChat();
-        // Inject a token into the ws-client.
         (cm.wsClient as unknown as { wsToken: string }).wsToken = 'secret';
         cm.handleMessage({ type: 'connected', requires_auth: true });
-        expect(cm.wsClient.send).toHaveBeenCalledWith({ type: 'auth', token: 'secret' });
+        const sendSpy = cm.wsClient.send as unknown as { mock: { calls: unknown[][] } };
+        const authCalls = sendSpy.mock.calls.filter(
+            (call) => (call[0] as { type?: string } | undefined)?.type === 'auth',
+        );
+        expect(authCalls).toHaveLength(0);
     });
 
     it('updates availableProviders from the payload', () => {

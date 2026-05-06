@@ -1,6 +1,5 @@
 """Unit tests for Music Queue Manager."""
 
-
 from cogs.music.queue import QueueManager
 
 
@@ -173,6 +172,7 @@ class TestQueuePersistence:
 # ======================================================================
 # Merged from test_music_queue_extended.py
 # ======================================================================
+
 
 class TestQueueManagerInit:
     """Tests for QueueManager initialization."""

@@ -4,6 +4,7 @@ Parametrized boilerplate tests.
 Consolidates ~86 repetitive tests (module_has_docstring, singleton_exists,
 global_instance_exists, module_imports) into parametrized test functions.
 """
+
 from __future__ import annotations
 
 import importlib

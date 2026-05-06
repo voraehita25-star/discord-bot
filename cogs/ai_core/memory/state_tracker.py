@@ -7,6 +7,7 @@ Provides real-time context about what characters are doing, where they are, etc.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -73,25 +74,32 @@ class CharacterStateTracker:
         # States stored per channel: {channel_id: {character_name: CharacterState}}
         self._states: dict[int, dict[str, CharacterState]] = {}
         self._last_scene: dict[int, str] = {}  # Last scene description per channel
+        # Reentrant lock so set_state can call itself / nested helpers without
+        # deadlocking, while still serialising mutations across Discord events
+        # that may execute concurrently on the asyncio loop.
+        self._lock = threading.RLock()
 
     def get_state(self, character_name: str, channel_id: int) -> CharacterState | None:
         """Get current state of a character (updates last_accessed for LRU)."""
-        channel_states = self._states.get(channel_id, {})
-        state = channel_states.get(character_name)
-        if state:
-            state.last_accessed = time.time()  # Update access time for LRU
-        return state
+        with self._lock:
+            channel_states = self._states.get(channel_id, {})
+            state = channel_states.get(character_name)
+            if state:
+                state.last_accessed = time.time()  # Update access time for LRU
+            return state
 
     def set_state(self, character_name: str, channel_id: int, **kwargs) -> CharacterState:
         """Update character state with provided fields."""
+        with self._lock:
+            return self._set_state_unlocked(character_name, channel_id, **kwargs)
+
+    def _set_state_unlocked(self, character_name: str, channel_id: int, **kwargs) -> CharacterState:
         if channel_id not in self._states:
             # Enforce max channels limit
             if len(self._states) >= self.MAX_CHANNELS:
                 # Remove oldest channel by oldest access time (LRU)
                 # Filter out channels with empty states to avoid min() on empty sequence
-                channels_with_states = [
-                    cid for cid in self._states if self._states[cid]
-                ]
+                channels_with_states = [cid for cid in self._states if self._states[cid]]
                 if channels_with_states:
                     oldest_channel = min(
                         channels_with_states,
@@ -149,27 +157,61 @@ class CharacterStateTracker:
         # Pattern: {{CharacterName}} followed by content
         character_blocks = re.findall(r"\{\{([^}]+)\}\}(.*?)(?=\{\{|$)", response_text, re.DOTALL)
 
+        # Helper: scrub control chars + bracketed system markers from any
+        # captured field. Stored values are later interpolated back into the
+        # prompt via get_states_for_prompt(), so unsanitised input becomes a
+        # stored prompt-injection vector.
+        _SYS_MARKER_RE = re.compile(
+            r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*"
+        )
+
+        def _scrub_state_value(s: str, *, max_len: int) -> str:
+            # Drop ASCII control chars except \n / \t.
+            cleaned = "".join(ch for ch in s if ch >= " " or ch in ("\n", "\t"))
+            cleaned = _SYS_MARKER_RE.sub("[redacted]", cleaned)
+            cleaned = cleaned.strip()
+            return cleaned[:max_len]
+
         for char_name, content in character_blocks:
             char_name = char_name.strip()
             content = content.strip()
 
             if not char_name or not content:
                 continue
+            # Cap the character name length so a malformed block like
+            # ``{{very long garbage that should never be a name}}`` can't
+            # bloat state storage.
+            if len(char_name) > 50:
+                continue
 
             # Extract state information
             state_updates = {}
 
-            # Location detection (Thai patterns)
+            # Location detection — anchor to start of segment so we don't
+            # grab bare prepositions ("ที่"/"ใน") mid-sentence and capture
+            # the next 30 chars as a "location". Match must follow a
+            # whitespace boundary or start.
             location_match = re.search(
-                r'(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่|ที่|ใน)\s*["\']?([^"\',.!?\n]{3,30})["\']?', content
+                r"(?:^|[\s])(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่)\s*"
+                r"[\"']?([^\"',.!?\n]{3,30})[\"']?",
+                content,
             )
             if location_match:
-                state_updates["location"] = location_match.group(1).strip()
+                state_updates["location"] = _scrub_state_value(
+                    location_match.group(1),
+                    max_len=80,
+                )
 
-            # Activity detection
-            activity_match = re.search(r"(?:กำลัง|อยู่|พยายาม)\s*([^,.!?\n]{3,50})", content)
+            # Activity detection — same anchor + length tightening.
+            activity_match = re.search(
+                r"(?:^|[\s])(?:กำลัง|พยายาม)\s+([^,.!?\n]{3,50})",
+                content,
+            )
             if activity_match:
-                state_updates["activity"] = activity_match.group(1).strip()
+                state_updates["activity"] = _scrub_state_value(
+                    activity_match.group(1),
+                    max_len=120,
+                )
 
             # Emotion detection
             emotion_patterns = {
@@ -187,15 +229,25 @@ class CharacterStateTracker:
                     state_updates["emotion"] = emotion
                     break
 
-            # Extract last dialogue (first quoted text)
-            dialogue_match = re.search(r'["\']([^"\']{5,100})["\']', content)
+            # Extract last dialogue. Require matched quote pair (same
+            # quote char on both sides) so "hello' world" doesn't match
+            # across the wrong delimiter. Two separate alternations cover
+            # the single- and double-quoted cases independently.
+            dialogue_match = re.search(
+                r'"([^"]{5,200})"' r"|" r"'([^']{5,200})'",
+                content,
+            )
             if dialogue_match:
-                state_updates["last_dialogue"] = dialogue_match.group(1)
+                grabbed = dialogue_match.group(1) or dialogue_match.group(2) or ""
+                state_updates["last_dialogue"] = _scrub_state_value(grabbed, max_len=200)
 
             # Extract last action (first > marked text)
             action_match = re.search(r">\s*([^<\n]{10,150})", content)
             if action_match:
-                state_updates["last_action"] = action_match.group(1).strip()
+                state_updates["last_action"] = _scrub_state_value(
+                    action_match.group(1),
+                    max_len=200,
+                )
 
             # Update state
             if state_updates:
@@ -205,8 +257,13 @@ class CharacterStateTracker:
         return updated
 
     def get_all_states(self, channel_id: int) -> dict[str, CharacterState]:
-        """Get all character states for a channel."""
-        return self._states.get(channel_id, {})
+        """Get all character states for a channel.
+
+        Returns a snapshot copy so the caller can iterate without racing the
+        background cleanup loop mutating the underlying dict.
+        """
+        with self._lock:
+            return dict(self._states.get(channel_id, {}))
 
     def get_states_for_prompt(
         self, channel_id: int, character_names: list[str] | None = None
@@ -232,18 +289,21 @@ class CharacterStateTracker:
 
     def set_scene(self, channel_id: int, scene: str) -> None:
         """Set the current scene description."""
-        self._last_scene[channel_id] = scene
+        with self._lock:
+            self._last_scene[channel_id] = scene
 
     def get_scene(self, channel_id: int) -> str | None:
         """Get the current scene description."""
-        return self._last_scene.get(channel_id)
+        with self._lock:
+            return self._last_scene.get(channel_id)
 
     def clear_channel(self, channel_id: int) -> None:
         """Clear all states for a channel."""
-        if channel_id in self._states:
-            del self._states[channel_id]
-        if channel_id in self._last_scene:
-            del self._last_scene[channel_id]
+        with self._lock:
+            if channel_id in self._states:
+                del self._states[channel_id]
+            if channel_id in self._last_scene:
+                del self._last_scene[channel_id]
 
     def cleanup_old_states(
         self,
@@ -259,31 +319,32 @@ class CharacterStateTracker:
         removed = 0
         cutoff = time.time() - (max_age_hours * 3600)
 
-        # Remove old states
-        for channel_id in list(self._states.keys()):
-            states = self._states.get(channel_id)
-            if states is None:
-                continue
-            # Check if all states are old
-            if all(s.updated_at < cutoff for s in states.values()):
-                self._states.pop(channel_id, None)
-                self._last_scene.pop(channel_id, None)
-                removed += 1
+        with self._lock:
+            # Remove old states
+            for channel_id in list(self._states.keys()):
+                states = self._states.get(channel_id)
+                if states is None:
+                    continue
+                # Check if all states are old
+                if all(s.updated_at < cutoff for s in states.values()):
+                    self._states.pop(channel_id, None)
+                    self._last_scene.pop(channel_id, None)
+                    removed += 1
 
-        # Enforce max channel limit if still over
-        if len(self._states) > max_channels:
-            # Sort by least recently accessed (LRU) and remove excess
-            sorted_channels = sorted(
-                self._states.keys(),
-                key=lambda cid: max(
-                    (s.last_accessed for s in self._states[cid].values()), default=0
-                ),
-            )
-            excess = len(self._states) - max_channels
-            for channel_id in sorted_channels[:excess]:
-                self._states.pop(channel_id, None)
-                self._last_scene.pop(channel_id, None)
-                removed += 1
+            # Enforce max channel limit if still over
+            if len(self._states) > max_channels:
+                # Sort by least recently accessed (LRU) and remove excess
+                sorted_channels = sorted(
+                    self._states.keys(),
+                    key=lambda cid: max(
+                        (s.last_accessed for s in self._states[cid].values()), default=0
+                    ),
+                )
+                excess = len(self._states) - max_channels
+                for channel_id in sorted_channels[:excess]:
+                    self._states.pop(channel_id, None)
+                    self._last_scene.pop(channel_id, None)
+                    removed += 1
 
         return removed
 
@@ -297,12 +358,13 @@ class CharacterStateTracker:
 
     def from_dict(self, channel_id: int, data: dict[str, Any]) -> None:
         """Import channel states from dictionary."""
-        if "states" in data:
-            self._states[channel_id] = {
-                k: CharacterState.from_dict(v) for k, v in data["states"].items()
-            }
-        if "scene" in data:
-            self._last_scene[channel_id] = data["scene"]
+        with self._lock:
+            if "states" in data:
+                self._states[channel_id] = {
+                    k: CharacterState.from_dict(v) for k, v in data["states"].items()
+                }
+            if "scene" in data:
+                self._last_scene[channel_id] = data["scene"]
 
 
 # Global instance

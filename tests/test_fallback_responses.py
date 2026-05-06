@@ -27,10 +27,7 @@ class TestFallbackResponse:
         """Test creating FallbackResponse with defaults."""
         from cogs.ai_core.fallback_responses import FallbackReason, FallbackResponse
 
-        response = FallbackResponse(
-            message="Test message",
-            reason=FallbackReason.UNKNOWN
-        )
+        response = FallbackResponse(message="Test message", reason=FallbackReason.UNKNOWN)
 
         assert response.message == "Test message"
         assert response.reason == FallbackReason.UNKNOWN
@@ -45,7 +42,7 @@ class TestFallbackResponse:
             message="Rate limited",
             reason=FallbackReason.RATE_LIMITED,
             should_retry=True,
-            retry_after_seconds=30.0
+            retry_after_seconds=30.0,
         )
 
         assert response.message == "Rate limited"

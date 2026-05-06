@@ -21,7 +21,12 @@ first_of_month = datetime.now().strftime("%Y-%m-01")
 
 try:
     sub = httpx.get(f"{base}/v1/dashboard/billing/subscription", headers=headers, timeout=10).json()
-    usage = httpx.get(f"{base}/v1/dashboard/billing/usage", headers=headers, params={"date": first_of_month}, timeout=10).json()
+    usage = httpx.get(
+        f"{base}/v1/dashboard/billing/usage",
+        headers=headers,
+        params={"date": first_of_month},
+        timeout=10,
+    ).json()
 
     limit = sub.get("hard_limit_usd", 0)
     used = usage.get("total_usage", 0) / 100

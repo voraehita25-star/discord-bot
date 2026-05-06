@@ -171,12 +171,12 @@ def get_tool_definitions() -> list[dict]:
                 {
                     "name": "list_channels",
                     "description": "List all text channels in the server",
-                    "parameters": {"type": "OBJECT", "properties": {}},
+                    "parameters": {"type": "OBJECT", "properties": {}, "required": []},
                 },
                 {
                     "name": "list_roles",
                     "description": "List all roles in the server",
-                    "parameters": {"type": "OBJECT", "properties": {}},
+                    "parameters": {"type": "OBJECT", "properties": {}, "required": []},
                 },
                 {
                     "name": "list_members",

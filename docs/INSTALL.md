@@ -146,7 +146,7 @@ python bot.py
 |---------|---------|---------|
 | `discord.py[voice]` | 2.7.1 | Discord API + Voice Support |
 | `python-dotenv` | 1.2.1 | อ่านค่าจาก .env |
-| `aiohttp` | 3.13.3 | Async HTTP requests |
+| `aiohttp` | 3.13.4 | Async HTTP requests |
 | `psutil` | 7.2.2 | System monitoring |
 
 ### AI (จำเป็น)
@@ -209,10 +209,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Windows: ดาวน์โหลดจาก https://rustup.rs
 ```
 
-1. **Tauri CLI:**
+1. **Tauri CLI v2:**
 
 ```bash
-cargo install tauri-cli
+cargo install tauri-cli --version "^2.0"
+# Or use the npm script which calls cargo via @tauri-apps/cli
 ```
 
 1. **WebView2 (Windows only):**
@@ -221,16 +222,22 @@ cargo install tauri-cli
 
 ### Build Dashboard
 
-```bash
+```powershell
 cd native_dashboard
-cargo build --release
+npm install              # first time only
+npm run release          # full build: tsc + cargo build --release + auto-rename
+# or, manually:
+npm run build            # tsc → ui/
+cargo build --release    # builds target/release/bot-dashboard.exe
 ```
 
 ### Run Dashboard
 
-```bash
-./target/release/bot-dashboard.exe  # Windows
-./target/release/bot-dashboard      # Linux
+```powershell
+# Windows — pick whichever filename you copied (build script writes all three):
+.\target\release\bot-dashboard.exe
+.\target\release\"Discord Bot Dashboard.exe"
+.\target\release\"디스코드 봇 대시보드.exe"
 ```
 
 ---
@@ -239,8 +246,8 @@ cargo build --release
 
 High-performance native extensions สำหรับ RAG และ Media processing
 
-> **Pre-built Status:** ✅ พร้อมใช้งาน (March 2, 2026)  
-> **Files:** `rag_engine.pyd`, `media_processor.pyd`
+> **Pre-built Status:** ✅ พร้อมใช้งาน (April 2, 2026)
+> **Files:** `cogs/ai_core/memory/rag_engine.pyd` (~653 KB), `utils/media/media_processor.pyd` (~1.6 MB)
 
 ### Prerequisites
 
@@ -338,8 +345,8 @@ python scripts/dev_watcher.py
 # Run tests
 python -m pytest tests/ -v
 
-# Build dashboard
-cd native_dashboard && cargo build --release
+# Build dashboard (TypeScript + Rust + auto-rename to all 3 names)
+cd native_dashboard && npm run release
 ```
 
 ---
@@ -351,4 +358,4 @@ cd native_dashboard && cargo build --release
 
 ---
 
-*Last Updated: March 2026 | Version: 3.3.13*
+*Last Updated: April 2026 | Version: 3.3.15*

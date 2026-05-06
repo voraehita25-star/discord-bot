@@ -1,10 +1,15 @@
 import asyncio
+from pathlib import Path
 
 import aiosqlite
 
+# Anchor to project root — running from a different cwd would silently
+# create a new empty DB instead of inspecting the real one.
+_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "bot_database.db"
+
 
 async def check():
-    async with aiosqlite.connect("data/bot_database.db") as conn:
+    async with aiosqlite.connect(_DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute("""
             SELECT channel_id, MIN(id) as min_id, MAX(id) as max_id, COUNT(*) as count

@@ -50,19 +50,19 @@ if ($Config.bot.check_dependencies) {
 # Main loop
 while ($true) {
     Show-Banner -Mode "Production"
-    
+
     Write-BoxTop
     Write-BoxLine -Text "$($C.Yellow)[*]$($C.Reset) Starting Discord Bot..." -Align "Left"
     Write-BoxBottom
     Write-Host ""
-    
+
     $Host.UI.RawUI.WindowTitle = "Discord Bot - Running"
     $StartTime = Get-Date
-    
+
     # Start bot
     try {
         $BotProcess = Start-Process -FilePath "python" -ArgumentList $BotScript -NoNewWindow -PassThru -WorkingDirectory $ProjectRoot
-        
+
         # Wait for process
         $BotProcess.WaitForExit()
         $ExitCode = $BotProcess.ExitCode
@@ -71,13 +71,13 @@ while ($true) {
         Write-Log "Failed to start bot: $_" -Level ERROR
         $ExitCode = 1
     }
-    
+
     $EndTime = Get-Date
     $Runtime = $EndTime - $StartTime
-    
+
     Write-Host ""
     Write-Log "Session ended after $($Runtime.ToString('hh\:mm\:ss'))" -Level INFO
-    
+
     # Check stop conditions
     $StopFlag = Join-Path $ProjectRoot "stop_loop.flag"
     if (Test-Path $StopFlag) {
@@ -85,12 +85,12 @@ while ($true) {
         Write-Log "Stop signal received - shutting down" -Level OK
         break
     }
-    
+
     if ($NoRestart) {
         Write-Log "No-restart mode - exiting" -Level INFO
         break
     }
-    
+
     # Handle restart logic
     if ($ExitCode -ne 0) {
         # Only count crashes (non-zero exit code) toward restart limit
@@ -100,14 +100,14 @@ while ($true) {
         # Clean exit — don't count as crash, just restart if configured
         Write-Log "Bot exited cleanly (code 0)" -Level INFO
     }
-    
+
     if ($RestartCount -ge $MaxRestarts) {
         Save-CrashReport -ExitCode $ExitCode -ErrorMessage "Max restarts reached" -Runtime $Runtime | Out-Null
-        
+
         Write-Log "Maximum restarts reached ($MaxRestarts) - manual intervention required" -Level ERROR
         break
     }
-    
+
     # Countdown
     Write-Host ""
     Write-BoxTop
@@ -118,9 +118,9 @@ while ($true) {
     }
     Write-BoxLine -Text "$($C.Yellow)[*]$($C.Reset) Restarting in $RestartDelay seconds... (Ctrl+C to cancel)" -Align "Left"
     Write-BoxBottom
-    
+
     $Host.UI.RawUI.WindowTitle = "Discord Bot - Restarting in $RestartDelay s..."
-    
+
     for ($i = $RestartDelay; $i -gt 0; $i--) {
         Write-Host -NoNewline "`r  Restarting in $i seconds...  "
         Start-Sleep -Seconds 1

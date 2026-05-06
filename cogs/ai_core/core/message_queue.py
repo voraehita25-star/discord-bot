@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-logger = logging.getLogger(__name__)
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..data.constants import LOCK_TIMEOUT, MAX_CHANNELS, MAX_PENDING_PER_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,9 +57,14 @@ class MessageQueue:
             return self.processing_locks[channel_id]
 
     def get_lock_sync(self, channel_id: int) -> asyncio.Lock:
-        """Get or create a lock for a channel (sync version for backwards compatibility).
+        """Get or create a lock for a channel (sync entry returning an asyncio.Lock).
 
-        Uses the same _queue_lock as get_lock() to ensure mutual exclusion.
+        Despite the ``_sync`` suffix, the returned lock is an
+        ``asyncio.Lock`` and is only useful from coroutines — it must be
+        ``await``-acquired on the same running loop. Calling this from a
+        thread with no running loop creates a lock bound to no loop and
+        the eventual ``await lock.acquire()`` will raise a confusing
+        ``RuntimeError`` deep in the stack. Fail fast here instead.
 
         Args:
             channel_id: Channel ID
@@ -66,6 +72,15 @@ class MessageQueue:
         Returns:
             asyncio.Lock for the channel
         """
+        # Use the public API; `asyncio._get_running_loop` is a private
+        # CPython internal that has no contract on alternative interpreters.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "get_lock_sync requires a running asyncio loop — the returned "
+                "asyncio.Lock cannot be acquired from a thread without one."
+            ) from exc
         with self._queue_lock:
             if channel_id not in self.processing_locks:
                 self.processing_locks[channel_id] = asyncio.Lock()
@@ -111,18 +126,42 @@ class MessageQueue:
             # Enforce max channels limit
             if channel_id not in self.pending_messages:
                 if len(self.pending_messages) >= MAX_CHANNELS:
-                    # Evict oldest channel — prefer empty channels first, then oldest message
-                    oldest_channel = min(
-                        self.pending_messages,
-                        key=lambda cid: (
-                            0 if not self.pending_messages[cid] else 1,
-                            self.pending_messages[cid][0].timestamp
-                            if self.pending_messages[cid]
-                            else 0,
-                        ),
-                    )
+                    # Build candidate list excluding channels whose
+                    # processing_lock is currently held — evicting a locked
+                    # channel would orphan the lock held by the in-flight
+                    # processor (a fresh lock would be created later for the
+                    # same channel id, breaking mutual exclusion). If
+                    # nothing is evictable, refuse the new channel rather
+                    # than corrupt state.
+                    candidates = [
+                        cid
+                        for cid in self.pending_messages
+                        if not (
+                            cid in self.processing_locks and self.processing_locks[cid].locked()
+                        )
+                    ]
+                    if not candidates:
+                        logger.warning(
+                            "🧹 Message queue at limit (%d) but every channel "
+                            "is currently locked — refusing new channel %s",
+                            MAX_CHANNELS,
+                            channel_id,
+                        )
+                        return
+
+                    def _evict_key(cid: int) -> tuple[int, float]:
+                        msgs = self.pending_messages[cid]
+                        return (
+                            0 if not msgs else 1,  # empty first
+                            msgs[0].timestamp if msgs else 0.0,
+                        )
+
+                    oldest_channel = min(candidates, key=_evict_key)
                     del self.pending_messages[oldest_channel]
                     self.cancel_flags.pop(oldest_channel, None)
+                    # Safe to drop the lock since it wasn't held (we filtered
+                    # locked channels out of the candidate set above).
+                    self.processing_locks.pop(oldest_channel, None)
                     logger.warning(
                         "🧹 Message queue limit reached, evicted channel %s", oldest_channel
                     )
@@ -217,7 +256,11 @@ class MessageQueue:
         with self._queue_lock:
             pending = self.pending_messages.get(channel_id, [])
             self.pending_messages[channel_id] = []
-            self.cancel_flags[channel_id] = False
+            # Only clear an existing cancel flag — pre-populating `False` for
+            # channels that have never had one bloats the dict and changes
+            # `is_cancelled()` semantics from "never seen" to "explicitly
+            # not cancelled".
+            self.cancel_flags.pop(channel_id, None)
             return pending
 
     def merge_pending_messages(self, channel_id: int) -> tuple[PendingMessage | None, str]:
@@ -303,7 +346,8 @@ class MessageQueue:
             # is not the owner. Log so silent ownership bugs surface.
             logger.warning(
                 "release_lock skipped for channel %s (not owner): %s",
-                channel_id, exc,
+                channel_id,
+                exc,
             )
 
     def get_lock_time(self, channel_id: int) -> float | None:
@@ -333,7 +377,9 @@ class MessageQueue:
         """
         now = time.time()
         with self._queue_lock:
-            stale = [cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age]
+            stale = [
+                cid for cid, lock_time in self._lock_times.items() if now - lock_time > max_age
+            ]
         for channel_id in stale:
             # Only log warning - do not force-release as the task may still be running
             logger.warning(

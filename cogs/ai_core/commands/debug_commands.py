@@ -99,7 +99,7 @@ class AIDebug(commands.Cog):
             rag_stats = rag_system.get_stats()
             index_status = (
                 f"✅ {rag_stats['index_size']} vectors"
-                if rag_stats['index_built']
+                if rag_stats["index_built"]
                 else "❌ Not built"
             )
             rag_info = (
@@ -150,7 +150,11 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.memory.entity_memory import entity_memory
 
-            entity_count = len(entity_memory._cache) if hasattr(entity_memory, "_cache") else 0
+            # `_cache` is private; treat any non-Sized object the same as
+            # missing, so a partially-initialised entity_memory doesn't blow
+            # up the debug command with TypeError on len().
+            _cache_obj = getattr(entity_memory, "_cache", None)
+            entity_count = len(_cache_obj) if hasattr(_cache_obj, "__len__") else 0
             embed.add_field(
                 name="👤 Entity Memory",
                 value=f"```\nCached: {entity_count} entities```",
@@ -229,8 +233,8 @@ class AIDebug(commands.Cog):
         embed = discord.Embed(title="🔍 AI Request Trace", color=discord.Color.blue())
 
         # Basic info
-        thinking = '✅' if chat_data.get('thinking_enabled') else '❌'
-        streaming = '✅' if chat_data.get('streaming_enabled') else '❌'
+        thinking = "✅" if chat_data.get("thinking_enabled") else "❌"
+        streaming = "✅" if chat_data.get("streaming_enabled") else "❌"
         embed.add_field(
             name="📝 Session Info",
             value=(
@@ -251,8 +255,8 @@ class AIDebug(commands.Cog):
             embed.add_field(name="⏱️ Timing", value=f"```\n{timing_info}```", inline=True)
 
             # Tokens
-            input_tokens = last_trace.get('input_tokens', 'N/A')
-            output_tokens = last_trace.get('output_tokens', 'N/A')
+            input_tokens = last_trace.get("input_tokens", "N/A")
+            output_tokens = last_trace.get("output_tokens", "N/A")
             embed.add_field(
                 name="🔢 Tokens",
                 value=f"```\nInput: {input_tokens}\nOutput: {output_tokens}```",

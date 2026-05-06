@@ -25,11 +25,11 @@ class TestLoadCachedImageBytes:
         # Clear cache before test
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=True):
-            with patch('pathlib.Path.read_bytes', return_value=b'fake_image_data'):
-                result = load_cached_image_bytes('/fake/path/image.png')
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.read_bytes", return_value=b"fake_image_data"):
+                result = load_cached_image_bytes("/fake/path/image.png")
 
-        assert result == b'fake_image_data'
+        assert result == b"fake_image_data"
 
     def test_load_cached_image_bytes_file_not_exists(self):
         """Test loading image bytes when file doesn't exist."""
@@ -41,8 +41,8 @@ class TestLoadCachedImageBytes:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=False):
-            result = load_cached_image_bytes('/nonexistent/path/image.png')
+        with patch("pathlib.Path.exists", return_value=False):
+            result = load_cached_image_bytes("/nonexistent/path/image.png")
 
         assert result is None
 
@@ -56,9 +56,9 @@ class TestLoadCachedImageBytes:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch('pathlib.Path.exists', return_value=True):
-            with patch('pathlib.Path.read_bytes', side_effect=OSError("Read failed")):
-                result = load_cached_image_bytes('/fake/path/image.png')
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.read_bytes", side_effect=OSError("Read failed")):
+                result = load_cached_image_bytes("/fake/path/image.png")
 
         assert result is None
 
@@ -77,16 +77,17 @@ class TestPilToInlineData:
             return
 
         # Create a simple test image
-        img = Image.new('RGB', (10, 10), color='red')
+        img = Image.new("RGB", (10, 10), color="red")
 
         result = pil_to_inline_data(img)
 
-        assert 'inline_data' in result
-        assert result['inline_data']['mime_type'] == 'image/png'
-        assert 'data' in result['inline_data']
+        assert "inline_data" in result
+        assert result["inline_data"]["mime_type"] == "image/png"
+        assert "data" in result["inline_data"]
         # Check it's valid base64
         import base64
-        decoded = base64.b64decode(result['inline_data']['data'])
+
+        decoded = base64.b64decode(result["inline_data"]["data"])
         assert len(decoded) > 0
 
 
@@ -104,9 +105,9 @@ class TestIsAnimatedGif:
             return
 
         # Create a static GIF
-        img = Image.new('P', (10, 10), color=1)
+        img = Image.new("P", (10, 10), color=1)
         buffer = io.BytesIO()
-        img.save(buffer, format='GIF')
+        img.save(buffer, format="GIF")
         gif_data = buffer.getvalue()
 
         result = is_animated_gif(gif_data)
@@ -121,7 +122,7 @@ class TestIsAnimatedGif:
             pytest.skip("media_processor not available")
             return
 
-        result = is_animated_gif(b'not a gif')
+        result = is_animated_gif(b"not a gif")
 
         assert result is False
 
@@ -142,7 +143,7 @@ class TestConvertGifToVideo:
         media_processor.IMAGEIO_AVAILABLE = False
 
         try:
-            result = media_processor.convert_gif_to_video(b'fake_gif_data')
+            result = media_processor.convert_gif_to_video(b"fake_gif_data")
             assert result is None
         finally:
             media_processor.IMAGEIO_AVAILABLE = original
@@ -187,7 +188,7 @@ class TestAvatarKeywords:
             pytest.skip("media_processor not available")
             return
 
-        assert isinstance(AVATAR_KEYWORDS, (list, tuple))
+        assert isinstance(AVATAR_KEYWORDS, list | tuple)
         assert len(AVATAR_KEYWORDS) > 0
 
     def test_avatar_keywords_contains_thai(self):
@@ -236,9 +237,9 @@ class TestPrepareUserAvatar:
             return
 
         # Create a fake avatar image
-        avatar_img = Image.new('RGB', (256, 256), color='blue')
+        avatar_img = Image.new("RGB", (256, 256), color="blue")
         buffer = io.BytesIO()
-        avatar_img.save(buffer, format='PNG')
+        avatar_img.save(buffer, format="PNG")
         avatar_bytes = buffer.getvalue()
 
         mock_user.display_avatar.with_format.return_value.with_size.return_value.read = AsyncMock(
@@ -248,9 +249,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": []}  # Empty history
         seen_users = {}
 
-        result = await prepare_user_avatar(
-            mock_user, "hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "hello", chat_data, 123, seen_users)
 
         assert result is not None
 
@@ -264,9 +263,9 @@ class TestPrepareUserAvatar:
             pytest.skip("media_processor or PIL not available")
             return
 
-        avatar_img = Image.new('RGB', (256, 256), color='blue')
+        avatar_img = Image.new("RGB", (256, 256), color="blue")
         buffer = io.BytesIO()
-        avatar_img.save(buffer, format='PNG')
+        avatar_img.save(buffer, format="PNG")
         avatar_bytes = buffer.getvalue()
 
         mock_user.display_avatar.with_format.return_value.with_size.return_value.read = AsyncMock(
@@ -276,9 +275,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": [{"role": "user", "content": "test"}]}
         seen_users = {123: set()}  # User not seen yet
 
-        result = await prepare_user_avatar(
-            mock_user, "hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "hello", chat_data, 123, seen_users)
 
         assert result is not None
 
@@ -292,9 +289,9 @@ class TestPrepareUserAvatar:
             pytest.skip("media_processor or PIL not available")
             return
 
-        avatar_img = Image.new('RGB', (256, 256), color='blue')
+        avatar_img = Image.new("RGB", (256, 256), color="blue")
         buffer = io.BytesIO()
-        avatar_img.save(buffer, format='PNG')
+        avatar_img.save(buffer, format="PNG")
         avatar_bytes = buffer.getvalue()
 
         mock_user.display_avatar.with_format.return_value.with_size.return_value.read = AsyncMock(
@@ -323,9 +320,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": [{"role": "user", "content": "test"}]}
         seen_users = {123: {user_key}}  # Already seen
 
-        result = await prepare_user_avatar(
-            mock_user, "hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "hello", chat_data, 123, seen_users)
 
         assert result is None
 
@@ -346,9 +341,7 @@ class TestPrepareUserAvatar:
         chat_data = {"history": []}
         seen_users = {}
 
-        result = await prepare_user_avatar(
-            mock_user, "hello", chat_data, 123, seen_users
-        )
+        result = await prepare_user_avatar(mock_user, "hello", chat_data, 123, seen_users)
 
         assert result is None
 
@@ -375,10 +368,10 @@ class TestTextExtensions:
             pytest.skip("media_processor not available")
             return
 
-        assert '.txt' in TEXT_EXTENSIONS
-        assert '.py' in TEXT_EXTENSIONS
-        assert '.json' in TEXT_EXTENSIONS
-        assert '.md' in TEXT_EXTENSIONS
+        assert ".txt" in TEXT_EXTENSIONS
+        assert ".py" in TEXT_EXTENSIONS
+        assert ".json" in TEXT_EXTENSIONS
+        assert ".md" in TEXT_EXTENSIONS
 
 
 class TestTextMimes:
@@ -403,8 +396,8 @@ class TestTextMimes:
             pytest.skip("media_processor not available")
             return
 
-        assert 'text/plain' in TEXT_MIMES
-        assert 'application/json' in TEXT_MIMES
+        assert "text/plain" in TEXT_MIMES
+        assert "application/json" in TEXT_MIMES
 
 
 class TestProcessAttachments:
@@ -469,9 +462,9 @@ class TestProcessAttachments:
             return
 
         # Create a fake image
-        img = Image.new('RGB', (10, 10), color='red')
+        img = Image.new("RGB", (10, 10), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
         img_bytes = buffer.getvalue()
 
         mock_attachment = MagicMock()
@@ -499,7 +492,7 @@ class TestProcessAttachments:
         mock_attachment.content_type = "text/plain"
         mock_attachment.filename = "large.txt"
         mock_attachment.size = 30000
-        mock_attachment.read = AsyncMock(return_value=large_text.encode('utf-8'))
+        mock_attachment.read = AsyncMock(return_value=large_text.encode("utf-8"))
 
         images, videos, texts = await process_attachments([mock_attachment], "TestUser")
 
@@ -515,7 +508,7 @@ class TestProcessAttachments:
             return
 
         # Latin-1 encoded text
-        latin1_text = "café résumé".encode('latin-1')
+        latin1_text = "café résumé".encode("latin-1")
 
         mock_attachment = MagicMock()
         mock_attachment.content_type = "text/plain"
@@ -550,6 +543,7 @@ class TestModuleConstants:
 # Merged from test_media_processor_module.py
 # ======================================================================
 
+
 class TestLoadCachedImageBytes:
     """Tests for load_cached_image_bytes function."""
 
@@ -564,6 +558,7 @@ class TestLoadCachedImageBytes:
     def test_load_cached_image_bytes_function_exists(self):
         """Test load_cached_image_bytes function exists."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert callable(load_cached_image_bytes)
 
 
@@ -575,7 +570,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (100, 100), color='red')
+        img = Image.new("RGB", (100, 100), color="red")
 
         result = pil_to_inline_data(img)
 
@@ -589,7 +584,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create a simple test image
-        img = Image.new('RGB', (50, 50), color='blue')
+        img = Image.new("RGB", (50, 50), color="blue")
 
         result = pil_to_inline_data(img)
 
@@ -603,7 +598,7 @@ class TestPilToInlineData:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Create RGBA image
-        img = Image.new('RGBA', (100, 100), color=(255, 0, 0, 128))
+        img = Image.new("RGBA", (100, 100), color=(255, 0, 0, 128))
 
         result = pil_to_inline_data(img)
 
@@ -618,9 +613,9 @@ class TestIsAnimatedGif:
         from cogs.ai_core.media_processor import is_animated_gif
 
         # Create static GIF
-        img = Image.new('P', (10, 10), color=0)
+        img = Image.new("P", (10, 10), color=0)
         buffer = io.BytesIO()
-        img.save(buffer, format='GIF')
+        img.save(buffer, format="GIF")
 
         result = is_animated_gif(buffer.getvalue())
 
@@ -641,21 +636,25 @@ class TestModuleImports:
     def test_import_media_processor(self):
         """Test media_processor module can be imported."""
         from cogs.ai_core import media_processor
+
         assert media_processor is not None
 
     def test_import_load_cached_image_bytes(self):
         """Test load_cached_image_bytes can be imported."""
         from cogs.ai_core.media_processor import load_cached_image_bytes
+
         assert load_cached_image_bytes is not None
 
     def test_import_pil_to_inline_data(self):
         """Test pil_to_inline_data can be imported."""
         from cogs.ai_core.media_processor import pil_to_inline_data
+
         assert pil_to_inline_data is not None
 
     def test_import_is_animated_gif(self):
         """Test is_animated_gif can be imported."""
         from cogs.ai_core.media_processor import is_animated_gif
+
         assert is_animated_gif is not None
 
 
@@ -675,6 +674,7 @@ class TestServerCharacters:
     def test_server_characters_imported(self):
         """Test SERVER_CHARACTER_NAMES is imported in media_processor."""
         from cogs.ai_core.media_processor import SERVER_CHARACTER_NAMES
+
         assert SERVER_CHARACTER_NAMES is not None
 
 
@@ -686,7 +686,7 @@ class TestImageConversion:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Very small image
-        img = Image.new('RGB', (1, 1), color='white')
+        img = Image.new("RGB", (1, 1), color="white")
 
         result = pil_to_inline_data(img)
 
@@ -698,7 +698,7 @@ class TestImageConversion:
         from cogs.ai_core.media_processor import pil_to_inline_data
 
         # Larger image
-        img = Image.new('RGB', (500, 500), color='green')
+        img = Image.new("RGB", (500, 500), color="green")
 
         result = pil_to_inline_data(img)
 
@@ -714,9 +714,9 @@ class TestStaticGifDetection:
         from cogs.ai_core.media_processor import is_animated_gif
 
         # Create PNG and convert to bytes
-        img = Image.new('RGB', (10, 10), color='red')
+        img = Image.new("RGB", (10, 10), color="red")
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format="PNG")
 
         # Should return False (not animated)
         result = is_animated_gif(buffer.getvalue())
@@ -736,12 +736,13 @@ class TestStaticGifDetection:
 # Merged from test_media_processor_new.py
 # ======================================================================
 
+
 class TestLoadCachedImageBytes:
     """Tests for load_cached_image_bytes function."""
 
     def test_load_existing_file(self):
         """Test loading existing image file."""
-        from cogs.ai_core.media_processor import load_cached_image_bytes, _BASE_DIR
+        from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
 
         # Create a temp image
         img = Image.new("RGB", (10, 10), color="red")
@@ -749,8 +750,11 @@ class TestLoadCachedImageBytes:
             img.save(buf, format="PNG")
             expected_bytes = buf.getvalue()
 
-        test_path = str(_BASE_DIR / 'assets' / 'test_image.png')
-        with patch("pathlib.Path.exists", return_value=True):
+        # The cache validates against ``st_mtime_ns`` to detect on-disk
+        # changes, so patch ``stat`` (not ``exists``) alongside ``read_bytes``.
+        test_path = str(_BASE_DIR / "assets" / "test_image.png")
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch("pathlib.Path.stat", return_value=fake_stat):
             with patch("pathlib.Path.read_bytes", return_value=expected_bytes):
                 # Clear cache first
                 load_cached_image_bytes.cache_clear()
@@ -766,7 +770,9 @@ class TestLoadCachedImageBytes:
         # Clear cache
         load_cached_image_bytes.cache_clear()
 
-        with patch("pathlib.Path.exists", return_value=False):
+        # Missing files raise FileNotFoundError from ``stat`` — that's the
+        # short-circuit the cache uses to return None without attempting a read.
+        with patch("pathlib.Path.stat", side_effect=FileNotFoundError):
             result = load_cached_image_bytes("/nonexistent/image.png")
 
             assert result is None
@@ -777,7 +783,8 @@ class TestLoadCachedImageBytes:
 
         load_cached_image_bytes.cache_clear()
 
-        with patch("pathlib.Path.exists", return_value=True):
+        fake_stat = MagicMock(st_mtime_ns=42)
+        with patch("pathlib.Path.stat", return_value=fake_stat):
             with patch("pathlib.Path.read_bytes", side_effect=OSError("read error")):
                 result = load_cached_image_bytes("/error/image.png")
 

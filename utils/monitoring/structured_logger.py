@@ -145,10 +145,12 @@ class StructuredFormatter(logging.Formatter):
             "line": record.lineno,
         }
 
-        # Add context from context variable
+        # Add context from context variable. Defensive copy so the contextvar
+        # dict isn't mutated by record.context.update below — otherwise extra
+        # fields would persist across log calls in the same context.
         ctx = _log_context.get({})
         if ctx:
-            log_entry["context"] = ctx
+            log_entry["context"] = dict(ctx)
 
         # Add context from record if available
         if hasattr(record, "context") and record.context:
@@ -183,7 +185,18 @@ class StructuredFormatter(logging.Formatter):
                 "stacktrace": self.formatException(record.exc_info),
             }
 
-        return json.dumps(log_entry, ensure_ascii=False, default=str)
+        output = json.dumps(log_entry, ensure_ascii=False, default=str)
+        # Run the serialised JSON through the same secret-redactor used
+        # by the plain-text logger. Without this, a Discord token / API
+        # key embedded inside an `extra={...}` dict would land in the
+        # JSON log file unredacted — defeating the SensitiveDataFilter.
+        try:
+            from utils.monitoring.logger import _redact_sensitive
+
+            output = _redact_sensitive(output)
+        except Exception:  # pragma: no cover — never let logging crash
+            pass
+        return output
 
 
 class HumanReadableFormatter(logging.Formatter):
@@ -271,7 +284,15 @@ class StructuredLogger:
 
         try:
             # Only pass known LogContext fields; put the rest in 'extra'
-            known_fields = {"request_id", "correlation_id", "user_id", "channel_id", "guild_id", "command", "service"}
+            known_fields = {
+                "request_id",
+                "correlation_id",
+                "user_id",
+                "channel_id",
+                "guild_id",
+                "command",
+                "service",
+            }
             ctx_kwargs = {k: v for k, v in kwargs.items() if k in known_fields}
             extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_fields}
             if extra_kwargs:
@@ -509,8 +530,16 @@ def setup_structured_logging(
     """
     root_logger = logging.getLogger()
 
-    # Prevent duplicate handlers on re-initialization
-    root_logger.handlers.clear()
+    # Prevent duplicate handlers on re-initialization. Close existing
+    # handlers first — RotatingFileHandler holds an open file descriptor,
+    # and a bare .clear() leaks it on each hot reload until interpreter
+    # exit. Mirrors the close-then-clear pattern used in logger.py.
+    for h in list(root_logger.handlers):
+        try:
+            h.close()
+        except Exception:
+            pass
+        root_logger.removeHandler(h)
 
     # Create formatters
     json_formatter = StructuredFormatter(service_name=service_name)
@@ -543,14 +572,29 @@ def setup_structured_logging(
 def get_correlation_id() -> str | None:
     """Get current correlation/request ID from context."""
     ctx = _log_context.get({})
-    return ctx.get("request_id") or ctx.get("correlation_id")
+    value = ctx.get("request_id") or ctx.get("correlation_id")
+    return value if isinstance(value, str) else None
 
 
-def set_correlation_id(correlation_id: str) -> None:
-    """Set correlation ID in current context."""
+def set_correlation_id(correlation_id: str) -> Any:
+    """Set correlation ID in current context.
+
+    Returns the ``Token`` from ``_log_context.set`` so callers can later
+    pass it to ``reset_correlation_id`` for proper rollback. Without that,
+    the correlation ID leaks across tasks and request boundaries.
+    """
     current = _log_context.get({}).copy()
     current["correlation_id"] = correlation_id
-    _log_context.set(current)
+    return _log_context.set(current)
+
+
+def reset_correlation_id(token: Any) -> None:
+    """Restore the previous correlation context (token from set_correlation_id)."""
+    try:
+        _log_context.reset(token)
+    except (ValueError, LookupError):
+        # Token from a different context or already reset — best-effort.
+        pass
 
 
 # Convenience function for creating loggers

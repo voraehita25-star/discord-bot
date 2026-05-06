@@ -1,6 +1,5 @@
 """Unit tests for Fast JSON utility module."""
 
-
 from utils.fast_json import (
     is_orjson_enabled,
     json_dumps,
@@ -145,6 +144,7 @@ class TestRoundTrip:
 # Merged from test_fast_json_extended.py
 # ======================================================================
 
+
 class TestFastJSONLoads:
     """Tests for fast_json.json_loads function."""
 
@@ -159,7 +159,7 @@ class TestFastJSONLoads:
         """Test loading simple list."""
         from utils.fast_json import json_loads
 
-        result = json_loads('[1, 2, 3]')
+        result = json_loads("[1, 2, 3]")
         assert result == [1, 2, 3]
 
     def test_loads_nested_structure(self):
@@ -280,11 +280,8 @@ class TestFastJSONRoundTrip:
         from utils.fast_json import json_dumps, json_loads
 
         original = {
-            "users": [
-                {"name": "Alice", "age": 30},
-                {"name": "Bob", "age": 25}
-            ],
-            "meta": {"version": 1}
+            "users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}],
+            "meta": {"version": 1},
         }
         result = json_loads(json_dumps(original))
 
@@ -335,6 +332,7 @@ class TestOrjsonFallback:
 # Merged from test_fast_json_module.py
 # ======================================================================
 
+
 class TestJsonLoads:
     """Tests for json_loads function."""
 
@@ -358,7 +356,7 @@ class TestJsonLoads:
         """Test json_loads with array."""
         from utils.fast_json import json_loads
 
-        result = json_loads('[1, 2, 3]')
+        result = json_loads("[1, 2, 3]")
 
         assert result == [1, 2, 3]
 

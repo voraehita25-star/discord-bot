@@ -47,12 +47,8 @@ class TestReflectionResult:
 
     def test_has_critical_issues(self):
         """Test critical issue detection."""
-        critical_issue = Issue(
-            type=IssueType.UNSAFE, description="Unsafe content", severity=0.9
-        )
-        minor_issue = Issue(
-            type=IssueType.TOO_SHORT, description="Brief", severity=0.2
-        )
+        critical_issue = Issue(type=IssueType.UNSAFE, description="Unsafe content", severity=0.9)
+        minor_issue = Issue(type=IssueType.TOO_SHORT, description="Brief", severity=0.2)
 
         result = ReflectionResult(
             is_valid=False, confidence=0.5, issues=[critical_issue, minor_issue]
@@ -61,12 +57,8 @@ class TestReflectionResult:
 
     def test_no_critical_issues(self):
         """Test when no critical issues exist."""
-        minor_issue = Issue(
-            type=IssueType.TOO_SHORT, description="Brief", severity=0.3
-        )
-        result = ReflectionResult(
-            is_valid=True, confidence=0.8, issues=[minor_issue]
-        )
+        minor_issue = Issue(type=IssueType.TOO_SHORT, description="Brief", severity=0.3)
+        result = ReflectionResult(is_valid=True, confidence=0.8, issues=[minor_issue])
         assert result.has_critical_issues is False
 
     def test_issue_summary_empty(self):
@@ -133,7 +125,9 @@ class TestSelfReflector:
 
     def test_check_length_normal(self):
         """Test normal length passes."""
-        normal_text = "This is a normal response with adequate length that provides useful information."
+        normal_text = (
+            "This is a normal response with adequate length that provides useful information."
+        )
         issue = self.reflector._check_length(normal_text)
         assert issue is None
 
@@ -200,4 +194,3 @@ class TestSelfReflectorPatterns:
         # Just verify the method exists and returns expected type
         result = self.reflector._check_hallucination("A normal response")
         assert result is None or isinstance(result, Issue)
-

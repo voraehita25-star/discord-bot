@@ -256,9 +256,7 @@ class TestResponseSenderSendResponse:
         channel = MagicMock()
         channel.send = AsyncMock(return_value=MagicMock(id=123))
 
-        result = await sender.send_response(
-            channel, "[Alice]: Hello!", use_webhook=False
-        )
+        result = await sender.send_response(channel, "[Alice]: Hello!", use_webhook=False)
 
         # Should have used Alice as character name
         assert result.success is True

@@ -26,7 +26,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_debug')
+        assert hasattr(cog, "ai_debug")
 
     def test_cog_has_ai_perf_command(self):
         """Test cog has ai_perf command."""
@@ -35,7 +35,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_perf')
+        assert hasattr(cog, "ai_perf")
 
     def test_cog_has_ai_cache_clear_command(self):
         """Test cog has ai_cache_clear command."""
@@ -44,7 +44,7 @@ class TestAIDebugCog:
         mock_bot = MagicMock(spec=commands.Bot)
         cog = AIDebug(mock_bot)
 
-        assert hasattr(cog, 'ai_cache_clear')
+        assert hasattr(cog, "ai_cache_clear")
 
 
 class TestGetChatManager:
@@ -102,7 +102,7 @@ class TestAIDebugCommand:
         mock_ctx.send.assert_called_once()
         # Should have sent an embed
         call_args = mock_ctx.send.call_args
-        assert 'embed' in call_args.kwargs or len(call_args.args) > 0
+        assert "embed" in call_args.kwargs or len(call_args.args) > 0
 
     @pytest.mark.asyncio
     async def test_ai_debug_with_chat_manager(self):
@@ -223,7 +223,9 @@ class TestAICacheClearCommand:
         mock_cache = MagicMock()
         mock_cache.invalidate.return_value = 5
 
-        with patch.dict("sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}):
+        with patch.dict(
+            "sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}
+        ):
             with patch("cogs.ai_core.cache.ai_cache.ai_cache", mock_cache, create=True):
                 await cog.ai_cache_clear.callback(cog, mock_ctx)
 
@@ -297,6 +299,7 @@ class TestModuleImports:
 # Merged from test_debug_commands_extended.py
 # ======================================================================
 
+
 class TestAIDebugCog:
     """Tests for AIDebug cog initialization."""
 
@@ -312,7 +315,7 @@ class TestAIDebugCog:
         cog = AIDebug(mock_bot)
 
         assert cog.bot == mock_bot
-        assert hasattr(cog, 'logger')
+        assert hasattr(cog, "logger")
 
     def test_ai_debug_has_commands(self):
         """Test AIDebug cog has expected commands."""
@@ -326,12 +329,12 @@ class TestAIDebugCog:
         cog = AIDebug(mock_bot)
 
         # Check for expected command methods
-        assert hasattr(cog, 'ai_debug')
-        assert hasattr(cog, 'ai_perf')
-        assert hasattr(cog, 'ai_cache_clear')
-        assert hasattr(cog, 'ai_trace')
-        assert hasattr(cog, 'ai_stats_cmd')
-        assert hasattr(cog, 'ai_tokens_cmd')
+        assert hasattr(cog, "ai_debug")
+        assert hasattr(cog, "ai_perf")
+        assert hasattr(cog, "ai_cache_clear")
+        assert hasattr(cog, "ai_trace")
+        assert hasattr(cog, "ai_stats_cmd")
+        assert hasattr(cog, "ai_tokens_cmd")
 
 
 class TestGetChatManager:
@@ -438,15 +441,12 @@ class TestAIDebugCommand:
 
         mock_chat_manager = MagicMock()
         mock_chat_manager.chats = {
-            123456: {
-                "history": [{"role": "user", "content": "test"}],
-                "thinking_enabled": True
-            }
+            123456: {"history": [{"role": "user", "content": "test"}], "thinking_enabled": True}
         }
         mock_chat_manager.get_performance_stats.return_value = {}
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
 
-        with patch('cogs.ai_core.commands.debug_commands.discord.Embed'):
+        with patch("cogs.ai_core.commands.debug_commands.discord.Embed"):
             await cog.ai_debug.callback(cog, mock_ctx)
 
         mock_ctx.send.assert_called_once()
@@ -492,7 +492,7 @@ class TestAIPerfCommand:
         mock_chat_manager = MagicMock()
         mock_chat_manager.get_performance_stats.return_value = {
             "api_call": {"avg_ms": 150.5, "min_ms": 100.0, "max_ms": 200.0, "count": 10},
-            "rag_query": {"avg_ms": 25.0, "min_ms": 10.0, "max_ms": 50.0, "count": 5}
+            "rag_query": {"avg_ms": 25.0, "min_ms": 10.0, "max_ms": 50.0, "count": 5},
         }
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
 
@@ -523,13 +523,15 @@ class TestAICacheClearCommand:
         mock_cache = MagicMock()
         mock_cache.invalidate.return_value = 5
 
-        with patch.dict('sys.modules', {'cogs.ai_core.cache.ai_cache': MagicMock(ai_cache=mock_cache)}):
-            with patch('cogs.ai_core.commands.debug_commands.ai_cache', mock_cache, create=True):
+        with patch.dict(
+            "sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}
+        ):
+            with patch("cogs.ai_core.commands.debug_commands.ai_cache", mock_cache, create=True):
                 # Import and re-mock within context
                 pass
 
         # Test import error path
-        with patch.object(cog, 'ai_cache_clear') as mock_cmd:
+        with patch.object(cog, "ai_cache_clear") as mock_cmd:
             mock_cmd.callback = AsyncMock()
 
     async def test_ai_cache_clear_import_error(self):
@@ -549,7 +551,7 @@ class TestAICacheClearCommand:
         # Simulate ImportError by having get_cog work but cache import fail
 
         # Call with mocked import to raise ImportError
-        with patch('builtins.__import__', side_effect=ImportError):
+        with patch("builtins.__import__", side_effect=ImportError):
             # The command itself handles the import internally
             pass
 
@@ -629,8 +631,8 @@ class TestAITraceCommand:
                     "output_tokens": 50,
                     "cache_hit": False,
                     "rag_results": 3,
-                    "intent": "question"
-                }
+                    "intent": "question",
+                },
             }
         }
         cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
@@ -725,7 +727,7 @@ class TestCommandDecorators:
 
         # Check that commands have checks
         # The commands should have the is_owner check
-        assert hasattr(cog.ai_debug, 'checks') or hasattr(cog.ai_debug, '__commands_checks__')
+        assert hasattr(cog.ai_debug, "checks") or hasattr(cog.ai_debug, "__commands_checks__")
 
     def test_command_names(self):
         """Test commands have correct names."""
@@ -803,7 +805,7 @@ class TestEdgeCases:
             123456: {
                 "history": [],
                 "thinking_enabled": False,
-                "streaming_enabled": False
+                "streaming_enabled": False,
                 # No last_trace
             }
         }

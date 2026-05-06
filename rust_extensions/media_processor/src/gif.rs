@@ -53,10 +53,10 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
                 if i + 10 > data.len() {
                     break;
                 }
-                
+
                 let local_flags = data[i + 9];
                 i += 10;
-                
+
                 // Skip Local Color Table if present
                 if local_flags & 0x80 != 0 {
                     let table_size = 3 * (1 << ((local_flags & 0x07) + 1));
@@ -65,13 +65,13 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
                     }
                     i += table_size;
                 }
-                
+
                 // Skip LZW minimum code size
                 if i >= data.len() {
                     break;
                 }
                 i += 1;
-                
+
                 // Skip image data blocks
                 while i < data.len() && data[i] != 0 {
                     let block_size = data[i] as usize;

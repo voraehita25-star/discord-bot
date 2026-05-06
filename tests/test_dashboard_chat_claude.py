@@ -97,22 +97,26 @@ class TestClaudeDashboardRetry:
     async def test_chat_retries_past_three_attempts_until_success(self, ws: FakeWS):
         from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
 
-        client = FakeClaudeClient([
-            RuntimeError("busy-1"),
-            RuntimeError("busy-2"),
-            RuntimeError("busy-3"),
-            RuntimeError("busy-4"),
-            [_text_event("Recovered response")],
-        ])
+        client = FakeClaudeClient(
+            [
+                RuntimeError("busy-1"),
+                RuntimeError("busy-2"),
+                RuntimeError("busy-3"),
+                RuntimeError("busy-4"),
+                [_text_event("Recovered response")],
+            ]
+        )
         sleep_mock = AsyncMock()
 
-        with patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False), \
-             patch(
-                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                 new=AsyncMock(return_value=("User context", "Memory context", False)),
-             ), \
-             patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)), \
-             patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", "Memory context", False)),
+            ),
+            patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)),
+            patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock),
+        ):
             await handle_chat_message_claude(
                 cast(Any, ws),
                 {"content": "hello", "conversation_id": "conv-1"},
@@ -120,7 +124,9 @@ class TestClaudeDashboardRetry:
                 stream_timeout=1,
             )
 
-        retry_chunks = [message for message in ws.find("chunk") if "retrying" in message["content"].lower()]
+        retry_chunks = [
+            message for message in ws.find("chunk") if "retrying" in message["content"].lower()
+        ]
         assert len(retry_chunks) == 4
         assert all("/3" not in message["content"] for message in retry_chunks)
         assert "(attempt 4)" in retry_chunks[-1]["content"]
@@ -132,29 +138,35 @@ class TestClaudeDashboardRetry:
     async def test_ai_edit_retries_past_three_attempts_until_success(self, ws: FakeWS):
         from cogs.ai_core.api.dashboard_chat_claude import handle_ai_edit_message_claude
 
-        client = FakeClaudeClient([
-            RuntimeError("busy-1"),
-            RuntimeError("busy-2"),
-            RuntimeError("busy-3"),
-            RuntimeError("busy-4"),
-            [_text_event("Edited response")],
-        ])
+        client = FakeClaudeClient(
+            [
+                RuntimeError("busy-1"),
+                RuntimeError("busy-2"),
+                RuntimeError("busy-3"),
+                RuntimeError("busy-4"),
+                [_text_event("Edited response")],
+            ]
+        )
         sleep_mock = AsyncMock()
         mock_db = MagicMock()
-        mock_db.get_dashboard_messages = AsyncMock(return_value=[
-            {"id": 1, "role": "user", "content": "hello"},
-            {"id": 2, "role": "assistant", "content": "original"},
-        ])
+        mock_db.get_dashboard_messages = AsyncMock(
+            return_value=[
+                {"id": 1, "role": "user", "content": "hello"},
+                {"id": 2, "role": "assistant", "content": "original"},
+            ]
+        )
         mock_db.update_dashboard_message = AsyncMock()
 
-        with patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db), \
-             patch(
-                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                 new=AsyncMock(return_value=("User context", "Memory context", False)),
-             ), \
-             patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)), \
-             patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", "Memory context", False)),
+            ),
+            patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)),
+            patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock),
+        ):
             await handle_ai_edit_message_claude(
                 cast(Any, ws),
                 {
@@ -166,12 +178,16 @@ class TestClaudeDashboardRetry:
                 stream_timeout=1,
             )
 
-        retry_chunks = [message for message in ws.find("chunk") if "retrying" in message["content"].lower()]
+        retry_chunks = [
+            message for message in ws.find("chunk") if "retrying" in message["content"].lower()
+        ]
         assert len(retry_chunks) == 4
         assert all("/3" not in message["content"] for message in retry_chunks)
         assert "(attempt 4)" in retry_chunks[-1]["content"]
         assert ws.find("stream_end")[0]["full_response"] == "Edited response"
-        mock_db.update_dashboard_message.assert_awaited_once_with(2, "Edited response")
+        mock_db.update_dashboard_message.assert_awaited_once_with(
+            2, "Edited response", expected_conversation_id="conv-1"
+        )
         assert client.attempts == 5
         assert [call.args[0] for call in sleep_mock.await_args_list] == [2, 4, 8, 16]
 
@@ -182,11 +198,13 @@ class TestClaudeDashboardRetry:
         client = FakeClaudeClient([[_text_event("should not run")]])
         heic_image = f"data:image/heic;base64,{base64.b64encode(b'abc').decode('ascii')}"
 
-        with patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False), \
-             patch(
-                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                 new=AsyncMock(return_value=("User context", "Memory context", False)),
-             ):
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", "Memory context", False)),
+            ),
+        ):
             await handle_chat_message_claude(
                 cast(Any, ws),
                 {
@@ -200,5 +218,7 @@ class TestClaudeDashboardRetry:
 
         errors = ws.find("error")
         assert any("unsupported image type" in message["message"].lower() for message in errors)
-        assert any("no supported text or images" in message["message"].lower() for message in errors)
+        assert any(
+            "no supported text or images" in message["message"].lower() for message in errors
+        )
         assert client.attempts == 0

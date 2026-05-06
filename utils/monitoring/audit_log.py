@@ -5,9 +5,12 @@ Tracks administrative actions for security and accountability.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-logger = logging.getLogger(__name__)
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 # Try to import database
@@ -17,6 +20,45 @@ try:
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
+
+# Fallback JSONL file used when the DB layer is unavailable. We append-only
+# so audit history isn't silently lost when sqlite is broken at import time.
+_FALLBACK_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "audit_fallback.jsonl"
+_FALLBACK_LOCK = asyncio.Lock()
+
+
+def _scrub_str(v: Any) -> Any:
+    if isinstance(v, str):
+        return v.replace("\r", " ").replace("\n", " ")[:500]
+    return v
+
+
+async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
+    """Append one audit row to the JSONL fallback file.
+
+    The previous implementation opened the file inside a lambda and
+    discarded the handle once ``write`` returned, leaving close to GC.
+    On Windows the file handle would stay open long enough that a
+    rotating-logs sweeper holding a Path lock could collide with the
+    next write. Using ``with`` makes close deterministic.
+    """
+
+    def _do_write(line: str) -> None:
+        with _FALLBACK_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line)
+
+    try:
+        async with _FALLBACK_LOCK:
+            _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
+            await asyncio.to_thread(_do_write, line)
+        return True
+    except Exception:
+        logger.exception("Audit fallback write failed; entry lost")
+        return False
 
 
 class AuditLogger:
@@ -45,15 +87,32 @@ class AuditLogger:
             True if logged successfully
         """
         if not DB_AVAILABLE:
+            # Strip newlines / control chars from string fields so a
+            # crafted action / details string can't inject extra log
+            # lines. The %s formatter does NOT escape these by default.
             logger.info(
                 "📋 AUDIT: [%s] %s (target: %s:%s) - %s",
                 guild_id,
-                action,
-                target_type,
+                _scrub_str(action),
+                _scrub_str(target_type),
                 target_id,
-                details,
+                _scrub_str(details),
             )
-            return True
+            # Persist to JSONL so an audit trail survives DB outages. Logger
+            # output alone is not durable — log files rotate and are not a
+            # tamper-resistant audit substrate.
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts_epoch": time.time(),
+                "user_id": user_id,
+                "action": _scrub_str(action),
+                "guild_id": guild_id,
+                "target_type": _scrub_str(target_type),
+                "target_id": target_id,
+                "details": _scrub_str(details),
+                "fallback_reason": "db_unavailable",
+            }
+            return await _write_fallback_entry(entry)
 
         try:
             # Embed target_type into details JSON if provided

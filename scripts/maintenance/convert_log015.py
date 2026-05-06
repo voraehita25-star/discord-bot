@@ -66,7 +66,10 @@ def convert_file(path: Path) -> tuple[bool, str]:
     if LOGGER_DECL not in original:
         # Insert right after the import line, preserving the line-ending style of the
         # import line (handled by splitting on \n — \r stays attached to the line above).
-        new_lines.insert(import_idx + 1, LOGGER_DECL + b"\r" if text_lines[import_idx].endswith(b"\r") else LOGGER_DECL)
+        new_lines.insert(
+            import_idx + 1,
+            LOGGER_DECL + b"\r" if text_lines[import_idx].endswith(b"\r") else LOGGER_DECL,
+        )
         inserted = True
 
     new_content = b"\n".join(new_lines)
@@ -108,7 +111,7 @@ def main() -> int:
             continue
         try:
             changed, reason = convert_file(path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"[ERR ] {rel}: {e}")
             failed += 1
             continue

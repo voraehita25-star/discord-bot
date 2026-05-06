@@ -12,10 +12,7 @@ class TestCacheEntryDataclass:
         """Test creating CacheEntry."""
         from cogs.ai_core.cache.ai_cache import CacheEntry
 
-        entry = CacheEntry(
-            response="Test response",
-            created_at=time.time()
-        )
+        entry = CacheEntry(response="Test response", created_at=time.time())
 
         assert entry.response == "Test response"
         assert entry.hits == 0
@@ -24,10 +21,7 @@ class TestCacheEntryDataclass:
         """Test CacheEntry default hits."""
         from cogs.ai_core.cache.ai_cache import CacheEntry
 
-        entry = CacheEntry(
-            response="Test",
-            created_at=time.time()
-        )
+        entry = CacheEntry(response="Test", created_at=time.time())
 
         assert entry.hits == 0
         assert entry.context_hash == ""
@@ -42,11 +36,7 @@ class TestCacheStatsDataclass:
         from cogs.ai_core.cache.ai_cache import CacheStats
 
         stats = CacheStats(
-            total_entries=100,
-            hits=80,
-            misses=20,
-            hit_rate=0.8,
-            memory_estimate_kb=256.0
+            total_entries=100, hits=80, misses=20, hit_rate=0.8, memory_estimate_kb=256.0
         )
 
         assert stats.total_entries == 100
@@ -472,6 +462,7 @@ class TestAICacheInvalidatePattern:
 # Merged from test_ai_cache_extended.py
 # ======================================================================
 
+
 class TestCacheEntryDataclass:
     """Tests for CacheEntry dataclass."""
 
@@ -640,7 +631,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'get')
+        assert hasattr(cache, "get")
 
     def test_cache_has_set_method(self):
         """Test AICache has set method."""
@@ -648,7 +639,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'set')
+        assert hasattr(cache, "set")
 
     def test_cache_has_invalidate_method(self):
         """Test AICache has invalidate method."""
@@ -656,7 +647,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'invalidate') or hasattr(cache, 'invalidate_pattern')
+        assert hasattr(cache, "invalidate") or hasattr(cache, "invalidate_pattern")
 
     def test_cache_has_get_stats_method(self):
         """Test AICache has get_stats method."""
@@ -664,7 +655,7 @@ class TestAICacheMethods:
 
         cache = AICache()
 
-        assert hasattr(cache, 'get_stats')
+        assert hasattr(cache, "get_stats")
 
 
 class TestAICacheSetAndGet:
@@ -691,7 +682,7 @@ class TestAICacheSetAndGet:
         cache.set("greeting bye", "Bye!")
 
         # Invalidate and check stats
-        if hasattr(cache, 'invalidate_pattern'):
+        if hasattr(cache, "invalidate_pattern"):
             cache.invalidate_pattern("greeting")
 
         # After invalidation, check stats still work
@@ -718,7 +709,7 @@ class TestAICacheStats:
         cache = AICache()
         stats = cache.get_stats()
 
-        assert hasattr(stats, 'hit_rate')
+        assert hasattr(stats, "hit_rate")
 
 
 class TestNumpyAvailable:

@@ -1,4 +1,4 @@
-﻿# pylint: disable=protected-access
+# pylint: disable=protected-access
 """
 Unit Tests for Memory Consolidator Module.
 Tests message counting and consolidation triggers.
@@ -342,6 +342,7 @@ class TestInitialize:
 # Merged from test_consolidator_extended.py
 # ======================================================================
 
+
 class TestConsolidatorConstants:
     """Tests for consolidator constants."""
 
@@ -499,6 +500,7 @@ class TestMemoryConsolidatorSingleton:
 # Merged from test_consolidator_more.py
 # ======================================================================
 
+
 class TestMemoryConsolidatorInit:
     """Tests for MemoryConsolidator initialization."""
 
@@ -636,13 +638,14 @@ class TestInitializeMethod:
         else:
             # When genai is available, it would try to use the API
             # We just check the return type
-            with patch('cogs.ai_core.memory.consolidator.anthropic'):
+            with patch("cogs.ai_core.memory.consolidator.anthropic"):
                 result = consolidator.initialize("test_api_key")
                 assert isinstance(result, bool)
 
 
 class TestModuleDocstring:
     """Tests for module documentation."""
+
 
 class TestEmptyDictsOnInit:
     """Tests for empty dictionaries on initialization."""

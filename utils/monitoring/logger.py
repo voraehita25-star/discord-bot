@@ -6,12 +6,13 @@ Sets up smart color-coded logging and handles log file rotation.
 from __future__ import annotations
 
 import logging
-logger = logging.getLogger(__name__)
 import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, ClassVar
+
+logger = logging.getLogger(__name__)
 
 # Emoji to ASCII mapping for console compatibility
 EMOJI_MAP = {
@@ -63,11 +64,16 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 
-        # Enable ANSI escape sequences in Windows Console
+        # Enable ANSI escape sequences in Windows Console.
+        # Validate the handle before calling GetConsoleMode — when stdout is
+        # piped/redirected (CI, Docker, systemd) the handle is NULL or
+        # INVALID_HANDLE_VALUE and the API call would either no-op or, on
+        # some Windows builds, raise OSError.
         handle = kernel32.GetStdHandle(-11)
-        console_mode = ctypes.c_ulong()
-        kernel32.GetConsoleMode(handle, ctypes.byref(console_mode))
-        kernel32.SetConsoleMode(handle, console_mode.value | 0x0004)
+        if handle and handle != -1:
+            console_mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(console_mode)):
+                kernel32.SetConsoleMode(handle, console_mode.value | 0x0004)
 
         # Test if Unicode actually works
         try:
@@ -140,8 +146,14 @@ class JSONLogFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=True)
 
 
-# Patterns that look like secrets (Discord tokens, API keys, bearer tokens)
-_SECRET_PATTERNS = re.compile(
+# Patterns that look like secrets (Discord tokens, API keys, bearer tokens).
+#
+# We use TWO compiled regexes and chain them in `_redact_sensitive` so the
+# AWS/GitHub patterns can stay case-sensitive (the prefixes AKIA / ghp_ /
+# gho_ / ghs_ are FIXED CASE in the real format — making them
+# case-insensitive caused false-positive redactions on innocuous text like
+# "akia" appearing inside English words / hex digests).
+_SECRET_PATTERNS_CI = re.compile(
     r"(?:"
     # Discord bot token: base64.base64.base64 (3 dot-separated segments, 59+ chars)
     r"[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}"
@@ -149,17 +161,53 @@ _SECRET_PATTERNS = re.compile(
     # Generic long base64-like API key (32+ alphanumeric chars)
     r"(?:key|token|secret|password|apikey|api_key|authorization)[\s=:]+['\"]?[A-Za-z0-9_\-]{32,}['\"]?"
     r"|"
-    # OpenAI / Anthropic API keys (sk-...)
+    # Anthropic API keys (sk-ant-api03-..., sk-ant-...) — kept BEFORE the
+    # generic sk- pattern so the longer match wins.
+    r"sk-ant-[A-Za-z0-9_\-]{40,}"
+    r"|"
+    # OpenAI / generic sk- API keys
     r"sk-[A-Za-z0-9]{20,}"
     r"|"
-    # GitHub Personal Access Tokens (ghp_..., gho_..., ghs_...)
-    r"gh[pos]_[A-Za-z0-9_]{36,}"
-    r"|"
-    # AWS Access Key IDs
-    r"AKIA[0-9A-Z]{16}"
+    # Google API keys (AIza...) — fixed 39 chars total
+    r"AIza[A-Za-z0-9_\-]{35}"
     r")",
     re.IGNORECASE,
 )
+
+# Case-SENSITIVE patterns. Real AWS/GitHub keys have fixed-case prefixes;
+# matching case-insensitively snared things like "akia"/"ghp_" appearing
+# in lowercase identifiers/words and produced noisy `[REDACTED]` output.
+_SECRET_PATTERNS_CS = re.compile(
+    r"(?:"
+    # GitHub Personal Access Tokens (ghp_..., gho_..., ghs_...) — fixed lowercase prefix
+    r"gh[pos]_[A-Za-z0-9_]{36,}"
+    r"|"
+    # AWS Access Key IDs — fixed uppercase prefix
+    r"AKIA[0-9A-Z]{16}"
+    r")",
+)
+
+# Backward-compat alias used by callers that import the symbol directly.
+_SECRET_PATTERNS = _SECRET_PATTERNS_CI
+
+
+def _redact_sensitive(value: str) -> str:
+    """Redact patterns in `value` that look like secrets.
+
+    Public helper so other subsystems (e.g. the Sentry breadcrumb scrubber)
+    can apply the same redaction policy without re-implementing the regex.
+
+    Applies both the case-insensitive pattern set (covers Discord tokens
+    and prefixed keys like ``sk-``/``AIza``) AND the case-sensitive set
+    (AWS ``AKIA``/GitHub ``gh[pos]_`` — these have fixed-case prefixes,
+    so a case-insensitive match falsely flagged english text containing
+    "akia" or lowercase identifiers).
+    """
+    if not isinstance(value, str):
+        return value
+    redacted = _SECRET_PATTERNS_CI.sub("[REDACTED]", value)
+    redacted = _SECRET_PATTERNS_CS.sub("[REDACTED]", redacted)
+    return redacted
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -170,16 +218,15 @@ class SensitiveDataFilter(logging.Filter):
             # Redact args if they are strings containing secrets
             if isinstance(record.args, dict):
                 record.args = {
-                    k: _SECRET_PATTERNS.sub("[REDACTED]", str(v)) if isinstance(v, str) else v
+                    k: _redact_sensitive(str(v)) if isinstance(v, str) else v
                     for k, v in record.args.items()
                 }
             elif isinstance(record.args, tuple):
                 record.args = tuple(
-                    _SECRET_PATTERNS.sub("[REDACTED]", str(a)) if isinstance(a, str) else a
-                    for a in record.args
+                    _redact_sensitive(str(a)) if isinstance(a, str) else a for a in record.args
                 )
         if isinstance(record.msg, str):
-            record.msg = _SECRET_PATTERNS.sub("[REDACTED]", record.msg)
+            record.msg = _redact_sensitive(record.msg)
         return True
 
 
@@ -191,6 +238,13 @@ def setup_smart_logging(json_logs: bool = False) -> None:
     """
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+    # Close existing handlers before clearing — otherwise file descriptors
+    # for old RotatingFileHandlers leak across hot reloads until GC runs.
+    for h in list(logger.handlers):
+        try:
+            h.close()
+        except Exception:
+            pass
     if logger.hasHandlers():
         logger.handlers.clear()
 
@@ -222,18 +276,22 @@ def setup_smart_logging(json_logs: bool = False) -> None:
     logger.addHandler(error_handler)
     logger.addHandler(console_handler)
 
-    # Add sensitive data redaction filter to all handlers
-    secret_filter = SensitiveDataFilter()
-    for handler in logger.handlers:
-        handler.addFilter(secret_filter)
-
-    # Optional: JSON structured logs for analysis
+    # Optional: JSON structured logs for analysis. Add BEFORE the secret
+    # filter loop so structured logs also get redaction (previously the
+    # JSON handler was added after the filter loop and bypassed it).
     if json_logs:
         json_handler = RotatingFileHandler(
             "logs/bot_structured.jsonl", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         json_handler.setFormatter(JSONLogFormatter())
         logger.addHandler(json_handler)
+
+    # Add sensitive data redaction filter to ALL handlers (including JSON).
+    secret_filter = SensitiveDataFilter()
+    for handler in logger.handlers:
+        handler.addFilter(secret_filter)
+
+    if json_logs:
         logger.info("📊 JSON structured logging enabled")
 
     logger.info("🧠 Smart Logging System Initialized.")

@@ -52,7 +52,9 @@ def _ensure_backup_dir() -> None:
 
 def _list_backups() -> list[Path]:
     _ensure_backup_dir()
-    return sorted(BACKUP_DIR.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(
+        BACKUP_DIR.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
 
 
 def _get_schema_version(db: Path) -> int | None:
@@ -73,7 +75,11 @@ def _table_row_counts(db: Path) -> dict[str, int]:
             ).fetchall()
             for (name,) in rows:
                 try:
-                    cur = conn.execute(f'SELECT COUNT(*) FROM "{name}"')
+                    # Use bracket-quoted identifier — even though `name` is
+                    # read from sqlite_master (trusted), bracketed identifiers
+                    # tolerate any character (including `"`) without escaping
+                    # gymnastics. Identifiers can't be parameterised in SQLite.
+                    cur = conn.execute(f"SELECT COUNT(*) FROM [{name}]")
                     counts[name] = int(cur.fetchone()[0])
                 except sqlite3.Error:
                     counts[name] = -1
@@ -91,7 +97,9 @@ def cmd_list(_args: argparse.Namespace) -> int:
         return 0
 
     current_version = _get_schema_version(DB_PATH) if DB_PATH.exists() else None
-    print(f"Current DB: {DB_PATH} (version {current_version if current_version is not None else 'unknown'})")
+    print(
+        f"Current DB: {DB_PATH} (version {current_version if current_version is not None else 'unknown'})"
+    )
     print(f"Backups under {BACKUP_DIR}:\n")
     print(f"  {'Filename':<50}  {'Size':>10}  {'Modified':<19}  Restorable")
     print(f"  {'-' * 50}  {'-' * 10}  {'-' * 19}  ----------")
@@ -100,12 +108,35 @@ def cmd_list(_args: argparse.Namespace) -> int:
         mtime = datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         version = _get_schema_version(b)
         restorable = version is not None
-        print(f"  {b.name:<50}  {size:>10,}  {mtime}  {'v' + str(version) if restorable else 'CORRUPT'}")
+        print(
+            f"  {b.name:<50}  {size:>10,}  {mtime}  {'v' + str(version) if restorable else 'CORRUPT'}"
+        )
     return 0
 
 
+def _resolve_backup_arg(user_arg: str) -> Path | None:
+    """Resolve ``user_arg`` under BACKUP_DIR, rejecting any path that escapes it.
+
+    Returns None (and prints an error) for traversal attempts or invalid paths —
+    this is CLI-only and operator-run, but a sane guard keeps scripted
+    invocations from accidentally targeting unrelated files.
+    """
+    candidate = BACKUP_DIR / user_arg
+    try:
+        resolved = candidate.resolve(strict=False)
+        if not resolved.is_relative_to(BACKUP_DIR.resolve()):
+            print(f"ERROR: backup path escapes backup directory: {user_arg}")
+            return None
+    except (OSError, ValueError) as e:
+        print(f"ERROR: invalid backup path '{user_arg}': {e}")
+        return None
+    return candidate
+
+
 def cmd_diff(args: argparse.Namespace) -> int:
-    backup = BACKUP_DIR / args.backup
+    backup = _resolve_backup_arg(args.backup)
+    if backup is None:
+        return 1
     if not backup.exists():
         print(f"ERROR: backup not found: {backup}")
         return 1
@@ -140,7 +171,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
-    backup = BACKUP_DIR / args.backup
+    backup = _resolve_backup_arg(args.backup)
+    if backup is None:
+        return 1
     if not backup.exists():
         print(f"ERROR: backup not found: {backup}")
         return 1
@@ -148,8 +181,10 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if not args.yes:
         print(f"About to restore: {backup}")
         print(f"  onto: {DB_PATH}")
-        print("\nThe current DB will first be copied to a `pre_rollback_*.db` file so the\n"
-              "rollback itself is undoable. Make sure the bot is STOPPED.")
+        print(
+            "\nThe current DB will first be copied to a `pre_rollback_*.db` file so the\n"
+            "rollback itself is undoable. Make sure the bot is STOPPED."
+        )
         resp = input("Type YES to continue: ").strip()
         if resp != "YES":
             print("Aborted.")
@@ -201,8 +236,9 @@ def main() -> int:
 
     p_restore = sub.add_parser("restore", help="Restore the DB from a backup.")
     p_restore.add_argument("backup", help="Backup filename (as shown by `list`).")
-    p_restore.add_argument("--yes", action="store_true",
-                           help="Skip the interactive 'type YES' confirmation.")
+    p_restore.add_argument(
+        "--yes", action="store_true", help="Skip the interactive 'type YES' confirmation."
+    )
 
     args = parser.parse_args()
     if args.cmd == "list":

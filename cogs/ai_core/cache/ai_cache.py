@@ -10,7 +10,6 @@ import asyncio
 import hashlib
 import json
 import logging
-logger = logging.getLogger(__name__)
 import re
 import sqlite3
 import threading
@@ -29,6 +28,15 @@ try:
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
+
+
+# Cache size limits — short responses aren't worth the per-entry overhead;
+# very long ones tend to be session-specific and dilute the hit rate.
+_CACHE_MIN_RESPONSE_CHARS = 10
+_CACHE_MAX_RESPONSE_CHARS = 1500
 
 
 # Using slots=True for ~30% memory reduction and faster attribute access
@@ -55,7 +63,8 @@ class CacheStats:
     misses: int
     hit_rate: float
     memory_estimate_kb: float
-    semantic_hits: int = 0
+    semantic_hits: int = 0  # embedding-based matches
+    fuzzy_hits: int = 0  # lexical (difflib SequenceMatcher) matches
 
 
 class AICache:
@@ -101,12 +110,35 @@ class AICache:
         # Stats
         self._hits = 0
         self._misses = 0
-        self._semantic_hits = 0
+        self._semantic_hits = 0  # embedding-based matches (currently unused)
+        self._fuzzy_hits = 0  # difflib SequenceMatcher matches
 
         # Compile normalize patterns
         self._normalize_compiled = [
             (re.compile(pattern), repl) for pattern, repl in self.NORMALIZE_PATTERNS
         ]
+
+    def warm_with_entries(self, entries: list[tuple[str, CacheEntry]]) -> int:
+        """Bulk-load (key, CacheEntry) pairs into L1 from a persistent store.
+
+        Public counterpart to the previous module-level warm-up that reached
+        into ``_cache_lock`` and ``cache`` directly. Goes through a single
+        lock acquisition, skips entries that are already present, and respects
+        ``max_size`` so a corrupt L2 with many rows can't blow past the cap
+        before the eviction path catches up.
+        """
+        added = 0
+        with self._cache_lock:
+            for key, entry in entries:
+                if key in self.cache:
+                    continue
+                if len(self.cache) >= self.max_size:
+                    # Drop the oldest when over capacity. Mirrors _evict_lru
+                    # behaviour without re-acquiring the lock.
+                    self.cache.popitem(last=False)
+                self.cache[key] = entry
+                added += 1
+        return added
 
     def _normalize_message(self, message: str) -> str:
         """Normalize message for consistent cache keys."""
@@ -322,14 +354,41 @@ class AICache:
             if similar:
                 similar_key, similar_entry, similarity = similar
                 with self._cache_lock:
-                    # Re-verify entry still exists after releasing and re-acquiring lock
-                    if similar_key in self.cache:
-                        self.cache.move_to_end(similar_key)
-                        similar_entry.hits += 1
+                    # Belt-and-braces: re-check the EXACT key first. The
+                    # fuzzy scan released the lock for ~ms; another writer
+                    # may have inserted/refreshed the exact entry while we
+                    # were scanning, in which case the (stale) fuzzy match
+                    # would shadow it. Prefer exact every time.
+                    exact_fresh = self.cache.get(key)
+                    if exact_fresh is not None and not self._is_expired(exact_fresh):
+                        self.cache.move_to_end(key)
+                        exact_fresh.hits += 1
+                        self._update_adaptive_ttl(exact_fresh)
                         self._hits += 1
-                        self._semantic_hits += 1
-                        self.logger.debug("Cache hit (fuzzy %.2f): %s...", similarity, similar_key[:8])
-                        return similar_entry.response
+                        self.logger.debug(
+                            "Cache hit (exact, post-fuzzy): %s... (hits: %d)",
+                            key[:8],
+                            exact_fresh.hits,
+                        )
+                        return exact_fresh.response
+                    # Re-verify entry still exists AND is not expired after
+                    # releasing and re-acquiring the lock — the entry may
+                    # have ticked past its TTL during the fuzzy scan.
+                    fresh = self.cache.get(similar_key)
+                    if fresh is not None and not self._is_expired(fresh):
+                        self.cache.move_to_end(similar_key)
+                        fresh.hits += 1
+                        self._update_adaptive_ttl(fresh)
+                        self._hits += 1
+                        # `find_similar` uses difflib SequenceMatcher (lexical),
+                        # not embeddings — so this is a lexical-fuzzy hit, not
+                        # semantic. Track it under a separate counter so the
+                        # `semantic_hits` stat isn't inflated.
+                        self._fuzzy_hits += 1
+                        self.logger.debug(
+                            "Cache hit (fuzzy %.2f): %s...", similarity, similar_key[:8]
+                        )
+                        return fresh.response
 
         with self._cache_lock:
             self._misses += 1
@@ -351,8 +410,18 @@ class AICache:
             context_hash: Hash of conversation context
             intent: Detected intent
         """
-        # Don't cache very short or very long responses
-        if len(response) < 10 or len(response) > 1500:
+        # Don't cache very short or very long responses. The 1500-char ceiling
+        # is intentional for now — long answers are usually session-specific
+        # and unlikely to recur — but operators want visibility into this
+        # implicit drop, hence the debug log.
+        if len(response) < _CACHE_MIN_RESPONSE_CHARS:
+            return
+        if len(response) > _CACHE_MAX_RESPONSE_CHARS:
+            self.logger.debug(
+                "Skipping cache.set: response %d chars > %d cap",
+                len(response),
+                _CACHE_MAX_RESPONSE_CHARS,
+            )
             return
 
         key = self._generate_key(message, context_hash, intent)
@@ -364,13 +433,25 @@ class AICache:
             # Store normalized message for fuzzy matching
             normalized = self._normalize_message(message)
 
-            self.cache[key] = CacheEntry(
+            entry = CacheEntry(
                 response=response,
                 created_at=time.time(),
                 context_hash=context_hash or "",
                 intent=intent or "",
                 normalized_message=normalized,
             )
+            self.cache[key] = entry
+
+        # Optional persistence hook (e.g. write-through to L2). Set on the
+        # instance, not the class — that way subclasses, test instances, and
+        # alternate caches don't all inherit the same persistence target via
+        # a class-level monkey-patch.
+        hook = getattr(self, "_post_set_hook", None)
+        if hook is not None:
+            try:
+                hook(key, entry)
+            except Exception:
+                self.logger.exception("AICache post_set_hook raised")
 
         self.logger.debug("Cached response: %s...", key[:8])
 
@@ -433,21 +514,19 @@ class AICache:
             return len(to_remove)
 
     def cleanup_expired(self) -> int:
-        """Remove expired entries. Returns count removed."""
-        with self._cache_lock:
-            now = time.time()
-            expired_keys = [
-                key
-                for key, entry in self.cache.items()
-                if now - entry.created_at > self.ttl * entry.ttl_multiplier
-            ]
+        """Remove expired entries. Returns count removed.
 
+        Reuses ``_is_expired`` so the TTL formula stays in one place —
+        previously this method duplicated the comparison and could drift
+        from the canonical implementation (e.g. if adaptive TTL gained
+        a min/max clamp).
+        """
+        with self._cache_lock:
+            expired_keys = [key for key, entry in self.cache.items() if self._is_expired(entry)]
             for key in expired_keys:
                 del self.cache[key]
-
             if expired_keys:
                 self.logger.info("Cleaned up %d expired cache entries", len(expired_keys))
-
             return len(expired_keys)
 
     async def start_cleanup_loop(self, interval: float = 3600.0) -> None:
@@ -492,12 +571,18 @@ class AICache:
                 hit_rate=hit_rate,
                 memory_estimate_kb=memory_bytes / 1024,
                 semantic_hits=self._semantic_hits,
+                fuzzy_hits=self._fuzzy_hits,
             )
 
     def reset_stats(self) -> None:
-        """Reset hit/miss statistics."""
-        self._hits = 0
-        self._misses = 0
+        """Reset hit/miss statistics under the cache lock so a concurrent
+        `get()` increment can't race with the reset and produce a negative
+        hit count or lose an increment."""
+        with self._cache_lock:
+            self._hits = 0
+            self._misses = 0
+            self._semantic_hits = 0
+            self._fuzzy_hits = 0
 
 
 class ContextHasher:
@@ -528,20 +613,42 @@ class ContextHasher:
         return hashlib.sha256("|".join(summary).encode()).hexdigest()[:16]
 
 
+def _resolve_project_root() -> Path:
+    """Find the project root by walking upward looking for a marker file.
+
+    The previous hard-coded ``Path(__file__).parent ... .parent`` chain
+    silently returned the wrong directory when this module was loaded from
+    a copy outside the canonical layout (e.g. an agent worktree, a wheel
+    install). Walk upward instead, falling back to the parent-chain root if
+    no marker is found so behaviour is no worse than before.
+    """
+    candidate = Path(__file__).resolve().parent
+    for _ in range(8):
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    # Last-resort fallback to the original anchor.
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
 def _load_resource_config() -> dict:
     """Load resource configuration from JSON file."""
-    config_path = Path(__file__).parent.parent.parent.parent / "data" / "resource_config.json"
+    config_path = _resolve_project_root() / "data" / "resource_config.json"
     try:
         if config_path.exists():
             config = json.loads(config_path.read_text(encoding="utf-8"))
             logger.info("Loaded resource config from %s", config_path)
             return config  # type: ignore[no-any-return]
+        logger.debug("Resource config not found at %s — using defaults", config_path)
     except Exception as e:
         logger.warning("Failed to load resource config: %s", e)
     return {}
 
 
 # ==================== L2 Persistent Cache ====================
+
 
 class L2SqliteCache:
     """
@@ -550,7 +657,7 @@ class L2SqliteCache:
     Survives restarts and warms up the in-memory L1 cache on startup.
     """
 
-    DB_PATH = Path(__file__).parent.parent.parent.parent / "data" / "ai_cache_l2.db"
+    DB_PATH = _resolve_project_root() / "data" / "ai_cache_l2.db"
     MAX_ENTRIES = 20_000  # hard cap on disk rows
 
     def __init__(self) -> None:
@@ -614,7 +721,9 @@ class L2SqliteCache:
             except sqlite3.DatabaseError as e:
                 logger.debug("L2 store failed: %s", e)
 
-    def load_recent(self, limit: int = 1000, max_age: float = 86400) -> list[tuple[str, CacheEntry]]:
+    def load_recent(
+        self, limit: int = 1000, max_age: float = 86400
+    ) -> list[tuple[str, CacheEntry]]:
         """Load recent entries for L1 warm-up."""
         if self._conn is None:
             return []
@@ -681,16 +790,16 @@ ai_cache = AICache(
 )
 context_hasher = ContextHasher()
 
-# L2 persistent cache — warm up L1
+# L2 persistent cache — warm up L1.
+# Uses the public warm_with_entries method so import-time warm-up no longer
+# reaches into AICache._cache_lock or .cache directly. The method also
+# enforces max_size so a corrupt L2 row count can't blow past the cap.
 _l2_cache = L2SqliteCache()
 try:
     _warm_entries = _l2_cache.load_recent(limit=500)
     if _warm_entries:
-        with ai_cache._cache_lock:
-            for _key, _entry in _warm_entries:
-                if _key not in ai_cache.cache:
-                    ai_cache.cache[_key] = _entry
-        logger.info("L2 cache: warmed L1 with %d entries", len(_warm_entries))
+        _added = ai_cache.warm_with_entries(_warm_entries)
+        logger.info("L2 cache: warmed L1 with %d entries", _added)
 except Exception as _e:
     logger.warning("L2 warm-up failed (non-fatal): %s", _e)
 
@@ -702,16 +811,31 @@ def _persist_to_l2(key: str, entry: CacheEntry) -> None:
     (see :func:`flush_l2_pending`) can await them before the event loop closes.
     Without tracking, ``run_in_executor`` returns a Future that may be
     garbage-collected mid-flight, losing L2 writes and emitting warnings.
+
+    We hand the executor a fresh ``CacheEntry`` snapshot rather than the
+    live L1 object — otherwise the worker thread would read mutable fields
+    (`hits`, `ttl_multiplier`) without holding the L1 lock, producing
+    torn values in the persisted row.
     """
+    snapshot = CacheEntry(
+        response=entry.response,
+        created_at=entry.created_at,
+        hits=entry.hits,
+        context_hash=entry.context_hash,
+        intent=entry.intent,
+        normalized_message=entry.normalized_message,
+        embedding=entry.embedding,
+        ttl_multiplier=entry.ttl_multiplier,
+    )
     try:
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, _l2_cache.store, key, entry)
+        fut = loop.run_in_executor(None, _l2_cache.store, key, snapshot)
         _l2_pending_futures.add(fut)
         # Remove on completion so the set doesn't grow unbounded
         fut.add_done_callback(_l2_pending_futures.discard)
     except RuntimeError:
         # No running event loop — fall back to synchronous
-        _l2_cache.store(key, entry)
+        _l2_cache.store(key, snapshot)
 
 
 # Tracks outstanding background persist futures so they can be awaited during
@@ -740,24 +864,15 @@ async def flush_l2_pending(timeout: float = 5.0) -> int:
     return len(done)
 
 
-# Monkey-patch AICache.set to also persist to L2
-_original_set = AICache.set
+# Install L2 persistence as a per-instance hook on the global ai_cache.
+# Avoids the previous AICache.set monkey-patch which mutated the CLASS at
+# import time — that affected every subclass / test instance / re-imported
+# copy and could even cause infinite recursion if the module was loaded twice.
+def _l2_post_set_hook(key: str, entry: CacheEntry) -> None:
+    _persist_to_l2(key, entry)
 
 
-def _patched_set(self: AICache, *args: Any, **kwargs: Any) -> None:
-    _original_set(self, *args, **kwargs)
-    # Persist the just-added entry
-    message = args[0] if args else kwargs.get("message", "")
-    context_hash = args[2] if len(args) > 2 else kwargs.get("context_hash")
-    intent = args[3] if len(args) > 3 else kwargs.get("intent")
-    key = self._generate_key(message, context_hash, intent)
-    with self._cache_lock:
-        entry = self.cache.get(key)
-    if entry:
-        _persist_to_l2(key, entry)
-
-
-AICache.set = _patched_set  # type: ignore[method-assign]
+ai_cache._post_set_hook = _l2_post_set_hook  # type: ignore[attr-defined]
 
 
 def get_cache_stats() -> CacheStats:

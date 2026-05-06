@@ -43,7 +43,10 @@ class TestHistoryManagerInit:
         assert manager.keep_recent == 200
         assert manager.max_history == 10000
         assert manager.compress_threshold == 2000
-        assert manager.max_tokens == 1200000
+        # Default trim target is now 600K (~60% of 1M context window). The
+        # old 1.2M default assumed Gemini 2M; both providers now cap at 1M
+        # so 1.2M would overflow the context if a caller used the default.
+        assert manager.max_tokens == 600_000
 
     def test_init_custom_values(self):
         """Test initialization with custom values."""
@@ -68,7 +71,7 @@ class TestHistoryManagerInit:
         manager = HistoryManager()
 
         assert len(manager._importance_patterns) > 0
-        assert hasattr(manager._importance_patterns[0][0], 'search')  # Compiled pattern
+        assert hasattr(manager._importance_patterns[0][0], "search")  # Compiled pattern
 
 
 class TestGetMessageContent:
@@ -330,9 +333,7 @@ class TestSmartTrimAsync:
         result = await manager.smart_trim(history, max_messages=20)
 
         # Important message should be preserved
-        all_content = " ".join(
-            manager._get_message_content(m) for m in result
-        )
+        all_content = " ".join(manager._get_message_content(m) for m in result)
         assert "John" in all_content or "สำคัญ" in all_content
 
 
@@ -358,9 +359,7 @@ class TestSmartTrimByTokens:
 
         manager = HistoryManager(keep_recent=2)
         # Create messages with substantial content
-        history = [
-            {"role": "user", "parts": ["A" * 100]} for _ in range(50)
-        ]
+        history = [{"role": "user", "parts": ["A" * 100]} for _ in range(50)]
 
         # Very small token budget
         result = await manager.smart_trim_by_tokens(history, max_tokens=500)

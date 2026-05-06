@@ -16,9 +16,10 @@ import base64
 import contextlib
 import datetime
 import logging
-logger = logging.getLogger(__name__)
+import os
 import re
 import time
+from datetime import timezone
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -41,17 +42,30 @@ class _NewMessageInterrupt(BaseException):
 
 
 def _utc_now_iso() -> str:
-    """Return a normalized Asia/Bangkok ISO timestamp for persisted chat history.
+    """Return a normalized UTC ISO 8601 timestamp for persisted chat history.
 
-    Kept under the historical name ``_utc_now_iso`` for API stability; the value
-    is now Bangkok local time so all prompt-injected timestamps share a single
-    timezone across Dashboard and Discord paths.
+    Returns a timezone-aware UTC value so the function name matches its
+    behaviour. Downstream consumers that need to display in Asia/Bangkok
+    apply ``normalize_timestamp_to_bangkok`` at format time, so storing UTC
+    is the safer canonical form.
     """
-    from zoneinfo import ZoneInfo
-    return datetime.datetime.now(ZoneInfo("Asia/Bangkok")).isoformat(timespec="seconds")
+    return datetime.datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-# Import API handler module (direct subfolder import)
-from utils.monitoring.metrics import metrics
+
+# Import API handler module (direct subfolder import). Wrap the metrics
+# import in the same try/except pattern bot.py uses — every other optional
+# dependency in this codebase has a stub fallback, and a hard import here
+# would crash the whole AI cog at startup if the metrics module fails
+# (e.g., prometheus_client not installed).
+try:
+    from utils.monitoring.metrics import metrics
+except ImportError:
+
+    class _NullMetrics:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    metrics = _NullMetrics()  # type: ignore[assignment]
 
 from .api.api_handler import (
     build_api_config,
@@ -65,6 +79,7 @@ from .core.message_queue import MessageQueue
 
 # Import new modular components (v3.3.6 - direct subfolder imports)
 from .core.performance import PerformanceTracker, RequestDeduplicator
+from .data import SERVER_CHARACTER_NAMES
 
 # Import extracted modules
 from .data.constants import (
@@ -76,18 +91,20 @@ from .data.constants import (
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
 )
-from .data.roleplay_data import SERVER_CHARACTER_NAMES
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
 # TTS module removed - not used
-# Centralized optional dependencies
-from .imports import (
-    CACHE_AVAILABLE,  # noqa: F401 (re-exported for tests)
+# Centralized optional dependencies. CACHE_AVAILABLE / FALLBACK_AVAILABLE /
+# TOKEN_TRACKER_AVAILABLE aren't referenced locally but are part of this
+# module's public surface (tests import them via
+# ``from cogs.ai_core.logic import X``).
+from .imports import (  # noqa: F401 - public re-exports
+    CACHE_AVAILABLE,
     CIRCUIT_BREAKER_AVAILABLE,
-    FALLBACK_AVAILABLE,  # noqa: F401 (re-exported for tests)
+    FALLBACK_AVAILABLE,
     GUARDRAILS_AVAILABLE,
     HISTORY_MANAGER_AVAILABLE,
-    TOKEN_TRACKER_AVAILABLE,  # noqa: F401 (re-exported for tests)
+    TOKEN_TRACKER_AVAILABLE,
     URL_FETCHER_AVAILABLE,
     extract_urls,
     fetch_all_urls,
@@ -126,6 +143,8 @@ from .voice import (
     leave_voice_channel as voice_leave,
     parse_voice_command as voice_parse_command,
 )
+
+logger = logging.getLogger(__name__)
 
 # NOTE: IMAGEIO_AVAILABLE is imported from .media_processor (line 61)
 # No need to re-import imageio here
@@ -254,6 +273,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                 try:
                     loop = asyncio.get_running_loop()
                     from .storage import save_history
+
                     task = loop.create_task(save_history(self.bot, channel_id, chat_copy))
 
                     # Keep strong reference so task isn't GC'd before completion.
@@ -262,12 +282,16 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Capture channel_id and self per-iteration for the callback.
                     # Clean up channel data only after save succeeds to prevent data loss.
-                    def _handle_lru_save_result(t: asyncio.Task, _cid: int = channel_id, _mgr=self) -> None:
+                    def _handle_lru_save_result(
+                        t: asyncio.Task, _cid: int = channel_id, _mgr=self
+                    ) -> None:
                         if t.cancelled():
                             return
                         exc = t.exception()
                         if exc:
-                            logger.error("LRU save failed for channel %s, keeping in memory: %s", _cid, exc)
+                            logger.error(
+                                "LRU save failed for channel %s, keeping in memory: %s", _cid, exc
+                            )
                             return  # Don't delete if save failed — prevents data loss
                         # Save succeeded, now safe to clean up
                         _mgr.chats.pop(_cid, None)
@@ -284,7 +308,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                 except RuntimeError:
                     logger.warning("No event loop for LRU eviction save of channel %s", channel_id)
                 except Exception as e:
-                    logger.warning("Failed to save history before LRU eviction for %s: %s", channel_id, e)
+                    logger.warning(
+                        "Failed to save history before LRU eviction for %s: %s", channel_id, e
+                    )
             else:
                 # No chat data, safe to clean up immediately
                 self.last_accessed.pop(channel_id, None)
@@ -306,6 +332,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Try failover manager first (supports proxy/direct switching)
         try:
             from .api.api_failover import api_failover
+
             if not api_failover._initialized:
                 api_failover.initialize()
             if api_failover.active_config:
@@ -313,7 +340,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                 self.target_model = CLAUDE_MODEL
                 logger.info(
                     "Claude AI Initialized via failover (Model: %s, Endpoint: %s)",
-                    self.target_model, api_failover.active_endpoint.value,
+                    self.target_model,
+                    api_failover.active_endpoint.value,
                 )
                 memory_consolidator.initialize(api_failover.active_config.api_key)
                 return
@@ -326,10 +354,23 @@ class ChatManager(SessionMixin, ResponseMixin):
             )
             return
 
+        # Honor ANTHROPIC_BASE_URL on the legacy fallback path. Without
+        # this, users with proxy-only keys would silently bypass their
+        # proxy and hit the real Anthropic endpoint with the proxy key,
+        # producing 401s or unintended billing.
+        legacy_base_url = os.getenv("ANTHROPIC_BASE_URL", "").strip() or None
+
         try:
-            self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            client_kwargs: dict[str, Any] = {"api_key": ANTHROPIC_API_KEY}
+            if legacy_base_url:
+                client_kwargs["base_url"] = legacy_base_url
+            self.client = anthropic.AsyncAnthropic(**client_kwargs)
             self.target_model = CLAUDE_MODEL
-            logger.info("Claude AI Initialized (Model: %s)", self.target_model)
+            logger.info(
+                "Claude AI Initialized (Model: %s%s)",
+                self.target_model,
+                f", base_url={legacy_base_url}" if legacy_base_url else "",
+            )
 
             # Initialize memory consolidator with same API key
             memory_consolidator.initialize(ANTHROPIC_API_KEY)
@@ -567,7 +608,9 @@ class ChatManager(SessionMixin, ResponseMixin):
         MAX_MESSAGE_LENGTH = 100_000  # 100KB max
         if message and len(message) > MAX_MESSAGE_LENGTH:
             message = message[:MAX_MESSAGE_LENGTH] + "\n[... ข้อความถูกตัดเนื่องจากยาวเกินไป ...]"
-            logger.warning("Truncated oversized message from user %s (%d chars)", user.id, len(message))
+            logger.warning(
+                "Truncated oversized message from user %s (%d chars)", user.id, len(message)
+            )
 
         # Determine Context and Send channels
         context_channel = output_channel if output_channel else channel
@@ -788,7 +831,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # Check if user is requesting specific channel history
                         requested_channel = self._extract_channel_id_request(display_message)
                         if requested_channel:
-                            history_data = await self._get_requested_history(requested_channel, requester_id=user.id)
+                            history_data = await self._get_requested_history(
+                                requested_channel, requester_id=user.id
+                            )
                             prompt_with_context = (
                                 f"[System Info] Current Time: {now} | "
                                 f"User: {user_name}{creator_tag}\n"
@@ -843,7 +888,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                     )
 
                     # 5. Build current user message parts
-                    current_parts: list[dict[str, Any] | ClaudeContentBlockParam | InlineDataPart] = []
+                    current_parts: list[
+                        dict[str, Any] | ClaudeContentBlockParam | InlineDataPart
+                    ] = []
                     for part in content_parts:
                         if isinstance(part, str):
                             current_parts.append({"text": part})
@@ -932,6 +979,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         if ts_raw:
                             ts_prefix = f"[{_norm_ts(ts_raw)}] "
                         ts_applied = False
+                        had_image_only = False
                         for p in parts_data:
                             if isinstance(p, str):
                                 clean_text = PATTERN_ID.sub("", p)
@@ -945,6 +993,20 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     clean_text = ts_prefix + clean_text
                                     ts_applied = True
                                 converted_parts.append({"text": clean_text})
+                            elif isinstance(p, dict) and (
+                                "image_url" in p or "inline_data" in p or "source" in p
+                            ):
+                                # Image-only parts: track that this message had
+                                # image content so we can emit a placeholder
+                                # text and preserve role alternation. Dropping
+                                # these silently could collapse two consecutive
+                                # same-role turns into one.
+                                had_image_only = True
+                        if not converted_parts and had_image_only:
+                            placeholder = "[image]"
+                            if ts_prefix:
+                                placeholder = ts_prefix + placeholder
+                            converted_parts.append({"text": placeholder})
                         if converted_parts:
                             contents.append({"role": role, "parts": converted_parts})
 
@@ -1009,12 +1071,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                             metrics.increment_search_intent("prefilter", result_label)
                         else:
                             # Uncertain — fall through to AI-based detection
-                            logger.info("🔎 Pre-filter: UNCERTAIN, using AI detection for: %s", display_message[:50])
+                            logger.info(
+                                "🔎 Pre-filter: UNCERTAIN, using AI detection for: %s",
+                                display_message[:50],
+                            )
                             use_search = await self._detect_search_intent(display_message)
                             result_label = "search" if use_search else "no_search"
-                            logger.info(
-                                "🔎 AI search intent result: %s", result_label.upper()
-                            )
+                            logger.info("🔎 AI search intent result: %s", result_label.upper())
                             metrics.increment_search_intent("ai", result_label)
 
                     config_params = self._build_api_config(
@@ -1114,13 +1177,27 @@ class ChatManager(SessionMixin, ResponseMixin):
                         for tool_call in function_calls:
                             logger.info("🛠️ Executing Tool: %s", tool_call.name)
                             if isinstance(send_channel, discord.TextChannel):
-                                result = await execute_tool_call(
-                                    self.bot, send_channel, user, tool_call
-                                )
+                                # Per-tool timeout: a single misbehaving tool
+                                # (e.g. a slow HTTP call inside execute_tool_call)
+                                # used to block the entire turn. 30s gives most
+                                # tools room to finish while still bounding the
+                                # worst case.
+                                try:
+                                    result = await asyncio.wait_for(
+                                        execute_tool_call(self.bot, send_channel, user, tool_call),
+                                        timeout=30.0,
+                                    )
+                                except TimeoutError:
+                                    logger.warning(
+                                        "⏱️ Tool %s timed out after 30s — skipping",
+                                        tool_call.name,
+                                    )
+                                    result = (
+                                        f"Tool '{tool_call.name}' timed out after 30s "
+                                        "and was skipped."
+                                    )
                             else:
-                                result = (
-                                    "Tool execution is only available in guild text channels."
-                                )
+                                result = "Tool execution is only available in guild text channels."
                             tool_outputs.append(f"🔧 Tool '{tool_call.name}': {result}")
 
                             # Sanitize tool result before persisting to history:
@@ -1131,8 +1208,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             if len(raw_result) > 4000:
                                 raw_result = raw_result[:4000] + "…[truncated]"
                             safe_result = "".join(
-                                ch for ch in raw_result
-                                if ch in {"\n", "\t"} or ord(ch) >= 0x20
+                                ch for ch in raw_result if ch in {"\n", "\t"} or ord(ch) >= 0x20
                             )
 
                             # Add tool usage to history (represented as system/model info)
@@ -1164,7 +1240,19 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 chat_data["history"] = trimmed
                                 logger.info(
                                     "📦 Auto-trimmed history for channel %s: %d -> %d",
-                                    channel_id, original_len, len(trimmed),
+                                    channel_id,
+                                    original_len,
+                                    len(trimmed),
+                                )
+                                # Persist the trimmed view immediately. Without
+                                # this, the in-memory trim is lost on next save
+                                # (which would re-diff against the un-trimmed
+                                # DB and re-append everything).
+                                await save_history(
+                                    self.bot,
+                                    context_channel.id,
+                                    chat_data,
+                                    force=True,
                                 )
                         except Exception as e:
                             logger.debug("Auto-trim failed: %s", e)
@@ -1226,7 +1314,9 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 10.5 Apply guardrails to sanitize response
                     if GUARDRAILS_AVAILABLE:
-                        _is_valid, sanitized, warnings = validate_response_for_channel(response_text, channel_id)
+                        _is_valid, sanitized, warnings = validate_response_for_channel(
+                            response_text, channel_id
+                        )
                         if warnings:
                             logger.info("🛡️ Guardrails applied: %s", warnings)
                         response_text = sanitized
@@ -1242,6 +1332,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Check for {{Name}} syntax (Multi-Character Support)
                     # Split by {{Name}} blocks using precompiled pattern
                     parts = PATTERN_CHARACTER_TAG.split(response_text)
+
+                    # Cap the number of {{Name}} blocks to prevent runaway
+                    # webhook spam from a malformed/adversarial response.
+                    # Each block produces 2 elements (name + message) plus
+                    # the leading narrator text, so 60 elements ≈ 30 blocks.
+                    if len(parts) > 60:
+                        logger.warning(
+                            "⚠️ Truncating {{Name}} blocks for channel %s: %d parts -> 60",
+                            channel_id,
+                            len(parts),
+                        )
+                        parts = parts[:60]
 
                     # If parts has more than 1 element, it means we found {{...}}
                     if len(parts) > 1:
@@ -1286,19 +1388,30 @@ class ChatManager(SessionMixin, ResponseMixin):
                     if len(response_text) > 2000:
                         # Smart split at natural boundaries to avoid breaking
                         # multi-byte chars (Thai text) or markdown
+                        # Thai combining marks (tone marks, vowel marks) cannot
+                        # appear at the start of a chunk — splitting just
+                        # before one would render as a stray ◌-form glyph.
+                        THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
                         remaining = response_text
                         while remaining:
                             if len(remaining) <= 2000:
                                 sent_message = await send_channel.send(remaining)
                                 break
                             # Find best split point near 2000 chars
-                            split_at = remaining.rfind('\n', 0, 2000)
+                            split_at = remaining.rfind("\n", 0, 2000)
                             if split_at == -1 or split_at < 1000:
-                                split_at = remaining.rfind(' ', 0, 2000)
+                                split_at = remaining.rfind(" ", 0, 2000)
                             if split_at == -1 or split_at < 1000:
                                 split_at = 2000
+                            # Walk forward past Thai combining marks so they
+                            # stay attached to their base character.
+                            while (
+                                split_at < len(remaining)
+                                and ord(remaining[split_at]) in THAI_COMBINING
+                            ):
+                                split_at += 1
                             sent_message = await send_channel.send(remaining[:split_at])
-                            remaining = remaining[split_at:].lstrip('\n')
+                            remaining = remaining[split_at:].lstrip("\n")
                     elif response_text:  # Only send if there is text left
                         sent_message = await send_channel.send(response_text)
 
@@ -1327,6 +1440,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                     logger.error("Gemini Error: %s", e)
                     # Send generic error to user (don't leak internal details)
                     await send_channel.send("❌ เกิดข้อผิดพลาดจาก AI กรุณาลองใหม่อีกครั้ง")
+                except Exception as e:
+                    # Catch-all so unexpected errors don't escape `process_chat`
+                    # and orphan queued messages (the `_process_pending_messages`
+                    # check at the end of the function would never run).
+                    logger.exception("Unhandled error in process_chat: %s", e)
+                    with contextlib.suppress(discord.HTTPException):
+                        await send_channel.send("❌ เกิดข้อผิดพลาดจาก AI กรุณาลองใหม่อีกครั้ง")
                 finally:
                     # Cleanup: Close any remaining PIL images to prevent memory leaks
                     # Most images are closed during processing, this is a safety net
@@ -1355,7 +1475,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                 pass  # Lock was not acquired or already released
             # Clear lock time tracking
             self._message_queue._lock_times.pop(channel_id, None)
-
-        # After processing, check for pending messages
-        if self._message_queue.has_pending(channel_id):
-            await self._process_pending_messages(channel_id)
+            # Drain pending messages even on error paths so a single failure
+            # doesn't leave queued user messages stranded until the next turn.
+            if self._message_queue.has_pending(channel_id):
+                with contextlib.suppress(Exception):
+                    await self._process_pending_messages(channel_id)

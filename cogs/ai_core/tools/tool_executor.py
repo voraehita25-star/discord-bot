@@ -6,8 +6,8 @@ Handles execution of Gemini AI function calls and server commands.
 from __future__ import annotations
 
 import logging
-logger = logging.getLogger(__name__)
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -32,14 +32,16 @@ from ..commands.server_commands import (
     cmd_set_channel_perm,
     cmd_set_role_perm,
 )
+from ..data import SERVER_AVATARS
 from ..data.constants import MAX_CHANNEL_NAME_LENGTH
-from ..data.roleplay_data import SERVER_AVATARS
 from ..memory.rag import rag_system
 from ..response.webhook_cache import (
     get_cached_webhook,
     invalidate_webhook_cache,
     set_cached_webhook,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
@@ -69,7 +71,9 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
             # Hard split at limit, but ensure we don't break a surrogate pair
             split_at = limit
             # Back up if we're in the middle of a surrogate pair
-            while split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff":
+            while (
+                split_at > 0 and text[split_at - 1] >= "\ud800" and text[split_at - 1] <= "\udbff"
+            ):
                 split_at -= 1
             if split_at <= 0:
                 split_at = limit  # Fallback: force forward progress
@@ -103,7 +107,9 @@ async def execute_tool_call(
     guild = origin_channel.guild
 
     # Input validation helper
-    def validate_name(name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH) -> tuple[bool, str]:
+    def validate_name(
+        name: str | None, max_length: int = MAX_CHANNEL_NAME_LENGTH
+    ) -> tuple[bool, str]:
         """Validate channel/category name from AI input.
 
         Args:
@@ -122,18 +128,65 @@ async def execute_tool_call(
             return False, "❌ Name cannot be empty"
         return True, name
 
-    # Permission check
-    if not hasattr(user, 'guild_permissions') or not user.guild_permissions.administrator:
-        return f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} is not an Admin."
+    # Permission tiers. Mutating operations require administrator (creating
+    # channels, deleting roles, granting permissions, etc.). Read-only tools
+    # require only basic membership in the guild — they can't change server
+    # state and gating them behind administrator made the AI unusable for
+    # any non-admin user, which is over-restrictive.
+    #
+    # ``remember`` writes to the per-channel RAG store and is intentionally
+    # NOT in this set — letting any user invoke it would let one member
+    # poison every member's future AI replies with planted "facts". The
+    # ``remember`` branch below scopes the write to the calling user.
+    _READ_ONLY_TOOLS = {
+        "list_channels",
+        "list_roles",
+        "list_members",
+        "get_user_info",
+        "read_channel",
+    }
+    if not hasattr(user, "guild_permissions"):
+        return f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} has no guild membership."
+    is_admin = user.guild_permissions.administrator
+    is_read_only = fname in _READ_ONLY_TOOLS
+    if not is_admin and not is_read_only:
+        return (
+            f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} "
+            f"is not an Admin (tool '{fname}' requires admin privileges)."
+        )
+
+    # Fine-grained mutation gating: even an Administrator-tagged caller
+    # should not invoke channel/role mutation tools without the matching
+    # specific guild permission. Belt-and-braces against scenarios where
+    # `is_admin` is True via a derived role flag but the user's *intent*
+    # is constrained by missing manage_channels / manage_roles bits.
+    _CHANNEL_MUTATION_TOOLS = {
+        "create_text_channel",
+        "create_voice_channel",
+        "create_category",
+        "delete_channel",
+        "set_channel_permission",
+    }
+    _ROLE_MUTATION_TOOLS = {
+        "create_role",
+        "delete_role",
+        "add_role",
+        "remove_role",
+        "set_role_permission",
+    }
+    if fname in _CHANNEL_MUTATION_TOOLS and not (
+        user.guild_permissions.manage_channels or is_admin
+    ):
+        return "⛔ Permission denied: requires manage_channels permission."
+    if fname in _ROLE_MUTATION_TOOLS and not (user.guild_permissions.manage_roles or is_admin):
+        return "⛔ Permission denied: requires manage_roles permission."
 
     try:
         if fname == "create_text_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(
-                guild, origin_channel, result, [result, args.get("category", "")]
-            )
+            await cmd_create_text(guild, origin_channel, result, [result, args.get("category", "")])
             return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
@@ -181,9 +234,7 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ add_role requires both user_name and role_name"
-            await cmd_add_role(
-                guild, origin_channel, None, [user_name, role_name]
-            )
+            await cmd_add_role(guild, origin_channel, None, [user_name, role_name])
             return f"Requested adding role '{role_name}' to '{user_name}'"
 
         elif fname == "remove_role":
@@ -191,35 +242,43 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ remove_role requires both user_name and role_name"
-            await cmd_remove_role(
-                guild, origin_channel, None, [user_name, role_name]
-            )
-            return (
-                f"Requested removing role '{role_name}' from '{user_name}'"
-            )
+            await cmd_remove_role(guild, origin_channel, None, [user_name, role_name])
+            return f"Requested removing role '{role_name}' from '{user_name}'"
 
         elif fname == "set_channel_permission":
+            channel_name = args.get("channel_name")
+            target_name = args.get("target_name")
+            permission = args.get("permission")
+            value = args.get("value")
+            if not channel_name or not target_name or not permission or value is None:
+                return (
+                    "Missing required argument for set_channel_permission "
+                    "(need channel_name, target_name, permission, value)."
+                )
             await cmd_set_channel_perm(
                 guild,
                 origin_channel,
                 None,
-                [
-                    args.get("channel_name"),
-                    args.get("target_name"),
-                    args.get("permission"),
-                    str(args.get("value")),
-                ],
+                [channel_name, target_name, permission, str(value)],
             )
-            return f"Requested setting channel permission for '{args.get('channel_name')}'"
+            return f"Requested setting channel permission for '{channel_name}'"
 
         elif fname == "set_role_permission":
+            role_name = args.get("role_name")
+            permission = args.get("permission")
+            value = args.get("value")
+            if not role_name or not permission or value is None:
+                return (
+                    "Missing required argument for set_role_permission "
+                    "(need role_name, permission, value)."
+                )
             await cmd_set_role_perm(
                 guild,
                 origin_channel,
                 None,
-                [args.get("role_name"), args.get("permission"), str(args.get("value"))],
+                [role_name, permission, str(value)],
             )
-            return f"Requested setting role permission for '{args.get('role_name')}'"
+            return f"Requested setting role permission for '{role_name}'"
 
         elif fname == "list_channels":
             await cmd_list_channels(guild, origin_channel, None, [])
@@ -230,6 +289,13 @@ async def execute_tool_call(
             return "Listed roles"
 
         elif fname == "list_members":
+            # Gate by caller's view_channel permission on origin channel:
+            # listing members of a server they can't see is an info-leak.
+            try:
+                if not origin_channel.permissions_for(user).view_channel:
+                    return "⛔ Permission denied: you cannot view this channel."
+            except (AttributeError, TypeError):
+                pass
             cmd_args = []
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
@@ -241,31 +307,108 @@ async def execute_tool_call(
             return "Listed members"
 
         elif fname == "get_user_info":
-            await cmd_get_user_info(guild, origin_channel, None, [args.get("target")])
-            return f"Requested info for '{args.get('target')}'"
+            target = args.get("target")
+            if not isinstance(target, str) or not target.strip():
+                return "❌ Failed: 'target' is required and must be a non-empty string"
+            await cmd_get_user_info(guild, origin_channel, None, [target])
+            return f"Requested info for '{target}'"
 
         elif fname == "read_channel":
-            cmd_args = [args.get("channel_name")]
+            channel_name = args.get("channel_name")
+            if not isinstance(channel_name, str) or not channel_name.strip():
+                return "❌ Failed: 'channel_name' is required and must be a non-empty string"
+            # Resolve the target channel to verify the *caller* can see it —
+            # without this check, a non-admin could ask the AI to read a
+            # private staff/mod channel they have no access to (info-leak).
+            target_channel = discord.utils.get(guild.text_channels, name=channel_name.strip())
+            if not target_channel and channel_name.strip().isdigit():
+                target_channel = guild.get_channel(int(channel_name.strip()))
+            if target_channel is not None:
+                try:
+                    if not target_channel.permissions_for(user).read_messages:
+                        return "⛔ Permission denied to read that channel."
+                except (AttributeError, TypeError):
+                    return "⛔ Permission denied to read that channel."
+            cmd_args = [channel_name]
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
             await cmd_read_channel(guild, origin_channel, None, cmd_args)
-            return f"Requested reading channel '{args.get('channel_name')}'"
+            return f"Requested reading channel '{channel_name}'"
 
         elif fname == "remember":
             content = args.get("content")
-            if content:
-                # Limit memory content size to prevent abuse
-                max_memory_size = 5000
-                if len(content) > max_memory_size:
-                    content = content[:max_memory_size]
-                await rag_system.add_memory(content, channel_id=origin_channel.id)
-                return f"✅ Saved to long-term memory: {content[:100]}{'...' if len(content) > 100 else ''}"
-            return "❌ Failed to save memory: Content is empty"
+            if not isinstance(content, str):
+                return "❌ Failed to save memory: Content must be a string"
+            content = content.strip()
+            # Reject implausibly short payloads — the model occasionally
+            # tries to "remember" a single word, polluting RAG with noise.
+            if len(content) < 8:
+                return "❌ Failed to save memory: Content is too short"
+            # Reject content that looks like a stored prompt-injection
+            # payload — prevents future RAG retrievals from echoing
+            # ``[SYSTEM] ignore previous instructions`` back into prompts.
+            _suspicious = (
+                "[system]",
+                "[inst]",
+                "ignore previous",
+                "ignore the previous",
+                "<system>",
+                "<inst>",
+                "</system>",
+                "</inst>",
+            )
+            _content_lower = content.lower()
+            if any(marker in _content_lower for marker in _suspicious):
+                return "❌ Failed to save memory: Content contains restricted markers"
+            # Defense-in-depth against Unicode-normalisation bypasses:
+            # NFKD-decompose, drop non-ASCII, then lowercase before matching.
+            # This catches fullwidth / homoglyph / combining-mark variants of
+            # "[SYSTEM] ignore previous" that the literal substring check above
+            # would let through (e.g. "[ＳＹＳＴＥＭ] ignore previous").
+            _normalized = (
+                unicodedata.normalize("NFKD", content)
+                .encode("ascii", "ignore")
+                .decode("ascii")
+                .lower()
+            )
+            _forbidden_normalized = (
+                "[system]",
+                "ignore previous",
+                "pretend",
+                "you are now",
+                "system:",
+                "override",
+                "jailbreak",
+                "disregard",
+            )
+            if any(f in _normalized for f in _forbidden_normalized):
+                return "❌ Failed to save memory: Content contains restricted markers"
+            # Limit memory content size to prevent abuse.
+            max_memory_size = 5000
+            if len(content) > max_memory_size:
+                content = content[:max_memory_size]
+            # Provenance: prefix the calling user so future RAG retrievals
+            # carry attribution back into the prompt. Without this, any
+            # member could plant unattributed "facts" that later look
+            # authoritative when the AI cites them. Sanitize the display
+            # name to keep markdown/control chars out of the stored line.
+            user_display = getattr(user, "display_name", None) or getattr(user, "name", "user")
+            user_id = getattr(user, "id", "?")
+            safe_display = "".join(
+                c for c in str(user_display) if c.isprintable() and c not in "\r\n"
+            )[:32]
+            attributed = f"[user {safe_display} (id={user_id})] {content}"
+            await rag_system.add_memory(attributed, channel_id=origin_channel.id)
+            return f"✅ Saved to long-term memory: {content[:100]}{'...' if len(content) > 100 else ''}"
 
         else:
             return f"Unknown function: {fname}"
 
-    except (ValueError, discord.HTTPException) as e:
+    except (ValueError, AttributeError, TypeError, KeyError, discord.HTTPException) as e:
+        # Anthropic tool calls sometimes ship arguments with None/missing
+        # fields; the per-fname guards above try to bounce those, but we
+        # still want a backstop so a malformed payload doesn't kill the
+        # whole AI turn.
         logger.error("Tool execution error: %s", e, exc_info=True)
         return f"Error executing {fname}: {e}"
 
@@ -280,6 +423,12 @@ async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):
         cmd_type: The type of command to execute
         cmd_args: Arguments for the command
     """
+    # In DMs `user` is a discord.User without `guild_permissions`, so a bare
+    # attribute access used to crash with AttributeError before the DM guard
+    # below kicked in. Reject DM invocations explicitly first.
+    if not hasattr(user, "guild_permissions"):
+        await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น")
+        return
     if not user.guild_permissions.administrator:
         logger.warning("⚠️ User %s tried Admin Command %s without perm.", user, cmd_type)
         await origin_channel.send(f"⛔ คำสั่งนี้สำหรับ Admin เท่านั้น ({user.display_name})")
@@ -306,10 +455,12 @@ async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):
             await origin_channel.send("❌ ชื่อยาวเกินไป (สูงสุด 100 ตัวอักษร)")
             return
 
-        # Dispatch
+        # Dispatch. Pass the requesting user so each handler can enforce a
+        # per-action permission check (e.g. delete_channel requires the
+        # user to have manage_channels, not just the bot's admin grant).
         handler = COMMAND_HANDLERS.get(cmd_type)
         if handler:
-            await handler(guild, origin_channel, name, args)
+            await handler(guild, origin_channel, name, args, user)
         else:
             logger.warning("Unknown command type: %s", cmd_type)
 
@@ -339,7 +490,7 @@ async def send_as_webhook(bot, channel, name, message):
         message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
         # Guard against DM channels (no guild/webhooks)
-        if not hasattr(channel, 'guild') or channel.guild is None:
+        if not hasattr(channel, "guild") or channel.guild is None:
             await channel.send(f"**{name}**: {message}")
             return None
 
@@ -363,12 +514,16 @@ async def send_as_webhook(bot, channel, name, message):
                     chunks = _safe_split_message(message, limit)
                     for chunk in chunks:
                         sent_message = await webhook.send(
-                            content=chunk, username=name, wait=True,
+                            content=chunk,
+                            username=name,
+                            wait=True,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                 else:
                     sent_message = await webhook.send(
-                        content=message, username=name, wait=True,
+                        content=message,
+                        username=name,
+                        wait=True,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 logger.debug("🎭 AI spoke as %s (cached webhook)", name)
@@ -397,24 +552,46 @@ async def send_as_webhook(bot, channel, name, message):
                         break
 
             if img_path:
-                # Fix path resolution: Use current working directory (bot root)
-                # Security: Validate path is within expected directory to prevent path traversal
-                base_dir = Path.cwd().resolve()
-                full_path = (base_dir / img_path).resolve()
-
-                # Ensure the resolved path is still within the base directory
-                try:
-                    full_path.relative_to(base_dir)
-                except ValueError:
-                    logger.error("Path traversal attempt blocked: %s", img_path)
+                # Anchor to the repo root via __file__, NOT Path.cwd().
+                # cwd can be anywhere depending on how the bot was launched
+                # (a service that started in `/` would let `img_path =
+                # "etc/passwd"` resolve outside the project). Going via
+                # __file__ pins us to the known project tree.
+                # Layout: cogs/ai_core/tools/tool_executor.py → 3 parents up
+                # is the project root.
+                project_root = Path(__file__).resolve().parents[3]
+                # Reject absolute paths and `..` segments up front so a
+                # crafted SERVER_AVATARS entry can't escape via /etc/passwd
+                # or ../.. traversal.
+                _candidate = Path(img_path)
+                if _candidate.is_absolute() or any(p == ".." for p in _candidate.parts):
+                    logger.error("Rejecting suspicious avatar path: %s", img_path)
                     full_path = None
+                else:
+                    full_path = (project_root / _candidate).resolve()
+                    try:
+                        full_path.relative_to(project_root)
+                    except ValueError:
+                        logger.error("Path traversal attempt blocked: %s", img_path)
+                        full_path = None
 
                 if full_path and full_path.exists():
                     try:
-                        # Limit avatar file size to 1MB
+                        # Discord rejects webhook avatars over ~256 KB with a
+                        # 400 "Invalid Form Body" — the previous 1 MB cap let
+                        # the API call go through with a too-large image and
+                        # silently fail webhook creation. Cap at 200 KB to
+                        # leave headroom for the multipart wrapper.
+                        AVATAR_CAP = 200 * 1024
                         file_size = full_path.stat().st_size
-                        if file_size > 1024 * 1024:
-                            logger.warning("Avatar file too large (%d bytes): %s", file_size, full_path)
+                        if file_size > AVATAR_CAP:
+                            logger.warning(
+                                "Avatar file too large (%d bytes > %d cap): %s — "
+                                "webhook will be created without avatar",
+                                file_size,
+                                AVATAR_CAP,
+                                full_path,
+                            )
                         else:
                             avatar_bytes = full_path.read_bytes()
                     except OSError as err:
@@ -465,12 +642,16 @@ async def send_as_webhook(bot, channel, name, message):
                 chunks = _safe_split_message(message, limit)
                 for chunk in chunks:
                     sent_message = await webhook.send(
-                        content=chunk, username=name, wait=True,
+                        content=chunk,
+                        username=name,
+                        wait=True,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
             else:
                 sent_message = await webhook.send(
-                    content=message, username=name, wait=True,
+                    content=message,
+                    username=name,
+                    wait=True,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             logger.info("🎭 AI spoke as %s", name)

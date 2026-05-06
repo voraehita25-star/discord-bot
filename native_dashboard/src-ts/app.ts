@@ -17,6 +17,9 @@ import {
     loadSettings,
     saveSettings,
     initToastContainer,
+    setup3DInteractions,
+    animateNumber,
+    setSkeleton,
     showToast,
     showConfirmDialog,
 } from './shared.js';
@@ -112,6 +115,13 @@ document.addEventListener("DOMContentLoaded", () => {
     // Update AI avatars after all init
     updateAiAvatars();
     initApiFailoverUI();
+    // Bind avatar-crop modal listeners up front so Escape works even on the
+    // first open (the previous lazy bind inside openCropModal meant the very
+    // first session had no Escape handler attached yet).
+    setupCropEventListeners();
+    // 3D polish: ripple, cursor-tracking tilt, send-button pulse.
+    // Called last so it can attach to all elements rendered by the inits above.
+    setup3DInteractions();
 });
 
 // Cleanup on window unload — clear timers and close WebSocket so dev hot-reload
@@ -306,6 +316,12 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Fade-in entrance on the very first draw (CSS handles the transition;
+    // .chart-ready flips opacity from 0→1 and translateY from 16px→0).
+    if (!canvas.classList.contains('chart-ready')) {
+        requestAnimationFrame(() => canvas.classList.add('chart-ready'));
+    }
+
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     
@@ -329,8 +345,14 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 
     const values = data.map(d => d.value);
     // Use reduce instead of spread to prevent stack overflow with large arrays
-    const minVal = values.reduce((a, b) => Math.min(a, b), Infinity) * 0.9;
-    let maxVal = values.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1 || 1;
+    const rawMin = values.reduce((a, b) => Math.min(a, b), Infinity);
+    const rawMax = values.reduce((a, b) => Math.max(a, b), -Infinity);
+    // Padded versions are used for scaling so the line never grazes the
+    // chart edge; the raw values are shown as axis labels because a
+    // memory chart that never dipped below 42 MB shouldn't claim it
+    // bottomed out at 37.8 MB.
+    const minVal = rawMin * 0.9;
+    let maxVal = rawMax * 1.1 || 1;
     // Prevent division by zero when all values are identical
     if (maxVal === minVal) maxVal = minVal + 1;
 
@@ -394,8 +416,8 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(maxVal.toFixed(1), 5, padding + 10);
-    ctx.fillText(minVal.toFixed(1), 5, height - padding);
+    ctx.fillText(rawMax.toFixed(1), 5, padding + 10);
+    ctx.fillText(rawMin.toFixed(1), 5, height - padding);
 }
 
 function updateCharts(): void {
@@ -479,7 +501,12 @@ function initSakuraAnimation(): void {
         activePetals.add(petal);
 
         const size = Math.random() * 15 + 10;
-        const startX = Math.random() * window.innerWidth;
+        // Cap startX so the petal's right edge cannot push the document past
+        // the viewport. Petals are position:fixed but still contribute to
+        // scrollWidth — the previous formula could position a 25px petal at
+        // x = innerWidth - 1, leaving its right side ~24px outside the
+        // viewport and forcing a horizontal scrollbar / layout overflow.
+        const startX = Math.random() * Math.max(0, window.innerWidth - size);
         const duration = Math.random() * 6 + 6;
         const delay = Math.random() * 2;
         const rotateStart = Math.random() * 360;
@@ -489,7 +516,11 @@ function initSakuraAnimation(): void {
         const shape = petalShapes[Math.floor(Math.random() * petalShapes.length)];
 
         petal.innerHTML = shape;
-        petal.style.position = 'fixed';
+        // position:absolute (not fixed) so the container's overflow:hidden
+        // actually clips petals — fixed escapes any ancestor clip and would
+        // push past the viewport during the sway transform, creating a few
+        // hundred px of phantom horizontal scroll.
+        petal.style.position = 'absolute';
         petal.style.width = `${size}px`;
         petal.style.height = `${size}px`;
         petal.style.left = `${startX}px`;
@@ -581,6 +612,18 @@ function initNavigation(): void {
         setSakuraEnabled(enabled);
     });
 
+    document.getElementById('sound-toggle')?.addEventListener('change', (e) => {
+        const enabled = (e.target as HTMLInputElement).checked;
+        updateSetting('soundEnabled', enabled);
+        if (enabled) showToast('🔊 Click sounds enabled', { type: 'info', duration: 2000 });
+    });
+
+    document.getElementById('haptic-toggle')?.addEventListener('change', (e) => {
+        const enabled = (e.target as HTMLInputElement).checked;
+        updateSetting('hapticEnabled', enabled);
+        if (enabled) showToast('📳 Haptic feedback enabled', { type: 'info', duration: 2000 });
+    });
+
     document.getElementById('telemetry-toggle')?.addEventListener('change', async (e) => {
         const enabled = (e.target as HTMLInputElement).checked;
         try {
@@ -607,7 +650,7 @@ function initNavigation(): void {
     document.getElementById('btn-save-profile')?.addEventListener('click', () => {
         saveProfileToAI();
     });
-    
+
     // Avatar upload handlers
     document.getElementById('btn-change-avatar')?.addEventListener('click', () => {
         document.getElementById('avatar-input')?.click();
@@ -736,13 +779,26 @@ async function updateStatus(): Promise<void> {
             cachedDbStats ?? invoke<DbStats>('get_db_stats')
         ]);
 
+        // Either side can return null when the bot isn't running yet
+        // (DB not initialized, status endpoint hasn't responded). Without
+        // these guards the .memory_mb / .total_messages accesses below
+        // crash the entire dashboard at bootstrap, leaving a blank UI.
+        if (!status || !dbStats) return;
+
         // Cache the results
         if (!cachedStatus) dataCache.set('status', status, 1500);
         if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
 
-        // Add to chart history
-        addChartDataPoint(memoryHistory, status.memory_mb);
-        addChartDataPoint(messagesHistory, dbStats.total_messages);
+        // Only chart fresh samples — adding a point on every call would
+        // duplicate the previous reading whenever updateStatus runs against
+        // a warm cache (e.g. Ctrl+R immediately followed by the interval
+        // tick), compressing the history into bunched-up clusters.
+        if (!cachedStatus) {
+            addChartDataPoint(memoryHistory, status.memory_mb);
+        }
+        if (!cachedDbStats) {
+            addChartDataPoint(messagesHistory, dbStats.total_messages);
+        }
 
         // Batch all DOM updates
         batchDOMUpdate([
@@ -803,20 +859,35 @@ function updateButtons(status: BotStatus): void {
 }
 
 function updateStats(status: BotStatus, dbStats: DbStats): void {
-    const updates: [string, string][] = [
+    // Strings that don't animate naturally (uptime, mode) — just set textContent.
+    const stringUpdates: [string, string][] = [
         ['stat-uptime', status.uptime],
         ['stat-mode', status.mode],
-        ['stat-memory', `${status.memory_mb.toFixed(1)} MB`],
-        ['stat-messages', dbStats.total_messages.toLocaleString()],
-        ['stat-channels', dbStats.active_channels.toString()]
     ];
-
-    updates.forEach(([id, value]) => {
+    stringUpdates.forEach(([id, value]) => {
         const el = document.getElementById(id);
-        if (el && el.textContent !== value) {
-            el.textContent = value;
+        if (el) {
+            setSkeleton(el, false);
+            if (el.textContent !== value) el.textContent = value;
         }
     });
+
+    // Numeric stats — animate the count so changes feel alive.
+    const memEl = document.getElementById('stat-memory');
+    if (memEl) {
+        setSkeleton(memEl, false);
+        animateNumber(memEl, status.memory_mb, { decimals: 1, suffix: ' MB' });
+    }
+    const msgEl = document.getElementById('stat-messages');
+    if (msgEl) {
+        setSkeleton(msgEl, false);
+        animateNumber(msgEl, dbStats.total_messages);
+    }
+    const chEl = document.getElementById('stat-channels');
+    if (chEl) {
+        setSkeleton(chEl, false);
+        animateNumber(chEl, dbStats.active_channels);
+    }
 }
 
 // ============================================================================
@@ -955,7 +1026,11 @@ async function loadLogs(): Promise<void> {
             container.textContent = 'No logs found.';
         }
 
-        if (logsAutoScrollEnabled && hasNewLogs) {
+        // Auto-scroll on new logs OR when the filter changes — switching from
+        // ERROR to ALL with auto-scroll on previously left the view on a
+        // mid-scroll position from the prior filter instead of snapping back
+        // to the bottom of the rebuilt list.
+        if (logsAutoScrollEnabled && (hasNewLogs || filterChanged)) {
             container.scrollTop = container.scrollHeight;
         }
     } catch (error) {
@@ -1008,7 +1083,11 @@ function clearLogs(): void {
 async function loadDbStats(): Promise<void> {
     try {
         const stats = await invoke<DbStats>('get_db_stats');
-        
+        // Same defensive guard as updateStatus: backend can legitimately
+        // return null before the DB is initialized; treat as "no data yet"
+        // and let the next poll fill it in instead of crashing the page.
+        if (!stats) return;
+
         batchDOMUpdate([
             () => {
                 const dbMessages = document.getElementById('db-messages');
@@ -1016,18 +1095,26 @@ async function loadDbStats(): Promise<void> {
                 const dbEntities = document.getElementById('db-entities');
                 const dbRag = document.getElementById('db-rag');
 
-                if (dbMessages) dbMessages.textContent = stats.total_messages.toLocaleString();
-                if (dbChannels) dbChannels.textContent = stats.active_channels.toString();
-                if (dbEntities) dbEntities.textContent = stats.total_entities.toString();
-                if (dbRag) dbRag.textContent = stats.rag_memories.toString();
+                // animateNumber handles reduced-motion fallback internally,
+                // and setSkeleton clears any loading placeholder the first
+                // time real data arrives.
+                if (dbMessages) { setSkeleton(dbMessages, false); animateNumber(dbMessages, stats.total_messages); }
+                if (dbChannels) { setSkeleton(dbChannels, false); animateNumber(dbChannels, stats.active_channels); }
+                if (dbEntities) { setSkeleton(dbEntities, false); animateNumber(dbEntities, stats.total_entities); }
+                if (dbRag)      { setSkeleton(dbRag, false);      animateNumber(dbRag, stats.rag_memories); }
             }
         ]);
 
-        // Load channels and users in parallel
-        const [channels, users] = await Promise.all([
+        // Load channels and users in parallel. Coerce nulls (which the
+        // backend can return before the bot has indexed anything) to empty
+        // arrays so the .length / .forEach calls below don't crash and
+        // leave the UI in a half-rendered state.
+        const [channelsRaw, usersRaw] = await Promise.all([
             invoke<ChannelInfo[]>('get_recent_channels', { limit: 10 }),
             invoke<UserInfo[]>('get_top_users', { limit: 10 })
         ]);
+        const channels = channelsRaw ?? [];
+        const users = usersRaw ?? [];
 
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
@@ -1186,6 +1273,16 @@ function loadSettingsUI(): void {
         sakuraToggleEl.checked = settings.sakuraEnabled !== false;
     }
 
+    const soundToggleEl = document.getElementById('sound-toggle') as HTMLInputElement | null;
+    if (soundToggleEl) {
+        soundToggleEl.checked = settings.soundEnabled === true;
+    }
+
+    const hapticToggleEl = document.getElementById('haptic-toggle') as HTMLInputElement | null;
+    if (hapticToggleEl) {
+        hapticToggleEl.checked = settings.hapticEnabled === true;
+    }
+
     // Telemetry toggle is stored outside localStorage — it's a file on disk
     // so the Python bot can read the same source of truth. Fetch the current
     // state from the Rust side.
@@ -1236,7 +1333,11 @@ function loadSettingsUI(): void {
         if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
         if (avatarImage) {
-            avatarImage.src = '';
+            // Use a 1x1 transparent gif rather than '' — empty src triggers
+            // the browser's broken-image fallback even when the element
+            // itself is hidden via class, leaving a momentary glyph that
+            // bleeds through during page transitions.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1296,6 +1397,9 @@ let cropState = {
 let boundOnDrag: ((e: MouseEvent) => void) | null = null;
 let boundOnDragTouch: ((e: TouchEvent) => void) | null = null;
 let boundEndDrag: (() => void) | null = null;
+let boundStartDrag: ((e: MouseEvent) => void) | null = null;
+let boundStartDragTouch: ((e: TouchEvent) => void) | null = null;
+let cropListenersAttached = false;
 
 function openAvatarCropModal(imageUrl: string): void {
     cropState = {
@@ -1350,23 +1454,37 @@ function setupCropEventListeners(): void {
     const modal = document.getElementById('avatar-crop-modal');
     
     if (!cropArea || !zoomSlider || !saveBtn || !cancelBtn || !closeBtn || !modal) return;
-    
-    // Remove old listeners by cloning
-    const newCropArea = cropArea.cloneNode(true) as HTMLElement;
-    cropArea.parentNode?.replaceChild(newCropArea, cropArea);
-    
+
+    // Detach previously-bound handlers from the live elements rather than
+    // cloning the node (cloning silently drops every listener that was
+    // attached BEFORE this function ran, which leaks the document-level
+    // mousemove/touchmove/mouseup/touchend handlers from prior opens).
+    if (cropListenersAttached) {
+        if (boundStartDrag) cropArea.removeEventListener('mousedown', boundStartDrag);
+        if (boundStartDragTouch) cropArea.removeEventListener('touchstart', boundStartDragTouch);
+        if (boundOnDrag) document.removeEventListener('mousemove', boundOnDrag);
+        if (boundOnDragTouch) document.removeEventListener('touchmove', boundOnDragTouch);
+        if (boundEndDrag) {
+            document.removeEventListener('mouseup', boundEndDrag);
+            document.removeEventListener('touchend', boundEndDrag);
+        }
+    }
+
     // Create bound functions for proper cleanup
+    boundStartDrag = startDrag;
+    boundStartDragTouch = startDragTouch;
     boundOnDrag = onDrag;
     boundOnDragTouch = onDragTouch;
     boundEndDrag = endDrag;
-    
+
     // Mouse/touch drag
-    newCropArea.addEventListener('mousedown', startDrag);
-    newCropArea.addEventListener('touchstart', startDragTouch, { passive: false });
+    cropArea.addEventListener('mousedown', boundStartDrag);
+    cropArea.addEventListener('touchstart', boundStartDragTouch, { passive: false });
     document.addEventListener('mousemove', boundOnDrag);
     document.addEventListener('touchmove', boundOnDragTouch, { passive: false });
     document.addEventListener('mouseup', boundEndDrag);
     document.addEventListener('touchend', boundEndDrag);
+    cropListenersAttached = true;
     
     // Zoom
     zoomSlider.oninput = () => {
@@ -1383,9 +1501,31 @@ function setupCropEventListeners(): void {
     // Cancel/Close
     cancelBtn.onclick = closeCropModal;
     closeBtn.onclick = closeCropModal;
+    // Click on the .modal-overlay backdrop closes the modal. Guard with a
+    // dataset flag — without this every avatar-crop session would stack one
+    // more click listener and the overlay would call closeCropModal N times
+    // per click after N opens. The escape-key listener below already does
+    // this; the overlay listener was missing the same protection.
+    if (!modal.dataset.overlayCloseBound) {
+        modal.dataset.overlayCloseBound = '1';
+        modal.querySelector<HTMLElement>('[data-close-avatar-crop]')?.addEventListener('click', closeCropModal);
+    }
+    // Fallback: clicking the modal element itself (outside both content + overlay)
+    // also closes — keeps backwards compat with the previous click-target check.
     modal.onclick = (e) => {
         if (e.target === modal) closeCropModal();
     };
+    // Escape key dismiss — only active while modal is open.
+    // Guard with a dataset flag so re-opening the crop modal doesn't stack
+    // duplicate document-level keydown listeners every time. Without this
+    // flag every avatar-crop session leaks one more listener for the rest
+    // of the page lifetime.
+    if (!modal.dataset.escBound) {
+        modal.dataset.escBound = '1';
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.classList.contains('active')) closeCropModal();
+        });
+    }
 }
 
 function startDrag(e: MouseEvent): void {
@@ -1395,6 +1535,7 @@ function startDrag(e: MouseEvent): void {
 }
 
 function startDragTouch(e: TouchEvent): void {
+    if (!e.touches || e.touches.length === 0) return;
     e.preventDefault();
     cropState.isDragging = true;
     const touch = e.touches[0];
@@ -1411,6 +1552,7 @@ function onDrag(e: MouseEvent): void {
 
 function onDragTouch(e: TouchEvent): void {
     if (!cropState.isDragging) return;
+    if (!e.touches || e.touches.length === 0) return;
     e.preventDefault();
     const touch = e.touches[0];
     cropState.offsetX = touch.clientX - cropState.startX;
@@ -1546,7 +1688,9 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
         const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
         
         if (avatarImage) {
-            avatarImage.src = '';
+            // 1x1 transparent gif instead of empty src — empty triggers
+            // the browser's broken-image fallback even when hidden by class.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1562,7 +1706,9 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
         const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
         
         if (avatarImage) {
-            avatarImage.src = '';
+            // 1x1 transparent gif instead of empty src — empty triggers
+            // the browser's broken-image fallback even when hidden by class.
+            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
             avatarImage.classList.remove('visible');
         }
         if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
@@ -1582,13 +1728,13 @@ function saveProfileToAI(): void {
     const bio = (document.getElementById('user-bio-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const preferences = (document.getElementById('user-preferences-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const isCreator = (document.getElementById('creator-toggle') as HTMLInputElement)?.checked || false;
-    
+
     if (chatManager?.connected) {
-        chatManager.send({ 
-            type: 'save_profile', 
+        chatManager.send({
+            type: 'save_profile',
             profile: { display_name: displayName, bio, preferences, is_creator: isCreator }
         });
-        
+
         // Also update local settings
         settings.userName = displayName;
         settings.isCreator = isCreator;
@@ -1658,15 +1804,17 @@ function initApiFailoverUI(): void {
     const origInitChat = (window as unknown as Record<string, unknown>)._apiFailoverRequested;
     if (!origInitChat) {
         (window as unknown as Record<string, unknown>)._apiFailoverRequested = true;
-        // Poll for chatManager readiness
+        // Poll for chatManager readiness. We extend the give-up window to 60s
+        // because slow first connects (cold WS auth, dev tools attached, etc.)
+        // can blow past the previous 30s ceiling and leave the failover panel
+        // stuck on "loading…" until the user reloads the page.
         const checkInterval = setInterval(() => {
             if (chatManager?.connected) {
                 chatManager.send({ type: 'get_api_endpoints' });
                 clearInterval(checkInterval);
             }
         }, 2000);
-        // Stop polling after 30s
-        setTimeout(() => clearInterval(checkInterval), 30000);
+        setTimeout(() => clearInterval(checkInterval), 60000);
     }
 }
 
@@ -1689,21 +1837,33 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
         item.className = 'api-endpoint-item' +
             (ep.active ? ' active' : '') +
             (!ep.healthy ? ' unhealthy' : '');
+        // Coerce numeric fields BEFORE interpolation. ?? 0 only catches
+        // null/undefined — a string from a misbehaving server (or compromised
+        // local backend) would be injected raw into innerHTML and execute.
+        const totalRequests = Number(ep.total_requests) || 0;
+        const failureRate = Number(ep.failure_rate) || 0;
+        // Coerce server-provided values to strings BEFORE calling string-only
+        // methods (.substring / .toUpperCase). `ep` is Record<string, unknown>,
+        // so a non-string value would otherwise throw TypeError and abort the
+        // entire endpoint render loop.
+        const epType = String(ep.type ?? '').toUpperCase();
+        const epLabel = String(ep.label ?? '') || epType;
+        const lastError = ep.last_error == null ? '' : String(ep.last_error).substring(0, 80);
         item.innerHTML = `
-            <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(ep.label as string || (ep.type as string).toUpperCase())}</div>
-            <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${ep.last_error ? ` — ${escapeHtml((ep.last_error as string).substring(0, 80))}` : ''}</div>
+            <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(epLabel)}</div>
+            <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${lastError ? ` — ${escapeHtml(lastError)}` : ''}</div>
             <span class="ep-badge ${ep.active ? '' : (ep.healthy ? 'healthy' : 'unhealthy-badge')}">${ep.active ? 'ACTIVE' : (ep.healthy ? 'standby' : 'down')}</span>
-            <div class="ep-stats">Requests: ${ep.total_requests ?? 0} | Fail rate: ${ep.failure_rate ?? 0}%</div>
+            <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate}%</div>
         `;
 
         // Click to switch
         if (!ep.active) {
             item.style.cursor = 'pointer';
-            item.title = `คลิกเพื่อสลับไปใช้ ${(ep.type as string).toUpperCase()}`;
+            item.title = `คลิกเพื่อสลับไปใช้ ${epType}`;
             item.addEventListener('click', () => {
                 if (chatManager?.connected) {
                     chatManager.send({ type: 'switch_api_endpoint', endpoint: ep.type });
-                    showToast(`🔀 Switching to ${(ep.type as string).toUpperCase()}...`, { type: 'info', duration: 2000 });
+                    showToast(`🔀 Switching to ${epType}...`, { type: 'info', duration: 2000 });
                 }
             });
         }
@@ -1722,13 +1882,20 @@ function renderHealthCheckResults(results: Array<Record<string, unknown>>): void
     const div = document.createElement('div');
     div.id = 'api-health-results';
     div.className = 'api-health-result';
-    div.innerHTML = results.map(r =>
-        `<div><strong>${escapeHtml(r.label as string || (r.endpoint as string))}</strong>: ` +
+    div.innerHTML = results.map(r => {
+        // Coerce latency to a number — escape the rest. r is Record<string, unknown>,
+        // so any string from a misbehaving WS frame would otherwise land in
+        // innerHTML unescaped. Also coerce label/error to string so a non-string
+        // value doesn't throw TypeError on .substring and break the whole list.
+        const latencyMs = Number(r.latency_ms) || 0;
+        const labelOrEndpoint = String(r.label ?? '') || String(r.endpoint ?? '');
+        const errorText = String(r.error ?? 'Failed').substring(0, 100);
+        return `<div><strong>${escapeHtml(labelOrEndpoint)}</strong>: ` +
         (r.healthy
-            ? `<span class="healthy">✅ Healthy (${r.latency_ms}ms)</span>`
-            : `<span class="unhealthy">❌ ${escapeHtml((r.error as string || 'Failed').substring(0, 100))}</span>`) +
-        '</div>'
-    ).join('');
+            ? `<span class="healthy">✅ Healthy (${latencyMs}ms)</span>`
+            : `<span class="unhealthy">❌ ${escapeHtml(errorText)}</span>`) +
+        '</div>';
+    }).join('');
     section.appendChild(div);
 
     // Auto-remove after 15s

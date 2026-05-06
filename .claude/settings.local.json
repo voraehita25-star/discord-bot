@@ -5,7 +5,12 @@
       "Bash(.venv/Scripts/python -c \":*)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('utils/web/url_fetcher.py'\\).read\\(\\)\\); ast.parse\\(open\\('utils/reliability/self_healer.py'\\).read\\(\\)\\); ast.parse\\(open\\('utils/database/database.py'\\).read\\(\\)\\); ast.parse\\(open\\('scripts/maintenance/reindex_db.py'\\).read\\(\\)\\); ast.parse\\(open\\('cogs/music/cog.py'\\).read\\(\\)\\); print\\('All files parse OK'\\)\")",
       "Bash(cargo check *)",
-      "Bash(.venv/Scripts/ruff.exe check *)"
+      "Bash(.venv/Scripts/ruff.exe check *)",
+      "PowerShell(Get-Command gh -ErrorAction SilentlyContinue)",
+      "PowerShell(cd \"c:/Users/ME/BOT Discord/native_dashboard\"; powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build-release.ps1)",
+      "Bash(xargs wc *)",
+      "PowerShell(Get-Process | Where-Object { $_.Name -match 'dashboard|bot-' } | Select-Object Id, Name, Path | Format-Table -AutoSize)",
+      "PowerShell(Join-Path *)"
     ]
   }
 }

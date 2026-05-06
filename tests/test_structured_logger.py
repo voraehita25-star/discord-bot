@@ -106,6 +106,7 @@ class TestStructuredFormatter:
             raise ValueError("Test error")
         except ValueError:
             import sys
+
             exc_info = sys.exc_info()
 
         record = logging.LogRecord(
@@ -345,6 +346,7 @@ class TestTimedDecorator:
             return "result"
 
         import asyncio
+
         result = await my_async_func()
 
         assert result == "result"

@@ -3,8 +3,6 @@ Tests for cogs.ai_core.memory.state_tracker module.
 """
 
 
-
-
 class TestCharacterStateDataclass:
     """Tests for CharacterState dataclass."""
 
@@ -31,7 +29,7 @@ class TestCharacterStateDataclass:
             nearby_characters=["Dante"],
             inventory=["Book"],
             last_action="Turned a page",
-            last_dialogue="Interesting..."
+            last_dialogue="Interesting...",
         )
 
         assert state.name == "Faust"
@@ -45,11 +43,7 @@ class TestCharacterStateDataclass:
         """Test CharacterState to_dict method."""
         from cogs.ai_core.memory.state_tracker import CharacterState
 
-        state = CharacterState(
-            name="Faust",
-            location="Library",
-            emotion="calm"
-        )
+        state = CharacterState(name="Faust", location="Library", emotion="calm")
 
         result = state.to_dict()
 
@@ -63,11 +57,7 @@ class TestCharacterStateDataclass:
         """Test CharacterState from_dict method."""
         from cogs.ai_core.memory.state_tracker import CharacterState
 
-        data = {
-            "name": "Faust",
-            "location": "Office",
-            "emotion": "focused"
-        }
+        data = {"name": "Faust", "location": "Office", "emotion": "focused"}
 
         state = CharacterState.from_dict(data)
 
@@ -80,10 +70,7 @@ class TestCharacterStateDataclass:
         from cogs.ai_core.memory.state_tracker import CharacterState
 
         state = CharacterState(
-            name="Faust",
-            location="Library",
-            activity="Reading a book",
-            emotion="calm"
+            name="Faust", location="Library", activity="Reading a book", emotion="calm"
         )
 
         result = state.to_prompt_text()
@@ -238,10 +225,8 @@ class TestStateTrackerPersistence:
         tracker = CharacterStateTracker()
 
         data = {
-            "states": {
-                "Faust": {"name": "Faust", "location": "Library"}
-            },
-            "scene": "Dark night"
+            "states": {"Faust": {"name": "Faust", "location": "Library"}},
+            "scene": "Dark night",
         }
 
         tracker.from_dict(12345, data)

@@ -55,5 +55,9 @@ export interface Settings {
     aiAvatar: string;
     isCreator: boolean;
     sakuraEnabled?: boolean;
+    // 3D polish toggles — both default OFF so we never surprise users with
+    // sound/vibration on first launch. Settings UI lets them opt in.
+    soundEnabled?: boolean;
+    hapticEnabled?: boolean;
     lastConversationId?: string | null;
 }

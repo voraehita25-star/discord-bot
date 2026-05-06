@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import io
 import logging
-logger = logging.getLogger(__name__)
 import re
 
 import aiohttp
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
@@ -70,12 +71,11 @@ async def fetch_emoji_images(
         for emoji in emojis[:5]:  # Limit to 5 emojis to avoid overload
             img = None
             try:
-                async with s.get(
-                    emoji["url"], timeout=aiohttp.ClientTimeout(total=3)
-                ) as resp:
+                async with s.get(emoji["url"], timeout=aiohttp.ClientTimeout(total=3)) as resp:
                     if resp.status == 200:
                         data = await resp.read()
                         img = Image.open(io.BytesIO(data))
+                        img.load()
                         # Convert to RGB if needed (for GIFs, take first frame)
                         if img.mode in ("RGBA", "P"):
                             converted_img = img.convert("RGB")

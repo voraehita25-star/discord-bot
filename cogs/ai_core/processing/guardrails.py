@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
-logger = logging.getLogger(__name__)
+import os
 import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
+
+logger = logging.getLogger(__name__)
 
 # ==================== UNRESTRICTED MODE ====================
 # Channels in this set bypass ALL guardrail checks
@@ -40,7 +42,8 @@ def _load_unrestricted_channels() -> set[int]:
             if size > _UNRESTRICTED_MAX_BYTES:
                 logger.error(
                     "unrestricted_channels.json too large (%d bytes > %d) — ignoring",
-                    size, _UNRESTRICTED_MAX_BYTES,
+                    size,
+                    _UNRESTRICTED_MAX_BYTES,
                 )
                 return set()
             data = json.loads(_UNRESTRICTED_FILE.read_text(encoding="utf-8"))
@@ -73,11 +76,13 @@ def _save_unrestricted_channels(channels_snapshot: list[int] | None = None) -> b
             with _unrestricted_lock:
                 channels_snapshot = list(unrestricted_channels)
         data_to_save = {"channels": channels_snapshot}
-        # Atomic write: write to temp file then rename
-        temp_file.write_text(
-            json.dumps(data_to_save, indent=2),
-            encoding="utf-8",
-        )
+        # Atomic write: write to temp file, fsync, then rename.
+        # fsync flushes OS buffers before the rename so a crash mid-write
+        # cannot leave a half-written temp that later gets promoted.
+        with temp_file.open("w", encoding="utf-8") as f:
+            json.dump(data_to_save, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         temp_file.replace(_UNRESTRICTED_FILE)  # Atomic on most filesystems
         return True
     except (OSError, TypeError, ValueError):
@@ -153,8 +158,9 @@ class OutputGuardrails:
 
     # Patterns that should never appear in output
     SENSITIVE_PATTERNS: ClassVar[list[tuple[str, str]]] = [
-        # API keys and tokens (generic)
-        (r'(?i)(?:api[_-]?key|token|secret)["\'"]?\s*[:=]\s*["\'"]?[a-zA-Z0-9_-]{20,}', "api_key"),
+        # API keys and tokens (generic). Char-class previously had a duplicate
+        # double-quote (`["\'"]?`) — collapsed to `["']?`.
+        (r'(?i)(?:api[_-]?key|token|secret)["\']?\s*[:=]\s*["\']?[a-zA-Z0-9_-]{20,}', "api_key"),
         # Discord tokens (specific format)
         (r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27}", "discord_token"),
         # Google API keys (AIza prefix)
@@ -167,6 +173,17 @@ class OutputGuardrails:
         (r"sk-[a-zA-Z0-9]{20,}", "openai_key"),
         # AWS access keys
         (r"AKIA[0-9A-Z]{16}", "aws_access_key"),
+        # Slack webhook/bot/user tokens (xoxb/xoxp/xoxa/xoxr/xoxs)
+        (r"xox[baprs]-[A-Za-z0-9-]{20,}", "slack_token"),
+        # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+        (r"gh[posu]_[A-Za-z0-9]{30,}", "github_token"),
+        # Stripe live secret/publishable keys
+        (r"sk_live_[A-Za-z0-9]{20,}", "stripe_live_secret"),
+        (r"pk_live_[A-Za-z0-9]{20,}", "stripe_live_publishable"),
+        # PEM-encoded private keys (RSA, EC, DSA, OPENSSH, ENCRYPTED, etc.)
+        (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "pem_private_key"),
+        # JWTs (header.payload.signature)
+        (r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", "jwt"),
         # Generic Bearer tokens in AI output
         (r"(?i)Bearer\s+[a-zA-Z0-9_\-\.]{20,}", "bearer_token"),
         # Environment variable patterns
@@ -253,19 +270,22 @@ class OutputGuardrails:
         Returns:
             Tuple of (is_repetitive, description)
         """
-        # Check consecutive word repetition
+        # Check consecutive word repetition. Length gate must be ≥ window size,
+        # not the prior `> 10`, otherwise "yes yes yes yes yes" (5 words) slips past.
         words = text.split()
-        if len(words) > 10:
-            for i in range(len(words) - self.MAX_SINGLE_WORD_REPEAT):
+        if len(words) >= self.MAX_SINGLE_WORD_REPEAT:
+            for i in range(len(words) - self.MAX_SINGLE_WORD_REPEAT + 1):
                 window = words[i : i + self.MAX_SINGLE_WORD_REPEAT]
                 if len(set(window)) == 1:
                     return True, f"word '{window[0]}' repeated {self.MAX_SINGLE_WORD_REPEAT}+ times"
 
-        # Check phrase repetition (same 5+ words appearing 3+ times)
-        if len(words) > 20:
-            phrase_len = 5
+        # Check phrase repetition (same 5+ words appearing 3+ times). Length
+        # gate is phrase_len * 3 so we can detect 3 occurrences of a 5-gram in
+        # 15-word inputs.
+        phrase_len = 5
+        if len(words) >= phrase_len * 3:
             phrase_counts: dict[str, int] = {}
-            for i in range(len(words) - phrase_len):
+            for i in range(len(words) - phrase_len + 1):
                 phrase = " ".join(words[i : i + phrase_len])
                 phrase_counts[phrase] = phrase_counts.get(phrase, 0) + 1
                 if phrase_counts[phrase] >= 3:
@@ -330,6 +350,22 @@ class OutputGuardrails:
 
         # Quick sensitive pattern check (all patterns)
         return all(not pattern.search(response) for pattern, _ in self._compiled_sensitive)
+
+    def redact_secrets(self, text: str) -> str:
+        """Redact any sensitive patterns from arbitrary text.
+
+        Used for inputs in unrestricted channels — without this, raw
+        API keys / tokens pasted by users would land in the prompt and
+        downstream logs verbatim. Runs only the sensitive-pattern pass,
+        skipping repetition / length / formatting checks.
+        """
+        if not text:
+            return text
+        sanitized = text
+        for pattern, _name in self._compiled_sensitive:
+            if pattern.search(sanitized):
+                sanitized = pattern.sub("[REDACTED]", sanitized)
+        return sanitized
 
 
 # Global instance
@@ -405,7 +441,11 @@ class InputGuardrails:
         # Thai-language injection patterns
         (r"ไม่ต้อง(?:สนใจ|ทำตาม|ฟัง)(?:คำสั่ง|คำ)?(?:ก่อนหน้า|เดิม|ที่ผ่านมา)", "ignore_instructions_th", 0.9),
         (r"ลืม(?:คำสั่ง|ทุก(?:อย่าง|สิ่ง)|ที่(?:สอน|บอก|กำหนด))", "forget_instructions_th", 0.85),
-        (r"(?:ตอนนี้|ต่อจากนี้|จากนี้(?:ไป)?)\s*(?:คุณ|เธอ|นาย)\s*(?:คือ|เป็น|ต้อง)", "persona_change_th", 0.6),
+        (
+            r"(?:ตอนนี้|ต่อจากนี้|จากนี้(?:ไป)?)\s*(?:คุณ|เธอ|นาย)\s*(?:คือ|เป็น|ต้อง)",
+            "persona_change_th",
+            0.6,
+        ),
         (r"(?:แสดง|เปิดเผย|บอก|พิมพ์)(?:system\s*)?prompt", "prompt_leak_th", 0.6),
         (r"(?:ปิด|ยกเลิก|ข้าม|ปลด)(?:การ)?(?:ป้องกัน|กรอง|จำกัด|guardrail)", "bypass_safety_th", 0.85),
     ]
@@ -558,17 +598,23 @@ def validate_input_for_channel(
         if result.flags:
             logger.info(
                 "⚠️ Injection detected in unrestricted channel %s (allowed): %s",
-                channel_id, result.flags,
+                channel_id,
+                result.flags,
             )
         # Sanitize control characters even in unrestricted mode
         sanitized = user_input
         for pattern, _name, _score in input_guardrails._suspicious_patterns:
             sanitized = pattern.sub("", sanitized)
+        # ALSO redact secrets — unrestricted mode disables content filtering
+        # but a pasted API key / token must still not flow into the prompt
+        # or downstream logs verbatim.
+        sanitized = guardrails.redact_secrets(sanitized)
         return True, sanitized, 0.0, ["unrestricted_mode", *result.flags]
 
     # Normal validation
     result = input_guardrails.validate(user_input)
-    return result.is_valid, result.sanitized_input, result.risk_score, result.flags
+    sanitized_input = guardrails.redact_secrets(result.sanitized_input)
+    return result.is_valid, sanitized_input, result.risk_score, result.flags
 
 
 def validate_response_for_channel(response: str, channel_id: int) -> tuple[bool, str, list[str]]:

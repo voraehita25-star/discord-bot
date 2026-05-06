@@ -11,7 +11,6 @@ Sends alerts to a configured Discord webhook or channel when:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import time
@@ -23,11 +22,34 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
-ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))  # 5 min default
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Parse an int env var; fall back to default + log on garbage input.
+
+    Bare ``int(os.getenv(...))`` at module-import time crashes the entire
+    bot if a user has set ``ALERT_COOLDOWN_SECONDS=abc`` in .env.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r — using default %d", name, raw, default)
+        return default
+
+
+ALERT_COOLDOWN_SECONDS = _safe_int_env("ALERT_COOLDOWN_SECONDS", 300)  # 5 min default
 
 
 class AlertManager:
     """Manages sending alerts to Discord with cooldowns to prevent spam."""
+
+    # Cap on how many alert_type entries we track. Without this, dynamic
+    # alert types (e.g. ``circuit_breaker_<service>``, ``health_<svc>``)
+    # could grow the cooldown dict unboundedly across the bot's lifetime.
+    _MAX_TRACKED_ALERT_TYPES = 1000
 
     def __init__(self) -> None:
         self._last_alert_times: dict[str, float] = {}
@@ -35,6 +57,9 @@ class AlertManager:
         self._cooldown = ALERT_COOLDOWN_SECONDS
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
+        # Async lock guarding the cooldown map so two concurrent senders
+        # can't both pass the cooldown check (TOCTOU) and double-fire.
+        self._cooldown_lock = asyncio.Lock()
         self._alert_count = 0
 
     @property
@@ -53,16 +78,53 @@ class AlertManager:
                     pass
                 self._session = None
             if self._session is None:
-                self._session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=10)
-                )
+                self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
             return self._session
 
     def _can_send(self, alert_type: str) -> bool:
-        """Check if alert can be sent (respects cooldown)."""
+        """Check if alert can be sent (respects cooldown).
+
+        Sync read-only check kept for callers / tests that just want to
+        peek without committing the cooldown slot. Production sends use
+        ``_try_acquire_cooldown`` instead so the check + commit happen
+        atomically under the cooldown lock.
+        """
         now = time.time()
-        last_sent = self._last_alert_times.get(alert_type, 0)
+        last_sent = self._last_alert_times.get(alert_type, 0.0)
         return (now - last_sent) >= self._cooldown
+
+    async def _try_acquire_cooldown(self, alert_type: str) -> bool:
+        """Atomic check-and-update of the per-type cooldown timestamp.
+
+        Returns True if the alert is allowed to fire (and reserves the
+        slot). The previous split implementation read + wrote the dict
+        in two separate steps, so two concurrent callers could both
+        pass the check.
+        """
+        now = time.time()
+        async with self._cooldown_lock:
+            last_sent = self._last_alert_times.get(alert_type, 0.0)
+            if (now - last_sent) < self._cooldown:
+                return False
+            # Evict oldest entry if we're at the cap. This is best-effort —
+            # the next caller can always re-add an entry.
+            if (
+                len(self._last_alert_times) >= self._MAX_TRACKED_ALERT_TYPES
+                and alert_type not in self._last_alert_times
+            ):
+                # Defensive None-safe key: a future bug elsewhere could leave
+                # a key with a None value, and `min(... key=dict.get)` would
+                # raise TypeError comparing None to a float. Treat None as
+                # very-old so it gets evicted first instead of crashing.
+                oldest_key = min(
+                    self._last_alert_times,
+                    key=lambda k: (
+                        self._last_alert_times[k] if self._last_alert_times[k] is not None else 0.0
+                    ),
+                )
+                self._last_alert_times.pop(oldest_key, None)
+            self._last_alert_times[alert_type] = now
+            return True
 
     async def send_alert(
         self,
@@ -88,13 +150,15 @@ class AlertManager:
             logger.debug("Alert skipped (no webhook configured): %s", title)
             return False
 
-        if not self._can_send(alert_type):
+        # Atomic cooldown reservation — also commits the timestamp on
+        # success so we don't double-acquire below in the success branch.
+        if not await self._try_acquire_cooldown(alert_type):
             logger.debug("Alert skipped (cooldown): %s", title)
             return False
 
         color_map = {
-            "info": 0x3498DB,      # Blue
-            "warning": 0xF39C12,   # Orange
+            "info": 0x3498DB,  # Blue
+            "warning": 0xF39C12,  # Orange
             "critical": 0xE74C3C,  # Red
         }
         icon_map = {
@@ -112,8 +176,14 @@ class AlertManager:
         }
 
         if fields:
+            # Discord embed field limits: name ≤256, value ≤1024 chars.
+            # Truncate so a long value can't trip a 400 from the API.
             embed["fields"] = [
-                {"name": f["name"], "value": f["value"], "inline": f.get("inline", True)}
+                {
+                    "name": str(f["name"])[:256],
+                    "value": str(f["value"])[:1024],
+                    "inline": f.get("inline", True),
+                }
                 for f in fields
             ]
 
@@ -126,15 +196,19 @@ class AlertManager:
             session = await self._get_session()
             async with session.post(self._webhook_url, json=payload) as resp:
                 if resp.status in (200, 204):
-                    self._last_alert_times[alert_type] = time.time()
+                    # Cooldown timestamp was already set by
+                    # _try_acquire_cooldown above; just bump the counter.
                     self._alert_count += 1
                     logger.info("Alert sent: %s", title)
                     return True
                 else:
                     logger.warning("Alert failed (HTTP %d): %s", resp.status, title)
                     return False
-        except Exception as e:
-            logger.error("Failed to send alert: %s", e)
+        except Exception:
+            # Don't put `e` (repr of which may include the webhook URL on
+            # some aiohttp errors) into the log line — use exception() so
+            # the traceback goes through the secret-redaction filter.
+            logger.exception("Failed to send alert (title=%s)", title[:100])
             return False
 
     async def alert_circuit_breaker_open(self, breaker_name: str) -> bool:
@@ -142,7 +216,7 @@ class AlertManager:
         return await self.send_alert(
             title=f"Circuit Breaker OPEN: {breaker_name}",
             description=f"The `{breaker_name}` circuit breaker has tripped. "
-                        f"API calls are being blocked to prevent cascading failures.",
+            f"API calls are being blocked to prevent cascading failures.",
             alert_type=f"circuit_breaker_{breaker_name}",
             severity="critical",
         )
@@ -152,7 +226,7 @@ class AlertManager:
         return await self.send_alert(
             title="Memory Usage Warning",
             description=f"Memory usage is **{current_mb:.0f} MB** "
-                        f"(threshold: {threshold_mb:.0f} MB)",
+            f"(threshold: {threshold_mb:.0f} MB)",
             alert_type="memory_threshold",
             severity="warning",
             fields=[
@@ -166,7 +240,7 @@ class AlertManager:
         return await self.send_alert(
             title=f"Health Check Failed: {service}",
             description=f"Service `{service}` has failed {consecutive_failures} "
-                        f"consecutive health checks.",
+            f"consecutive health checks.",
             alert_type=f"health_{service}",
             severity="critical" if consecutive_failures >= 5 else "warning",
         )
@@ -187,28 +261,20 @@ class AlertManager:
         self._session = None
 
     def close_sync(self) -> None:
-        """Synchronous close for interpreter shutdown — prevents 'Unclosed session' warnings."""
-        session = self._session
+        """Best-effort sync close for interpreter shutdown.
+
+        Drops the session reference so the GC can collect it. We don't
+        try to manually close the underlying connector — older versions
+        of that code reached into ``session._connector._close()`` which
+        is private API that aiohttp 3.9+ removed. The "Unclosed session"
+        warning we used to fight is harmless during interpreter exit.
+        """
         self._session = None
 
-        try:
-            if session and not session.closed:
-                if session._connector is not None:
-                    # Use _close() (sync) instead of close() (async coroutine) to avoid
-                    # RuntimeWarning about unawaited coroutine during interpreter shutdown.
-                    if hasattr(session._connector, '_close'):
-                        close_result: Any = session._connector._close()
-                    else:
-                        close_result = session._connector.close()
-
-                    if inspect.isawaitable(close_result):
-                        closeable_result: Any = close_result
-                        closeable_result.close()
-        except Exception:
-            pass  # Best-effort cleanup during shutdown
-
-    def __del__(self) -> None:
-        self.close_sync()
+    # No __del__ — running async/private-API code during garbage
+    # collection is unreliable (GC ordering at shutdown is undefined,
+    # and exceptions in __del__ get printed to stderr without context).
+    # Callers should use ``await close()`` from an explicit shutdown path.
 
     @property
     def alert_count(self) -> int:

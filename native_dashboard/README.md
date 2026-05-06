@@ -2,20 +2,26 @@
 
 🎮 **Enhanced Edition** - Tauri-based native desktop dashboard for managing Discord Bot.
 
-## ✨ New Features (v2.0)
+## ✨ Features
 
 | Feature | Description |
 |---------|-------------|
-| 🔔 **Toast Notifications** | Beautiful animated notifications for all actions |
-| 📈 **Performance Charts** | Real-time memory & message count graphs |
-| 🌙 **Dark/Light Theme** | Toggle theme with localStorage persistence |
-| 🌸 **Sakura Animation** | Beautiful falling cherry blossom petals |
-| ⚡ **Performance Caching** | Smart caching reduces API calls by 50% |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send |
-| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude); Claude can run via SDK or `claude -p` subprocess (subscription) |
-| 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context |
-| 🧪 **Unit Tests** | 189 tests across 10 vitest files (app, chat-manager + 8 chat/ modules) |
-| 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars |
+| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). 1M-token context window active by default when using CLI backend. 200K chars/message cap (raised from 50K). |
+| 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
+| 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
+| ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |
+| 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context (separate from document memory). |
+| 🎨 **3D UI Polish** | Layered shadows, cursor-tracking card tilt, ripple on click, button press feedback, glassmorphism noise overlay, 3D sphere status dot, custom scrollbars, skeleton loaders, number count-up animations, chart entrance fade. |
+| 🌸 **Sakura Animation** | Cherry-blossom petals with mouse-parallax drift. Toggleable. |
+| 🔊 **Sound + Haptic** | Optional synth click + vibration on button press (off by default). |
+| 🌙 **Dark / Light Theme** | Toggle with localStorage persistence — pink/purple anime palette. |
+| 🔔 **Toast Notifications** | Animated slide-in for confirmations / errors. |
+| 📈 **Performance Charts** | Real-time memory & message count graphs. |
+| ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
+| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
+| 🧪 **Unit Tests** | 189 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
+| 🤖 **Headless E2E** | 63 Playwright tests in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots. Runs in CI on Chromium with python http.server + mocked Tauri IPC. |
+| 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
 ## 📦 Features
@@ -40,6 +46,33 @@
 | `Ctrl+R` | Refresh All Data |
 | `Ctrl+T` | Toggle Dark/Light Theme |
 | `Ctrl+Enter` | Send Message (in Chat) |
+| `Ctrl+S` | Save (inside file editor) |
+| `Ctrl+F` | In-chat search (inside chat view) |
+
+## 📎 File Attachments
+
+Drag + drop — or click the 📎 button in the input area — to attach up to
+**5 files per message, 32 MB each**:
+
+| Category | Formats |
+|----------|---------|
+| Images | PNG, JPEG, GIF, WebP (20 MB cap) |
+| Documents | PDF, DOCX |
+| Text + code | `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.xml`, `.log`, `.py`, `.js`, `.ts`, `.rs`, `.go`, `.java`, `.html`, `.css`, `.sh`, `.sql`, … |
+
+PDFs and DOCX are parsed via `pypdf` / `python-docx` on the bot side — the
+extracted text goes into `dashboard_document_memories` (SQLite), scoped to
+the conversation. On every subsequent AI turn it's auto-injected into the
+system prompt so you don't need to re-upload the same character sheets.
+
+Click the **📎 (count)** button in the chat header to see every file attached
+to the current conversation. Per-row **Edit** opens a roomy editor (filename
++ extracted text) and **Delete** removes the file from memory.
+
+> Tauri's native drag-drop is disabled in `tauri.conf.json` (`dragDropEnabled: false`)
+> so browser `dataTransfer.files` works normally inside WebView2. Without this
+> flip, the OS would intercept file drops and hand the JS layer empty file
+> arrays.
 
 ## 🏗️ Tech Stack
 
@@ -47,7 +80,8 @@
 |-----------|------------|
 | Backend | Rust + Tauri v2 |
 | Frontend | HTML + CSS + **TypeScript** |
-| Testing | Vitest + jsdom |
+| Unit tests | Vitest + jsdom |
+| Headless E2E | Playwright (Chromium) + axe-core (a11y) + visual-regression screenshots |
 | Database | SQLite (rusqlite) |
 | Process Control | sysinfo, std::process |
 
@@ -55,10 +89,11 @@
 
 | Metric | Value |
 |--------|-------|
-| Executable Size | ~17 MB (release build) |
+| Executable Size | ~17.5 MB (release build) |
 | Memory Usage | ~30 MB idle |
 | Startup Time | < 1 second |
-| API Call Reduction | 50% (with caching) |
+| API Call Reduction | ~50% (with LRU caching) |
+| Per-message ceiling | 200,000 chars (text) + 5 files × 32 MB (attachments) |
 
 ## 📁 Project Structure
 
@@ -69,34 +104,44 @@ native_dashboard/
 ├── build.rs                # Build script
 ├── package.json            # npm dependencies (v2.0.0)
 ├── tsconfig.json           # TypeScript config
-├── vitest.config.ts        # Test configuration
+├── vitest.config.ts        # Vitest (unit) configuration
+├── playwright.config.ts    # Playwright (headless e2e) configuration
 ├── src/
 │   ├── main.rs             # App entry + Tauri commands
 │   ├── lib.rs              # Module exports
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings (~1.75k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~2.08k lines, down from 3.2k after 2026-04 split)
-│   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts)
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~1.8k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~2.2k lines) — chat + file memory modal + editor
+│   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
 │   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (22 tests)
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
-│       ├── types.ts            # Shared chat TypeScript interfaces
-│       ├── ws-client.ts        # WebSocket client + ping/pong + reconnect
-│       ├── formatter.ts        # Markdown + LaTeX + code-fence renderer
-│       ├── message-template.ts # Message HTML + tail-window virtualization
-│       ├── context-window.ts   # Token-usage bar (LRU-capped per-conv cache)
-│       ├── conversation-list.ts # Sidebar render + filter (RENDER_CAP=200) + tag chips
+│       ├── types.ts              # Shared chat TypeScript interfaces
+│       ├── ws-client.ts          # WebSocket client + ping/pong + reconnect
+│       ├── formatter.ts          # Markdown + LaTeX + code-fence renderer
+│       ├── message-template.ts   # Message HTML + tail-window virtualization
+│       ├── context-window.ts     # Token-usage bar (LRU-capped per-conv cache)
+│       ├── conversation-list.ts  # Sidebar render + filter (RENDER_CAP=200) + tag chips
 │       ├── conversation-modals.ts # Rename + delete-confirm modals
-│       ├── search.ts           # In-chat search + match wrap/step cycle
-│       ├── prism.ts            # Prism.js lazy language loader
-│       ├── image-attach.ts     # Image attachment + drag-drop + paste
-│       ├── export-picker.ts    # Export format picker UI
-│       └── *.test.ts           # 8 vitest files (167 tests total)
+│       ├── search.ts             # In-chat search + match wrap/step cycle
+│       ├── prism.ts              # Prism.js lazy language loader
+│       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
+│       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
+│       ├── export-picker.ts      # Export format picker UI
+│       └── *.test.ts             # 7 vitest files (128 tests total)
+├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
+│   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
+│   ├── dashboard-smoke.spec.ts   # 18 smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
+│   ├── interactions.spec.ts      # 16 user-flow tests (clicks, typing, keyboard nav)
+│   ├── a11y.spec.ts              # 4 axe-core audits — zero critical/serious WCAG 2.1 AA violations
+│   ├── visual-regression.spec.ts # 8 visual tests producing 9 screenshot baselines (chromium-win32, <0.5% pixel diff)
+│   ├── visual-regression.spec.ts-snapshots/  # Baseline PNGs (checked into git)
+│   └── screenshots.spec.ts       # 13 capture targets for manual inspection
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer
@@ -128,8 +173,11 @@ native_dashboard/
 ```bash
 cd native_dashboard
 npm install          # First time only
-npm run build        # Compile TypeScript
-npm test             # Run unit tests
+npm run build        # Compile TypeScript (tsc → ui/)
+npm run watch        # Continuous TS recompile (alternative to one-shot build)
+npm test             # Run vitest unit tests
+npm run dev          # Shortcut: npm run build && cargo tauri dev
+# or run cargo tauri dev manually after npm run build:
 cargo tauri dev
 ```
 
@@ -169,16 +217,30 @@ python scripts/create_desktop_shortcut.py
 ### Testing
 
 ```bash
-npm test             # Run tests once
-npm run test:watch   # Watch mode
-npm run test:coverage # With coverage report
+# Unit tests (vitest, ~5s)
+npm test                       # Run all 189 vitest tests
+npm run test:watch             # Watch mode
+npm run test:coverage          # With coverage report
+
+# Headless e2e (Playwright + Chromium, ~30s)
+npm run test:e2e               # Run all 63 Playwright tests (smoke + interactions + a11y + visual)
+npm run test:e2e:ui            # Interactive UI mode for debugging
+npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
+npm run test:e2e:screenshots   # Capture screenshots for manual inspection
 ```
+
+> Playwright spawns `python -m http.server` against `ui/` and installs a Tauri-IPC shim
+> (`tests-e2e/_fixtures/mock-tauri.ts`) so the static dashboard runs in pure Chromium —
+> no Tauri runtime required. Visual baselines live in
+> `tests-e2e/visual-regression.spec.ts-snapshots/` and are checked into git.
 
 ### Output Files
 
 ```
-target/release/디스코드 봇 대시보드.exe           # Main executable
-target/release/bundle/nsis/디스코드 봇 대시보드_1.0.0_x64-setup.exe  # Installer
+target/release/bot-dashboard.exe                  # Source binary (Cargo output)
+target/release/Discord Bot Dashboard.exe          # English alias (copy)
+target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
+target/release/bundle/nsis/디스코드 봇 대시보드_2.0.0_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI

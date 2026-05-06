@@ -131,6 +131,7 @@ class TestSpotifyHandlerMethods:
 # Merged from test_spotify_handler_extended.py
 # ======================================================================
 
+
 class TestSpotifyHandlerInit:
     """Tests for SpotifyHandler initialization."""
 
@@ -144,7 +145,7 @@ class TestSpotifyHandlerInit:
 
         mock_bot = MagicMock()
 
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         assert handler.bot == mock_bot
@@ -184,7 +185,7 @@ class TestIsAvailable:
 
         mock_bot = MagicMock()
 
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         assert handler.is_available() is False
@@ -199,7 +200,7 @@ class TestIsAvailable:
 
         mock_bot = MagicMock()
 
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
             handler.sp = MagicMock()  # Manually set client
 
@@ -219,7 +220,7 @@ class TestProcessSpotifyUrl:
             return None
 
         mock_bot = MagicMock()
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
         return handler
 
@@ -232,9 +233,7 @@ class TestProcessSpotifyUrl:
         mock_ctx = MagicMock()
         queue = []
 
-        result = await spotify_handler.process_spotify_url(
-            mock_ctx, "spotify:track:123", queue
-        )
+        result = await spotify_handler.process_spotify_url(mock_ctx, "spotify:track:123", queue)
 
         assert result is False
 
@@ -270,7 +269,7 @@ class TestHandleTrack:
             return
 
         mock_bot = MagicMock()
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
         handler.sp = MagicMock()
 
@@ -280,9 +279,7 @@ class TestHandleTrack:
 
         handler._api_call_with_retry = AsyncMock(return_value=None)
 
-        result = await handler._handle_track(
-            mock_ctx, "https://open.spotify.com/track/123", queue
-        )
+        result = await handler._handle_track(mock_ctx, "https://open.spotify.com/track/123", queue)
 
         assert result is False
 
@@ -300,7 +297,7 @@ class TestSetupClient:
 
         mock_bot = MagicMock()
 
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         assert handler.sp is None
@@ -315,7 +312,7 @@ class TestSetupClient:
 
         mock_bot = MagicMock()
 
-        with patch.dict('os.environ', {'SPOTIPY_CLIENT_ID': 'test_id'}, clear=True):
+        with patch.dict("os.environ", {"SPOTIPY_CLIENT_ID": "test_id"}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         assert handler.sp is None
@@ -335,12 +332,12 @@ class TestApiCallWithRetry:
         mock_bot = MagicMock()
         mock_bot.loop = asyncio.new_event_loop()
 
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         mock_func = MagicMock(return_value={"name": "Test Track"})
 
-        with patch.object(handler.bot.loop, 'run_in_executor', new_callable=AsyncMock) as mock_exec:
+        with patch.object(handler.bot.loop, "run_in_executor", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = {"name": "Test Track"}
             result = await handler._api_call_with_retry(mock_func, "arg1")
 
@@ -388,6 +385,7 @@ class TestModuleImports:
 class TestModuleDocstring:
     """Tests for module documentation."""
 
+
 class TestSpotifyHandlerConstants:
     """Tests for SpotifyHandler class constants."""
 
@@ -399,7 +397,7 @@ class TestSpotifyHandlerConstants:
             pytest.skip("spotify_handler not available")
             return
 
-        assert hasattr(SpotifyHandler, 'MAX_RETRIES')
+        assert hasattr(SpotifyHandler, "MAX_RETRIES")
         assert isinstance(SpotifyHandler.MAX_RETRIES, int)
 
     def test_class_has_retry_delay(self):
@@ -410,5 +408,5 @@ class TestSpotifyHandlerConstants:
             pytest.skip("spotify_handler not available")
             return
 
-        assert hasattr(SpotifyHandler, 'RETRY_DELAY')
+        assert hasattr(SpotifyHandler, "RETRY_DELAY")
         assert isinstance(SpotifyHandler.RETRY_DELAY, int)

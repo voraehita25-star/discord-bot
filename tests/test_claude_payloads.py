@@ -22,19 +22,21 @@ def test_build_single_user_text_messages_returns_message_param_shape():
 def test_convert_to_claude_messages_replaces_unsupported_inline_media_with_notice():
     from cogs.ai_core.api.api_handler import convert_to_claude_messages
 
-    result = convert_to_claude_messages([
-        {
-            "role": "user",
-            "parts": [
-                {
-                    "inline_data": {
-                        "mime_type": "video/mp4",
-                        "data": "YWJj",
+    result = convert_to_claude_messages(
+        [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": "video/mp4",
+                            "data": "YWJj",
+                        }
                     }
-                }
-            ],
-        }
-    ])
+                ],
+            }
+        ]
+    )
 
     assert result == [
         {

@@ -10,7 +10,6 @@ import collections
 import contextlib
 import json
 import logging
-logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,8 @@ except ImportError:
     DB_AVAILABLE = False
     db = None  # type: ignore[assignment]
 
+
+logger = logging.getLogger(__name__)
 
 # Maximum queue size to prevent memory issues
 MAX_QUEUE_SIZE = 500
@@ -140,19 +141,24 @@ class QueueManager:
 
     async def save_queue(self, guild_id: int) -> None:
         """Save queue to database for persistence."""
+        # Snapshot under the lock so a concurrent `add_to_queue` can't
+        # mutate the deque mid-iteration, then release the lock BEFORE
+        # the slow I/O call. Holding the lock across `db.save_music_queue`
+        # serialises queue mutations behind disk/network I/O and stalls
+        # playback callbacks.
         async with self._get_lock(guild_id):
-            queue: collections.deque[dict[str, Any]] | list[Any] = self.queues.get(guild_id, [])
+            queue_snapshot = list(self.queues.get(guild_id, []))
 
-            if not DB_AVAILABLE or db is None:
-                await asyncio.to_thread(self._save_queue_json, guild_id)
-                return
+        if not DB_AVAILABLE or db is None:
+            await asyncio.to_thread(self._save_queue_json, guild_id)
+            return
 
-            if not queue:
-                await db.clear_music_queue(guild_id)
-                return
+        if not queue_snapshot:
+            await db.clear_music_queue(guild_id)
+            return
 
-            await db.save_music_queue(guild_id, list(queue))
-            logger.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue))
+        await db.save_music_queue(guild_id, queue_snapshot)
+        logger.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue_snapshot))
 
     def _save_queue_json(self, guild_id: int) -> None:
         """Legacy JSON save as fallback with atomic write pattern."""
@@ -172,6 +178,11 @@ class QueueManager:
             "mode_247": self.mode_247.get(guild_id, False),
         }
 
+        # Ensure data/ exists. On a fresh install the directory may not
+        # have been created yet, and write_text would raise FileNotFoundError.
+        with contextlib.suppress(OSError):
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+
         # Define temp_path before try block to ensure it's always bound
         temp_path = filepath.with_suffix(".tmp")
         try:
@@ -186,41 +197,106 @@ class QueueManager:
 
     async def load_queue(self, guild_id: int) -> bool:
         """Load queue from database. Returns True if loaded."""
-        if DB_AVAILABLE and db is not None:
-            queue = await db.load_music_queue(guild_id)
-            if queue:
-                self.queues[guild_id] = collections.deque(queue)
-                logger.info("📂 Loaded queue (%d tracks) from database", len(queue))
-                return True
+        # Hold the per-guild lock for the entire load so a concurrent
+        # save_queue can't race with us and partially overwrite. Without
+        # this, a save scheduled mid-load could land between the DB fetch
+        # and the deque assignment and torpedo state.
+        async with self._get_lock(guild_id):
+            if DB_AVAILABLE and db is not None:
+                queue = await db.load_music_queue(guild_id)
+                if queue:
+                    # Reject malformed entries — a row with no url / falsy url
+                    # would be stored unchanged and then crash play_next().
+                    valid = [item for item in queue if isinstance(item, dict) and item.get("url")]
+                    self.queues[guild_id] = collections.deque(valid)
+                    # The DB schema only stores the queue itself, not
+                    # per-guild volume/loop/24-7 settings. If a leftover
+                    # JSON sidecar exists (from before migration or set by
+                    # the JSON-only fallback path), pick those settings up
+                    # so they aren't silently reset to defaults each restart.
+                    settings_path = Path(f"data/queue_{guild_id}.json")
+                    if await asyncio.to_thread(settings_path.exists):
+                        try:
+                            content = await asyncio.to_thread(
+                                settings_path.read_text, encoding="utf-8"
+                            )
+                            settings_data = json.loads(content)
+                            if isinstance(settings_data, dict):
+                                self.volumes[guild_id] = float(settings_data.get("volume", 0.5))
+                                self.loops[guild_id] = bool(settings_data.get("loop", False))
+                                self.mode_247[guild_id] = bool(settings_data.get("mode_247", False))
+                        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                            logger.debug(
+                                "Settings sidecar unreadable for guild %s — using defaults",
+                                guild_id,
+                            )
+                    logger.info(
+                        "📂 Loaded queue (%d tracks, %d valid) from database",
+                        len(queue),
+                        len(valid),
+                    )
+                    return True
 
-        # Fallback to JSON
-        filepath = Path(f"data/queue_{guild_id}.json")
-        if not await asyncio.to_thread(filepath.exists):
-            return False
-
-        try:
-            # Use asyncio.to_thread to avoid blocking the event loop
-            content = await asyncio.to_thread(filepath.read_text, encoding="utf-8")
-            data = json.loads(content)
-            # Validate expected JSON structure
-            if not isinstance(data, dict) or not isinstance(data.get("queue"), list):
-                logger.warning("Invalid queue file format for guild %s — skipping", guild_id)
+            # Fallback to JSON
+            filepath = Path(f"data/queue_{guild_id}.json")
+            if not await asyncio.to_thread(filepath.exists):
                 return False
-            queue = data["queue"]
-            if queue:
-                # Validate each queue item is a dict with required fields
-                valid_items = [item for item in queue[:500] if isinstance(item, dict) and "url" in item]
-                self.queues[guild_id] = collections.deque(valid_items)  # Enforce max size
-                self.volumes[guild_id] = float(data.get("volume", 0.5))
-                self.loops[guild_id] = bool(data.get("loop", False))
-                self.mode_247[guild_id] = bool(data.get("mode_247", False))
-                logger.info("📂 Loaded queue (%d tracks) from JSON", len(queue))
-                await asyncio.to_thread(filepath.unlink)  # Migrate to DB
-                return True
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            logger.exception("Failed to load queue")
 
-        return False
+            try:
+                # Use asyncio.to_thread to avoid blocking the event loop
+                content = await asyncio.to_thread(filepath.read_text, encoding="utf-8")
+                data = json.loads(content)
+                # Validate expected JSON structure
+                if not isinstance(data, dict) or not isinstance(data.get("queue"), list):
+                    logger.warning("Invalid queue file format for guild %s — skipping", guild_id)
+                    return False
+                queue = data["queue"]
+                if queue:
+                    # Validate each queue item is a dict with non-empty URL.
+                    # Previously empty/None URLs were accepted because the
+                    # check only required the key to exist.
+                    valid_items = [
+                        item for item in queue[:500] if isinstance(item, dict) and item.get("url")
+                    ]
+                    if not valid_items:
+                        # Nothing to migrate — leave the JSON file alone so a
+                        # future bug fix can recover whatever was in there.
+                        return False
+                    self.queues[guild_id] = collections.deque(valid_items)  # Enforce max size
+                    self.volumes[guild_id] = float(data.get("volume", 0.5))
+                    self.loops[guild_id] = bool(data.get("loop", False))
+                    self.mode_247[guild_id] = bool(data.get("mode_247", False))
+                    logger.info("📂 Loaded queue (%d tracks) from JSON", len(valid_items))
+                    # Only delete the JSON migration file AFTER confirming
+                    # the new state was persisted to DB — a crash between
+                    # populating self.queues and deleting the file would
+                    # otherwise lose the queue silently.
+                    if DB_AVAILABLE and db is not None:
+                        try:
+                            await db.save_music_queue(guild_id, valid_items)
+                        except Exception:
+                            logger.exception(
+                                "Failed to migrate JSON queue to DB for guild %s; "
+                                "keeping JSON file as fallback",
+                                guild_id,
+                            )
+                            return True
+                        # DB save succeeded — safe to remove JSON.
+                        await asyncio.to_thread(filepath.unlink)
+                        return True
+                    # No DB available — keep the JSON file as the only
+                    # persistence layer rather than deleting it. Otherwise
+                    # the queue is held only in memory and is lost on the
+                    # next restart.
+                    logger.info(
+                        "📂 Keeping JSON queue file for guild %s (no DB available)",
+                        guild_id,
+                    )
+                    return True
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                logger.exception("Failed to load queue")
+
+            return False
 
 
 # Global queue manager instance

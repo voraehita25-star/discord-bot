@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -225,6 +228,39 @@ var allowedLabelValues = map[string]map[string]bool{
 	"service":  {"gemini": true, "spotify": true, "database": true, "health": true, "url_fetcher": true},
 }
 
+// requireBearerToken builds an HTTP middleware that requires
+// `Authorization: Bearer <token>` on every request. If `expected` is empty
+// it fails CLOSED — every write is rejected. That's deliberate: a default
+// of "skip auth when no token is configured" would mean a fresh deploy
+// that forgot to set HEALTH_API_TOKEN silently runs with no auth at all,
+// and an attacker who can reach the bind address can poison every metric.
+// Use constant-time comparison to avoid token-length / prefix timing leaks.
+func requireBearerToken(expected string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if expected == "" {
+				http.Error(w, "service refuses writes: HEALTH_API_TOKEN not configured", http.StatusServiceUnavailable)
+				return
+			}
+			authHdr := r.Header.Get("Authorization")
+			const prefix = "Bearer "
+			if !strings.HasPrefix(authHdr, prefix) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="health_api"`)
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			provided := strings.TrimSpace(authHdr[len(prefix):])
+			// subtle.ConstantTimeCompare requires equal-length inputs to be
+			// useful — guard the length first, then compare bytes.
+			if len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+				http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // safeLabel returns value only if it's in the allowed set for that label key,
 // otherwise returns "other".
 func safeLabel(key, value string) string {
@@ -263,6 +299,14 @@ func main() {
 		version = "dev"
 	}
 
+	// Bearer token for write endpoints. Empty = writes are rejected entirely.
+	// Read once at startup so a later env mutation can't sneak in a weaker
+	// value while the server is running.
+	authToken := os.Getenv("HEALTH_API_TOKEN")
+	if authToken == "" {
+		log.Println("WARNING: HEALTH_API_TOKEN not set — write endpoints (/health/service, /metrics/push, /metrics/batch) will refuse all requests")
+	}
+
 	healthService := NewHealthService(version)
 
 	// Initialize default services
@@ -275,7 +319,11 @@ func main() {
 	// Middleware
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+	// NOTE: chi's middleware.Timeout only signals via the request context — it
+	// does NOT interrupt handlers that ignore ctx, and can cause a
+	// "superfluous response.WriteHeader" race if a slow handler eventually
+	// writes after the timeout fires. We rely on http.Server.WriteTimeout
+	// (configured below) to bound per-request time instead.
 	// Security headers
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +374,12 @@ func main() {
 		}
 	})
 
+	// All write endpoints below require a bearer token. We wrap them in a
+	// Group so the middleware applies to every Post() but does NOT touch
+	// the read-only /health, /metrics, /stats handlers above.
+	r.Group(func(r chi.Router) {
+		r.Use(requireBearerToken(authToken))
+
 	// Update service status (called from Python)
 	r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
 		// Limit request body size
@@ -373,9 +427,12 @@ func main() {
 
 		switch payload.Type {
 		case "counter":
-			// Prometheus Counter.Add() panics on negative values
-			if payload.Value < 0 {
-				http.Error(w, "counter value must be non-negative", http.StatusBadRequest)
+			// Prometheus Counter.Add() panics on negative values, and NaN/Inf
+			// will silently corrupt the metric (any subsequent Add becomes
+			// NaN-poisoned). Reject all three up-front. Note: `value < 0`
+			// is `false` for NaN, so we have to check NaN/Inf explicitly.
+			if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) || payload.Value < 0 {
+				http.Error(w, "counter value must be non-negative finite", http.StatusBadRequest)
 				return
 			}
 			switch payload.Name {
@@ -446,8 +503,10 @@ func main() {
 			}
 			switch p.Type {
 			case "counter":
-				// Skip negative counter values to prevent Prometheus panic
-				if p.Value < 0 {
+				// Skip negative / NaN / Inf — Counter.Add panics on negative
+				// and is silently poisoned by NaN/Inf (`p.Value < 0` is
+				// false for NaN so the explicit checks are required).
+				if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
 					continue
 				}
 				switch p.Name {
@@ -499,6 +558,7 @@ func main() {
 			log.Printf("Failed to encode batch response: %v", err)
 		}
 	})
+	}) // end auth-protected Group
 
 	// Stats summary
 	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
@@ -550,13 +610,16 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("Health API server shutdown error: %v", err)
+		}
 	}()
 
 	log.Printf("Health API service starting on %s:%s", bindHost, port)
 	log.Printf("Metrics available at http://%s:%s/metrics", bindHost, port)
 
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+	// Use errors.Is for forward-compatible comparison.
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server error: %v", err)
 	}
 }

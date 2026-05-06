@@ -79,7 +79,9 @@ def discover_migrations() -> list[tuple[int, Path]]:
             continue
         # Prefer .sqlite.sql over .sql when both exist for the same version.
         existing = seen_versions.get(version)
-        if existing is None or (f.name.endswith(".sqlite.sql") and not existing.name.endswith(".sqlite.sql")):
+        if existing is None or (
+            f.name.endswith(".sqlite.sql") and not existing.name.endswith(".sqlite.sql")
+        ):
             seen_versions[version] = f
 
     return sorted(seen_versions.items(), key=lambda x: x[0])
@@ -113,10 +115,65 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
 
             statements: list[str] = []
             current: list[str] = []
+            in_block_comment = False
             for line in sql.splitlines():
+                # Strip comments before passing to ``sqlite3.complete_statement``
+                # — that builtin doesn't ignore `--` line comments or
+                # `/* ... */` block comments containing semicolons, so a
+                # comment with a `;` would split a statement prematurely.
+                stripped_line = line
+                if in_block_comment:
+                    end = stripped_line.find("*/")
+                    if end == -1:
+                        current.append(line)
+                        continue
+                    stripped_line = stripped_line[end + 2 :]
+                    in_block_comment = False
+                # Single-line comment
+                comment_pos = stripped_line.find("--")
+                if comment_pos != -1:
+                    stripped_line = stripped_line[:comment_pos]
+                # Block comment opening
+                start = stripped_line.find("/*")
+                if start != -1:
+                    rest = stripped_line[start:]
+                    end = rest.find("*/")
+                    if end == -1:
+                        in_block_comment = True
+                        stripped_line = stripped_line[:start]
+                    else:
+                        stripped_line = stripped_line[:start] + stripped_line[start + end + 2 :]
+
                 current.append(line)
                 candidate = "\n".join(current).strip()
-                if candidate and sqlite3.complete_statement(candidate):
+                # Use the comment-stripped accumulated text for the
+                # complete_statement check, but preserve the original lines
+                # in `current` so executed SQL keeps its formatting.
+                check_lines: list[str] = []
+                local_in_block = False
+                for ln in current:
+                    s = ln
+                    if local_in_block:
+                        e = s.find("*/")
+                        if e == -1:
+                            continue
+                        s = s[e + 2 :]
+                        local_in_block = False
+                    cp = s.find("--")
+                    if cp != -1:
+                        s = s[:cp]
+                    bs = s.find("/*")
+                    if bs != -1:
+                        rest_s = s[bs:]
+                        be = rest_s.find("*/")
+                        if be == -1:
+                            local_in_block = True
+                            s = s[:bs]
+                        else:
+                            s = s[:bs] + s[bs + be + 2 :]
+                    check_lines.append(s)
+                check_candidate = "\n".join(check_lines).strip()
+                if check_candidate and sqlite3.complete_statement(check_candidate):
                     statements.append(candidate)
                     current = []
 

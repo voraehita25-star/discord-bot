@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests for cogs/ai_core/session_mixin.py
 
 Comprehensive tests for SessionMixin class.
@@ -62,8 +62,12 @@ class TestGetChatSession:
 
         instance = TestClass()
 
-        with patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock) as mock_load_history:
-            with patch("cogs.ai_core.session_mixin.load_metadata", new_callable=AsyncMock) as mock_load_metadata:
+        with patch(
+            "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock
+        ) as mock_load_history:
+            with patch(
+                "cogs.ai_core.session_mixin.load_metadata", new_callable=AsyncMock
+            ) as mock_load_metadata:
                 mock_load_history.return_value = []
                 mock_load_metadata.return_value = {"thinking_enabled": True}
 

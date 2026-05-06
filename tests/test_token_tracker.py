@@ -3,8 +3,6 @@ Tests for utils.monitoring.token_tracker module.
 """
 
 
-
-
 class TestTokenUsageDataclass:
     """Tests for TokenUsage dataclass."""
 
@@ -78,11 +76,7 @@ class TestUserTokenStats:
         """Test total_tokens property."""
         from utils.monitoring.token_tracker import UserTokenStats
 
-        stats = UserTokenStats(
-            user_id=123,
-            total_input=500,
-            total_output=200
-        )
+        stats = UserTokenStats(user_id=123, total_input=500, total_output=200)
 
         assert stats.total_tokens == 700
 
@@ -98,12 +92,7 @@ class TestUserTokenStats:
         """Test average_per_request with requests."""
         from utils.monitoring.token_tracker import UserTokenStats
 
-        stats = UserTokenStats(
-            user_id=123,
-            total_input=500,
-            total_output=200,
-            total_requests=7
-        )
+        stats = UserTokenStats(user_id=123, total_input=500, total_output=200, total_requests=7)
 
         assert stats.average_per_request == 100
 
@@ -164,12 +153,7 @@ class TestTokenTrackerRecord:
         from utils.monitoring.token_tracker import TokenTracker
 
         tracker = TokenTracker()
-        tracker.record(
-            user_id=123,
-            input_tokens=100,
-            output_tokens=50,
-            channel_id=456
-        )
+        tracker.record(user_id=123, input_tokens=100, output_tokens=50, channel_id=456)
 
         assert 456 in tracker._channel_usage
 
@@ -232,7 +216,7 @@ class TestTokenTrackerGetTopUsers:
 
         tracker = TokenTracker()
         for i in range(10):
-            tracker.record(user_id=i, input_tokens=100*i, output_tokens=50*i)
+            tracker.record(user_id=i, input_tokens=100 * i, output_tokens=50 * i)
 
         top_users = tracker.get_top_users(limit=3)
 

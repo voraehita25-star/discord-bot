@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+
 logger = logging.getLogger(__name__)
+
 import re
 import threading
 import time
@@ -22,6 +24,7 @@ from google import genai
 
 try:
     from utils.database import db
+
     _DB_AVAILABLE = True
 except ImportError:
     db = None  # type: ignore[assignment]
@@ -32,8 +35,11 @@ from datetime import timezone
 
 from ..data.constants import GEMINI_API_KEY
 
-# Index persistence path
-FAISS_INDEX_DIR = Path("data/faiss")
+# Index persistence path. Anchor to the project root so the bot can be
+# started from any cwd (systemd, scheduled task, IDE) without spawning a
+# fresh empty FAISS index every restart and burning embedding API quota.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+FAISS_INDEX_DIR = _PROJECT_ROOT / "data" / "faiss"
 FAISS_INDEX_FILE = FAISS_INDEX_DIR / "index.bin"
 FAISS_ID_MAP_FILE = FAISS_INDEX_DIR / "id_map.npy"
 
@@ -54,6 +60,7 @@ except ImportError:
     FAISS_AVAILABLE = False
     logger.info("ℹ️ FAISS not installed - using linear scan fallback")
 
+
 # Embedding Model
 EMBEDDING_MODEL = "models/text-embedding-004"
 EMBEDDING_DIM = 768  # text-embedding-004 produces 768-dim vectors
@@ -63,6 +70,10 @@ TIME_DECAY_HALF_LIFE_DAYS = 30  # Memories lose half importance after 30 days
 
 # Database query timeout (seconds) to prevent indefinite blocking
 _DB_QUERY_TIMEOUT = 30
+
+# Cap on how many RAG rows we will rebuild the FAISS index from in one pass.
+# Prevents loading a multi-million-row table fully into RAM during rebuild.
+MAX_RAG_REBUILD = 100_000
 
 # Linear search similarity thresholds
 LINEAR_SEARCH_MIN_SIMILARITY = 0.5  # Minimum similarity to include in results
@@ -165,8 +176,13 @@ class FAISSIndex:
             if not self._initialized or self.index is None:
                 return []
 
-            # Search
+            # Search — guard against k=0 (FAISS may raise on empty queries)
+            # and against an empty index.
+            if self.index.ntotal == 0:
+                return []
             k = min(k, self.index.ntotal)
+            if k <= 0:
+                return []
             similarities, indices = self.index.search(query_normalized, k)
 
             # Map indices back to memory IDs
@@ -188,23 +204,27 @@ class FAISSIndex:
 
     def add_single(self, vector: np.ndarray, memory_id: int) -> None:
         """Add a single vector to the index."""
+        # Validate dimension up front so a wrong-shape vector raises a clear
+        # error instead of producing an opaque FAISS native crash later.
+        if vector.size != self.dimension:
+            raise ValueError(f"add_single: vector dim {vector.size} != index dim {self.dimension}")
+        # Reject zero-norm vectors loudly. Silently skipping them used to
+        # leave the DB row in place with no matching FAISS entry, which made
+        # the memory unfindable on any future search.
+        norm = np.linalg.norm(vector)
+        if norm == 0:
+            raise ValueError(f"add_single: cannot add zero-norm vector for memory_id={memory_id}")
         with self._lock:
+            normalized = (vector / norm).reshape(1, -1).astype(np.float32)
             if not self._initialized:
                 # First vector - initialize index
-                norm = np.linalg.norm(vector)
-                if norm > 0:
-                    normalized = (vector / norm).reshape(1, -1).astype(np.float32)
-                    self.index = faiss.IndexFlatIP(self.dimension)
-                    self.index.add(normalized)
-                    self.id_map = [memory_id]
-                    self._initialized = True
+                self.index = faiss.IndexFlatIP(self.dimension)
+                self.index.add(normalized)
+                self.id_map = [memory_id]
+                self._initialized = True
             else:
-                # Add to existing index
-                norm = np.linalg.norm(vector)
-                if norm > 0:
-                    normalized = (vector / norm).reshape(1, -1).astype(np.float32)
-                    self.index.add(normalized)  # type: ignore[union-attr]
-                    self.id_map.append(memory_id)
+                self.index.add(normalized)  # type: ignore[union-attr]
+                self.id_map.append(memory_id)
 
     def save_to_disk(self) -> bool:
         """Save FAISS index to disk for persistence.
@@ -345,7 +365,9 @@ class MemorySystem:
         evict_count = max(1, self.MAX_CACHE_SIZE // 10)
         # Snapshot keys to avoid RuntimeError from concurrent modification
         snapshot = list(self._memories_cache.items())
-        snapshot.sort(key=lambda pair: pair[1].get("created_at", 0))
+        # Coerce created_at to str so a mix of str (ISO timestamps) and int
+        # (legacy epoch values) doesn't raise TypeError on comparison.
+        snapshot.sort(key=lambda pair: str(pair[1].get("created_at") or ""))
         for mem_id, _ in snapshot[:evict_count]:
             self._memories_cache.pop(mem_id, None)
         logger.debug("🗑️ Evicted %d old entries from RAG cache", evict_count)
@@ -364,15 +386,39 @@ class MemorySystem:
         """Generate vector embedding for text using Gemini API."""
         if not self.client:
             return None
+        # Skip empty / whitespace-only payloads — they always yield a useless
+        # near-zero vector but still cost an API call against the embedding
+        # quota. Cheap guard up front saves quota on long-tail noisy inputs.
+        if not text or not text.strip():
+            return None
 
         try:
             result = await self.client.aio.models.embed_content(
                 model=EMBEDDING_MODEL, contents=text
             )
 
-            if result.embeddings:
-                return np.array(result.embeddings[0].values, dtype=np.float32)
-            return None
+            # Validate the embedding shape before indexing — the API may
+            # return an empty list, an embedding object with no .values,
+            # or a vector whose length differs from EMBEDDING_DIM (model
+            # change, partial response). Any of those used to either
+            # IndexError or silently corrupt the FAISS index.
+            embeddings = getattr(result, "embeddings", None)
+            if not embeddings:
+                logger.warning("Embedding API returned no embeddings")
+                return None
+            values = getattr(embeddings[0], "values", None)
+            if not values:
+                return None
+            vec = np.array(values, dtype=np.float32)
+            if vec.size != EMBEDDING_DIM:
+                logger.warning(
+                    "Embedding dim mismatch: expected %d, got %d (model %s)",
+                    EMBEDDING_DIM,
+                    vec.size,
+                    EMBEDDING_MODEL,
+                )
+                return None
+            return vec
         except Exception:
             logger.exception("Embedding generation failed")
             return None
@@ -383,29 +429,63 @@ class MemorySystem:
         """
         Generate embeddings for multiple texts in batches.
         More efficient than generating one at a time.
+
+        Each batch is capped to ``batch_size`` concurrent in-flight requests
+        via a semaphore so a caller passing batch_size=1000 can't fan out
+        1000 simultaneous API calls and trigger 429s / IP bans.
         """
         if not self.client or not texts:
             return [None] * len(texts)
 
         results: list[np.ndarray | None] = []
+        # Hard ceiling on concurrency regardless of batch_size — Gemini's
+        # default rate limits get unhappy past ~30 concurrent calls.
+        concurrency_limit = min(max(1, batch_size), 16)
+        sem = asyncio.Semaphore(concurrency_limit)
+
+        async def _embed_one(text: str):
+            async with sem:
+                return await self.client.aio.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=text,
+                )
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
+            # Pre-filter empty/whitespace entries — they always yield useless
+            # near-zero vectors but still cost an API call. Single-text guard
+            # in generate_embedding() does the same; mirror it here so batch
+            # callers don't burn quota on noise.
+            send_indices = [j for j, t in enumerate(batch) if t and t.strip()]
+            if not send_indices:
+                results.extend([None] * len(batch))
+                continue
+            send_texts = [batch[j] for j in send_indices]
             try:
-                # Process batch concurrently
-                tasks = [
-                    self.client.aio.models.embed_content(model=EMBEDDING_MODEL, contents=text)
-                    for text in batch
-                ]
+                # Process batch concurrently — semaphore caps inflight.
+                tasks = [_embed_one(text) for text in send_texts]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                for result in batch_results:
+                # Re-expand results to match original batch shape; positions
+                # whose text was empty stay None.
+                expanded: list[np.ndarray | None] = [None] * len(batch)
+                for src_idx, result in zip(send_indices, batch_results, strict=False):
                     if isinstance(result, Exception):
-                        results.append(None)
-                    elif result.embeddings:  # type: ignore[union-attr]
-                        results.append(np.array(result.embeddings[0].values, dtype=np.float32))  # type: ignore[union-attr]
-                    else:
-                        results.append(None)
+                        expanded[src_idx] = None
+                        continue
+                    embs = getattr(result, "embeddings", None)
+                    if not embs:
+                        expanded[src_idx] = None
+                        continue
+                    values = getattr(embs[0], "values", None)
+                    # Mirror the single-item `generate_embedding` guards: a
+                    # `None` or wrong-dimensionality vector silently corrupts
+                    # the FAISS index when added later.
+                    if not values:
+                        expanded[src_idx] = None
+                        continue
+                    expanded[src_idx] = np.array(values, dtype=np.float32)
+                results.extend(expanded)
 
             except Exception:
                 logger.exception("Batch embedding failed")
@@ -432,15 +512,63 @@ class MemorySystem:
                 self._faiss_index = FAISSIndex(EMBEDDING_DIM)
                 if self._faiss_index.load_from_disk():
                     self._index_built = True
-                    # Load memories cache from DB
-                    # Load ALL memories (not just one channel) since FAISS index is global
+                    # Load memories cache from DB. Cap to MAX_CACHE_SIZE
+                    # so a multi-million-row table doesn't OOM startup —
+                    # entries beyond the cap get pulled lazily on demand.
                     if _DB_AVAILABLE and db is not None:
-                        all_memories = await asyncio.wait_for(db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT)
-                        for mem in all_memories:
+                        all_memories = await asyncio.wait_for(
+                            db.get_all_rag_memories(None),
+                            timeout=_DB_QUERY_TIMEOUT,
+                        )
+                        eager_load_cap = max(self.MAX_CACHE_SIZE, 1000)
+                        for mem in all_memories[:eager_load_cap]:
                             mem_id = mem.get("id")
                             if mem_id:
                                 self._memories_cache[mem_id] = mem
+                        if len(all_memories) > eager_load_cap:
+                            logger.info(
+                                "RAG cache eager-load capped at %d entries "
+                                "(table has %d). Remainder loaded lazily.",
+                                eager_load_cap,
+                                len(all_memories),
+                            )
                         self._evict_cache_if_needed()
+
+                        # Reconcile DB rows that are absent from the on-disk FAISS
+                        # index — happens when add_memory ran between the last
+                        # periodic save and a restart/crash. Without this, those
+                        # rows live in DB forever but are unreachable via search.
+                        # Run the per-vector add in a thread so we don't pin the
+                        # event loop on a large reconcile (100k orphans times
+                        # locked add_single previously blocked for seconds).
+                        existing_ids = set(self._faiss_index.id_map)
+
+                        def _reconcile_sync() -> int:
+                            count = 0
+                            for mem in all_memories:
+                                mem_id = mem.get("id")
+                                if mem_id is None or mem_id in existing_ids:
+                                    continue
+                                try:
+                                    vec = np.frombuffer(mem["embedding"], dtype=np.float32)
+                                    if len(vec) != EMBEDDING_DIM:
+                                        continue
+                                    self._faiss_index.add_single(vec, mem_id)
+                                    count += 1
+                                except (ValueError, TypeError, KeyError) as e:
+                                    logger.debug("Skipping unreconcilable memory %s: %s", mem_id, e)
+                            return count
+
+                        reconciled = await asyncio.to_thread(_reconcile_sync)
+                        if reconciled:
+                            logger.info(
+                                "🔧 Reconciled %d RAG memories that were in DB "
+                                "but missing from FAISS",
+                                reconciled,
+                            )
+                            # Persist the reconciled state so we don't redo this
+                            # work on the next restart.
+                            self._schedule_index_save()
                     return
 
             # Build from database (slow path)
@@ -448,9 +576,19 @@ class MemorySystem:
             if not _DB_AVAILABLE or db is None:
                 return
 
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT
+            )
             if not all_memories:
                 return
+
+            if len(all_memories) > MAX_RAG_REBUILD:
+                logger.warning(
+                    "RAG rebuild capped: %d rows in DB, only loading first %d",
+                    len(all_memories),
+                    MAX_RAG_REBUILD,
+                )
+                all_memories = all_memories[:MAX_RAG_REBUILD]
 
             vectors = []
             ids: list[Any] = []
@@ -458,11 +596,18 @@ class MemorySystem:
             for mem in all_memories:
                 try:
                     vec = np.frombuffer(mem["embedding"], dtype=np.float32)
-                    if len(vec) == EMBEDDING_DIM:
-                        vectors.append(vec)
-                        mem_id = mem.get("id", len(ids))
-                        ids.append(mem_id)
-                        self._memories_cache[mem_id] = mem
+                    if len(vec) != EMBEDDING_DIM:
+                        continue
+                    mem_id = mem.get("id")
+                    if mem_id is None:
+                        # Skip rows without an id — falling back to len(ids) here
+                        # would collide with real auto-increment ids and route
+                        # search hits to the wrong memory. hybrid_search already
+                        # uses the same skip-on-missing-id guard.
+                        continue
+                    vectors.append(vec)
+                    ids.append(mem_id)
+                    self._memories_cache[mem_id] = mem
                 except (ValueError, TypeError, KeyError) as e:
                     logger.debug("Skipping invalid memory embedding: %s", e)
                     continue
@@ -549,19 +694,35 @@ class MemorySystem:
 
         embedding_bytes = embedding.tobytes()
 
-        # Save to DB and get ID
-        result = await db.save_rag_memory(
-            content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
-        )
-
-        # Add to FAISS index if available (with lock to prevent race conditions)
+        # Hold _index_lock around BOTH DB save and FAISS update so a
+        # concurrent _ensure_index rebuild cannot read the DB row in
+        # between, miss the FAISS entry, and leave the in-memory index
+        # out of sync. The DB layer has its own serialisation; the brief
+        # extra contention is worth the consistency.
         async with self._index_lock:
+            result = await db.save_rag_memory(
+                content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
+            )
             if FAISS_AVAILABLE and self._faiss_index and self._index_built:
                 memory_id = result if isinstance(result, int) and result > 0 else None
                 if memory_id is not None:
-                    self._faiss_index.add_single(embedding, memory_id)
-                    # Schedule debounced save instead of saving immediately (performance)
-                    self._schedule_index_save()
+                    try:
+                        self._faiss_index.add_single(embedding, memory_id)
+                        # Schedule debounced save instead of saving immediately (performance)
+                        self._schedule_index_save()
+                    except (ValueError, RuntimeError) as e:
+                        # FAISS rejected the vector (e.g. zero-norm, wrong dim).
+                        # The DB row is already committed; mark the index as
+                        # un-built so the next _ensure_index call rebuilds from
+                        # DB and picks up this orphan. Without this it would
+                        # remain unreachable to search forever.
+                        logger.warning(
+                            "FAISS add_single failed for memory %s: %s "
+                            "(scheduling rebuild on next access)",
+                            memory_id,
+                            e,
+                        )
+                        self._index_built = False
                 else:
                     logger.warning("⚠️ RAG memory saved to DB but got invalid ID: %s", result)
 
@@ -641,7 +802,7 @@ class MemorySystem:
 
         scored = []
         for mem in memories:
-            content = mem.get("content", "").lower()
+            content = (mem.get("content") or "").lower()
             content_tokens = set(re.findall(r"\w+", content))
 
             if not content_tokens:
@@ -670,20 +831,25 @@ class MemorySystem:
         semantic_results: list[tuple[int, float]],
         keyword_results: list[tuple[int, float]],
         k: int = 60,
+        semantic_weight: float = 1.0,
+        keyword_weight: float = 1.0,
     ) -> list[tuple[int, float]]:
         """
-        Merge results from semantic and keyword search using RRF.
+        Merge results from semantic and keyword search using weighted RRF.
         Returns list of (memory_id, combined_score).
+
+        ``semantic_weight`` / ``keyword_weight`` scale each source's
+        contribution; default 1.0/1.0 is plain RRF.
         """
         rrf_scores: dict[int, float] = {}
 
         # Process semantic results
         for rank, (mem_id, _) in enumerate(semantic_results):
-            rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + 1 / (k + rank + 1)
+            rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + semantic_weight / (k + rank + 1)
 
         # Process keyword results
         for rank, (mem_id, _) in enumerate(keyword_results):
-            rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + 1 / (k + rank + 1)
+            rrf_scores[mem_id] = rrf_scores.get(mem_id, 0) + keyword_weight / (k + rank + 1)
 
         # Sort by combined score
         results = list(rrf_scores.items())
@@ -719,18 +885,28 @@ class MemorySystem:
 
         # Get all memories for keyword search
         try:
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
+            )
         except TimeoutError:
             logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
             return []
         if not all_memories:
             return []
 
-        # Update cache (batch with size limit to prevent memory spike)
-        MAX_CACHE_BATCH = 2000
-        for mem in all_memories[:MAX_CACHE_BATCH]:
-            self._memories_cache[mem.get("id", -1)] = mem
+        # Update cache (batch with size limit to prevent memory spike).
+        # Skip rows with a missing id — using -1 as a fallback key would
+        # collapse multiple anonymous rows onto the same slot and silently
+        # overwrite each other.
+        MAX_CACHE_BATCH = 500
+        # Evict BEFORE the bulk append so a large batch can't briefly push
+        # the cache to MAX_CACHE_BATCH + MAX_CACHE_SIZE before eviction.
         self._evict_cache_if_needed()
+        for mem in all_memories[:MAX_CACHE_BATCH]:
+            mem_id = mem.get("id")
+            if mem_id is None:
+                continue
+            self._memories_cache[mem_id] = mem
 
         # Semantic search
         semantic_results = []
@@ -751,9 +927,16 @@ class MemorySystem:
         # Keyword search
         keyword_results = self._keyword_search(query, all_memories, limit * 2)
 
-        # Merge using RRF
+        # Merge using RRF, honouring caller-supplied weights so a
+        # `semantic_weight=0.9` actually emphasises semantic ranking
+        # rather than silently producing the same result as 0.5/0.5.
         if semantic_results and keyword_results:
-            merged = self._reciprocal_rank_fusion(semantic_results, keyword_results)
+            merged = self._reciprocal_rank_fusion(
+                semantic_results,
+                keyword_results,
+                semantic_weight=semantic_weight,
+                keyword_weight=keyword_weight,
+            )
             source = "hybrid"
         elif semantic_results:
             merged = semantic_results
@@ -785,7 +968,12 @@ class MemorySystem:
                     from datetime import datetime
 
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now(timezone.utc)
+                    # Coerce naive timestamps (legacy rows written before
+                    # the tz-aware migration) to UTC so we don't raise
+                    # TypeError on `now - created` and silently lose age.
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    now = datetime.now(created.tzinfo)
                     age_days = (now - created).days
                 except (ValueError, TypeError, AttributeError):
                     pass  # Invalid or missing datetime format
@@ -816,7 +1004,10 @@ class MemorySystem:
         Uses hybrid search internally.
         """
         results = await self.hybrid_search(query, limit, channel_id)
-        return [r.content for r in results if r.score > 0.1]
+        # No score threshold here: hybrid_search already does ranking +
+        # time-decay + result-count cap. RRF scores are inherently small
+        # (~1/(60+rank)) so a 0.1 cutoff dropped every hybrid-only result.
+        return [r.content for r in results]
 
     def _linear_search_raw_sync(
         self, query_vec: np.ndarray, limit: int, memories: list[dict]
@@ -827,12 +1018,24 @@ class MemorySystem:
         for mem in memories:
             try:
                 mem_vec = np.frombuffer(mem["embedding"], dtype=np.float32)
+                # Guard against shape mismatch — np.dot on differing dims
+                # raises and we'd skip via the except below, but bail
+                # explicitly so the message is clearer in logs.
+                if mem_vec.shape != query_vec.shape:
+                    continue
 
-                dot_product = np.dot(query_vec, mem_vec)
-                norm_a = np.linalg.norm(query_vec)
-                norm_b = np.linalg.norm(mem_vec)
+                dot_product = float(np.dot(query_vec, mem_vec))
+                norm_a = float(np.linalg.norm(query_vec))
+                norm_b = float(np.linalg.norm(mem_vec))
 
-                similarity = 0 if norm_a == 0 or norm_b == 0 else dot_product / (norm_a * norm_b)
+                similarity = 0.0 if norm_a == 0 or norm_b == 0 else dot_product / (norm_a * norm_b)
+
+                # Drop NaN / Inf scores — a corrupted embedding can produce
+                # one and silently torpedo every later sort/threshold check.
+                import math as _math
+
+                if not _math.isfinite(similarity):
+                    continue
 
                 if similarity > LINEAR_SEARCH_MIN_SIMILARITY:
                     scored.append((mem.get("id", -1), similarity))
@@ -857,7 +1060,9 @@ class MemorySystem:
             return []
 
         try:
-            all_memories = await asyncio.wait_for(db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT)
+            all_memories = await asyncio.wait_for(
+                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
+            )
         except TimeoutError:
             logger.warning("⏱️ RAG linear_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
             return []
@@ -867,13 +1072,16 @@ class MemorySystem:
 
         results = await self._linear_search_raw(query_vec, limit, all_memories)
 
+        # Build an id→memory lookup so the post-filter is O(N), not the
+        # original O(results × all_memories) which got expensive once
+        # MAX_RAG_REBUILD started returning tens of thousands of rows.
+        by_id = {m.get("id"): m for m in all_memories if m.get("id") is not None}
         relevant = []
         for mem_id, similarity in results:
             if similarity > LINEAR_SEARCH_RELEVANCE_THRESHOLD:
-                for mem in all_memories:
-                    if mem.get("id") == mem_id:
-                        relevant.append(mem["content"])
-                        break
+                mem = by_id.get(mem_id)
+                if mem and "content" in mem:
+                    relevant.append(mem["content"])
 
         if relevant:
             logger.info("🧠 Linear scan found %d relevant memories", len(relevant))

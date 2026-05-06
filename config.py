@@ -7,10 +7,11 @@ Uses dataclass for settings management with environment variable support.
 from __future__ import annotations
 
 import logging
-logger = logging.getLogger(__name__)
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_int_env(key: str, default: int) -> int:
@@ -42,14 +43,16 @@ class BotSettings:
     discord_token: str = field(default_factory=lambda: os.getenv("DISCORD_TOKEN", ""), repr=False)
 
     # Claude AI (primary)
-    anthropic_api_key: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"), repr=False)
-    anthropic_base_url: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL"))
-    claude_model: str = field(
-        default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-7")
+    anthropic_api_key: str | None = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"), repr=False
     )
+    anthropic_base_url: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL"))
+    claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-7"))
 
     # Gemini AI (used for RAG embeddings only)
-    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False)
+    gemini_api_key: str | None = field(
+        default_factory=lambda: os.getenv("GEMINI_API_KEY"), repr=False
+    )
 
     # Spotify
     spotipy_client_id: str | None = field(
@@ -128,7 +131,11 @@ class BotSettings:
             and not self.anthropic_api_key.startswith("sk-ant-")
             and not self.anthropic_base_url
         ):
-            errors.append("ANTHROPIC_API_KEY looks like a proxy key but ANTHROPIC_BASE_URL is not set")
+            errors.append(
+                "ANTHROPIC_API_KEY does not start with 'sk-ant-'. "
+                "If you're using a proxy, set ANTHROPIC_BASE_URL to its endpoint; "
+                "if you intended a direct Anthropic key, double-check the value."
+            )
         return errors
 
     def validate_optional_secrets(self) -> list[str]:

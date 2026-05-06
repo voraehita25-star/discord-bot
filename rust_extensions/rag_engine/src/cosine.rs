@@ -7,7 +7,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
-    
+
     if a.is_empty() {
         return 0.0;
     }
@@ -28,7 +28,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn simd_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     use simsimd::SpatialSimilarity;
-    
+
     // simsimd returns cosine *distance* (1.0 - similarity), so convert to similarity
     f32::cosine(a, b).and_then(|v| {
         let similarity = 1.0 - v as f32;
@@ -52,12 +52,12 @@ fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
             + a[idx + 1] * b[idx + 1]
             + a[idx + 2] * b[idx + 2]
             + a[idx + 3] * b[idx + 3];
-        
+
         norm_a += a[idx] * a[idx]
             + a[idx + 1] * a[idx + 1]
             + a[idx + 2] * a[idx + 2]
             + a[idx + 3] * a[idx + 3];
-        
+
         norm_b += b[idx] * b[idx]
             + b[idx + 1] * b[idx + 1]
             + b[idx + 2] * b[idx + 2]
@@ -85,7 +85,7 @@ fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
 #[allow(dead_code)]
 pub(crate) fn batch_cosine_similarity(query: &[f32], vectors: &[Vec<f32>]) -> Vec<f32> {
     use rayon::prelude::*;
-    
+
     vectors
         .par_iter()
         .map(|v| cosine_similarity(query, v))

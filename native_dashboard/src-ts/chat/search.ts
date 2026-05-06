@@ -129,6 +129,9 @@ export class ChatSearch {
  *  wrap each hit in <mark class="chat-search-hit">, and return the marks. */
 function wrapMatches(root: HTMLElement, query: string): HTMLElement[] {
     if (!query) return [];
+    // Cap total highlights so an empty/very-short query against a giant
+    // history can't lock the main thread wrapping tens of thousands of marks.
+    const MAX_HITS = 1000;
     const hits: HTMLElement[] = [];
     const needle = query.toLowerCase();
 
@@ -149,10 +152,11 @@ function wrapMatches(root: HTMLElement, query: string): HTMLElement[] {
     let n: Node | null = walker.nextNode();
     while (n) {
         candidates.push(n as Text);
+        if (candidates.length >= MAX_HITS) break;
         n = walker.nextNode();
     }
 
-    for (const textNode of candidates) {
+    outer: for (const textNode of candidates) {
         const text = textNode.nodeValue || '';
         const lower = text.toLowerCase();
         let idx = 0;
@@ -165,10 +169,21 @@ function wrapMatches(root: HTMLElement, query: string): HTMLElement[] {
             }
             const mark = document.createElement('mark');
             mark.className = 'chat-search-hit';
-            mark.textContent = text.slice(start, start + query.length);
+            // `start` is an offset in `lower` (= text.toLowerCase()), so the
+            // matched span has `needle.length` code units. Using query.length
+            // would diverge whenever toLowerCase changes length (Turkish dotted
+            // İ → i̇, etc.) and shift later highlights by one.
+            mark.textContent = text.slice(start, start + needle.length);
             fragment.appendChild(mark);
             hits.push(mark);
-            idx = start + query.length;
+            idx = start + needle.length;
+            if (hits.length >= MAX_HITS) {
+                if (idx < text.length) {
+                    fragment.appendChild(document.createTextNode(text.slice(idx)));
+                }
+                textNode.replaceWith(fragment);
+                break outer;
+            }
             start = lower.indexOf(needle, idx);
         }
         if (idx < text.length) {

@@ -1,12 +1,12 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** April 24, 2026
+> **Last Updated:** April 27, 2026
 > **Version:** 3.3.15
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 222 Python files | 91 Python test files (3,071 tests) + 10 vitest files (189 frontend tests)
+> **Total Files:** ~231 Python files | 92 Python test files (3,094 tests) + 10 vitest files (189 frontend tests) + 5 Playwright spec files (63 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
-> **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅
+> **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
 ---
 
@@ -54,34 +54,21 @@ BOT/
 │       ├── fallback_responses.py  # Fallback when AI fails
 │       ├── session_mixin.py  # Session management mixin
 │       ├── media_processor.py # Media processing
+│       ├── claude_payloads.py # Typed Claude message builders + prompt-cache helpers
+│       ├── imports.py        # Centralised optional-dependency imports
 │       │
-│       ├── # Re-export files (backward compat)
-│       ├── tools.py → tools/
-│       ├── api_handler.py → api/
-│       ├── performance.py → core/
-│       ├── message_queue.py → core/
-│       ├── context_builder.py → core/
-│       ├── response_sender.py → response/
-│       ├── response_mixin.py → response/
-│       ├── webhook_cache.py → response/
-│       ├── debug_commands.py → commands/
-│       ├── memory_commands.py → commands/
-│       ├── server_commands.py → commands/
-│       ├── tool_definitions.py → tools/
-│       ├── tool_executor.py → tools/
-│       │
-│       ├── api/              # 🔌 AI API Integration (Claude primary + Gemini embeddings)
+│       ├── api/              # 🔌 AI API Integration (Claude primary + Gemini embeddings) + dashboard backend
 │       │   ├── __init__.py
-│       │   ├── api_handler.py          # Core API calls, streaming, retry
+│       │   ├── api_handler.py          # Claude API calls (anthropic SDK), streaming, retry
 │       │   ├── api_failover.py         # Direct + proxy failover for Claude
-│       │   ├── claude_payloads.py      # Typed Claude message builders + prompt-cache helpers
-│       │   ├── ws_dashboard.py         # Dashboard WebSocket server
-│       │   ├── dashboard_chat.py       # Gemini-based dashboard chat
-│       │   ├── dashboard_chat_claude.py # Claude streaming chat + edit via anthropic SDK (per-token billing)
-│       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (subscription billing). Toggle with CLAUDE_BACKEND=cli
-│       │   ├── dashboard_common.py     # Shared helpers (timestamps, timezone)
+│       │   ├── ws_dashboard.py         # Dashboard WebSocket server (auth, origin check)
+│       │   ├── dashboard_chat.py       # Gemini-backed dashboard chat
+│       │   ├── dashboard_chat_claude.py     # Claude streaming chat + edit via anthropic SDK (per-token billing)
+│       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (Max subscription). Toggle with CLAUDE_BACKEND=cli
+│       │   ├── dashboard_common.py     # Shared helpers (timestamps, persona+context builder, memory cache)
 │       │   ├── dashboard_config.py     # Dashboard env config
-│       │   └── dashboard_handlers.py   # Dashboard command handlers
+│       │   ├── dashboard_handlers.py   # Conversation/memory CRUD with invalidate_user_context_cache hooks
+│       │   └── document_extractor.py   # PDF/DOCX/text extraction → dashboard_document_memories
 │       │
 │       ├── core/             # 🏗️ Core Components
 │       │   ├── __init__.py
@@ -200,7 +187,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (3,071 tests in 91 files)
+├── tests/                    # 🧪 Python test suite (3,094 tests in 92 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -209,7 +196,7 @@ BOT/
 │   ├── test_circuit_breaker.py
 │   ├── test_consolidator.py  # Memory consolidator
 │   ├── test_content_processor.py
-│   ├── test_dashboard_handlers.py # 🆕 Dashboard handler tests (42 tests)
+│   ├── test_dashboard_handlers.py # Dashboard handler tests (53 tests)
 │   ├── test_database.py
 │   ├── test_emoji_voice.py
 │   ├── test_error_recovery.py
@@ -245,8 +232,8 @@ BOT/
 │   │   ├── bot_manager.rs    # Bot process control
 │   │   └── database.rs       # SQLite queries
 │   ├── src-ts/
-│   │   ├── app.ts            # Status/logs/DB/settings UI (~1,750 lines)
-│   │   ├── chat-manager.ts   # ChatManager orchestrator (~2,080 lines after 2026-04 split)
+│   │   ├── app.ts            # Status/logs/DB/settings UI (~1,853 lines)
+│   │   ├── chat-manager.ts   # ChatManager orchestrator (~2,649 lines after 2026-04 split)
 │   │   ├── shared.ts         # Shared utils (invoke wrapper, errors, settings, toasts)
 │   │   ├── types.ts          # Shared TypeScript interfaces
 │   │   ├── faust_avatar.ts   # Default AI avatar (base64)
@@ -256,8 +243,16 @@ BOT/
 │   │   └── chat/             # Chat modules extracted from chat-manager.ts
 │   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
 │   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
-│   │       ├── search.ts, prism.ts, image-attach.ts, export-picker.ts
-│   │       └── *.test.ts     # 8 vitest files (167 tests)
+│   │       ├── search.ts, prism.ts, image-attach.ts, document-attach.ts, export-picker.ts
+│   │       └── *.test.ts     # 7 vitest files (128 tests)
+│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI
+│   │   ├── _fixtures/mock-tauri.ts      # Tauri IPC shim + WS mock + page-error tracker
+│   │   ├── dashboard-smoke.spec.ts      # 18 smoke tests covering UI fixes
+│   │   ├── interactions.spec.ts         # 16 user-flow tests
+│   │   ├── a11y.spec.ts                 # 8 axe-core audits
+│   │   ├── visual-regression.spec.ts    # 8 baseline screenshots
+│   │   └── screenshots.spec.ts          # 13 manual-inspection captures
+│   ├── playwright.config.ts  # Playwright config (python http.server + Chromium)
 │   ├── scripts/
 │   │   ├── build-tauri.ps1   # Build + auto-rename
 │   │   └── create_desktop_shortcut.py
@@ -303,7 +298,7 @@ BOT/
 Bot มี native extensions ที่เขียนด้วย **Rust** และ **Go** สำหรับ operations ที่ใช้ CPU/IO เยอะ
 Extensions เหล่านี้เป็น **optional** - bot ทำงานได้ปกติด้วย Python fallback
 
-> **Build Status:** ✅ Rust extensions built successfully (March 2, 2026)  
+> **Build Status:** ✅ Rust extensions built successfully (March 2, 2026)
 > **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ### Rust Extensions (PyO3)
@@ -360,18 +355,25 @@ from utils.monitoring.health_client import push_request_metric
 User Message
     │
     ▼
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   ai.py     │────▶│  logic.py    │────▶│ Gemini API  │
-│ (Discord)   │     │ (Processing) │     │ (Google)    │
-└─────────────┘     └──────────────┘     └─────────────┘
+┌─────────────┐     ┌──────────────┐     ┌──────────────────┐
+│  ai_cog.py  │────▶│  logic.py    │────▶│ Claude API       │
+│  (Discord)  │     │ (Processing) │     │ (Anthropic SDK + │
+│             │     │              │     │  failover proxy) │
+└─────────────┘     └──────────────┘     └──────────────────┘
                            │
            ┌───────────────┼───────────────┐
            ▼               ▼               ▼
     ┌───────────┐   ┌───────────┐   ┌───────────┐
-    │ RAG.py    │   │ guardrails│   │ storage.py│
-    │ (Memory)  │   │ (Safety)  │   │ (Persist) │
+    │ rag.py    │   │ guardrails│   │ storage.py│
+    │ (Memory + │   │ (Safety)  │   │ (Persist) │
+    │  Gemini   │   │           │   │           │
+    │ embeds)   │   │           │   │           │
     └───────────┘   └───────────┘   └───────────┘
 ```
+
+> The bot's primary AI is Claude (Anthropic). Gemini is used for RAG embeddings only,
+> not for chat completions. Dashboard chat additionally supports a Claude CLI backend
+> (`claude -p` subprocess, Max-subscription quota) — see `cogs/ai_core/api/dashboard_chat_claude_cli.py`.
 
 ### Key Classes
 
@@ -422,7 +424,7 @@ CREATOR_ID=your_discord_id
 **Environment-based:**
 
 - `GUILD_ID_*` - Server IDs
-- `CHANNEL_ID_*` - Channel IDs  
+- `CHANNEL_ID_*` - Channel IDs
 - `GEMINI_API_KEY` - API key
 - `GAME_SEARCH_KEYWORDS` - Keywords ที่ force Google Search
 
@@ -430,16 +432,17 @@ CREATOR_ID=your_discord_id
 
 | Constant | Default | Description |
 | --- | --- | --- |
-| `HISTORY_LIMIT_DEFAULT` | 1500 | Messages to keep per channel |
-| `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) |
-| `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) |
-| `LOCK_TIMEOUT` | 120s | Max wait for lock acquisition |
-| `API_TIMEOUT` | 120s | Max wait for Gemini API |
+| `HISTORY_LIMIT_DEFAULT` | 1500 | Approx **token** budget per channel for kept context |
+| `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) — token budget |
+| `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) — token budget |
+| `LOCK_TIMEOUT` | 30s | Max wait for per-channel lock acquisition (`constants.py`) |
+| `API_TIMEOUT` | 120s | Max wait for the upstream chat API (Claude) |
 | `STREAMING_TIMEOUT_INITIAL` | 30s | Initial chunk timeout |
-| `MAX_HISTORY_ITEMS` | 2000 | Max items in chat history |
+| `MAX_HISTORY_ITEMS` | 2000 | Max items in in-memory chat history |
 | `PERFORMANCE_SAMPLES_MAX` | 100 | Max samples per metric |
-| `MAX_CACHE_SIZE` | 1000 | Max channels in history/metadata cache |
-| `CACHE_TTL` | 300s | Cache entry time-to-live |
+
+> History/metadata cache lives in `cogs/ai_core/storage.py` (not `constants.py`). Defaults:
+> `MAX_CACHE_SIZE = 2000` (channels) and `CACHE_TTL = 900` seconds.
 
 ### Persona & Roleplay Files
 
@@ -514,8 +517,8 @@ Channels ที่เปิด unrestricted mode จะ:
 
 ```python
 # Enable unrestricted
-from cogs.ai_core.processing.guardrails import enable_unrestricted
-enable_unrestricted(channel_id)
+from cogs.ai_core.processing.guardrails import set_unrestricted
+set_unrestricted(channel_id, True)
 
 # Check status
 from cogs.ai_core.processing.guardrails import is_unrestricted
@@ -527,7 +530,8 @@ if is_unrestricted(channel_id):
 
 FAISS-based memory retrieval:
 
-- **Embedding:** sentence-transformers
+- **Embedding:** Gemini embeddings (`text-embedding-004` via `GEMINI_API_KEY`)
+- **Backend:** Optional Rust extension (`rag_engine.pyd`, ~10–25× faster) with Python fallback
 - **Hybrid Search:** Semantic + keyword + time decay
 - **Auto-indexing:** Conversations automatically indexed
 
@@ -545,11 +549,11 @@ Real-time response updates via Discord message editing:
 
 ### Key Files
 
-- `cogs/music/cog.py` - Main music cog  
+- `cogs/music/cog.py` - Main music cog
 - `cogs/music/queue.py` - Queue management
 - `cogs/music/utils.py` - Colors, emojis, formatting
 - `cogs/music/views.py` - Discord UI components
-- `cogs/spotify_handler.py` - Spotify URL processing  
+- `cogs/spotify_handler.py` - Spotify URL processing
 
 > **Note:** `spotify_handler.py` uses lazy import for `SpotifyHandler` to avoid circular import.
 
@@ -772,7 +776,7 @@ await db.save_ai_message(channel_id, 'user', 'Hello!')
 pip install -r requirements.txt
 
 # Run with auto-reload
-python dev_watcher.py
+python scripts/dev_watcher.py
 ```
 
 ### Production
@@ -811,7 +815,7 @@ Edit `cogs/ai_core/data/faust_data.py`:
 ### Add New Command
 
 ```python
-# In cogs/ai.py or new cog file
+# In a cog under cogs/ (e.g. cogs/ai_core/ai_cog.py or a new cog file)
 @commands.command()
 async def mycommand(self, ctx):
     await ctx.send("Hello!")
@@ -820,19 +824,19 @@ async def mycommand(self, ctx):
 ### Debug AI Issues
 
 ```text
-!ai-debug     # Show session info
-!ai-trace     # Show last request details
-!ai-stats     # Show performance metrics
-!ai-perf      # Show latency stats
+!ai_debug     # Show session info
+!ai_trace     # Show last request details
+!ai_stats     # Show performance metrics
+!ai_perf      # Show latency stats
 ```
 
 ---
 
 ## ⚠️ Known Gotchas
 
-1. **Lock Timeout:** Uses `asyncio.wait_for()` with 120s timeout (see `LOCK_TIMEOUT` in constants.py)
+1. **Lock Timeout:** Uses `asyncio.wait_for()` with 30s timeout (see `LOCK_TIMEOUT` in `cogs/ai_core/data/constants.py`)
 2. **Short Response Detection:** `detect_refusal()` only checks patterns, not length
-3. **Streaming Timeout:** 45s default, falls back to non-streaming
+3. **Streaming Timeout:** 30s for the initial chunk (`STREAMING_TIMEOUT_INITIAL`), falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
 6. **Webhook Cache:** Auto-cleared when channels are deleted via `on_guild_channel_delete` listener
@@ -869,7 +873,7 @@ async def mycommand(self, ctx):
 | Missing `guild.me` None check | Added null check in `cmd_add_role`/`cmd_remove_role` | `tools.py` |
 | Shallow copy in cache return | Changed to `copy.deepcopy()` | `storage.py` |
 | Magic number `max_history = 2000` | Uses `MAX_HISTORY_ITEMS` constant | `logic.py` |
-| Cache memory can grow unbounded | Added `MAX_CACHE_SIZE=1000` and cleanup functions | `storage.py` |
+| Cache memory can grow unbounded | Added `MAX_CACHE_SIZE=2000` (current value) + TTL cleanup | `storage.py` |
 | Missing permission check in music | Added `@bot_has_guild_permissions(connect, speak)` | `cog.py` |
 | No periodic cache cleanup | Added cleanup every 5 min in AI cog | `ai_cog.py` |
 
@@ -1103,4 +1107,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: April 24, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,071 Python tests + 189 frontend vitest tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) -->
+<!-- Documentation last updated: April 27, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,094 Python tests + 189 frontend vitest tests + 63 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) -->

@@ -11,7 +11,6 @@ import concurrent.futures
 import contextlib
 import logging
 import os
-import shutil
 import signal
 import sys
 import time
@@ -30,9 +29,9 @@ load_dotenv()
 # Module logger — declared before the optional-import blocks below use it.
 # setup_smart_logging() below wires up handlers; until then this logger
 # delegates to the root logger's default config.
-logger = logging.getLogger(__name__)
-
 from utils.monitoring.logger import cleanup_cache, setup_smart_logging
+
+logger = logging.getLogger(__name__)
 
 # Import Health API
 try:
@@ -142,6 +141,7 @@ if PID_FILE.exists():
     except (ValueError, OSError):
         _old_pid = None
 
+
 # Write current PID only when running as main script
 # (not on import from tests/scripts)
 def _write_pid_file() -> None:
@@ -203,7 +203,9 @@ def basic_startup_check() -> bool:
         if proc_user != current_user:
             logger.warning(
                 "Old PID %s is owned by %s (current user %s); refusing to terminate",
-                _old_pid, proc_user, current_user,
+                _old_pid,
+                proc_user,
+                current_user,
             )
             return True
 
@@ -252,6 +254,7 @@ def basic_startup_check() -> bool:
 # NOTE: smart_startup_check() is called in __main__ block only,
 # to avoid running side effects (killing processes) on import.
 
+
 def bootstrap() -> None:
     """Run one-time startup side effects (directories, FFmpeg check, cache cleanup).
 
@@ -267,13 +270,20 @@ def bootstrap() -> None:
                 logger.exception("Cannot create %s directory", dir_name)
                 raise
 
-    # Check for FFmpeg
-    if not shutil.which("ffmpeg"):
+    # Check for FFmpeg — honour FFMPEG_PATH and the bundled ./ffmpeg/bin
+    # before falling back to system PATH so installs that ship a vendored
+    # binary work without polluting the OS PATH.
+    from utils.media import get_ffmpeg_executable, is_ffmpeg_available
+
+    if not is_ffmpeg_available():
         logger.critical(
             "❌ FFmpeg not found! Music features will not work. "
-            "Please install FFmpeg and add it to PATH."
+            "Set FFMPEG_PATH in .env, drop a binary at ./ffmpeg/bin/ffmpeg.exe, "
+            "or install FFmpeg and add it to PATH."
         )
         os.environ["FFMPEG_MISSING"] = "1"
+    else:
+        logger.info("FFmpeg resolved to: %s", get_ffmpeg_executable())
 
     cleanup_cache()
 
@@ -312,7 +322,8 @@ class MusicBot(commands.AutoShardedBot):
         loop = asyncio.get_running_loop()
         # Keep a reference so we can shut it down cleanly during graceful_shutdown.
         self._default_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=_thread_workers, thread_name_prefix="bot-worker",
+            max_workers=_thread_workers,
+            thread_name_prefix="bot-worker",
         )
         loop.set_default_executor(self._default_executor)
         logger.info("⚡ ThreadPoolExecutor set to %d workers", _thread_workers)
@@ -320,9 +331,7 @@ class MusicBot(commands.AutoShardedBot):
         # Setup signal handlers for graceful shutdown
         if sys.platform != "win32":
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(
-                    sig, lambda s=sig: self._schedule_shutdown(s)
-                )
+                loop.add_signal_handler(sig, lambda s=sig: self._schedule_shutdown(s))
             logger.info("🛡️ Signal handlers registered for graceful shutdown")
         else:
             # Windows: asyncio event loop does not support add_signal_handler.
@@ -335,7 +344,8 @@ class MusicBot(commands.AutoShardedBot):
                     return
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        graceful_shutdown(signal.SIGTERM), _loop,
+                        graceful_shutdown(signal.SIGTERM),
+                        _loop,
                     )
                 except RuntimeError:
                     # Loop closed concurrently between is_closed() and submit
@@ -355,7 +365,7 @@ class MusicBot(commands.AutoShardedBot):
         # Load main cogs from cogs/ directory (sorted for deterministic order across platforms).
         # Sync iterdir is fine here: this runs once at startup, before the bot connects.
         cogs_dir = Path("./cogs")
-        for filename in sorted(cogs_dir.iterdir()):  # noqa: ASYNC240 - startup-only, bot not yet connected
+        for filename in sorted(cogs_dir.iterdir()):
             if filename.suffix == ".py":
                 # Skip utility modules
                 if filename.name in skip_modules:
@@ -441,9 +451,30 @@ class MusicBot(commands.AutoShardedBot):
 
             await ctx.send(embed=embed)
 
-    def _schedule_shutdown(self, sig) -> None:
-        """Schedule graceful shutdown, keeping a reference to prevent GC."""
-        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig))
+    def _schedule_shutdown(self, sig: signal.Signals) -> None:
+        """Schedule graceful shutdown, keeping a reference to prevent GC.
+
+        Passes ``self`` so graceful_shutdown tears down THIS bot instance
+        even if the module-level `bot` global has been rebound (e.g. after
+        a "no, resume" answer to the Ctrl+C prompt rebuilt the bot).
+        """
+        # Cancel any earlier in-flight shutdown task — re-issuing the signal
+        # shouldn't drop the original task on the floor.
+        prev = self._shutdown_task
+        if prev is not None and not prev.done():
+            prev.cancel()
+
+            def _swallow(t: asyncio.Task) -> None:
+                # Swallow the cancellation noise but log a real exception
+                # so a failed prior shutdown doesn't disappear silently.
+                if t.cancelled():
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    logger.warning("Previous shutdown task ended with: %s", exc)
+
+            prev.add_done_callback(_swallow)
+        self._shutdown_task = asyncio.create_task(graceful_shutdown(sig, bot_instance=self))
 
     @staticmethod
     def _on_health_task_done(task: asyncio.Task) -> None:
@@ -468,7 +499,7 @@ class MusicBot(commands.AutoShardedBot):
         perf_status = []
         # Check for orjson
         try:
-            import orjson  # noqa: F401
+            import orjson  # noqa: F401 - import-for-availability check
 
             perf_status.append("orjson")
         except ImportError:
@@ -499,7 +530,9 @@ class MusicBot(commands.AutoShardedBot):
             logger.info("🧠 Memory monitor activated (warning: 8GB, critical: 16GB)")
 
     async def on_command_error(  # pylint: disable=arguments-differ
-        self, ctx: commands.Context, error: commands.CommandError,
+        self,
+        ctx: commands.Context,
+        error: commands.CommandError,
     ) -> None:
         """Global error handler for all commands with Thai messages."""
         # Ignore command not found errors
@@ -583,12 +616,18 @@ class MusicBot(commands.AutoShardedBot):
                 f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง หากยังมีปัญหา ติดต่อ Admin\n🔖 Error ID: `{error_id}`"
             )
         except discord.HTTPException:
-            logger.warning("Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id)
+            logger.warning(
+                "Could not send error message to channel %s (Error ID: %s)", ctx.channel, error_id
+            )
 
-    async def on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError) -> None:
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
+    ) -> None:
         """Global error handler for slash (app) commands with Thai messages."""
         error_id = uuid.uuid4().hex[:6].upper()
-        logger.error("App command error in %s (Error ID: %s): %s", interaction.command, error_id, error)
+        logger.error(
+            "App command error in %s (Error ID: %s): %s", interaction.command, error_id, error
+        )
 
         # Determine the response method (followup if already responded/deferred)
         async def respond(content: str) -> None:
@@ -598,7 +637,9 @@ class MusicBot(commands.AutoShardedBot):
                 else:
                     await interaction.response.send_message(content, ephemeral=True)
             except discord.HTTPException:
-                logger.warning("Could not send app command error to interaction (Error ID: %s)", error_id)
+                logger.warning(
+                    "Could not send app command error to interaction (Error ID: %s)", error_id
+                )
 
         original = getattr(error, "original", error)
 
@@ -609,19 +650,25 @@ class MusicBot(commands.AutoShardedBot):
             missing = ", ".join(original.missing_permissions)
             await respond(f"❌ **บอทไม่มีสิทธิ์เพียงพอ**\nกรุณาให้สิทธิ์ `{missing}` แก่บอท")
         elif isinstance(original, discord.app_commands.CommandOnCooldown):
-            await respond(f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที")
+            await respond(
+                f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที"
+            )
         else:
             await respond(f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง\n🔖 Error ID: `{error_id}`")
 
     async def on_message(self, message: discord.Message) -> None:
         """Track messages for metrics."""
-        # Ignore bot messages
+        # Ignore bot messages (own + other bots/webhooks).
         if message.author.bot:
             return
 
-        # Track message in metrics
+        # Track message in metrics. Only count as a "command" if the
+        # prefix-stripped content actually resolves to a registered
+        # command — previously every "!" prefix incremented even when
+        # the command didn't exist or was rejected, skewing metrics.
         if METRICS_AVAILABLE and metrics:
-            if message.content.startswith("!"):
+            ctx = await self.get_context(message)
+            if ctx.valid and ctx.command is not None:
                 metrics.increment_messages("command")
             else:
                 metrics.increment_messages("other")
@@ -655,7 +702,9 @@ def create_bot() -> MusicBot:
         everyone=False, roles=False, users=True, replied_user=True
     )
     new_bot = MusicBot(
-        command_prefix="!", intents=intents, help_command=None,
+        command_prefix="!",
+        intents=intents,
+        help_command=None,
         allowed_mentions=safe_mentions,
     )
     new_bot._register_bot_commands()
@@ -686,8 +735,21 @@ def validate_token(token: str | None) -> bool:
     return len(token) >= 50
 
 
-async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
-    """Gracefully shutdown the bot"""
+async def graceful_shutdown(
+    sig: signal.Signals | None = None,
+    bot_instance: MusicBot | None = None,
+) -> None:
+    """Gracefully shutdown the bot.
+
+    `bot_instance` lets the caller pin the exact bot we should be tearing
+    down — important after run_bot_with_confirmation() recreates the global
+    `bot`, otherwise we'd close the new instance and leak resources from
+    the old one.
+    """
+    bot = bot_instance if bot_instance is not None else globals().get("bot")
+    if bot is None:
+        logger.warning("graceful_shutdown invoked with no bot instance; skipping")
+        return
     if sig:
         logger.info("🛑 Received signal %s, shutting down gracefully...", sig.name)
     else:
@@ -750,7 +812,7 @@ async def graceful_shutdown(sig: signal.Signals | None = None) -> None:
     exec_ref = getattr(bot, "_default_executor", None)
     if exec_ref is not None:
         try:
-            exec_ref.shutdown(wait=False, cancel_futures=True)  # type: ignore[attr-defined]
+            exec_ref.shutdown(wait=False, cancel_futures=True)
             logger.info("🧵 Default thread pool executor shut down")
         except Exception:
             logger.exception("Error shutting down default executor")
@@ -795,9 +857,12 @@ def run_bot_with_confirmation() -> None:
                 logger.info("🛑 Bot stopped by user (Ctrl+C)")
                 # Run graceful shutdown on any platform where no running loop exists yet.
                 # bot.run() has already returned so its internal loop is closed; a fresh
-                # asyncio.run() is safe here.
+                # asyncio.run() is safe here. Pass the current bot explicitly
+                # so we don't accidentally clean up a different instance if
+                # the global was rebound elsewhere.
+                _current_bot = bot
                 try:
-                    asyncio.run(graceful_shutdown())
+                    asyncio.run(graceful_shutdown(bot_instance=_current_bot))
                 except RuntimeError as e:
                     logger.warning("Skipping graceful_shutdown (%s)", e)
                 except Exception:
@@ -817,7 +882,7 @@ def run_bot_with_confirmation() -> None:
                     logger.exception("Error closing old bot instance")
                 # Re-read token in case .env was updated
                 load_dotenv(override=True)
-                token = os.getenv("DISCORD_TOKEN")
+                token = os.getenv("DISCORD_TOKEN") or ""
                 # Recreate bot instance for restart
                 bot = create_bot()
                 bot.start_time = time.time()

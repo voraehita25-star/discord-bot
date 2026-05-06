@@ -29,29 +29,50 @@ try:
     def json_dumps(
         obj: Any,
         *,
-        ensure_ascii: bool = False,  # NOTE: Ignored by orjson (always outputs UTF-8)
+        ensure_ascii: bool = False,  # NOTE: orjson always outputs UTF-8
         indent: int | None = None,
+        default: Any = None,
+        sort_keys: bool = False,
         **kwargs,
     ) -> str:
         """
         Serialize Python object to JSON string (orjson-accelerated).
 
-        Note: orjson always outputs UTF-8 and does not support ensure_ascii.
-        If ensure_ascii=True is critical, use stdlib json directly.
-        orjson doesn't support indent parameter directly.
-        For pretty printing, use json_dumps_pretty().
+        Honors stdlib-compatible kwargs that orjson does support natively:
+        - ``default`` → orjson ``default=`` (called for unknown types)
+        - ``sort_keys`` → ``orjson.OPT_SORT_KEYS``
+        - ``indent`` → ``orjson.OPT_INDENT_2`` (orjson only supports 2-space)
+
+        ``ensure_ascii=True`` is rejected because orjson always emits UTF-8;
+        callers needing BMP-escaping must use stdlib ``json`` directly.
+        Other unknown kwargs raise ``TypeError`` so silent semantic drift
+        between orjson and stdlib paths becomes a loud failure.
         """
-        # orjson options
+        if ensure_ascii:
+            raise NotImplementedError(
+                "fast_json.json_dumps: ensure_ascii=True is not supported under orjson. "
+                "Use stdlib json directly if BMP-escaping is required."
+            )
+        if kwargs:
+            raise TypeError(
+                f"fast_json.json_dumps: unsupported kwargs {sorted(kwargs)} under orjson"
+            )
+
         option = orjson.OPT_NON_STR_KEYS
-        if indent:
+        # `if indent:` is falsy for `indent=0` (a valid "no newlines"
+        # JSON option), which would silently drop indentation when the
+        # caller explicitly passed 0. Only skip when indent is None.
+        if indent is not None and indent > 0:
             option |= orjson.OPT_INDENT_2
+        if sort_keys:
+            option |= orjson.OPT_SORT_KEYS
 
         # orjson returns bytes, decode to str for compatibility
-        return orjson.dumps(obj, option=option).decode("utf-8")
+        return orjson.dumps(obj, default=default, option=option).decode("utf-8")
 
-    def json_dumps_bytes(obj: Any) -> bytes:
+    def json_dumps_bytes(obj: Any, *, default: Any = None) -> bytes:
         """Serialize Python object to JSON bytes (zero-copy, fastest)."""
-        return orjson.dumps(obj)
+        return orjson.dumps(obj, default=default)
 
 except ImportError:
     import json as _json
@@ -65,14 +86,34 @@ except ImportError:
         return _json.loads(data)
 
     def json_dumps(
-        obj: Any, *, ensure_ascii: bool = False, indent: int | None = None, **kwargs
+        obj: Any,
+        *,
+        ensure_ascii: bool = False,
+        indent: int | None = None,
+        default: Any = None,
+        sort_keys: bool = False,
     ) -> str:
-        """Serialize Python object to JSON string (standard json)."""
-        return _json.dumps(obj, ensure_ascii=ensure_ascii, indent=indent, **kwargs)
+        """Serialize Python object to JSON string (standard json).
 
-    def json_dumps_bytes(obj: Any) -> bytes:
+        Mirrors the orjson-backed signature so callers don't get silent
+        semantic drift between paths. The previous ``**kwargs`` passthrough
+        accepted arbitrary stdlib kwargs that the orjson branch would
+        reject — meaning calls would succeed in production (orjson
+        installed) but raise TypeError in tests (no orjson), or vice
+        versa. Listing every arg explicitly keeps the two branches in
+        lockstep.
+        """
+        return _json.dumps(
+            obj,
+            ensure_ascii=ensure_ascii,
+            indent=indent,
+            default=default,
+            sort_keys=sort_keys,
+        )
+
+    def json_dumps_bytes(obj: Any, *, default: Any = None) -> bytes:
         """Serialize Python object to JSON bytes (standard json)."""
-        return _json.dumps(obj).encode("utf-8")
+        return _json.dumps(obj, default=default).encode("utf-8")
 
 
 def is_orjson_enabled() -> bool:

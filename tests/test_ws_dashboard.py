@@ -54,6 +54,7 @@ def server():
         with patch("cogs.ai_core.api.ws_dashboard.genai") as mock_genai:
             mock_genai.Client.return_value = MagicMock()
             from cogs.ai_core.api.ws_dashboard import DashboardWebSocketServer
+
             srv = DashboardWebSocketServer()
             srv.gemini_client = MagicMock()
             return srv
@@ -131,7 +132,9 @@ class TestMessageRouting:
     async def test_new_conversation_creates_id(self, server, ws):
         """new_conversation should return conversation_created with an ID."""
         with patch("cogs.ai_core.api.ws_dashboard.DB_AVAILABLE", False):
-            await server.handle_message(ws, {"type": "new_conversation", "role_preset": "general"}, "c1")
+            await server.handle_message(
+                ws, {"type": "new_conversation", "role_preset": "general"}, "c1"
+            )
         created = ws.find("conversation_created")
         assert len(created) == 1
         assert "id" in created[0]
@@ -141,7 +144,9 @@ class TestMessageRouting:
     async def test_new_conversation_invalid_preset_defaults_to_general(self, server, ws):
         """Invalid role_preset should default to 'general'."""
         with patch("cogs.ai_core.api.ws_dashboard.DB_AVAILABLE", False):
-            await server.handle_message(ws, {"type": "new_conversation", "role_preset": "invalid_preset"}, "c1")
+            await server.handle_message(
+                ws, {"type": "new_conversation", "role_preset": "invalid_preset"}, "c1"
+            )
         created = ws.find("conversation_created")
         assert len(created) == 1
         assert created[0]["role_preset"] == "general"
@@ -212,32 +217,41 @@ class TestInputValidation:
     @pytest.mark.asyncio
     async def test_empty_message_rejected(self, server, ws):
         """Empty content with no images should be rejected."""
-        await server.handle_chat_message(ws, {
-            "conversation_id": "test-conv",
-            "content": "",
-            "images": [],
-        })
+        await server.handle_chat_message(
+            ws,
+            {
+                "conversation_id": "test-conv",
+                "content": "",
+                "images": [],
+            },
+        )
         errors = ws.find("error")
         assert any("Empty message" in e["message"] for e in errors)
 
     @pytest.mark.asyncio
     async def test_content_too_long(self, server, ws):
         """Content exceeding MAX_CONTENT_LENGTH should be rejected."""
-        await server.handle_chat_message(ws, {
-            "conversation_id": "test-conv",
-            "content": "x" * (server.MAX_CONTENT_LENGTH + 1),
-        })
+        await server.handle_chat_message(
+            ws,
+            {
+                "conversation_id": "test-conv",
+                "content": "x" * (server.MAX_CONTENT_LENGTH + 1),
+            },
+        )
         errors = ws.find("error")
         assert any("too long" in e["message"].lower() for e in errors)
 
     @pytest.mark.asyncio
     async def test_too_many_images(self, server, ws):
         """More than MAX_IMAGES should be rejected."""
-        await server.handle_chat_message(ws, {
-            "conversation_id": "test-conv",
-            "content": "test",
-            "images": ["img"] * (server.MAX_IMAGES + 1),
-        })
+        await server.handle_chat_message(
+            ws,
+            {
+                "conversation_id": "test-conv",
+                "content": "test",
+                "images": ["img"] * (server.MAX_IMAGES + 1),
+            },
+        )
         errors = ws.find("error")
         assert any("too many images" in e["message"].lower() for e in errors)
 
@@ -247,26 +261,36 @@ class TestInputValidation:
         long_history = [{"role": "user", "content": f"msg{i}"} for i in range(200)]
         server.gemini_client = None
         server.claude_client = None
-        await server.handle_chat_message(ws, {
-            "conversation_id": "test-conv",
-            "content": "test",
-            "history": long_history,
-            "ai_provider": "gemini",
-        })
+        await server.handle_chat_message(
+            ws,
+            {
+                "conversation_id": "test-conv",
+                "content": "test",
+                "history": long_history,
+                "ai_provider": "gemini",
+            },
+        )
         # Should get error about AI not configured (but history was accepted/truncated)
         errors = ws.find("error")
-        assert any("not configured" in e.get("message", "").lower() or "not available" in e.get("message", "").lower() for e in errors)
+        assert any(
+            "not configured" in e.get("message", "").lower()
+            or "not available" in e.get("message", "").lower()
+            for e in errors
+        )
 
     @pytest.mark.asyncio
     async def test_no_gemini_client(self, server, ws):
         """When Gemini client is None, should return error."""
         server.gemini_client = None
         server.claude_client = None
-        await server.handle_chat_message(ws, {
-            "conversation_id": "test-conv",
-            "content": "hello",
-            "ai_provider": "gemini",
-        })
+        await server.handle_chat_message(
+            ws,
+            {
+                "conversation_id": "test-conv",
+                "content": "hello",
+                "ai_provider": "gemini",
+            },
+        )
         errors = ws.find("error")
         assert len(errors) >= 1
 
@@ -282,8 +306,10 @@ class TestConversationManagement:
         """list_conversations should return empty list when DB has nothing."""
         mock_db = MagicMock()
         mock_db.get_dashboard_conversations = AsyncMock(return_value=[])
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_list_conversations(ws)
         result = ws.find("conversations_list")
         assert len(result) == 1
@@ -294,8 +320,10 @@ class TestConversationManagement:
         """delete_conversation should call DB and return success."""
         mock_db = MagicMock()
         mock_db.delete_dashboard_conversation = AsyncMock(return_value=True)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_delete_conversation(ws, {"id": "test-id"})
         result = ws.find("conversation_deleted")
         assert len(result) == 1
@@ -305,8 +333,10 @@ class TestConversationManagement:
         """star_conversation should toggle star status."""
         mock_db = MagicMock()
         mock_db.update_dashboard_conversation_star = AsyncMock(return_value=True)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_star_conversation(ws, {"id": "test-id", "starred": True})
         result = ws.find("conversation_starred")
         assert len(result) == 1
@@ -316,8 +346,10 @@ class TestConversationManagement:
         """rename_conversation should update title."""
         mock_db = MagicMock()
         mock_db.rename_dashboard_conversation = AsyncMock(return_value=True)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_rename_conversation(ws, {"id": "test-id", "title": "New Title"})
         result = ws.find("conversation_renamed")
         assert len(result) == 1
@@ -334,8 +366,10 @@ class TestMemoryManagement:
         """save_memory should persist and return success."""
         mock_db = MagicMock()
         mock_db.save_dashboard_memory = AsyncMock(return_value=42)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_save_memory(ws, {"content": "Remember this", "category": "general"})
         result = ws.find("memory_saved")
         assert len(result) == 1
@@ -344,11 +378,13 @@ class TestMemoryManagement:
     async def test_get_memories(self, server, ws):
         """get_memories should return list from DB."""
         mock_db = MagicMock()
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[
-            {"id": 1, "content": "fact1", "category": "general", "importance": 1}
-        ])
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        mock_db.get_dashboard_memories = AsyncMock(
+            return_value=[{"id": 1, "content": "fact1", "category": "general", "importance": 1}]
+        )
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_get_memories(ws, {})
         result = ws.find("memories")
         assert len(result) == 1
@@ -359,8 +395,10 @@ class TestMemoryManagement:
         """delete_memory should call DB and return success."""
         mock_db = MagicMock()
         mock_db.delete_dashboard_memory = AsyncMock(return_value=True)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_delete_memory(ws, {"id": 1})
         result = ws.find("memory_deleted")
         assert len(result) == 1
@@ -376,11 +414,18 @@ class TestProfileManagement:
     async def test_get_profile(self, server, ws):
         """get_profile should return profile data."""
         mock_db = MagicMock()
-        mock_db.get_dashboard_profile = AsyncMock(return_value={
-            "display_name": "Test User", "bio": "Hello", "preferences": None, "is_creator": 0
-        })
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        mock_db.get_dashboard_profile = AsyncMock(
+            return_value={
+                "display_name": "Test User",
+                "bio": "Hello",
+                "preferences": None,
+                "is_creator": 0,
+            }
+        )
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_get_profile(ws)
 
     @pytest.mark.asyncio
@@ -388,8 +433,10 @@ class TestProfileManagement:
         """save_profile should persist and return success."""
         mock_db = MagicMock()
         mock_db.save_dashboard_profile = AsyncMock(return_value=True)
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True), \
-             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db):
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+        ):
             await server.handle_save_profile(ws, {"display_name": "New Name"})
 
 
@@ -405,7 +452,7 @@ class TestMaxClients:
 
     def test_limits_constants(self, server):
         """Verify all limit constants are set."""
-        assert server.MAX_CONTENT_LENGTH == 50_000
+        assert server.MAX_CONTENT_LENGTH == 200_000
         assert server.MAX_HISTORY_MESSAGES == 100
         assert server.MAX_IMAGES == 10
         assert server.MAX_IMAGE_SIZE_BYTES == 10 * 1024 * 1024

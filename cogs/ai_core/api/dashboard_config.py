@@ -5,7 +5,9 @@ Dashboard WebSocket configuration, constants, and role presets.
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
+
 import os
 
 # NOTE: .env is loaded early in bot.py (before any module imports).
@@ -20,33 +22,32 @@ WS_HOST = os.getenv("WS_DASHBOARD_HOST", "127.0.0.1")
 WS_PORT = int(os.getenv("WS_DASHBOARD_PORT", "8765"))
 WS_REQUIRE_TLS = os.getenv("WS_REQUIRE_TLS", "false").lower() in ("true", "1", "yes")
 
-# Safety: warn if binding on non-localhost without TLS
+# Safety: refuse to bind on non-localhost without TLS, regardless of
+# WS_REQUIRE_TLS. Plaintext WebSocket on a public-facing interface leaks
+# the auth token — the previous behavior of just *warning* in that case
+# made it too easy to ship a misconfigured deploy.
 _WS_LOCALHOST_ADDRS = {"127.0.0.1", "localhost", "::1"}
 if WS_HOST not in _WS_LOCALHOST_ADDRS:
     _ws_tls_cert = os.getenv("WS_TLS_CERT_PATH", "")
     _ws_tls_key = os.getenv("WS_TLS_KEY_PATH", "")
     if not (_ws_tls_cert and _ws_tls_key):
-        if WS_REQUIRE_TLS:
-            logger.critical(
-                "⛔ WS_REQUIRE_TLS is enabled but WS_TLS_CERT_PATH / WS_TLS_KEY_PATH are not set. "
-                "Refusing to expose WebSocket on %s without TLS. "
-                "Set WS_DASHBOARD_HOST=127.0.0.1 for local-only access, or provide TLS certificates.",
-                WS_HOST,
-            )
-            WS_HOST = "127.0.0.1"  # Fallback to localhost for safety
-        else:
-            logger.warning(
-                "⚠️ WebSocket dashboard binding on %s without TLS. "
-                "Set WS_REQUIRE_TLS=true and provide TLS certificates for production use, "
-                "or set WS_DASHBOARD_HOST=127.0.0.1 for local-only access.",
-                WS_HOST,
-            )
+        logger.critical(
+            "⛔ Refusing to expose WebSocket dashboard on %s without TLS — "
+            "the auth token would travel in plaintext. Either set "
+            "WS_TLS_CERT_PATH + WS_TLS_KEY_PATH, or use "
+            "WS_DASHBOARD_HOST=127.0.0.1 for local-only access. "
+            "Falling back to 127.0.0.1.",
+            WS_HOST,
+        )
+        WS_HOST = "127.0.0.1"
 
 # ============================================================================
 # Gemini Configuration
 # ============================================================================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Strip whitespace — a trailing newline in .env produces a confusing
+# 401 "invalid_api_key" error from the API.
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip() or None
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
 GEMINI_CONTEXT_WINDOW = int(os.getenv("GEMINI_CONTEXT_WINDOW", "1000000"))
 # For thinking mode, use the same model (gemini-3.1-pro supports thinking)
@@ -55,7 +56,7 @@ GEMINI_CONTEXT_WINDOW = int(os.getenv("GEMINI_CONTEXT_WINDOW", "1000000"))
 # Claude (Anthropic) Configuration
 # ============================================================================
 
-CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-7")
 CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "128000"))
 CLAUDE_CONTEXT_WINDOW = int(os.getenv("CLAUDE_CONTEXT_WINDOW", "1000000"))
@@ -112,6 +113,7 @@ else:
 
 try:
     from ..data import ENI_ESCALATION_FRAMING, FAUST_INSTRUCTION, UNRESTRICTED_MODE_INSTRUCTION
+
     FAUST_AVAILABLE = True
 except ImportError:
     FAUST_AVAILABLE = False
@@ -125,10 +127,12 @@ except ImportError:
 
 try:
     from utils.database import Database
+
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
     Database = None  # type: ignore[assignment, misc]
+
 
 # ============================================================================
 # Unrestricted Mode Framings
@@ -160,13 +164,19 @@ Be concise, helpful, and friendly.
 For simple questions, give brief answers (1-3 sentences).
 For complex topics, provide detailed but well-organized responses.""",
         "color": "#22d3ee",  # Cyan
-        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION if FAUST_AVAILABLE else GENERAL_UNRESTRICTED_FRAMING,
+        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION
+        if FAUST_AVAILABLE
+        else GENERAL_UNRESTRICTED_FRAMING,
     },
     "faust": {
         "name": "Faust",
         "emoji": "👻",
-        "system_instruction": FAUST_INSTRUCTION if FAUST_AVAILABLE else "You are Faust, a genius AI assistant who speaks in third person.",
+        "system_instruction": FAUST_INSTRUCTION
+        if FAUST_AVAILABLE
+        else "You are Faust, a genius AI assistant who speaks in third person.",
         "color": "#ffb1b4",  # Cerebral Pink
-        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION if FAUST_AVAILABLE else GENERAL_UNRESTRICTED_FRAMING,
+        "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION
+        if FAUST_AVAILABLE
+        else GENERAL_UNRESTRICTED_FRAMING,
     },
 }

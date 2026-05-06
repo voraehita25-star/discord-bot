@@ -119,12 +119,17 @@ def _cleanup_old_backoff_states() -> None:
     # 2. Older than 2x TTL regardless of failure count (very old)
     # 3. Have very high failure counts but are old (likely abandoned services)
     keys_to_remove = [
-        key for key, state in _backoff_states.items()
-        if (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures == 0)
+        key
+        for key, state in _backoff_states.items()
+        if (
+            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures == 0
+        )
         or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL * 2)
-        or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures > 100)  # Likely abandoned
+        or (
+            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+            and state.consecutive_failures > 100
+        )  # Likely abandoned
     ]
     for key in keys_to_remove:
         _backoff_states.pop(key, None)
@@ -146,6 +151,18 @@ def _get_backoff_state(key: str) -> BackoffState:
         if len(_backoff_states) >= _MAX_BACKOFF_STATES or _backoff_call_counter >= 100:
             _cleanup_old_backoff_states()
             _backoff_call_counter = 0
+
+        # Hard cap: when we're still over the limit AFTER cleanup (e.g., during
+        # a sustained outage where most entries have recent failures and can't
+        # be evicted), evict the oldest entry to make room. Without this guard
+        # the dict can grow unboundedly with one new entry per failing service
+        # during an outage and OOM the process.
+        if len(_backoff_states) >= _MAX_BACKOFF_STATES and key not in _backoff_states:
+            oldest_key = min(
+                _backoff_states,
+                key=lambda k: _backoff_states[k].last_failure_time,
+            )
+            _backoff_states.pop(oldest_key, None)
 
         if key not in _backoff_states:
             _backoff_states[key] = BackoffState()
@@ -198,7 +215,7 @@ def calculate_delay_sync(
     Returns:
         Delay in seconds before next retry
     """
-    base_exp_delay = config.base_delay * (config.exponential_base ** attempt)
+    base_exp_delay = config.base_delay * (config.exponential_base**attempt)
     cap = config.max_delay
 
     if config.jitter_strategy == JitterStrategy.NONE:
@@ -215,12 +232,18 @@ def calculate_delay_sync(
 
     elif config.jitter_strategy == JitterStrategy.DECORRELATED:
         # Decorrelated Jitter: sleep = min(cap, random(base, prev * 3))
-        if state and state.previous_delay > 0:
-            delay = min(cap, random.uniform(config.base_delay, state.previous_delay * 3))
+        # Mutating ``state.previous_delay`` happens under the shared backoff
+        # lock so concurrent retries against the same key don't race each
+        # other when reading and writing the previous delay.
+        if state:
+            with _backoff_states_lock:
+                if state.previous_delay > 0:
+                    delay = min(cap, random.uniform(config.base_delay, state.previous_delay * 3))
+                else:
+                    delay = min(cap, random.uniform(config.base_delay, base_exp_delay))
+                state.previous_delay = delay
         else:
             delay = min(cap, random.uniform(config.base_delay, base_exp_delay))
-        if state:
-            state.previous_delay = delay
 
     else:
         delay = min(base_exp_delay, cap)
@@ -253,9 +276,19 @@ def extract_retry_after(error: Exception) -> float | None:
     - requests.Response exceptions
     - Google API errors with retry_delay
     """
-    # Check for Google API retry_delay
+    # Check for Google API retry_delay. Google's gRPC errors expose this as
+    # a google.protobuf.duration_pb2.Duration (NOT a float) — returning it
+    # raw would later raise TypeError when compared with float in the
+    # retry-delay max() call. Coerce via total_seconds() if available.
     if hasattr(error, "retry_delay"):
-        return error.retry_delay  # type: ignore[no-any-return]
+        delay = error.retry_delay
+        try:
+            total = getattr(delay, "total_seconds", None)
+            if callable(total):
+                return float(total())
+            return float(delay)
+        except (TypeError, ValueError):
+            return None
 
     # Check for response headers
     if hasattr(error, "headers"):
@@ -333,12 +366,17 @@ async def retry_async(
         status = service_monitor.get_status(service_name)
         service_health = status.get("success_rate", 1.0)
 
-    # Check circuit breaker before starting
-    if config.respect_circuit_breaker:
+    # Check circuit breaker before starting. We look the breaker up by
+    # service_name in the shared registry so callers retrying ``spotify``,
+    # ``database``, etc. honor their own breakers — the previous code
+    # only ever consulted ``gemini_circuit`` and silently bypassed every
+    # other service's protection.
+    if config.respect_circuit_breaker and service_name:
         try:
-            from .circuit_breaker import gemini_circuit
+            from .circuit_breaker import get_circuit_for_service
 
-            if service_name == "gemini" and not gemini_circuit.can_execute():
+            breaker = get_circuit_for_service(service_name)
+            if breaker is not None and not breaker.can_execute():
                 logger.warning("⚡ Circuit breaker OPEN - skipping retry for %s", service_name)
                 if fallback is not None:
                     return fallback
@@ -359,8 +397,12 @@ async def retry_async(
 
         except config.recoverable_errors as e:
             last_error = e
-            state.consecutive_failures += 1
-            state.last_failure_time = time.time()
+            # Mutate the shared state under the global lock so concurrent
+            # retries against the same service don't trample
+            # consecutive_failures / last_failure_time on each other.
+            with _backoff_states_lock:
+                state.consecutive_failures += 1
+                state.last_failure_time = time.time()
 
             if service_name:
                 service_monitor.record_failure(service_name, str(e)[:100])
@@ -404,7 +446,9 @@ async def retry_async(
 
     if last_error is not None:
         raise last_error
-    raise RuntimeError(f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})")
+    raise RuntimeError(
+        f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})"
+    )
 
 
 def with_retry(
@@ -531,21 +575,27 @@ class ServiceHealthMonitor:
         self._window_size = window_size
         self._failure_threshold = failure_threshold
         self._last_errors: dict[str, str] = {}
+        # Lock guarding _results / _last_errors so concurrent record_success
+        # / record_failure / read paths don't race on the dict mutation.
+        # Reentrant so is_healthy can be called from inside get_status.
+        self._lock = threading.RLock()
         self.logger = logging.getLogger("ServiceHealthMonitor")
 
     def record_success(self, service: str) -> None:
         """Record a successful request."""
-        self._ensure_service(service)
-        self._results[service].append(True)
+        with self._lock:
+            self._ensure_service_unlocked(service)
+            self._results[service].append(True)
 
     def record_failure(self, service: str, error: str = "") -> None:
         """Record a failed request."""
-        self._ensure_service(service)
-        self._results[service].append(False)
-        self._last_errors[service] = error
+        with self._lock:
+            self._ensure_service_unlocked(service)
+            self._results[service].append(False)
+            self._last_errors[service] = error
 
-    def _ensure_service(self, service: str) -> None:
-        """Ensure service tracking exists."""
+    def _ensure_service_unlocked(self, service: str) -> None:
+        """Ensure service tracking exists (caller must hold _lock)."""
         from collections import deque
 
         if service not in self._results:
@@ -553,34 +603,39 @@ class ServiceHealthMonitor:
 
     def is_healthy(self, service: str) -> bool:
         """Check if service is healthy based on recent success rate."""
-        if service not in self._results or len(self._results[service]) == 0:
-            return True  # Assume healthy if no data
+        with self._lock:
+            if service not in self._results or len(self._results[service]) == 0:
+                return True  # Assume healthy if no data
 
-        success_count = sum(self._results[service])
-        total = len(self._results[service])
+            success_count = sum(self._results[service])
+            total = len(self._results[service])
         failure_rate = 1.0 - (success_count / total)
 
         return failure_rate < self._failure_threshold  # type: ignore[no-any-return]
 
     def get_status(self, service: str) -> dict[str, Any]:
         """Get detailed status for a service."""
-        if service not in self._results:
-            return {"healthy": True, "requests": 0, "success_rate": 1.0}
+        with self._lock:
+            if service not in self._results:
+                return {"healthy": True, "requests": 0, "success_rate": 1.0}
 
-        results = self._results[service]
-        total = len(results)
-        success_count = sum(results)
+            results = self._results[service]
+            total = len(results)
+            success_count = sum(results)
+            last_error = self._last_errors.get(service, "")
 
         return {
             "healthy": self.is_healthy(service),
             "requests": total,
             "success_rate": success_count / max(1, total),
-            "last_error": self._last_errors.get(service, ""),
+            "last_error": last_error,
         }
 
     def get_all_status(self) -> dict[str, dict[str, Any]]:
         """Get status for all tracked services."""
-        return {service: self.get_status(service) for service in self._results}
+        with self._lock:
+            services = list(self._results.keys())
+        return {service: self.get_status(service) for service in services}
 
 
 # Global service health monitor

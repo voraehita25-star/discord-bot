@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -98,15 +99,29 @@ class Fact:
 
         Returns the decayed confidence value without mutating self.
         """
+        # Clamp negative days to 0 — a clock skew or "future" timestamp
+        # would otherwise produce a confidence > 1.0 (i.e. negative decay).
+        days = max(0, days_since_confirmed)
         # Confidence decays 10% per 30 days without confirmation
         decay_rate = 0.1
-        decay_periods = days_since_confirmed / 30
+        decay_periods = days / 30
         return max(0.1, 1.0 - (decay_rate * decay_periods))
 
 
 class FactExtractor:
     """
     Extracts facts from messages using pattern matching.
+
+    Note:
+        This is the *offline* fact-extraction path — pure regex, runs on every
+        user message, no API call. The patterns here are intentionally narrow
+        (``IDENTITY`` + explicit "remember"/"forget" commands carry the most
+        weight) so the noise rate stays low. When an Anthropic API key is
+        configured, :mod:`cogs.ai_core.memory.consolidator` runs every N
+        messages and extracts richer entity facts via Claude — that's the
+        higher-quality path. Treat the FactExtractor output as a fast-but-
+        rough first pass; the consolidator's results take precedence in
+        ``entity_memory`` because they have higher confidence scores.
     """
 
     # Patterns for extracting facts (pattern, category, importance)
@@ -258,7 +273,9 @@ class LongTermMemory:
     def __init__(self):
         self.logger = logging.getLogger("LongTermMemory")
         self.extractor = FactExtractor()
-        self._cache: dict[int, list[Fact]] = {}  # user_id -> facts
+        # OrderedDict + move_to_end gives true LRU eviction so heavily-used
+        # users aren't kicked out just because they were inserted first.
+        self._cache: OrderedDict[int, list[Fact]] = OrderedDict()
         self._next_cache_id: int = 0  # monotonic counter for cache-only IDs
         self._lock = asyncio.Lock()
 
@@ -394,15 +411,21 @@ class LongTermMemory:
         """
         similar = await self._find_similar_fact(user_id, content_query)
         if similar and similar.id:
-            if DB_AVAILABLE and db is not None:
-                async with db.get_write_connection() as conn:
-                    await conn.execute(
-                        "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
-                    )
+            # Hold _lock across BOTH the DB write and the cache mutation.
+            # `_update_fact_confirmation` holds the same lock across its DB
+            # write, so doing only the cache update under lock here would
+            # let an interleaving cache rebuild from the DB observe the
+            # not-yet-deactivated row.
+            async with self._lock:
+                if DB_AVAILABLE and db is not None:
+                    async with db.get_write_connection() as conn:
+                        await conn.execute(
+                            "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
+                        )
+                        await conn.commit()
 
-            # Remove from cache
-            if user_id in self._cache:
-                self._cache[user_id] = [f for f in self._cache[user_id] if f.id != similar.id]
+                if user_id in self._cache:
+                    self._cache[user_id] = [f for f in self._cache[user_id] if f.id != similar.id]
 
             self.logger.info("Forgot fact: %s", similar.content[:50])
             return True
@@ -425,6 +448,19 @@ class LongTermMemory:
         """
         if not DB_AVAILABLE or db is None:
             async with self._lock:
+                # Warn near capacity — without DB, every miss past
+                # MAX_CACHE_USERS evicts the LRU user's facts. Surface
+                # this so operators know facts are being lost in
+                # cache-only mode before it actually happens.
+                if len(self._cache) >= self.MAX_CACHE_USERS - 10:
+                    self.logger.warning(
+                        "LTM cache near capacity (%d/%d) with DB unavailable — "
+                        "next new user will evict oldest user's facts",
+                        len(self._cache),
+                        self.MAX_CACHE_USERS,
+                    )
+                if user_id in self._cache:
+                    self._cache.move_to_end(user_id)
                 return list(self._cache.get(user_id, []))
 
         async with db.get_connection() as conn:
@@ -509,29 +545,50 @@ class LongTermMemory:
         return "\n".join(lines)
 
     async def _find_similar_fact(self, user_id: int, content: str) -> Fact | None:
-        """Find existing similar fact."""
-        facts = await self.get_user_facts(user_id)
-        content_lower = content.lower()
+        """Find existing similar fact.
 
-        # Skip matching for very short content to avoid false positives
-        if len(content_lower.strip()) < 5:
+        Pre-computes the query word set + length once outside the loop —
+        previously this was rebuilt per-fact, making the function O(N*M)
+        where N is the user's fact count. Also requires a substring match
+        to be at least half the longer string's length so "John" doesn't
+        spuriously dedupe "John Smith died yesterday".
+        """
+        content_lower = content.lower().strip()
+        if len(content_lower) < 5:
             return None
 
+        facts = await self.get_user_facts(user_id)
+        if not facts:
+            return None
+
+        content_words = set(content_lower.split())
+        content_len = len(content_lower)
+
         for fact in facts:
-            fact_lower = fact.content.lower()
-            # Skip very short facts to avoid overly broad matches
-            if len(fact_lower.strip()) < 5:
+            fact_lower = fact.content.lower().strip()
+            if len(fact_lower) < 5:
                 continue
-            # Simple substring matching
-            if content_lower in fact_lower or fact_lower in content_lower:
+            # Substring match — require the shorter string to be at least
+            # 50% of the longer one. Stops "name" prefix matches from
+            # treating arbitrary longer facts as duplicates.
+            min_len = min(content_len, len(fact_lower))
+            max_len = max(content_len, len(fact_lower))
+            if (
+                max_len > 0
+                and min_len * 2 >= max_len
+                and (content_lower in fact_lower or fact_lower in content_lower)
+            ):
                 return fact
-            # Word overlap
-            content_words = set(content_lower.split())
-            fact_words = set(fact_lower.split())
-            if content_words and fact_words:
-                overlap = len(content_words & fact_words) / max(len(content_words), len(fact_words))
-                if overlap >= self.SIMILARITY_THRESHOLD:
-                    return fact
+            # Word overlap (Jaccard-ish) — only meaningful when both
+            # sides have multi-word content.
+            if content_words:
+                fact_words = set(fact_lower.split())
+                if fact_words:
+                    overlap = len(content_words & fact_words) / max(
+                        len(content_words), len(fact_words)
+                    )
+                    if overlap >= self.SIMILARITY_THRESHOLD:
+                        return fact
 
         return None
 
@@ -541,12 +598,20 @@ class LongTermMemory:
             # Store in cache only (thread-safe)
             async with self._lock:
                 if fact.user_id not in self._cache:
-                    # Evict oldest user cache if at capacity
+                    # Evict least-recently-used user cache if at capacity
                     if len(self._cache) >= self.MAX_CACHE_USERS:
-                        oldest_uid = next(iter(self._cache))
-                        del self._cache[oldest_uid]
-                        self.logger.debug("Evicted LTM cache for user %s (capacity %d)", oldest_uid, self.MAX_CACHE_USERS)
+                        oldest_uid, _ = self._cache.popitem(last=False)
+                        # Promoted from debug — eviction in cache-only mode
+                        # silently destroys a user's facts, so operators
+                        # need to see it.
+                        self.logger.warning(
+                            "Evicted LTM cache for user %s (capacity %d) — facts lost (DB unavailable)",
+                            oldest_uid,
+                            self.MAX_CACHE_USERS,
+                        )
                     self._cache[fact.user_id] = []
+                else:
+                    self._cache.move_to_end(fact.user_id)
                 self._next_cache_id += 1
                 fact.id = self._next_cache_id
                 self._cache[fact.user_id].append(fact)
@@ -582,21 +647,27 @@ class LongTermMemory:
     async def _update_fact_confirmation(self, fact: Fact) -> None:
         """Update fact's last confirmation time and count."""
         now = datetime.now(tz=timezone.utc)
-        fact.last_confirmed = now
-        fact.mention_count += 1
-        fact.confidence = 1.0  # Reset confidence on confirmation
+        # Hold the lock across the in-memory mutation so a concurrent
+        # forget_fact() (which rewrites the cache list under the same
+        # lock) can't read a torn fact mid-update. The DB UPDATE is also
+        # inside the lock so the persisted state matches what the cache
+        # ends up with.
+        async with self._lock:
+            fact.last_confirmed = now
+            fact.mention_count += 1
+            fact.confidence = 1.0  # Reset confidence on confirmation
 
-        if DB_AVAILABLE and db is not None and fact.id:
-            async with db.get_write_connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE user_facts
-                    SET last_confirmed = ?, mention_count = mention_count + 1, confidence = 1.0
-                    WHERE id = ?
-                """,
-                    (now.isoformat(), fact.id),
-                )
-                await conn.commit()
+            if DB_AVAILABLE and db is not None and fact.id:
+                async with db.get_write_connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE user_facts
+                        SET last_confirmed = ?, mention_count = mention_count + 1, confidence = 1.0
+                        WHERE id = ?
+                    """,
+                        (now.isoformat(), fact.id),
+                    )
+                    await conn.commit()
 
     async def deduplicate_facts(self, user_id: int) -> int:
         """
@@ -616,12 +687,15 @@ class LongTermMemory:
             content_key = fact.content.lower().strip()
 
             if content_key in seen_contents:
-                # Mark duplicate as inactive
+                # Mark duplicate as inactive — explicit commit so the
+                # `is_active = 0` write is durable even if the db manager's
+                # context exit doesn't auto-commit.
                 if fact.id and DB_AVAILABLE and db is not None:
                     async with db.get_write_connection() as conn:
                         await conn.execute(
                             "UPDATE user_facts SET is_active = 0 WHERE id = ?", (fact.id,)
                         )
+                        await conn.commit()
                 removed += 1
             else:
                 seen_contents[content_key] = fact.id

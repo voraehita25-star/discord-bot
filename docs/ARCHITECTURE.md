@@ -68,16 +68,16 @@
 
 | Module | Purpose |
 | -------- | --------- |
-| `api/` | API failover (direct/proxy), WebSocket dashboard, chat handlers |
-| `cache/` | AI response caching |
+| `api/` | Claude SDK wrapper, direct/proxy failover, dashboard WebSocket + chat backends (SDK + CLI), conversation/memory CRUD handlers, document text extractor |
+| `cache/` | AI response cache, analytics, tz-aware token tracker |
 | `commands/` | Slash commands (debug, memory, server) |
-| `core/` | Context builder, message queue, performance |
-| `data/` | Constants, env vars, roleplay data |
-| `memory/` | Entity memory, RAG, summarizer, state tracker, conversation branching |
-| `processing/` | Content safety guardrails |
-| `prompts/` | System prompt templates (YAML) |
-| `response/` | Response formatting mixin |
-| `tools/` | AI tool definitions and executor |
+| `core/` | Context builder, message queue, performance tracking |
+| `data/` | Constants, env vars, persona + roleplay data |
+| `memory/` | Entity memory, RAG (FAISS / Rust SIMD), summarizer, state tracker, conversation branching, long-term facts, history manager |
+| `processing/` | Content safety guardrails, intent detection, prompt manager, self-reflection |
+| `prompts/` | System prompt templates (YAML — `base.yaml`) loaded by `processing/prompt_manager.py` |
+| `response/` | Response sender (chunked + webhook + code-fence-aware), webhook cache, response mixin |
+| `tools/` | AI function-calling tool definitions and executor |
 
 ## External Services
 

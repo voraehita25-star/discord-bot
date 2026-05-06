@@ -113,6 +113,7 @@ class TestMaxContentLength:
 # Merged from test_url_fetcher_client.py
 # ======================================================================
 
+
 class TestURLFetcherClientInit:
     """Tests for URLFetcherClient initialization."""
 
@@ -276,11 +277,9 @@ class TestURLFetcherClientFetchViaService:
         client = URLFetcherClient()
 
         mock_response = AsyncMock()
-        mock_response.json = AsyncMock(return_value={
-            "url": "http://test.com",
-            "title": "Test",
-            "content": "Content"
-        })
+        mock_response.json = AsyncMock(
+            return_value={"url": "http://test.com", "title": "Test", "content": "Content"}
+        )
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock()
 
@@ -288,7 +287,9 @@ class TestURLFetcherClientFetchViaService:
         mock_session.get = MagicMock(return_value=mock_response)
         client._session = mock_session
 
-        with patch("utils.web.url_fetcher._is_private_url", new_callable=AsyncMock, return_value=False):
+        with patch(
+            "utils.web.url_fetcher._is_private_url", new_callable=AsyncMock, return_value=False
+        ):
             result = await client._fetch_via_service("http://test.com")
 
         assert result["url"] == "http://test.com"
@@ -399,11 +400,9 @@ class TestURLFetcherClientFetchBatch:
 
         client = URLFetcherClient()
         client._service_available = True
-        client._fetch_batch_via_service = AsyncMock(return_value={
-            "results": [],
-            "success_count": 0,
-            "error_count": 0
-        })
+        client._fetch_batch_via_service = AsyncMock(
+            return_value={"results": [], "success_count": 0, "error_count": 0}
+        )
 
         urls = ["http://a.com", "http://b.com"]
         await client.fetch_batch(urls)
@@ -417,11 +416,9 @@ class TestURLFetcherClientFetchBatch:
 
         client = URLFetcherClient()
         client._service_available = False
-        client._fetch_batch_fallback = AsyncMock(return_value={
-            "results": [],
-            "success_count": 0,
-            "error_count": 0
-        })
+        client._fetch_batch_fallback = AsyncMock(
+            return_value={"results": [], "success_count": 0, "error_count": 0}
+        )
 
         urls = ["http://a.com", "http://b.com"]
         await client.fetch_batch(urls)
@@ -433,21 +430,38 @@ class TestURLFetcherClientFetchBatchViaService:
     """Tests for _fetch_batch_via_service method."""
 
     @pytest.mark.asyncio
-    async def test_fetch_batch_via_service_success(self):
-        """Test successful batch fetch via service."""
+    async def test_fetch_batch_via_service_success(self, monkeypatch):
+        """Test successful batch fetch via service.
+
+        _fetch_batch_via_service now performs a per-URL SSRF check via
+        ``utils.web.url_fetcher._is_private_url`` BEFORE forwarding to
+        the Go service — without this, any URL that bypassed the Go-side
+        check (or any future config drift between the two sides) would
+        become an SSRF. Stub the SSRF helper to return False so the test
+        URLs aren't filtered out before the Go-service mock fires.
+        """
         from utils.web.url_fetcher_client import URLFetcherClient
+
+        # Stub the SSRF helper at the source module so the lazy import
+        # inside _fetch_batch_via_service picks up our mock.
+        monkeypatch.setattr(
+            "utils.web.url_fetcher._is_private_url",
+            AsyncMock(return_value=False),
+        )
 
         client = URLFetcherClient()
 
         mock_response = AsyncMock()
-        mock_response.json = AsyncMock(return_value={
-            "results": [
-                {"url": "http://a.com", "title": "A"},
-                {"url": "http://b.com", "title": "B"}
-            ],
-            "success_count": 2,
-            "error_count": 0
-        })
+        mock_response.json = AsyncMock(
+            return_value={
+                "results": [
+                    {"url": "http://a.com", "title": "A"},
+                    {"url": "http://b.com", "title": "B"},
+                ],
+                "success_count": 2,
+                "error_count": 0,
+            }
+        )
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock()
 
@@ -462,9 +476,19 @@ class TestURLFetcherClientFetchBatchViaService:
         assert len(result["results"]) == 2
 
     @pytest.mark.asyncio
-    async def test_fetch_batch_via_service_with_timeout(self):
-        """Test batch fetch via service with timeout."""
+    async def test_fetch_batch_via_service_with_timeout(self, monkeypatch):
+        """Test batch fetch via service with timeout.
+
+        See test_fetch_batch_via_service_success for why _is_private_url
+        must be stubbed — without it the test URL is filtered out and
+        the Go-service POST is short-circuited (never called).
+        """
         from utils.web.url_fetcher_client import URLFetcherClient
+
+        monkeypatch.setattr(
+            "utils.web.url_fetcher._is_private_url",
+            AsyncMock(return_value=False),
+        )
 
         client = URLFetcherClient()
 
@@ -509,10 +533,12 @@ class TestURLFetcherClientFetchBatchFallback:
         from utils.web.url_fetcher_client import URLFetcherClient
 
         client = URLFetcherClient()
-        client._fetch_fallback = AsyncMock(side_effect=[
-            {"url": "http://a.com", "title": "A"},
-            {"url": "http://b.com", "title": "B"}
-        ])
+        client._fetch_fallback = AsyncMock(
+            side_effect=[
+                {"url": "http://a.com", "title": "A"},
+                {"url": "http://b.com", "title": "B"},
+            ]
+        )
 
         urls = ["http://a.com", "http://b.com"]
         result = await client._fetch_batch_fallback(urls)
@@ -527,10 +553,12 @@ class TestURLFetcherClientFetchBatchFallback:
         from utils.web.url_fetcher_client import URLFetcherClient
 
         client = URLFetcherClient()
-        client._fetch_fallback = AsyncMock(side_effect=[
-            {"url": "http://a.com", "title": "A"},
-            {"url": "http://b.com", "error": "Failed"}
-        ])
+        client._fetch_fallback = AsyncMock(
+            side_effect=[
+                {"url": "http://a.com", "title": "A"},
+                {"url": "http://b.com", "error": "Failed"},
+            ]
+        )
 
         urls = ["http://a.com", "http://b.com"]
         result = await client._fetch_batch_fallback(urls)
@@ -544,10 +572,9 @@ class TestURLFetcherClientFetchBatchFallback:
         from utils.web.url_fetcher_client import URLFetcherClient
 
         client = URLFetcherClient()
-        client._fetch_fallback = AsyncMock(side_effect=[
-            {"url": "http://a.com", "title": "A"},
-            Exception("Connection error")
-        ])
+        client._fetch_fallback = AsyncMock(
+            side_effect=[{"url": "http://a.com", "title": "A"}, Exception("Connection error")]
+        )
 
         urls = ["http://a.com", "http://b.com"]
         result = await client._fetch_batch_fallback(urls)
@@ -614,10 +641,7 @@ class TestConvenienceFunctions:
 
         with patch("utils.web.url_fetcher_client.URLFetcherClient") as MockClient:
             mock_client = AsyncMock()
-            mock_client.fetch_batch = AsyncMock(return_value={
-                "results": [],
-                "success_count": 0
-            })
+            mock_client.fetch_batch = AsyncMock(return_value={"results": [], "success_count": 0})
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock()
             MockClient.return_value = mock_client
@@ -671,4 +695,3 @@ class TestModuleImports:
         from utils.web.url_fetcher_client import fetch_urls
 
         assert fetch_urls is not None
-

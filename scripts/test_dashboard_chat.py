@@ -5,8 +5,11 @@ Run: python scripts/test_dashboard_chat.py
 
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+# Anchor sys.path to project root so the script works from any cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 
 async def test_database():
     """Test database schema and methods."""
@@ -26,7 +29,7 @@ async def test_database():
         conversation_id=conv_id,
         role_preset="faust",
         thinking_enabled=True,
-        title="Test Conversation"
+        title="Test Conversation",
     )
     print(f"✅ Created conversation: {conv_id}")
 
@@ -55,6 +58,7 @@ async def test_database():
     print("✅ Deleted test conversation")
 
     print("\n✅ All database tests passed!\n")
+
 
 async def test_websocket_server():
     """Test WebSocket server startup/shutdown."""
@@ -93,6 +97,7 @@ async def test_websocket_server():
 
     print("\n✅ All WebSocket tests passed!\n")
 
+
 async def main():
     print("\n" + "=" * 50)
     print("Dashboard Chat Component Tests")
@@ -108,7 +113,9 @@ async def main():
     except Exception as e:
         print(f"\n❌ Test failed: {e}")
         import traceback
+
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

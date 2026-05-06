@@ -18,11 +18,7 @@ class TestPendingMessageDataclass:
         channel = MagicMock()
         user = MagicMock()
 
-        msg = PendingMessage(
-            channel=channel,
-            user=user,
-            message="Hello"
-        )
+        msg = PendingMessage(channel=channel, user=user, message="Hello")
 
         assert msg.channel == channel
         assert msg.user == user
@@ -33,11 +29,7 @@ class TestPendingMessageDataclass:
         """Test PendingMessage default values."""
         from cogs.ai_core.core.message_queue import PendingMessage
 
-        msg = PendingMessage(
-            channel=MagicMock(),
-            user=MagicMock(),
-            message="Test"
-        )
+        msg = PendingMessage(channel=MagicMock(), user=MagicMock(), message="Test")
 
         assert msg.attachments is None
         assert msg.output_channel is None
@@ -52,10 +44,7 @@ class TestPendingMessageDataclass:
         attachments = [MagicMock(), MagicMock()]
 
         msg = PendingMessage(
-            channel=MagicMock(),
-            user=MagicMock(),
-            message="Test",
-            attachments=attachments
+            channel=MagicMock(), user=MagicMock(), message="Test", attachments=attachments
         )
 
         assert msg.attachments == attachments
@@ -89,8 +78,13 @@ class TestMessageQueueInit:
 class TestMessageQueueLock:
     """Tests for MessageQueue lock management."""
 
-    def test_get_lock_creates_lock(self):
-        """Test get_lock_sync creates a lock if not exists."""
+    async def test_get_lock_creates_lock(self):
+        """Test get_lock_sync creates a lock if not exists.
+
+        get_lock_sync now requires a running asyncio loop because the
+        asyncio.Lock it returns is only useful from coroutines on that loop.
+        Test is async to satisfy that contract.
+        """
         from cogs.ai_core.core.message_queue import MessageQueue
 
         queue = MessageQueue()
@@ -100,7 +94,7 @@ class TestMessageQueueLock:
         assert isinstance(lock, asyncio.Lock)
         assert 12345 in queue.processing_locks
 
-    def test_get_lock_returns_same_lock(self):
+    async def test_get_lock_returns_same_lock(self):
         """Test get_lock_sync returns same lock for same channel."""
         from cogs.ai_core.core.message_queue import MessageQueue
 
@@ -143,12 +137,7 @@ class TestMessageQueueQueue:
         channel = MagicMock()
         user = MagicMock()
 
-        queue.queue_message(
-            channel_id=12345,
-            channel=channel,
-            user=user,
-            message="Hello"
-        )
+        queue.queue_message(channel_id=12345, channel=channel, user=user, message="Hello")
 
         assert 12345 in queue.pending_messages
         assert len(queue.pending_messages[12345]) == 1

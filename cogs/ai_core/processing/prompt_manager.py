@@ -6,7 +6,6 @@ Manages AI system prompts with template support.
 from __future__ import annotations
 
 import logging
-logger = logging.getLogger(__name__)
 import random
 from datetime import datetime
 from pathlib import Path
@@ -14,11 +13,14 @@ from typing import Any
 
 # Try to import YAML
 try:
-    import yaml  # type: ignore[import-untyped]
+    import yaml
 
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
 
 
 class PromptManager:
@@ -184,9 +186,7 @@ class PromptManager:
                 # Sanitize curly braces in user input to prevent format string injection
                 safe_name = str(user_name or "Unknown").replace("{", "{{").replace("}", "}}")
                 try:
-                    parts.append(
-                        user_info.format(user_name=safe_name, user_id=user_id or 0)
-                    )
+                    parts.append(user_info.format(user_name=safe_name, user_id=user_id or 0))
                 except (KeyError, IndexError) as exc:
                     logger.warning("user_info template formatting failed: %s", exc)
 
@@ -278,10 +278,28 @@ class PromptManager:
         return "\n".join(parts)
 
     def reload(self) -> None:
-        """Reload all templates from disk."""
-        self.templates.clear()
-        self._load_templates()
-        self.logger.info("Templates reloaded")
+        """Reload all templates from disk atomically.
+
+        Build into a temp ``new_templates`` dict and only swap it onto
+        ``self.templates`` once the load succeeds. Previously we cleared
+        ``self.templates`` before loading, so a failure mid-load left the
+        manager with an empty (or half-built) template set even when the
+        ``except`` branch tried to restore the previous version.
+        """
+        prev_templates = self.templates
+        try:
+            new_templates: dict[str, Any] = {}
+            # Temporarily swap so `_load_templates` (which writes to
+            # `self.templates`) populates the new dict instead.
+            self.templates = new_templates
+            self._load_templates()
+        except Exception:
+            self.templates = prev_templates
+            self.logger.exception("Reload failed; kept previous templates")
+            raise
+        # _load_templates fills `self.templates` (= new_templates) directly;
+        # the assignment above is the atomic swap point.
+        self.logger.info("Templates reloaded (%d entries)", len(self.templates))
 
 
 # Global instance

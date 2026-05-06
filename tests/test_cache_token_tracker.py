@@ -185,7 +185,7 @@ class TestTokenTracker:
             channel_id=456,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         # Check usage was stored
@@ -209,7 +209,7 @@ class TestTokenTracker:
             guild_id=789,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         assert "guild:789" in tracker._usage_cache
@@ -241,7 +241,7 @@ class TestTokenTracker:
             channel_id=456,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         stats = await tracker.get_user_usage(123)
@@ -323,7 +323,7 @@ class TestTokenTracker:
             channel_id=456,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         allowed, warning = await tracker.check_limits(123)
@@ -347,7 +347,7 @@ class TestTokenTracker:
             channel_id=456,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         allowed, warning = await tracker.check_limits(123)
@@ -373,7 +373,7 @@ class TestTokenTracker:
             channel_id=456,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         allowed, warning = await tracker.check_limits(123)
@@ -413,7 +413,7 @@ class TestTokenTracker:
             guild_id=789,
         )
 
-        with patch.object(tracker, '_persist_usage', new_callable=AsyncMock):
+        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
             await tracker.record_usage(usage)
 
         stats = await tracker.get_global_stats()
@@ -512,12 +512,16 @@ class TestTokenTracker:
 
     def test_get_usage_in_period(self):
         """Test _get_usage_in_period."""
+        from datetime import timezone
+
         from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage
 
         tracker = TokenTracker()
 
-        # Add records with different timestamps
-        now = datetime.now()
+        # Add records with different timestamps. Use tz-aware UTC so the cutoff
+        # comparison is unambiguous — the production code now requires this so
+        # naive local time vs aware UTC don't silently mis-classify records.
+        now = datetime.now(timezone.utc)
         tracker._usage_cache["user:123"] = [
             TokenUsage(
                 input_tokens=100,

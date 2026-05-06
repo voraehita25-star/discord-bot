@@ -1,7 +1,7 @@
 """
 Tests for cogs/ai_core/memory/memory_consolidator.py
 
-Comprehensive tests for MemoryConsolidator and ConversationSummary classes.
+Comprehensive tests for SummaryArchiver and ConversationSummary classes.
 """
 
 import asyncio
@@ -115,14 +115,14 @@ class TestConversationSummaryDataclass:
         assert "Topic3" in result
 
 
-class TestMemoryConsolidatorInit:
-    """Tests for MemoryConsolidator initialization."""
+class TestSummaryArchiverInit:
+    """Tests for SummaryArchiver initialization."""
 
     def test_init(self):
-        """Test MemoryConsolidator init."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        """Test SummaryArchiver init."""
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
 
         assert consolidator._consolidation_task is None
         assert consolidator.MIN_MESSAGES_TO_SUMMARIZE == 20
@@ -130,22 +130,22 @@ class TestMemoryConsolidatorInit:
         assert consolidator.MAX_SUMMARY_LENGTH == 500
 
     def test_has_logger(self):
-        """Test MemoryConsolidator has logger."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        """Test SummaryArchiver has logger."""
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         assert consolidator.logger is not None
 
 
-class TestMemoryConsolidatorBackgroundTask:
+class TestSummaryArchiverBackgroundTask:
     """Tests for background task methods."""
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_start_background_task(self):
         """Test start_background_task creates task."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
 
         # Mock asyncio.create_task
         with patch("asyncio.create_task") as mock_create:
@@ -160,9 +160,9 @@ class TestMemoryConsolidatorBackgroundTask:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_start_background_task_already_running(self):
         """Test start_background_task does nothing if already running."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         mock_task = MagicMock()
         mock_task.done.return_value = False
         consolidator._consolidation_task = mock_task
@@ -176,9 +176,9 @@ class TestMemoryConsolidatorBackgroundTask:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_stop_background_task(self):
         """Test stop_background_task cancels task."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
 
         # Create a real async task that we can cancel
         async def dummy_task():
@@ -195,99 +195,99 @@ class TestMemoryConsolidatorBackgroundTask:
     @pytest.mark.asyncio
     async def test_stop_background_task_no_task(self):
         """Test stop_background_task with no task."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         consolidator._consolidation_task = None
 
         # Should not raise
         await consolidator.stop_background_task()
 
 
-class TestMemoryConsolidatorInitSchema:
+class TestSummaryArchiverInitSchema:
     """Tests for init_schema method."""
 
     @pytest.mark.asyncio
     @patch("cogs.ai_core.memory.memory_consolidator.DB_AVAILABLE", False)
     async def test_init_schema_no_db(self):
         """Test init_schema when DB not available."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
 
         # Should not raise, just return early
         await consolidator.init_schema()
 
 
-class TestMemoryConsolidatorConsolidateChannel:
+class TestSummaryArchiverConsolidateChannel:
     """Tests for consolidate_channel method."""
 
     @pytest.mark.asyncio
     @patch("cogs.ai_core.memory.memory_consolidator.DB_AVAILABLE", False)
     async def test_consolidate_channel_no_db(self):
         """Test consolidate_channel when DB not available."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         result = await consolidator.consolidate_channel(12345)
 
         assert result is None
 
 
-class TestMemoryConsolidatorConsolidateAllChannels:
+class TestSummaryArchiverConsolidateAllChannels:
     """Tests for consolidate_all_channels method."""
 
     @pytest.mark.asyncio
     @patch("cogs.ai_core.memory.memory_consolidator.DB_AVAILABLE", False)
     async def test_consolidate_all_channels_no_db(self):
         """Test consolidate_all_channels when DB not available."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         result = await consolidator.consolidate_all_channels()
 
         assert result == 0
 
 
-class TestMemoryConsolidatorGetChannelSummaries:
+class TestSummaryArchiverGetChannelSummaries:
     """Tests for get_channel_summaries method."""
 
     @pytest.mark.asyncio
     @patch("cogs.ai_core.memory.memory_consolidator.DB_AVAILABLE", False)
     async def test_get_channel_summaries_no_db(self):
         """Test get_channel_summaries when DB not available."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         result = await consolidator.get_channel_summaries(12345)
 
         assert result == []
 
 
-class TestMemoryConsolidatorGetContextSummaries:
+class TestSummaryArchiverGetContextSummaries:
     """Tests for get_context_summaries method."""
 
     @pytest.mark.asyncio
     @patch("cogs.ai_core.memory.memory_consolidator.DB_AVAILABLE", False)
     async def test_get_context_summaries_no_db(self):
         """Test get_context_summaries when DB not available."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         result = await consolidator.get_context_summaries(12345)
 
         assert result == ""
 
 
-class TestMemoryConsolidatorGenerateSummary:
+class TestSummaryArchiverGenerateSummary:
     """Tests for _generate_summary method."""
 
     @pytest.mark.asyncio
     async def test_generate_summary_empty_messages(self):
         """Test _generate_summary with empty messages."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         result = await consolidator._generate_summary([])
 
         assert result is None
@@ -295,9 +295,9 @@ class TestMemoryConsolidatorGenerateSummary:
     @pytest.mark.asyncio
     async def test_generate_summary_with_messages(self):
         """Test _generate_summary with messages."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        consolidator = MemoryConsolidator()
+        consolidator = SummaryArchiver()
         messages = [
             {"role": "user", "content": "Hello, how are you?"},
             {"role": "model", "content": "I'm fine, thank you!"},
@@ -320,11 +320,20 @@ class TestModuleImports:
 
         assert ConversationSummary is not None
 
-    def test_import_memory_consolidator(self):
-        """Test MemoryConsolidator can be imported."""
-        from cogs.ai_core.memory.memory_consolidator import MemoryConsolidator
+    def test_import_summary_archiver(self):
+        """Test SummaryArchiver can be imported."""
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
-        assert MemoryConsolidator is not None
+        assert SummaryArchiver is not None
+
+    def test_import_summary_archiver_singleton(self):
+        """The module-level ``summary_archiver`` instance is the public hook."""
+        from cogs.ai_core.memory.memory_consolidator import (
+            SummaryArchiver,
+            summary_archiver,
+        )
+
+        assert isinstance(summary_archiver, SummaryArchiver)
 
     def test_db_available_flag_exists(self):
         """Test DB_AVAILABLE flag exists."""

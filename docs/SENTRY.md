@@ -27,6 +27,7 @@
 
 ```ini
 SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx
+SENTRY_ENVIRONMENT=production       # optional — read by bot.py at startup
 ```
 
 ### ปรับแต่ง (optional)
@@ -35,27 +36,49 @@ SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx
 
 ```python
 init_sentry(
+    dsn=os.getenv("SENTRY_DSN"),
     environment="production",  # หรือ "staging", "development"
-    sample_rate=1.0,          # 1.0 = 100% errors
-    traces_sample_rate=0.1    # 0.1 = 10% performance traces
+    sample_rate=1.0,           # 1.0 = 100% errors
+    traces_sample_rate=0.1,    # 0.1 = 10% performance traces
 )
 ```
+
+### Opt-out
+
+วางไฟล์ว่าง `data/telemetry_optout.flag` เพื่อปิด Sentry ทั้งหมด — `init_sentry()` จะ
+ตรวจไฟล์นี้ตอนเริ่มและ skip การ initialize ถ้าพบ ทำให้ไม่ต้องลบ DSN ออกจาก `.env`
 
 ---
 
 ## 📝 Manual Usage
 
 ```python
-from utils.sentry_integration import capture_exception, capture_message
+from utils.monitoring.sentry_integration import (
+    capture_exception,
+    capture_message,
+    set_user_context,
+    add_breadcrumb,
+)
 
-# จับ exception
+# จับ exception (signature: capture_exception(error, context=None, user_id=None, guild_id=None))
 try:
     risky_operation()
 except Exception as e:
     capture_exception(e, user_id=123, guild_id=456)
 
-# ส่ง message
+# ส่ง message (signature: capture_message(message, level="info", context=None))
 capture_message("Something happened", level="warning")
+
+# ผูก user identity เข้ากับเหตุการณ์ทั้งหมดของ session นี้
+set_user_context(user_id=123, username="me_no_you")
+
+# เก็บ breadcrumb สำหรับ debug ลำดับเหตุการณ์ก่อน error
+add_breadcrumb(
+    "user invoked /play",
+    category="command",
+    level="info",
+    data={"query": "song-name"},
+)
 ```
 
 ---
