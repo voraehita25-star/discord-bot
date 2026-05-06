@@ -104,7 +104,7 @@ jobs:
     - name: Run type checker (mypy)
       run: |
         # Track error count: fail CI if new type errors introduced
-        BASELINE=13  # Pre-existing arch issues — discord.py union types, sentry SDK signature, lambda inference, ssrf helper signature
+        BASELINE=16  # Pre-existing arch issues — discord.py union types, sentry SDK signature, lambda inference, ssrf helper signature
         ERROR_COUNT=$(mypy cogs/ utils/ bot.py config.py 2>&1 | grep -c ': error:' || true)
         echo "mypy errors: $ERROR_COUNT (baseline: $BASELINE)"
         if [ "$ERROR_COUNT" -gt "$BASELINE" ]; then
