@@ -12,9 +12,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import anthropic
+import pytest
 
 from cogs.ai_core.api.api_failover import (
     APIFailoverManager,
@@ -33,11 +32,9 @@ class TestShouldFailover:
         assert _should_failover(TimeoutError("slow")) is True
 
     def test_rate_limit_does_not_trigger_failover(self):
-        err = MagicMock(spec=anthropic.RateLimitError)
-        # spec via MagicMock won't pass isinstance check unless we use real class.
-        # Construct via the exception class hierarchy — anthropic exceptions need
-        # message + response/body args; use side_effect-style stub via subclass.
-
+        # anthropic.RateLimitError takes message + response/body args at runtime;
+        # subclass with a no-arg __init__ to keep the test focused on isinstance
+        # behaviour inside _should_failover.
         class FakeRateLimit(anthropic.RateLimitError):
             def __init__(self) -> None:  # type: ignore[no-untyped-def]
                 pass

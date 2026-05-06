@@ -20,7 +20,6 @@ import pytest
 
 from cogs.ai_core.api import dashboard_chat_claude_cli as cli
 
-
 # ---------------------------------------------------------------------------
 # _save_inline_images
 # ---------------------------------------------------------------------------
@@ -141,7 +140,13 @@ class TestSaveInlineDocuments:
     def test_drops_unsupported_extension(self):
         result = cli._save_inline_documents(
             "conv-1",
-            [{"name": "evil.exe", "kind": "binary", "data": "data:application/x-msdownload;base64,QQ=="}],
+            [
+                {
+                    "name": "evil.exe",
+                    "kind": "binary",
+                    "data": "data:application/x-msdownload;base64,QQ==",
+                }
+            ],
             1024,
         )
         assert result == []
@@ -167,9 +172,7 @@ class TestSaveInlineDocuments:
         assert cli._save_inline_documents("conv-1", ["not-a-dict", 5], 1024) == []
 
     def test_skips_missing_name(self):
-        assert (
-            cli._save_inline_documents("conv-1", [{"kind": "text", "data": "hi"}], 1024) == []
-        )
+        assert cli._save_inline_documents("conv-1", [{"kind": "text", "data": "hi"}], 1024) == []
 
     def test_sanitises_filename(self):
         result = cli._save_inline_documents(

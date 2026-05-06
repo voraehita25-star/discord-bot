@@ -64,7 +64,9 @@ class TestIsPrivateUrl:
 
     async def test_blocks_dns_failure(self):
         # DNS failure should result in block (fail-closed for safety).
-        with patch("utils.web.url_fetcher.asyncio.wait_for", new=AsyncMock(side_effect=TimeoutError())):
+        with patch(
+            "utils.web.url_fetcher.asyncio.wait_for", new=AsyncMock(side_effect=TimeoutError())
+        ):
             assert await uf._is_private_url("https://nonexistent.invalid") is True
 
     async def test_blocks_loopback_dns(self):
@@ -108,9 +110,7 @@ class TestFormatUrlContentExtra:
         assert "https://broken.example" in out
 
     def test_includes_title_and_url(self):
-        out = uf.format_url_content_for_context(
-            [("https://x.example", "Title X", "Hello body")]
-        )
+        out = uf.format_url_content_for_context([("https://x.example", "Title X", "Hello body")])
         assert "Title X" in out
         assert "https://x.example" in out
         assert "Hello body" in out

@@ -265,9 +265,7 @@ class TestReflowLegacyText:
 
 class TestExtractedDocument:
     def test_dataclass_basic_fields(self):
-        d = de.ExtractedDocument(
-            filename="a.txt", kind="text", text="hi", char_count=2
-        )
+        d = de.ExtractedDocument(filename="a.txt", kind="text", text="hi", char_count=2)
         assert d.filename == "a.txt"
         assert d.kind == "text"
         assert d.text == "hi"
