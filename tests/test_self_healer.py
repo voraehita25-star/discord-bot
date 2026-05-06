@@ -1342,7 +1342,14 @@ class TestHealingActions:
             mock_path.exists.return_value = True
             mock_path.unlink.return_value = None
 
-            with patch("utils.reliability.self_healer.Path", return_value=mock_path):
+            # The live-PID safety guard added in audit-fixes will refuse to
+            # unlink unless we pin psutil.pid_exists to False (the mock_path's
+            # MagicMock read_text would otherwise resolve to PID 1 which exists
+            # on Linux CI runners).
+            with (
+                patch("utils.reliability.self_healer.Path", return_value=mock_path),
+                patch("utils.reliability.self_healer.psutil.pid_exists", return_value=False),
+            ):
                 result = healer.clean_pid_file()
 
                 assert result is True

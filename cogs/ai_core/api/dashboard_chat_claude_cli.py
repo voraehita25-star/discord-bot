@@ -209,8 +209,17 @@ async def delete_session_file(conversation_id: str) -> bool:
     doesn't linger after the user deletes the chat in the dashboard.
     Returns True if a file was actually deleted.
     """
+    # Wait for any in-flight track-saves so this delete's save is the
+    # last write to land — otherwise an older snapshot containing this
+    # conv would overwrite our deletion.
+    if _PERSIST_TASKS:
+        await asyncio.gather(*_PERSIST_TASKS, return_exceptions=True)
     session_id = _CONVERSATION_SESSIONS.pop(conversation_id, None)
     _save_persisted_sessions()
+    # Wait for our own save to land before returning so the test (and any
+    # caller relying on disk state) sees the deletion reflected.
+    if _PERSIST_TASKS:
+        await asyncio.gather(*_PERSIST_TASKS, return_exceptions=True)
     if not session_id:
         return False
     # Defense-in-depth: refuse anything that doesn't look like the UUID/hex
