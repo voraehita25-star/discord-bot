@@ -98,7 +98,7 @@ ignore = [
     "PLR1714", # comparison merge (`x == a or x == b` -> `x in (a, b)`) — readable as-is
     "B904",    # raise from (existing exception chains intentional)
     # RUF006 removed — dangling tasks now properly tracked in bot.py
-    # RUF059 — added in newer ruff; safe to drop until pre-commit ruff is bumped
+    "RUF059",  # unused-unpacked-variable (tuple unpacking patterns common in test/legacy code)
     "UP017",   # datetime-timezone-utc (timezone.utc compat for Python <3.11)
     "UP046",   # uses-generic-over-type-params (Generic[T] compat for Python <3.12)
 ]

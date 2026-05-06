@@ -6,7 +6,7 @@ repos:
   # Ruff - extremely fast Python linter and formatter
   # Pinned by commit SHA (not tag) so a tag retag can't swap the hook code.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: efa716b1aab63601b256afc0cda469f0f7606759  # v0.9.7
+    rev: 6fec9b7edb08fd9989088709d864a7826dc74e80  # v0.15.12
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
