@@ -349,7 +349,7 @@ class ShutdownManager:
                     asyncio.gather(*tasks, return_exceptions=True),
                     timeout=phase_budget,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Whole phase exceeded budget — cancel any stragglers so the
                 # bot doesn't sit there waiting for handlers that are stuck.
                 for t in tasks:

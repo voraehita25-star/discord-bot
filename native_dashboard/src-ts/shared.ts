@@ -37,7 +37,9 @@ declare global {
 
 // Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
 export const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
-    if (window.__TAURI__?.core?.invoke) {
+    // Guard `typeof window` — vitest can fire setTimeout callbacks after
+    // the JSDOM environment has been torn down, leaving `window` undefined.
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
         return window.__TAURI__.core.invoke<T>(cmd, args);
     }
     console.warn('Tauri not available, using mock');
