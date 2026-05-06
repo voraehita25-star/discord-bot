@@ -37,7 +37,9 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-target-version = "py314"
+# py313 (not py314) — pre-commit ruff is pinned to v0.9.7 which doesn't
+# recognize py314 yet. py313 is a strict subset so lint coverage is fine.
+target-version = "py313"
 line-length = 100
 exclude = [
     ".venv",
@@ -87,7 +89,7 @@ ignore = [
     "SIM105",  # suppressible-exception (explicit try-except preferred)
     "SIM117",  # multiple-with-statements (line length control)
     # RUF006 removed — dangling tasks now properly tracked in bot.py
-    "RUF059",  # unused-unpacked-variable (tuple unpacking patterns)
+    # RUF059 — added in newer ruff; safe to drop until pre-commit ruff is bumped
     "UP017",   # datetime-timezone-utc (timezone.utc compat for Python <3.11)
     "UP046",   # uses-generic-over-type-params (Generic[T] compat for Python <3.12)
 ]

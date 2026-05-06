@@ -187,4 +187,3 @@ class TestUserAgent:
         from utils.media.ytdl_source import ytdl_opts_hq
 
         assert 'Chrome' in ytdl_opts_hq.get('user_agent', '')
-

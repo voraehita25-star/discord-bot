@@ -982,7 +982,7 @@ class HealthAPIServer:
             self.running = True
             logger.info(
                 "🏥 Health API started at http://%s:%d",
-                self.host if self.host != "0.0.0.0" else "localhost",
+                self.host if self.host != "0.0.0.0" else "localhost",  # nosec B104  # string compare, not bind
                 self.port,
             )
             return True

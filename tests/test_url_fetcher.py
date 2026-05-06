@@ -696,4 +696,3 @@ class TestModuleImports:
         from utils.web.url_fetcher_client import fetch_urls
 
         assert fetch_urls is not None
-

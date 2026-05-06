@@ -648,4 +648,3 @@ class TestExecuteToolCallMoreFunctions:
             result = await execute_tool_call(bot, channel, user, tool_call)
 
         assert "Error executing" in result
-

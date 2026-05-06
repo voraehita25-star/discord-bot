@@ -20,7 +20,7 @@ def _normalize_service_host(host: str | None) -> str:
     """Convert wildcard bind addresses into a local connect target."""
     if host is None:
         return "localhost"
-    if host in ("", "0.0.0.0", "::", "[::]", "::1", "[::1]"):
+    if host in ("", "0.0.0.0", "::", "[::]", "::1", "[::1]"):  # nosec B104  # normalize wildcard literals
         return "localhost"
     return host
 

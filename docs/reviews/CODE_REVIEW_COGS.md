@@ -1,17 +1,17 @@
 # Deep Code Review — `cogs/` Directory
 
-**Scope:** All 61 Python files under `cogs/`, `cogs/music/`, `cogs/ai_core/` and subdirectories.  
-**Focus:** Bugs, security vulnerabilities, type errors, null checks, async issues, Discord.py misuse, memory leaks.  
+**Scope:** All 61 Python files under `cogs/`, `cogs/music/`, `cogs/ai_core/` and subdirectories.
+**Focus:** Bugs, security vulnerabilities, type errors, null checks, async issues, Discord.py misuse, memory leaks.
 **Date:** 2025-07
 
 ---
 
 ## Critical Issues
 
-### 1. [SECURITY] SSRF — No Private-IP Validation on URL Fetch  
+### 1. [SECURITY] SSRF — No Private-IP Validation on URL Fetch
 
-**File:** `cogs/ai_core/core/context_builder.py` lines 375-381  
-**Category:** Security vulnerability  
+**File:** `cogs/ai_core/core/context_builder.py` lines 375-381
+**Category:** Security vulnerability
 
 The `fetch_url_content` method validates the URL scheme (`http`/`https`) but does **not** block requests to private/internal IPs (`127.0.0.1`, `10.x`, `172.16-31.x`, `192.168.x`, `169.254.x`, `[::1]`, `fd00::/8`). An attacker can craft a message containing `http://169.254.169.254/latest/meta-data/` to access cloud metadata or internal services.
 
@@ -44,10 +44,10 @@ if _is_private_url(url):
 
 ---
 
-### 2. [SECURITY] Unrestricted Mode Bypasses Prompt Injection Detection  
+### 2. [SECURITY] Unrestricted Mode Bypasses Prompt Injection Detection
 
-**File:** `cogs/ai_core/processing/guardrails.py` lines 507-509  
-**Category:** Security vulnerability  
+**File:** `cogs/ai_core/processing/guardrails.py` lines 507-509
+**Category:** Security vulnerability
 
 When a channel is in unrestricted mode, `validate_input_for_channel` returns immediately without checking for prompt injection:
 
@@ -72,10 +72,10 @@ if is_unrestricted(channel_id):
 
 ---
 
-### 3. [BUG / ASYNC] `threading.RLock` Blocks the Event Loop in Async Functions  
+### 3. [BUG / ASYNC] `threading.RLock` Blocks the Event Loop in Async Functions
 
-**File:** `cogs/ai_core/storage.py` line 79, used at lines 91, 111, 137, 144, 399, 418, 428, 486, 496, 504  
-**Category:** Async issue — blocking call in async context  
+**File:** `cogs/ai_core/storage.py` line 79, used at lines 91, 111, 137, 144, 399, 418, 428, 486, 496, 504
+**Category:** Async issue — blocking call in async context
 
 `_cache_lock = threading.RLock()` is a **synchronous** lock used with `with _cache_lock:` inside `async def` functions (e.g., `get_history`, `save_history`). When contended, this blocks the asyncio event loop thread, stalling **all** concurrent async operations.
 
@@ -109,10 +109,10 @@ This same pattern also applies to:
 
 ---
 
-### 4. [BUG / RACE CONDITION] Webhook Fetch on Every Webhook Message — Rate Limit Risk  
+### 4. [BUG / RACE CONDITION] Webhook Fetch on Every Webhook Message — Rate Limit Risk
 
-**File:** `cogs/ai_core/ai_cog.py` lines 345-353  
-**Category:** Bug / Discord.py API misuse  
+**File:** `cogs/ai_core/ai_cog.py` lines 345-353
+**Category:** Bug / Discord.py API misuse
 
 Every webhook message triggers `await message.channel.webhooks()` to verify the webhook identity. This makes an HTTP API call per message, which can easily hit Discord's rate limits on busy channels.
 
@@ -153,10 +153,10 @@ else:
 
 ---
 
-### 5. [BUG] Non-Atomic File Write for Queue JSON  
+### 5. [BUG] Non-Atomic File Write for Queue JSON
 
-**File:** `cogs/music/cog.py` lines 335-337  
-**Category:** Bug — data corruption on crash  
+**File:** `cogs/music/cog.py` lines 335-337
+**Category:** Bug — data corruption on crash
 
 `_save_queue_json_sync` writes directly to the target file. If the process crashes mid-write, the file is corrupted. Compare with `cogs/music/queue.py` which correctly uses `write_text` on a temp file + `os.replace`.
 
@@ -183,10 +183,10 @@ except BaseException:
 
 ---
 
-### 6. [BUG] Fire-and-Forget Tasks During LRU Eviction — Silent Data Loss  
+### 6. [BUG] Fire-and-Forget Tasks During LRU Eviction — Silent Data Loss
 
-**File:** `cogs/ai_core/logic.py` lines 400-402  
-**Category:** Bug — resource leak / data loss  
+**File:** `cogs/ai_core/logic.py` lines 400-402
+**Category:** Bug — resource leak / data loss
 
 When `_enforce_channel_limit` evicts channels, it creates fire-and-forget tasks to save history. But immediately after scheduling the task, it deletes the channel data from `self.chats`. If the save task hasn't started yet (which is likely since `create_task` only schedules, doesn't execute), the save function may operate on stale references or the data may already be gone.
 
@@ -216,10 +216,10 @@ if self._eviction_tasks:
 
 ---
 
-### 7. [BUG] `entity_memory.py` — `IS ?` with `None` for DELETE  
+### 7. [BUG] `entity_memory.py` — `IS ?` with `None` for DELETE
 
-**File:** `cogs/ai_core/memory/entity_memory.py` lines 407-408  
-**Category:** Bug — SQL correctness  
+**File:** `cogs/ai_core/memory/entity_memory.py` lines 407-408
+**Category:** Bug — SQL correctness
 
 ```python
 WHERE name = ? AND channel_id IS ? AND guild_id IS ?
@@ -245,10 +245,10 @@ await conn.execute(f"DELETE FROM entity_memories WHERE {where}", params)
 
 ---
 
-### 8. [BUG] JSON Regex in Consolidator Matches First Brace Pair (Non-Greedy)  
+### 8. [BUG] JSON Regex in Consolidator Matches First Brace Pair (Non-Greedy)
 
-**File:** `cogs/ai_core/memory/consolidator.py` line 293  
-**Category:** Bug — logic error  
+**File:** `cogs/ai_core/memory/consolidator.py` line 293
+**Category:** Bug — logic error
 
 ```python
 match = re.search(r"\{[\s\S]*?\}", response_text)
@@ -280,10 +280,10 @@ Or use a bracket-depth counter for O(n) extraction.
 
 ## High-Priority Issues
 
-### 9. [RESOURCE LEAK] `Database()` Instantiated 16 Times in ws_dashboard.py  
+### 9. [RESOURCE LEAK] `Database()` Instantiated 16 Times in ws_dashboard.py
 
-**File:** `cogs/ai_core/api/ws_dashboard.py` lines 448, 503, 515, 549, 783, 841, 864, 900, 922, 945, 966, 992, 1013, 1032, 1053, 1072  
-**Category:** Resource leak  
+**File:** `cogs/ai_core/api/ws_dashboard.py` lines 448, 503, 515, 549, 783, 841, 864, 900, 922, 945, 966, 992, 1013, 1032, 1053, 1072
+**Category:** Resource leak
 
 Every handler creates a new `Database()` instance: `db = Database()`. If `Database.__init__` opens a connection or creates a connection pool, this leaks connections. Even if `Database` is a singleton, repeatedly calling the constructor is wasteful.
 
@@ -300,11 +300,11 @@ class DashboardWebSocketServer:
 
 ---
 
-### 10. [SECURITY] All Gemini Safety Settings Set to BLOCK_NONE  
+### 10. [SECURITY] All Gemini Safety Settings Set to BLOCK_NONE
 
-**File:** `cogs/ai_core/api/api_handler.py` lines 94-97  
-**File:** `cogs/ai_core/api/ws_dashboard.py` lines ~650-655  
-**Category:** Security vulnerability  
+**File:** `cogs/ai_core/api/api_handler.py` lines 94-97
+**File:** `cogs/ai_core/api/ws_dashboard.py` lines ~650-655
+**Category:** Security vulnerability
 
 All four safety categories are set to `BLOCK_NONE`, meaning the AI will generate any content with zero safety filtering. Combined with unrestricted mode and escalation framings, this can produce harmful content.
 
@@ -325,10 +325,10 @@ def get_safety_settings(unrestricted: bool = False):
 
 ---
 
-### 11. [ASYNC] L2 SQLite Cache Uses Synchronous `sqlite3` in Event Loop Thread  
+### 11. [ASYNC] L2 SQLite Cache Uses Synchronous `sqlite3` in Event Loop Thread
 
-**File:** `cogs/ai_core/cache/ai_cache.py` lines 529-545, 556-570  
-**Category:** Async issue — blocking I/O  
+**File:** `cogs/ai_core/cache/ai_cache.py` lines 529-545, 556-570
+**Category:** Async issue — blocking I/O
 
 `L2SqliteCache` uses the synchronous `sqlite3` module with `threading.Lock`. The `store` method is called from `_persist_to_l2` which uses `loop.run_in_executor(None, ...)` — this is correct for the write path. However, `load_recent` (line ~575) is called **at module import time** (line 654) which runs on the main thread. That's acceptable for startup. But if `_evict_excess` inside `store` takes too long (e.g., large DB), it blocks the executor thread pool.
 
@@ -339,10 +339,10 @@ def get_safety_settings(unrestricted: bool = False):
 
 ---
 
-### 12. [BUG] Monkey-Patching `AICache.set` is Fragile  
+### 12. [BUG] Monkey-Patching `AICache.set` is Fragile
 
-**File:** `cogs/ai_core/cache/ai_cache.py` lines 677-694  
-**Category:** Bug — maintenance hazard  
+**File:** `cogs/ai_core/cache/ai_cache.py` lines 677-694
+**Category:** Bug — maintenance hazard
 
 The L2 persist hook is applied via monkey-patch:
 
@@ -377,10 +377,10 @@ ai_cache.add_on_set_hook(lambda key, entry: _persist_to_l2(key, entry))
 
 ---
 
-### 13. [BUG] `_DictProxy.__contains__` Fails for `in` Operator in music/cog.py  
+### 13. [BUG] `_DictProxy.__contains__` Fails for `in` Operator in music/cog.py
 
-**File:** `cogs/music/cog.py` (wherever `_DictProxy` is used)  
-**Category:** Bug — logic error  
+**File:** `cogs/music/cog.py` (wherever `_DictProxy` is used)
+**Category:** Bug — logic error
 
 If `_DictProxy` doesn't implement `__contains__`, `guild_id in self.mode_247` (or similar) will iterate the dict, not check the proxied `_data`. Without seeing the full `_DictProxy` implementation, this is a potential issue if the `MusicGuildState` consolidation broke dict-like behavior.
 
@@ -388,10 +388,10 @@ If `_DictProxy` doesn't implement `__contains__`, `guild_id in self.mode_247` (o
 
 ---
 
-### 14. [SECURITY] `cmd_read_channel` Allows AI to Read Any Channel  
+### 14. [SECURITY] `cmd_read_channel` Allows AI to Read Any Channel
 
-**File:** `cogs/ai_core/commands/server_commands.py` (cmd_read_channel, near line ~740)  
-**Category:** Security vulnerability  
+**File:** `cogs/ai_core/commands/server_commands.py` (cmd_read_channel, near line ~740)
+**Category:** Security vulnerability
 
 The `read_channel` tool function lets the AI read messages from **any** text channel by name or ID, with no permission check beyond the bot's own Discord permissions. If the AI is prompted to do so (via prompt injection or social engineering), it could exfiltrate private channel content.
 
@@ -406,10 +406,10 @@ async def cmd_read_channel(guild, origin_channel, _name, args):
 
 ---
 
-### 15. [BUG] Token Tracker Stores Triple Copies of Each Usage Record  
+### 15. [BUG] Token Tracker Stores Triple Copies of Each Usage Record
 
-**File:** `cogs/ai_core/cache/token_tracker.py` lines 145-160  
-**Category:** Memory usage  
+**File:** `cogs/ai_core/cache/token_tracker.py` lines 145-160
+**Category:** Memory usage
 
 Each `record_usage` call stores the same `TokenUsage` object in three separate lists (by user, by channel, by guild). This triples memory usage. With `MAX_RECORDS_PER_KEY = 5000`, for a server with 100 users, 50 channels, this could be up to `(100 + 50 + 1) * 5000 = 755,000` records stored.
 
@@ -426,10 +426,10 @@ Or accept the memory cost and document it. The current bound of `MAX_RECORDS_PER
 
 ## Medium-Priority Issues
 
-### 16. [BUG] Missing `await` Guard in `force_release_lock`  
+### 16. [BUG] Missing `await` Guard in `force_release_lock`
 
-**File:** `cogs/ai_core/core/message_queue.py` lines 300-306  
-**Category:** Bug — potential RuntimeError  
+**File:** `cogs/ai_core/core/message_queue.py` lines 300-306
+**Category:** Bug — potential RuntimeError
 
 ```python
 def force_release_lock(self, channel_id: int):
@@ -454,10 +454,10 @@ def force_release_lock(self, channel_id: int):
 
 ---
 
-### 17. [BUG] `quality_scores` List in analytics.py Grows and Gets Pop(0)  
+### 17. [BUG] `quality_scores` List in analytics.py Grows and Gets Pop(0)
 
-**File:** `cogs/ai_core/cache/analytics.py` lines ~305-310  
-**Category:** Performance  
+**File:** `cogs/ai_core/cache/analytics.py` lines ~305-310
+**Category:** Performance
 
 ```python
 if len(self._stats["quality_scores"]) > 1000:
@@ -474,10 +474,10 @@ self._stats["quality_scores"] = deque(maxlen=1000)
 
 ---
 
-### 18. [BUG] `response_times` List Also Does Inefficient Slicing  
+### 18. [BUG] `response_times` List Also Does Inefficient Slicing
 
-**File:** `cogs/ai_core/cache/analytics.py` line ~535  
-**Category:** Performance  
+**File:** `cogs/ai_core/cache/analytics.py` line ~535
+**Category:** Performance
 
 ```python
 if len(self._stats["response_times"]) > 1000:
@@ -488,19 +488,19 @@ Creates a new 1000-element list every time. Same fix: use `deque(maxlen=1000)`.
 
 ---
 
-### 19. [NULL CHECK] Missing `guild.me` Check Before `top_role` Access  
+### 19. [NULL CHECK] Missing `guild.me` Check Before `top_role` Access
 
-**File:** `cogs/ai_core/commands/server_commands.py`  
-**Category:** Missing null check  
+**File:** `cogs/ai_core/commands/server_commands.py`
+**Category:** Missing null check
 
 In `cmd_add_role` and `cmd_remove_role`, there's a check `if guild.me is None`, which is good. But other command functions like `cmd_create_role` don't check `guild.me` before accessing bot member properties. In edge cases during startup or after a reconnect, `guild.me` can be `None`.
 
 ---
 
-### 20. [BUG] `conversation_branch.py` — Deep Copy of History May Be Expensive  
+### 20. [BUG] `conversation_branch.py` — Deep Copy of History May Be Expensive
 
-**File:** `cogs/ai_core/memory/conversation_branch.py`  
-**Category:** Performance  
+**File:** `cogs/ai_core/memory/conversation_branch.py`
+**Category:** Performance
 
 Checkpoints deep-copy the entire conversation history. For channels with thousands of messages, this is expensive both in CPU and memory.
 
@@ -508,10 +508,10 @@ Checkpoints deep-copy the entire conversation history. For channels with thousan
 
 ---
 
-### 21. [SECURITY] `cmd_edit_message` Allows AI to Edit Bot's Webhook Messages  
+### 21. [SECURITY] `cmd_edit_message` Allows AI to Edit Bot's Webhook Messages
 
-**File:** `cogs/ai_core/commands/server_commands.py` (`cmd_edit_message`, near line ~680)  
-**Category:** Security concern  
+**File:** `cogs/ai_core/commands/server_commands.py` (`cmd_edit_message`, near line ~680)
+**Category:** Security concern
 
 The AI can edit any bot-owned message (including webhook messages). If the AI is prompt-injected, it could silently alter previous messages.
 
@@ -519,10 +519,10 @@ The AI can edit any bot-owned message (including webhook messages). If the AI is
 
 ---
 
-### 22. [BUG] Potential Data Race in `_history_cache` / `_metadata_cache`  
+### 22. [BUG] Potential Data Race in `_history_cache` / `_metadata_cache`
 
-**File:** `cogs/ai_core/storage.py`  
-**Category:** Race condition  
+**File:** `cogs/ai_core/storage.py`
+**Category:** Race condition
 
 The cache uses `threading.RLock` but is accessed from async code. Two coroutines could:
 
@@ -537,10 +537,10 @@ Since both hold references to the **same list object**, concurrent modifications
 
 ---
 
-### 23. [BUG] `_parse_extraction` Non-Greedy Regex for JSON Arrays  
+### 23. [BUG] `_parse_extraction` Non-Greedy Regex for JSON Arrays
 
-**File:** `cogs/ai_core/memory/consolidator.py` line ~306  
-**Category:** Bug — logic error  
+**File:** `cogs/ai_core/memory/consolidator.py` line ~306
+**Category:** Bug — logic error
 
 Same issue as #8 but for array pattern:
 
@@ -552,19 +552,19 @@ This matches the first `[...]` pair with minimal content, which can miss nested 
 
 ---
 
-### 24. [MEMORY] `_verified_webhooks` Cache (if implemented per fix #4) Needs Eviction  
+### 24. [MEMORY] `_verified_webhooks` Cache (if implemented per fix #4) Needs Eviction
 
-**File:** `cogs/ai_core/ai_cog.py`  
-**Category:** Memory leak (pre-emptive)  
+**File:** `cogs/ai_core/ai_cog.py`
+**Category:** Memory leak (pre-emptive)
 
 The current code fetches webhooks on every message (issue #4). Any cache added should include eviction to prevent unbounded growth.
 
 ---
 
-### 25. [BUG] `memory_consolidator.py` — Extractions Lost if Summary Quality is Poor  
+### 25. [BUG] `memory_consolidator.py` — Extractions Lost if Summary Quality is Poor
 
-**File:** `cogs/ai_core/memory/memory_consolidator.py`  
-**Category:** Data loss risk  
+**File:** `cogs/ai_core/memory/memory_consolidator.py`
+**Category:** Data loss risk
 
 The extractive summarizer uses heuristic scoring (not LLM). After summarizing, it **deletes** the original messages from the database. If the summary is poor quality, the original data is permanently lost.
 
@@ -572,10 +572,10 @@ The extractive summarizer uses heuristic scoring (not LLM). After summarizing, i
 
 ---
 
-### 26. [BUG] `long_term_memory.py` — Substring Match False Positives  
+### 26. [BUG] `long_term_memory.py` — Substring Match False Positives
 
-**File:** `cogs/ai_core/memory/long_term_memory.py`  
-**Category:** Logic error  
+**File:** `cogs/ai_core/memory/long_term_memory.py`
+**Category:** Logic error
 
 `_find_similar_fact` uses substring matching for short strings (>= 5 chars). A fact like "likes cats" would match "he likes cats and dogs" — this is intentional. But it would also match "he dislikes cats", which is a contradiction flagged as a duplicate.
 
@@ -583,10 +583,10 @@ The extractive summarizer uses heuristic scoring (not LLM). After summarizing, i
 
 ---
 
-### 27. [SECURITY] `context_builder.py` URL Content Injection  
+### 27. [SECURITY] `context_builder.py` URL Content Injection
 
-**File:** `cogs/ai_core/core/context_builder.py` lines 383-386  
-**Category:** Security — prompt injection via URL content  
+**File:** `cogs/ai_core/core/context_builder.py` lines 383-386
+**Category:** Security — prompt injection via URL content
 
 Fetched URL content is injected directly into the AI context:
 
@@ -604,10 +604,10 @@ contents.append(f"[Fetched URL: {url}]\n<untrusted_content>\n{content}\n</untrus
 
 ---
 
-### 28. [BUG] `state_tracker.py` — Regex-Based State Extraction is Fragile  
+### 28. [BUG] `state_tracker.py` — Regex-Based State Extraction is Fragile
 
-**File:** `cogs/ai_core/memory/state_tracker.py`  
-**Category:** Logic error  
+**File:** `cogs/ai_core/memory/state_tracker.py`
+**Category:** Logic error
 
 Character state is extracted from AI responses using regex patterns for Thai language. These patterns are inherently fragile and can produce incorrect extractions or miss valid state changes.
 
@@ -615,10 +615,10 @@ Character state is extracted from AI responses using regex patterns for Thai lan
 
 ---
 
-### 29. [BUG] `tool_executor.py` — `send_as_webhook` Creates Duplicate Webhooks  
+### 29. [BUG] `tool_executor.py` — `send_as_webhook` Creates Duplicate Webhooks
 
-**File:** `cogs/ai_core/tools/tool_executor.py` lines ~380-430  
-**Category:** Resource leak  
+**File:** `cogs/ai_core/tools/tool_executor.py` lines ~380-430
+**Category:** Resource leak
 
 The `send_as_webhook` function in `tool_executor.py` searches for existing webhooks then creates a new one if none match. On a busy channel this can accumulate webhooks up to Discord's 15-per-channel limit. The fallback to reusing "AI Tupper Proxy" webhook is good, but the primary path can still create excess webhooks.
 
@@ -626,10 +626,10 @@ The `send_as_webhook` function in `tool_executor.py` searches for existing webho
 
 ---
 
-### 30. [BUG] `summarizer.py` — No Token Limit Validation on Input  
+### 30. [BUG] `summarizer.py` — No Token Limit Validation on Input
 
-**File:** `cogs/ai_core/memory/summarizer.py`  
-**Category:** Bug  
+**File:** `cogs/ai_core/memory/summarizer.py`
+**Category:** Bug
 
 Conversation text is passed directly to the Gemini summarization API without checking if it exceeds the model's context window. Very long conversations could cause API errors.
 
@@ -639,28 +639,28 @@ Conversation text is passed directly to the Gemini summarization API without che
 
 ## Low-Priority Issues
 
-### 31. [STYLE/BUG] `importlib.reload` in `reload_config`  
+### 31. [STYLE/BUG] `importlib.reload` in `reload_config`
 
-**File:** `cogs/ai_core/ai_cog.py` (reload_config_cmd)  
-**Category:** Maintenance hazard  
+**File:** `cogs/ai_core/ai_cog.py` (reload_config_cmd)
+**Category:** Maintenance hazard
 
 Using `importlib.reload(config)` at runtime may not properly update all references to config values that were imported with `from config import X`.
 
 ---
 
-### 32. Fallback `_DictProxy` in music/cog.py  
+### 32. Fallback `_DictProxy` in music/cog.py
 
-**File:** `cogs/music/cog.py`  
-**Category:** Maintenance  
+**File:** `cogs/music/cog.py`
+**Category:** Maintenance
 
 `_DictProxy` wraps `MusicGuildState` fields as dicts for backward compatibility. If any caller uses dict-specific methods not forwarded by the proxy (`update()`, `popitem()`, etc.), it will raise `AttributeError` at runtime.
 
 ---
 
-### 33. `intent_feedback` List Uses `pop` Slicing  
+### 33. `intent_feedback` List Uses `pop` Slicing
 
-**File:** `cogs/ai_core/cache/analytics.py` line ~581  
-**Category:** Performance  
+**File:** `cogs/ai_core/cache/analytics.py` line ~581
+**Category:** Performance
 
 ```python
 self._stats["intent_feedback"] = self._stats["intent_feedback"][-500:]
@@ -670,19 +670,19 @@ Same O(n) slicing issue. Use `deque(maxlen=500)` instead.
 
 ---
 
-### 34. Dashboard WS Server — Missing Origin Validation Bypass  
+### 34. Dashboard WS Server — Missing Origin Validation Bypass
 
-**File:** `cogs/ai_core/api/ws_dashboard.py`  
-**Category:** Security  
+**File:** `cogs/ai_core/api/ws_dashboard.py`
+**Category:** Security
 
 The origin validation was partially read. Verify that `localhost` and `127.0.0.1` origins are the only ones allowed in production, and that the `ALLOWED_ORIGINS` list cannot be overridden via environment variable to include arbitrary origins.
 
 ---
 
-### 35. `token_tracker.py` — `_get_usage_in_period` Called Without Lock  
+### 35. `token_tracker.py` — `_get_usage_in_period` Called Without Lock
 
-**File:** `cogs/ai_core/cache/token_tracker.py` (line ~225)  
-**Category:** Race condition (minor)  
+**File:** `cogs/ai_core/cache/token_tracker.py` (line ~225)
+**Category:** Race condition (minor)
 
 `_get_usage_in_period` accesses `self._usage_cache` without holding `self._lock`. It's documented as "caller should use with lock if needed" and the public methods do acquire the lock. But `_get_usage_in_period` itself iterates a defaultdict list that could be modified concurrently by `record_usage`.
 

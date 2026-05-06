@@ -100,19 +100,19 @@ pub fn resize_image(
             );
             let scaled_w = (orig_w as f64 * scale).ceil().min(u32::MAX as f64) as u32;
             let scaled_h = (orig_h as f64 * scale).ceil().min(u32::MAX as f64) as u32;
-            
+
             let scaled = img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
-            
+
             // Get actual dimensions after resize for bounds check
             let (actual_w, actual_h) = scaled.dimensions();
-            
+
             let x = (actual_w.saturating_sub(new_w)) / 2;
             let y = (actual_h.saturating_sub(new_h)) / 2;
-            
+
             // Clamp crop dimensions to prevent panic on edge cases
             let crop_w = new_w.min(actual_w.saturating_sub(x)).max(1);
             let crop_h = new_h.min(actual_h.saturating_sub(y)).max(1);
-            
+
             scaled.crop_imm(x, y, crop_w, crop_h)
         }
         ResizeMode::Stretch => {
@@ -127,7 +127,7 @@ pub fn resize_image(
     let (new_w, new_h) = resized.dimensions();
     let mut output = Vec::new();
     let format = determine_output_format(&img);
-    
+
     match format {
         ImageFormat::Jpeg => {
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);

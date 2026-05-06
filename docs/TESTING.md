@@ -151,18 +151,18 @@ start htmlcov/index.html
 ```python
 class TestMyFeature:
     """Test my feature functionality."""
-    
+
     def test_basic_case(self) -> None:
         """Test the basic case."""
         result = my_function(input_value)
         assert result == expected_value
-    
+
     @pytest.mark.asyncio
     async def test_async_function(self) -> None:
         """Test an async function."""
         result = await my_async_function()
         assert result is not None
-    
+
     @pytest.mark.slow
     def test_slow_operation(self) -> None:
         """Test that takes a long time."""

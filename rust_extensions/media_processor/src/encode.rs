@@ -29,7 +29,7 @@ pub(crate) fn from_data_uri(uri: &str) -> Result<Vec<u8>, MediaError> {
     } else {
         uri
     };
-    
+
     from_base64(base64_part)
 }
 
@@ -50,7 +50,7 @@ mod tests {
         let data = b"test image data";
         let uri = to_data_uri(data, "image/png");
         assert!(uri.starts_with("data:image/png;base64,"));
-        
+
         let decoded = from_data_uri(&uri).expect("Failed to decode data URI");
         assert_eq!(data.as_slice(), decoded.as_slice());
     }

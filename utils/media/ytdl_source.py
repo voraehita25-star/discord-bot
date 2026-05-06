@@ -47,7 +47,7 @@ ytdl_opts_hq = {
     "quiet": True,
     "no_warnings": True,
     "default_search": "ytsearch",
-    "source_address": "0.0.0.0",
+    "source_address": "0.0.0.0",  # nosec B104  # yt-dlp outbound bind, not a server
     "http_chunk_size": 10485760,
     # Hard cap on downloaded audio to prevent disk-fill DoS from malicious
     # or oversized URLs. 300 MiB is far larger than any reasonable track

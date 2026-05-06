@@ -352,8 +352,8 @@ python scripts/maintenance/check_db.py
 ```powershell
 # ตรวจสอบทุกไฟล์
 
-Get-ChildItem -Recurse -Filter "*.py" -File | 
-  Where-Object { $_.FullName -notmatch "node_modules|__pycache__|\.venv|temp" } | 
+Get-ChildItem -Recurse -Filter "*.py" -File |
+  Where-Object { $_.FullName -notmatch "node_modules|__pycache__|\.venv|temp" } |
   ForEach-Object { python -m py_compile $_.FullName }
 
 # รันบอท

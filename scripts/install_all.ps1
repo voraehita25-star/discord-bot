@@ -339,7 +339,7 @@ Refresh-Path
 
 if (Test-CommandExists "python") {
     Push-Location $ProjectRoot
-    
+
     # Create venv if not exists
     if (-not (Test-Path ".venv")) {
         Write-Info "Creating virtual environment..."
@@ -347,16 +347,16 @@ if (Test-CommandExists "python") {
     } else {
         Write-OK "Virtual environment already exists"
     }
-    
+
     # Activate and install
     Write-Info "Installing Python dependencies..."
     & ".venv\Scripts\python.exe" -m pip install --upgrade pip
     & ".venv\Scripts\pip.exe" install -r requirements.txt
-    
+
     # Install dev tools
     Write-Info "Installing development tools..."
     & ".venv\Scripts\pip.exe" install ruff bandit[toml] pip-audit mypy
-    
+
     Pop-Location
     Write-OK "Python environment setup complete"
 } else {
@@ -382,7 +382,7 @@ Pop-Location
 # ============================================================
 # SUMMARY
 # ============================================================
-Write-Host "`n" 
+Write-Host "`n"
 Write-Step "INSTALLATION SUMMARY"
 Refresh-Path
 

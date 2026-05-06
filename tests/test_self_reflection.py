@@ -200,4 +200,3 @@ class TestSelfReflectorPatterns:
         # Just verify the method exists and returns expected type
         result = self.reflector._check_hallucination("A normal response")
         assert result is None or isinstance(result, Issue)
-

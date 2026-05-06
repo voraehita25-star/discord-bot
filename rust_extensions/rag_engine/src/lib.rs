@@ -207,7 +207,7 @@ impl RagEngine {
                 .par_iter()
                 .map(|entry| {
                     let base_score = cosine_similarity(&query_embedding, &entry.embedding);
-                    
+
                     // Apply time decay if factor > 0
                     let final_score = if time_decay_factor > 0.0 {
                         // Clamp age to >= 0 to prevent score inflation for future timestamps
@@ -432,7 +432,7 @@ impl RagEngine {
                         if val.is_finite() { Some(val) } else { None }
                     }))
                     .collect();
-                
+
                 if emb.len() == self.dimension {
                     let imp = importance as f32;
                     if !imp.is_finite() {
@@ -472,10 +472,10 @@ fn rag_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RagEngine>()?;
     m.add_class::<MemoryEntry>()?;
     m.add_class::<SearchResult>()?;
-    
+
     // Version info
     m.add("__version__", "0.1.0")?;
     m.add("__author__", "voraehita25-star")?;
-    
+
     Ok(())
 }

@@ -1,7 +1,7 @@
 # Utils Directory — Deep Code Audit Report
 
-**Scope**: All 32 Python files under `utils/`  
-**Date**: 2025  
+**Scope**: All 32 Python files under `utils/`
+**Date**: 2025
 **Focus**: Bugs, security vulnerabilities, race conditions, resource leaks, async issues, platform issues
 
 ---
@@ -10,7 +10,7 @@
 
 ### 1. `AttributeError` on `_pool_semaphore` — Bypasses lazy initializer
 
-**File**: `utils/database/database.py` — Lines 720, 735, 775  
+**File**: `utils/database/database.py` — Lines 720, 735, 775
 **Severity**: Critical (crash)
 
 `get_connection_with_retry()` directly accesses `self._pool_semaphore` instead of calling `self._get_pool_semaphore()`. The semaphore is initialized to `None` (line 68) and only created lazily via `_get_pool_semaphore()`. If `get_connection_with_retry()` is called before `get_connection()` has ever been called, `self._pool_semaphore` is `None`, causing:
@@ -38,8 +38,8 @@ self._get_pool_semaphore().release()
 
 ### 2. `asyncio.Lock` created at module/class init binds to wrong event loop
 
-**File**: `utils/reliability/error_recovery.py` — Line 104  
-**File**: `utils/reliability/circuit_breaker.py` — Line 56  
+**File**: `utils/reliability/error_recovery.py` — Line 104
+**File**: `utils/reliability/circuit_breaker.py` — Line 56
 **Severity**: Critical (RuntimeError in multi-loop scenarios)
 
 `asyncio.Lock()` captures the running event loop at creation time. If created at module load time (before any loop exists) or in a different loop context, using it later raises:
@@ -89,7 +89,7 @@ def _get_async_lock(self) -> asyncio.Lock:
 
 ### 3. Resource leak in redirect-following loop — response objects not closed
 
-**File**: `utils/web/url_fetcher.py` — Lines 220–244  
+**File**: `utils/web/url_fetcher.py` — Lines 220–244
 **Severity**: High (connection/memory leak)
 
 In `fetch_url_content()`, the initial `response` from `session.get()` is used as a context manager (`async with`), but the `final_response` objects obtained during redirect following are **not** wrapped in context managers. If an exception occurs mid-loop (e.g., SSRF block, timeout), the last `final_response` leaks.
@@ -123,7 +123,7 @@ finally:
 
 ### 4. `AlertManager` session never closed on process exit
 
-**File**: `utils/monitoring/alerting.py` — Lines 48–53, 175–178  
+**File**: `utils/monitoring/alerting.py` — Lines 48–53, 175–178
 **Severity**: High (resource leak, unclosed connector warning)
 
 `AlertManager._get_session()` lazily creates an `aiohttp.ClientSession`, and while there's a `close()` method (line 175), the global `alert_manager` instance (line 185) is never guaranteed to have `close()` called. This causes "Unclosed client session" and "Unclosed connector" warnings at shutdown.
@@ -139,7 +139,7 @@ shutdown_manager.register(alert_manager.close, priority=5)
 
 ### 5. f-string SQL column interpolation — fragile even with whitelist
 
-**File**: `utils/database/database.py` — Lines 1046–1048, 1062–1068  
+**File**: `utils/database/database.py` — Lines 1046–1048, 1062–1068
 **Severity**: Medium-High (defense in depth concern)
 
 `save_guild_settings()` and `increment_user_stat()` use f-strings to inject column names into SQL. Both have whitelists, which is good, but the pattern is fragile — a future developer might add a column name with special characters or modify the whitelist incorrectly.
@@ -177,7 +177,7 @@ _STAT_QUERIES = {
 
 ### 6. `_connection_count` not thread-safe and not atomic
 
-**File**: `utils/database/database.py` — Lines 68, 582, 599, 720, 734, 774  
+**File**: `utils/database/database.py` — Lines 68, 582, 599, 720, 734, 774
 **Severity**: Medium-High (race condition)
 
 `self._connection_count` is incremented/decremented from `async` code without any lock. While the GIL protects simple `int` operations in CPython, the check-then-act pattern (`while self._connection_count > 0`) in `_reinitialize_pool()` (line 648) could see a stale value during concurrent connection operations.
@@ -188,7 +188,7 @@ _STAT_QUERIES = {
 
 ### 7. `get_connection_with_retry` doesn't use connection pool
 
-**File**: `utils/database/database.py` — Lines 694–775  
+**File**: `utils/database/database.py` — Lines 694–775
 **Severity**: Medium (resource waste, inconsistency)
 
 `get_connection_with_retry()` creates fresh connections every time and closes them in `finally`, completely bypassing the pool that `get_connection()` uses. It also duplicates PRAGMA setup code. Any connection obtained this way:
@@ -217,7 +217,7 @@ async def get_connection_with_retry(self, max_retries=3):
 
 ### 8. `migrations.py` — `version` variable potentially unbound
 
-**File**: `utils/database/migrations.py` — Line 117  
+**File**: `utils/database/migrations.py` — Line 117
 **Severity**: Medium (crash in edge case)
 
 ```python
@@ -244,7 +244,7 @@ if applied:
 
 ### 9. Health API handler accesses bot data from HTTP thread without full synchronization
 
-**File**: `utils/monitoring/health_api.py` — Lines 509–529 (`_generate_health_html`), 621–636 (`do_GET`), 764–773 (`_perform_deep_health_check`)  
+**File**: `utils/monitoring/health_api.py` — Lines 509–529 (`_generate_health_html`), 621–636 (`do_GET`), 764–773 (`_perform_deep_health_check`)
 **Severity**: Medium (race condition, potential data corruption)
 
 The `HealthRequestHandler.do_GET()` runs in a separate thread (via `HTTPServer`). While `BotHealthData` uses locks for counters and data updates, the `_generate_health_html()` and `_generate_stats_html()` methods directly read `health_data` attributes and dict contents like `service_health` without holding the data lock, creating potential for reading partially-updated data.
@@ -257,7 +257,7 @@ Additionally, `get_ai_performance_stats()` (line 231) accesses `self.bot.cogs` f
 
 ### 10. `fast_json.py` — `ensure_ascii` parameter silently ignored with orjson
 
-**File**: `utils/fast_json.py`  
+**File**: `utils/fast_json.py`
 **Severity**: Low-Medium (silent behavior change)
 
 When orjson is available, `dumps(obj, ensure_ascii=True)` still outputs non-ASCII characters because orjson always emits UTF-8. Code that depends on ASCII-safe JSON output will silently get Unicode bytes instead.
@@ -278,7 +278,7 @@ def dumps(obj, ensure_ascii=False, ...):
 
 ### 11. `url_fetcher.py` — TOCTOU in SSRF check (DNS rebinding)
 
-**File**: `utils/web/url_fetcher.py` — Lines 71–99, 163–170  
+**File**: `utils/web/url_fetcher.py` — Lines 71–99, 163–170
 **Severity**: Medium (SSRF bypass possible)
 
 `_is_private_url()` resolves the hostname to check for private IPs, but the actual HTTP request is made later by `aiohttp`, which does its own DNS resolution. Between the check and the request, a malicious DNS server could change the record (DNS rebinding attack).
@@ -304,7 +304,7 @@ class SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
 
 ### 12. `self_healer.py` — Process matching is overly broad
 
-**File**: `utils/reliability/self_healer.py` — Lines 82–100  
+**File**: `utils/reliability/self_healer.py` — Lines 82–100
 **Severity**: Medium (could kill wrong process)
 
 `find_all_bot_processes()` matches any process where `"bot.py"` appears in the cmdline. This could match:
@@ -331,7 +331,7 @@ Or better, match against the resolved absolute path of the bot script.
 
 ### 13. `shutdown_manager.py` — Signal tasks may be GC'd on Windows
 
-**File**: `utils/reliability/shutdown_manager.py` — Lines 392–400  
+**File**: `utils/reliability/shutdown_manager.py` — Lines 392–400
 **Severity**: Medium (Windows-specific)
 
 `setup_async_signal_handlers()` returns early on Windows (line 389: `if sys.platform == "win32": return`), which means on Windows the bot only gets synchronous signal handling via `signal.signal(SIGINT)`. The sync handler calls `self.shutdown()` which is a coroutine — but `_signal_handler` is a sync function that schedules it.
@@ -344,7 +344,7 @@ Looking at `_signal_handler` (not fully shown), if it tries to create an asyncio
 
 ### 14. `rate_limiter.py` — Token replenishment can exceed max under adaptive limiting
 
-**File**: `utils/reliability/rate_limiter.py` — Lines 76–86  
+**File**: `utils/reliability/rate_limiter.py` — Lines 76–86
 **Severity**: Low-Medium (logical error)
 
 In `RateLimitBucket.consume()`:
@@ -370,7 +370,7 @@ self.tokens = min(effective_max, self.tokens)  # Clamp first
 
 ### 15. `health_api.py` — HTML generation uses f-strings with user data without full escaping
 
-**File**: `utils/monitoring/health_api.py` — Lines 509, 549  
+**File**: `utils/monitoring/health_api.py` — Lines 509, 549
 **Severity**: Low (limited XSS since this is a local dashboard)
 
 Most f-string-interpolated values in the health HTML are numeric or from bot internals. However, the cogs list (line 549) is properly escaped with `html.escape()`. The f-string approach for HTML is fragile — if any future field contains user-controlled strings, it could lead to XSS.
@@ -381,7 +381,7 @@ Most f-string-interpolated values in the health HTML are numeric or from bot int
 
 ### 16. `media_rust.py` — `_pil_resize` condition logic has unreachable branch
 
-**File**: `utils/media/media_rust.py` — Lines 108–112  
+**File**: `utils/media/media_rust.py` — Lines 108–112
 **Severity**: Low (dead code)
 
 ```python
@@ -416,7 +416,7 @@ save_kwargs = {"quality": self.jpeg_quality} if format_str == "JPEG" else {}
 
 ### 17. `colors.py` — `enable_windows_ansi` doesn't verify handle validity
 
-**File**: `utils/media/colors.py` — Lines 62–85  
+**File**: `utils/media/colors.py` — Lines 62–85
 **Severity**: Low (crash when stdout is redirected)
 
 `kernel32.GetStdHandle(-11)` can return `INVALID_HANDLE_VALUE` (-1) when stdout is not a console (e.g., piped or redirected). The subsequent `GetConsoleMode` call with an invalid handle causes an error.
@@ -433,7 +433,7 @@ if handle == -1 or handle is None:
 
 ### 18. `error_recovery.py` — Double locking in `_get_backoff_state_async`
 
-**File**: `utils/reliability/error_recovery.py` — Lines 152–155  
+**File**: `utils/reliability/error_recovery.py` — Lines 152–155
 **Severity**: Low (performance, deadlock risk if refactored)
 
 ```python
@@ -450,7 +450,7 @@ Every async call acquires both the async lock AND the threading lock. While not 
 
 ### 19. `structured_logger.py` — `_log_context` ContextVar default set at module level
 
-**File**: `utils/monitoring/structured_logger.py` — Line 38  
+**File**: `utils/monitoring/structured_logger.py` — Line 38
 **Severity**: Low (unexpected behavior in sub-tasks)
 
 ```python
@@ -484,7 +484,7 @@ def _get_log_context() -> dict[str, Any]:
 
 ### 20. `ytdl_source.py` — `source_address: "0.0.0.0"` binds to all interfaces
 
-**File**: `utils/media/ytdl_source.py` — Line 41  
+**File**: `utils/media/ytdl_source.py` — Line 41
 **Severity**: Low (information)
 
 ```python
@@ -497,7 +497,7 @@ This forces yt-dlp to bind outgoing connections to `0.0.0.0`. On multi-homed sys
 
 ### 21. `token_tracker.py` — Missing `_evict_least_recently_used_users` and `_evict_least_used_channels` methods documented?
 
-**File**: `utils/monitoring/token_tracker.py` — Lines 105–109  
+**File**: `utils/monitoring/token_tracker.py` — Lines 105–109
 **Severity**: Low (potential crash if eviction methods are missing)
 
 The `record()` method references `self._evict_least_recently_used_users()` and `self._evict_least_used_channels()` but these methods must be defined somewhere below line 200. As long as they exist, this is fine — just noting the dependency.

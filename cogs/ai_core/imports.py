@@ -290,5 +290,3 @@ except ImportError:
 
     def msg_en(key: str, **kwargs: Any) -> str:
         return key
-
-

@@ -177,5 +177,3 @@ def build_split_cached_system_prompt(
     if volatile_text:
         blocks.append({"type": "text", "text": volatile_text})
     return blocks
-
-

@@ -1667,7 +1667,7 @@ class Database:
 
             await conn.execute(
                 f"""INSERT INTO guild_settings ({col_str}) VALUES ({placeholders})
-                    ON CONFLICT(guild_id) DO UPDATE SET {update_str}, updated_at=CURRENT_TIMESTAMP""",
+                    ON CONFLICT(guild_id) DO UPDATE SET {update_str}, updated_at=CURRENT_TIMESTAMP""",  # nosec B608
                 values,
             )
 
@@ -1695,7 +1695,7 @@ class Database:
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(user_id, guild_id) DO UPDATE SET
                     [{col}] = [{col}] + ?,
-                    last_active = CURRENT_TIMESTAMP""",
+                    last_active = CURRENT_TIMESTAMP""",  # nosec B608  # col from whitelist, bracket-quoted
                 (user_id, guild_id, amount, amount),
             )
 
@@ -1966,7 +1966,7 @@ class Database:
             values = [*list(safe_updates.values()), conversation_id]
 
             await conn.execute(
-                f"UPDATE dashboard_conversations SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                f"UPDATE dashboard_conversations SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",  # nosec B608  # set_clause from whitelist
                 values,
             )
             return True
@@ -2834,7 +2834,7 @@ class Database:
                     assert table.replace("_", "").isalnum(), (
                         f"Invalid table name {table!r}"
                     )
-                    cursor = await conn.execute(f"SELECT * FROM [{table}]")
+                    cursor = await conn.execute(f"SELECT * FROM [{table}]")  # nosec B608  # asserted alnum, bracket-quoted
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
                     summary[table] = len(data)

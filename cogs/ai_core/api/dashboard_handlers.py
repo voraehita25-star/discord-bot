@@ -1132,4 +1132,3 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
     except Exception:
         logger.exception("WebSocket handler error")
         await ws.send_json({"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to save profile"})
-

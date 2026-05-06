@@ -74,7 +74,7 @@ impl MediaProcessor {
     /// Load image from bytes
     fn load<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
-        
+
         // Check dimensions before full decode to prevent decompression bombs
         let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()
@@ -97,13 +97,13 @@ impl MediaProcessor {
 
         let img = image::load_from_memory(bytes)
             .map_err(|e| PyValueError::new_err(format!("Failed to load image: {}", e)))?;
-        
+
         let (width, height) = img.dimensions();
         let channels = img.color().channel_count();
-        
+
         // Detect format from magic bytes
         let format = detect_format(bytes).unwrap_or("unknown").to_string();
-        
+
         Ok(ImageData {
             data: bytes.to_vec(),
             width,
@@ -118,30 +118,30 @@ impl MediaProcessor {
         let bytes = data.as_bytes();
         let max_w = max_width.unwrap_or(self.max_dimension);
         let max_h = max_height.unwrap_or(self.max_dimension);
-        
+
         let result = resize_image(bytes, max_w, max_h, ResizeMode::Fit, self.jpeg_quality)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
+
         Ok(result)
     }
 
     /// Resize image to exact dimensions (with cropping)
     fn resize_exact<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, width: u32, height: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
-        
+
         let result = resize_image(bytes, width, height, ResizeMode::Fill, self.jpeg_quality)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
+
         Ok(result)
     }
 
     /// Create thumbnail
     fn thumbnail<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, size: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
-        
+
         let result = resize_image(bytes, size, size, ResizeMode::Fit, self.jpeg_quality)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
+
         Ok(result)
     }
 
@@ -155,14 +155,14 @@ impl MediaProcessor {
     #[staticmethod]
     fn get_dimensions<'py>(data: &Bound<'py, PyBytes>) -> PyResult<(u32, u32)> {
         let bytes = data.as_bytes();
-        
+
         let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
+
         let dims = reader.into_dimensions()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        
+
         Ok(dims)
     }
 
@@ -183,13 +183,13 @@ impl MediaProcessor {
     /// Batch resize multiple images (parallel, releases GIL)
     fn batch_resize<'py>(&self, py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
         use rayon::prelude::*;
-        
+
         let bytes_list: Vec<Vec<u8>> = images.iter()
             .map(|b| b.as_bytes().to_vec())
             .collect();
-        
+
         let quality = self.jpeg_quality;
-        
+
         // Release the GIL during CPU-intensive parallel processing
         let results = py.detach(|| {
             bytes_list
@@ -197,7 +197,7 @@ impl MediaProcessor {
                 .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
                 .collect::<Result<Vec<ImageData>, _>>()
         });
-        
+
         results.map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -213,7 +213,7 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
     if data.len() < 4 {
         return None;
     }
-    
+
     match &data[0..4] {
         [0x89, 0x50, 0x4E, 0x47] => Some("png"),
         [0xFF, 0xD8, 0xFF, _] => Some("jpeg"),
@@ -228,16 +228,16 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
 fn media_processor(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MediaProcessor>()?;
     m.add_class::<ImageData>()?;
-    
+
     // Convenience functions
     m.add_function(wrap_pyfunction!(py_is_animated, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_dimensions, m)?)?;
     m.add_function(wrap_pyfunction!(py_to_base64, m)?)?;
-    
+
     // Version info
     m.add("__version__", "0.1.0")?;
     m.add("__author__", "voraehita25-star")?;
-    
+
     Ok(())
 }
 

@@ -529,7 +529,8 @@ class SummaryArchiver:
                     batch = message_ids[i : i + batch_size]
                     placeholders = ",".join("?" * len(batch))
                     await conn.execute(
-                        f"DELETE FROM ai_history WHERE id IN ({placeholders})", batch
+                        f"DELETE FROM ai_history WHERE id IN ({placeholders})",  # nosec B608  # placeholders is '?,?,...'; values via batch
+                        batch,
                     )
                 await conn.commit()
             except Exception:

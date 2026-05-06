@@ -64,10 +64,10 @@ function Write-Log {
         [ValidateSet("INFO", "OK", "WARN", "ERROR", "DEBUG")]
         [string]$Level = "INFO"
     )
-    
+
     $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogFile = Join-Path $LogsDir "startup.log"
-    
+
     $Colors = @{
         INFO  = $C.Cyan
         OK    = $C.Green
@@ -82,7 +82,7 @@ function Write-Log {
         ERROR = "[X]"
         DEBUG = "[D]"
     }
-    
+
     Write-Host "  $($Colors[$Level])$($Icons[$Level])$($C.Reset) $Message"
     "[$Time] [$Level] $Message" | Add-Content -Path $LogFile -Encoding UTF8
 }
@@ -133,7 +133,7 @@ function Write-BoxLine {
     $TextWidth = Get-DisplayWidth -Text $Text
     $Padding = $ContentWidth - $TextWidth
     if ($Padding -lt 0) { $Padding = 0 }
-    
+
     switch ($Align) {
         "Center" {
             $Left = [math]::Floor($Padding / 2)
@@ -146,16 +146,16 @@ function Write-BoxLine {
     Write-Host "$($C.Cyan)|$($C.Reset) $Text $($C.Cyan)|$($C.Reset)"
 }
 
-function Write-BoxTop { 
-    Write-Host "$($C.Cyan)+$("=" * ($BoxWidth - 2))+$($C.Reset)" 
+function Write-BoxTop {
+    Write-Host "$($C.Cyan)+$("=" * ($BoxWidth - 2))+$($C.Reset)"
 }
 
-function Write-BoxBottom { 
-    Write-BoxTop 
+function Write-BoxBottom {
+    Write-BoxTop
 }
 
-function Write-BoxSeparator { 
-    Write-Host "  $($C.Gray)$("-" * ($BoxWidth - 4))$($C.Reset)" 
+function Write-BoxSeparator {
+    Write-Host "  $($C.Gray)$("-" * ($BoxWidth - 4))$($C.Reset)"
 }
 
 # ============================================================================
@@ -166,7 +166,7 @@ function Test-Environment {
     Write-BoxTop
     Write-BoxLine -Text "$($C.Bold)$($C.White)Health Checks$($C.Reset)" -Align "Center"
     Write-BoxBottom
-    
+
     # Python
     $PythonOK = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
     if ($PythonOK) {
@@ -176,7 +176,7 @@ function Test-Environment {
         Write-Log "Python not found" -Level ERROR
         return $false
     }
-    
+
     # .env file
     $EnvFile = Join-Path $ProjectRoot ".env"
     if (Test-Path $EnvFile) {
@@ -185,7 +185,7 @@ function Test-Environment {
     else {
         Write-Log ".env file missing - using defaults" -Level WARN
     }
-    
+
     # Disk space
     $Drive = (Get-Item $ProjectRoot).PSDrive
     $FreeGB = [math]::Round($Drive.Free / 1GB, 2)
@@ -196,7 +196,7 @@ function Test-Environment {
     else {
         Write-Log "Low disk space: ${FreeGB}GB (min: ${MinGB}GB)" -Level WARN
     }
-    
+
     # Memory
     $FreeMB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1KB, 0)
     $MinMB = $Config.health.min_memory_mb
@@ -206,7 +206,7 @@ function Test-Environment {
     else {
         Write-Log "Low memory: ${FreeMB}MB (min: ${MinMB}MB)" -Level WARN
     }
-    
+
     return $true
 }
 
@@ -249,7 +249,7 @@ function Save-CrashReport {
         [string]$ErrorMessage,
         [TimeSpan]$Runtime
     )
-    
+
     $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $CrashFile = Join-Path $CrashLogsDir "crash_$Timestamp.log"
     $RuntimeStr = $Runtime.ToString("hh\:mm\:ss")
@@ -257,7 +257,7 @@ function Save-CrashReport {
     $OSInfo = [System.Environment]::OSVersion.VersionString
     $PSVer = $PSVersionTable.PSVersion
     $MemFree = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 2)
-    
+
     $Report = @"
 ================================================================
 CRASH REPORT - $DateStr
@@ -274,15 +274,15 @@ Memory: $MemFree GB free
 
 --- Last Bot Log Lines ---
 "@
-    
+
     $BotLog = Join-Path $LogsDir "bot.log"
     if (Test-Path $BotLog) {
         $Report += "`n" + (Get-Content $BotLog -Tail 50 | Out-String)
     }
-    
+
     $Report | Out-File -FilePath $CrashFile -Encoding UTF8
     Write-Log "Crash report saved: $CrashFile" -Level ERROR
-    
+
     return $CrashFile
 }
 
@@ -291,10 +291,10 @@ Memory: $MemFree GB free
 # ============================================================================
 function Show-Banner {
     param([string]$Mode = "Production")
-    
+
     Clear-Host
     Write-Host ""
-    
+
     $Art = @(
         " ____  _                       _   ____        _   "
         "|  _ \(_)___  ___ ___  _ __ __| | | __ )  ___ | |_ "
@@ -302,7 +302,7 @@ function Show-Banner {
         "| |_| | \__ \ (_| (_) | | | (_| | | |_) | (_) | |_ "
         "|____/|_|___/\___\___/|_|  \__,_| |____/ \___/ \__|"
     )
-    
+
     Write-BoxTop
     Write-BoxLine -Text "" -Align "Center"
     foreach ($Line in $Art) {
@@ -310,7 +310,7 @@ function Show-Banner {
     }
     Write-BoxLine -Text "" -Align "Center"
     Write-BoxBottom
-    
+
     $Time = Get-Date -Format "HH:mm:ss"
     $ModeColor = if ($Mode -eq "Dev") { $C.Yellow } else { $C.Green }
     $StatusText = "$($C.Green)[*]$($C.Reset) STATUS: ONLINE | $($ModeColor)MODE: $Mode$($C.Reset) | $($C.Cyan)$Time$($C.Reset)"

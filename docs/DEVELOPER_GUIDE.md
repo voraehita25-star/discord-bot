@@ -298,7 +298,7 @@ BOT/
 Bot มี native extensions ที่เขียนด้วย **Rust** และ **Go** สำหรับ operations ที่ใช้ CPU/IO เยอะ
 Extensions เหล่านี้เป็น **optional** - bot ทำงานได้ปกติด้วย Python fallback
 
-> **Build Status:** ✅ Rust extensions built successfully (March 2, 2026)  
+> **Build Status:** ✅ Rust extensions built successfully (March 2, 2026)
 > **Files:** `rag_engine.pyd` (651 KB), `media_processor.pyd` (1.7 MB)
 
 ### Rust Extensions (PyO3)
@@ -424,7 +424,7 @@ CREATOR_ID=your_discord_id
 **Environment-based:**
 
 - `GUILD_ID_*` - Server IDs
-- `CHANNEL_ID_*` - Channel IDs  
+- `CHANNEL_ID_*` - Channel IDs
 - `GEMINI_API_KEY` - API key
 - `GAME_SEARCH_KEYWORDS` - Keywords ที่ force Google Search
 
@@ -549,11 +549,11 @@ Real-time response updates via Discord message editing:
 
 ### Key Files
 
-- `cogs/music/cog.py` - Main music cog  
+- `cogs/music/cog.py` - Main music cog
 - `cogs/music/queue.py` - Queue management
 - `cogs/music/utils.py` - Colors, emojis, formatting
 - `cogs/music/views.py` - Discord UI components
-- `cogs/spotify_handler.py` - Spotify URL processing  
+- `cogs/spotify_handler.py` - Spotify URL processing
 
 > **Note:** `spotify_handler.py` uses lazy import for `SpotifyHandler` to avoid circular import.
 
