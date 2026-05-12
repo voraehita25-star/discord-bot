@@ -21,7 +21,7 @@ RUN cd go_services/url_fetcher && CGO_ENABLED=0 go build -ldflags="-s -w" -o /ou
 # Use the same Python version as production so PyO3 links against the correct ABI.
 # rust:1.80 used python3-dev from Debian bookworm (Python 3.11), which is incompatible
 # with the Python 3.14 production stage — the .so files would fail to import.
-FROM python:3.14.3-bookworm AS rust-builder
+FROM python:3.15.0b1-bookworm AS rust-builder
 
 WORKDIR /build
 
@@ -70,7 +70,7 @@ RUN mkdir -p /out-rust-wheels && \
     maturin build --release --manifest-path rust_extensions/rag_engine/Cargo.toml --interpreter python3.14 -o /out-rust-wheels
 
 # ======================== Stage 3: Python Builder ========================
-FROM python:3.14.3-slim AS py-builder
+FROM python:3.15.0b1-slim AS py-builder
 
 WORKDIR /app
 
@@ -81,7 +81,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # ======================== Stage 4: Production ========================
-FROM python:3.14.3-slim
+FROM python:3.15.0b1-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
