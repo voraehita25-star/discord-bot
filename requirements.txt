@@ -17,8 +17,8 @@ google-genai==1.75.0          # Google Gemini API (latest)
 anthropic>=0.99.0,<1.0        # Anthropic Claude API (CVE-2026-34450, CVE-2026-34452)
 Pillow==12.2.0                # Image processing (CVE-2026-40192/42308/42309/42310/42311)
 beautifulsoup4==4.14.3        # HTML parsing for URL content (latest)
-lxml==6.1.0                   # Fast HTML parser (CVE-2026-41066)
-numpy==2.4.4                  # Numerical operations (for RAG embeddings, latest)
+lxml==6.1.1                   # Fast HTML parser (CVE-2026-41066)
+numpy==2.4.6                  # Numerical operations (for RAG embeddings, latest)
 faiss-cpu==1.13.2             # Vector similarity search (latest)
 imageio[ffmpeg]==2.37.3       # GIF to video conversion for Gemini (latest)
 pypdf>=5.0.0                  # PDF text extraction for dashboard document memory
@@ -40,11 +40,11 @@ types-PyYAML>=6.0.12.20260408             # Type stubs for mypy
 types-requests>=2.32.0.20250306  # Type stubs for requests/spotipy integration
 
 # ==================== Monitoring (Optional) ====================
-sentry-sdk==2.59.0            # Error tracking (optional)
+sentry-sdk==2.60.0            # Error tracking (optional)
 prometheus-client==0.25.0     # Metrics & monitoring (latest)
 
 # ==================== Performance ====================
-orjson==3.11.8               # 10x faster JSON parsing (drop-in replacement)
+orjson==3.11.9               # 10x faster JSON parsing (drop-in replacement)
 
 
 # ==================== Windows Utilities ====================
@@ -52,7 +52,7 @@ winshell==0.6; sys_platform == 'win32'   # Windows shell integration
 pywin32==311; sys_platform == 'win32'    # Windows COM automation
 
 # ==================== Token Counting ====================
-tiktoken==0.12.0              # Accurate token counting for AI (latest)
+tiktoken==0.13.0              # Accurate token counting for AI (latest)
 
 # ==================== Testing ====================
 pytest==9.0.3                 # Test framework (CVE-2025-71176)
