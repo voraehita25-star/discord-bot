@@ -45,6 +45,7 @@ rust_extensions/target/
 
 # Node modules
 native_dashboard/node_modules/
+/node_modules/
 
 # TypeScript compiled output (regenerated from src-ts/)
 native_dashboard/ui/app.js
