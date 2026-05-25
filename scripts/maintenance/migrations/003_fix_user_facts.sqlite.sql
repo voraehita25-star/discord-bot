@@ -3,6 +3,12 @@
 -- Code has: category TEXT NOT NULL, importance DEFAULT 2
 -- Uses SQLite table rebuild pattern to preserve existing 2 rows.
 
+-- IF NOT EXISTS / DROP TABLE IF EXISTS makes this migration safe to
+-- re-apply after a partial-crash. Without these guards, a power loss
+-- between INSERT and RENAME would leave ``user_facts_new`` on disk and
+-- the next migration attempt would fail with "table already exists",
+-- requiring manual DB intervention.
+DROP TABLE IF EXISTS user_facts_new;
 CREATE TABLE user_facts_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -29,7 +35,7 @@ INSERT INTO user_facts_new
            source_message, is_active, is_user_defined, created_at
     FROM user_facts;
 
-DROP TABLE user_facts;
+DROP TABLE IF EXISTS user_facts;
 
 ALTER TABLE user_facts_new RENAME TO user_facts;
 

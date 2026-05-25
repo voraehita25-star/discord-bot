@@ -328,7 +328,10 @@ class HistoryManager:
         max_messages = max_messages or self.max_history
 
         if len(history) <= max_messages:
-            return history
+            # Return a copy, not the original object — every other trim path
+            # (smart_trim, smart_trim_by_tokens) returns a fresh list, so a
+            # caller that mutates the result must not corrupt the live history.
+            return list(history)
 
         # Simple approach: keep first few + last many
         keep_start = max_messages // 10

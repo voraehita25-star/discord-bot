@@ -32,10 +32,7 @@ import re
 import time
 from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +64,14 @@ except ImportError:
 # language. This is the max that's worth persisting; anything larger would
 # dominate the prompt budget when re-injected.
 MAX_EXTRACTED_CHARS = 500_000
+
+# Truncation marker appended when extracted text is sliced. The slice budget
+# subtracts this so the final ``len(text) <= MAX_EXTRACTED_CHARS`` invariant
+# actually holds — previously the marker pushed the final length ~18 chars
+# over the cap, which is harmless in practice but breaks tests that assert
+# strict equality on the bound.
+_TRUNCATION_MARKER = "\n\n[... truncated]"
+_TRUNCATION_BUDGET = MAX_EXTRACTED_CHARS - len(_TRUNCATION_MARKER)
 
 
 @dataclass(slots=True)
@@ -232,7 +237,7 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
 
     combined = "\n\n".join(pages)
     if len(combined) > MAX_EXTRACTED_CHARS:
-        combined = combined[:MAX_EXTRACTED_CHARS] + "\n\n[... truncated]"
+        combined = combined[:_TRUNCATION_BUDGET] + _TRUNCATION_MARKER
     return ExtractedDocument(
         filename=filename,
         kind="pdf",
@@ -275,11 +280,40 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
     import zipfile
 
     _MAX_DOCX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MiB aggregate (real bytes)
+    _MAX_DOCX_ENTRIES = 1000  # Real DOCX files have ~10-50 entries; 1000 is generous
     _CHUNK = 64 * 1024
     try:
         with zipfile.ZipFile(BytesIO(docx_bytes)) as zf:
+            entries = zf.infolist()
+            # Cap entry count BEFORE iterating. A crafted DOCX with millions
+            # of zero-length entries makes ``infolist()`` allocate
+            # proportionally and the per-entry loop spin forever — the
+            # byte cap above doesn't trigger because each entry is empty.
+            if len(entries) > _MAX_DOCX_ENTRIES:
+                logger.warning(
+                    "DOCX %s rejected: %d entries exceeds %d-entry cap (zip-bomb guard)",
+                    filename,
+                    len(entries),
+                    _MAX_DOCX_ENTRIES,
+                )
+                return None
             total = 0
-            for info in zf.infolist():
+            for info in entries:
+                # Defense-in-depth: reject path-traversal entry names.
+                # We only read into memory today, but a future change that
+                # writes any entry to disk would inherit a traversal sink
+                # if we didn't filter at the source.
+                entry_name = info.filename or ""
+                if (
+                    entry_name.startswith(("/", "\\"))
+                    or ".." in entry_name.replace("\\", "/").split("/")
+                ):
+                    logger.warning(
+                        "DOCX %s rejected: suspicious entry name %r",
+                        filename,
+                        entry_name,
+                    )
+                    return None
                 with zf.open(info.filename) as entry:
                     while True:
                         chunk = entry.read(_CHUNK)
@@ -327,7 +361,7 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
 
     combined = "\n\n".join(chunks)
     if len(combined) > MAX_EXTRACTED_CHARS:
-        combined = combined[:MAX_EXTRACTED_CHARS] + "\n\n[... truncated]"
+        combined = combined[:_TRUNCATION_BUDGET] + _TRUNCATION_MARKER
     return ExtractedDocument(
         filename=filename,
         kind="docx",
@@ -343,7 +377,7 @@ def _extract_text(filename: str, data_field: str) -> ExtractedDocument | None:
     if not text:
         return None
     if len(text) > MAX_EXTRACTED_CHARS:
-        text = text[:MAX_EXTRACTED_CHARS] + "\n\n[... truncated]"
+        text = text[:_TRUNCATION_BUDGET] + _TRUNCATION_MARKER
     return ExtractedDocument(
         filename=filename,
         kind="text",
@@ -604,6 +638,7 @@ MAX_ROWS = 200
 # Lazily created so test code that imports the module without an event loop
 # doesn't blow up on import.
 _persist_lock: Any = None
+_extract_sem: Any = None
 
 
 def _get_persist_lock() -> Any:
@@ -614,6 +649,23 @@ def _get_persist_lock() -> Any:
 
         _persist_lock = _asyncio.Lock()
     return _persist_lock
+
+
+def _get_extract_sem() -> Any:
+    """Return the module-level extraction semaphore (cap=2).
+
+    Per-call instantiation (the previous shape) gave each
+    ``extract_and_persist`` call its own semaphore, so two simultaneous
+    requests each got a fresh cap of 2 → effective concurrency of 4
+    across the process, defeating the memory-DoS guard. A module-level
+    semaphore caps it globally.
+    """
+    global _extract_sem
+    if _extract_sem is None:
+        import asyncio as _asyncio
+
+        _extract_sem = _asyncio.Semaphore(2)
+    return _extract_sem
 
 
 async def extract_and_persist(
@@ -649,8 +701,19 @@ async def extract_and_persist(
 
     # Parallel extraction — CPU-bound work in separate threads, then await
     # the gather so we have all results before touching the DB.
+    # A module-level semaphore caps concurrent extractions GLOBALLY so a
+    # user uploading 5+ huge PDFs can't simultaneously spawn 5 layout-mode
+    # workers (each can use GBs of RAM in pypdf), which is a memory-DoS
+    # vector. The cap is deliberately conservative — extraction is rare
+    # and bursty. (Was previously per-call, defeating the global cap.)
+    extract_sem = _get_extract_sem()
+
+    async def _bounded_extract(payload: Any) -> Any:
+        async with extract_sem:
+            return await asyncio.to_thread(extract_from_payload, payload)
+
     extractions = await asyncio.gather(
-        *(asyncio.to_thread(extract_from_payload, payload) for payload in documents),
+        *(_bounded_extract(payload) for payload in documents),
         return_exceptions=True,
     )
 
@@ -686,10 +749,16 @@ async def extract_and_persist(
         async with persist_lock:
             # Enforce aggregate caps with LRU eviction. Loop rather than a
             # single check-and-delete because a freshly added big doc could
-            # require evicting several older entries.
+            # require evicting several older entries. The hard iteration
+            # cap protects against a buggy
+            # ``delete_oldest_document_memory`` that returns truthy without
+            # actually shrinking the table — without the cap this loop
+            # would run forever, holding ``persist_lock`` and stalling
+            # every concurrent uploader.
             fits = False
+            max_eviction_iterations = MAX_ROWS + 16
             try:
-                while True:
+                for _ in range(max_eviction_iterations):
                     total = await db.total_document_memories_size()
                     count = await db.count_document_memories()
                     if total + extracted.char_count <= MAX_TOTAL_CHARS and count < MAX_ROWS:
@@ -707,6 +776,13 @@ async def extract_and_persist(
                             MAX_TOTAL_CHARS,
                         )
                         break
+                else:
+                    logger.error(
+                        "Eviction loop exhausted (%d iterations) for document %s — "
+                        "delete_oldest_document_memory may be stuck; bailing.",
+                        max_eviction_iterations,
+                        extracted.filename,
+                    )
             except Exception as e:
                 logger.warning("Document memory cap check failed: %s", e)
                 continue
@@ -730,7 +806,7 @@ async def extract_and_persist(
             {
                 "id": memory_id,
                 "filename": extracted.filename,
-                "kind": extracted.kind,
+                "file_kind": extracted.kind,
                 "char_count": extracted.char_count,
                 "page_count": extracted.page_count,
             }
@@ -752,6 +828,14 @@ async def extract_and_persist(
 
             invalidate_user_context_cache(source_conversation_id)
         except ImportError:
-            pass
+            # Test fixtures may not bring up dashboard_common; in real
+            # runtime this is unreachable. Log so a packaging regression
+            # (e.g. a renamed module) doesn't hide as "cache never
+            # invalidates → AI never sees newly-uploaded docs".
+            logger.exception(
+                "Failed to invalidate user_context cache after saving "
+                "documents; new uploads may not be visible to the next "
+                "AI turn until the bot restarts."
+            )
 
     return saved

@@ -70,6 +70,11 @@ logs/
 
 # Temp files
 temp/
+# WebDriver binary for Tauri Rust-IPC e2e (msedgedriver) — local, version-matched, not committed
+native_dashboard/.drivers/
+# Claude Code transient/per-user state (shared settings.json is kept)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
 *.tmp
 *.temp
 tmpclaude-*
@@ -81,6 +86,7 @@ Thumbs.db
 
 # Project specific
 bot.pid
+bot.singleton.lock
 dev_watcher.pid
 .cache
 

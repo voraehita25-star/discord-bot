@@ -21,8 +21,9 @@ lxml==6.1.0                   # Fast HTML parser (CVE-2026-41066)
 numpy==2.4.4                  # Numerical operations (for RAG embeddings, latest)
 faiss-cpu==1.13.2             # Vector similarity search (latest)
 imageio[ffmpeg]==2.37.3       # GIF to video conversion for Gemini (latest)
-pypdf>=5.0.0                  # PDF text extraction for dashboard document memory
+pypdf>=6.10.2                 # PDF text extraction; floor must stay >=6.9.2 (CVE-2026-33699 infinite-loop DoS, +27628/24688/28351 on untrusted PDFs)
 python-docx>=1.1.0            # DOCX text extraction for dashboard document memory
+defusedxml>=0.7.1             # Hardens python-docx's lxml against XXE/billion-laughs; document_extractor disables DOCX entirely if this is missing
 
 # ==================== Music ====================
 yt-dlp==2026.3.17             # YouTube downloader — IMPORTANT: old versions freeze on changed APIs

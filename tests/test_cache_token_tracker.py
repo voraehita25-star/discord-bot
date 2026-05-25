@@ -431,14 +431,15 @@ class TestTokenTracker:
         # Won't actually start without event loop
         assert tracker._cleanup_task is None
 
-    def test_stop_cleanup_task_when_none(self):
+    @pytest.mark.asyncio
+    async def test_stop_cleanup_task_when_none(self):
         """Test stopping cleanup task when none."""
         from cogs.ai_core.cache.token_tracker import TokenTracker
 
         tracker = TokenTracker()
 
         # Should not raise
-        tracker.stop_cleanup_task()
+        await tracker.stop_cleanup_task()
 
         assert tracker._cleanup_task is None
 

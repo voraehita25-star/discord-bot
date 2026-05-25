@@ -17,8 +17,9 @@ SQLite database at `data/bot_database.db` — WAL mode, aiosqlite.
 | message_id | INTEGER | |
 | timestamp | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+| summarized_at | DATETIME | NULL until the row is consolidated (migration 015) |
 
-Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel_id, timestamp DESC)`, `idx_ai_history_local_id(channel_id, local_id)`, `idx_ai_history_user_id(user_id)`
+Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel_id, timestamp DESC)`, `idx_ai_history_local_id(channel_id, local_id)`, `idx_ai_history_user_id(user_id)`, `idx_ai_history_pending_summary(channel_id, timestamp) WHERE summarized_at IS NULL`
 
 ### ai_metadata — AI Session Metadata
 
@@ -92,17 +93,19 @@ Indexes: `idx_error_logs_type(error_type, created_at DESC)`, `idx_error_logs_cre
 | Column | Type | Constraints |
 | -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
-| guild_id | INTEGER | NOT NULL |
-| channel_id | INTEGER | |
 | name | TEXT | NOT NULL |
+| entity_type | TEXT | NOT NULL |
 | facts | TEXT | NOT NULL — JSON dict |
+| channel_id | INTEGER | |
+| guild_id | INTEGER | |
 | confidence | REAL | DEFAULT 1.0 |
-| source | TEXT | |
+| source | TEXT | DEFAULT 'user' |
+| created_at | REAL | NOT NULL (epoch seconds) |
+| updated_at | REAL | NOT NULL (epoch seconds) |
 | access_count | INTEGER | DEFAULT 0 |
-| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
-| updated_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
-Indexes: `idx_entity_name(guild_id, name)`, `idx_entity_guild_channel(guild_id, channel_id)`, `idx_entity_updated_at(updated_at DESC)`
+Constraint: `UNIQUE(name, channel_id, guild_id)`
+Indexes: `idx_entity_name(name)`, `idx_entity_type(entity_type)`, `idx_entity_channel(channel_id)`, `idx_entity_guild(guild_id)`, `idx_entity_guild_channel(guild_id, channel_id)`, `idx_entity_updated_at(updated_at DESC)`
 
 ### conversation_summaries — Lazily-created (memory_consolidator)
 
@@ -112,12 +115,16 @@ Created on first write by `cogs/ai_core/memory/memory_consolidator.py`, not at s
 | -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
 | channel_id | INTEGER | NOT NULL |
-| start_timestamp | DATETIME | NOT NULL |
-| end_timestamp | DATETIME | NOT NULL |
+| user_id | INTEGER | |
 | summary | TEXT | NOT NULL |
-| message_count | INTEGER | NOT NULL |
-| topics | TEXT | DEFAULT '[]' |
+| key_topics | TEXT | |
+| key_decisions | TEXT | |
+| start_time | DATETIME | |
+| end_time | DATETIME | |
+| message_count | INTEGER | |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+
+Index: `idx_summaries_channel(channel_id)`
 
 ### ai_long_term_memory — RAG Vector Store
 

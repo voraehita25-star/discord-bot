@@ -6,7 +6,7 @@
         "frontendDist": "./ui"
     },
     "app": {
-        "withGlobalTauri": true,
+        "withGlobalTauri": false,
         "windows": [
             {
                 "title": "디스코드 봇 대시보드",
@@ -22,7 +22,7 @@
             }
         ],
         "security": {
-            "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 wss://localhost:8765 wss://127.0.0.1:8765; object-src 'none'; frame-ancestors 'none'"
+            "csp": "default-src 'self'; script-src 'self' 'sha256-Y24CGBiNpvAHum+ZoXXPIUxmExgs7YP4BGdo45z8wdI='; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:8765 wss://127.0.0.1:8765; object-src 'none'; frame-ancestors 'none'"
         }
     },
     "bundle": {

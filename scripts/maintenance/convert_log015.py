@@ -19,6 +19,8 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
+import os
 import py_compile
 import re
 import sys
@@ -49,9 +51,11 @@ def find_logging_import_line(lines: list[bytes]) -> int | None:
 def convert_file(path: Path) -> tuple[bool, str]:
     """Convert one file. Returns (changed, reason)."""
     original = path.read_bytes()
-    if LOGGER_DECL in original:
-        # Logger already declared — still do call replacement below.
-        pass
+    # Logger already declared; skip re-insertion. We still want the
+    # ``logging.<level>(`` → ``logger.<level>(`` call rewrite below, so
+    # there's nothing to do here — the ``inserted`` flag will simply
+    # stay False and ``new_lines.insert`` won't run.
+    # (The membership check below is the actual gate for insertion.)
 
     # Split preserving line endings.
     # We want to find the `import logging` line index without losing line endings.
@@ -81,21 +85,36 @@ def convert_file(path: Path) -> tuple[bool, str]:
         return (False, "no changes needed")
 
     # Syntax-check before overwriting.
-    with tempfile.NamedTemporaryFile(
-        mode="wb", suffix=".py", delete=False, dir=str(path.parent)
-    ) as tmp:
-        tmp.write(new_content)
-        tmp_path = Path(tmp.name)
+    tmp_path: Path | None = None
     try:
-        py_compile.compile(str(tmp_path), doraise=True)
-    except py_compile.PyCompileError as e:
-        tmp_path.unlink(missing_ok=True)
-        return (False, f"syntax error after edit: {e.msg}")
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".py", delete=False, dir=str(path.parent)
+        ) as tmp:
+            tmp.write(new_content)
+            tmp_path = Path(tmp.name)
+        try:
+            # cfile=os.devnull keeps py_compile from writing a stray
+            # ``.pyc`` next to the syntax-check temp — we only care that
+            # ``compile()`` doesn't raise; the bytecode is throwaway and
+            # would otherwise litter the working directory on every run.
+            py_compile.compile(str(tmp_path), cfile=os.devnull, doraise=True)
+        except py_compile.PyCompileError as e:
+            return (False, f"syntax error after edit: {e.msg}")
 
-    # Replace atomically.
-    path.write_bytes(new_content)
-    tmp_path.unlink(missing_ok=True)
-    return (True, f"inserted={inserted}, replaced={n_replaced}")
+        # Atomic replace: rename the verified temp file over the source so
+        # a crash mid-write can't corrupt the original. ``Path.write_bytes``
+        # was not atomic — a process kill between truncate and write would
+        # leave the source partially overwritten with no recovery.
+        tmp_path.replace(path)
+        tmp_path = None  # ownership transferred via replace
+        return (True, f"inserted={inserted}, replaced={n_replaced}")
+    finally:
+        # Cleanup any leftover temp file from non-PyCompileError exceptions
+        # (e.g. OSError from disk full) — without this, the previous code
+        # leaked .tmp files in the source tree.
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
 
 
 def main() -> int:
@@ -112,7 +131,13 @@ def main() -> int:
         try:
             changed, reason = convert_file(path)
         except Exception as e:
+            # Include the traceback so an unexpected error mode (e.g.
+            # encoding error on a non-UTF-8 source file) surfaces
+            # actionable info instead of just an opaque type name.
+            import traceback as _tb
+
             print(f"[ERR ] {rel}: {e}")
+            _tb.print_exc()
             failed += 1
             continue
         if changed:

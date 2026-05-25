@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from typing import TYPE_CHECKING
 
-from ..data import SERVER_CHARACTER_NAMES
+from ..character_tags import replace_character_names
 from ..storage import get_all_channels_summary, get_channel_history_preview
 
 logger = logging.getLogger(__name__)
@@ -76,60 +77,16 @@ class ResponseMixin:
     def _get_voice_status(self) -> str:
         """Get current voice connection status for all servers.
 
-        Returns:
-            Formatted string describing voice connection status.
+        Thin wrapper that delegates to the canonical implementation in
+        ``cogs.ai_core.voice.get_voice_status``. Two near-identical
+        implementations were drifting silently — keeping the logic in
+        one place stops bug fixes from landing in only one of them.
         """
-        if not self.bot.voice_clients:
-            return "Faust ไม่ได้เชื่อมต่อกับห้องเสียงใดๆ"
+        # Local import to dodge a circular dependency at module load
+        # (voice.py imports from this package's __init__).
+        from ..voice import get_voice_status as _voice_status_impl
 
-        music_cog = self.bot.get_cog("Music")
-        voice_info = []
-
-        for vc in self.bot.voice_clients:
-            if vc.is_connected() and vc.channel:  # type: ignore[attr-defined]
-                guild_name = vc.guild.name if vc.guild else "Unknown Server"  # type: ignore[attr-defined]
-                guild_id = vc.guild.id if vc.guild else None  # type: ignore[attr-defined]
-                channel_name = vc.channel.name  # type: ignore[attr-defined]
-
-                # Get members in voice channel (excluding bots)
-                members = [m.display_name for m in vc.channel.members if not m.bot]  # type: ignore[attr-defined]
-                member_count = len(members)
-
-                # Check if playing music and get track info
-                if vc.is_playing():  # type: ignore[attr-defined]
-                    status = "กำลังเล่นเพลง"
-                    if music_cog and guild_id:
-                        track_info = music_cog.current_track.get(guild_id, {})  # type: ignore[attr-defined]
-                        track_title = track_info.get("title", "Unknown")
-                        status = f"กำลังเล่นเพลง: {track_title}"
-                elif vc.is_paused():  # type: ignore[attr-defined]
-                    status = "หยุดชั่วคราว"
-                    if music_cog and guild_id:
-                        track_info = music_cog.current_track.get(guild_id, {})  # type: ignore[attr-defined]
-                        track_title = track_info.get("title", "Unknown")
-                        status = f"หยุดชั่วคราว: {track_title}"
-                else:
-                    status = "ว่าง (ไม่ได้เล่นเพลง)"
-
-                if members:
-                    member_list = ", ".join(members[:5])
-                    if member_count > 5:
-                        member_list += f" และอีก {member_count - 5} คน"
-                    voice_info.append(
-                        f"• Server: {guild_name} | Channel: {channel_name}\n"
-                        f"  Status: {status}\n"
-                        f"  Members: {member_list}"
-                    )
-                else:
-                    voice_info.append(
-                        f"• Server: {guild_name} | Channel: {channel_name}\n"
-                        f"  Status: {status}\n"
-                        f"  Members: ไม่มีใครในห้อง"
-                    )
-
-        if voice_info:
-            return "Faust กำลังเชื่อมต่อกับห้องเสียง:\n" + "\n".join(voice_info)
-        return "Faust ไม่ได้เชื่อมต่อกับห้องเสียงใดๆ"
+        return _voice_status_impl(self.bot)
 
     async def _get_chat_history_index(self) -> str:
         """Get index of all channels with chat history for DM context.
@@ -158,8 +115,10 @@ class ResponseMixin:
 
             lines.append("\n💡 พูดถึง channel ID เพื่อขอดูประวัติแชท เช่น 'ดูประวัติ 1234567890'")
             return "\n".join(lines)
-        except (OSError, RuntimeError):
-            # RuntimeError covers aiosqlite.Error subclasses surfaced as generic errors.
+        except (OSError, RuntimeError, sqlite3.Error):
+            # ``sqlite3.Error`` covers ``aiosqlite.Error`` (subclass of
+            # ``sqlite3.Error``, NOT ``RuntimeError`` — the earlier comment
+            # claiming RuntimeError covered them was wrong).
             logger.exception("Failed to get chat history index")
             return "ไม่สามารถดึงข้อมูลประวัติแชทได้"
         except Exception:  # pragma: no cover — last-resort safety for DB driver errors
@@ -256,7 +215,7 @@ class ResponseMixin:
                 lines.append(f"[{role}] {content}")
 
             return "\n".join(lines)
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, sqlite3.Error):
             logger.exception("Failed to get requested history")
             return "❌ เกิดข้อผิดพลาดในการดึงประวัติแชท"
         except Exception:  # pragma: no cover — last-resort safety for DB driver errors
@@ -281,22 +240,7 @@ class ResponseMixin:
         response_text = PATTERN_SPACED.sub(r"\1", response_text)
 
         # Convert standalone character names to {{Name}} tags
-        if guild_id and guild_id in SERVER_CHARACTER_NAMES:
-            char_names = list(SERVER_CHARACTER_NAMES[guild_id].keys())
-            char_names.sort(key=len, reverse=True)
-            for char_name in char_names:
-                pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"
-                # Use a callable replacement so re.sub doesn't interpret
-                # any character in the name as a backref/escape (`\1`,
-                # `\g<name>`, `&` in some flavours). The previous
-                # `.replace("\\", r"\\")` only handled backslashes.
-                replacement_text = f"{{{{{char_name}}}}}"
-                response_text = re.sub(
-                    pattern,
-                    lambda _m, rep=replacement_text: rep,
-                    response_text,
-                    flags=re.MULTILINE | re.IGNORECASE,
-                )
+        response_text = replace_character_names(response_text, guild_id)
 
         # Prepend search indicator
         if search_indicator:

@@ -1,6 +1,11 @@
 -- Migration 011: Fix ai_analytics.model default to Claude while preserving
 -- historical per-row model values.
 
+-- Idempotent re-apply guard: a crash between INSERT and RENAME below
+-- would otherwise leave ai_analytics_new orphaned on disk and the rerun
+-- would fail with "table already exists". Migrations 003/007/010 added
+-- this guard; 011 was missed.
+DROP TABLE IF EXISTS ai_analytics_new;
 CREATE TABLE ai_analytics_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -48,7 +53,7 @@ SELECT
     created_at
 FROM ai_analytics;
 
-DROP TABLE ai_analytics;
+DROP TABLE IF EXISTS ai_analytics;
 
 ALTER TABLE ai_analytics_new RENAME TO ai_analytics;
 
@@ -57,3 +62,8 @@ CREATE INDEX IF NOT EXISTS idx_ai_analytics_user
 
 CREATE INDEX IF NOT EXISTS idx_ai_analytics_guild
     ON ai_analytics(guild_id, created_at DESC);
+
+-- Channel-scoped analytics (per-conversation drilldown) hit this table
+-- often; without this index the lookup degrades to a full scan.
+CREATE INDEX IF NOT EXISTS idx_ai_analytics_channel
+    ON ai_analytics(channel_id, created_at DESC);

@@ -27,7 +27,48 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
 # Configuration
-HEALTH_API_PORT = int(os.getenv("HEALTH_API_PORT", "8080"))
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env var with a logged fallback on bad input.
+
+    Previously ``int(os.getenv(...))`` would raise ``ValueError`` at
+    module import time if an operator set ``HEALTH_API_PORT=foo``,
+    bringing the whole bot down before any logging was visible.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "⚠️ %s=%r is not a valid integer; falling back to default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env var with a logged fallback on bad input."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "⚠️ %s=%r is not a valid float; falling back to default %g",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
+HEALTH_API_PORT = _env_int("HEALTH_API_PORT", 8080)
 _HEALTH_API_HOST_RAW = os.getenv("HEALTH_API_HOST", "127.0.0.1")
 HEALTH_API_TOKEN = os.getenv("HEALTH_API_TOKEN", "")  # Bearer token for sensitive endpoints
 
@@ -45,10 +86,16 @@ if not HEALTH_API_TOKEN:
     import secrets
 
     HEALTH_API_TOKEN = secrets.token_urlsafe(32)
+    # Don't log the generated token — it grants admin access to all
+    # protected endpoints and the secret-redaction filter only matches
+    # tokens with `key=`/`token=` style prefixes (not bare urlsafe).
+    # Print enough to identify it (first 8 chars) so an operator can
+    # discover it via stdout, but the full value lives only in memory.
     logger.warning(
-        "⚠️ HEALTH_API_TOKEN not set; generated ephemeral token: %s "
-        "(set HEALTH_API_TOKEN in .env for a stable value).",
-        HEALTH_API_TOKEN,
+        "⚠️ HEALTH_API_TOKEN not set; generated an ephemeral token "
+        "(prefix=%s..., 32 bytes urlsafe). Set HEALTH_API_TOKEN in .env "
+        "for a stable, persisted value.",
+        HEALTH_API_TOKEN[:8],
     )
 
 if _HEALTH_API_HOST_RAW not in _LOCALHOST_ADDRESSES and not os.getenv(
@@ -64,8 +111,8 @@ else:
     HEALTH_API_HOST = _HEALTH_API_HOST_RAW
 
 # Health check thresholds (configurable via env vars)
-HEARTBEAT_MAX_AGE_SECONDS = int(os.getenv("HEALTH_HEARTBEAT_MAX_AGE", "60"))
-MAX_LATENCY_MS = int(os.getenv("HEALTH_MAX_LATENCY_MS", "5000"))
+HEARTBEAT_MAX_AGE_SECONDS = _env_int("HEALTH_HEARTBEAT_MAX_AGE", 60)
+MAX_LATENCY_MS = _env_int("HEALTH_MAX_LATENCY_MS", 5000)
 
 
 # External service URLs to health-check (validated to prevent SSRF)
@@ -544,7 +591,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 <div class="stats"><div class="stat"><span class="value">{bot.get("guilds", 0)}</span><span class="label">Guilds</span></div>
 <div class="stat"><span class="value">{bot.get("users", 0)}</span><span class="label">Users</span></div></div></div>
 <div class="card" style="border-left:4px solid #9b59b6;"><div class="card-header"><span class="icon">💻</span><span class="name">System</span></div>
-<div class="stats"><div class="stat"><span class="value">{system.get("memory_mb", 0):.0f}MB</span><span class="label">Memory</span></div>
+<div class="stats"><div class="stat"><span class="value">{(system.get("memory_mb") or 0):.0f}MB</span><span class="label">Memory</span></div>
 <div class="stat"><span class="value">{system.get("cpu_percent", 0):.1f}%</span><span class="label">CPU</span></div></div></div>
 <div class="card" style="border-left:4px solid #e74c3c;"><div class="card-header"><span class="icon">📊</span><span class="name">Stats</span></div>
 <div class="stats"><div class="stat"><span class="value">{stats.get("messages_processed", 0)}</span><span class="label">Messages</span></div>
@@ -708,12 +755,18 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             self._send_text_response(metrics)
 
         elif path == "/stats":
-            # Quick stats (HTML dashboard)
+            # Quick stats (HTML dashboard). Snapshot the counters under
+            # the lock so concurrent increments can't tear a multi-byte
+            # int on platforms without atomic 64-bit ops.
+            with health_data._counter_lock:
+                msg_ct = health_data.message_count
+                cmd_ct = health_data.command_count
+                err_ct = health_data.error_count
             data = {
                 "uptime": health_data.get_uptime_str(),
-                "messages": health_data.message_count,
-                "commands": health_data.command_count,
-                "errors": health_data.error_count,
+                "messages": msg_ct,
+                "commands": cmd_ct,
+                "errors": err_ct,
                 "guilds": health_data.guild_count,
                 "latency_ms": round(health_data.latency_ms, 2),
             }
@@ -721,13 +774,17 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             self._send_html_response(stats_html)
 
         elif path == "/stats/json":
-            # Quick stats (JSON)
+            # Quick stats (JSON) — same lock-protected snapshot as /stats.
+            with health_data._counter_lock:
+                msg_ct = health_data.message_count
+                cmd_ct = health_data.command_count
+                err_ct = health_data.error_count
             self._send_json_response(
                 {
                     "uptime": health_data.get_uptime_str(),
-                    "messages": health_data.message_count,
-                    "commands": health_data.command_count,
-                    "errors": health_data.error_count,
+                    "messages": msg_ct,
+                    "commands": cmd_ct,
+                    "errors": err_ct,
                     "guilds": health_data.guild_count,
                     "latency_ms": round(health_data.latency_ms, 2),
                 }
@@ -943,11 +1000,16 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         process = health_data._get_process()
         memory_mb = process.memory_info().rss / 1024 / 1024
         try:
-            from utils.reliability.memory_manager import MemoryMonitor as _MM
+            # The actual threshold the cleanup loop uses lives on the
+            # ``memory_monitor`` singleton, not as a class attribute —
+            # the previous ``MemoryMonitor.DEFAULT_WARNING_MB`` lookup
+            # never resolved and always fell back to the 8 GiB default,
+            # while the real cleanup fires at 1 GiB.
+            from utils.reliability.memory_manager import memory_monitor as _mm
 
-            mem_warning = float(getattr(_MM, "DEFAULT_WARNING_MB", 8192))
+            mem_warning = float(getattr(_mm, "warning_mb", 1024))
         except Exception:
-            mem_warning = 8192.0
+            mem_warning = 1024.0
         checks["checks"]["memory"] = {
             "status": "ok" if memory_mb < mem_warning else "warning",
             "usage_mb": round(memory_mb, 2),
@@ -1015,7 +1077,11 @@ class HealthAPIServer:
                 self.port,
             )
             return True
-        except OSError:
+        except Exception:
+            # Broad catch: ThreadingHTTPServer construction can raise more than
+            # OSError (e.g. ValueError on a bad host). Any failure here must
+            # degrade to "health API unavailable", never crash the caller's
+            # startup path.
             logger.exception("❌ Failed to start Health API")
             return False
 
@@ -1129,25 +1195,35 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                 except ImportError:
                     pass
 
-                # Check external Go services
+                # Check external Go services. Run them concurrently — the
+                # previous sequential loop waited the full per-service
+                # timeout end-to-end (5s × N), so adding a third service
+                # would have made the health update visibly slow.
                 services = {
                     "go_health_api": GO_HEALTH_API_URL,
                     "go_url_fetcher": GO_URL_FETCHER_URL,
                 }
-                for svc_name, svc_url in services.items():
-                    await check_service(session, svc_name, svc_url)
+                await asyncio.gather(
+                    *(
+                        check_service(session, svc_name, svc_url)
+                        for svc_name, svc_url in services.items()
+                    ),
+                    return_exceptions=True,
+                )
 
-                    # Alert on consecutive failures
-                    if alerting_available and _service_failures.get(svc_name, 0) >= 3:
-                        await alert_manager.alert_health_check_failed(
-                            svc_name, _service_failures[svc_name]
-                        )
+                # Alert on consecutive failures
+                if alerting_available:
+                    for svc_name in services:
+                        if _service_failures.get(svc_name, 0) >= 3:
+                            await alert_manager.alert_health_check_failed(
+                                svc_name, _service_failures[svc_name]
+                            )
 
                 # Check memory threshold and alert
                 if alerting_available:
                     try:
                         mem_mb = psutil.Process().memory_info().rss / 1024 / 1024
-                        threshold = float(os.getenv("ALERT_MEMORY_THRESHOLD_MB", "2048"))
+                        threshold = _env_float("ALERT_MEMORY_THRESHOLD_MB", 2048.0)
                         if mem_mb > threshold:
                             await alert_manager.alert_memory_threshold(mem_mb, threshold)
                     except Exception:

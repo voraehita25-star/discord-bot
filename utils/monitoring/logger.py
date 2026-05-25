@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, ClassVar
@@ -48,6 +49,21 @@ def safe_ascii(text: Any) -> str:
     return result.encode("ascii", "replace").decode("ascii")
 
 
+def safe_unicode(text: Any) -> str:
+    """Like ``safe_ascii`` but preserves Thai/CJK/other Unicode.
+
+    Only the known emoji set is rewritten to ``[BRACKETED]`` tokens so
+    non-Unicode consoles still get readable output. Everything else —
+    Thai script, Japanese, accented Latin — passes through unchanged.
+    Used by the JSON formatter where the output is UTF-8 and the
+    ASCII-mangling of ``safe_ascii`` would destroy meaningful content.
+    """
+    result = str(text)
+    for emoji, ascii_text in EMOJI_MAP.items():
+        result = result.replace(emoji, ascii_text)
+    return result
+
+
 # Check if console supports Unicode
 CONSOLE_UNICODE_SAFE = False
 if sys.platform == "win32":
@@ -69,8 +85,16 @@ if sys.platform == "win32":
         # piped/redirected (CI, Docker, systemd) the handle is NULL or
         # INVALID_HANDLE_VALUE and the API call would either no-op or, on
         # some Windows builds, raise OSError.
+        #
+        # INVALID_HANDLE_VALUE on Win32 is ``(HANDLE)-1`` which is
+        # ``0xFFFFFFFF`` on Win32 / ``0xFFFFFFFFFFFFFFFF`` on Win64. A
+        # raw ``handle != -1`` compares against the signed Python int
+        # ``-1``, which differs from the unsigned HANDLE value returned
+        # by ctypes — we'd miss the sentinel on Win64. ``c_void_p(-1).value``
+        # gives the platform-correct unsigned bit pattern.
+        _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
         handle = kernel32.GetStdHandle(-11)
-        if handle and handle != -1:
+        if handle and handle != _INVALID_HANDLE_VALUE:
             console_mode = ctypes.c_ulong()
             if kernel32.GetConsoleMode(handle, ctypes.byref(console_mode)):
                 kernel32.SetConsoleMode(handle, console_mode.value | 0x0004)
@@ -128,12 +152,17 @@ class JSONLogFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         import json
-        from datetime import datetime
 
         log_entry = {
-            "timestamp": datetime.now().isoformat(),
+            # Naive ``datetime.now()`` is interpreted as wall-clock by most
+            # log aggregators (Loki, ES) but loses timezone info. UTC ISO
+            # is unambiguous and survives shipping across regions.
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
-            "message": safe_ascii(record.getMessage()),
+            # ``safe_unicode`` keeps Thai/CJK intact while still rewriting
+            # known emojis to ``[BRACKETED]`` tokens. JSON output is UTF-8
+            # so there's no reason to mangle non-ASCII via safe_ascii.
+            "message": safe_unicode(record.getMessage()),
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno,
@@ -143,7 +172,9 @@ class JSONLogFormatter(logging.Formatter):
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
 
-        return json.dumps(log_entry, ensure_ascii=True)
+        # ensure_ascii=False so multibyte characters land verbatim instead
+        # of being \u-escaped — matches the policy in health_api.py.
+        return json.dumps(log_entry, ensure_ascii=False)
 
 
 # Patterns that look like secrets (Discord tokens, API keys, bearer tokens).
@@ -155,21 +186,53 @@ class JSONLogFormatter(logging.Formatter):
 # "akia" appearing inside English words / hex digests).
 _SECRET_PATTERNS_CI = re.compile(
     r"(?:"
-    # Discord bot token: base64.base64.base64 (3 dot-separated segments, 59+ chars)
-    r"[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}"
+    # Discord bot token: base64.base64.base64 (3 dot-separated segments).
+    # Upper bounds keep the regex linear-time against pathological input —
+    # an unbounded ``{24,}`` lets a long base64-looking input feed the
+    # backtracker for ages on the dot-separator branches.
+    r"[A-Za-z0-9_-]{24,90}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,90}"
     r"|"
-    # Generic long base64-like API key (32+ alphanumeric chars)
-    r"(?:key|token|secret|password|apikey|api_key|authorization)[\s=:]+['\"]?[A-Za-z0-9_\-]{32,}['\"]?"
+    # Generic long base64-like API key (32+ alphanumeric chars).
+    # Capture the keyword + delimiter into a non-emit group so the
+    # replacement only redacts the SECRET, leaving the keyword visible.
+    # Without this, a JSON-formatted log line like ``"key":"abc..."``
+    # has the entire chunk (including ``"key":"``) replaced by
+    # ``[REDACTED]``, breaking JSON validity for downstream parsers.
+    #
+    # NOTE on the lookbehinds: each is anchored by an extra
+    # ``(?<![A-Za-z0-9_])`` boundary group to avoid false matches
+    # against substrings inside larger words (e.g. ``monkey: <hex>``
+    # used to redact via the ``key`` lookbehind). Python lookbehinds
+    # must be fixed-width, so we chain a 1-char negative lookbehind
+    # before each keyword.
+    r"(?:"
+    r"(?<![A-Za-z0-9_])(?<=key)|"
+    r"(?<![A-Za-z0-9_])(?<=token)|"
+    r"(?<![A-Za-z0-9_])(?<=secret)|"
+    r"(?<![A-Za-z0-9_])(?<=password)|"
+    r"(?<![A-Za-z0-9_])(?<=apikey)|"
+    r"(?<![A-Za-z0-9_])(?<=api_key)|"
+    r"(?<![A-Za-z0-9_])(?<=authorization)"
+    r")[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}['\"]?"
     r"|"
     # Anthropic API keys (sk-ant-api03-..., sk-ant-...) — kept BEFORE the
     # generic sk- pattern so the longer match wins.
     r"sk-ant-[A-Za-z0-9_\-]{40,}"
     r"|"
-    # OpenAI / generic sk- API keys
-    r"sk-[A-Za-z0-9]{20,}"
+    # OpenAI / generic sk- API keys. Allow `_` and `-` so newer prefixed
+    # keys (sk-proj-…, sk-svcacct-…) are redacted in full instead of being
+    # cut at the first `-`, which would leak the suffix. The longer anthropic
+    # pattern above runs first, so sk-ant-… still wins its more specific match.
+    r"sk-[A-Za-z0-9_-]{20,}"
     r"|"
     # Google API keys (AIza...) — fixed 39 chars total
     r"AIza[A-Za-z0-9_\-]{35}"
+    r"|"
+    # JWTs (eyJ<base64url>.<base64url>.<base64url>), e.g. ``Bearer eyJ...``.
+    # The keyword pattern above stops at the first '.', and the Discord-token
+    # pattern needs a 6-char middle segment, so neither fully redacts a JWT
+    # (its payload segment is long). Bounds keep matching linear-time.
+    r"eyJ[A-Za-z0-9_\-]{10,2048}\.[A-Za-z0-9_\-]{4,4096}\.[A-Za-z0-9_\-]{4,2048}"
     r")",
     re.IGNORECASE,
 )

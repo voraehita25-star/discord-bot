@@ -26,7 +26,12 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
     let max_iterations = data.len().min(100_000);
     let mut iterations: usize = 0;
 
-    while i + 2 < data.len() && iterations < max_iterations {
+    // Loop bound `i < data.len()` (not `i + 2 < ...`) so a second Image
+    // Descriptor sitting in the final 2 bytes is still examined — otherwise a
+    // genuinely-animated 2-frame GIF could be reported as static. Every inner
+    // access (data[i+9], i+=2, etc.) is individually bounds-checked below, and
+    // this matches get_gif_frame_count's loop condition.
+    while i < data.len() && iterations < max_iterations {
         iterations += 1;
         match data[i] {
             0x21 => {

@@ -27,12 +27,21 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Safety cap on the number of chunks emitted when splitting an oversized
+# response into Discord-sized pieces. Prevents pathological inputs from
+# producing hundreds of messages.
+_MAX_RESPONSE_CHUNKS = 20
+
 # Precompiled regex patterns
 CHARACTER_TAG_PATTERN = re.compile(r"^\[([^\]]+)\]:\s*")
 URL_PATTERN = re.compile(r"https?://\S+")
+# ``MENTION_PATTERN`` is exported for tests and downstream callers even
+# though this module doesn't consume it directly. Keep it module-level.
 MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
 # Patterns for dangerous mentions that should be sanitized in webhook messages
-DANGEROUS_MENTION_PATTERN = re.compile(r"@(everyone|here)", re.IGNORECASE)
+# Negative lookahead so repeated sanitisation passes don't bloat the
+# string by re-inserting ZWS chars on already-escaped mentions.
+DANGEROUS_MENTION_PATTERN = re.compile("@(?!\u200b)(everyone|here)", re.IGNORECASE)
 
 
 @dataclass
@@ -96,6 +105,12 @@ class ResponseSender:
         if char_name:
             avatar_name = char_name
 
+        # Stripping the tag can leave content empty (e.g. "[Name]: "), which
+        # would attempt an empty channel/webhook send → Discord HTTP 400. The
+        # guard at the top runs before extraction, so re-check here.
+        if not content or not content.strip():
+            return SendResult(success=False, error="Empty content after tag strip")
+
         # Split content if too long
         chunks = self.split_content(content)
 
@@ -143,10 +158,11 @@ class ResponseSender:
         # Use zero-width space to break the mention. Replacement strings must
         # NOT be raw \u2014 `r"\u200b"` is six literal chars, not the ZWS code point.
         sanitized = DANGEROUS_MENTION_PATTERN.sub("@\u200b\\1", content)
-        # User mentions: <@123> / <@!123>
-        sanitized = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", sanitized)
+        # User mentions: <@123> / <@!123>. Negative lookahead for ZWS to keep
+        # repeated passes idempotent (same reason as the @everyone guard).
+        sanitized = re.sub(r"<@!?(?!\u200b)(\d+)>", "<@\u200b\\1>", sanitized)
         # Role mentions: <@&456>
-        sanitized = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", sanitized)
+        sanitized = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", sanitized)
         return sanitized
 
     def extract_character_tag(self, content: str) -> tuple[str | None, str]:
@@ -183,7 +199,7 @@ class ResponseSender:
 
         chunks: list[str] = []
         remaining = content
-        max_chunks = 20  # Safety limit to prevent unbounded chunking
+        max_chunks = _MAX_RESPONSE_CHUNKS
         # Track which fenced-code-block we're currently inside so the next chunk
         # can re-open it. Without this, splitting in the middle of a ```python
         # block leaves the first chunk with a stray opening fence (no close)
@@ -356,13 +372,11 @@ class ResponseSender:
         try:
             start_time = time.time()
 
-            # Get webhook
             webhook = await self._get_webhook(channel)
             if not webhook:
                 # Fall back to direct send
                 return await self._send_direct(channel, chunks, reference, allowed_mentions)
 
-            # Send chunks
             last_message_id = None
             for i, chunk in enumerate(chunks):
                 try:
@@ -462,6 +476,16 @@ class ResponseSender:
         Returns:
             SendResult with send status
         """
+        # Defence-in-depth: if the caller passed no ``allowed_mentions``,
+        # default to ``AllowedMentions.none()`` so AI-generated text
+        # containing ``@everyone``/``@here``/``<@id>``/``<@&id>`` can't
+        # ping anyone via the direct path. The webhook path sanitises
+        # mentions inside ``_sanitize_webhook_content`` already; this
+        # closes the same hole on the fallback. Match by ``is None``
+        # rather than truthiness because ``AllowedMentions(...)`` is
+        # falsy by ``__bool__`` semantics in some Python wrappers.
+        if allowed_mentions is None:
+            allowed_mentions = discord.AllowedMentions.none()
         try:
             last_message_id = None
             for i, chunk in enumerate(chunks):

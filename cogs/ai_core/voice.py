@@ -20,7 +20,7 @@ class _VoiceLikeChannel(Protocol):
     name: str
     guild: Any
 
-    async def connect(self) -> Any: ...
+    async def connect(self, *, timeout: float = ...) -> Any: ...
 
 
 def _is_voice_like_channel(channel: object) -> TypeGuard[_VoiceLikeChannel]:
@@ -72,6 +72,12 @@ async def join_voice_channel(bot: Bot, channel_id: int) -> tuple[bool, str]:
         return True, f"✅ เข้าไปรอใน **{voice_channel.name}** แล้ว"
 
     except Exception:
+        # Broad catch is intentional here: discord.py wraps voice errors
+        # in many types (ClientException, OpusNotLoaded, ConnectionClosed,
+        # OS-level socket errors) and we don't want to import discord at
+        # module load time (this file is type-only). The
+        # ``logger.exception`` captures the traceback so debugging isn't
+        # blind even though the user sees a generic Thai message.
         logger.exception("Failed to join voice channel")
         return False, "❌ ไม่สามารถเข้าช่องเสียงได้ กรุณาลองใหม่อีกครั้ง"
 
@@ -165,14 +171,16 @@ def get_voice_status(bot: Bot) -> str:
                 status = "กำลังเล่นเพลง"
                 # Get current track info from Music cog
                 if music_cog and guild_id:
-                    track_info = music_cog.current_track.get(guild_id, {})  # type: ignore[attr-defined]
+                    gs = music_cog._gs(guild_id)  # type: ignore[attr-defined]
+                    track_info = getattr(gs, "current_track", None) or {}
                     track_title = track_info.get("title", "Unknown")
                     status = f"กำลังเล่นเพลง: {track_title}"
             elif vc.is_paused():  # type: ignore[attr-defined]
                 status = "หยุดชั่วคราว"
                 # Get paused track info
                 if music_cog and guild_id:
-                    track_info = music_cog.current_track.get(guild_id, {})  # type: ignore[attr-defined]
+                    gs = music_cog._gs(guild_id)  # type: ignore[attr-defined]
+                    track_info = getattr(gs, "current_track", None) or {}
                     track_title = track_info.get("title", "Unknown")
                     status = f"หยุดชั่วคราว: {track_title}"
             else:

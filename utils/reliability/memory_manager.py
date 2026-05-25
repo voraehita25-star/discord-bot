@@ -424,7 +424,9 @@ class MemoryMonitor:
         """Run all registered cleanup callbacks."""
         results = {}
 
-        for name, callback in self._cleanup_callbacks.items():
+        # Snapshot first: a cleanup callback may (un)register callbacks, which
+        # would otherwise raise "dictionary changed size during iteration".
+        for name, callback in list(self._cleanup_callbacks.items()):
             try:
                 cleaned = callback()
                 results[name] = cleaned

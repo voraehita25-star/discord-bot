@@ -222,7 +222,11 @@ export class MemoryManager {
         const modal = document.getElementById('add-memory-modal');
         if (modal) {
             modal.classList.add('active');
-            document.getElementById('memory-content').value = '';
+            // Optional chaining avoids a runtime crash if the textarea was
+            // ever removed from the DOM ahead of the modal being shown.
+            const ta = document.getElementById('memory-content');
+            if (ta)
+                ta.value = '';
         }
     }
     closeModal() {
@@ -279,15 +283,36 @@ export class ChatManager {
         this.isStreaming = false;
         this.presets = {};
         this.currentMode = ''; // Store current mode for the streaming message
-        this.aiProvider = localStorage.getItem('dashboard_ai_provider') || 'gemini'; // Current AI provider
+        // ``localStorage`` is tampering-trivial via devtools, so validate the
+        // restored value against the allowlist of known providers and fall
+        // back to ``gemini`` on garbage. Before this, a hand-edited entry
+        // like ``{"$": 1}`` would propagate through every WS frame as the
+        // ``ai_provider`` field and confuse the server-side dispatcher.
+        this.aiProvider = (() => {
+            const stored = localStorage.getItem('dashboard_ai_provider');
+            const allowed = new Set(['gemini', 'claude']);
+            return stored && allowed.has(stored) ? stored : 'gemini';
+        })();
         this.availableProviders = ['gemini']; // Available providers from server
         this.thinkingEnabled = localStorage.getItem('dashboard_thinking') === 'true'; // Persist thinking preference
         this.isEditStreaming = false; // True when AI edit streaming is in progress
         this.editTargetMessageId = null; // DB ID of message being AI-edited
         this.editStreamContent = ''; // Accumulated edit stream content
+        // Id of the conversation a stream belongs to, captured at stream_start.
+        // If the user switches conversations mid-stream, late chunk/stream_end
+        // frames for the OLD conversation must not mutate the NEW one.
+        this.streamingConversationId = null;
+        // rAF id for pending edit-stream textContent flush. We accumulate chunks
+        // into ``editStreamContent`` and only push to the DOM once per frame to
+        // avoid O(n²) string concatenation costs as the response grows.
+        this.editStreamRafId = null;
         this.userScrolledUp = false; // True when user manually scrolls up during streaming
         this.draftSaveTimer = null; // Debounced localStorage draft writer
         this.allTagsCache = []; // #22 populated by 'all_tags' message
+        // Most-recent conversation id passed to ``loadConversation``. The
+        // ``conversation_loaded`` WS handler compares against this to drop
+        // stale frames when the user switches conversations rapidly.
+        this.pendingConversationLoadId = null;
         // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
         // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
         // the same method surface (connect, disconnect, send, scheduleReconnect) +
@@ -492,8 +517,30 @@ export class ChatManager {
                 this.listConversations();
                 this.closeModal();
                 break;
-            case 'conversation_loaded':
-                this.currentConversation = this.enrichConversation(data.conversation);
+            case 'conversation_loaded': {
+                // Guard against a race when the user switches conversations
+                // rapidly: A's load frame can arrive AFTER B was opened and
+                // would otherwise replace the now-current B's view. Compare
+                // the incoming frame's id to the conversation we last asked
+                // for; if it doesn't match, drop the frame.
+                const incoming = this.enrichConversation(data.conversation);
+                const requestedId = this.pendingConversationLoadId;
+                if (requestedId !== null && requestedId !== incoming.id) {
+                    break;
+                }
+                // If a response was still streaming into the PREVIOUS
+                // conversation when the user switched, abandon it cleanly so the
+                // half-rendered stream doesn't leave the input locked. Late
+                // chunk frames no-op (their DOM target is gone) and a late
+                // stream_end is dropped by the streamingConversationId guard.
+                if (this.isStreaming || this.isEditStreaming) {
+                    this.isStreaming = false;
+                    this.isEditStreaming = false;
+                    this.editTargetMessageId = null;
+                    this.editStreamContent = '';
+                    this.setInputEnabled(true);
+                }
+                this.currentConversation = incoming;
                 this.aiProvider = this.currentConversation.ai_provider || this.aiProvider;
                 this.messages = data.messages || [];
                 // Reset virtualization window when switching conversations.
@@ -515,11 +562,16 @@ export class ChatManager {
                 this.updateChatFilesBadge(0);
                 this.refreshChatFilesBadge();
                 break;
+            }
             case 'stream_start':
                 this.isStreaming = true;
+                this.streamingConversationId = this.currentConversation?.id ?? null;
                 this.userScrolledUp = false; // Reset scroll lock on new stream
-                this.currentMode = data.mode || ''; // Store mode for later
-                if (data.is_edit && data.target_message_id) {
+                // Narrow with ``typeof`` instead of an unchecked ``as`` cast so a
+                // malformed frame from the bot can't poison ``currentMode`` with
+                // a non-string (e.g. ``null`` becoming the literal "null").
+                this.currentMode = typeof data.mode === 'string' ? data.mode : '';
+                if (data.is_edit && typeof data.target_message_id === 'number') {
                     // AI edit mode: prepare to update existing message in-place
                     this.isEditStreaming = true;
                     this.editTargetMessageId = data.target_message_id;
@@ -570,6 +622,20 @@ export class ChatManager {
                 }
                 break;
             case 'stream_end':
+                // Drop a stream_end for a conversation the user has navigated
+                // away from (mid-stream switch) — otherwise full_response would
+                // be appended into the now-current (wrong) conversation.
+                if (this.streamingConversationId !== null &&
+                    this.streamingConversationId !== (this.currentConversation?.id ?? null)) {
+                    this.streamingConversationId = null;
+                    this.isStreaming = false;
+                    this.isEditStreaming = false;
+                    this.editTargetMessageId = null;
+                    this.editStreamContent = '';
+                    this.setInputEnabled(true);
+                    break;
+                }
+                this.streamingConversationId = null;
                 this.isStreaming = false;
                 this.userScrolledUp = false; // Reset scroll lock when stream ends
                 // Failover cleanup: remove the failed streaming bubble silently
@@ -781,10 +847,31 @@ export class ChatManager {
             case 'pong':
                 this.wsClient.notePong();
                 break;
-            // Memory handlers
-            case 'memories':
-                memoryManager.renderMemories(data.memories);
+            case 'provider_updated': {
+                const conversationId = data.conversation_id;
+                const aiProvider = data.ai_provider;
+                if (conversationId &&
+                    aiProvider &&
+                    this.currentConversation?.id === conversationId) {
+                    this.aiProvider = aiProvider;
+                }
+                window.dispatchEvent(new CustomEvent('ai-provider-updated', {
+                    detail: { conversationId, aiProvider },
+                }));
                 break;
+            }
+            // Memory handlers
+            case 'memories': {
+                const memories = data.memories;
+                memoryManager.renderMemories(memories);
+                // Server emits truncated:true + total_count when capping
+                // the list (default 500). Surface it so the user knows
+                // there's more behind the visible set.
+                if (data.truncated && typeof data.total_count === 'number') {
+                    showToast(`Showing ${memories.length} of ${data.total_count} memories`, { type: 'info', duration: 4000 });
+                }
+                break;
+            }
             case 'memory_saved':
                 showToast('Memory saved!', { type: 'success' });
                 memoryManager.loadMemories();
@@ -925,6 +1012,10 @@ export class ChatManager {
         });
     }
     loadConversation(id) {
+        // Track the most recently requested conversation ID so the
+        // ``conversation_loaded`` handler can drop late-arriving frames
+        // for a conversation the user already switched away from.
+        this.pendingConversationLoadId = id;
         // Show loading spinner immediately for responsive feel
         this.showChatLoading();
         // Persist the last-opened conversation so it re-opens next launch.
@@ -1025,8 +1116,17 @@ export class ChatManager {
         // ("here, look at this PDF") — the old check required text too, which
         // blocked that flow entirely.
         const hasAttachments = this.attachedImages.length > 0 || this.attachedDocs.length > 0;
-        if ((!rawContent && !hasAttachments) || this.isStreaming)
+        if (!rawContent && !hasAttachments) {
             return;
+        }
+        if (this.isStreaming) {
+            // Surface a hint instead of returning silently — without it,
+            // hitting Enter while a previous response is still streaming
+            // looks like the keystroke was dropped, leaving the user to
+            // wonder if Discord/Tauri ate their input.
+            showToast('Wait for the current response to finish', { type: 'warning' });
+            return;
+        }
         if (!this.currentConversation) {
             showToast('Please start a conversation first', { type: 'warning' });
             return;
@@ -1095,12 +1195,17 @@ export class ChatManager {
             content: m.content,
             created_at: m.created_at,
         }));
-        // Add to local messages for display (include images)
+        // Add to local messages for display (include images + documents).
+        // ``documents`` must be persisted on the message object so a later
+        // regenerate-after-edit can resend the same attachments — previously
+        // ``editedMsg.documents`` was always undefined and the regenerate
+        // dropped attached PDFs/text files.
         this.messages.push({
             role: 'user',
             content,
             created_at: new Date().toISOString(),
-            images: this.attachedImages.length > 0 ? [...this.attachedImages] : undefined
+            images: this.attachedImages.length > 0 ? [...this.attachedImages] : undefined,
+            documents: this.attachedDocs.length > 0 ? [...this.attachedDocs] : undefined,
         });
         this.trimLocalMessages();
         this.renderMessages();
@@ -1119,7 +1224,11 @@ export class ChatManager {
         const userName = settings.userName || 'User';
         // Snapshot both attachment types before the send so clear() can't
         // race with in-flight FileReaders still resolving their payload.
+        // Also: ``images`` was previously sent by reference, so the clear()
+        // below could empty the array between WS-client serialization and
+        // the network write. Take a defensive shallow copy here too.
         const docs = this.attachedDocs;
+        const images = [...this.attachedImages];
         const sendOk = this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
@@ -1130,7 +1239,7 @@ export class ChatManager {
             // New features
             use_search: searchToggle?.checked ?? true,
             unrestricted_mode: unrestrictedToggle?.checked || false,
-            images: this.attachedImages,
+            images,
             documents: docs.length > 0 ? docs : undefined,
             user_name: userName,
             ai_provider: this.aiProvider,
@@ -1170,7 +1279,7 @@ export class ChatManager {
                     ${modeHtml}
                 </div>
 
-                <div class="thinking-container" style="display:none">
+                <div class="thinking-container">
                     <div class="thinking-header">💭 Thinking...</div>
                     <div class="thinking-content"></div>
                 </div>
@@ -1190,10 +1299,14 @@ export class ChatManager {
             thinkingContainer.style.display = 'block';
         }
     }
+    // Append-via-text-node avoids the O(n²) string growth of
+    // ``textContent += chunk`` (each += copies the entire prior string).
+    // ``createTextNode`` + ``appendChild`` is O(1) per chunk while still
+    // letting consumers read aggregated ``textContent`` synchronously.
     appendThinkingChunk(text) {
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         if (thinkingContent) {
-            thinkingContent.textContent += text;
+            thinkingContent.appendChild(document.createTextNode(text));
             this.scrollToBottom();
         }
     }
@@ -1206,10 +1319,20 @@ export class ChatManager {
         if (thinkingHeader) {
             thinkingHeader.textContent = '\uD83D\uDCAD Thought Process';
             thinkingHeader.classList.add('collapsible', 'collapsed'); // Start collapsed
-            thinkingHeader.onclick = () => {
-                thinkingContent?.classList.toggle('collapsed');
-                thinkingHeader.classList.toggle('collapsed');
-            };
+            // ``addEventListener`` over ``.onclick =``: assignment to
+            // ``onclick`` overwrites any prior handler, so re-rendering
+            // a streaming message would clobber a handler attached by
+            // an earlier finalize pass and confuse multi-render flows.
+            // ``addEventListener`` plays nicely with multi-attach
+            // patterns and is the convention used everywhere else in
+            // this file. Guard against double-binding via a data flag.
+            if (!thinkingHeader.dataset.collapseBound) {
+                thinkingHeader.dataset.collapseBound = '1';
+                thinkingHeader.addEventListener('click', () => {
+                    thinkingContent?.classList.toggle('collapsed');
+                    thinkingHeader.classList.toggle('collapsed');
+                });
+            }
         }
         if (thinkingContent) {
             // Render Markdown formatting (bold, italic, code, etc.)
@@ -1220,7 +1343,10 @@ export class ChatManager {
     appendChunk(text) {
         const streamingText = document.querySelector('#streaming-message .streaming-text');
         if (streamingText) {
-            streamingText.textContent += text;
+            // Same O(n²) avoidance as ``appendThinkingChunk`` above —
+            // append a text node instead of concatenating onto
+            // ``textContent`` so chunk N doesn't re-copy chunks 1..N-1.
+            streamingText.appendChild(document.createTextNode(text));
             this.scrollToBottom();
         }
     }
@@ -1270,12 +1396,20 @@ export class ChatManager {
                 wrapper.appendChild(actionsDiv);
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
                     const btn = e.target;
+                    // ``getAttribute`` returns the attribute value already
+                    // entity-decoded by the HTML parser. Previously this
+                    // path piped the value through ``textarea.innerHTML =
+                    // contentAttr`` to "decode" it \u2014 a NO-OP for entity
+                    // handling but a YES-OP for HTML parsing: a payload
+                    // like ``</textarea><img src=x onerror=...>`` would
+                    // escape the textarea (RCDATA terminates on its own
+                    // closing tag) and the parser would create a real
+                    // ``<img>`` element with the onerror handler firing.
+                    // Writing the plain string straight to the clipboard
+                    // skips the parse step entirely.
                     const contentAttr = btn.getAttribute('data-content') || '';
-                    const textarea = document.createElement('textarea');
-                    textarea.innerHTML = contentAttr;
-                    const decodedContent = textarea.value;
                     try {
-                        await navigator.clipboard.writeText(decodedContent);
+                        await navigator.clipboard.writeText(contentAttr);
                         btn.textContent = '\u2705 Copied';
                         setTimeout(() => { btn.textContent = '\uD83D\uDCCB Copy'; }, 1500);
                     }
@@ -1316,10 +1450,24 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container)
             return;
-        const msgElements = container.querySelectorAll('.chat-message');
+        let msgElements = container.querySelectorAll('.chat-message');
         // With virtualization the DOM only contains messages.slice(visibleStartIdx);
         // translate the absolute index into the local DOM index.
-        const msgEl = msgElements[msgIdx - this.visibleStartIdx];
+        let msgEl = msgElements[msgIdx - this.visibleStartIdx];
+        if (!msgEl) {
+            // Target is virtualized OUT of the rendered window (editing an
+            // older message). Grow the window so it renders, re-resolve, and
+            // scroll it into view — otherwise the live edit stream is silently
+            // dropped (.edit-streaming-text never exists) until stream_end
+            // re-renders. windowSize = total - msgIdx ⇒ startIdx = msgIdx, so
+            // the target lands at local DOM index 0.
+            this.visibleMessageCount = Math.max(this.visibleMessageCount, this.messages.length - msgIdx);
+            this.renderMessages();
+            msgElements = container.querySelectorAll('.chat-message');
+            msgEl = msgElements[msgIdx - this.visibleStartIdx];
+            if (msgEl)
+                msgEl.scrollIntoView({ block: 'center' });
+        }
         if (!msgEl)
             return;
         const contentEl = msgEl.querySelector('.message-content');
@@ -1351,13 +1499,31 @@ export class ChatManager {
             actionsEl.style.display = 'none';
     }
     appendEditStreamChunk(text) {
-        const streamingText = document.querySelector('.edit-streaming-text');
-        if (streamingText) {
-            this.editStreamContent += text;
-            streamingText.textContent = this.editStreamContent;
-        }
+        // Buffer into the running content string but defer the DOM write to
+        // the next animation frame. Without batching, a fast stream issuing
+        // many small chunks triggered N textContent writes per frame —
+        // each one re-renders the full string, giving O(n²) total work as
+        // the response grew. With rAF batching it's exactly one write per
+        // frame regardless of chunk count.
+        this.editStreamContent += text;
+        if (this.editStreamRafId !== null)
+            return;
+        this.editStreamRafId = requestAnimationFrame(() => {
+            this.editStreamRafId = null;
+            const streamingText = document.querySelector('.edit-streaming-text');
+            if (streamingText) {
+                streamingText.textContent = this.editStreamContent;
+            }
+        });
     }
     finalizeEditStreaming(fullResponse, targetMessageId) {
+        // Cancel any pending rAF flush — we're about to re-render the message
+        // entirely from ``fullResponse``, so a deferred chunk write would
+        // race against (and lose to) the renderMessages() below.
+        if (this.editStreamRafId !== null) {
+            cancelAnimationFrame(this.editStreamRafId);
+            this.editStreamRafId = null;
+        }
         // Update the local message content
         const msgIdx = this.messages.findIndex(m => m.id === targetMessageId);
         if (msgIdx >= 0) {
@@ -1441,12 +1607,23 @@ export class ChatManager {
                         catch { /* cross-origin guard */ }
                         const doc = newWindow.document;
                         doc.title = 'Image Preview';
-                        const style = doc.createElement('style');
-                        style.textContent = 'body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}img{max-width:100%;max-height:100vh;object-fit:contain;}';
-                        doc.head.appendChild(style);
+                        // Style via CSSOM property setters (not a <style> element
+                        // or inline style= attribute): the popup is about:blank and
+                        // inherits this page's CSP, where style-src is 'self' with
+                        // no 'unsafe-inline'. CSSOM mutations are exempt from CSP.
+                        const b = doc.body;
+                        b.style.margin = '0';
+                        b.style.display = 'flex';
+                        b.style.justifyContent = 'center';
+                        b.style.alignItems = 'center';
+                        b.style.minHeight = '100vh';
+                        b.style.background = '#1a1a1a';
                         const imgEl = doc.createElement('img');
                         imgEl.src = src;
                         imgEl.alt = 'preview';
+                        imgEl.style.maxWidth = '100%';
+                        imgEl.style.maxHeight = '100vh';
+                        imgEl.style.objectFit = 'contain';
                         doc.body.appendChild(imgEl);
                     }
                 }
@@ -1464,12 +1641,16 @@ export class ChatManager {
         // Setup copy button clicks (whole message)
         container.querySelectorAll('.copy-message-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
+                // ``getAttribute`` returns the value already entity-decoded
+                // by the HTML parser. The previous textarea-based "decode"
+                // dance was a no-op for entities and a XSS sink for HTML:
+                // a payload like ``</textarea><img onerror=...>`` would
+                // escape the textarea's RCDATA and create a live ``<img>``
+                // with a firing handler. Write the string straight to the
+                // clipboard instead.
                 const content = btn.getAttribute('data-content') || '';
-                const textarea = document.createElement('textarea');
-                textarea.innerHTML = content;
-                const decodedContent = textarea.value;
                 try {
-                    await navigator.clipboard.writeText(decodedContent);
+                    await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
                     btn.textContent = '\u2705';
                     setTimeout(() => { btn.textContent = originalText; }, 1500);
@@ -1483,12 +1664,12 @@ export class ChatManager {
         // Setup code-block copy button clicks (per-block inside a message)
         container.querySelectorAll('.code-copy-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
-                const encoded = btn.getAttribute('data-code-copy') || '';
-                // data-code-copy was HTML-escaped at render time \u2014 decode it via textarea.
-                const decoder = document.createElement('textarea');
-                decoder.innerHTML = encoded;
+                // Same fix as the message-copy path above: getAttribute
+                // already returns decoded text; the textarea round-trip
+                // re-parses HTML and would execute injected handlers.
+                const content = btn.getAttribute('data-code-copy') || '';
                 try {
-                    await navigator.clipboard.writeText(decoder.value);
+                    await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
                     btn.textContent = '\u2705';
                     setTimeout(() => { btn.textContent = originalText; }, 1200);
@@ -1499,10 +1680,12 @@ export class ChatManager {
                 }
             });
         });
-        // Setup edit button clicks
+        // Setup edit button clicks. Always pass radix 10 to ``parseInt``
+        // — without it, JS engines may interpret leading-zero strings as
+        // octal in non-strict mode, silently corrupting message IDs.
         container.querySelectorAll('.edit-message-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.msgIdx || '-1');
+                const idx = parseInt(btn.dataset.msgIdx || '-1', 10);
                 if (idx >= 0)
                     this.startEditMessage(idx);
             });
@@ -1510,7 +1693,7 @@ export class ChatManager {
         // Setup AI edit button clicks
         container.querySelectorAll('.ai-edit-message-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.msgIdx || '-1');
+                const idx = parseInt(btn.dataset.msgIdx || '-1', 10);
                 if (idx >= 0)
                     this.startAiEditMessage(idx);
             });
@@ -1518,7 +1701,7 @@ export class ChatManager {
         // Setup delete button clicks
         container.querySelectorAll('.delete-message-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
-                const idx = parseInt(btn.dataset.msgIdx || '-1');
+                const idx = parseInt(btn.dataset.msgIdx || '-1', 10);
                 if (idx >= 0) {
                     const confirmed = await showConfirmDialog('Delete this message?');
                     if (confirmed)
@@ -1678,8 +1861,14 @@ export class ChatManager {
             btn.disabled = !enabled;
     }
     scrollToBottom(force = false) {
-        if (!force && this.userScrolledUp)
+        if (!force && this.userScrolledUp) {
+            // User is scrolled up — increment the badge so they can see how
+            // many new messages arrived while they were reading older ones.
+            // Without this the FAB badge stayed permanently at 0 (dead UI).
+            this.newMessagesWhileScrolledUp += 1;
+            this.updateScrollFab(true);
             return;
+        }
         const container = document.getElementById('chat-messages');
         if (container) {
             container.scrollTop = container.scrollHeight;
@@ -1885,7 +2074,10 @@ export class ChatManager {
         }).join('');
         list.querySelectorAll('.file-edit').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const id = parseInt(e.currentTarget.dataset.id || '0');
+                // ``parseInt`` without an explicit radix is implementation-
+                // specific (older JS engines parse ``08`` as octal); always
+                // pass radix 10 to keep the parse deterministic.
+                const id = parseInt(e.currentTarget.dataset.id || '0', 10);
                 if (!id || !this.currentConversation)
                     return;
                 this.openChatFileEditor(id);
@@ -1893,7 +2085,7 @@ export class ChatManager {
         });
         list.querySelectorAll('.file-delete').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const id = parseInt(e.currentTarget.dataset.id || '0');
+                const id = parseInt(e.currentTarget.dataset.id || '0', 10);
                 if (!id || !this.currentConversation)
                     return;
                 this.send({
@@ -2162,7 +2354,7 @@ export class ChatManager {
             <textarea class="edit-textarea">${escapeHtml(originalContent)}</textarea>
             <div class="edit-actions">
                 <button class="edit-save-btn">Save</button>
-                <button class="edit-save-regen-btn" style="${msg.role === 'user' ? '' : 'display:none'}">Save &amp; Regenerate</button>
+                <button class="edit-save-regen-btn${msg.role === 'user' ? '' : ' hidden'}">Save &amp; Regenerate</button>
                 <button class="edit-cancel-btn">Cancel</button>
             </div>
         `;
@@ -2263,6 +2455,11 @@ export class ChatManager {
             message_id: msg.id,
             delete_pair: deletePair,
             pair_message_id: pairId,
+            // Scope the delete to the currently open conversation. The
+            // backend validates the message belongs to this conversation
+            // and refuses cross-conversation deletes (defence-in-depth
+            // against a stale client UI deleting the wrong message).
+            conversation_id: this.currentConversation?.id ?? null,
         });
     }
     regenerateAfterEdit(editedMsg) {
@@ -2286,10 +2483,11 @@ export class ChatManager {
         // Without this, a regenerate on a turn that originally had a PDF
         // attached would produce a reply written with no doc context.
         const originalImages = (editedMsg.images && editedMsg.images.length > 0) ? editedMsg.images : [];
-        const originalDocs = (editedMsg.documents
-            && editedMsg.documents.length > 0)
-            ? editedMsg.documents
-            : undefined;
+        // Extract once into a local instead of casting the same expression
+        // three times — the repeated cast was noisy and made it easy to
+        // miss if one of the three branches drifted.
+        const editedDocs = editedMsg.documents;
+        const originalDocs = (editedDocs && editedDocs.length > 0) ? editedDocs : undefined;
         this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
@@ -2371,7 +2569,11 @@ export class ChatManager {
         a.href = url;
         a.download = filename;
         a.click();
-        URL.revokeObjectURL(url);
+        // Defer revoke. Calling revokeObjectURL synchronously after .click()
+        // can cancel an in-flight download in Firefox / older Edge because
+        // the actual fetch of the blob: URL is async. 1s is a comfortable
+        // upper bound on the time the browser needs to start streaming.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
         showToast('Conversation exported!', { type: 'success' });
     }
     init() {

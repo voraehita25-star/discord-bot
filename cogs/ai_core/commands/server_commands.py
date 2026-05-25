@@ -6,6 +6,7 @@ Provides Discord server management commands for AI tools.
 from __future__ import annotations
 
 import logging
+import unicodedata
 
 import discord
 
@@ -45,7 +46,10 @@ _SAFE_PERMISSIONS: frozenset[str] = frozenset(
         "speak",
         "stream",
         "use_voice_activation",
-        "manage_threads",
+        # ``manage_threads`` was previously here but it lets a holder
+        # delete/lock threads owned by other users, including the
+        # original poster's. Promote to ``_DANGEROUS_PERMISSIONS``
+        # below so the AI can't grant it.
         "priority_speaker",
         "request_to_speak",
         "use_application_commands",
@@ -85,6 +89,11 @@ _DANGEROUS_PERMISSIONS: frozenset[str] = frozenset(
         "mute_members",
         "deafen_members",
         "move_members",
+        # Promoted from _SAFE_PERMISSIONS — ``manage_threads`` lets the
+        # holder delete/lock threads they don't own, including the
+        # creator's. AI shouldn't be able to grant this without an
+        # explicit operator workflow.
+        "manage_threads",
     }
 )
 
@@ -113,16 +122,26 @@ def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
     Returns:
         Found member or None
     """
-    name_opts = [name, name.lower()]
+    # Dedupe via set so ``name == name.lower()`` (already lowercase / ASCII)
+    # doesn't pay for two identical passes.
+    name_opts = {name, name.lower()}
+
+    def _norm(s: str) -> str:
+        # NFKC + lower so users typed with combining marks, full-width
+        # latin, or other Unicode quirks still match. Plain ``.lower()``
+        # alone would miss e.g. "ＡＢＣ" vs "abc".
+        return unicodedata.normalize("NFKC", s).casefold()
+
     for n in name_opts:
         m = discord.utils.get(guild.members, display_name=n) or discord.utils.get(
             guild.members, name=n
         )
         if m:
             return m
-        # Manual search
-        m = next((m for m in guild.members if m.display_name.lower() == n.lower()), None) or next(
-            (m for m in guild.members if m.name.lower() == n.lower()), None
+        # Manual search (NFKC-folded for Unicode-aware comparison)
+        n_norm = _norm(n)
+        m = next((m for m in guild.members if _norm(m.display_name) == n_norm), None) or next(
+            (m for m in guild.members if _norm(m.name) == n_norm), None
         )
         if m:
             return m
@@ -162,6 +181,14 @@ async def cmd_create_text(
 
     category_name = args[1] if len(args) > 1 else None
     category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+    # Surface a clear warning when the operator named a category that
+    # doesn't exist instead of silently creating a top-level channel.
+    # The user almost always wanted the category to exist, so failing
+    # loudly beats a confusing "where did my channel go" support ticket.
+    if category_name and category is None:
+        await origin_channel.send(
+            f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level"
+        )
 
     try:
         channel = await guild.create_text_channel(name, category=category)
@@ -217,6 +244,10 @@ async def cmd_create_voice(
 
     category_name = args[1] if len(args) > 1 else None
     category = discord.utils.get(guild.categories, name=category_name) if category_name else None
+    if category_name and category is None:
+        await origin_channel.send(
+            f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level"
+        )
 
     try:
         channel = await guild.create_voice_channel(name, category=category)
@@ -378,8 +409,14 @@ async def cmd_create_role(
             # range so a 9-digit hex (or worse) can't crash discord.Color.
             if 0 <= int_val <= 0xFFFFFF:
                 color = discord.Color(int_val)
+            else:
+                await origin_channel.send(
+                    f"⚠️ ใช้สี default เพราะ hex `{color_hex}` อยู่นอกช่วง 0x000000-0xFFFFFF"
+                )
         except ValueError:
-            pass
+            await origin_channel.send(
+                f"⚠️ ใช้สี default เพราะ hex `{color_hex}` ไม่ถูกต้อง"
+            )
     try:
         role = await guild.create_role(name=role_name, color=color)
         logger.info("🛠️ AI Created Role: %s", role_name)
@@ -419,7 +456,10 @@ async def cmd_delete_role(
         await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการลบ")
         return
 
-    role_name = args[0]
+    role_name = args[0].strip()
+    if not role_name:
+        await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้")
+        return
 
     # Check for duplicate names
     matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
@@ -506,6 +546,25 @@ async def cmd_add_role(
                 f"ยศที่จะมอบอยู่ที่ตำแหน่ง {role.position})"
             )
             return
+        # Discord also requires the bot's top role to be above the TARGET
+        # member's top role for any role-modification op (not just the role
+        # being added). Without this check, ``add_roles`` raises 403 at
+        # runtime even though our role-vs-bot check above passed. We use
+        # ``getattr`` with explicit ints to defend against ``member.top_role``
+        # being absent on partial fetches; an unparseable position falls
+        # through and the API call's 403 surfaces below as before.
+        member_top_pos = getattr(getattr(member, "top_role", None), "position", None)
+        bot_top_pos = getattr(bot_top_role, "position", None)
+        if (
+            isinstance(member_top_pos, int)
+            and isinstance(bot_top_pos, int)
+            and member_top_pos >= bot_top_pos
+        ):
+            await origin_channel.send(
+                f"❌ ไม่สามารถมอบยศให้ **{member.display_name}** ได้ "
+                f"(ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)"
+            )
+            return
         try:
             await member.add_roles(role)
             logger.info("➕ AI Added Role %s to %s", role.name, member.display_name)
@@ -578,6 +637,19 @@ async def cmd_remove_role(
                 f"ยศที่จะลบอยู่ที่ตำแหน่ง {role.position})"
             )
             return
+        # Same target-vs-bot hierarchy guard as cmd_add_role.
+        member_top_pos = getattr(getattr(member, "top_role", None), "position", None)
+        bot_top_pos = getattr(bot_top_role, "position", None)
+        if (
+            isinstance(member_top_pos, int)
+            and isinstance(bot_top_pos, int)
+            and member_top_pos >= bot_top_pos
+        ):
+            await origin_channel.send(
+                f"❌ ไม่สามารถลบยศจาก **{member.display_name}** ได้ "
+                f"(ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)"
+            )
+            return
         try:
             await member.remove_roles(role)
             logger.info("➖ AI Removed Role %s from %s", role_name, user_name)
@@ -617,7 +689,7 @@ async def cmd_set_channel_perm(
     target_name = args[1]
     perm_name = args[2].lower()
     value_str = args[3].lower()
-    value = True if value_str == "true" else False if value_str == "false" else None
+    value = {"true": True, "false": False}.get(value_str)
     if value is None:
         await origin_channel.send("❌ ค่า permission ต้องเป็น 'true' หรือ 'false'")
         return
@@ -702,7 +774,18 @@ async def cmd_set_role_perm(
 
     value = value_str == "true"
 
+    # Try exact match first; fall back to case-insensitive match if
+    # nothing found. ``cmd_delete_role`` already uses this pattern, so
+    # mirror it here for consistency — without the fallback, a user
+    # asking for ``Admin`` couldn't set perms on a role literally named
+    # ``admin``.
     role = discord.utils.get(guild.roles, name=role_name)
+    if not role:
+        role_name_lower = role_name.lower()
+        role = next(
+            (r for r in guild.roles if r.name.lower() == role_name_lower),
+            None,
+        )
     if not role:
         await origin_channel.send(f"❌ ไม่พบยศ: **{role_name}**")
         return
@@ -758,8 +841,19 @@ async def cmd_list_channels(
     _args: list[str],
     _user: discord.Member | discord.User | None = None,
 ) -> None:
-    """List all text channels."""
-    channels = [f"#{ch.name} (ID: {ch.id})" for ch in guild.text_channels]
+    """List text channels, filtered by caller's view permission.
+
+    Without the filter, the AI tool path leaked private/staff channel
+    names to any non-staff member who asked.
+    """
+    if isinstance(_user, discord.Member):
+        channels = [
+            f"#{ch.name} (ID: {ch.id})"
+            for ch in guild.text_channels
+            if ch.permissions_for(_user).view_channel
+        ]
+    else:
+        channels = [f"#{ch.name} (ID: {ch.id})" for ch in guild.text_channels]
     await send_long_message(origin_channel, "**📜 Server Text Channels:**\n", channels)
 
 
@@ -782,7 +876,20 @@ async def cmd_list_members(
     args: list[str],
     _user: discord.Member | discord.User | None = None,
 ) -> None:
-    """List members with optional query and limit."""
+    """List members with optional query and limit.
+
+    Gated to callers with ``manage_guild`` so the AI tool path can't be
+    used by a regular member to enumerate the entire roster (which, in
+    a large guild, is a privacy concern even though Discord's UI also
+    exposes it). Channel-level perms aren't enough here because member
+    visibility isn't scoped per-channel.
+    """
+    if not isinstance(_user, discord.Member) or not _user.guild_permissions.manage_guild:
+        await origin_channel.send(
+            "❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น"
+        )
+        return
+
     limit = 50  # Default limit
     query = None  # Default no query
 
@@ -822,7 +929,18 @@ async def cmd_get_user_info(
     args: list[str],
     _user: discord.Member | discord.User | None = None,
 ) -> None:
-    """Get detailed info about a user."""
+    """Get detailed info about a user.
+
+    Gated to callers with ``manage_guild`` — the output includes presence
+    status, join date, and full role list, which is more than the AI
+    tool path should be handing out to arbitrary guild members.
+    """
+    if not isinstance(_user, discord.Member) or not _user.guild_permissions.manage_guild:
+        await origin_channel.send(
+            "❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น"
+        )
+        return
+
     if not args or len(args) < 1:
         await origin_channel.send("❌ กรุณาระบุชื่อผู้ใช้หรือ ID ที่ต้องการค้นหา")
         return
@@ -832,7 +950,16 @@ async def cmd_get_user_info(
         return
     member = None
     if target.isdigit():
+        # Try cached members first; if not cached (members intent off,
+        # large guild, or member only fetched on join) fall back to
+        # ``fetch_member``. Without the fetch, lookups by ID fail
+        # silently for users the bot has never seen send a message.
         member = guild.get_member(int(target))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(target))
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                member = None
     if not member:
         member = find_member(guild, target)
 
@@ -884,8 +1011,9 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     if len(args) < 2:
         await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: message_id | new_content")
         return
-    msg_id = int(args[0].strip()) if args[0].strip().isdigit() else None
-    if not msg_id:
+    raw_msg_id = args[0].strip()
+    msg_id = int(raw_msg_id) if raw_msg_id.isdigit() else None
+    if msg_id is None:
         await origin_channel.send("❌ Message ID ต้องเป็นตัวเลขเท่านั้น")
         return
     new_content = args[1].strip()
@@ -991,12 +1119,18 @@ async def send_long_message(channel, header, lines):
     current_chunk = safe_header
     for line in safe_lines:
         if len(current_chunk) + len(line) + 5 > 1900:
-            await channel.send(f"```\n{current_chunk}\n```")
+            await channel.send(
+                f"```\n{current_chunk}\n```",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             current_chunk = line + "\n"
         else:
             current_chunk += line + "\n"
     if current_chunk:
-        await channel.send(f"```\n{current_chunk}\n```")
+        await channel.send(
+            f"```\n{current_chunk}\n```",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 # Command Handler Mapping

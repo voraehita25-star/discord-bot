@@ -12,19 +12,35 @@ use database::{
     DbStats,
     UserInfo,
 };
-use std::sync::{Arc, Mutex};
+use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, State, WindowEvent,
 };
 
+// Separator between error-log entries. Lazily computed once at first
+// use (instead of ``"=".repeat(80)`` on every log write/read) — the
+// rebuild was ~300ns each call but happens on a hot path.
+static ERROR_LOG_SEPARATOR: LazyLock<String> = LazyLock::new(|| "=".repeat(80));
+
 struct AppState {
     bot_manager: Arc<Mutex<BotManager>>,
     db_service: Mutex<DatabaseService>,
     // Rolling rate-limit window for frontend error logging (per second).
-    // Tuple: (window_start_unix_seconds, errors_in_current_second).
-    frontend_error_rate: Mutex<(u64, u32)>,
+    // Monotonic-clock based: tuple is (window_start_instant, errors_in_window).
+    // Using ``Instant`` (monotonic) instead of ``SystemTime`` so an NTP
+    // backstep cannot make the bucket appear to have moved backwards in
+    // time and silently disable the rate limit.
+    frontend_error_rate: Mutex<(Instant, u32)>,
+    // Per-file Mutex serializing concurrent log-rotation attempts on the
+    // dashboard error log. Without this, two simultaneous frontend errors
+    // could both observe ``len > 5MB``, both call ``rename``, and the
+    // second call would overwrite the first rotated archive or fail with
+    // an OS error on Windows where the destination already exists.
+    error_log_rotation: Mutex<()>,
 }
 
 // Helper macro to safely lock mutex and handle poisoned state
@@ -189,14 +205,29 @@ fn clear_history(state: State<AppState>) -> Result<i32, String> {
 }
 
 #[tauri::command]
-fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> bool {
+async fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> Result<bool, String> {
+    use tauri::async_runtime::channel;
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    // Async callback variant (not `blocking_show()`): the previous version
+    // blocked the IPC worker for the entire dialog, freezing every other
+    // invoke (status polls, log refresh, chat) while the prompt was open.
+    // Use Tauri's bundled async channel rather than pulling in a direct
+    // tokio dependency.
+    let (tx, mut rx) = channel::<bool>(1);
     app.dialog()
         .message(&message)
         .title("Confirm")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom("Yes".into(), "No".into()))
-        .blocking_show()
+        .show(move |confirmed| {
+            // Receiver may have been dropped if the caller cancelled the
+            // invoke — ignore the send error in that case. blocking_send
+            // because this callback fires on a non-async thread.
+            let _ = tx.blocking_send(confirmed);
+        });
+    rx.recv()
+        .await
+        .ok_or_else(|| "dialog channel closed before reply".to_string())
 }
 
 #[tauri::command]
@@ -207,10 +238,21 @@ fn delete_channels_history(state: State<AppState>, channel_ids: Vec<String>) -> 
     if channel_ids.len() > 100 {
         return Err("Too many channels (max 100)".to_string());
     }
-    // Parse string IDs to i64 (avoids JavaScript Number precision loss for Discord Snowflake IDs)
+    // Parse string IDs to i64 (avoids JavaScript Number precision loss for
+    // Discord Snowflake IDs). Discord snowflakes are 64-bit unsigned but
+    // are always positive (timestamp-based), so a negative value indicates
+    // a malformed payload — reject explicitly so a frontend bug doesn't
+    // forward signed-cast garbage into the DB layer.
     let parsed_ids: Vec<i64> = channel_ids
         .iter()
-        .map(|id| id.parse::<i64>().map_err(|e| format!("Invalid channel ID '{}': {}", id, e)))
+        .map(|id| {
+            let parsed = id.parse::<i64>()
+                .map_err(|e| format!("Invalid channel ID '{}': {}", id, e))?;
+            if parsed <= 0 {
+                return Err(format!("Channel ID must be positive, got: {}", id));
+            }
+            Ok(parsed)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let db = lock_db_service!(state)?;
     db.delete_channels_history(&parsed_ids)
@@ -218,6 +260,13 @@ fn delete_channels_history(state: State<AppState>, channel_ids: Vec<String>) -> 
 
 #[tauri::command]
 fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
+    // Reject oversized paths before any filesystem syscall — Windows
+    // MAX_PATH is 260 and even with long-path support the practical
+    // upper bound for an Explorer-launchable directory is well below
+    // 4 KiB. Anything past this is almost certainly hostile input.
+    if path.len() > 4096 {
+        return Err("Path too long".to_string());
+    }
     let path_obj = std::path::Path::new(&path);
     if !path_obj.exists() {
         return Err(format!("Path does not exist: {}", path));
@@ -258,10 +307,22 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     // Resolve an absolute path to explorer.exe under %SystemRoot% so a
     // poisoned PATH entry (or an attacker-planted explorer.exe in the
     // application directory) cannot get executed instead of the system one.
-    let explorer_path = if let Ok(root) = std::env::var("SystemRoot") {
-        format!("{}\\explorer.exe", root)
-    } else {
-        String::from("C:\\Windows\\explorer.exe")
+    // Validate that the env-var value resembles a real Windows root —
+    // a poisoned ``SystemRoot=C:\Attacker`` would otherwise let an
+    // attacker-planted explorer.exe run with our process privileges.
+    // We canonicalize the env value AND the hardcoded default and
+    // accept the env path only if both canonicalize to the same target.
+    // This is stricter than the previous "last segment is 'windows'"
+    // check, which would accept e.g. ``C:\\Attacker\\Windows``.
+    let sysroot_canonical = std::env::var("SystemRoot")
+        .ok()
+        .and_then(|s| std::fs::canonicalize(&s).ok());
+    let default_root_canonical = std::fs::canonicalize("C:\\Windows").ok();
+    let explorer_path = match (sysroot_canonical, default_root_canonical.as_ref()) {
+        (Some(env_root), Some(def_root)) if &env_root == def_root => {
+            env_root.join("explorer.exe").to_string_lossy().into_owned()
+        }
+        _ => String::from("C:\\Windows\\explorer.exe"),
     };
 
     // TOCTOU note: there is an inherent race between the canonicalize/check
@@ -271,8 +332,15 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     // so explorer.exe receives the resolved target string, but Windows
     // filesystem lookup still happens at spawn time. Threat model is
     // local-only and the user could already navigate there manually.
+    // Detach stdio so the spawned explorer.exe doesn't keep the
+    // dashboard's stdin/stdout/stderr handles open. Without this, on
+    // platforms that inherit handles by default the child could pin
+    // a console window or leak file descriptors back into our process.
     std::process::Command::new(&explorer_path)
         .arg(canonical.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to open folder: {}", e))?;
 
@@ -285,20 +353,20 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
 
     // Rate limit: cap at 20 errors/sec. Stops a frontend render-loop bug from
     // filling the log file and pinning the Tauri worker on disk I/O.
+    // Uses ``Instant::now()`` (monotonic) so NTP backsteps or manual wall-
+    // clock changes can't make the bucket appear to have moved backwards
+    // and silently disable the limit.
     {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = Instant::now();
         let mut rate = state.frontend_error_rate.lock()
             .map_err(|e| format!("rate-limit lock poisoned: {}", e))?;
-        if rate.0 == now_secs {
+        if now.duration_since(rate.0).as_secs() < 1 {
             if rate.1 >= 20 {
                 return Ok("Error dropped (rate limit)".to_string());
             }
             rate.1 += 1;
         } else {
-            *rate = (now_secs, 1);
+            *rate = (now, 1);
         }
     }
 
@@ -315,24 +383,45 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
         let _ = std::fs::create_dir_all(&log_dir);
     }
     
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    // Use UTC so log timestamps are unambiguous when correlating
+    // dashboard logs with bot logs (which already use UTC). Local time
+    // here meant a log read in another timezone could be off by hours.
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    // Stack traces are multi-line by nature so we tab-indent every line
+    // instead of stripping (preserves readability) but we still strip the
+    // Unicode line separators that could otherwise fake a new log entry.
     let stack_trace = stack
         .unwrap_or_else(|| "No stack trace".to_string())
+        .replace(['\u{2028}', '\u{2029}'], " ")
+        .replace('\r', "")
+        .replace('\n', "\n  ")
         .chars().take(16384).collect::<String>(); // Limit stack trace size
-    
+
     let log_entry = format!(
         "\n[{}] {}\nMessage: {}\nStack: {}\n{}",
-        timestamp, error_type, message, stack_trace, "=".repeat(80)
+        timestamp, error_type, message, stack_trace, ERROR_LOG_SEPARATOR.as_str()
     );
     
-    // Rotate error log if it exceeds 5 MB
+    // Rotate error log if it exceeds 5 MB.
+    // Held under ``error_log_rotation`` so two concurrent log writers
+    // can't both see ``len > 5MB`` and both attempt the rename — on
+    // Windows the second rename would fail because the destination
+    // exists, and on POSIX the first archive would be lost.
     if error_log_path.exists() {
         if let Ok(meta) = std::fs::metadata(&error_log_path) {
             if meta.len() > 5 * 1024 * 1024 {
-                let old_path = error_log_path.with_extension("log.old");
-                let _ = std::fs::remove_file(&old_path);
-                if let Err(e) = std::fs::rename(&error_log_path, &old_path) {
-                    eprintln!("Failed to rotate error log: {}", e);
+                let _rot_guard = state.error_log_rotation.lock()
+                    .map_err(|e| format!("rotation lock poisoned: {}", e))?;
+                // Re-check size under the lock — another writer may have
+                // already rotated while we were waiting on the mutex.
+                if let Ok(meta2) = std::fs::metadata(&error_log_path) {
+                    if meta2.len() > 5 * 1024 * 1024 {
+                        let old_path = error_log_path.with_extension("log.old");
+                        let _ = std::fs::remove_file(&old_path);
+                        if let Err(e) = std::fs::rename(&error_log_path, &old_path) {
+                            eprintln!("Failed to rotate error log: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -379,7 +468,7 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
     match std::fs::read_to_string(&error_log_path) {
         Ok(content) => {
             // Split by separator and take last N entries
-            let entries: Vec<&str> = content.split("=".repeat(80).as_str()).collect();
+            let entries: Vec<&str> = content.split(ERROR_LOG_SEPARATOR.as_str()).collect();
             Ok(entries.iter()
                 .rev()
                 .filter(|s| !s.trim().is_empty())
@@ -446,14 +535,22 @@ fn set_telemetry_enabled(state: State<AppState>, enabled: bool) -> Result<(), St
 fn get_ws_token(state: State<AppState>) -> Result<String, String> {
     let manager = lock_bot_manager!(state)?;
     let env_path = manager.base_path().join(".env");
-    if !env_path.exists() {
-		return Ok(std::env::var("DASHBOARD_WS_TOKEN").unwrap_or_default());
-    }
-    Ok(
+    let token = if env_path.exists() {
         read_dotenv_value(&env_path, "DASHBOARD_WS_TOKEN")
             .or_else(|| std::env::var("DASHBOARD_WS_TOKEN").ok())
-            .unwrap_or_default(),
-    )
+    } else {
+        std::env::var("DASHBOARD_WS_TOKEN").ok()
+    };
+    // Surface the missing-token case explicitly. The previous version
+    // swallowed the absence and returned "" — frontend then opened the
+    // WS with no token and got a confusing "401: missing token" with no
+    // hint that .env wasn't configured.
+    match token {
+        Some(t) if !t.is_empty() => Ok(t),
+        _ => Err(
+            "DASHBOARD_WS_TOKEN is not set in .env or environment".to_string(),
+        ),
+    }
 }
 
 fn normalize_ws_connect_host(host: &str) -> String {
@@ -496,11 +593,26 @@ fn get_ws_endpoint(state: State<AppState>) -> Result<String, String> {
 }
 
 /// Read a single key from a .env file without requiring AppState.
+///
+/// Tolerates two common variants that ``dotenv`` accepts but a naive
+/// ``strip_prefix`` would miss:
+///   1. A UTF-8 BOM (``\u{feff}``) on the first line — Windows editors
+///      such as Notepad save files this way by default.
+///   2. A leading ``export `` prefix — shells use this form so the
+///      same file can be ``source``d.
 fn read_dotenv_value(env_path: &std::path::Path, key: &str) -> Option<String> {
     let content = std::fs::read_to_string(env_path).ok()?;
     let prefix = format!("{}=", key);
-    for line in content.lines() {
-        let line = line.trim();
+    for (idx, raw_line) in content.lines().enumerate() {
+        let mut line = raw_line.trim();
+        if idx == 0 {
+            line = line.trim_start_matches('\u{feff}');
+        }
+        // ``export KEY=val`` is valid in .env files that double as shell
+        // scripts; strip the prefix so the key-match below still works.
+        if let Some(rest) = line.strip_prefix("export ") {
+            line = rest.trim_start();
+        }
         if let Some(val) = line.strip_prefix(&prefix) {
             let val = val.trim().trim_matches('"').trim_matches('\'');
             if !val.is_empty() {
@@ -528,14 +640,75 @@ fn save_base_path_config(base_path: &std::path::Path) {
     let _ = std::fs::write(&config_path, base_path.to_string_lossy().as_bytes());
 }
 
+/// Return the list of directory roots under which a saved bot base path
+/// is trusted to live. Any path written into ``bot_path.txt`` that does
+/// not canonicalise under one of these roots is ignored — that file
+/// lives in ``%APPDATA%`` (user-writable) and another process running
+/// as the same user could otherwise redirect the dashboard to ``python
+/// <attacker_dir>/bot.py``. Keeping the allowlist tight to typical
+/// install locations bounds that risk without forcing operators to set
+/// ``BOT_BASE_PATH`` every launch.
+fn allowed_base_roots(exe_path: &Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.clone());
+    }
+    if let Some(docs) = dirs::document_dir() {
+        roots.push(docs);
+    }
+    if let Some(desktop) = dirs::desktop_dir() {
+        roots.push(desktop);
+    }
+    if let Some(downloads) = dirs::download_dir() {
+        roots.push(downloads);
+    }
+    if let Some(exe) = exe_path.as_ref().and_then(|p| p.parent()) {
+        roots.push(exe.to_path_buf());
+    }
+    // Canonicalise the roots ahead of comparison so symlink shenanigans
+    // on either side ("the attacker created %HOME%/.../link → C:\evil")
+    // get resolved consistently. Skip any root that fails to canonicalise.
+    roots
+        .into_iter()
+        .filter_map(|r| std::fs::canonicalize(&r).ok())
+        .collect()
+}
+
+fn is_under_allowed_root(candidate: &std::path::Path, exe_path: &Option<std::path::PathBuf>) -> bool {
+    let canon = match std::fs::canonicalize(candidate) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let roots = allowed_base_roots(exe_path);
+    if roots.is_empty() {
+        // No trustable root resolved — refuse to trust an attacker-writable
+        // marker file rather than fall back to "trust everything".
+        return false;
+    }
+    roots.iter().any(|root| canon.starts_with(root))
+}
+
 /// Resolve production base path by checking saved config and common locations.
 fn resolve_production_base_path(exe_path: &Option<std::path::PathBuf>) -> std::path::PathBuf {
-    // 1. Check saved config from a previous successful run
+    // 1. Check saved config from a previous successful run. The marker file
+    // lives in ``%APPDATA%\com.botdashboard.desktop\bot_path.txt`` which is
+    // user-writable, so an attacker-controlled folder with a ``bot.py`` in
+    // it could otherwise redirect the dashboard's ``python bot.py`` spawn.
+    // Reject saved paths that don't canonicalise under one of the trusted
+    // install-location roots; treat that as "no saved value" and fall
+    // through to the next resolution strategy.
     let config_path = get_config_path();
     if let Ok(saved) = std::fs::read_to_string(&config_path) {
         let saved_path = std::path::PathBuf::from(saved.trim());
         if saved_path.join("bot.py").exists() {
-            return saved_path;
+            if is_under_allowed_root(&saved_path, exe_path) {
+                return saved_path;
+            } else {
+                eprintln!(
+                    "WARNING: Saved bot_path.txt points outside trusted roots ({}); ignoring.",
+                    saved_path.display(),
+                );
+            }
         }
     }
 
@@ -618,8 +791,17 @@ fn main() {
             dsn.starts_with("https://")
                 && dsn.split('/').nth(2)  // Extract host from https://HOST/...
                     .is_some_and(|host| {
+                        // Strip optional port suffix and userinfo prefix.
                         let host_part = host.split('@').next_back().unwrap_or(host);
-                        host_part.ends_with(".sentry.io") || host_part.ends_with(".sentry.io:")
+                        let host_no_port = host_part.split(':').next().unwrap_or(host_part);
+                        // Standard Sentry SaaS DSN host is `oXXXXXX.ingest.sentry.io`.
+                        // The previous check accepted any subdomain of sentry.io,
+                        // including ones an attacker could obtain (defunct
+                        // subdomain takeover) — narrow to the documented ingest
+                        // host or the bare apex.
+                        host_no_port == "sentry.io"
+                            || host_no_port == "ingest.sentry.io"
+                            || host_no_port.ends_with(".ingest.sentry.io")
                     })
         })
         .map(|dsn| {
@@ -637,7 +819,8 @@ fn main() {
         .manage(AppState {
             bot_manager: Arc::new(Mutex::new(bot_manager)),
             db_service: Mutex::new(db_service),
-            frontend_error_rate: Mutex::new((0, 0)),
+            frontend_error_rate: Mutex::new((Instant::now(), 0)),
+            error_log_rotation: Mutex::new(()),
         })
         .setup(|app| {
             // Create tray menu

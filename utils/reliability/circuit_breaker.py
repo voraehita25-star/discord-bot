@@ -188,6 +188,27 @@ class CircuitBreaker:
             self._success_count += 1
 
             if self._state == CircuitState.HALF_OPEN:
+                # Forgive stuck probes that exceeded the call timeout
+                # BEFORE incrementing successes. This keeps the success
+                # count and the in-flight probe set consistent:
+                # without it, a probe that was forgiven by ``can_execute``
+                # could later return success and inflate
+                # _half_open_successes past the inflight count, closing
+                # the circuit early. Only clamp when forgive actually
+                # ran — otherwise a test that bypasses ``can_execute``
+                # (forcing HALF_OPEN with empty _half_open_call_starts)
+                # would never close.
+                if self._half_open_call_starts:
+                    cutoff = time.time() - self.half_open_call_timeout
+                    forgiven = [
+                        ts for ts in self._half_open_call_starts if ts > cutoff
+                    ]
+                    if len(forgiven) != len(self._half_open_call_starts):
+                        self._half_open_call_starts = forgiven
+                        self._half_open_calls = len(forgiven)
+                        self._half_open_successes = min(
+                            self._half_open_successes, self._half_open_calls
+                        )
                 self._half_open_successes += 1
                 # Wait until ALL admitted probes confirm before closing —
                 # otherwise the first 1/3 probes could succeed, the circuit
@@ -257,78 +278,107 @@ class CircuitBreaker:
 
         Uses an asyncio.Lock so concurrent coroutines don't block the event
         loop. The body mirrors the sync ``can_execute`` logic.
+
+        Also takes the sync ``self._lock`` while mutating shared counters so
+        a sync caller from another thread can't race on read-modify-write
+        of ``_failure_count`` / ``_success_count`` / ``_half_open_*``. The
+        threading lock is held briefly so it doesn't stall the event loop.
         """
         async with self._get_async_lock():
-            now = time.time()
-            # Check for state transition from OPEN to HALF_OPEN
-            if (
-                self._state == CircuitState.OPEN
-                and self._last_failure_time
-                and (
-                    now - self._last_failure_time
-                    >= (self._current_reset_timeout or self.reset_timeout)
-                )
-            ):
-                self._transition_to_unlocked(CircuitState.HALF_OPEN)
-
-            current_state = self._state
-
-            if current_state == CircuitState.CLOSED:
-                return True
-            elif current_state == CircuitState.HALF_OPEN:
-                if self._half_open_call_starts:
-                    cutoff = now - self.half_open_call_timeout
-                    self._half_open_call_starts = [
-                        ts for ts in self._half_open_call_starts if ts > cutoff
-                    ]
-                    self._half_open_calls = len(self._half_open_call_starts)
-                    # Clamp counters to active-probe count (see sync version).
-                    self._half_open_successes = min(
-                        self._half_open_successes, self._half_open_calls
+            with self._lock:
+                now = time.time()
+                # Check for state transition from OPEN to HALF_OPEN
+                if (
+                    self._state == CircuitState.OPEN
+                    and self._last_failure_time
+                    and (
+                        now - self._last_failure_time
+                        >= (self._current_reset_timeout or self.reset_timeout)
                     )
-                if self._half_open_calls < self.half_open_max_calls:
-                    self._half_open_calls += 1
-                    self._half_open_call_starts.append(now)
+                ):
+                    self._transition_to_unlocked(CircuitState.HALF_OPEN)
+
+                current_state = self._state
+
+                if current_state == CircuitState.CLOSED:
                     return True
-                return False
-            else:  # OPEN
-                return False
+                elif current_state == CircuitState.HALF_OPEN:
+                    if self._half_open_call_starts:
+                        cutoff = now - self.half_open_call_timeout
+                        self._half_open_call_starts = [
+                            ts for ts in self._half_open_call_starts if ts > cutoff
+                        ]
+                        self._half_open_calls = len(self._half_open_call_starts)
+                        # Clamp counters to active-probe count (see sync version).
+                        self._half_open_successes = min(
+                            self._half_open_successes, self._half_open_calls
+                        )
+                    if self._half_open_calls < self.half_open_max_calls:
+                        self._half_open_calls += 1
+                        self._half_open_call_starts.append(now)
+                        return True
+                    return False
+                else:  # OPEN
+                    return False
 
     async def async_record_success(self) -> None:
         """Async-safe version of record_success.
 
         Mirrors the sync ``record_success`` logic but under an asyncio.Lock.
+        Also holds ``self._lock`` so sync/async callers can't lose updates
+        to ``_success_count`` / ``_failure_count``. The threading lock is a
+        regular ``with`` (not ``async with``) — it's acquired and released
+        synchronously inside the asyncio coroutine.
         """
         async with self._get_async_lock():
-            self._success_count += 1
+            with self._lock:
+                self._success_count += 1
 
-            if self._state == CircuitState.HALF_OPEN:
-                self._half_open_successes += 1
-                if self._half_open_successes >= self.half_open_max_calls:
-                    self._transition_to_unlocked(CircuitState.CLOSED)
-            elif self._state == CircuitState.CLOSED:
-                if self._failure_count > 0:
-                    self._failure_count = max(0, self._failure_count - 1)
+                if self._state == CircuitState.HALF_OPEN:
+                    # Mirror the sync ``record_success`` forgive-timeout
+                    # logic. Without it, an async caller whose probe was
+                    # forgiven by ``async_can_execute`` could inflate
+                    # _half_open_successes past _half_open_calls and close
+                    # the circuit before all admitted probes confirmed.
+                    if self._half_open_call_starts:
+                        cutoff = time.time() - self.half_open_call_timeout
+                        forgiven = [
+                            ts for ts in self._half_open_call_starts if ts > cutoff
+                        ]
+                        if len(forgiven) != len(self._half_open_call_starts):
+                            self._half_open_call_starts = forgiven
+                            self._half_open_calls = len(forgiven)
+                            self._half_open_successes = min(
+                                self._half_open_successes, self._half_open_calls
+                            )
+                    self._half_open_successes += 1
+                    if self._half_open_successes >= self.half_open_max_calls:
+                        self._transition_to_unlocked(CircuitState.CLOSED)
+                elif self._state == CircuitState.CLOSED:
+                    if self._failure_count > 0:
+                        self._failure_count = max(0, self._failure_count - 1)
 
     async def async_record_failure(self) -> None:
         """Async-safe version of record_failure.
 
         Mirrors the sync ``record_failure`` logic but under an asyncio.Lock.
+        Also holds ``self._lock`` to serialise with sync callers.
         """
         async with self._get_async_lock():
-            self._failure_count += 1
-            self._last_failure_time = time.time()
+            with self._lock:
+                self._failure_count += 1
+                self._last_failure_time = time.time()
 
-            if self._state == CircuitState.HALF_OPEN:
-                self._transition_to_unlocked(CircuitState.OPEN)
-            elif self._state == CircuitState.CLOSED:
-                if self._failure_count >= self.failure_threshold:
+                if self._state == CircuitState.HALF_OPEN:
                     self._transition_to_unlocked(CircuitState.OPEN)
-                    logger.warning(
-                        "⚡ Circuit Breaker [%s]: OPENED after %d failures",
-                        self.name,
-                        self._failure_count,
-                    )
+                elif self._state == CircuitState.CLOSED:
+                    if self._failure_count >= self.failure_threshold:
+                        self._transition_to_unlocked(CircuitState.OPEN)
+                        logger.warning(
+                            "⚡ Circuit Breaker [%s]: OPENED after %d failures",
+                            self.name,
+                            self._failure_count,
+                        )
 
 
 class CircuitBreakerOpenError(Exception):
@@ -351,9 +401,15 @@ spotify_circuit = CircuitBreaker(
 # previously hard-coded the ``gemini`` lookup, so retrying any other service
 # silently bypassed its breaker. New services register here and the
 # generic retry path picks them up via ``get_circuit_for_service``.
+# Register under BOTH the short alias and the canonical ``.name`` so a
+# lookup by either spelling resolves to the same breaker — previously
+# ``get_circuit_for_service("gemini_api")`` (matching the breaker's own
+# ``name``) returned None while ``"gemini"`` worked.
 _CIRCUIT_REGISTRY: dict[str, CircuitBreaker] = {
     "gemini": gemini_circuit,
+    "gemini_api": gemini_circuit,
     "spotify": spotify_circuit,
+    "spotify_api": spotify_circuit,
 }
 
 

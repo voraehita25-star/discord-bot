@@ -1,11 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal permissions for the dashboard. The frontend only calls custom #[tauri::command] handlers via invoke() (which itself needs no permission) and the dialog plugin. We deliberately avoid `core:default` because it bundles broad permissions (window, webview, fs path, os info, resources, image, menu, tray) that the dashboard never uses — granting them widens the IPC attack surface for nothing.",
+  "description": "Minimal permissions for the dashboard. The frontend only calls custom #[tauri::command] handlers via invoke() (which itself needs no permission) and the dialog plugin. We deliberately avoid `core:default` because it bundles broad permissions (window, webview, fs path, os info, resources, image, menu, tray) that the dashboard never uses — granting them widens the IPC attack surface for nothing. We also avoid `dialog:default` because it implicitly enables dialog:allow-open and dialog:allow-save (file pickers); the app never invokes those, and granting them would let any future XSS-injected JS open a native file picker against the user's filesystem.",
   "windows": ["main"],
   "permissions": [
     "core:webview:deny-internal-toggle-devtools",
-    "dialog:default",
     "dialog:allow-message",
     "dialog:allow-confirm",
     "dialog:allow-ask"

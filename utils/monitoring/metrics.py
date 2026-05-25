@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+import threading
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,12 @@ class BotMetrics:
         self._server_started = False
         self._server = None
         self._server_thread = None
+        # Per-instance (NOT class-shared) so multiple BotMetrics constructions
+        # don't trample each other's queue snapshots — and a threading.Lock
+        # so concurrent dict mutation/iteration doesn't trip
+        # ``RuntimeError: dictionary changed size during iteration``.
+        self._guild_queue_sizes = {}
+        self._queue_lock = threading.Lock()
 
         if self.enabled:
             # Counters (always increasing)
@@ -183,13 +190,19 @@ class BotMetrics:
             # prometheus_client's start_http_server signature changed: newer
             # versions return (server, thread); older versions return None.
             # Handle both so we don't crash on `cannot unpack None`.
+            # Older versions also lack ``addr=`` AND default to 0.0.0.0 —
+            # binding metrics on a public interface is a real exposure
+            # for a SaaS deployment. Refuse to start rather than silently
+            # falling back to a public bind.
             try:
                 result = start_http_server(port, addr="127.0.0.1")
             except TypeError:
-                # Pre-0.20 build: start_http_server has no addr= and the
-                # server can't be retained for graceful shutdown.
-                start_http_server(port)
-                result = None
+                logger.error(
+                    "prometheus_client too old (no ``addr=`` kwarg). "
+                    "Refusing to start metrics server because the default "
+                    "bind is 0.0.0.0 — please upgrade to >= 0.20."
+                )
+                return False
 
             if isinstance(result, tuple) and len(result) == 2:
                 self._server, self._server_thread = result
@@ -249,12 +262,18 @@ class BotMetrics:
 
     # Per-guild snapshot used to recompute aggregates without keeping a
     # per-guild Prometheus series (which would blow up cardinality).
-    _guild_queue_sizes: ClassVar[dict[int, int]] = {}
+    # Guarded by ``_queue_lock`` so concurrent set/remove from multiple
+    # threads don't race on dict iteration during ``list(.values())``.
+    # NOTE: stored as an instance attribute (init below) — the previous
+    # ClassVar form silently shared state across every BotMetrics instance.
+    _guild_queue_sizes: dict[int, int]
+    _queue_lock: threading.Lock
 
     def _recompute_queue_aggregates(self) -> None:
         if not self.enabled:
             return
-        sizes = list(self._guild_queue_sizes.values())
+        with self._queue_lock:
+            sizes = list(self._guild_queue_sizes.values())
         non_empty = [s for s in sizes if s > 0]
         self.queue_size_total.set(sum(non_empty))
         self.queue_size_max.set(max(non_empty) if non_empty else 0)
@@ -264,14 +283,16 @@ class BotMetrics:
         """Update per-guild queue size and refresh aggregates."""
         if not self.enabled:
             return
-        self._guild_queue_sizes[guild_id] = size
+        with self._queue_lock:
+            self._guild_queue_sizes[guild_id] = size
         self._recompute_queue_aggregates()
 
     def remove_queue_size(self, guild_id: int):
         """Forget a guild's queue size (call when the bot leaves the guild)."""
         if not self.enabled:
             return
-        self._guild_queue_sizes.pop(guild_id, None)
+        with self._queue_lock:
+            self._guild_queue_sizes.pop(guild_id, None)
         self._recompute_queue_aggregates()
 
     def set_memory(self, bytes_used: int):

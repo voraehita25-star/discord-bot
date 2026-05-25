@@ -2574,6 +2574,11 @@ margin-bottom: 8px;
     color: var(--text-primary);
     line-height: 1.6;
     font-size: 15px;
+    /* Break long unbroken tokens (URLs, file paths, hashes, base64 that
+       Claude often emits) so they wrap inside the bubble instead of forcing
+       horizontal overflow / layout blowout. <pre> handles its own scroll. */
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .chat-message.user .message-content {
@@ -3407,6 +3412,17 @@ mark.chat-search-hit.active {
     border-top: 1px solid var(--border-color);
 }
 
+/* The avatar-crop modal footer uses `.modal-actions` (index.html), which had
+   no rule — its Cancel/Save buttons rendered as default inline-block with no
+   gap or right-alignment. Match `.modal-footer`. */
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 24px;
+    border-top: 1px solid var(--border-color);
+}
+
 /* Light theme overrides for chat */
 html[data-theme="light"] .chat-sidebar {
     background: var(--sidebar-bg);
@@ -4165,6 +4181,13 @@ html[data-theme="light"] .thinking-content blockquote {
     background: rgba(168, 85, 247, 0.1);
 }
 
+/* Markdown table column alignment (:--- / :---: / ---:). Replaces the old
+   inline style="text-align:…" the formatter used to emit, so AI-markdown tables
+   no longer rely on an inline-style attribute (one less inline-CSS surface). */
+.md-ta-left { text-align: left; }
+.md-ta-center { text-align: center; }
+.md-ta-right { text-align: right; }
+
 html[data-theme="light"] .md-table th {
     background: rgba(109, 40, 217, 0.1);
 }
@@ -4224,6 +4247,11 @@ html[data-theme="light"] .thinking-content .md-hr {
 }
 
 .thinking-container {
+    /* Hidden by default (no inline style= attribute, so style-src 'self' needs
+       no 'unsafe-inline'). showThinkingIndicator() reveals it via CSSOM
+       (el.style.display='block'), which overrides this non-!important rule and
+       is itself exempt from CSP. */
+    display: none;
     margin-bottom: 12px;
     border: 1px solid rgba(168, 85, 247, 0.3);
     border-radius: 8px;
@@ -5112,10 +5140,20 @@ html[data-theme="light"] .toast::before {
 .chart-card,
 .settings-card,
 .memory-card,
-.modal-content,
 .toast {
     position: relative;
     overflow: hidden;
+}
+
+/* .modal-content gets the same noise-texture corner clipping, but must NOT
+   clip the y-axis: the shorthand `overflow:hidden` here (when it was in the
+   group above) overrode the `overflow-y:auto` set at line ~3257 (equal
+   specificity, later source order), re-clipping tall modals so their footer
+   (e.g. Create/Cancel) was unreachable in a short Tauri window. Clip x only;
+   let y scroll. */
+.modal-content {
+    position: relative;
+    overflow-x: hidden;
 }
 
 .sidebar > *,

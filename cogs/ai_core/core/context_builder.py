@@ -305,7 +305,6 @@ class ContextBuilder:
         try:
             start_time = time.time()
 
-            # Get state
             if hasattr(self.state_tracker, "get_state_summary"):
                 state = await self.state_tracker.get_state_summary(channel_id)
             elif hasattr(self.state_tracker, "get_state"):

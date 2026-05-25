@@ -367,7 +367,9 @@ class TestGetVoiceStatus:
         mock_vc.guild = mock_guild
 
         mock_music_cog = MagicMock()
-        mock_music_cog.current_track = {12345: {"title": "Test Song"}}
+        # current_track lives on the per-guild MusicGuildState returned by
+        # _gs(guild_id), not as a dict on the cog itself.
+        mock_music_cog._gs.return_value.current_track = {"title": "Test Song"}
 
         mock_bot = MagicMock()
         mock_bot.voice_clients = [mock_vc]
@@ -398,7 +400,7 @@ class TestGetVoiceStatus:
         mock_vc.guild = mock_guild
 
         mock_music_cog = MagicMock()
-        mock_music_cog.current_track = {12345: {"title": "Paused Song"}}
+        mock_music_cog._gs.return_value.current_track = {"title": "Paused Song"}
 
         mock_bot = MagicMock()
         mock_bot.voice_clients = [mock_vc]

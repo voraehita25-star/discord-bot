@@ -181,11 +181,26 @@ func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 			}
 		}
 
-		// Dial using the original host (not IP) to preserve TLS SNI / Host header.
-		// IPs were just validated above; the small DNS-rebinding window is acceptable
-		// versus breaking HTTPS on every request.
-		_ = port // retained for clarity; addr already contains host:port
-		return dialer.DialContext(ctx, network, addr)
+		// Dial the IPs we just validated instead of re-resolving the hostname.
+		// Passing the original host to DialContext triggers a SECOND DNS
+		// lookup inside the dialer, which could return a private IP that
+		// bypassed the check above (classic DNS-rebinding). http.Transport
+		// derives the TLS ServerName (SNI) and Host header from the request
+		// URL, not from the dial address, so HTTPS still works when we connect
+		// by IP literal. Try each validated IP in order to keep multi-homed
+		// failover.
+		var lastErr error
+		for _, ip := range ips {
+			conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if derr == nil {
+				return conn, nil
+			}
+			lastErr = derr
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("SSRF blocked: no dialable IP for %q", host)
+		}
+		return nil, lastErr
 	}
 }
 
@@ -293,7 +308,10 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	body := rawBody
 	utf8Reader, err := charset.NewReader(bytes.NewReader(rawBody), result.ContentType)
 	if err == nil {
-		if converted, err := io.ReadAll(utf8Reader); err == nil {
+		// Cap the post-conversion size as well: transcoding from a multi-byte
+		// charset (e.g. UTF-16/GBK) to UTF-8 can expand beyond the input cap,
+		// so limiting only rawBody above is not enough to bound memory.
+		if converted, err := io.ReadAll(io.LimitReader(utf8Reader, maxContentLength)); err == nil {
 			body = converted
 		}
 	}

@@ -29,11 +29,15 @@ from cogs.ai_core.api.dashboard_config import DASHBOARD_ROLE_PRESETS
 
 async def main(title_substr: str = "", show_full: bool = False) -> None:
     db_path = ROOT / "data" / "bot_database.db"
+    # SQLite LIKE treats ``%`` and ``_`` as wildcards. Without escaping,
+    # a CLI arg containing ``%`` would match every conversation in the DB.
+    _esc_substr = title_substr.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with sqlite3.connect(db_path) as raw:
         raw.row_factory = sqlite3.Row
         row = raw.execute(
-            "SELECT id, title, role_preset FROM dashboard_conversations WHERE title LIKE ?",
-            (f"%{title_substr}%",),
+            "SELECT id, title, role_preset FROM dashboard_conversations "
+            "WHERE title LIKE ? ESCAPE '\\'",
+            (f"%{_esc_substr}%",),
         ).fetchone()
         if not row:
             print(f"No conversation matching {title_substr!r}")

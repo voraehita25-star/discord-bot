@@ -33,8 +33,14 @@ test.beforeEach(async ({ page }) => {
     await page.waitForLoadState('domcontentloaded');
     // Disable transitions globally so pixel diffs don't flake on partial
     // animation states (the modalIn/sakuraFall keyframes etc).
-    await page.addStyleTag({
-        content: `*, *::before, *::after { animation: none !important; transition: none !important; }`,
+    // page.addStyleTag() injects a <style> element, which the production CSP
+    // (style-src 'self', no 'unsafe-inline') now blocks. Inject via a
+    // constructed CSSStyleSheet + adoptedStyleSheets instead — CSSOM mutations
+    // are exempt from CSP, so the test exercises the real strict policy.
+    await page.evaluate(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync('*, *::before, *::after { animation: none !important; transition: none !important; }');
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     });
     await page.waitForTimeout(300);
 });

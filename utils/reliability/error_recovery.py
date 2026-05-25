@@ -414,12 +414,22 @@ async def retry_async(
                 # Calculate delay with smart jitter
                 delay = await calculate_delay(attempt, config, state, service_health)
 
-                # Honor Retry-After header if present
+                # Honor Retry-After header if present, but clamp to the
+                # config's max_delay so a hostile/buggy server returning
+                # ``Retry-After: 999999`` can't freeze the retry loop.
                 if config.respect_retry_after:
                     retry_after = extract_retry_after(e)
-                    if retry_after is not None:
-                        delay = max(delay, retry_after)
-                        logger.info("⏳ Respecting Retry-After: %.1fs", retry_after)
+                    if retry_after is not None and retry_after > 0:
+                        bounded = min(retry_after, config.max_delay)
+                        delay = max(delay, bounded)
+                        if bounded < retry_after:
+                            logger.info(
+                                "⏳ Respecting Retry-After: %.1fs (clamped from %.1fs)",
+                                bounded,
+                                retry_after,
+                            )
+                        else:
+                            logger.info("⏳ Respecting Retry-After: %.1fs", retry_after)
 
                 logger.warning(
                     "⚠️ Attempt %d/%d failed: %s. Retrying in %.2fs (jitter: %s)...",

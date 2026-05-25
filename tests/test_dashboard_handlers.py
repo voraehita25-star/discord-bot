@@ -278,7 +278,7 @@ class TestEditMessage:
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
 
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_edit_message(ws, {"message_id": "1", "content": "A" * 50_001})
+            await handle_edit_message(ws, {"message_id": "1", "content": "A" * 200_001})
         assert ws.last()["code"] == "CONTENT_TOO_LONG"
 
     @pytest.mark.asyncio
@@ -562,7 +562,7 @@ class TestSaveMemory:
         from cogs.ai_core.api.dashboard_handlers import handle_save_memory
 
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_save_memory(ws, {"content": "A" * 2001})
+            await handle_save_memory(ws, {"content": "A" * 10_001})
         assert ws.last()["code"] == "CONTENT_TOO_LONG"
 
     @pytest.mark.asyncio

@@ -7,7 +7,7 @@
 curl http://localhost:8080/health
 
 # Check Prometheus metrics
-curl http://localhost:9090/metrics
+curl http://localhost:9090/metrics  # Python metrics (PROMETHEUS_PORT, default 9090)
 
 # Check logs
 tail -f logs/bot.log
@@ -81,26 +81,40 @@ tail -f logs/bot_errors.log
 
    ```bash
    # Check in Prometheus
-   curl http://localhost:9090/metrics | grep circuit_breaker_state
+   curl http://localhost:9090/metrics  # Python metrics (PROMETHEUS_PORT, default 9090) | grep circuit_breaker_state
    ```
 
-4. **API failover** — Direct API failed, proxy should take over. Check endpoint:
+4. **API failover** — Direct API failed, proxy should take over. Check endpoint URL:
 
    ```ini
-   ANTHROPIC_API_ENDPOINT=direct  # or proxy
+   # Use the Anthropic API directly (this is the default — a sentinel, not a URL)
+   ANTHROPIC_API_ENDPOINT=direct
+   # Proxy override (whatever URL your proxy exposes)
+   ANTHROPIC_PROXY_BASE_URL=https://your-proxy.example/v1
    ```
+
+   The failover layer flips between these two endpoints automatically based on
+   error rate; manual override via `ANTHROPIC_API_ENDPOINT` is for sticky pinning.
 
 ### High Memory Usage
 
-The memory monitor triggers warnings at thresholds:
+The memory monitor triggers cache cleanup at configurable RSS thresholds:
 
-- **Warning:** 8GB
-- **Critical:** 16GB (for 32GB system)
+- **Warning:** 1 GiB (default — env `BOT_MEMORY_WARNING_MB`)
+- **Critical:** 1.5 GiB (default — env `BOT_MEMORY_CRITICAL_MB`)
+- **Poll interval:** 30 s (default — env `BOT_MEMORY_CHECK_INTERVAL`)
+
+These defaults target a typical container; raise on a workstation, lower for a
+tight 512 MiB container. The previous 8 GiB/16 GiB defaults sat above the OOM
+killer on every host the bot actually runs on, so cleanup never fired before the
+process was killed — they're now env-tunable per deployment.
 
 Check via:
 
 ```bash
-curl http://localhost:9090/metrics | grep process_resident_memory
+curl http://localhost:9090/metrics  # Python metrics (PROMETHEUS_PORT, default 9090) | grep process_resident_memory
+# or, for the bot's own report including the configured threshold:
+curl http://localhost:8080/health/deep
 ```
 
 Common causes:
@@ -128,7 +142,7 @@ By design. Each conversation has its own scoped document library — uploads in 
 
 **"Document too large" on a file under 32 MB:**
 
-The WebSocket frame cap is 10 MB (`max_msg_size` in `ws_dashboard.py`), which bounds the payload *per WebSocket frame*, including the base64 overhead. PDFs near the 10 MB raw mark balloon to ~13 MB once base64-encoded and get rejected before hitting the 32 MB document cap. Split large PDFs with a PDF editor.
+The post-auth WebSocket frame cap is ~43 MB (`max_msg_size` in `ws_dashboard.py`, sized to fit the 32 MB document cap plus base64 overhead and headroom); the 10 MB figure is the *per-image* limit (`MAX_IMAGE_SIZE_BYTES`), not the frame cap. Documents are capped at 32 MB raw (`MAX_DOCUMENT_SIZE_BYTES`); base64 inflates that ~33%, so a raw PDF in the high-20s MB can still exceed the frame once encoded. Split very large PDFs with a PDF editor. (Before authentication the frame cap is only 4 KiB.)
 
 **Storage caps are hit — oldest documents disappearing:**
 
@@ -183,7 +197,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `CLAUDE_MODEL` | `claude-opus-4-7` | Claude model name |
 | `CLAUDE_MAX_TOKENS` | `128000` | Max output tokens per response |
 | `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 4.7 supports 1M with subscription auth (`CLAUDE_BACKEND=cli`) or `betas: context-1m` header on direct API |
-| `CLAUDE_BACKEND` | `api` | Dashboard Claude path: `api` (anthropic SDK, per-token) or `cli` (`claude -p` subprocess, Max subscription quota) |
+| `CLAUDE_BACKEND` | `cli` | Claude path for BOTH Discord chat and dashboard chat: `cli` (`claude -p` subprocess, Max subscription quota — default, no `ANTHROPIC_API_KEY` required) or `api` (Anthropic SDK, per-token billing — needs `ANTHROPIC_API_KEY`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `""` | Only needed when `CLAUDE_BACKEND=cli` and bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
 | `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-7` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
 | `CLAUDE_EFFORT` | `high` | Effort level: `low` / `medium` / `high` / `xhigh` / `max` |
@@ -191,7 +205,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |
 | `ANTHROPIC_PROXY_BASE_URL` | `""` | Proxy API URL |
-| `ANTHROPIC_API_ENDPOINT` | `direct` | `direct` or `proxy` |
+| `ANTHROPIC_API_ENDPOINT` | `direct` | Failover *mode* selector (a sentinel, not a URL): `direct` calls the Anthropic API directly; any other value pins the proxy. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
 | `DEFAULT_AI_PROVIDER` | auto | Dashboard default (`gemini`/`claude`) |
 
 ### Discord IDs
@@ -208,7 +222,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | -------- | ------- | ----------- |
 | `WS_DASHBOARD_HOST` | `127.0.0.1` | Dashboard WS host |
 | `WS_DASHBOARD_PORT` | `8765` | Dashboard WS port |
-| `DASHBOARD_WS_TOKEN` | `""` | Auth token (HMAC) |
+| `DASHBOARD_WS_TOKEN` | `""` | Bearer auth token (shared secret, compared byte-for-byte by the WS handshake). An empty value rejects all WS connections — set this OR enable `DASHBOARD_ALLOW_UNRESTRICTED=true` (NOT recommended outside localhost). |
 | `WS_REQUIRE_TLS` | `false` | Require TLS |
 
 ### Monitoring

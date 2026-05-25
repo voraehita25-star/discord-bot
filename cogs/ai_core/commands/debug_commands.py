@@ -6,7 +6,7 @@ Provides debug commands for AI system observability.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import discord
 from discord.ext import commands
@@ -131,8 +131,14 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.processing.intent_detector import detect_intent
 
-            if ctx.message.reference and ctx.message.reference.resolved:
-                test_msg = ctx.message.reference.resolved.content  # type: ignore[union-attr]
+            # ``resolved`` may be a ``DeletedReferencedMessage`` (the
+            # original was deleted between reply and command), which
+            # has no ``.content`` attribute and would AttributeError
+            # past the ``cast``. Use ``isinstance(..., discord.Message)``
+            # so only a real message slot reaches the ``.content`` path.
+            ref_resolved = ctx.message.reference.resolved if ctx.message.reference else None
+            if isinstance(ref_resolved, discord.Message):
+                test_msg = ref_resolved.content
             else:
                 test_msg = "สวัสดี"  # Default test
 
@@ -143,8 +149,8 @@ class AIDebug(commands.Cog):
                 f"Sub: {result.sub_category or 'N/A'}"
             )
             embed.add_field(name="🎯 Intent Detection", value=f"```\n{intent_info}```", inline=True)
-        except ImportError:
-            pass
+        except ImportError as exc:
+            self.logger.debug("Intent detection import failed: %s", exc)
 
         # 6. Entity Memory (if available)
         try:
@@ -154,14 +160,19 @@ class AIDebug(commands.Cog):
             # missing, so a partially-initialised entity_memory doesn't blow
             # up the debug command with TypeError on len().
             _cache_obj = getattr(entity_memory, "_cache", None)
-            entity_count = len(_cache_obj) if hasattr(_cache_obj, "__len__") else 0
+            # Sized ABC excludes None; explicit None check + Sized cast keeps
+            # mypy happy without losing the defensive hasattr guard.
+            from collections.abc import Sized
+            entity_count = (
+                len(cast(Sized, _cache_obj)) if isinstance(_cache_obj, Sized) else 0
+            )
             embed.add_field(
                 name="👤 Entity Memory",
                 value=f"```\nCached: {entity_count} entities```",
                 inline=True,
             )
-        except ImportError:
-            pass
+        except ImportError as exc:
+            self.logger.debug("Entity memory import failed: %s", exc)
 
         embed.set_footer(text=f"Channel ID: {channel_id}")
 
@@ -362,7 +373,12 @@ class AIDebug(commands.Cog):
         try:
             from cogs.ai_core.cache.token_tracker import token_tracker
 
-            stats = await token_tracker.get_global_stats()
+            try:
+                stats = await token_tracker.get_global_stats()
+            except Exception as e:
+                self.logger.warning("Failed to fetch token tracker stats: %s", e)
+                await ctx.send(f"❌ ดึงสถิติ token ไม่สำเร็จ: {type(e).__name__}")
+                return
 
             embed = discord.Embed(title="💰 Token Usage Tracker", color=discord.Color.gold())
 

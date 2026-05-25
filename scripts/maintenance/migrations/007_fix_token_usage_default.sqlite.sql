@@ -2,6 +2,10 @@
 -- The application now records Claude as the primary default model for token tracking.
 -- Rebuild the table to update the column default while preserving existing data.
 
+-- Idempotent re-apply guards: a crash between the INSERT and the RENAME
+-- would otherwise leave token_usage_new orphaned on disk and the rerun
+-- would fail with "table already exists".
+DROP TABLE IF EXISTS token_usage_new;
 CREATE TABLE token_usage_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -37,7 +41,7 @@ SELECT
     created_at
 FROM token_usage;
 
-DROP TABLE token_usage;
+DROP TABLE IF EXISTS token_usage;
 
 ALTER TABLE token_usage_new RENAME TO token_usage;
 

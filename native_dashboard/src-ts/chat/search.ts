@@ -22,6 +22,7 @@ export class ChatSearch {
     private matches: HTMLElement[] = [];
     private currentIdx: number = -1;
     private bound: boolean = false;
+    private previousFocus: HTMLElement | null = null;
     private readonly getContainer: GetContainer;
 
     constructor(getContainer: GetContainer) {
@@ -32,6 +33,9 @@ export class ChatSearch {
         const bar = document.getElementById('chat-search-bar');
         const input = document.getElementById('chat-search-input') as HTMLInputElement | null;
         if (!bar || !input) return;
+        // Remember what had focus so close() can restore it — otherwise
+        // keyboard focus is left on the now-hidden search bar.
+        this.previousFocus = document.activeElement as HTMLElement | null;
         bar.classList.remove('hidden');
         input.focus();
         input.select();
@@ -44,6 +48,11 @@ export class ChatSearch {
         this.clearHighlights();
         this.matches = [];
         this.currentIdx = -1;
+        // Restore focus to the pre-open element (e.g. the chat input).
+        if (this.previousFocus && document.contains(this.previousFocus)) {
+            this.previousFocus.focus();
+        }
+        this.previousFocus = null;
     }
 
     /** Wire input/keydown/buttons once per DOM lifetime — idempotent. */

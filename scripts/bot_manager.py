@@ -666,7 +666,13 @@ def _launch_script(path, name, hidden=False):
         path_str = str(path_obj.resolve())
         cwd = str(PROJECT_ROOT.resolve())
         if hidden:
-            subprocess.Popen(["wscript", path_str], shell=False, cwd=cwd)
+            # Resolve wscript to its absolute System32 path rather than relying
+            # on a bare-name PATH lookup — a malicious ``wscript.exe`` earlier on
+            # PATH would otherwise be executed instead of the OS binary.
+            wscript_path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wscript.exe"
+            # Fall back to PATH only if the System32 layout differs from expected.
+            wscript = str(wscript_path) if wscript_path.exists() else "wscript"
+            subprocess.Popen([wscript, path_str], shell=False, cwd=cwd)
         elif sys.platform == "win32":
             os.startfile(path_str)
         else:

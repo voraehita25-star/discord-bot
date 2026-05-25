@@ -15,9 +15,36 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# Service configuration
-URL_FETCHER_HOST = os.getenv("URL_FETCHER_HOST", "localhost")
-URL_FETCHER_PORT = os.getenv("URL_FETCHER_PORT", "8081")
+# Service configuration. Pin the host to a tight allowlist so a
+# misconfigured env var can't redirect "internal Go service" traffic
+# (which carries the bot's own request bodies) at an arbitrary host.
+_URL_FETCHER_HOST_RAW = os.getenv("URL_FETCHER_HOST", "localhost").strip()
+_URL_FETCHER_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "url-fetcher"})
+if _URL_FETCHER_HOST_RAW not in _URL_FETCHER_ALLOWED_HOSTS:
+    logger.warning(
+        "URL_FETCHER_HOST=%r not in allowlist; falling back to 'localhost'. "
+        "Set the env var to one of %s if you need to override.",
+        _URL_FETCHER_HOST_RAW,
+        sorted(_URL_FETCHER_ALLOWED_HOSTS),
+    )
+    URL_FETCHER_HOST = "localhost"
+else:
+    URL_FETCHER_HOST = _URL_FETCHER_HOST_RAW
+# Validate port up front so a misconfigured env var produces a clean
+# error at import time rather than an obscure aiohttp connect failure
+# every time a fetch is attempted.
+_URL_FETCHER_PORT_RAW = os.getenv("URL_FETCHER_PORT", "8081").strip()
+try:
+    _port_int = int(_URL_FETCHER_PORT_RAW)
+    if not 1 <= _port_int <= 65535:
+        raise ValueError(f"port {_port_int} out of range")
+    URL_FETCHER_PORT = str(_port_int)
+except ValueError:
+    logger.warning(
+        "Invalid URL_FETCHER_PORT %r — falling back to 8081",
+        _URL_FETCHER_PORT_RAW,
+    )
+    URL_FETCHER_PORT = "8081"
 URL_FETCHER_URL = f"http://{URL_FETCHER_HOST}:{URL_FETCHER_PORT}"
 
 
@@ -280,6 +307,11 @@ class URLFetcherClient:
         Returns:
             Dict with: results, total_time_ms, success_count, error_count
         """
+        # Re-check service liveness before routing, mirroring fetch(): without
+        # this a service that died after the last check would still receive the
+        # whole batch and fail it, instead of falling back to aiohttp.
+        if self._session is not None:
+            await self._check_service()
         if self._service_available:
             return await self._fetch_batch_via_service(urls, timeout)
         return await self._fetch_batch_fallback(urls)

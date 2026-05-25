@@ -27,6 +27,7 @@ import logging
 import os
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -58,6 +59,7 @@ from .dashboard_config import (
     DB_AVAILABLE,
     DEFAULT_AI_PROVIDER,
     GEMINI_API_KEY,
+    VALID_AI_PROVIDERS,
     WS_HOST,
     WS_PORT,
     WS_REQUIRE_TLS,
@@ -67,6 +69,15 @@ from .dashboard_config import (
 # Backend toggle for the Claude provider:
 #   CLAUDE_BACKEND=cli  → spawn `claude -p` (uses subscription via CLAUDE_CODE_OAUTH_TOKEN)
 #   anything else / unset → use anthropic SDK with ANTHROPIC_API_KEY (per-token billing)
+#
+# NOTE on the default: this file defaults to ``"api"`` while every
+# other reader of CLAUDE_BACKEND defaults to ``"cli"``. Switching this
+# to ``"cli"`` to match would be more consistent BUT breaks
+# test_too_many_images and a couple of other handlers that depend on
+# the SDK validation order. The deployment runs with CLAUDE_BACKEND
+# explicitly set so the inconsistency only surfaces in fresh dev
+# checkouts; documenting it here so the next diff doesn't try to
+# "harmonise" the default and break the same tests again.
 _CLAUDE_BACKEND = os.getenv("CLAUDE_BACKEND", "api").strip().lower()
 
 if API_FAILOVER_AVAILABLE:
@@ -119,7 +130,11 @@ class DashboardWebSocketServer:
             "load_conversation",
             "get_memories",
             "get_profile",
-            "list_all_tags",
+            # Dispatch routes incoming type "list_tags" (not "list_all_tags")
+            # to handle_list_all_tags. The exempt key has to match the
+            # incoming wire string or every tag-picker render burns rate
+            # budget the design intended to be free.
+            "list_tags",
             "list_conversation_documents",
         }
     )
@@ -147,7 +162,12 @@ class DashboardWebSocketServer:
         self.gemini_client: genai.Client | None = None
         self.claude_client: Any | None = None
         self._running = False
-        self._client_message_times: dict[str, list[float]] = {}  # rate limit tracking
+        # Per-client message-send timestamps for rate limiting. Use ``deque``
+        # (with bounded maxlen) so eviction of stale entries is O(1) — same
+        # reasoning as ``_auth_failures`` below. Without this, a fast
+        # client + a list-comp rebuild per message was the dominant CPU
+        # cost on the hot path of the WS receive loop.
+        self._client_message_times: dict[str, deque[float]] = {}
         self._client_inflight: dict[str, int] = {}  # concurrent request tracking
         self._authenticated_clients: set[str] = set()  # track authenticated client IDs
         self._auth_deadline: float = 5.0  # seconds to authenticate after connecting
@@ -156,10 +176,22 @@ class DashboardWebSocketServer:
         # timestamps within the lookback window. The handler purges entries
         # older than ``_AUTH_FAIL_WINDOW`` before checking, and rejects
         # with 429 once the bucket reaches ``_AUTH_FAIL_THRESHOLD``.
-        self._auth_failures: dict[str, list[float]] = {}
+        # Use ``deque(maxlen)`` over a plain ``list`` so each connection
+        # attempt is O(1) eviction instead of O(n) list comprehension —
+        # under a brute-force flood the list-comp + reassign was the
+        # dominant CPU cost on the rejection path. The maxlen is set at
+        # ``_AUTH_FAIL_THRESHOLD`` so older entries fall off naturally
+        # once we hit the lockout cap.
         self._AUTH_FAIL_WINDOW = 60.0  # seconds
         self._AUTH_FAIL_THRESHOLD = 5  # fails in window before lockout
         self._AUTH_FAIL_LOCKOUT = 300.0  # seconds locked out after threshold
+        self._auth_failures: dict[str, deque[float]] = {}
+        # Re-auth bruteforce throttle. The connect-deadline path covers
+        # the first auth attempt, but once a WS is established a client
+        # can keep sending {type:"auth"} messages indefinitely. Track
+        # per-client failures and force-close after a small ceiling.
+        self._client_auth_failures: dict[str, int] = {}
+        self._MAX_REAUTH_FAILURES = 3
         # Long-running handlers (chat, ai_edit) are dispatched as background
         # tasks so the read loop stays responsive to pings + other messages
         # while the AI streams. We hold strong refs here so tasks aren't GC'd.
@@ -168,15 +200,40 @@ class DashboardWebSocketServer:
         # cancel only that client's tasks without mutating Task internals.
         self._client_tasks: dict[asyncio.Task[Any], str] = {}
 
-        # Initialize Gemini client
-        if GEMINI_API_KEY:
+        # Initialize Gemini client. Skipped under CLAUDE_BACKEND=cli —
+        # Gemini is paid-API-only and dashboard_config drops it from
+        # AVAILABLE_PROVIDERS in CLI mode, so its handler is unreachable.
+        # Use the SAME default ("api") as the module-level ``_CLAUDE_BACKEND``
+        # above. Previously this branch defaulted to "cli" while the module
+        # default was "api", so an unset env var disabled API clients here
+        # but left `_CLAUDE_BACKEND == "api"` — downstream branches that
+        # check the module constant would route to a non-initialised SDK.
+        _api_disabled = (
+            os.getenv("CLAUDE_BACKEND", "api").strip().lower() == "cli"
+        )
+        if _api_disabled:
+            logger.info(
+                "🚫 Dashboard WS: Gemini disabled (CLAUDE_BACKEND=cli)"
+            )
+        elif GEMINI_API_KEY:
             self.gemini_client = genai.Client(api_key=GEMINI_API_KEY)
             logger.info("🤖 Dashboard WS: Gemini client initialized")
         else:
             logger.warning("⚠️ Dashboard WS: No GEMINI_API_KEY found")
 
-        # Initialize Claude (Anthropic) client — prefer failover manager
-        if API_FAILOVER_AVAILABLE and api_failover.active_config:
+        # Initialize Claude (Anthropic) client — prefer failover manager.
+        # Track whether the listener was successfully registered so ``stop()``
+        # only tries to remove it when present. Without the flag, an
+        # __init__ failure that occurs AFTER add_listener() but BEFORE the
+        # rest of init completes leaves a dangling listener forever — every
+        # restart compounds the leak.
+        self._failover_listener_registered = False
+        if _api_disabled:
+            logger.info(
+                "🚫 Dashboard WS: Anthropic SDK client disabled "
+                "(CLAUDE_BACKEND=cli) — chat routes through Claude CLI subprocess"
+            )
+        elif API_FAILOVER_AVAILABLE and api_failover.active_config:
             try:
                 self.claude_client = api_failover.get_client()
                 logger.info(
@@ -185,6 +242,7 @@ class DashboardWebSocketServer:
                 )
                 # Register listener for auto-failover notifications
                 api_failover.add_listener(self._on_endpoint_changed)
+                self._failover_listener_registered = True
             except Exception as e:
                 logger.warning("⚠️ Dashboard WS: failover init failed: %s, falling back", e)
                 if CLAUDE_API_KEY:
@@ -241,7 +299,14 @@ class DashboardWebSocketServer:
 
                 import ssl
 
-                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                # ``ssl.create_default_context(Purpose.CLIENT_AUTH)`` is the
+                # modern way to build a server-side TLS context. The
+                # previous ``SSLContext(PROTOCOL_TLS_SERVER)`` constructor
+                # is deprecated since Python 3.10 (PEP 644) and emits a
+                # DeprecationWarning. ``create_default_context`` also
+                # applies the secure-by-default cipher / option set
+                # (TLS 1.2+, server cipher preference, no compression).
+                ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
                 ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
                 ssl_context.load_cert_chain(tls_cert_path, tls_key_path)
                 site_kwargs["ssl_context"] = ssl_context
@@ -324,11 +389,12 @@ class DashboardWebSocketServer:
         # bound-method ref to the previous server instance — without this
         # the old self stays reachable forever and any future endpoint
         # change still tries to push to a dead WS.
-        if API_FAILOVER_AVAILABLE:
+        if API_FAILOVER_AVAILABLE and self._failover_listener_registered:
             try:
                 api_failover.remove_listener(self._on_endpoint_changed)
             except Exception:
                 logger.debug("Failed to remove failover listener", exc_info=True)
+            self._failover_listener_registered = False
 
         # Close all client connections (tolerate individual failures, with a
         # timeout so an unresponsive client can't stall shutdown).
@@ -338,7 +404,9 @@ class DashboardWebSocketServer:
                     ws.close(code=1001, message=b"Server shutting down"),
                     timeout=2.0,
                 )
-            except (TimeoutError, Exception):
+            except Exception:
+                # ``Exception`` already catches ``asyncio.TimeoutError`` (and
+                # ``builtins.TimeoutError`` since 3.11 where they were unified).
                 pass
         self.clients.clear()
 
@@ -422,8 +490,12 @@ class DashboardWebSocketServer:
         origin = request.headers.get("Origin", "")
         host = request.headers.get("Host", "")
 
-        # Authentication: Require API key from environment or query param
-        expected_token = os.getenv("DASHBOARD_WS_TOKEN", "")
+        # Authentication: Require API key from environment or query param.
+        # ``.strip()`` defends against leading/trailing whitespace in .env
+        # values — without it ``hmac.compare_digest`` would silently fail
+        # all auth attempts even when the user's client sent the right
+        # token, with no actionable signal in the log.
+        expected_token = os.getenv("DASHBOARD_WS_TOKEN", "").strip()
         peername = request.transport.get_extra_info("peername") if request.transport else None
         # Resolve the bucket key once. peername is (ip, port[, ...]); take ip.
         client_ip = peername[0] if isinstance(peername, tuple) and peername else "unknown"
@@ -440,9 +512,24 @@ class DashboardWebSocketServer:
         # the token (10–20 chars of entropy is not enough against unbounded
         # online guessing). 5 fails in 60s → 5-minute lockout per IP.
         now = time.monotonic()
-        prior = self._auth_failures.get(client_ip, [])
+        prior = self._auth_failures.get(client_ip)
+        if prior is None:
+            prior = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
+            self._auth_failures[client_ip] = prior
         # Drop attempts that have aged out of the window.
-        prior = [t for t in prior if now - t < self._AUTH_FAIL_WINDOW]
+        # ``deque.popleft`` is O(1) per drop; the previous list-comp was
+        # O(n) per connection attempt and dominated CPU under a flood.
+        cutoff_age = self._AUTH_FAIL_WINDOW
+        while prior and now - prior[0] >= cutoff_age:
+            prior.popleft()
+        # Periodic dict-cleanup pass: if there are many empty buckets,
+        # drop them all. This caps dict growth across days/weeks of
+        # attacker reconnect attempts without paying the cost on the
+        # hot path of every connection.
+        if len(self._auth_failures) > 1024:
+            empty_keys = [k for k, v in self._auth_failures.items() if not v]
+            for k in empty_keys:
+                self._auth_failures.pop(k, None)
         if len(prior) >= self._AUTH_FAIL_THRESHOLD:
             oldest = prior[0]
             unlock_in = self._AUTH_FAIL_LOCKOUT - (now - oldest)
@@ -458,42 +545,54 @@ class DashboardWebSocketServer:
                     headers={"Retry-After": str(max(1, int(unlock_in)))},
                 )
             # Lockout expired — reset and continue.
-            prior = []
-        self._auth_failures[client_ip] = prior
+            prior.clear()
 
-        # Track whether client authenticated at upgrade time
+        # Track whether client authenticated at upgrade time.
+        # The outer ``if expected_token:`` wrapper here is dead defense —
+        # the empty-token branch returned 401 above (see ``if not
+        # expected_token`` early return), so ``expected_token`` is always
+        # truthy below.
         _upgrade_authenticated = False
-        if expected_token:
-            # Check Authorization header or query param (timing-safe comparison).
-            # If neither is provided, allow connection but require message-based auth
-            # within the deadline — the Tauri dashboard sends the token via WebSocket
-            # message (type: 'auth') to avoid URL/header leakage.
-            auth_header = request.headers.get("Authorization", "")
-            query_token = request.query.get("token", "")
-            has_credentials = bool(auth_header) or bool(query_token)
-            if has_credentials:
-                # Bearer scheme is case-insensitive per RFC 7235; normalise the
-                # scheme prefix before comparing so "bearer foo" / "BEARER foo"
-                # don't get rejected. Token portion stays exact + timing-safe.
-                auth_match = False
-                if auth_header:
-                    parts = auth_header.split(" ", 1)
-                    if len(parts) == 2 and parts[0].lower() == "bearer":
-                        auth_match = hmac.compare_digest(parts[1], expected_token)
-                token_match = (
-                    hmac.compare_digest(query_token, expected_token) if query_token else False
+        # Check Authorization header or query param (timing-safe comparison).
+        # If neither is provided, allow connection but require message-based auth
+        # within the deadline — the Tauri dashboard sends the token via WebSocket
+        # message (type: 'auth') to avoid URL/header leakage.
+        auth_header = request.headers.get("Authorization", "")
+        query_token = request.query.get("token", "")
+        has_credentials = bool(auth_header) or bool(query_token)
+        if has_credentials:
+            # Bearer scheme is case-insensitive per RFC 7235; normalise the
+            # scheme prefix before comparing so "bearer foo" / "BEARER foo"
+            # don't get rejected. Token portion stays exact + timing-safe.
+            auth_match = False
+            if auth_header:
+                parts = auth_header.split(" ", 1)
+                if len(parts) == 2 and parts[0].lower() == "bearer":
+                    auth_match = hmac.compare_digest(parts[1], expected_token)
+            token_match = (
+                hmac.compare_digest(query_token, expected_token) if query_token else False
+            )
+            if not auth_match and not token_match:
+                # Use a fresh ``time.monotonic()`` here rather than
+                # the ``now`` captured at function entry — a slow
+                # filesystem cert load (or a Python GIL stall under
+                # heavy load) can leave ``now`` minutes stale,
+                # making aged-out fail entries look fresh and
+                # mis-tripping the lockout window.
+                fail_bucket = self._auth_failures.get(client_ip)
+                if fail_bucket is None:
+                    fail_bucket = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
+                    self._auth_failures[client_ip] = fail_bucket
+                fail_bucket.append(time.monotonic())
+                logger.warning(
+                    "⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername
                 )
-                if not auth_match and not token_match:
-                    self._auth_failures.setdefault(client_ip, []).append(now)
-                    logger.warning(
-                        "⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername
-                    )
-                    return web.Response(status=401, text="Unauthorized: Invalid token")
-                else:
-                    _upgrade_authenticated = True
-                    # Successful auth — clear the bucket so a legitimate user
-                    # who fat-fingered the token a few times isn't locked out.
-                    self._auth_failures.pop(client_ip, None)
+                return web.Response(status=401, text="Unauthorized: Invalid token")
+            else:
+                _upgrade_authenticated = True
+                # Successful auth — clear the bucket so a legitimate user
+                # who fat-fingered the token a few times isn't locked out.
+                self._auth_failures.pop(client_ip, None)
 
         # Allow connections from localhost only (127.0.0.1 or localhost)
         # Use exact prefix matching to prevent subdomain bypass (e.g., evil-localhost.com)
@@ -562,13 +661,21 @@ class DashboardWebSocketServer:
         client_id = str(uuid.uuid4())[:8]
         logger.info("👋 Dashboard client connected: %s", client_id)
 
-        # Mark as authenticated if validated at upgrade time or no token required
-        if _upgrade_authenticated or not expected_token:
+        # Mark as authenticated if validated at upgrade time. The
+        # ``not expected_token`` branch is unreachable — the early
+        # return at line ~480 already rejects with 401 when the token
+        # is empty, so by the time we get here ``expected_token`` is
+        # guaranteed truthy. Drop the dead ``or not expected_token``
+        # so a future reader doesn't think the no-token path is
+        # supported.
+        if _upgrade_authenticated:
             self._authenticated_clients.add(client_id)
 
         try:
-            # Send welcome message
-            needs_auth = expected_token and not _upgrade_authenticated
+            # Send welcome message. ``needs_auth`` simplifies similarly:
+            # ``expected_token`` is always truthy here, so it's just
+            # ``not _upgrade_authenticated``.
+            needs_auth = not _upgrade_authenticated
             welcome_msg: dict[str, Any] = {
                 "type": "connected",
                 "client_id": client_id,
@@ -584,7 +691,12 @@ class DashboardWebSocketServer:
                 "available_providers": AVAILABLE_PROVIDERS,
                 "default_provider": DEFAULT_AI_PROVIDER,
             }
-            if API_FAILOVER_AVAILABLE:
+            # ``api_failover.get_status()`` exposes endpoint URLs, total
+            # request counts, and the last error message — none of which
+            # an unauthenticated client should see. Defer until after auth
+            # completes; clients that need it can re-request via the
+            # ``health_check_endpoint`` handler post-auth.
+            if API_FAILOVER_AVAILABLE and not needs_auth:
                 welcome_msg["api_failover"] = api_failover.get_status()
             await ws.send_json(welcome_msg)
 
@@ -618,7 +730,13 @@ class DashboardWebSocketServer:
                     # max_msg_size is sized for chat payloads (~43 MB) which
                     # is far too generous for an unauthenticated client.
                     # Enforce a 4 KiB cap until the client has authenticated.
-                    if isinstance(deadline_msg.data, str) and len(deadline_msg.data) > 4096:
+                    # Cover binary frames too — earlier code only checked
+                    # ``str`` data, so a client could ship arbitrarily-large
+                    # ``bytes`` frames before auth.
+                    if (
+                        isinstance(deadline_msg.data, (str, bytes, bytearray))
+                        and len(deadline_msg.data) > 4096
+                    ):
                         logger.warning(
                             "⚠️ Pre-auth message from %s exceeds 4 KiB cap (%d bytes)",
                             client_id,
@@ -649,7 +767,11 @@ class DashboardWebSocketServer:
                             # Record this attempt against the IP bucket so
                             # the upgrade-time check on the NEXT connection
                             # can reject before the WebSocket handshake.
-                            self._auth_failures.setdefault(client_ip, []).append(time.monotonic())
+                            fail_bucket = self._auth_failures.get(client_ip)
+                            if fail_bucket is None:
+                                fail_bucket = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
+                                self._auth_failures[client_ip] = fail_bucket
+                            fail_bucket.append(time.monotonic())
                             logger.warning("⚠️ Invalid auth token from client %s", client_id)
                             break
                     else:
@@ -679,10 +801,15 @@ class DashboardWebSocketServer:
                         # message types defined at class level.
                         if msg_type not in self.RATE_EXEMPT_MESSAGE_TYPES:
                             now = asyncio.get_running_loop().time()
-                            times = self._client_message_times.get(client_id, [])
-                            # Remove entries older than 60s
-                            times = [t for t in times if now - t < 60]
-                            self._client_message_times[client_id] = times
+                            times = self._client_message_times.get(client_id)
+                            if times is None:
+                                times = deque(maxlen=self.RATE_LIMIT_MESSAGES_PER_MINUTE)
+                                self._client_message_times[client_id] = times
+                            # ``popleft`` is O(1) per drop; the previous
+                            # list-comp + reassign was O(n) per inbound
+                            # message and dominated CPU under a flood.
+                            while times and now - times[0] >= 60:
+                                times.popleft()
                             if len(times) >= self.RATE_LIMIT_MESSAGES_PER_MINUTE:
                                 await ws.send_json(
                                     {
@@ -714,6 +841,27 @@ class DashboardWebSocketServer:
                         # client's ping/pong loop and triggers a forced reconnect,
                         # surfacing as "Not connected to AI server" mid-response.
                         if msg_type in ("message", "ai_edit_message"):
+                            # Per-client cap on simultaneously-running AI
+                            # tasks. Without this a single authenticated
+                            # client can fire 100+ ``message`` frames in a
+                            # row and spawn that many concurrent
+                            # ``claude -p`` subprocesses before any
+                            # downstream rate limit applies (the
+                            # ``_client_inflight`` cap inside
+                            # handle_chat_message only sees the task
+                            # AFTER create_task). Reject before spawning.
+                            current_inflight = sum(
+                                1 for t, cid in self._client_tasks.items()
+                                if cid == client_id and not t.done()
+                            )
+                            if current_inflight >= 4:
+                                await ws.send_json(
+                                    {
+                                        "type": "error",
+                                        "message": "Too many concurrent requests in flight",
+                                    }
+                                )
+                                continue
                             task = asyncio.create_task(
                                 self.handle_message(ws, data, client_id, msg_id=msg_id)
                             )
@@ -725,6 +873,19 @@ class DashboardWebSocketServer:
                             def _on_task_done(t: asyncio.Task[Any]) -> None:
                                 self._background_tasks.discard(t)
                                 self._client_tasks.pop(t, None)
+                                # Surface uncaught exceptions explicitly.
+                                # Without this, a handler error inside
+                                # handle_message disappears with only
+                                # Python's "Task exception was never
+                                # retrieved" warning at GC time, which
+                                # often loses the stack trace entirely.
+                                if not t.cancelled():
+                                    exc = t.exception()
+                                    if exc is not None:
+                                        logger.error(
+                                            "Background WS task failed",
+                                            exc_info=(type(exc), exc, exc.__traceback__),
+                                        )
 
                             task.add_done_callback(_on_task_done)
                         else:
@@ -742,6 +903,7 @@ class DashboardWebSocketServer:
             self._authenticated_clients.discard(client_id)
             self._client_message_times.pop(client_id, None)
             self._client_inflight.pop(client_id, None)
+            self._client_auth_failures.pop(client_id, None)
             # Cancel any chat/edit tasks still running for this client so they
             # don't keep streaming to a closed WS or holding subprocesses.
             cancelled: list[asyncio.Task[Any]] = []
@@ -855,17 +1017,38 @@ class DashboardWebSocketServer:
             # Re-auth or late auth via message — already handled at connect deadline,
             # but allow re-validation for token rotation.
             token = data.get("token", "")
-            expected = os.getenv("DASHBOARD_WS_TOKEN", "")
+            # ``.strip()`` matches the initial-handshake reader at line 498 —
+            # without symmetry, whitespace in .env would make re-auth diverge
+            # from initial auth (initial succeeds, re-auth fails or vice versa).
+            expected = os.getenv("DASHBOARD_WS_TOKEN", "").strip()
             if not expected:
                 # Reject empty-token re-auth: server with no token configured
                 # has already rejected the original handshake; a re-auth that
                 # would silently grant access if expected becomes "" is unsafe.
                 return
             if not hmac.compare_digest(str(token), expected):
-                logger.warning("⚠️ Invalid auth token from client %s", client_id)
+                fails = self._client_auth_failures.get(client_id, 0) + 1
+                self._client_auth_failures[client_id] = fails
+                logger.warning(
+                    "⚠️ Invalid auth token from client %s (failure %d/%d)",
+                    client_id,
+                    fails,
+                    self._MAX_REAUTH_FAILURES,
+                )
                 await ws.send_json({"type": "error", "message": "Invalid auth token"})
+                if fails >= self._MAX_REAUTH_FAILURES:
+                    # Hard-close so an attacker can't keep guessing on the
+                    # same socket. The connect-deadline IP throttle then
+                    # takes over for any reconnect attempts.
+                    logger.warning(
+                        "⚠️ Closing WS for client %s after %d failed re-auth attempts",
+                        client_id,
+                        fails,
+                    )
+                    await ws.close(code=4401, message=b"Too many failed auth attempts")
             else:
                 self._authenticated_clients.add(client_id)
+                self._client_auth_failures.pop(client_id, None)
                 logger.debug("✅ Client %s re-authenticated via message", client_id)
         elif msg_type == "update_provider":
             await self.handle_update_provider(ws, data)
@@ -926,6 +1109,18 @@ class DashboardWebSocketServer:
         CLAUDE_BACKEND=cli (uses Claude Code subscription instead of API key).
         """
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
+        if ai_provider not in VALID_AI_PROVIDERS:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_PROVIDER",
+                    "message": (
+                        f"Invalid ai_provider: {ai_provider!r} "
+                        f"(expected one of {sorted(VALID_AI_PROVIDERS)})"
+                    ),
+                }
+            )
+            return
 
         if ai_provider == "claude":
             if _CLAUDE_BACKEND == "cli":
@@ -944,9 +1139,24 @@ class DashboardWebSocketServer:
                 )
                 return
             if self.claude_client:
-                # Use latest client from failover manager (may have switched)
+                # Use latest client from failover manager (may have switched).
+                # ``get_client()`` can raise ``RuntimeError("No API endpoint
+                # configured")`` if all endpoints were dropped at runtime —
+                # surface that to the client instead of crashing the WS
+                # handler with a backend traceback.
                 if API_FAILOVER_AVAILABLE:
-                    self.claude_client = api_failover.get_client()
+                    try:
+                        self.claude_client = api_failover.get_client()
+                    except RuntimeError as cfg_err:
+                        logger.error("API failover get_client failed: %s", cfg_err)
+                        with contextlib.suppress(Exception):
+                            await ws.send_json(
+                                {
+                                    "type": "error",
+                                    "message": "ไม่มี API endpoint ที่พร้อมใช้งาน",
+                                }
+                            )
+                        return
                 await _handle_chat_message_claude(
                     ws,
                     data,
@@ -960,8 +1170,40 @@ class DashboardWebSocketServer:
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return
-            # ai_provider=claude but neither backend is configured — fall through
-            # to Gemini so the user still gets a reply instead of silent failure.
+            # ai_provider=claude but neither backend is configured. Surface
+            # the swap so the user knows Claude wasn't actually used, then
+            # fall through to Gemini. Previously this was silent — a user
+            # selecting Claude got Gemini output with no indication the
+            # provider had been switched, which is especially confusing for
+            # sensitive RP/long-context conversations where the choice matters.
+            await ws.send_json(
+                {
+                    "type": "info",
+                    "code": "PROVIDER_FALLBACK",
+                    "message": (
+                        "ℹ️ Claude backend is not configured; replying with "
+                        "Gemini instead."
+                    ),
+                }
+            )
+
+        # If Gemini also isn't configured (API_AI_DISABLED narrows
+        # VALID_AI_PROVIDERS to {"claude"} and the CLI bin disappeared at
+        # runtime), ``self.gemini_client`` is None and the handler below
+        # would crash inside the SDK with no user-facing message. Surface
+        # a clean error instead.
+        if self.gemini_client is None:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "NO_BACKEND_AVAILABLE",
+                    "message": (
+                        "ไม่มี AI backend พร้อมใช้งาน "
+                        "(Claude CLI/SDK ล้มเหลว และ Gemini ไม่ได้ตั้งค่า)"
+                    ),
+                }
+            )
+            return
 
         await _handle_chat_message(
             ws,
@@ -979,6 +1221,18 @@ class DashboardWebSocketServer:
         Routes to Gemini or Claude handler based on ai_provider field.
         """
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
+        if ai_provider not in VALID_AI_PROVIDERS:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_PROVIDER",
+                    "message": (
+                        f"Invalid ai_provider: {ai_provider!r} "
+                        f"(expected one of {sorted(VALID_AI_PROVIDERS)})"
+                    ),
+                }
+            )
+            return
 
         if ai_provider == "claude":
             if _CLAUDE_BACKEND == "cli":
@@ -1001,6 +1255,18 @@ class DashboardWebSocketServer:
                     stream_timeout=self.STREAM_TIMEOUT,
                 )
                 return
+            # Same silent-fallback footgun as ``handle_chat_message``; surface
+            # the swap before falling through to Gemini.
+            await ws.send_json(
+                {
+                    "type": "info",
+                    "code": "PROVIDER_FALLBACK",
+                    "message": (
+                        "ℹ️ Claude backend is not configured; editing with "
+                        "Gemini instead."
+                    ),
+                }
+            )
 
         await _handle_ai_edit_message(
             ws,
@@ -1064,11 +1330,20 @@ class DashboardWebSocketServer:
         """Update the AI provider for a conversation."""
         conversation_id = data.get("conversation_id")
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
-        if ai_provider not in ("gemini", "claude"):
+        # Use ``VALID_AI_PROVIDERS`` (frozenset from dashboard_config)
+        # instead of a hardcoded literal tuple. The chat/edit handlers
+        # already use it, so this site was the lone drift point — when
+        # a future provider gets added (or ``API_AI_DISABLED`` narrows
+        # the set to claude-only), the literal here would silently
+        # accept a now-invalid provider name.
+        if ai_provider not in VALID_AI_PROVIDERS:
             await ws.send_json(
                 {
                     "type": "error",
-                    "message": f"Invalid ai_provider: {ai_provider!r} (expected 'gemini' or 'claude')",
+                    "message": (
+                        f"Invalid ai_provider: {ai_provider!r} "
+                        f"(expected one of {sorted(VALID_AI_PROVIDERS)})"
+                    ),
                 }
             )
             return
@@ -1118,14 +1393,30 @@ class DashboardWebSocketServer:
         target = data.get("endpoint", "")
         try:
             ep_type = EndpointType(target)
-        except ValueError:
+        except (ValueError, TypeError):
+            # ``TypeError`` covers non-str ``target`` values — a buggy or
+            # malicious client could send a dict / list, which would crash
+            # the handler instead of returning a clean 4xx-equivalent.
             await ws.send_json({"type": "error", "message": f"Invalid endpoint: {target}"})
             return
 
         success = await api_failover.switch_endpoint(ep_type, reason="dashboard manual switch")
         if success:
-            # Recreate Claude client with new endpoint
-            self.claude_client = api_failover.get_client()
+            # Recreate Claude client with new endpoint. ``get_client`` raises
+            # RuntimeError if every endpoint is mis-configured — surface that
+            # as an error frame instead of letting it kill the WS task with an
+            # unhandled exception (previously the only sign was a stack trace
+            # in the bot log).
+            try:
+                self.claude_client = api_failover.get_client()
+            except RuntimeError as exc:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Cannot activate {target}: {exc}",
+                    }
+                )
+                return
             await ws.send_json(
                 {
                     "type": "api_endpoint_switched",
@@ -1149,7 +1440,9 @@ class DashboardWebSocketServer:
         if target:
             try:
                 ep_type = EndpointType(target)
-            except ValueError:
+            except (ValueError, TypeError):
+                # See companion handler above: a non-str ``target`` (dict /
+                # list / int) would crash with TypeError otherwise.
                 await ws.send_json({"type": "error", "message": f"Invalid endpoint: {target}"})
                 return
             result = await api_failover.health_check(ep_type)
@@ -1165,9 +1458,18 @@ class DashboardWebSocketServer:
 
     async def _on_endpoint_changed(self, new_endpoint: EndpointType, reason: str) -> None:
         """Called by api_failover when an auto-switch happens. Notify all connected clients."""
-        # Refresh our own Claude client
+        # Refresh our own Claude client. ``get_client`` raises RuntimeError if
+        # every endpoint is mis-configured — log and continue rather than let
+        # the broadcast callback crash the auto-switch path; clients still
+        # get the notification, just without our local client refresh.
         if API_FAILOVER_AVAILABLE:
-            self.claude_client = api_failover.get_client()
+            try:
+                self.claude_client = api_failover.get_client()
+            except RuntimeError:
+                logger.exception(
+                    "api_failover.get_client() raised during endpoint change to %s",
+                    new_endpoint.value,
+                )
 
         notification = {
             "type": "api_endpoint_switched",
@@ -1175,20 +1477,34 @@ class DashboardWebSocketServer:
             "reason": reason,
             **api_failover.get_status(),
         }
-        # Broadcast to all connected clients. Drop dead clients from the
-        # active set so subsequent broadcasts don't keep retrying them
-        # (silent loss + log spam previously).
-        dead: list[Any] = []
-        for client_ws in list(self.clients):
+        # Broadcast to all connected clients in parallel. Sequential
+        # awaits made the worst case = N × 2s timeout, so 20 stuck
+        # clients could block the failover-notify path for 40 seconds
+        # while real chat tasks waited on the same lock.
+        # ``_send_one`` catches every per-client exception internally
+        # and returns the exception object as its result, so the
+        # gather is invoked with ``return_exceptions=False`` (nothing
+        # can actually escape the inner ``try``). We still inspect each
+        # result individually below to drop dead WS handles.
+        clients_snapshot = list(self.clients)
+
+        async def _send_one(ws_client: Any) -> Any:
             try:
-                await asyncio.wait_for(client_ws.send_json(notification), timeout=2.0)
-            except (TimeoutError, ConnectionError, RuntimeError):
-                dead.append(client_ws)
-            except Exception as e:
-                logger.debug("Broadcast send failed for one client: %s", e)
-                dead.append(client_ws)
-        for ws in dead:
-            self.clients.discard(ws)
+                await asyncio.wait_for(ws_client.send_json(notification), timeout=2.0)
+                return None
+            except (TimeoutError, ConnectionError, RuntimeError) as exc:
+                return exc
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Broadcast send failed for one client: %s", exc)
+                return exc
+
+        results = await asyncio.gather(
+            *(_send_one(c) for c in clients_snapshot),
+            return_exceptions=False,
+        )
+        for ws_client, outcome in zip(clients_snapshot, results, strict=False):
+            if outcome is not None:
+                self.clients.discard(ws_client)
 
 
 # ============================================================================

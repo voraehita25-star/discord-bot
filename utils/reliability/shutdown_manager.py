@@ -59,6 +59,9 @@ class CleanupHandler:
     timeout: float = 5.0
     is_async: bool = False
     required: bool = True  # If True, failure is logged as error
+    # True if the callback declares a `stop_event` parameter it can poll to bail
+    # out early when its timeout fires (threads can't be force-killed).
+    wants_stop_event: bool = False
 
 
 @dataclass
@@ -201,6 +204,13 @@ class ShutdownManager:
         import inspect
 
         is_async = inspect.iscoroutinefunction(callback)
+        # Detect cooperative-cancellation opt-in: a handler declaring a
+        # `stop_event` parameter receives a threading.Event (positionally) that
+        # is set when its timeout fires, so a long cleanup can bail out.
+        try:
+            wants_stop_event = "stop_event" in inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            wants_stop_event = False
 
         handler = CleanupHandler(
             name=name,
@@ -209,6 +219,7 @@ class ShutdownManager:
             timeout=timeout,
             is_async=is_async,
             required=required,
+            wants_stop_event=wants_stop_event,
         )
 
         self._handlers.append(handler)
@@ -242,23 +253,40 @@ class ShutdownManager:
         not atomic and could be observed by other coroutines.
         """
         effective_timeout = handler.timeout if timeout is None else timeout
+        # Cooperative-cancellation signal. A handler that declared a `stop_event`
+        # parameter can poll it to bail out when its timeout fires. Threads can't
+        # be force-killed, so a NON-cooperative sync handler may keep running past
+        # the timeout — hence the contract: cleanup handlers must be fast +
+        # idempotent and must not mutate shared state after they return/time out.
+        stop_event = threading.Event()
         try:
             self.logger.info("🔄 Running cleanup: %s", handler.name)
 
             if handler.is_async:
-                await asyncio.wait_for(handler.callback(), timeout=effective_timeout)
+                coro = (
+                    handler.callback(stop_event)
+                    if handler.wants_stop_event
+                    else handler.callback()
+                )
+                await asyncio.wait_for(coro, timeout=effective_timeout)
             else:
                 # Run sync callback in executor.
                 loop = asyncio.get_running_loop()
-                await asyncio.wait_for(
-                    loop.run_in_executor(None, handler.callback), timeout=effective_timeout
-                )
+                if handler.wants_stop_event:
+                    fut = loop.run_in_executor(None, handler.callback, stop_event)
+                else:
+                    fut = loop.run_in_executor(None, handler.callback)
+                await asyncio.wait_for(fut, timeout=effective_timeout)
 
             self.logger.info("✅ Cleanup complete: %s", handler.name)
             self._state.handlers_run += 1
             return True
 
         except TimeoutError:
+            # Signal a cooperative handler to stop. A non-cooperative one keeps
+            # running on its executor thread (Python can't kill it) — see the
+            # contract noted where stop_event is created.
+            stop_event.set()
             msg = f"Cleanup timed out after {effective_timeout}s: {handler.name}"
             self._state.errors.append(msg)
             self._state.handlers_failed += 1
@@ -438,25 +466,28 @@ class ShutdownManager:
                 # than sum(timeouts) when many handlers are registered.
                 import threading as _thr
 
-                workers: list[tuple[Any, Any, _thr.Thread]] = []
+                workers: list[tuple[Any, Any, _thr.Thread, Any]] = []
                 for handler in self._handlers:
                     if handler.is_async:
                         continue
                     try:
+                        _stop = _thr.Event()
                         worker = _thr.Thread(
                             target=handler.callback,
+                            args=(_stop,) if handler.wants_stop_event else (),
                             name=f"atexit-{handler.name}",
                             daemon=True,
                         )
                         worker.start()
-                        workers.append((handler.name, handler.timeout, worker))
+                        workers.append((handler.name, handler.timeout, worker, _stop))
                     except Exception as shutdown_err:
                         logger.debug("Shutdown handler error (ignored): %s", shutdown_err)
 
-                for name, timeout, worker in workers:
+                for name, timeout, worker, _stop in workers:
                     try:
                         worker.join(timeout=timeout)
                         if worker.is_alive():
+                            _stop.set()  # ask a cooperative handler to bail out
                             # Daemon threads are killed mid-syscall when the
                             # interpreter exits, which can leave external
                             # state (open files, locks, sockets) inconsistent.

@@ -8,19 +8,38 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from google import genai
+
+# Guard the google-genai import — when the project runs in CLI-only mode the
+# google-genai package may not be installed (it's only required for the
+# embedding-based RAG path). An ImportError here would otherwise take down
+# the entire memory layer, including the in-memory fallbacks that don't
+# need embeddings at all.
+try:
+    from google import genai
+
+    _GENAI_AVAILABLE = True
+except ImportError:
+    genai = None  # type: ignore[assignment]
+    _GENAI_AVAILABLE = False
+    logger.warning(
+        "google-genai not installed; RAG embedding generation will be disabled "
+        "(install with `pip install google-genai` to re-enable)"
+    )
 
 try:
     from utils.database import db
@@ -31,7 +50,7 @@ except ImportError:
     _DB_AVAILABLE = False
     logger.warning("Database not available for RAG module")
 
-from datetime import timezone
+from datetime import datetime, timezone
 
 from ..data.constants import GEMINI_API_KEY
 
@@ -41,7 +60,12 @@ from ..data.constants import GEMINI_API_KEY
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FAISS_INDEX_DIR = _PROJECT_ROOT / "data" / "faiss"
 FAISS_INDEX_FILE = FAISS_INDEX_DIR / "index.bin"
-FAISS_ID_MAP_FILE = FAISS_INDEX_DIR / "id_map.npy"
+# JSON sidecar replaces the legacy ``.npy`` (which used
+# ``allow_pickle=True``). ``load_from_disk`` still reads the legacy file
+# for one cycle so existing deployments migrate transparently on first
+# save, but the canonical path is JSON to remove the pickle RCE surface.
+FAISS_ID_MAP_FILE = FAISS_INDEX_DIR / "id_map.json"
+_LEGACY_FAISS_ID_MAP_FILE = FAISS_INDEX_DIR / "id_map.npy"
 
 # Try to import FAISS for optimized vector search
 try:
@@ -217,14 +241,80 @@ class FAISSIndex:
         with self._lock:
             normalized = (vector / norm).reshape(1, -1).astype(np.float32)
             if not self._initialized:
-                # First vector - initialize index
-                self.index = faiss.IndexFlatIP(self.dimension)
-                self.index.add(normalized)
+                # First vector - initialize index. Append to id_map BEFORE
+                # the FAISS add so a MemoryError on append leaves the index
+                # untouched. (FAISS.add can also fail; on either path the
+                # invariant `index.ntotal == len(id_map)` must hold.)
                 self.id_map = [memory_id]
+                try:
+                    self.index = faiss.IndexFlatIP(self.dimension)
+                    self.index.add(normalized)
+                except Exception:
+                    self.id_map = []
+                    self.index = None
+                    raise
                 self._initialized = True
             else:
-                self.index.add(normalized)  # type: ignore[union-attr]
+                # Append to id_map first; if FAISS.add raises, roll the
+                # id_map entry back so the lengths stay aligned.
                 self.id_map.append(memory_id)
+                try:
+                    self.index.add(normalized)  # type: ignore[union-attr]
+                except Exception:
+                    self.id_map.pop()
+                    raise
+
+    def add_batch(self, vectors: list[np.ndarray], memory_ids: list[int]) -> int:
+        """Add many vectors in a single lock acquisition.
+
+        Used by reconcile paths where calling ``add_single`` per row would
+        starve concurrent searches by holding the lock thousands of times.
+        Returns the number of vectors actually added (skips wrong-dim and
+        zero-norm entries).
+        """
+        if not vectors:
+            return 0
+        if len(vectors) != len(memory_ids):
+            raise ValueError("add_batch: vectors and memory_ids length mismatch")
+
+        # Validate + normalize outside the lock so search isn't blocked
+        # during a multi-thousand-row reconcile.
+        good_vecs: list[np.ndarray] = []
+        good_ids: list[int] = []
+        for vec, mem_id in zip(vectors, memory_ids, strict=True):
+            if vec.size != self.dimension:
+                continue
+            norm = np.linalg.norm(vec)
+            if norm == 0:
+                continue
+            good_vecs.append((vec / norm).astype(np.float32))
+            good_ids.append(mem_id)
+
+        if not good_vecs:
+            return 0
+
+        stacked = np.vstack(good_vecs)
+        with self._lock:
+            if not self._initialized or self.index is None:
+                self.index = faiss.IndexFlatIP(self.dimension)
+                self.id_map = list(good_ids)
+                try:
+                    self.index.add(stacked)
+                except Exception:
+                    self.id_map = []
+                    self.index = None
+                    raise
+                self._initialized = True
+            else:
+                prev_len = len(self.id_map)
+                self.id_map.extend(good_ids)
+                try:
+                    self.index.add(stacked)
+                except Exception:
+                    # Roll the id_map back so ntotal == len(id_map) invariant holds.
+                    del self.id_map[prev_len:]
+                    raise
+        return len(good_ids)
 
     def save_to_disk(self) -> bool:
         """Save FAISS index to disk for persistence.
@@ -234,7 +324,12 @@ class FAISSIndex:
         2. Write completion marker
         3. Rename to final paths
 
-        This prevents inconsistent state if crash occurs between writes.
+        Each save also writes a per-save UUID into both the index sidecar
+        AND the id_map sidecar. ``load_from_disk`` cross-validates: if
+        the two UUIDs disagree, a torn save (crash between the two
+        ``replace(...)`` calls) is detected even when row counts happen
+        to coincide. Without the marker, an old id_map paired with a
+        new same-length index silently returns wrong memory_ids.
         """
         if not self._initialized or not FAISS_AVAILABLE:
             return False
@@ -245,34 +340,61 @@ class FAISSIndex:
 
                 # Atomic write pattern: write to temp, then rename
                 temp_index = FAISS_INDEX_FILE.with_suffix(".tmp")
-                temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.npy")
+                temp_id_map = FAISS_ID_MAP_FILE.with_suffix(".tmp.json")
                 transaction_marker = FAISS_INDEX_DIR / ".save_in_progress"
+                # Save-pairing UUID: written next to BOTH artefacts so a
+                # torn rename can be detected even when ntotal happens to
+                # match the stale id_map.
+                save_uuid_path = FAISS_INDEX_DIR / "save.uuid"
+                temp_uuid = save_uuid_path.with_suffix(".tmp")
+                save_uuid = uuid.uuid4().hex
 
                 # Create transaction marker
                 transaction_marker.write_text(str(time.time()), encoding="utf-8")
 
-                # Write to temp files first
+                # Write to temp files first; embed the UUID into the
+                # id_map sidecar via JSON. The previous numpy-pickle format
+                # (``np.save(... allow_pickle=True)`` + ``np.load(...
+                # allow_pickle=True)``) was a pickle-deserialization vector:
+                # anyone who could write to ``data/faiss`` could ship
+                # arbitrary Python code that executed on the next save/load
+                # cycle. JSON is bounded to data and removes that surface.
                 faiss.write_index(self.index, str(temp_index))
-                np.save(str(temp_id_map), np.array(self.id_map))
+                temp_id_map.write_text(
+                    json.dumps(
+                        {"save_uuid": save_uuid, "id_map": list(self.id_map)},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                temp_uuid.write_text(save_uuid, encoding="utf-8")
 
                 # Both files written successfully - now rename atomically
                 # Backup old files first (if they exist)
                 backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
-                backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+                backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.json")
+                backup_uuid = save_uuid_path.with_suffix(".bak")
 
                 if FAISS_INDEX_FILE.exists():
                     FAISS_INDEX_FILE.replace(backup_index)
                 if FAISS_ID_MAP_FILE.exists():
                     FAISS_ID_MAP_FILE.replace(backup_id_map)
+                if save_uuid_path.exists():
+                    save_uuid_path.replace(backup_uuid)
 
                 # Rename temp to final
                 temp_index.replace(FAISS_INDEX_FILE)
                 temp_id_map.replace(FAISS_ID_MAP_FILE)
+                temp_uuid.replace(save_uuid_path)
 
                 # Remove transaction marker and backups on success
                 transaction_marker.unlink(missing_ok=True)
                 backup_index.unlink(missing_ok=True)
                 backup_id_map.unlink(missing_ok=True)
+                backup_uuid.unlink(missing_ok=True)
+                # Remove the legacy pickled .npy now that we successfully
+                # wrote the JSON sidecar; one migration is enough.
+                _LEGACY_FAISS_ID_MAP_FILE.unlink(missing_ok=True)
 
                 logger.info("💾 Saved FAISS index to disk (%d vectors)", len(self.id_map))
                 return True
@@ -281,7 +403,8 @@ class FAISSIndex:
                 # Clean up temp files on failure
                 for temp_file in [
                     FAISS_INDEX_FILE.with_suffix(".tmp"),
-                    FAISS_ID_MAP_FILE.with_suffix(".tmp.npy"),
+                    FAISS_ID_MAP_FILE.with_suffix(".tmp.json"),
+                    (FAISS_INDEX_DIR / "save.uuid").with_suffix(".tmp"),
                     FAISS_INDEX_DIR / ".save_in_progress",
                 ]:
                     try:
@@ -298,22 +421,119 @@ class FAISSIndex:
 
         # Recovery: check for backup files from interrupted save
         backup_index = FAISS_INDEX_FILE.with_suffix(".bak")
-        backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.npy")
+        backup_id_map = FAISS_ID_MAP_FILE.with_suffix(".bak.json")
+        save_uuid_path = FAISS_INDEX_DIR / "save.uuid"
+        backup_uuid = save_uuid_path.with_suffix(".bak")
         if not FAISS_INDEX_FILE.exists() and backup_index.exists():
             logger.warning("🔄 Recovering FAISS index from backup (interrupted save detected)")
             try:
                 backup_index.replace(FAISS_INDEX_FILE)
                 if backup_id_map.exists():
                     backup_id_map.replace(FAISS_ID_MAP_FILE)
+                if backup_uuid.exists():
+                    backup_uuid.replace(save_uuid_path)
             except OSError:
                 logger.exception("Failed to recover FAISS backup")
 
-        if not FAISS_INDEX_FILE.exists() or not FAISS_ID_MAP_FILE.exists():
+        # Pick the freshest id_map source: prefer the canonical JSON, but
+        # fall back to the legacy ``.npy`` (pickle) one cycle so existing
+        # deployments migrate transparently. The legacy file is deleted on
+        # the next successful save.
+        id_map_path: Path | None = None
+        legacy_pickle_load = False
+        if FAISS_ID_MAP_FILE.exists():
+            id_map_path = FAISS_ID_MAP_FILE
+        elif _LEGACY_FAISS_ID_MAP_FILE.exists():
+            if os.getenv("RAG_ALLOW_LEGACY_PICKLE", "").strip().lower() not in ("1", "true", "yes"):
+                logger.error(
+                    "🚫 Legacy FAISS id_map .npy detected but RAG_ALLOW_LEGACY_PICKLE not set. "
+                    "Refusing to deserialize untrusted pickle. "
+                    "Delete %s to force a rebuild, or set RAG_ALLOW_LEGACY_PICKLE=1 if you trust the file.",
+                    _LEGACY_FAISS_ID_MAP_FILE,
+                )
+                return False
+            id_map_path = _LEGACY_FAISS_ID_MAP_FILE
+            legacy_pickle_load = True
+            logger.warning(
+                "🔄 Loading FAISS id_map from legacy .npy (pickle) — RAG_ALLOW_LEGACY_PICKLE opt-in. "
+                "It will be rewritten as JSON on the next save."
+            )
+
+        if not FAISS_INDEX_FILE.exists() or id_map_path is None:
             return False
 
         try:
             self.index = faiss.read_index(str(FAISS_INDEX_FILE))
-            self.id_map = np.load(str(FAISS_ID_MAP_FILE)).tolist()
+            id_map_uuid: str | None = None
+            if legacy_pickle_load:
+                # ``allow_pickle=True`` is the deserialization vector we are
+                # migrating AWAY from. Keep it gated to the one-time legacy
+                # path; new saves use JSON. The FAISS dir is already a
+                # private bot data directory, but pickle on any file an
+                # operator could touch is still a needless RCE surface.
+                raw_id_map = np.load(str(id_map_path), allow_pickle=True)
+                try:
+                    payload = raw_id_map.item()
+                except (ValueError, AttributeError):
+                    payload = None
+                if isinstance(payload, dict) and "id_map" in payload:
+                    self.id_map = list(payload["id_map"])
+                    id_map_uuid = payload.get("save_uuid")
+                else:
+                    self.id_map = raw_id_map.tolist()
+            else:
+                try:
+                    payload = json.loads(id_map_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    logger.exception("Failed to parse FAISS id_map JSON")
+                    return False
+                if isinstance(payload, dict) and isinstance(payload.get("id_map"), list):
+                    self.id_map = list(payload["id_map"])
+                    raw_uuid = payload.get("save_uuid")
+                    id_map_uuid = raw_uuid if isinstance(raw_uuid, str) else None
+                elif isinstance(payload, list):
+                    self.id_map = list(payload)
+                else:
+                    logger.error("FAISS id_map JSON has unexpected shape — rebuilding")
+                    return False
+
+            # Cross-check the per-save UUID. If the index file was
+            # renamed but the id_map rename didn't complete (or vice
+            # versa), the sidecar UUID will mismatch even when ntotal
+            # happens to coincide with len(id_map). The marker is the
+            # only way to catch that class of corruption.
+            on_disk_uuid: str | None = None
+            if save_uuid_path.exists():
+                try:
+                    on_disk_uuid = save_uuid_path.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    on_disk_uuid = None
+            if id_map_uuid is not None and on_disk_uuid is not None and id_map_uuid != on_disk_uuid:
+                logger.error(
+                    "🔥 FAISS save UUID mismatch (id_map=%s, sidecar=%s) — "
+                    "torn save detected; discarding on-disk state and rebuilding",
+                    id_map_uuid,
+                    on_disk_uuid,
+                )
+                self.index = None
+                self.id_map = []
+                return False
+
+            # Validate length match — a partial-rename crash between
+            # save_to_disk's two ``temp_*.replace(...)`` calls leaves a new
+            # index pointing at an old id_map (or vice versa). Detecting
+            # this here forces a rebuild instead of silently returning
+            # wrong memory ids on every future search.
+            if self.index.ntotal != len(self.id_map):
+                logger.error(
+                    "🔥 FAISS index/id_map length mismatch (%d vs %d) — "
+                    "discarding on-disk state and rebuilding from DB",
+                    self.index.ntotal,
+                    len(self.id_map),
+                )
+                self.index = None
+                self.id_map = []
+                return False
             self._initialized = True
             logger.info("📂 Loaded FAISS index from disk (%d vectors)", len(self.id_map))
             return True
@@ -337,11 +557,19 @@ class MemorySystem:
     # Maximum cache size to prevent unbounded memory growth
     MAX_CACHE_SIZE = 10000
 
+    # Per-channel snapshot of `get_all_rag_memories(channel_id)` so a
+    # busy channel doesn't re-pull the entire table on every hybrid
+    # search. The TTL is short enough that newly stored facts surface
+    # in the next query without operator action.
+    _ALL_MEMORIES_TTL_SECONDS = 30.0
+
     def __init__(self):
         self.client = None
         self._faiss_index: FAISSIndex | None = None
         self._index_built = False
         self._memories_cache: dict[int, dict] = {}  # id -> memory dict
+        # channel_id -> (expiry_monotonic, rows)
+        self._all_memories_cache: dict[int, tuple[float, list[Any]]] = {}
 
         # Debounced save state
         self._save_task: asyncio.Task | None = None
@@ -350,11 +578,28 @@ class MemorySystem:
         # Lock for index building to prevent race conditions
         self._index_lock = asyncio.Lock()
 
-        if GEMINI_API_KEY:
+        # Skip Gemini client init under CLAUDE_BACKEND=cli. Gemini is
+        # paid-API-only; with the client unset, ``generate_embedding``
+        # returns None and ``hybrid_search`` falls through to its
+        # keyword-only path. New memories can still be stored — they
+        # just won't get a vector and won't show up in semantic search
+        # until the user re-enables CLAUDE_BACKEND=api.
+        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+            logger.info(
+                "🚫 RAG embedding (Gemini) disabled (CLAUDE_BACKEND=cli) — "
+                "hybrid search degrades to keyword-only; new memories "
+                "won't be vector-indexed."
+            )
+        elif GEMINI_API_KEY and _GENAI_AVAILABLE:
             try:
                 self.client = genai.Client(api_key=GEMINI_API_KEY)
             except Exception:
                 logger.exception("Failed to init Gemini Client for RAG")
+        elif GEMINI_API_KEY and not _GENAI_AVAILABLE:
+            logger.warning(
+                "GEMINI_API_KEY is set but google-genai is not installed; "
+                "RAG embeddings will be disabled."
+            )
 
     def _evict_cache_if_needed(self) -> None:
         """Evict oldest entries from cache if over MAX_CACHE_SIZE."""
@@ -381,6 +626,55 @@ class MemorySystem:
             "index_size": len(self._faiss_index.id_map) if self._faiss_index else 0,
             "client_ready": self.client is not None,
         }
+
+    async def _get_all_memories_cached(self, channel_id: int | None) -> list[Any]:
+        """Return ``get_all_rag_memories(channel_id)`` with a TTL cache.
+
+        Hot channels were re-fetching every memory row on every search
+        before — even back-to-back queries pulled the same 10K rows. The
+        TTL is short enough that newly-stored memories show up in the
+        next query without operator action.
+
+        ``channel_id=None`` skips the cache because that path crosses
+        every channel and a single shared snapshot would let one channel
+        starve out fresh reads for all the others.
+        """
+        now = time.monotonic()
+        if channel_id is not None:
+            cached = self._all_memories_cache.get(channel_id)
+            if cached is not None and cached[0] > now:
+                # Return a SHALLOW COPY of the cached list so callers
+                # that mutate the result (filter/sort in place) don't
+                # corrupt the cache for the next reader. The previous
+                # shape returned the live cache list and a single
+                # in-place ``.sort()`` would persist into every future
+                # cache hit.
+                return list(cached[1])
+
+        try:
+            rows = await asyncio.wait_for(
+                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
+            )
+        except TimeoutError:
+            logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
+            return []
+        rows = list(rows or [])
+        if channel_id is not None:
+            self._all_memories_cache[channel_id] = (now + self._ALL_MEMORIES_TTL_SECONDS, rows)
+        # Same defensive copy on cache-miss return so callers can mutate
+        # freely without aliasing into the cache.
+        return list(rows)
+
+    def invalidate_all_memories_cache(self, channel_id: int | None = None) -> None:
+        """Drop the cached `get_all_rag_memories` snapshot.
+
+        Called after a write so the next read picks up new rows
+        immediately rather than waiting for the TTL to expire.
+        """
+        if channel_id is None:
+            self._all_memories_cache.clear()
+        else:
+            self._all_memories_cache.pop(channel_id, None)
 
     async def generate_embedding(self, text: str) -> np.ndarray | None:
         """Generate vector embedding for text using Gemini API."""
@@ -516,10 +810,18 @@ class MemorySystem:
                     # so a multi-million-row table doesn't OOM startup —
                     # entries beyond the cap get pulled lazily on demand.
                     if _DB_AVAILABLE and db is not None:
-                        all_memories = await asyncio.wait_for(
-                            db.get_all_rag_memories(None),
-                            timeout=_DB_QUERY_TIMEOUT,
-                        )
+                        try:
+                            all_memories = await asyncio.wait_for(
+                                db.get_all_rag_memories(None),
+                                timeout=_DB_QUERY_TIMEOUT,
+                            )
+                        except TimeoutError:
+                            # FAISS already loaded from disk — _index_built stays True.
+                            # Cache stays cold; lazy-load fills it on first hit.
+                            logger.warning(
+                                "RAG cache eager-load timed out; falling back to lazy population"
+                            )
+                            return
                         eager_load_cap = max(self.MAX_CACHE_SIZE, 1000)
                         for mem in all_memories[:eager_load_cap]:
                             mem_id = mem.get("id")
@@ -541,23 +843,38 @@ class MemorySystem:
                         # Run the per-vector add in a thread so we don't pin the
                         # event loop on a large reconcile (100k orphans times
                         # locked add_single previously blocked for seconds).
-                        existing_ids = set(self._faiss_index.id_map)
+                        # Capture a non-None local so the worker thread doesn't
+                        # have to re-narrow self._faiss_index, and to defend
+                        # against an unrelated reset clearing the attribute
+                        # mid-reconcile.
+                        faiss_index = self._faiss_index
+                        existing_ids = set(faiss_index.id_map)
 
                         def _reconcile_sync() -> int:
-                            count = 0
+                            # Collect all orphan vectors first WITHOUT touching
+                            # the FAISS lock. Then add them all in one batch
+                            # so search threads only see a single brief lock
+                            # hold instead of N per-row holds.
+                            orphan_vecs: list[np.ndarray] = []
+                            orphan_ids: list[int] = []
                             for mem in all_memories:
                                 mem_id = mem.get("id")
                                 if mem_id is None or mem_id in existing_ids:
                                     continue
                                 try:
                                     vec = np.frombuffer(mem["embedding"], dtype=np.float32)
-                                    if len(vec) != EMBEDDING_DIM:
-                                        continue
-                                    self._faiss_index.add_single(vec, mem_id)
-                                    count += 1
                                 except (ValueError, TypeError, KeyError) as e:
                                     logger.debug("Skipping unreconcilable memory %s: %s", mem_id, e)
-                            return count
+                                    continue
+                                orphan_vecs.append(vec)
+                                orphan_ids.append(mem_id)
+                            if not orphan_vecs:
+                                return 0
+                            try:
+                                return faiss_index.add_batch(orphan_vecs, orphan_ids)
+                            except Exception:
+                                logger.exception("FAISS batch reconcile failed")
+                                return 0
 
                         reconciled = await asyncio.to_thread(_reconcile_sync)
                         if reconciled:
@@ -574,12 +891,31 @@ class MemorySystem:
             # Build from database (slow path)
             # Load ALL memories (not just one channel) since FAISS index is global
             if not _DB_AVAILABLE or db is None:
+                # Mark the index as "built" with whatever empty/in-memory
+                # state we have so the next ``_ensure_index`` call
+                # doesn't re-enter this branch on every search. Without
+                # this flag flip, every single hybrid_search call
+                # re-acquired the lock + re-checked DB availability,
+                # busy-looping the lock at search rate.
+                self._index_built = True
                 return
 
-            all_memories = await asyncio.wait_for(
-                db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT
-            )
+            try:
+                all_memories = await asyncio.wait_for(
+                    db.get_all_rag_memories(None), timeout=_DB_QUERY_TIMEOUT
+                )
+            except TimeoutError:
+                # Mark as "built" with empty state so we don't re-enter this
+                # branch on every search and re-time-out. The next periodic
+                # rebuild (or an explicit ``_invalidate_index``) gets us back.
+                logger.warning(
+                    "RAG full-rebuild DB query timed out; marking index as built-empty"
+                )
+                self._index_built = True
+                return
             if not all_memories:
+                # Same flag flip — empty DB is a valid "built" state.
+                self._index_built = True
                 return
 
             if len(all_memories) > MAX_RAG_REBUILD:
@@ -631,7 +967,11 @@ class MemorySystem:
             try:
                 await asyncio.sleep(delay)
                 if self._faiss_index and self._index_built:
-                    self._faiss_index.save_to_disk()
+                    # Run the synchronous save on a worker thread —
+                    # ``save_to_disk`` calls ``faiss.write_index`` and
+                    # ``np.save`` which can block the event loop for
+                    # 100-500ms on large indices.
+                    await asyncio.to_thread(self._faiss_index.save_to_disk)
             except asyncio.CancelledError:
                 raise  # Re-raise to properly handle cancellation
 
@@ -645,7 +985,7 @@ class MemorySystem:
                 try:
                     await asyncio.sleep(interval)
                     if self._faiss_index and self._index_built:
-                        self._faiss_index.save_to_disk()
+                        await asyncio.to_thread(self._faiss_index.save_to_disk)
                 except asyncio.CancelledError:
                     # Task was cancelled, exit gracefully
                     break
@@ -679,7 +1019,7 @@ class MemorySystem:
     async def force_save_index(self) -> bool:
         """Force immediate save of FAISS index (useful for shutdown)."""
         if self._faiss_index and self._index_built:
-            return self._faiss_index.save_to_disk()
+            return await asyncio.to_thread(self._faiss_index.save_to_disk)
         return False
 
     async def add_memory(self, content: str, channel_id: int | None = None) -> bool:
@@ -692,17 +1032,41 @@ class MemorySystem:
         if embedding is None:
             return False
 
+        # Validate the embedding BEFORE writing to DB so a wrong-shape or
+        # zero-norm vector doesn't produce a permanent DB orphan that fails
+        # to re-index on every subsequent rebuild.
+        if embedding.size != EMBEDDING_DIM:
+            logger.warning(
+                "add_memory: embedding dim %d != expected %d — refusing to save",
+                embedding.size,
+                EMBEDDING_DIM,
+            )
+            return False
+        if float(np.linalg.norm(embedding)) == 0.0:
+            logger.warning("add_memory: embedding is zero-norm — refusing to save")
+            return False
+
         embedding_bytes = embedding.tobytes()
 
-        # Hold _index_lock around BOTH DB save and FAISS update so a
-        # concurrent _ensure_index rebuild cannot read the DB row in
-        # between, miss the FAISS entry, and leave the in-memory index
-        # out of sync. The DB layer has its own serialisation; the brief
-        # extra contention is worth the consistency.
+        # DB save is the slow op (sqlite WAL fsync); run it WITHOUT the
+        # index lock so concurrent search/_ensure_index calls aren't
+        # blocked by disk I/O. Then take the lock for the brief FAISS
+        # update.
+        #
+        # Race note: a concurrent ``_ensure_index`` rebuild can run
+        # between the DB save and the FAISS add. That's safe because
+        # ``_ensure_index`` reads ALL rows from the DB — the just-saved
+        # row will be included, so the rebuild picks it up. The
+        # FAISS add below would then add a duplicate entry; the
+        # ``add_single`` path dedupes on ``id_map`` so the dup is
+        # silently dropped. (The previous "hold lock across both"
+        # shape blocked search for the entire DB write window — the
+        # consistency win there wasn't worth the latency hit.)
+        result = await db.save_rag_memory(
+            content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
+        )
+
         async with self._index_lock:
-            result = await db.save_rag_memory(
-                content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
-            )
             if FAISS_AVAILABLE and self._faiss_index and self._index_built:
                 memory_id = result if isinstance(result, int) and result > 0 else None
                 if memory_id is not None:
@@ -726,6 +1090,11 @@ class MemorySystem:
                 else:
                     logger.warning("⚠️ RAG memory saved to DB but got invalid ID: %s", result)
 
+        # Drop the cached snapshot so the next hybrid_search picks up
+        # this row instead of waiting for the TTL.
+        if channel_id is not None:
+            self.invalidate_all_memories_cache(channel_id)
+
         logger.info("🧠 Saved RAG memory: %s...", content[:30])
         return True
 
@@ -735,8 +1104,6 @@ class MemorySystem:
         Returns value between 0 and 1, where 1 is most recent.
         """
         try:
-            from datetime import datetime
-
             created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
             # Always use timezone.utc for consistent comparison, avoiding timezone issues
             if created.tzinfo is None:
@@ -820,7 +1187,13 @@ class MemorySystem:
                     jaccard += 0.3
 
                 if jaccard > 0:
-                    scored.append((mem.get("id", -1), jaccard))
+                    # Skip rows with a missing id — using -1 as a fallback key
+                    # would collide every unknown row into one bucket and the
+                    # subsequent merge could pick the wrong content.
+                    mem_id = mem.get("id")
+                    if mem_id is None or mem_id == -1:
+                        continue
+                    scored.append((mem_id, jaccard))
 
         # Sort by score
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -883,14 +1256,11 @@ class MemorySystem:
         if not _DB_AVAILABLE or db is None:
             return []
 
-        # Get all memories for keyword search
-        try:
-            all_memories = await asyncio.wait_for(
-                db.get_all_rag_memories(channel_id), timeout=_DB_QUERY_TIMEOUT
-            )
-        except TimeoutError:
-            logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
-            return []
+        # Get all memories for keyword search. Cached per-channel with
+        # a short TTL — a chatty channel was previously re-pulling the
+        # entire RAG table on every query, which dominated the search
+        # path for high-memory channels.
+        all_memories = await self._get_all_memories_cached(channel_id)
         if not all_memories:
             return []
 
@@ -899,14 +1269,15 @@ class MemorySystem:
         # collapse multiple anonymous rows onto the same slot and silently
         # overwrite each other.
         MAX_CACHE_BATCH = 500
-        # Evict BEFORE the bulk append so a large batch can't briefly push
-        # the cache to MAX_CACHE_BATCH + MAX_CACHE_SIZE before eviction.
-        self._evict_cache_if_needed()
         for mem in all_memories[:MAX_CACHE_BATCH]:
             mem_id = mem.get("id")
             if mem_id is None:
                 continue
             self._memories_cache[mem_id] = mem
+        # Evict AFTER the bulk insert — the previous order let a steady
+        # stream of queries keep the cache permanently above the cap by
+        # always inserting more than was reclaimed.
+        self._evict_cache_if_needed()
 
         # Semantic search
         semantic_results = []
@@ -965,8 +1336,6 @@ class MemorySystem:
                 decay = self._calculate_time_decay(created_at)
                 final_score *= decay
                 try:
-                    from datetime import datetime
-
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     # Coerce naive timestamps (legacy rows written before
                     # the tz-aware migration) to UTC so we don't raise
@@ -980,7 +1349,11 @@ class MemorySystem:
 
             results.append(
                 MemoryResult(
-                    content=mem["content"],
+                    # Use ``.get`` with an empty-string default so a row
+                    # missing the ``content`` key (e.g. a corrupted historic
+                    # record) doesn't raise KeyError and abort the entire
+                    # hybrid-search response.
+                    content=mem.get("content", ""),
                     score=final_score,
                     memory_id=mem_id,
                     source=source,

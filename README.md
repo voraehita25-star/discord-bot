@@ -70,10 +70,13 @@ python bot.py
 | Variable | Required | Description |
 | -------- | -------- | ----------- |
 | `DISCORD_TOKEN` | ✅ | Discord bot token |
-| `ANTHROPIC_API_KEY` | ⚠️ | Anthropic API key. Required for the Discord AI cog. Optional for the dashboard chat when `CLAUDE_BACKEND=cli`. |
-| `CLAUDE_BACKEND` | ❌ | Dashboard Claude backend: `api` (default — anthropic SDK + per-token billing) or `cli` (spawn `claude -p`, uses your Claude Code Max subscription quota — no per-token charge). |
+| `ANTHROPIC_API_KEY` | ⚠️ | Anthropic API key. Only required when `CLAUDE_BACKEND=api`. The default `cli` mode reads credentials from your Claude Code login instead. |
+| `CLAUDE_BACKEND` | ❌ | Claude backend mode: `cli` (default — spawn `claude -p`, uses your Claude Code Max subscription quota, no per-token charge) or `api` (anthropic SDK + per-token billing, enables Discord-side AI replies + memory consolidator + summarizer). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | Only needed for `CLAUDE_BACKEND=cli` when the bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
-| `GEMINI_API_KEY` | ❌ | Google Gemini API key for embeddings/RAG |
+| `GEMINI_API_KEY` | ❌ | Google Gemini API key for embeddings/RAG (only used when `CLAUDE_BACKEND=api`). |
+| `RAG_ALLOW_LEGACY_PICKLE` | ❌ | Opt-in flag to load pre-v3.3 FAISS `.npy` (pickle) sidecar files. Off by default — pickle deserialization is an RCE sink. Only enable when migrating a trusted old deployment. |
+| `BOT_MEMORY_WARNING_MB` | ❌ | Soft memory threshold in MiB (default: 1024). Tune per-host. |
+| `BOT_MEMORY_CRITICAL_MB` | ❌ | Hard memory threshold in MiB (default: 1536). |
 | `CREATOR_ID` | ✅ | Your Discord user ID |
 | `SPOTIPY_CLIENT_ID` | ❌ | Spotify API client ID |
 | `SPOTIPY_CLIENT_SECRET` | ❌ | Spotify API secret |

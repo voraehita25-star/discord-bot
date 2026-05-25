@@ -105,6 +105,9 @@ class TestEndpointHealth:
 
 class TestAPIFailoverManagerInit:
     def test_initialize_with_direct_only(self, monkeypatch):
+        # CLAUDE_BACKEND=cli short-circuits initialize(); these tests
+        # exercise the API-mode codepath so opt back into it explicitly.
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
         monkeypatch.setenv("ANTHROPIC_DIRECT_API_KEY", "direct-key")
         monkeypatch.delenv("ANTHROPIC_PROXY_API_KEY", raising=False)
         m = APIFailoverManager()
@@ -114,6 +117,7 @@ class TestAPIFailoverManagerInit:
         assert m.has_failover is False
 
     def test_initialize_with_both_endpoints(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
         monkeypatch.setenv("ANTHROPIC_DIRECT_API_KEY", "direct-key")
         monkeypatch.setenv("ANTHROPIC_PROXY_API_KEY", "proxy-key")
         monkeypatch.setenv("ANTHROPIC_PROXY_BASE_URL", "https://proxy.example/v1")
@@ -124,6 +128,7 @@ class TestAPIFailoverManagerInit:
         assert m.has_failover is True
 
     def test_initialize_idempotent(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
         monkeypatch.setenv("ANTHROPIC_DIRECT_API_KEY", "direct-key")
         m = APIFailoverManager()
         m.initialize()
@@ -133,6 +138,7 @@ class TestAPIFailoverManagerInit:
 
 class TestGetStatus:
     def test_status_reports_endpoints(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
         monkeypatch.setenv("ANTHROPIC_DIRECT_API_KEY", "direct-key")
         m = APIFailoverManager()
         m.initialize()

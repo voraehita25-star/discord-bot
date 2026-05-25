@@ -86,7 +86,13 @@ class Fact:
         for key in ["first_mentioned", "last_confirmed"]:
             if data.get(key) and isinstance(data[key], str):
                 try:
-                    data[key] = datetime.fromisoformat(data[key])
+                    # Strip the trailing ``Z`` so legacy ISO timestamps
+                    # written via ``isoformat() + "Z"`` parse cleanly on
+                    # Python < 3.11 fromisoformat. Without this, those
+                    # rows silently lose their datetime on rehydration.
+                    data[key] = datetime.fromisoformat(
+                        data[key].replace("Z", "+00:00")
+                    )
                 except ValueError:
                     data[key] = None
         # Filter to only known fields to avoid TypeError on unknown keys
@@ -106,6 +112,13 @@ class Fact:
         decay_rate = 0.1
         decay_periods = days / 30
         return max(0.1, 1.0 - (decay_rate * decay_periods))
+
+
+# Hard cap on the input length we run the extraction regex set against.
+# Several patterns use unanchored ``(.+?)`` with alternation tails which
+# is a ReDoS surface on adversarially long inputs; truncating bounds
+# the worst-case backtracking cost without losing realistic content.
+_MAX_FACT_EXTRACTION_LEN = 4096
 
 
 class FactExtractor:
@@ -154,14 +167,19 @@ class FactExtractor:
             ImportanceLevel.HIGH,
         ),
         (r"(?:ผม|ฉัน)อายุ\s*(\d+)", FactCategory.PERSONAL, ImportanceLevel.MEDIUM),
-        # Preference patterns
+        # Preference patterns. The lazy ``(.+?)`` followed by
+        # ``(?:มาก|$)`` previously matched the smallest possible string
+        # (often 1 char) — useless 2-char "facts" got captured then
+        # filtered out at the length-cap check, wasting work. Anchor
+        # on a sentence-end punctuation set OR ``มาก`` so we capture a
+        # real preference noun phrase.
         (
-            r"(?:ผม|ฉัน|ชั้น)(?:ชอบ|รัก|โปรด)\s*(.+?)(?:มาก|$)",
+            r"(?:ผม|ฉัน|ชั้น)(?:ชอบ|รัก|โปรด)\s+(.+?)(?:\s*มาก|[.!?\n]|$)",
             FactCategory.PREFERENCE,
             ImportanceLevel.MEDIUM,
         ),
         (
-            r"(?:ผม|ฉัน|ชั้น)(?:ไม่ชอบ|เกลียด)\s*(.+?)(?:มาก|$)",
+            r"(?:ผม|ฉัน|ชั้น)(?:ไม่ชอบ|เกลียด)\s+(.+?)(?:\s*มาก|[.!?\n]|$)",
             FactCategory.PREFERENCE,
             ImportanceLevel.MEDIUM,
         ),
@@ -187,8 +205,16 @@ class FactExtractor:
             ImportanceLevel.HIGH,
         ),
         (r"(?:ผม|ฉัน)(?:เรียน|ศึกษา)\s*(.+?)(?:อยู่|$)", FactCategory.PERSONAL, ImportanceLevel.MEDIUM),
-        # Skill patterns
-        (r"(?:ผม|ฉัน)(?:เป็น|เก่ง)(?:เรื่อง)?\s*(.+?)(?:$)", FactCategory.SKILL, ImportanceLevel.MEDIUM),
+        # Skill patterns. ``(.+?)$`` was effectively ``(.+)`` once lazy
+        # backtracking had to reach the end-of-string anchor — captured
+        # the entire rest of the message as a "skill". Bound to a
+        # sentence-terminating punctuation set so a normal sentence
+        # produces a normal-sized capture.
+        (
+            r"(?:ผม|ฉัน)(?:เป็น|เก่ง)(?:เรื่อง)?\s+(.+?)(?:[.!?\n]|$)",
+            FactCategory.SKILL,
+            ImportanceLevel.MEDIUM,
+        ),
         (
             r"(?:i know|i can|i\'m good at)\s+(.+?)(?:\s|$|\.)",
             FactCategory.SKILL,
@@ -222,6 +248,15 @@ class FactExtractor:
         """
         facts = []
         now = datetime.now(tz=timezone.utc)
+
+        # Cap message length before regex evaluation. Several extraction
+        # patterns use unanchored ``(.+?)`` with alternation tails — on
+        # adversarially long input this is a ReDoS vector. 4096 bytes
+        # is plenty for normal user messages and bounds the worst-case
+        # backtracking cost. Truncate from the END so a "remember that
+        # …" pattern at message tail still matches when present.
+        if len(message) > _MAX_FACT_EXTRACTION_LEN:
+            message = message[:_MAX_FACT_EXTRACTION_LEN]
 
         for pattern, category, importance in self._compiled_patterns:
             matches = pattern.findall(message)
@@ -278,13 +313,50 @@ class LongTermMemory:
         self._cache: OrderedDict[int, list[Fact]] = OrderedDict()
         self._next_cache_id: int = 0  # monotonic counter for cache-only IDs
         self._lock = asyncio.Lock()
+        # Per-user lock guarding ``add_explicit_fact`` AND
+        # ``process_message``. Separate from ``self._lock`` because the
+        # storage helpers (``_store_fact`` / ``_update_fact_confirmation``)
+        # already lock and asyncio.Lock is not reentrant. The schema has
+        # no UNIQUE(user_id, content) constraint, so two concurrent
+        # ``process_message`` calls for the same user could both miss the
+        # similarity check and double-insert — this lock closes that
+        # window without touching schema migrations.
+        self._explicit_fact_locks: dict[int, asyncio.Lock] = {}
+
+    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
+        """Return the per-user asyncio Lock, creating it on demand.
+
+        Uses ``setdefault`` with a small sentinel-then-replace shape so
+        the rare race where two coroutines hit a missing key simultaneously
+        still ends up sharing one Lock — the loser's freshly-built Lock
+        is discarded immediately.
+        """
+        lock = self._explicit_fact_locks.get(user_id)
+        if lock is not None:
+            return lock
+        # Bound growth: this dict otherwise keeps one Lock per distinct user
+        # forever (a slow leak on a long-running bot). When it grows large,
+        # drop locks that aren't currently held — they're idle and a fresh one
+        # is created on demand. A held lock is in active use, so it's kept.
+        if len(self._explicit_fact_locks) >= 10_000:
+            for uid in [u for u, lk in self._explicit_fact_locks.items() if not lk.locked()]:
+                del self._explicit_fact_locks[uid]
+        new_lock = asyncio.Lock()
+        existing = self._explicit_fact_locks.setdefault(user_id, new_lock)
+        return existing
 
     async def init_schema(self) -> None:
         """Initialize database schema for facts."""
         if not DB_AVAILABLE or db is None:
             return
 
-        async with db.get_connection() as conn:
+        # DDL must route through the single-writer connection; otherwise two
+        # cogs racing through ``init_schema`` against a fresh DB can both
+        # see "table doesn't exist" and run CREATE TABLE concurrently.
+        # SQLite serialises the actual CREATE but cross-connection DDL
+        # under WAL has historically surfaced "database is locked" on
+        # Windows. ``get_write_connection`` routes via the writer lock.
+        async with db.get_write_connection() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_facts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,24 +407,40 @@ class LongTermMemory:
         if not extracted:
             return []
 
-        stored_facts = []
-        for fact in extracted:
-            # Check for duplicates
-            existing = await self._find_similar_fact(user_id, fact.content)
+        # Serialize concurrent ``process_message`` calls for the SAME user
+        # so two near-simultaneous messages can't both miss the dedup
+        # check and both insert. The schema has no UNIQUE constraint on
+        # ``(user_id, content)``, so the lock is the only defence.
+        async with self._get_user_lock(user_id):
+            # Fetch the user's existing fact list ONCE — _find_similar_fact
+            # used to re-fetch on every loop iteration, which is O(N²) on
+            # the DB read for a single message that extracts N facts.
+            existing_facts = await self.get_user_facts(user_id)
 
-            if existing:
-                # Update existing fact
-                await self._update_fact_confirmation(existing)
-                self.logger.debug("Updated existing fact: %s", existing.content[:30])
-            else:
-                # Store new fact
-                fact_id = await self._store_fact(fact)
-                if fact_id:
-                    fact.id = fact_id
-                    stored_facts.append(fact)
-                    self.logger.info("Stored new fact: [%s] %s", fact.category, fact.content[:50])
+            stored_facts = []
+            for fact in extracted:
+                # Check for duplicates against the snapshot taken above. New
+                # facts stored within this loop don't deduplicate against
+                # each other in the same call, but the extractor already
+                # de-dupes its own output before returning.
+                existing = self._find_similar_fact_in(existing_facts, fact.content)
 
-        return stored_facts
+                if existing:
+                    # Update existing fact
+                    await self._update_fact_confirmation(existing)
+                    self.logger.debug("Updated existing fact: %s", existing.content[:30])
+                else:
+                    # Store new fact
+                    fact_id = await self._store_fact(fact)
+                    if fact_id:
+                        fact.id = fact_id
+                        stored_facts.append(fact)
+                        existing_facts.append(fact)
+                        self.logger.info(
+                            "Stored new fact: [%s] %s", fact.category, fact.content[:50]
+                        )
+
+            return stored_facts
 
     async def add_explicit_fact(
         self,
@@ -373,28 +461,33 @@ class LongTermMemory:
         Returns:
             Stored fact or None if duplicate
         """
-        # Check for duplicates
-        existing = await self._find_similar_fact(user_id, content)
-        if existing:
-            await self._update_fact_confirmation(existing)
-            return existing
+        # Serialize concurrent ``add_explicit_fact`` calls for the SAME
+        # user so two near-simultaneous calls (e.g. user double-clicking
+        # a "remember this" button) don't both see "no duplicate" and
+        # both insert. Uses the same per-user lock as ``process_message``
+        # so the two paths can't double-insert through each other either.
+        async with self._get_user_lock(user_id):
+            existing = await self._find_similar_fact(user_id, content)
+            if existing:
+                await self._update_fact_confirmation(existing)
+                return existing
 
-        now = datetime.now(tz=timezone.utc)
-        fact = Fact(
-            user_id=user_id,
-            channel_id=channel_id,
-            category=category,
-            content=content,
-            importance=ImportanceLevel.CRITICAL.value,
-            first_mentioned=now,
-            last_confirmed=now,
-            is_user_defined=True,
-        )
+            now = datetime.now(tz=timezone.utc)
+            fact = Fact(
+                user_id=user_id,
+                channel_id=channel_id,
+                category=category,
+                content=content,
+                importance=ImportanceLevel.CRITICAL.value,
+                first_mentioned=now,
+                last_confirmed=now,
+                is_user_defined=True,
+            )
 
-        fact_id = await self._store_fact(fact)
-        if fact_id:
-            fact.id = fact_id
-            return fact
+            fact_id = await self._store_fact(fact)
+            if fact_id:
+                fact.id = fact_id
+                return fact
 
         return None
 
@@ -482,8 +575,38 @@ class LongTermMemory:
             cursor = await conn.execute(query, params)
             rows = await cursor.fetchall()
 
+        def _parse_ts(value: str | None) -> datetime | None:
+            """Parse a stored timestamp, normalising to tz-aware UTC.
+
+            ``isoformat()``-written rows already carry ``+00:00``; rows
+            written via SQLite's ``DEFAULT CURRENT_TIMESTAMP`` come back
+            naive. Mixed sets used to crash ``get_context_facts`` when it
+            subtracted a naive value from a tz-aware ``now``.
+            """
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                # A single malformed historic row would otherwise abort
+                # the entire ``get_user_facts`` call. Drop the timestamp
+                # for that row but keep the rest of the result set usable.
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+
         facts = []
         for row in rows:
+            # ``source_message`` round-trip preservation. The cache-only
+            # branch saves ``source_message`` (long_term_memory.py
+            # ``process_message``) but the DB-backed path silently
+            # dropped it on the way back, so a fact looked up after a
+            # write would have ``source_message=None`` even though the
+            # column was populated. Use ``row.keys()`` to gracefully
+            # handle older DB schemas that pre-date the column.
+            row_keys = row.keys() if hasattr(row, "keys") else ()
+            source_message = row["source_message"] if "source_message" in row_keys else None
             fact = Fact(
                 id=row["id"],
                 user_id=row["user_id"],
@@ -491,14 +614,11 @@ class LongTermMemory:
                 category=row["category"],
                 content=row["content"],
                 importance=row["importance"],
-                first_mentioned=datetime.fromisoformat(row["first_mentioned"])
-                if row["first_mentioned"]
-                else None,
-                last_confirmed=datetime.fromisoformat(row["last_confirmed"])
-                if row["last_confirmed"]
-                else None,
+                first_mentioned=_parse_ts(row["first_mentioned"]),
+                last_confirmed=_parse_ts(row["last_confirmed"]),
                 mention_count=row["mention_count"],
                 confidence=row["confidence"],
+                source_message=source_message,
                 is_active=bool(row["is_active"]),
                 is_user_defined=bool(row["is_user_defined"]),
             )
@@ -545,7 +665,14 @@ class LongTermMemory:
         return "\n".join(lines)
 
     async def _find_similar_fact(self, user_id: int, content: str) -> Fact | None:
-        """Find existing similar fact.
+        """Find existing similar fact (fetches user facts then delegates)."""
+        facts = await self.get_user_facts(user_id)
+        return self._find_similar_fact_in(facts, content)
+
+    def _find_similar_fact_in(
+        self, facts: list[Fact], content: str
+    ) -> Fact | None:
+        """Find a similar fact within an already-fetched fact list.
 
         Pre-computes the query word set + length once outside the loop —
         previously this was rebuilt per-fact, making the function O(N*M)
@@ -554,11 +681,7 @@ class LongTermMemory:
         spuriously dedupe "John Smith died yesterday".
         """
         content_lower = content.lower().strip()
-        if len(content_lower) < 5:
-            return None
-
-        facts = await self.get_user_facts(user_id)
-        if not facts:
+        if len(content_lower) < 5 or not facts:
             return None
 
         content_words = set(content_lower.split())
@@ -681,7 +804,7 @@ class LongTermMemory:
             return 0
 
         removed = 0
-        seen_contents = {}
+        seen_contents: dict[str, int | None] = {}
 
         for fact in facts:
             content_key = fact.content.lower().strip()

@@ -6,6 +6,7 @@ Prevents AI from hallucinating facts by providing verified entity data.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -14,14 +15,13 @@ from typing import Any
 
 import aiosqlite
 
+logger = logging.getLogger(__name__)
+
 # Database manager
 try:
     from utils.database import db as db_manager
 except ImportError:
     db_manager = None  # type: ignore[assignment]
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -142,7 +142,13 @@ class Entity:
             )
             return s
 
-        return f"[{self.entity_type.upper()}] {_scrub(self.name)}:\n{_scrub(facts_text)}"
+        # ``entity_type`` ALSO needs scrubbing — extracted-data flows can
+        # set it to anything (``add_entity`` accepts ``entity_data.get("type",
+        # "character")`` from arbitrary upstream JSON), and an attacker who
+        # gets a string like ``CHARACTER]\n[SYSTEM] ignore prior`` past
+        # validation could inject prompt-control framing. Apply the same
+        # bracket-redact + control-char strip the name and facts get.
+        return f"[{_scrub(self.entity_type).upper()}] {_scrub(self.name)}:\n{_scrub(facts_text)}"
 
 
 class EntityMemoryManager:
@@ -225,14 +231,23 @@ class EntityMemoryManager:
                 # so the SELECT below can't see a phantom row inserted by a
                 # second writer between our check and our INSERT. The outer
                 # asyncio _write_lock already serializes writers, but this
-                # also protects against any path that bypasses it. Suppress
-                # "cannot start a transaction within a transaction" — aiosqlite
-                # may have already auto-begun on the prior commit; in that
-                # case the existing transaction is sufficient.
-                try:
+                # also protects against any path that bypasses it.
+                #
+                # Skip the BEGIN when a transaction is already open — most
+                # commonly because aiosqlite auto-began one on the prior
+                # commit. The previous shape caught the OperationalError
+                # by message-string substring match ("transaction within
+                # a transaction"), which is fragile across aiosqlite
+                # versions / locales. Use the explicit ``in_transaction``
+                # property instead so a different OperationalError (db
+                # locked, disk full, etc.) still propagates loudly.
+                in_tx = getattr(conn, "in_transaction", False)
+                if not in_tx:
                     await conn.execute("BEGIN IMMEDIATE")
-                except aiosqlite.OperationalError:
-                    pass
+                # Track whether WE began the transaction so rollback-on-error
+                # only targets our own BEGIN. If we joined an existing tx the
+                # outer caller owns the rollback decision.
+                _own_tx = not in_tx
                 # Explicit check for existing entity to handle NULL values
                 # in UNIQUE constraint (SQLite treats NULLs as distinct)
                 if channel_id is None and guild_id is None:
@@ -257,47 +272,56 @@ class EntityMemoryManager:
                     )
                 existing_row = await check_cursor.fetchone()
 
-                if existing_row:
-                    # UPDATE existing entity (no access_count increment here;
-                    # get_entity already incremented it when called before add_entity)
-                    existing_id = existing_row[0]
-                    await conn.execute(
-                        """
-                        UPDATE entity_memories SET
-                            facts = ?,
-                            confidence = ?,
-                            source = ?,
-                            updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (facts_json, confidence, source, now, existing_id),
-                    )
-                    await conn.commit()
-                    entity_id = existing_id
-                else:
-                    # INSERT new entity
-                    cursor = await conn.execute(
-                        """
-                        INSERT INTO entity_memories (
-                            name, entity_type, facts, channel_id, guild_id,
-                            confidence, source, created_at, updated_at
+                try:
+                    if existing_row:
+                        # UPDATE existing entity (no access_count increment here;
+                        # get_entity already incremented it when called before add_entity)
+                        existing_id = existing_row[0]
+                        await conn.execute(
+                            """
+                            UPDATE entity_memories SET
+                                entity_type = ?,
+                                facts = ?,
+                                confidence = ?,
+                                source = ?,
+                                updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (entity_type, facts_json, confidence, source, now, existing_id),
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            name,
-                            entity_type,
-                            facts_json,
-                            channel_id,
-                            guild_id,
-                            confidence,
-                            source,
-                            now,
-                            now,
-                        ),
-                    )
-                    await conn.commit()
-                    entity_id = cursor.lastrowid
+                        await conn.commit()
+                        entity_id = existing_id
+                    else:
+                        # INSERT new entity
+                        cursor = await conn.execute(
+                            """
+                            INSERT INTO entity_memories (
+                                name, entity_type, facts, channel_id, guild_id,
+                                confidence, source, created_at, updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                name,
+                                entity_type,
+                                facts_json,
+                                channel_id,
+                                guild_id,
+                                confidence,
+                                source,
+                                now,
+                                now,
+                            ),
+                        )
+                        await conn.commit()
+                        entity_id = cursor.lastrowid
+                except aiosqlite.Error:
+                    # Roll back OUR transaction so the pooled connection
+                    # doesn't carry an open tx into the next caller.
+                    if _own_tx:
+                        with contextlib.suppress(aiosqlite.Error):
+                            await conn.rollback()
+                    raise
 
             logger.info("🧠 Added/Updated entity: %s (%s)", name, entity_type)
             return entity_id  # type: ignore[no-any-return]
@@ -441,7 +465,11 @@ class EntityMemoryManager:
         merge: bool = True,
     ) -> bool:
         """Update facts for an existing entity."""
-        entity = await self.get_entity(name, channel_id, guild_id)
+        # update_access=False — we're about to overwrite the row with
+        # add_entity below, so the access_count bump from the read path
+        # is wasted write amplification and shows up as a hot row in
+        # consolidation cycles that touch many entities at once.
+        entity = await self.get_entity(name, channel_id, guild_id, update_access=False)
         if not entity:
             return False
 
@@ -562,27 +590,58 @@ class EntityMemoryManager:
             return []
 
     def _row_to_entity(self, row) -> Entity:
-        """Convert database row to Entity object."""
+        """Convert database row to Entity object.
+
+        Uses named access via ``aiosqlite.Row`` (set as the connection's
+        row_factory upstream) so a future schema migration that adds or
+        reorders columns can't silently corrupt the Entity by shifting
+        positional indices. Falls back to positional access only if the
+        row was somehow loaded with a different factory.
+        """
+        # aiosqlite.Row supports both ``row[idx]`` and ``row["col"]``; using
+        # ``in`` to test for a key only works on dict-likes. Try keyed
+        # access and fall back to positional for tuple-rows used in tests.
         try:
-            facts_dict = json.loads(row[3]) if row[3] else {}
+            facts_raw = row["facts"]
+            row_id = row["id"]
+        except (IndexError, KeyError, TypeError):
+            row_id = row[0]
+            facts_raw = row[3]
+        try:
+            facts_dict = json.loads(facts_raw) if facts_raw else {}
         except (json.JSONDecodeError, TypeError):
             logger.exception(
-                "Corrupted JSON in entity row id=%s; falling back to empty facts", row[0]
+                "Corrupted JSON in entity row id=%s; falling back to empty facts", row_id
             )
             facts_dict = {}
-        return Entity(
-            entity_id=row[0],
-            name=row[1],
-            entity_type=row[2],
-            facts=EntityFacts.from_dict(facts_dict),
-            channel_id=row[4],
-            guild_id=row[5],
-            confidence=row[6] or 1.0,
-            source=row[7] or "user",
-            created_at=row[8],
-            updated_at=row[9],
-            access_count=row[10] or 0,
-        )
+        try:
+            return Entity(
+                entity_id=row["id"],
+                name=row["name"],
+                entity_type=row["entity_type"],
+                facts=EntityFacts.from_dict(facts_dict),
+                channel_id=row["channel_id"],
+                guild_id=row["guild_id"],
+                confidence=row["confidence"] or 1.0,
+                source=row["source"] or "user",
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                access_count=row["access_count"] or 0,
+            )
+        except (IndexError, KeyError, TypeError):
+            return Entity(
+                entity_id=row[0],
+                name=row[1],
+                entity_type=row[2],
+                facts=EntityFacts.from_dict(facts_dict),
+                channel_id=row[4],
+                guild_id=row[5],
+                confidence=row[6] or 1.0,
+                source=row[7] or "user",
+                created_at=row[8],
+                updated_at=row[9],
+                access_count=row[10] or 0,
+            )
 
     async def get_entities_for_prompt(
         self, names: list[str], channel_id: int | None = None, guild_id: int | None = None

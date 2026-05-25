@@ -2,8 +2,8 @@
 Analyze imports and find unused Python files in the project.
 """
 
+import ast
 import os
-import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -28,24 +28,40 @@ def find_python_files():
 
 
 def extract_imports(filepath):
-    """Extract all imports from a Python file."""
-    imports = set()
+    """Extract all imports from a Python file via AST.
+
+    The previous regex approach missed relative imports entirely
+    (``from . import x``) because ``[\\w.]+`` doesn't match a bare dot.
+    AST parsing yields both absolute and relative imports and is
+    immune to comment / string-literal false positives.
+    """
+    imports: set[str] = set()
     try:
         content = filepath.read_text(encoding="utf-8")
-
-        # Match: from X import Y and import X
-        patterns = [
-            r"^from\s+([\w.]+)\s+import",  # from X import Y
-            r"^import\s+([\w.]+)",  # import X
-        ]
-
-        for pattern in patterns:
-            for match in re.finditer(pattern, content, re.MULTILINE):
-                module = match.group(1)
-                imports.add(module)
-    except Exception as e:
+        tree = ast.parse(content, filename=str(filepath))
+    except (SyntaxError, OSError, UnicodeDecodeError) as e:
         print(f"Error reading {filepath}: {e}")
-
+        return imports
+    pkg_parts = filepath.relative_to(PROJECT_ROOT).parts[:-1]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            # Resolve relative imports against the file's package path
+            # so ``from . import x`` and ``from ..sub import y`` map
+            # back to absolute module names the rest of the tool
+            # already understands.
+            if node.level == 0:
+                if node.module:
+                    imports.add(node.module)
+            else:
+                base = list(pkg_parts[: max(0, len(pkg_parts) - node.level + 1)])
+                if node.module:
+                    base.append(node.module)
+                resolved = ".".join(base)
+                if resolved:
+                    imports.add(resolved)
     return imports
 
 
@@ -57,9 +73,36 @@ def module_to_file(module_name, project_files):
         module_name.replace(".", "/") + "/__init__.py",
     ]
 
-    for var in variations:
+    # Use a pre-built relative-path lookup so this function is O(1) per
+    # call instead of O(N) over all project files. Called once per
+    # import edge during scan: the previous O(N²) loop made a 1000-file
+    # repo do ~1M comparisons every run.
+    rel_lookup = getattr(module_to_file, "_rel_lookup", None)
+    if rel_lookup is None:
+        rel_lookup = {
+            str(pf).replace("\\", "/").lstrip("/"): pf
+            for pf in project_files
+        }
+        # Also index by relative-to-PROJECT_ROOT path so trailing-segment
+        # matches don't accidentally pick up unrelated files (the
+        # previous ``endswith`` accepted ``xbar.py`` as a match for
+        # ``bar.py``).
         for pf in project_files:
-            if str(pf).replace("\\", "/").endswith(var):
+            try:
+                rel = pf.relative_to(PROJECT_ROOT).as_posix()
+                rel_lookup[rel] = pf
+            except ValueError:
+                continue
+        module_to_file._rel_lookup = rel_lookup  # type: ignore[attr-defined]
+
+    for var in variations:
+        # Exact-path hit first
+        if var in rel_lookup:
+            return rel_lookup[var]
+        # Fall back to slow suffix match only when needed — the indexed
+        # lookup catches >99% of imports without scanning.
+        for path_key, pf in rel_lookup.items():
+            if path_key.endswith("/" + var) or path_key == var:
                 return pf
     return None
 
@@ -87,10 +130,13 @@ def main():
                 imported_files.add(target)
                 import_map[target].add(filepath)
 
-    # Find entry points (files that should be run directly)
+    # Find entry points (files that should be run directly). Anchor to
+    # PROJECT_ROOT — bare relative paths never matched the absolute
+    # ``filepath`` produced by ``rglob``, so entry points were not
+    # actually being skipped.
     entry_points = {
-        Path("bot.py"),
-        Path("config.py"),
+        PROJECT_ROOT / "bot.py",
+        PROJECT_ROOT / "config.py",
     }
 
     # Scripts and tools are typically run directly (skip them below)
@@ -114,6 +160,13 @@ def main():
 
         # Skip tools (they're meant to be run directly)
         if rel_parts and rel_parts[0] == "tools":
+            continue
+
+        # Skip test files — they're only imported by pytest's collector,
+        # not by other source files, so they'd be flagged as unused.
+        if rel_parts and rel_parts[0] == "tests":
+            continue
+        if filepath.name.startswith("test_"):
             continue
 
         # Skip __init__.py files (they're package markers)
@@ -143,7 +196,11 @@ def main():
     single_import = []
     for filepath, importers in import_map.items():
         if len(importers) == 1 and filepath.name != "__init__.py":
-            single_import.append((filepath, next(iter(importers))))
+            # ``next(iter(set))`` is non-deterministic across runs and
+            # makes the report's "first importer" column flap between
+            # runs even when nothing changed. Sort so the report is
+            # reproducible.
+            single_import.append((filepath, sorted(importers)[0]))
 
     if single_import:
         for f, importer in sorted(single_import):

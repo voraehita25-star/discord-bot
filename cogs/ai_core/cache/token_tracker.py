@@ -6,11 +6,12 @@ Monitors and controls API costs per user/channel/guild.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from ..data.constants import DEFAULT_MODEL
 
@@ -55,6 +56,20 @@ class TokenUsage:
     model: str = DEFAULT_MODEL
     cached: bool = False
 
+    # Explicit per-model rates checked by *prefix* so dated suffixes
+    # (e.g. ``claude-opus-4-7-20251001``) match the canonical id
+    # (``claude-opus-4-7``). Order matters: longer/more-specific
+    # prefixes must come first.
+    # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
+    # Class-level constant so it's interned once at import time rather
+    # than rebuilt on every ``estimated_cost`` access. ``ClassVar`` keeps
+    # the dataclass machinery from treating it as an instance field.
+    _CLAUDE_PRICING: ClassVar[tuple[tuple[str, tuple[float, float]], ...]] = (
+        ("claude-opus-4-7", (15.0, 75.0)),
+        ("claude-sonnet-4-6", (3.0, 15.0)),
+        ("claude-haiku-4-5", (0.80, 4.0)),
+    )
+
     @property
     def total_tokens(self) -> int:
         """Total tokens used in this request."""
@@ -70,17 +85,7 @@ class TokenUsage:
         - Gemini: https://ai.google.dev/pricing
         """
         model_lower = (self.model or "").lower()
-        # Explicit per-model rates checked by *prefix* so dated suffixes
-        # (e.g. ``claude-opus-4-7-20251001``) match the canonical id
-        # (``claude-opus-4-7``). Order matters: longer/more-specific
-        # prefixes must come first.
-        # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
-        _CLAUDE_PRICING: tuple[tuple[str, tuple[float, float]], ...] = (
-            ("claude-opus-4-7", (15.0, 75.0)),
-            ("claude-sonnet-4-6", (3.0, 15.0)),
-            ("claude-haiku-4-5", (0.80, 4.0)),
-        )
-        for _prefix, (_in, _out) in _CLAUDE_PRICING:
+        for _prefix, (_in, _out) in self._CLAUDE_PRICING:
             if model_lower.startswith(_prefix):
                 input_rate = _in / 1_000_000
                 output_rate = _out / 1_000_000
@@ -107,10 +112,24 @@ class TokenUsage:
             )
             input_rate = 3.0 / 1_000_000
             output_rate = 15.0 / 1_000_000
-        # Gemini explicitly — Flash tier rates
+        # Gemini — tier-aware so Pro requests aren't billed at Flash rates.
+        # Gemini Pro is ~10x more expensive than Flash; the previous
+        # one-rate-for-all collapsed both into Flash pricing, under-counting
+        # Pro spend by an order of magnitude.
         elif "gemini" in model_lower or "google" in model_lower:
-            input_rate = 0.10 / 1_000_000
-            output_rate = 0.40 / 1_000_000
+            if "pro" in model_lower:
+                # Gemini 2.5/3.x Pro: ~$1.25 input / $10 output per 1M tokens
+                # (long-context tier; short-context is ~$1.25/$5).
+                input_rate = 1.25 / 1_000_000
+                output_rate = 10.0 / 1_000_000
+            elif "ultra" in model_lower:
+                # Gemini Ultra (premium tier): ~$7 input / $21 output per 1M.
+                input_rate = 7.0 / 1_000_000
+                output_rate = 21.0 / 1_000_000
+            else:
+                # Flash / Flash-Lite / Nano / embedding: ~$0.10 / $0.40.
+                input_rate = 0.10 / 1_000_000
+                output_rate = 0.40 / 1_000_000
         # Unknown provider — log loudly. Prior behaviour silently billed
         # OpenAI/o3/etc. at Gemini Flash rates (~100x under-report). Use a
         # mid-tier rate (Sonnet-like) so the estimate at least flags as
@@ -164,19 +183,42 @@ class TokenTracker:
 
     # Maximum records per cache key to prevent unbounded growth between cleanups
     MAX_RECORDS_PER_KEY = 5000
+    # How many usage records to batch into a single DB write. Tuned against
+    # SQLite's per-statement overhead: at 50 records/batch the wal_writer's
+    # fsync is amortised over ~50× fewer transactions versus the previous
+    # per-record write.
+    PERSIST_BATCH_SIZE = 50
+    # Maximum delay between flushes regardless of batch fill. Bounds the
+    # quota-reload-after-crash window: anything in the buffer is "lost" if
+    # the bot dies before a flush. 5s is short enough that quota lag is
+    # negligible, long enough to actually fill batches under steady load.
+    PERSIST_FLUSH_INTERVAL = 5.0
 
     def __init__(self, limits: UsageLimits | None = None):
         self.limits = limits or UsageLimits()
         self._usage_cache: dict[str, list[TokenUsage]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
+        # Pending usage records waiting to be flushed to DB. Drained in
+        # batches by ``_persist_loop`` to avoid the previous one-write-
+        # per-record overhead (each ``record_usage`` opened its own
+        # write connection, fsync'd the WAL, and closed — heavy under
+        # bursty traffic).
+        self._persist_queue: list[TokenUsage] = []
+        self._persist_lock = asyncio.Lock()
+        self._persist_task: asyncio.Task | None = None
         self.logger = logging.getLogger("TokenTracker")
 
     def start_cleanup_task(self) -> None:
-        """Start background cleanup of old usage data."""
+        """Start background cleanup of old usage data + batched persist
+        flush. Both share the same lifecycle since they're scoped to
+        the tracker instance."""
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self.logger.info("📊 Token tracker cleanup task started")
+        if self._persist_task is None or self._persist_task.done():
+            self._persist_task = asyncio.create_task(self._persist_loop())
+            self.logger.info("📊 Token tracker persist loop started")
 
     async def init_from_db(self, hours: int = 24, max_rows: int = 10_000) -> int:
         """Pre-populate the in-memory cache from the ``token_usage`` table.
@@ -197,21 +239,24 @@ class TokenTracker:
         cutoff = _aware_now() - timedelta(hours=hours)
         try:
             async with db.get_connection() as conn:
-                # ORDER BY ASC so the trim-from-front logic at the end keeps
-                # the NEWEST records (the tail), matching the eviction
-                # semantics _record_usage relies on. Previously the DESC
-                # order combined with `[-MAX_RECORDS_PER_KEY:]` kept the
-                # oldest records, which is the opposite of intent.
+                # ``ORDER BY created_at DESC LIMIT N`` returns the *newest* N
+                # rows in the window, then we reverse to ASC before
+                # populating the cache. Doing it the other way (ASC + LIMIT)
+                # silently kept the OLDEST N rows when the window exceeded
+                # ``max_rows`` — exactly the opposite of intent and the
+                # bug fix the previous in-file comment was trying to
+                # describe but actually inverted.
                 cursor = await conn.execute(
                     """SELECT user_id, channel_id, guild_id, input_tokens,
                               output_tokens, model, cached, created_at
                        FROM token_usage
                        WHERE created_at >= ?
-                       ORDER BY created_at ASC
+                       ORDER BY created_at DESC
                        LIMIT ?""",
                     (cutoff.isoformat(), max_rows),
                 )
-                rows = await cursor.fetchall()
+                rows_desc = await cursor.fetchall()
+                rows = list(reversed(rows_desc))
         except Exception as e:
             self.logger.warning("Failed to load token_usage history: %s", e)
             return 0
@@ -227,8 +272,14 @@ class TokenTracker:
             # in the cache stay untouched in case _record_usage produced any
             # in-memory entries in the meantime.
             for cache_key in list(self._usage_cache.keys()):
+                # Compare tz-aware values — a legacy cached record with a
+                # naive timestamp would otherwise raise TypeError here and
+                # silently drop the entire cache slice. Other comparison
+                # sites in this file already route through ``_ensure_aware``;
+                # this one was the outlier.
                 self._usage_cache[cache_key] = [
-                    u for u in self._usage_cache[cache_key] if u.timestamp < cutoff
+                    u for u in self._usage_cache[cache_key]
+                    if _ensure_aware(u.timestamp) < cutoff
                 ]
 
             for row in rows:
@@ -268,11 +319,36 @@ class TokenTracker:
         self.logger.info("📊 Token tracker pre-populated: %d records from last %dh", loaded, hours)
         return loaded
 
-    def stop_cleanup_task(self) -> None:
-        """Stop the cleanup task."""
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            self._cleanup_task = None
+    async def stop_cleanup_task(self) -> None:
+        """Stop both cleanup and persist tasks and await cancellation.
+
+        Was previously sync — it cancelled the asyncio.Task but didn't
+        await it, so the cancellation handler ran on a later loop tick
+        AFTER the loop was already shutting down, producing
+        ``Task was destroyed but it is pending!`` warnings in logs.
+        Awaiting the task with CancelledError suppression drains the
+        cancellation cleanly.
+
+        Also stops the persist loop and triggers a final flush so any
+        in-flight buffered records hit the DB before shutdown.
+        """
+        for attr in ("_cleanup_task", "_persist_task"):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    # CancelledError is expected; any other shutdown error
+                    # is a best-effort cleanup so don't propagate.
+                    pass
+            setattr(self, attr, None)
+        # Belt-and-suspenders: even if the persist loop's cancel handler
+        # didn't get to flush (e.g. cancelled before its first sleep
+        # completed), drain the queue here so we don't leak quota
+        # records on shutdown.
+        with contextlib.suppress(Exception):
+            await self._flush_persist_queue()
 
     async def _cleanup_loop(self) -> None:
         """Periodic cleanup of old usage records."""
@@ -346,32 +422,87 @@ class TokenTracker:
         )
 
     async def _persist_usage(self, usage: TokenUsage) -> None:
-        """Persist usage to database."""
+        """Queue a usage record for batched DB persist.
+
+        Replaces the previous one-write-per-record path (open write
+        connection → fsync WAL → close) with a queue + periodic flush.
+        ``_persist_loop`` drains the queue every ``PERSIST_FLUSH_INTERVAL``
+        seconds OR whenever the queue grows past ``PERSIST_BATCH_SIZE``,
+        amortising fsync cost across ~50x fewer transactions.
+        """
         if not DB_AVAILABLE or db is None:
             return
 
+        async with self._persist_lock:
+            self._persist_queue.append(usage)
+            queue_len = len(self._persist_queue)
+
+        # Eager flush when the batch is full so a steady-state high-rate
+        # workload doesn't accumulate unbounded queue depth between
+        # interval ticks.
+        if queue_len >= self.PERSIST_BATCH_SIZE:
+            await self._flush_persist_queue()
+
+    async def _flush_persist_queue(self) -> None:
+        """Drain the pending persist queue into a single DB transaction."""
+        if not DB_AVAILABLE or db is None:
+            return
+        async with self._persist_lock:
+            if not self._persist_queue:
+                return
+            batch = self._persist_queue
+            self._persist_queue = []
         try:
             async with db.get_write_connection() as conn:
-                await conn.execute(
+                await conn.executemany(
                     """
                     INSERT INTO token_usage
                     (user_id, channel_id, guild_id, input_tokens, output_tokens,
                      model, cached, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                    (
-                        usage.user_id,
-                        usage.channel_id,
-                        usage.guild_id,
-                        usage.input_tokens,
-                        usage.output_tokens,
-                        usage.model,
-                        usage.cached,
-                        usage.timestamp.isoformat(),
-                    ),
+                    [
+                        (
+                            u.user_id,
+                            u.channel_id,
+                            u.guild_id,
+                            u.input_tokens,
+                            u.output_tokens,
+                            u.model,
+                            u.cached,
+                            u.timestamp.isoformat(),
+                        )
+                        for u in batch
+                    ],
                 )
         except Exception as e:
-            self.logger.warning("Failed to persist token usage: %s", e)
+            # Drop the batch and log — re-queueing risks an infinite loop
+            # if the underlying DB problem is sticky (disk full, schema
+            # mismatch). Quota lag is preferable to a head-of-line block.
+            self.logger.warning(
+                "Failed to persist token usage batch (%d records): %s",
+                len(batch),
+                e,
+            )
+
+    async def _persist_loop(self) -> None:
+        """Periodically flush the persist queue regardless of fill.
+
+        Runs alongside ``_cleanup_loop``. Started by
+        ``start_cleanup_task`` so a single lifecycle hook covers both.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.PERSIST_FLUSH_INTERVAL)
+                await self._flush_persist_queue()
+            except asyncio.CancelledError:
+                # Flush whatever's still buffered on shutdown so we
+                # don't lose in-flight quota records.
+                with contextlib.suppress(Exception):
+                    await self._flush_persist_queue()
+                break
+            except Exception as e:  # pragma: no cover — defensive
+                self.logger.error("Token tracker persist loop error: %s", e)
 
     def _get_usage_in_period(self, key: str, period: timedelta) -> list[TokenUsage]:
         """Get usage records within a time period (returns snapshot, caller should use with lock if needed)."""
@@ -464,26 +595,45 @@ class TokenTracker:
             Tuple of (is_allowed, warning_message)
             - is_allowed: True if request should proceed
             - warning_message: Optional warning if approaching limit
+
+        All four counter reads happen inside a single ``self._lock`` so a
+        concurrent ``record_usage`` can't slip new tokens in between two
+        independent quota checks (TOCTOU race that previously let bursts
+        of requests blow past the limit).
         """
-        # Check hourly user limit
-        hourly_stats = await self.get_user_usage(user_id, "hour")
+        async with self._lock:
+            hour_delta = timedelta(hours=1)
+            day_delta = timedelta(days=1)
+            user_key = f"user:{user_id}"
+            hourly_records = self._get_usage_in_period(user_key, hour_delta)
+            daily_records = self._get_usage_in_period(user_key, day_delta)
+            channel_records = (
+                self._get_usage_in_period(f"channel:{channel_id}", day_delta)
+                if channel_id
+                else []
+            )
+            guild_records = (
+                self._get_usage_in_period(f"guild:{guild_id}", day_delta)
+                if guild_id
+                else []
+            )
+
+        hourly_stats = self._aggregate_usage(hourly_records)
+        daily_stats = self._aggregate_usage(daily_records)
+
         if hourly_stats.total_tokens >= self.limits.hourly_user_tokens:
             return False, "⚠️ คุณใช้โควต้ารายชั่วโมงหมดแล้ว กรุณารอสักครู่"
 
-        # Check daily user limit
-        daily_stats = await self.get_user_usage(user_id, "day")
         if daily_stats.total_tokens >= self.limits.daily_user_tokens:
             return False, "⚠️ คุณใช้โควต้ารายวันหมดแล้ว กรุณารอจนถึงพรุ่งนี้"
 
-        # Check daily channel limit
         if channel_id:
-            channel_stats = await self.get_channel_usage(channel_id, "day")
+            channel_stats = self._aggregate_usage(channel_records)
             if channel_stats.total_tokens >= self.limits.daily_channel_tokens:
                 return False, "⚠️ ห้องนี้ใช้โควต้าหมดแล้ววันนี้"
 
-        # Check daily guild limit
         if guild_id:
-            guild_stats = await self.get_guild_usage(guild_id, "day")
+            guild_stats = self._aggregate_usage(guild_records)
             if guild_stats.total_tokens >= self.limits.daily_guild_tokens:
                 return False, "⚠️ เซิร์ฟเวอร์นี้ใช้โควต้าหมดแล้ววันนี้"
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import itertools
 import json
 import logging
 import random
@@ -48,6 +49,10 @@ class MusicGuildState:
     loop: bool = False
     current_track: dict[str, Any] | None = None
     fixing: bool = False
+    # If ``cleanup_guild_data`` arrives while ``fixing=True`` we can't run
+    # the cleanup safely — fix is mid-mutation. Setting this flag lets the
+    # ``fix`` finally-block trigger a deferred cleanup after it releases.
+    cleanup_pending: bool = False
     pause_start: float | None = None
     play_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     volume: float = 0.5
@@ -86,6 +91,10 @@ class Music(commands.Cog):
         self._temp_cleanup_task: asyncio.Task | None = None
         self._queue_autosave_task: asyncio.Task | None = None
         self._queue_save_pending: set[int] = set()  # guild IDs with pending saves
+        # on_ready fires on every reconnect; the startup cache sweep should
+        # only run once per process so we don't churn the disk on flaky
+        # Discord gateway connections.
+        self._cleaned_temp_once: bool = False
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded. Start background tasks."""
@@ -93,30 +102,67 @@ class Music(commands.Cog):
         self._queue_autosave_task = asyncio.create_task(self._periodic_queue_save())
 
     async def _periodic_temp_cleanup(self) -> None:
-        """Periodically clean up stale files in temp directory."""
+        """Periodically clean up stale files in temp directory.
+
+        Skips files registered as ``current_track`` for any guild — a
+        paused/looping track holding a file beyond the 1-hour staleness
+        window was previously deleted out from under ffmpeg, breaking
+        the playback on next seek (Linux: continues from inode; Windows:
+        PermissionError on the next spawn).
+        """
         import time as _time
 
         temp_dir = Path("temp")
         stale_threshold = 3600  # 1 hour
 
-        def _cleanup_sync() -> int:
+        def _collect_in_use() -> set[str]:
+            """Snapshot every guild's current_track file path."""
+            in_use: set[str] = set()
+            for _, gs in self._guild_states.items():
+                track_info = gs.current_track
+                if track_info and "filename" in track_info:
+                    try:
+                        in_use.add(str(Path(track_info["filename"]).resolve()))
+                    except (OSError, ValueError):
+                        # Reserved names / non-existent paths shouldn't
+                        # poison the in-use set — just skip them.
+                        continue
+            return in_use
+
+        def _cleanup_sync(in_use: set[str]) -> int:
             if not temp_dir.exists():
                 return 0
             now = _time.time()
             cleaned = 0
             for f in temp_dir.iterdir():
-                if f.is_file() and (now - f.stat().st_mtime) > stale_threshold:
-                    try:
+                if not f.is_file():
+                    continue
+                try:
+                    abs_path = str(f.resolve())
+                except (OSError, ValueError):
+                    continue
+                # Never delete files actively held by playback. ffmpeg
+                # keeps the FD open on POSIX so it would keep playing,
+                # but a subsequent loop/seek would fail; on Windows the
+                # unlink itself fails noisily.
+                if abs_path in in_use:
+                    continue
+                try:
+                    if (now - f.stat().st_mtime) > stale_threshold:
                         f.unlink()
                         cleaned += 1
-                    except (PermissionError, OSError):
-                        pass
+                except (PermissionError, OSError):
+                    pass
             return cleaned
 
         while True:
             try:
                 await asyncio.sleep(1800)  # Run every 30 minutes
-                cleaned = await asyncio.to_thread(_cleanup_sync)
+                # Snapshot must happen on the loop thread — ``_guild_states``
+                # mutation lives there. Then hand the snapshot to the worker
+                # for the slow filesystem walk.
+                in_use_now = _collect_in_use()
+                cleaned = await asyncio.to_thread(_cleanup_sync, in_use_now)
                 if cleaned:
                     logger.info("🧹 Temp cleanup: removed %d stale files", cleaned)
             except asyncio.CancelledError:
@@ -126,9 +172,17 @@ class Music(commands.Cog):
 
     async def _periodic_queue_save(self) -> None:
         """Periodically save all active queues to persist them across restarts."""
+        # Add a small per-process jitter to the 5-minute tick so a fleet
+        # of bots restarted at the same time (rolling deploy, blue/green
+        # cutover) doesn't all hit the DB at exactly the same wall-clock
+        # boundary. ``random.uniform`` keeps the offset small enough that
+        # the tick still averages 300s.
+        import random as _save_random
+
         while True:
             try:
-                await asyncio.sleep(300)  # Every 5 minutes
+                jitter = _save_random.uniform(-15.0, 15.0)
+                await asyncio.sleep(300 + jitter)
                 # Save only guilds whose queue actually changed since the
                 # last save — the previous version walked every guild_state
                 # every tick, which on a 1000-guild bot meant 1000 redundant
@@ -161,10 +215,21 @@ class Music(commands.Cog):
     # ----- Guild state helpers -----
 
     def _gs(self, guild_id: int) -> MusicGuildState:
-        """Get or create per-guild state."""
-        if guild_id not in self._guild_states:
-            self._guild_states[guild_id] = MusicGuildState()
-        return self._guild_states[guild_id]
+        """Get or create per-guild state.
+
+        Called from BOTH the main event loop AND the audio after-callback
+        thread. The check-then-set pattern used to race: two simultaneous
+        first-time lookups (e.g. ``play`` from a command at the same time
+        as an after-callback) would both miss the ``not in`` and create
+        independent ``MusicGuildState`` objects, dropping one's queue /
+        play_lock entirely. ``setdefault`` is dict-level atomic, fixing
+        the race at the cost of one needless allocation on already-known
+        guilds — cheap at Discord scale.
+        """
+        existing = self._guild_states.get(guild_id)
+        if existing is not None:
+            return existing
+        return self._guild_states.setdefault(guild_id, MusicGuildState())
 
     def _safe_run_coroutine(self, coro) -> None:
         """Safely run a coroutine in the bot's event loop.
@@ -193,13 +258,25 @@ class Music(commands.Cog):
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
-        # Cancel temp cleanup task
+        import contextlib
+
+        # Cancel + await temp cleanup task. Without the await, the task
+        # is cancelled but discord.py's ``cog_unload`` returns before its
+        # except-handler runs, producing "Task was destroyed but it is
+        # pending!" warnings and leaving any in-flight cleanup half-done.
         if self._temp_cleanup_task is not None:
             self._temp_cleanup_task.cancel()
-        # Cancel queue auto-save task
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._temp_cleanup_task
+            self._temp_cleanup_task = None
+        # Cancel + await queue auto-save task — same reasoning.
         if self._queue_autosave_task is not None:
             self._queue_autosave_task.cancel()
-        # Cancel all auto-disconnect tasks
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._queue_autosave_task
+            self._queue_autosave_task = None
+        # Cancel all auto-disconnect tasks (don't bother awaiting — there
+        # are potentially many and they don't hold critical state).
         for gs in self._guild_states.values():
             if gs.auto_disconnect_task is not None:
                 gs.auto_disconnect_task.cancel()
@@ -233,9 +310,18 @@ class Music(commands.Cog):
 
     async def cleanup_guild_data(self, guild_id: int) -> None:
         """Clean up all data for a specific guild."""
-        # Skip cleanup if the fix command is in progress (race condition prevention)
+        # Defer cleanup if the fix command is in progress (race condition
+        # prevention). Mark a sticky flag so the fix-command's finally
+        # block can drive the cleanup once it's safe — previously the
+        # early-return silently dropped the cleanup forever, leaving the
+        # guild's state resident in memory after the bot left the voice
+        # channel.
         if guild_id in self._guild_states and self._guild_states[guild_id].fixing:
-            logger.debug("Skipping cleanup for guild %s - fix command in progress", guild_id)
+            self._guild_states[guild_id].cleanup_pending = True
+            logger.debug(
+                "Deferring cleanup for guild %s - fix command in progress",
+                guild_id,
+            )
             return
 
         # Save queue before cleanup for persistence
@@ -246,13 +332,19 @@ class Music(commands.Cog):
             # Cancel auto-disconnect task
             if gs.auto_disconnect_task is not None:
                 gs.auto_disconnect_task.cancel()
-            # Preserve mode_247 setting across cleanup
+            # Preserve mode_247 setting across cleanup.
+            # Avoid the previous ``del`` + ``= MusicGuildState(...)`` pattern:
+            # in asyncio a concurrent ``_gs(guild_id)`` (which calls
+            # ``setdefault``) between the ``del`` and the reassignment would
+            # insert a fresh default state (mode_247=False) that our
+            # subsequent assignment then clobbers — or worse, the
+            # concurrent call wins and 247 is silently dropped. Building
+            # the replacement up front and writing once removes the gap.
             keep_247 = gs.mode_247
-            # Remove the guild state entirely
-            del self._guild_states[guild_id]
-            # Re-create minimal state if 24/7 mode was enabled
             if keep_247:
                 self._guild_states[guild_id] = MusicGuildState(mode_247=True)
+            else:
+                del self._guild_states[guild_id]
 
     async def cog_before_invoke(self, ctx: commands.Context) -> None:
         """Called before every command - track last used text channel."""
@@ -402,12 +494,28 @@ class Music(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_remove(self, guild):
         """Clean up when bot is removed from a guild."""
-        # Disconnect voice client first to prevent resource leak
-        if guild.voice_client:
+        # Look the voice client up via ``self.bot.voice_clients`` rather
+        # than ``guild.voice_client``. After a kick/ban discord.py may
+        # null ``guild.voice_client`` before this event fires, even
+        # though the underlying VoiceClient object is still tracked on
+        # the bot. The previous shape silently leaked the connection in
+        # that case. Mirror the iteration pattern used by
+        # ``on_voice_state_update`` so both paths agree.
+        for vc_proto in list(self.bot.voice_clients):
+            vc = cast(discord.VoiceClient, vc_proto)
+            if not hasattr(vc, "guild") or not vc.guild:
+                continue
+            if vc.guild.id != guild.id:
+                continue
             try:
-                await guild.voice_client.disconnect(force=True)
+                await vc.disconnect(force=True)
             except Exception as e:
                 logger.warning("Failed to disconnect voice client on guild remove: %s", e)
+            # Don't ``break`` — under sharding edge cases a single guild
+            # can briefly own more than one VoiceClient (e.g. one
+            # disconnecting + a fresh reconnect mid-flight). Disconnect
+            # every matching client so none are left orphaned holding a
+            # gateway socket open after the guild is gone.
 
         await self.cleanup_guild_data(guild.id)
         logger.info("🧹 Cleaned up data for guild %s", guild.id)
@@ -439,13 +547,19 @@ class Music(commands.Cog):
             guild_id = guild.id
 
             # Bot was disconnected
-            if member == self.bot.user and before.channel and not after.channel:
+            bot_user = self.bot.user
+            if bot_user is not None and member.id == bot_user.id and before.channel and not after.channel:
                 logger.info("🔌 Bot disconnected from voice in guild %s - cleaning up", guild_id)
                 await self.cleanup_guild_data(guild_id)
                 continue
 
             # Bot was moved to another channel
-            if member == self.bot.user and before.channel != after.channel and after.channel:
+            if (
+                bot_user is not None
+                and member.id == bot_user.id
+                and before.channel != after.channel
+                and after.channel
+            ):
                 # Cancel any pending auto-disconnect
                 task = self._gs(guild_id).auto_disconnect_task
                 if task is not None:
@@ -459,9 +573,10 @@ class Music(commands.Cog):
                 if self._gs(guild_id).mode_247:
                     continue
 
-                # Capture channel reference once to avoid race condition
+                # Capture channel reference once to avoid race condition.
+                # VoiceChannel always exposes ``.members`` — no hasattr guard needed.
                 bot_channel = vc.channel
-                if not bot_channel or not hasattr(bot_channel, "members"):
+                if not bot_channel:
                     continue
                 humans = [m for m in bot_channel.members if not m.bot]
                 if len(humans) == 0:
@@ -471,9 +586,26 @@ class Music(commands.Cog):
                     # asyncio's cooperative scheduler).
                     gs = self._gs(guild_id)
                     if gs.auto_disconnect_task is None:
-                        gs.auto_disconnect_task = asyncio.create_task(
+                        new_task = asyncio.create_task(
                             self._auto_disconnect(guild_id, vc)
                         )
+                        # Without a done-callback, an exception raised
+                        # before the body's main ``await asyncio.sleep``
+                        # would be silently swallowed when GC reaped the
+                        # task (asyncio warns at "warning" level which is
+                        # easy to miss). Log explicitly.
+                        new_task.add_done_callback(
+                            lambda t, gid=guild_id: (
+                                logger.exception(
+                                    "Auto-disconnect task for guild %s failed",
+                                    gid,
+                                    exc_info=t.exception(),
+                                )
+                                if not t.cancelled() and t.exception()
+                                else None
+                            )
+                        )
+                        gs.auto_disconnect_task = new_task
                         logger.info("⏳ Started auto-disconnect timer for guild %s", guild_id)
 
             # Check if someone joined bot's channel
@@ -488,7 +620,6 @@ class Music(commands.Cog):
     async def _auto_disconnect(self, guild_id: int, voice_client: discord.VoiceClient) -> None:
         """Auto-disconnect after delay when alone in voice channel."""
         try:
-            # Send warning message
             if voice_client.is_connected() and voice_client.guild:
                 guild = voice_client.guild
                 text_channel = None
@@ -528,6 +659,13 @@ class Music(commands.Cog):
             # Wait for the delay
             await asyncio.sleep(self.auto_disconnect_delay)
 
+            # Re-check 24/7 mode after the sleep — moderator may have
+            # flipped it on during the 3-minute warning window. Without
+            # this, the bot still disconnects despite the just-set flag.
+            if self._gs(guild_id).mode_247:
+                logger.info("⏹️ Auto-disconnect cancelled: 24/7 enabled during wait")
+                return
+
             # Double check if still alone
             if voice_client.is_connected() and voice_client.channel:
                 humans = [m for m in voice_client.channel.members if not m.bot]
@@ -539,12 +677,16 @@ class Music(commands.Cog):
                     await voice_client.disconnect()
                     await self.cleanup_guild_data(guild_id)
 
-                    # Update presence
-                    await self.bot.change_presence(
-                        activity=discord.Activity(
-                            type=discord.ActivityType.listening, name="คำสั่งเพลง"
+                    # ``change_presence`` is global — only reset to the idle
+                    # listening status if no other voice clients are still
+                    # active, otherwise we clobber the now-playing presence
+                    # of every other guild this bot is serving simultaneously.
+                    if len(self.bot.voice_clients) <= 1:
+                        await self.bot.change_presence(
+                            activity=discord.Activity(
+                                type=discord.ActivityType.listening, name="คำสั่งเพลง"
+                            )
                         )
-                    )
 
                     logger.info("👋 Auto-disconnected from guild %s due to inactivity", guild_id)
 
@@ -608,19 +750,20 @@ class Music(commands.Cog):
             return
         guild_id = ctx.guild.id
         max_retries = 10
-        for _ in range(max_retries + 1):
+        # Local retry counter. This previously lived on the shared per-guild
+        # state (self._gs(guild_id).play_retries) and was read/written here
+        # OUTSIDE play_lock, so two concurrent play_next calls for the same
+        # guild interleaved the counter and could defeat the 10-retry cap.
+        # A local int is private to this invocation and race-free.
+        retries = 0
+        while True:
             retry_next = await self._play_next_once(ctx)
             if not retry_next:
-                # Reset the per-guild retry counter on a clean exit so the
-                # next track has a fresh budget.
-                self._gs(guild_id).play_retries = 0
                 return
-            count = self._gs(guild_id).play_retries
-            if count >= max_retries:
+            if retries >= max_retries:
                 logger.warning("play_next retry limit reached for guild %s", guild_id)
-                self._gs(guild_id).play_retries = 0
                 return
-            self._gs(guild_id).play_retries = count + 1
+            retries += 1
 
     async def _play_next_once(self, ctx: Context) -> bool:
         """Single attempt of play_next. Returns True if caller should retry.
@@ -649,16 +792,35 @@ class Music(commands.Cog):
             return True
 
         _acquire_task = asyncio.create_task(_acquire_lock())
-        _timed_out_flag: list[bool] = [False]  # Use list to share state safely with callback
+        # Set if we time out OR the outer task is cancelled — in both cases the
+        # shielded helper may still acquire the lock with nobody left to release
+        # it. Shared with the done-callback (list for safe mutation from it).
+        _abandoned_flag: list[bool] = [False]
 
-        def _release_if_timed_out(task: asyncio.Task) -> None:
-            if _timed_out_flag[0] and not task.cancelled() and task.exception() is None:
+        def _release_if_abandoned(task: asyncio.Task) -> None:
+            # Cover the cases where the acquired lock would otherwise leak:
+            # (1) we abandoned the wait (timeout or cancellation) but the helper
+            #     still succeeded in acquiring the lock — nobody owns it;
+            # (2) future code in the helper raises AFTER acquire() but before
+            #     returning, so we hold the lock with no owner.
+            # If the helper task itself was cancelled before acquire() returned,
+            # the lock was never taken — skip.
+            if task.cancelled():
+                return
+            should_release = False
+            if _abandoned_flag[0] and task.exception() is None:
+                should_release = True
+            elif task.exception() is not None and lock.locked():
+                # Helper raised but the lock IS held — must have been
+                # acquired before the raise. Release to avoid deadlock.
+                should_release = True
+            if should_release:
                 try:
                     lock.release()
                 except RuntimeError:
                     pass
 
-        _acquire_task.add_done_callback(_release_if_timed_out)
+        _acquire_task.add_done_callback(_release_if_abandoned)
 
         try:
             # Bumped from 0.1s to 2s. The original 100ms was meant to make
@@ -675,10 +837,18 @@ class Music(commands.Cog):
                 logger.debug("play_next lock acquisition failed for guild %s", guild_id)
                 return False
         except TimeoutError:
-            _timed_out_flag[0] = True
+            _abandoned_flag[0] = True
             # Another task is processing - skip this call
             logger.debug("play_next already in progress for guild %s", guild_id)
             return False
+        except asyncio.CancelledError:
+            # Outer task cancelled while shield() kept _acquire_task alive, so
+            # the helper will still acquire the lock with no owner to release it.
+            # Mark abandoned so the done-callback frees it, then re-raise to
+            # preserve cancellation semantics. Without this the per-guild
+            # play_lock leaks permanently and music deadlocks for that guild.
+            _abandoned_flag[0] = True
+            raise
 
         _retry_next = False
         try:
@@ -723,15 +893,18 @@ class Music(commands.Cog):
                         # Update start time
                         track_info["start_time"] = time.time()
 
-                        # Capture voice_client reference at callback definition time
-                        voice_client_loop = voice_client
-
                         def after_playing_loop(error):
                             if self._gs(guild_id).fixing:
                                 return  # Skip if fixing
 
-                            # Guard: Check if voice_client is still valid
-                            if not voice_client_loop or not voice_client_loop.is_connected():
+                            # Look up the LIVE voice_client from the guild rather
+                            # than the one captured at callback-definition time.
+                            # If the user ran ``!leave`` + ``!join`` between
+                            # playback start and the after-callback, the captured
+                            # reference is stale and ``is_connected()`` returns
+                            # False even though a fresh VC is fully playable.
+                            live_vc = ctx.guild.voice_client if ctx.guild else None
+                            if not live_vc or not live_vc.is_connected():
                                 return
 
                             if not self._gs(guild_id).loop:
@@ -742,7 +915,7 @@ class Music(commands.Cog):
                                 logger.error("Loop error: %s", error)
 
                             # Guard: Don't schedule if already playing or paused
-                            if voice_client_loop.is_playing() or voice_client_loop.is_paused():
+                            if live_vc.is_playing() or live_vc.is_paused():
                                 return
 
                             self._safe_run_coroutine(self.play_next(ctx))
@@ -802,7 +975,9 @@ class Music(commands.Cog):
                 # player. While False, any exception path must call
                 # ``player.cleanup()`` so the FFmpeg subprocess that
                 # ``YTDLSource.from_url`` spawned doesn't leak.
-                player = None
+                # mypy widens ``player`` to YTDLSource from the loop-replay
+                # branch above, so a None reset here needs an explicit cast.
+                player: YTDLSource | None = None  # type: ignore[no-redef]
                 player_handed_off = False
                 try:
                     async with ctx.typing():
@@ -817,6 +992,21 @@ class Music(commands.Cog):
                             )
                             if not search_info or not search_info.get("webpage_url"):
                                 logger.warning("Search resolution failed for queue item: %r", item)
+                                # Notify the user — without this the queue
+                                # silently advances and a Spotify track that
+                                # failed to resolve via YouTube search just
+                                # vanishes with no feedback. Use ctx.send
+                                # rather than a fancy embed: the next track
+                                # is about to play and we don't want to
+                                # spam.
+                                with contextlib.suppress(discord.HTTPException):
+                                    title = (
+                                        item.get("title") if isinstance(item, dict) else None
+                                    ) or url
+                                    await ctx.send(
+                                        f"⚠️ ข้ามเพลงนี้: ไม่พบบน YouTube — `{title}`",
+                                        delete_after=15,
+                                    )
                                 _retry_next = True
                                 return _retry_next
                             play_url = search_info["webpage_url"]
@@ -843,31 +1033,40 @@ class Music(commands.Cog):
                             "start_time": time.time(),
                         }
 
-                        # Capture voice_client reference at callback definition time
-                        # to avoid issues with ctx.voice_client becoming None
-                        vc_callback = voice_client
+                        # Snapshot ``player.filename`` into the closure too.
+                        # The outer ``player`` binding is reset to None at
+                        # the top of the next loop iteration; without this
+                        # snapshot, when ``after_playing`` fires after the
+                        # next track has already been queued, ``player``
+                        # resolves to None and ``player.filename`` raises
+                        # AttributeError, breaking the callback chain (and
+                        # leaking the FFmpeg subprocess + temp file).
+                        player_filename = player.filename
 
                         def after_playing(error):
                             if self._gs(guild_id).fixing:
                                 return  # Skip if fixing
 
-                            # Guard: Check if voice_client is still valid
-                            if not vc_callback or not vc_callback.is_connected():
+                            # Use the live voice_client (see after_playing_loop
+                            # comment) so a !leave+!join cycle between play
+                            # start and this callback doesn't freeze the queue.
+                            live_vc = ctx.guild.voice_client if ctx.guild else None
+                            if not live_vc or not live_vc.is_connected():
                                 # Cleanup file even if disconnected
-                                if player.filename and not self._gs(guild_id).loop:
-                                    self._safe_run_coroutine(self.safe_delete(player.filename))
+                                if player_filename and not self._gs(guild_id).loop:
+                                    self._safe_run_coroutine(self.safe_delete(player_filename))
                                 return
 
                             # Cleanup: Delete file ONLY if loop is OFF
                             if not self._gs(guild_id).loop:
-                                if player.filename:
-                                    self._safe_run_coroutine(self.safe_delete(player.filename))
+                                if player_filename:
+                                    self._safe_run_coroutine(self.safe_delete(player_filename))
 
                             if error:
                                 logger.error("Player error: %s", error)
 
                             # Guard: Don't schedule if already playing or paused
-                            if vc_callback.is_playing() or vc_callback.is_paused():
+                            if live_vc.is_playing() or live_vc.is_paused():
                                 return
 
                             self._safe_run_coroutine(self.play_next(ctx))
@@ -1048,7 +1247,16 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         if ctx.voice_client.is_playing():
-            ctx.voice_client.pause()
+            try:
+                ctx.voice_client.pause()
+            except discord.ClientException as exc:
+                # Already paused / not actually playing in a race.
+                logger.warning("Pause failed: %s", exc)
+                embed = discord.Embed(
+                    description=f"{Emojis.CROSS} หยุดเพลงไม่ได้ (state ผิดพลาด)",
+                    color=Colors.ERROR,
+                )
+                return await ctx.send(embed=embed)
             self._gs(ctx.guild.id).pause_start = time.time()
 
             # Get current track info for embed
@@ -1148,14 +1356,35 @@ class Music(commands.Cog):
         # Clear pause state if exists (since we will resume playing)
         self._gs(guild_id).pause_start = None
 
-        ctx.voice_client.stop()
-        await ctx.voice_client.disconnect()
+        # Disconnect can throw discord.HTTPException on transient gateway
+        # errors. Without the try, ``fixing`` was reset by the outer
+        # ``finally`` (line ~1282) but the embed at ``fix_msg`` already
+        # promised "เชื่อมต่อใหม่" and the user sees nothing. Surface
+        # the failure cleanly so they know to retry.
+        try:
+            ctx.voice_client.stop()
+            await ctx.voice_client.disconnect()
+        except (discord.HTTPException, discord.ClientException) as disconnect_err:
+            self._gs(guild_id).fixing = False
+            logger.warning("fix: disconnect failed: %s", disconnect_err)
+            embed = discord.Embed(
+                description=(
+                    f"{Emojis.CROSS} ไม่สามารถตัดการเชื่อมต่อเดิมได้ "
+                    "ลอง !leave แล้ว !play ใหม่"
+                ),
+                color=Colors.ERROR,
+            )
+            with contextlib.suppress(discord.HTTPException):
+                await ctx.send(embed=embed)
+            return
 
         try:
-            # 3. Reconnect
+            # 3. Reconnect. Match the timeout other connect sites use
+            # (join, play) so a stalled gateway doesn't hang the command
+            # for the full 60s discord.py default.
             if ctx.author.voice:
                 channel = ctx.author.voice.channel
-                await channel.connect()
+                await channel.connect(timeout=30.0)
             else:
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} คุณไม่ได้อยู่ในห้องเสียง", color=Colors.ERROR
@@ -1166,6 +1395,19 @@ class Music(commands.Cog):
             # 4. Resume
             filename = track_info["filename"]
             data = track_info["data"]
+
+            # Mirror the existence check that ``seek`` (line ~1905) does:
+            # the previous track's after-callback may have already deleted
+            # the file (loop=False path), in which case ffmpeg silently
+            # produces no audio. Bail out cleanly so the user can re-issue.
+            if not Path(filename).exists():
+                self._gs(guild_id).fixing = False
+                embed = discord.Embed(
+                    description=f"{Emojis.CROSS} ไฟล์เพลงถูกลบไปแล้ว ลอง !play ใหม่",
+                    color=Colors.ERROR,
+                )
+                await ctx.send(embed=embed)
+                return
 
             # Seek to elapsed time
             current_options = get_ffmpeg_options(stream=False, start_time=elapsed)
@@ -1187,15 +1429,18 @@ class Music(commands.Cog):
             # Update start time to now - elapsed
             self._gs(guild_id).current_track["start_time"] = time.time() - elapsed
 
-            # Capture voice_client reference at callback definition time
+            # Hold a reference for the immediate ``.play()`` call below; the
+            # callback itself looks up the LIVE VC each time it fires so a
+            # disconnect/reconnect between play-start and end doesn't freeze
+            # the queue.
             voice_client_fix = ctx.voice_client
 
             def after_playing_fix(error):
                 if self._gs(guild_id).fixing:
                     return
 
-                # Guard: Check if voice_client is still valid
-                if not voice_client_fix or not voice_client_fix.is_connected():
+                live_vc = ctx.guild.voice_client if ctx.guild else None
+                if not live_vc or not live_vc.is_connected():
                     # Cleanup file even if disconnected
                     if not self._gs(guild_id).loop and filename:
                         self._safe_run_coroutine(self.safe_delete(filename))
@@ -1251,6 +1496,15 @@ class Music(commands.Cog):
         finally:
             # Always reset fixing flag at the end
             self._gs(guild_id).fixing = False
+            # If a guild-leave / voice-state cleanup arrived while we
+            # were mid-fix, ``cleanup_guild_data`` set ``cleanup_pending``
+            # and bailed early. Run it now so the deferred cleanup
+            # doesn't get lost (which would leak the guild's state
+            # forever).
+            if guild_id in self._guild_states and self._guild_states[guild_id].cleanup_pending:
+                self._guild_states[guild_id].cleanup_pending = False
+                with contextlib.suppress(Exception):
+                    await self.cleanup_guild_data(guild_id)
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"])  # type: ignore[arg-type]
     @commands.bot_has_guild_permissions(connect=True, speak=True)
@@ -1316,7 +1570,31 @@ class Music(commands.Cog):
         """เล่นเพลงจาก YouTube หรือ Spotify."""
         # Validate query parameter
         if query:
+            # Strip Discord's "suppress embed" angle brackets — users habitually
+            # type ``!play <https://...>`` and the brackets used to fall through
+            # to YouTube-search, which then 404'd on the YouTube side.
+            query = query.strip()
+            if len(query) >= 2 and query.startswith("<") and query.endswith(">"):
+                query = query[1:-1].strip()
             query = query[:500]  # Cap length to prevent DoS via extremely long queries
+        # SSRF guard: yt-dlp will fetch any URL we hand it, including
+        # ``file://``, ``ftp://``, ``http://169.254.169.254/`` (AWS metadata),
+        # or other internal addresses. A user typing ``!play file:///etc/passwd``
+        # would have yt-dlp open that path. Reject URLs with non-http(s)
+        # schemes, and reject http(s) URLs that target loopback / private
+        # networks. Plain text searches (no scheme) bypass this — yt-dlp
+        # only treats text without ``://`` as a search query.
+        if query and "://" in query:
+            from .url_safety import is_url_query_safe_async
+
+            ok, reason = await is_url_query_safe_async(query)
+            if not ok:
+                embed = discord.Embed(
+                    description=f"{Emojis.CROSS} URL ไม่ปลอดภัย: {reason}",
+                    color=Colors.ERROR,
+                )
+                await ctx.send(embed=embed)
+                return
         if not query or not query.strip():
             embed = discord.Embed(
                 title=f"{Emojis.MUSIC} วิธีเล่นเพลง",
@@ -1372,8 +1650,30 @@ class Music(commands.Cog):
                 await ctx.send(embed=embed)
                 return
         elif ctx.voice_client.channel and ctx.voice_client.channel != channel:
-            # Move to user's channel if in different channel
-            await ctx.voice_client.move_to(channel)  # type: ignore[attr-defined]
+            # Move to user's channel if in different channel. Mirror the
+            # connect path's permission check so a Connect-less destination
+            # surfaces as a friendly error instead of a silent move
+            # failure or mid-playback drop.
+            permissions = channel.permissions_for(ctx.guild.me)
+            if not (permissions.connect and permissions.speak):
+                embed = discord.Embed(
+                    description=(
+                        f"{Emojis.CROSS} ไม่สามารถย้ายไปห้อง `{channel.name}`. "
+                        "กรุณาให้สิทธิ์ `Connect` และ `Speak` แก่ Bot"
+                    ),
+                    color=Colors.ERROR,
+                )
+                await ctx.send(embed=embed)
+                return
+            try:
+                await ctx.voice_client.move_to(channel)  # type: ignore[attr-defined]
+            except (TimeoutError, discord.ClientException) as e:
+                embed = discord.Embed(
+                    description=f"{Emojis.CROSS} ย้ายห้องเสียงไม่สำเร็จ: {e}",
+                    color=Colors.ERROR,
+                )
+                await ctx.send(embed=embed)
+                return
 
         queue = self.get_queue(ctx)
 
@@ -1498,7 +1798,12 @@ class Music(commands.Cog):
     @commands.guild_only()
     async def skip(self, ctx):
         """ข้ามเพลงปัจจุบัน."""
-        if ctx.voice_client and ctx.voice_client.is_playing():
+        # Accept either is_playing OR is_paused — previously a paused track
+        # couldn't be skipped because the gate required is_playing only,
+        # forcing the user to !resume first just to !skip.
+        if ctx.voice_client and (
+            ctx.voice_client.is_playing() or ctx.voice_client.is_paused()
+        ):
             # Disable loop when skipping
             self._gs(ctx.guild.id).loop = False
             ctx.voice_client.stop()
@@ -1541,9 +1846,10 @@ class Music(commands.Cog):
                     name=f"{Emojis.NOTES} Now Playing", value=f"**{now_playing}**", inline=False
                 )
 
-            # Queue List (with numbers)
+            # Queue List (with numbers). islice avoids materialising the full
+            # deque just to slice the head off it.
             description = ""
-            for i, item in enumerate(list(queue)[:10], 1):
+            for i, item in enumerate(itertools.islice(queue, 10), 1):
                 if isinstance(item, dict):
                     title = item.get("title", "Unknown")
                     title = title[:40] + "..." if len(title) > 40 else title
@@ -1766,7 +2072,7 @@ class Music(commands.Cog):
 
         # Show first 3 tracks after shuffle
         preview = ""
-        for i, item in enumerate(list(queue)[:3], 1):
+        for i, item in enumerate(itertools.islice(queue, 3), 1):
             title = item.get("title", "Unknown") if isinstance(item, dict) else str(item)
             title = title[:30] + "..." if len(title) > 30 else title
             preview += f"`{i}.` {title}\n"
@@ -1802,6 +2108,11 @@ class Music(commands.Cog):
 
         removed = queue[position - 1]
         del queue[position - 1]
+        # Persist the change so a bot restart doesn't bring the removed
+        # track back. The shuffle command does the same thing — without
+        # this, ``!remove`` was effectively a memory-only operation
+        # that silently regressed across the next ``save_queue`` cycle.
+        self._schedule_queue_save(ctx.guild.id)
         title = removed.get("title", "Unknown") if isinstance(removed, dict) else str(removed)
 
         embed = discord.Embed(
@@ -1925,21 +2236,30 @@ class Music(commands.Cog):
                 filename=filename,
             )
 
-            # Apply volume
             player.volume = self._gs(guild_id).volume
-
-            # Update start time
             track_info["start_time"] = time.time() - seek_time
 
-            # Capture voice_client reference for callback
+            # Capture voice_client reference for the .play() call below;
+            # the after-callback must look up the LIVE voice_client via
+            # ``ctx.guild.voice_client`` so a leave+rejoin between the
+            # ``play`` call and the callback firing doesn't leave us
+            # checking ``is_connected()`` on a stale, dead VC and skip
+            # the queue-rearm (matches the after_playing / after_playing_fix
+            # pattern fixed in the prior audit).
             vc_seek = ctx.voice_client
 
             def after_seek(error):
                 # Reset fixing flag in callback to prevent race condition
                 self._gs(guild_id).fixing = False
 
+                # Look up the live voice_client at callback time. The
+                # captured ``vc_seek`` reference is only used as a last
+                # resort if the lookup fails (e.g. guild went away).
+                live_vc = ctx.guild.voice_client if ctx.guild else None
+                vc_check = live_vc or vc_seek
+
                 # Guard: Check if voice_client is still valid
-                if not vc_seek or not vc_seek.is_connected():
+                if not vc_check or not vc_check.is_connected():
                     if not self._gs(guild_id).loop and filename:
                         self._safe_run_coroutine(self.safe_delete(filename))
                     return
@@ -1950,7 +2270,7 @@ class Music(commands.Cog):
                     logger.error("Seek player error: %s", error)
 
                 # Guard: Don't schedule if already playing or paused
-                if vc_seek.is_playing() or vc_seek.is_paused():
+                if vc_check.is_playing() or vc_check.is_paused():
                     return
 
                 self._safe_run_coroutine(self.play_next(ctx))
@@ -2281,9 +2601,13 @@ class Music(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Called when the cog is ready."""
-        # Clean cache on startup
-        count, size = await self.cleanup_cache()
-        logger.info("🧹 Startup Cleanup: Removed %s files (%s bytes)", count, size)
+        # Clean cache on startup — but only once per process. on_ready fires
+        # on every reconnect, and re-scanning the temp dir on each ping is
+        # wasted I/O.
+        if not self._cleaned_temp_once:
+            self._cleaned_temp_once = True
+            count, size = await self.cleanup_cache()
+            logger.info("🧹 Startup Cleanup: Removed %s files (%s bytes)", count, size)
 
         logger.info("ℹ️  %s is Online.", self.bot.user)
 

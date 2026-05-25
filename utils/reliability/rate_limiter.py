@@ -73,12 +73,23 @@ class RateLimitBucket:
         """
         now = time.time()
 
-        # Replenish tokens based on time passed
-        time_passed = now - self.last_update
+        # Replenish tokens based on time passed.
+        # ``max(0, ...)`` defends against NTP backsteps or manual system
+        # clock changes producing a negative ``time_passed`` that would
+        # silently drain the bucket below zero. (Switching to
+        # ``time.monotonic`` would also fix this, but the existing test
+        # suite stores ``time.time()`` values directly in ``last_update``
+        # so the wall clock stays here for compat.)
+        # Additional cap at one full window so a FORWARD clock jump
+        # (NTP, suspend/resume, manual change) can't gift unlimited
+        # tokens — the worst the cap permits is "replenish the bucket
+        # all the way" rather than "burst N*ratio tokens at once".
+        time_passed = min(self.window, max(0.0, now - self.last_update))
         effective_max = max(1, int(self.max_tokens * self.adaptive_multiplier))
-        # Clamp tokens to effective_max (handles adaptive_multiplier drops)
+        # Clamp tokens to effective_max (handles adaptive_multiplier drops).
+        # The outer ``min`` on line above already caps the result — a
+        # second ``min`` would be a no-op.
         self.tokens = min(effective_max, self.tokens + (time_passed * effective_max / self.window))
-        self.tokens = min(self.tokens, effective_max)
         self.last_update = now
 
         if self.tokens >= 1:
@@ -348,14 +359,16 @@ class RateLimiter:
         config = self._configs[config_name]
         key = self._get_bucket_key(config_name, config, user_id, channel_id, guild_id)
 
-        # Lazy lock creation. We avoid ``setdefault(asyncio.Lock())`` because
-        # that constructs a fresh Lock object on every call — only to throw
-        # it away when one already exists. Worse, the throwaway Lock binds
-        # to the current event loop on every call, so every miss measurably
-        # cost CPU and trash GC pressure on hot paths.
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        lock = self._locks[key]
+        # Fast path: no allocation when the lock already exists.
+        lock = self._locks.get(key)
+        if lock is None:
+            # Slow path: ``setdefault`` is dict-level atomic, so two
+            # coroutines hitting a new key simultaneously share ONE lock
+            # rather than racing past a ``not in`` check and both
+            # consuming tokens under independent Lock objects. The
+            # throwaway Lock() is one allocation per first-time miss
+            # only — cheap.
+            lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             bucket = self._get_or_create_bucket(key, config)
             if bucket is None:
@@ -472,11 +485,12 @@ class RateLimiter:
             )
 
         # Update or create bucket under lock to prevent race conditions.
-        # Lazy-init avoids constructing a throwaway Lock on every call.
+        # Use setdefault on the slow path so two simultaneous first-time
+        # accesses share one Lock rather than racing past ``not in``.
         key = f"{config_name}:channel:{channel_id}"
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        lock = self._locks[key]
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if key in self._buckets:
                 self._buckets[key].max_tokens = requests_per_minute
@@ -530,7 +544,10 @@ class RateLimiter:
         """
         multiplier = self._get_adaptive_multiplier()
 
-        for key, bucket in self._buckets.items():
+        # Snapshot via list() so a concurrent ``_get_or_create_bucket``
+        # mutation can't raise ``RuntimeError: dictionary changed size``
+        # mid-iteration.
+        for key, bucket in list(self._buckets.items()):
             # Only update buckets for adaptive configs
             config_name = key.split(":")[0]
             if config_name in self._configs:

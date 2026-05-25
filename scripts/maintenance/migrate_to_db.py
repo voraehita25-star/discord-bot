@@ -128,28 +128,25 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
         if dry_run:
             return len(rows)
 
-        # Single transaction per file. BEGIN IMMEDIATE acquires the
-        # writer lock up-front so we either fully migrate this file or
-        # roll back cleanly.
+        # Single transaction per file. ``get_write_connection`` holds the
+        # write lock for the whole block and its context manager commits on
+        # success / rolls back on any exception, so we either fully migrate
+        # this file or leave the DB untouched. Do NOT issue a manual
+        # ``BEGIN IMMEDIATE``/``COMMIT`` here: the pooled connection runs in
+        # sqlite3's legacy isolation mode (isolation_level=""), where mixing
+        # explicit transaction control with the driver's implicit BEGIN can
+        # raise "cannot start a transaction within a transaction" and would
+        # also double-commit against the context manager's own commit.
         count = 0
         async with db.get_write_connection() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            try:
-                for chan_id, role, content, message_id, ts in rows:
-                    await conn.execute(
-                        """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
-                           VALUES (?, ?, ?, ?, ?,
-                               (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
-                        (chan_id, role, content, message_id, ts, chan_id),
-                    )
-                    count += 1
-                await conn.execute("COMMIT")
-            except Exception:
-                # On any failure, roll back the whole file so we never
-                # leave a partially-migrated channel in the DB.
-                with contextlib.suppress(Exception):
-                    await conn.execute("ROLLBACK")
-                raise
+            for chan_id, role, content, message_id, ts in rows:
+                await conn.execute(
+                    """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?,
+                           (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
+                    (chan_id, role, content, message_id, ts, chan_id),
+                )
+                count += 1
 
         return count
 

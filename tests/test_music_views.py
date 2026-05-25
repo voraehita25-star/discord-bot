@@ -240,7 +240,7 @@ class TestSkipButton:
 
     @pytest.mark.asyncio
     async def test_skip_button_not_playing(self):
-        """Test skip when not playing."""
+        """Test skip when neither playing nor paused → nothing to skip."""
         with patch("discord.ui.View.__init__", return_value=None):
             from cogs.music.views import MusicControlView
 
@@ -249,6 +249,8 @@ class TestSkipButton:
 
             mock_voice_client = MagicMock()
             mock_voice_client.is_playing.return_value = False
+            # Must also be NOT paused — a paused track IS skippable now.
+            mock_voice_client.is_paused.return_value = False
 
             mock_interaction = MagicMock()
             mock_interaction.guild.voice_client = mock_voice_client
@@ -261,6 +263,29 @@ class TestSkipButton:
             mock_interaction.response.send_message.assert_called_once()
             args, kwargs = mock_interaction.response.send_message.call_args
             assert "ไม่มีเพลงให้ข้าม" in args[0]
+
+    @pytest.mark.asyncio
+    async def test_skip_button_paused(self):
+        """A paused track must be skippable (parity with the text `skip` command)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            mock_cog = MagicMock()
+            view = MusicControlView(cog=mock_cog, guild_id=12345)
+
+            mock_voice_client = MagicMock()
+            mock_voice_client.is_playing.return_value = False
+            mock_voice_client.is_paused.return_value = True
+
+            mock_interaction = MagicMock()
+            mock_interaction.guild.voice_client = mock_voice_client
+            mock_interaction.response.send_message = AsyncMock()
+
+            await view.skip_button(mock_interaction, MagicMock())
+
+            mock_voice_client.stop.assert_called_once()
+            args, kwargs = mock_interaction.response.send_message.call_args
+            assert "ข้ามเพลง" in args[0]
 
     @pytest.mark.asyncio
     async def test_skip_button_no_voice_client(self):

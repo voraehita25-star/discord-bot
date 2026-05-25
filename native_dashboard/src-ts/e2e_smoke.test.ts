@@ -151,10 +151,19 @@ describe('index.html shell smoke', () => {
         }
     });
 
-    it('has no inline <script> content (CSP: script-src \'self\')', () => {
+    it('has no un-allowlisted inline <script> content (CSP: script-src \'self\' + importmap hash)', () => {
         const inlineScripts = Array.from(doc.querySelectorAll('script:not([src])'));
         for (const s of inlineScripts) {
-            expect((s.textContent || '').trim(), `inline script: "${s.textContent?.slice(0, 80)}"`).toBe('');
+            const content = (s.textContent || '').trim();
+            if (!content) continue;
+            // The ONLY permitted inline script is the Tauri import map, whose
+            // exact content is SHA-256 hash-allowlisted in the CSP script-src
+            // (index.html + tauri.conf.json). Any other inline script would be
+            // CSP-blocked at runtime, so fail the build instead.
+            expect(
+                (s.getAttribute('type') || '').toLowerCase(),
+                `unexpected inline script: "${content.slice(0, 80)}"`,
+            ).toBe('importmap');
         }
     });
 

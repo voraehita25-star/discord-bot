@@ -9,7 +9,7 @@ import logging
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import discord
 from discord.ext import commands
@@ -43,6 +43,11 @@ from ..response.webhook_cache import (
 
 logger = logging.getLogger(__name__)
 
+# Safety cap on the number of chunks ``_safe_split_message`` will emit
+# before bailing out, even if the input is pathologically long. Prevents
+# unbounded loops on adversarial or corrupted text.
+_MAX_CHUNKS = 50
+
 
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     """Split a message into chunks without breaking mid-line or mid-Unicode.
@@ -57,8 +62,7 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     if limit <= 0:
         limit = 2000
     chunks: list[str] = []
-    max_chunks = 50  # Safety limit to prevent infinite loops
-    while text and len(chunks) < max_chunks:
+    while text and len(chunks) < _MAX_CHUNKS:
         if len(text) <= limit:
             chunks.append(text)
             break
@@ -79,7 +83,7 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
                 split_at = limit  # Fallback: force forward progress
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
-    if text and len(chunks) >= max_chunks:
+    if text and len(chunks) >= _MAX_CHUNKS:
         chunks.append(text[:limit])  # Append truncated remainder
     return chunks
 
@@ -102,7 +106,9 @@ async def execute_tool_call(
         String describing the result of the tool call
     """
     fname = tool_call.name
-    args = tool_call.args
+    # A tool_call with no inputs can arrive with args=None (or the attribute
+    # absent); default to {} so the args.get(...) lookups below don't raise.
+    args = getattr(tool_call, "args", None) or {}
 
     guild = origin_channel.guild
 
@@ -182,11 +188,19 @@ async def execute_tool_call(
         return "⛔ Permission denied: requires manage_roles permission."
 
     try:
+        # Pass ``user=user`` through to every cmd_* so the per-command
+        # permission check inside ``server_commands`` re-validates against
+        # the actual caller. Previously these calls passed no user, leaving
+        # the cmd_* ``if user is not None and not perm`` guard a no-op and
+        # the protection relied entirely on the top-of-function admin/role
+        # gating above. Defense-in-depth.
         if fname == "create_text_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(guild, origin_channel, result, [result, args.get("category", "")])
+            await cmd_create_text(
+                guild, origin_channel, result, [result, args.get("category", "")], user=user
+            )
             return f"Requested creation of text channel '{result}'"
 
         elif fname == "create_voice_channel":
@@ -194,7 +208,7 @@ async def execute_tool_call(
             if not valid:
                 return result
             await cmd_create_voice(
-                guild, origin_channel, result, [result, args.get("category", "")]
+                guild, origin_channel, result, [result, args.get("category", "")], user=user
             )
             return f"Requested creation of voice channel '{result}'"
 
@@ -202,14 +216,14 @@ async def execute_tool_call(
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_category(guild, origin_channel, result, [])
+            await cmd_create_category(guild, origin_channel, result, [], user=user)
             return f"Requested creation of category '{result}'"
 
         elif fname == "delete_channel":
             valid, result = validate_name(args.get("name_or_id"))
             if not valid:
                 return result
-            await cmd_delete_channel(guild, origin_channel, result, [])
+            await cmd_delete_channel(guild, origin_channel, result, [], user=user)
             return f"Requested deletion of channel '{result}'"
 
         elif fname == "create_role":
@@ -219,14 +233,14 @@ async def execute_tool_call(
             cmd_args = [result]
             if args.get("color_hex"):
                 cmd_args.append(args.get("color_hex"))
-            await cmd_create_role(guild, origin_channel, None, cmd_args)
+            await cmd_create_role(guild, origin_channel, None, cmd_args, user=user)
             return f"Requested creation of role '{result}'"
 
         elif fname == "delete_role":
             valid, result = validate_name(args.get("name_or_id"))
             if not valid:
                 return result
-            await cmd_delete_role(guild, origin_channel, None, [result])
+            await cmd_delete_role(guild, origin_channel, None, [result], user=user)
             return f"Requested deletion of role '{result}'"
 
         elif fname == "add_role":
@@ -234,7 +248,7 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ add_role requires both user_name and role_name"
-            await cmd_add_role(guild, origin_channel, None, [user_name, role_name])
+            await cmd_add_role(guild, origin_channel, None, [user_name, role_name], user=user)
             return f"Requested adding role '{role_name}' to '{user_name}'"
 
         elif fname == "remove_role":
@@ -242,7 +256,9 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ remove_role requires both user_name and role_name"
-            await cmd_remove_role(guild, origin_channel, None, [user_name, role_name])
+            await cmd_remove_role(
+                guild, origin_channel, None, [user_name, role_name], user=user
+            )
             return f"Requested removing role '{role_name}' from '{user_name}'"
 
         elif fname == "set_channel_permission":
@@ -260,6 +276,7 @@ async def execute_tool_call(
                 origin_channel,
                 None,
                 [channel_name, target_name, permission, str(value)],
+                user=user,
             )
             return f"Requested setting channel permission for '{channel_name}'"
 
@@ -277,22 +294,29 @@ async def execute_tool_call(
                 origin_channel,
                 None,
                 [role_name, permission, str(value)],
+                user=user,
             )
             return f"Requested setting role permission for '{role_name}'"
 
         elif fname == "list_channels":
-            await cmd_list_channels(guild, origin_channel, None, [])
+            # Thread the caller through so ``cmd_list_channels`` can filter
+            # by view-permission and not leak private channel names via
+            # the AI tool path.
+            await cmd_list_channels(guild, origin_channel, None, [], _user=user)
             return "Listed channels"
 
         elif fname == "list_roles":
-            await cmd_list_roles(guild, origin_channel, None, [])
+            await cmd_list_roles(guild, origin_channel, None, [], _user=user)
             return "Listed roles"
 
         elif fname == "list_members":
             # Gate by caller's view_channel permission on origin channel:
             # listing members of a server they can't see is an info-leak.
+            # The DM-context guard at the top of this function ensures user is
+            # a Member here; cast to Any so permissions_for's typeshed stub
+            # (which only accepts Member|Role) doesn't reject the call.
             try:
-                if not origin_channel.permissions_for(user).view_channel:
+                if not origin_channel.permissions_for(cast(Any, user)).view_channel:
                     return "⛔ Permission denied: you cannot view this channel."
             except (AttributeError, TypeError):
                 pass
@@ -303,14 +327,14 @@ async def execute_tool_call(
                 if not cmd_args:
                     cmd_args.append("50")
                 cmd_args.append(args.get("query"))
-            await cmd_list_members(guild, origin_channel, None, cmd_args)
+            await cmd_list_members(guild, origin_channel, None, cmd_args, _user=user)
             return "Listed members"
 
         elif fname == "get_user_info":
             target = args.get("target")
             if not isinstance(target, str) or not target.strip():
                 return "❌ Failed: 'target' is required and must be a non-empty string"
-            await cmd_get_user_info(guild, origin_channel, None, [target])
+            await cmd_get_user_info(guild, origin_channel, None, [target], _user=user)
             return f"Requested info for '{target}'"
 
         elif fname == "read_channel":
@@ -320,19 +344,45 @@ async def execute_tool_call(
             # Resolve the target channel to verify the *caller* can see it —
             # without this check, a non-admin could ask the AI to read a
             # private staff/mod channel they have no access to (info-leak).
-            target_channel = discord.utils.get(guild.text_channels, name=channel_name.strip())
-            if not target_channel and channel_name.strip().isdigit():
-                target_channel = guild.get_channel(int(channel_name.strip()))
-            if target_channel is not None:
-                try:
-                    if not target_channel.permissions_for(user).read_messages:
-                        return "⛔ Permission denied to read that channel."
-                except (AttributeError, TypeError):
+            #
+            # Channel name resolution: ``discord.utils.get(..., name=X)``
+            # returns the FIRST channel with that name. Discord allows
+            # multiple channels with the same name across categories, so
+            # an attacker who knows two ``general`` channels exist (one
+            # public, one private) could ask for "general" and hit the
+            # public one's permission check while the AI ends up reading
+            # whichever ``cmd_read_channel`` resolves later. Prefer ID
+            # resolution when the caller-supplied name is numeric;
+            # otherwise document the first-match behaviour and rely on
+            # the per-channel permission check below to fail-closed.
+            stripped_name = channel_name.strip()
+            target_channel: discord.TextChannel | None = None
+            if stripped_name.isdigit():
+                resolved = guild.get_channel(int(stripped_name))
+                if isinstance(resolved, discord.TextChannel):
+                    target_channel = resolved
+            if target_channel is None:
+                target_channel = discord.utils.get(
+                    guild.text_channels, name=stripped_name
+                )
+            # Fail-closed when channel can't be located — without this the
+            # call would skip the read-permission check and let cmd_read_channel
+            # decide on its own (info-leak hole noted in audit).
+            if target_channel is None:
+                return "⛔ Channel not found or not accessible."
+            try:
+                # User has been narrowed to Member by the DM-context guard at
+                # the top of this function, but discord.py's typeshed types
+                # permissions_for as Member|Role only — cast through Any to
+                # avoid an unhelpful arg-type error here.
+                if not target_channel.permissions_for(cast(Any, user)).read_messages:
                     return "⛔ Permission denied to read that channel."
+            except (AttributeError, TypeError):
+                return "⛔ Permission denied to read that channel."
             cmd_args = [channel_name]
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
-            await cmd_read_channel(guild, origin_channel, None, cmd_args)
+            await cmd_read_channel(guild, origin_channel, None, cmd_args, user=user)
             return f"Requested reading channel '{channel_name}'"
 
         elif fname == "remember":
@@ -361,12 +411,55 @@ async def execute_tool_call(
             if any(marker in _content_lower for marker in _suspicious):
                 return "❌ Failed to save memory: Content contains restricted markers"
             # Defense-in-depth against Unicode-normalisation bypasses:
-            # NFKD-decompose, drop non-ASCII, then lowercase before matching.
-            # This catches fullwidth / homoglyph / combining-mark variants of
-            # "[SYSTEM] ignore previous" that the literal substring check above
-            # would let through (e.g. "[ＳＹＳＴＥＭ] ignore previous").
+            # First translate common Cyrillic/Greek confusables to their
+            # visually-identical Latin letters (е→e, о→o, …). Then
+            # NFKD-decompose and drop non-ASCII. Without the confusable map
+            # an attacker can write "иgnore previous" — Cyrillic 'и' would
+            # be ASCII-stripped, leaving "gnore previous" which evades the
+            # "ignore previous" check while still reading as the original
+            # phrase to a downstream language model.
+            _CONFUSABLE_MAP = {
+                # Cyrillic lowercase → Latin lowercase. Note: ``"х"`` appears
+                # once — the previous map had a duplicate entry that did
+                # nothing (later key/value pair was identical to the first).
+                "а": "a", "в": "b", "с": "c", "д": "d",
+                "е": "e", "х": "x", "и": "i", "ј": "j",
+                "к": "k", "ӏ": "l", "о": "o", "р": "p",
+                "ѕ": "s", "т": "t", "у": "y",
+                "һ": "h",
+                # Cyrillic uppercase → Latin uppercase
+                "А": "A", "В": "B", "С": "C", "Е": "E",
+                "Н": "H", "К": "K", "М": "M", "О": "O",
+                "Р": "P", "Т": "T", "Х": "X", "Ј": "J",
+                # Greek lowercase → Latin lowercase
+                "α": "a", "ο": "o", "ρ": "p", "υ": "y",
+                # Greek uppercase → Latin uppercase
+                "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z",
+                "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
+                "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
+                "Υ": "Y", "Χ": "X",
+                # Mathematical Alphanumeric Symbols (U+1D400+ block).
+                # Attackers can write "𝗶gnore previous" using these
+                # fonts and bypass the prior map. Cover bold/italic
+                # ASCII Latin letters that look identical to their
+                # plain counterparts.
+                "𝐚": "a", "𝐛": "b", "𝐜": "c", "𝐝": "d", "𝐞": "e",
+                "𝐟": "f", "𝐠": "g", "𝐡": "h", "𝐢": "i", "𝐣": "j",
+                "𝐤": "k", "𝐥": "l", "𝐦": "m", "𝐧": "n", "𝐨": "o",
+                "𝐩": "p", "𝐪": "q", "𝐫": "r", "𝐬": "s", "𝐭": "t",
+                "𝐮": "u", "𝐯": "v", "𝐰": "w", "𝐱": "x", "𝐲": "y", "𝐳": "z",
+                # Full-width ASCII (U+FF21-U+FF5A) used in CJK input
+                # methods — visually identical to ASCII when rendered.
+                "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e",
+                "ｆ": "f", "ｇ": "g", "ｈ": "h", "ｉ": "i", "ｊ": "j",
+                "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n", "ｏ": "o",
+                "ｐ": "p", "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t",
+                "ｕ": "u", "ｖ": "v", "ｗ": "w", "ｘ": "x", "ｙ": "y", "ｚ": "z",
+                "Ａ": "A", "Ｅ": "E", "Ｉ": "I", "Ｏ": "O", "Ｕ": "U",
+            }
+            _de_confused = "".join(_CONFUSABLE_MAP.get(c, c) for c in content)
             _normalized = (
-                unicodedata.normalize("NFKD", content)
+                unicodedata.normalize("NFKD", _de_confused)
                 .encode("ascii", "ignore")
                 .decode("ascii")
                 .lower()
@@ -384,9 +477,13 @@ async def execute_tool_call(
             if any(f in _normalized for f in _forbidden_normalized):
                 return "❌ Failed to save memory: Content contains restricted markers"
             # Limit memory content size to prevent abuse.
+            # Append an explicit ``[truncated]`` marker so the stored
+            # attribution string carries the signal that the original
+            # was longer — without it, a retrieval-time consumer can't
+            # tell whether the entire intent was captured or only a prefix.
             max_memory_size = 5000
             if len(content) > max_memory_size:
-                content = content[:max_memory_size]
+                content = content[:max_memory_size] + " [truncated]"
             # Provenance: prefix the calling user so future RAG retrievals
             # carry attribution back into the prompt. Without this, any
             # member could plant unattributed "facts" that later look
@@ -404,7 +501,19 @@ async def execute_tool_call(
         else:
             return f"Unknown function: {fname}"
 
-    except (ValueError, AttributeError, TypeError, KeyError, discord.HTTPException) as e:
+    except (
+        ValueError,
+        AttributeError,
+        TypeError,
+        KeyError,
+        discord.HTTPException,
+        # RAG/embedding paths can raise RuntimeError / OSError on disk
+        # I/O failure; they were previously uncaught here, killing the
+        # AI turn with a stack trace instead of returning the friendly
+        # ``Error executing X`` string back to Claude.
+        RuntimeError,
+        OSError,
+    ) as e:
         # Anthropic tool calls sometimes ship arguments with None/missing
         # fields; the per-fname guards above try to bounce those, but we
         # still want a backstop so a malformed payload doesn't kill the
@@ -483,20 +592,31 @@ async def send_as_webhook(bot, channel, name, message):
         The sent message object, or None if failed
     """
     try:
-        # Sanitize dangerous mentions FIRST (before any send path)
-        message = re.sub(r"@everyone", "@\u200beveryone", message, flags=re.IGNORECASE)
-        message = re.sub(r"@here", "@\u200bhere", message, flags=re.IGNORECASE)
-        message = re.sub(r"<@&(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
-        message = re.sub(r"<@!?(\d+)>", "<@\u200b\\1>", message)  # User mentions
+        # Sanitize dangerous mentions FIRST (before any send path). Negative
+        # lookahead so repeated calls don't accumulate ZWS chars (the
+        # original ``re.sub`` would turn ``@\u200beveryone`` into
+        # ``@\u200b\u200beveryone`` on every additional pass).
+        message = re.sub(r"@(?!\u200b)everyone", "@\u200beveryone", message, flags=re.IGNORECASE)
+        message = re.sub(r"@(?!\u200b)here", "@\u200bhere", message, flags=re.IGNORECASE)
+        message = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
+        message = re.sub(r"<@!?(?!\u200b)(\d+)>", "<@\u200b\\1>", message)  # User mentions
 
-        # Guard against DM channels (no guild/webhooks)
+        # Guard against DM channels (no guild/webhooks). Disable mentions on
+        # all fallback paths — ``name`` is AI-controlled and may contain
+        # raw ``<@everyone>``/``<@id>`` that the per-message regexes don't cover.
         if not hasattr(channel, "guild") or channel.guild is None:
-            await channel.send(f"**{name}**: {message}")
+            await channel.send(
+                f"**{name}**: {message}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return None
 
         # Check bot permissions first
         if not channel.permissions_for(channel.guild.me).manage_webhooks:
-            await channel.send(f"**{name}**: {message}")
+            await channel.send(
+                f"**{name}**: {message}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return None
 
         webhook_name = f"AI: {name}"
@@ -613,21 +733,33 @@ async def send_as_webhook(bot, channel, name, message):
                 try:
                     webhook = await channel.create_webhook(name=webhook_name, avatar=avatar_bytes)
                     logger.info("🆕 Created new webhook for %s", name)
+                    # Cache the freshly-created webhook so the next message
+                    # for this character doesn't pay the channel.webhooks()
+                    # round-trip again.
+                    set_cached_webhook(channel_id, webhook_name, webhook)
                 except discord.HTTPException as err:
                     logger.warning("Failed to create webhook for %s: %s", name, err)
             else:
-                # Limit reached, try to reuse "AI Tupper Proxy" or oldest
+                # Limit reached, try to reuse "AI Tupper Proxy" specifically.
+                # We deliberately DO NOT fall back to "any webhook owned by
+                # the bot" here — the previous fallback rendered messages
+                # under another character's avatar (the username override on
+                # webhook.send doesn't change the webhook avatar), creating
+                # cross-identity confusion. Better to surface a clear failure.
                 for wh in webhooks:
                     if wh.user and wh.user == bot.user and wh.name == "AI Tupper Proxy":
                         webhook = wh
                         break
 
-                # If still no webhook, just pick the first one owned by bot
                 if not webhook:
-                    for wh in webhooks:
-                        if wh.user and wh.user == bot.user:
-                            webhook = wh
-                            break
+                    logger.warning(
+                        "Webhook limit (%d) reached in channel %s and no "
+                        "fallback proxy found — character %s will fall back "
+                        "to direct send",
+                        DISCORD_WEBHOOK_LIMIT,
+                        channel_id,
+                        name,
+                    )
 
         # 3. Send Message and cache webhook
         if webhook:
@@ -658,14 +790,23 @@ async def send_as_webhook(bot, channel, name, message):
             return sent_message
 
         # Fallback if no webhook could be found/created
-        return await channel.send(f"**{name}**: {message}")
+        return await channel.send(
+            f"**{name}**: {message}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     except discord.Forbidden:
         logger.warning("No permission to manage webhooks in %s", channel.name)
-        return await channel.send(f"**{name}**: {message}")
+        return await channel.send(
+            f"**{name}**: {message}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
     except discord.HTTPException as err:
         logger.error("Failed to send webhook: %s", err)
-        return await channel.send(f"**{name}**: {message}")
+        return await channel.send(
+            f"**{name}**: {message}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 __all__ = [

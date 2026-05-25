@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 import yarl
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
 
 if TYPE_CHECKING:
     pass
@@ -126,7 +126,17 @@ async def _get_shared_session() -> aiohttp.ClientSession:
                 enable_cleanup_closed=True,
                 resolver=resolver,
             )
-            _shared_session = aiohttp.ClientSession(connector=connector)
+            # ``trust_env=False`` ignores ``HTTP_PROXY``/``HTTPS_PROXY``
+            # / ``NO_PROXY`` env vars on the request path. Without it,
+            # a proxy set in the host environment would route requests
+            # through the proxy IP — bypassing the SSRF resolver above
+            # (the resolver checks the destination DNS, but the proxy
+            # connect handshake hits the proxy IP first, which the
+            # resolver never sees). Hardening: refuse to honour
+            # process-environment proxy hints.
+            _shared_session = aiohttp.ClientSession(
+                connector=connector, trust_env=False
+            )
         return _shared_session
 
 
@@ -248,7 +258,11 @@ async def _is_private_url(url: str) -> bool:
             return True  # Block on DNS resolution failure/timeout for safety
 
         for _family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
+            # sockaddr[0] is always a str host for AF_INET/AF_INET6 from
+            # getaddrinfo, but the typeshed stub types it as str | int because
+            # AF_NETLINK uses an int. Coerce explicitly so the SSRF block
+            # path can rely on a str.
+            ip_str = str(sockaddr[0])
             if _ip_is_blocked(ip_str):
                 logger.warning("SSRF blocked: %s resolves to %s (blocked)", url, ip_str)
                 return True
@@ -397,7 +411,14 @@ Default Branch: {data.get("default_branch", "main")}
                             ) as readme_resp:
                                 if readme_resp.status == 200:
                                     readme_text = await readme_resp.text()
-                                    content += f"\n--- README ---\n{readme_text[: MAX_CONTENT_LENGTH - len(content)]}"
+                                    # Guard the slice — if ``content`` is
+                                    # already >= MAX_CONTENT_LENGTH the
+                                    # subtraction goes negative and Python's
+                                    # ``s[:-n]`` strips from the END instead
+                                    # of returning empty. ``max(0, ...)``
+                                    # gives the empty-slice semantics we want.
+                                    remaining = max(0, MAX_CONTENT_LENGTH - len(content))
+                                    content += f"\n--- README ---\n{readme_text[:remaining]}"
 
                             result_content = content[:MAX_CONTENT_LENGTH]
                             # Cache GitHub result
@@ -460,9 +481,16 @@ Default Branch: {data.get("default_branch", "main")}
                 return url, None
 
             content_type = final_response.headers.get("Content-Type", "")
+            # Parse only the MIME portion (strip charset/boundary) and
+            # match exactly. The previous substring check accepted
+            # ``application/text/html-weird``-style values that contain
+            # ``text/html`` as a substring; harmless for downstream
+            # consumers but a non-zero attack surface for content-type
+            # smuggling.
+            primary_mime = content_type.split(";", 1)[0].strip().lower()
 
             # Only process HTML/text content
-            if "text/html" not in content_type and "text/plain" not in content_type:
+            if primary_mime not in ("text/html", "text/plain"):
                 return url, f"[Non-text content: {content_type}]"
 
             # Early rejection if Content-Length exceeds limit (avoids wasting bandwidth)
@@ -475,8 +503,19 @@ Default Branch: {data.get("default_branch", "main")}
                 logger.warning("URL content too large: %s (%s bytes)", url, content_length)
                 return url, f"[Content too large: {content_length} bytes]"
 
-            # Handle encoding with fallback, size-limited to prevent memory exhaustion
-            raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE)
+            # Handle encoding with fallback, size-limited to prevent memory
+            # exhaustion. Read one byte past the cap so a body that overflows
+            # the limit is distinguishable from one exactly at it — when the
+            # server sent no/incorrect Content-Length, reject rather than
+            # silently parse a truncated half-document.
+            raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE + 1)
+            if len(raw_bytes) > MAX_RESPONSE_SIZE:
+                logger.warning(
+                    "URL content exceeded %d bytes (streamed, no/!Content-Length): %s",
+                    MAX_RESPONSE_SIZE,
+                    url,
+                )
+                return url, f"[Content too large: >{MAX_RESPONSE_SIZE} bytes]"
             # Magic-byte check: even when the server claims text/html,
             # the body may be binary (PDF, ZIP, image, executable). The
             # latin-1 fallback would happily decode garbage and feed it
@@ -499,12 +538,23 @@ Default Branch: {data.get("default_branch", "main")}
                 # Fallback to latin-1 which accepts all byte values
                 html = raw_bytes.decode("latin-1", errors="replace")
 
-            # Parse HTML
-            soup = BeautifulSoup(html, "lxml")
+            # Parse HTML. Prefer ``lxml`` for speed, fall back to the
+            # stdlib ``html.parser`` if lxml isn't installed in the
+            # deployment env. Without the fallback, ``FeatureNotFound``
+            # bubbled up as an opaque error and the whole URL fetch
+            # failed instead of degrading to slower-but-working parsing.
+            try:
+                soup = BeautifulSoup(html, "lxml")
+            except FeatureNotFound:
+                soup = BeautifulSoup(html, "html.parser")
 
-            # Get title
+            # Get title. ``get_text(strip=True)`` on a present-but-empty
+            # ``<title></title>`` returns ``""`` which the previous code
+            # accepted — leaving the embed with an empty title. Fall back
+            # to the URL whenever the extracted title is falsy.
             title_tag = soup.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else url
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            title = title or url
 
             # Remove script, style, nav, footer elements
             for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
@@ -543,10 +593,15 @@ Default Branch: {data.get("default_branch", "main")}
             if len(cleaned_content) > MAX_CONTENT_LENGTH:
                 cleaned_content = cleaned_content[:MAX_CONTENT_LENGTH] + "\n[Content truncated...]"
 
-            # Store in URL cache
+            # Store in URL cache.
+            # Eviction is FIFO (oldest by INSERTION time), not access-time
+            # LRU — ``_url_cache`` is a ``dict``/``OrderedDict`` whose
+            # iteration order matches insertion. A read of an existing key
+            # does NOT move it to the end. Hot URLs can therefore be
+            # evicted before stale ones; if access-time LRU becomes
+            # important later, switch to ``move_to_end`` on read.
             async with _get_url_cache_lock():
                 if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
-                    # Evict oldest entry
                     oldest_key = next(iter(_url_cache))
                     del _url_cache[oldest_key]
                 _url_cache[url] = (title, cleaned_content, _time.time())
@@ -590,8 +645,10 @@ async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, 
     # Limit number of URLs
     urls_to_fetch = urls[:max_urls]
 
-    session = await _get_shared_session()
-    tasks = [fetch_url_content(url, session) for url in urls_to_fetch]
+    # ``fetch_url_content`` ignores its ``session`` argument (it always
+    # uses the SSRF-safe shared session internally). Don't pre-fetch one
+    # here just to throw it away.
+    tasks = [fetch_url_content(url) for url in urls_to_fetch]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     fetched: list[tuple[str, str, str | None]] = []

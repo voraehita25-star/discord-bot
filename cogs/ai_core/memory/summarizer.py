@@ -10,7 +10,13 @@ import logging
 import os
 from typing import Any
 
-import anthropic
+try:
+    import anthropic
+except ImportError:  # SDK absent (e.g. CLAUDE_BACKEND=cli install without anthropic)
+    # Keep ai_core importable; __init__ creates a summarizer at import time and
+    # the client stays None → summarize() returns None and callers fall back to
+    # raw history. consolidator.py guards the same import the same way.
+    anthropic = None  # type: ignore[assignment]
 
 from ..claude_payloads import build_single_user_text_messages
 from ..data.constants import (
@@ -24,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 # Summarization Model (configurable via environment variable)
 SUMMARIZATION_MODEL = os.getenv("CLAUDE_SUMMARIZATION_MODEL", DEFAULT_MODEL)
+
+
+def _summary_backoff(attempt: int) -> float:
+    """Exponential backoff capped at 30s — matches Anthropic's 429 retry
+    guidance. Used identically across all summarization retry paths
+    (empty-response retry, ``(TimeoutError, ValueError, ...)`` retry,
+    and the Anthropic SDK retryable-exception branch), so it lives as a
+    helper rather than three open-coded copies.
+    """
+    return min(30.0, float(2**attempt))
 
 
 # Summarization prompt template
@@ -45,7 +61,15 @@ class ConversationSummarizer:
         self.client: anthropic.AsyncAnthropic | None = None
         self.model = SUMMARIZATION_MODEL
 
-        if ANTHROPIC_API_KEY:
+        # Skip SDK init under CLAUDE_BACKEND=cli — summarization is a
+        # paid-API feature; under CLI mode summarize() will return None
+        # and callers fall back to the raw history.
+        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+            logger.info(
+                "🚫 Conversation summarizer disabled (CLAUDE_BACKEND=cli) — "
+                "long histories will not be auto-compressed."
+            )
+        elif ANTHROPIC_API_KEY and anthropic is not None:
             try:
                 self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
             except Exception:
@@ -92,29 +116,53 @@ class ConversationSummarizer:
 
             for attempt in range(max_retries):
                 try:
-                    response = await self.client.messages.create(
-                        model=self.model,
-                        max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
-                        messages=build_single_user_text_messages(prompt),
+                    # 60s ceiling — Anthropic SDK has no default per-call
+                    # timeout, so a network stall would otherwise hang
+                    # the summarizer forever (consolidator's caller has
+                    # a separate 60s wrap; keep them in sync).
+                    response = await asyncio.wait_for(
+                        self.client.messages.create(
+                            model=self.model,
+                            max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
+                            messages=build_single_user_text_messages(prompt),
+                        ),
+                        timeout=60.0,
                     )
 
-                    summary = None
-                    for block in response.content:
-                        if block.type == "text":
-                            summary = block.text.strip()
-                            break
+                    # Concatenate ALL text blocks rather than taking only
+                    # the first. Claude can split a response across
+                    # multiple ``text`` blocks (interrupted by tool_use
+                    # or thinking blocks); the first-only path silently
+                    # truncated the summary in those cases.
+                    text_chunks = [
+                        block.text
+                        for block in response.content
+                        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+                    ]
+                    summary = "\n".join(text_chunks).strip() or None
 
                     if summary:
                         logger.info("📝 Generated conversation summary: %s...", summary[:50])
+                        return summary
 
-                    return summary
+                    # Empty/whitespace-only response on this attempt — fall
+                    # through to retry rather than returning None
+                    # immediately, since a single empty block may be a
+                    # transient model glitch worth one more shot.
+                    last_error = ValueError("empty summary from model")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(_summary_backoff(attempt))
+                        logger.warning(
+                            "Summarization attempt %d returned empty content; retrying",
+                            attempt + 1,
+                        )
+                        continue
+                    return None
 
                 except (TimeoutError, ValueError, TypeError, OSError, RuntimeError) as e:
                     last_error = e
                     if attempt < max_retries - 1:
-                        # Exponential backoff base 2 capped at 30s to respect Anthropic 429 retry guidance.
-                        backoff = min(30.0, float(2**attempt))
-                        await asyncio.sleep(backoff)
+                        await asyncio.sleep(_summary_backoff(attempt))
                         logger.warning("Summarization attempt %d failed: %s", attempt + 1, e)
                     continue
                 except Exception as e:
@@ -133,8 +181,7 @@ class ConversationSummarizer:
                         "ServiceUnavailableError",
                     } or err_name.startswith("APIStatus")
                     if is_retryable and attempt < max_retries - 1:
-                        backoff = min(30.0, float(2**attempt))
-                        await asyncio.sleep(backoff)
+                        await asyncio.sleep(_summary_backoff(attempt))
                         logger.warning(
                             "Summarization attempt %d failed (Anthropic %s): %s",
                             attempt + 1,

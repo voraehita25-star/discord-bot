@@ -19,12 +19,26 @@ import logging
 import os
 import re
 import time
-from datetime import timezone
+from datetime import timedelta, timezone
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# Pre-allocate timezone to avoid re-creating on every message
-BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+# Pre-allocate timezone to avoid re-creating on every message. On Windows
+# without the ``tzdata`` package, ``ZoneInfo("Asia/Bangkok")`` raises and
+# the whole AI cog would fail to load. Fall back to a fixed UTC+7 offset
+# so the bot stays operational and only the IANA-aware features (DST,
+# historical-transition data — which Bangkok doesn't observe anyway)
+# silently degrade.
+try:
+    BANGKOK_TZ: Any = ZoneInfo("Asia/Bangkok")
+except ZoneInfoNotFoundError:
+    import logging as _logging_zi
+
+    _logging_zi.getLogger(__name__).warning(
+        "ZoneInfo('Asia/Bangkok') unavailable (tzdata not installed). "
+        "Falling back to fixed UTC+7. `pip install tzdata` to restore IANA accuracy."
+    )
+    BANGKOK_TZ = timezone(timedelta(hours=7), name="Asia/Bangkok")
 
 import aiohttp
 import anthropic
@@ -74,12 +88,12 @@ from .api.api_handler import (
     classify_search_intent,
     detect_search_intent,
 )
+from .character_tags import replace_character_names
 from .claude_payloads import ClaudeContentBlockParam
 from .core.message_queue import MessageQueue
 
 # Import new modular components (v3.3.6 - direct subfolder imports)
 from .core.performance import PerformanceTracker, RequestDeduplicator
-from .data import SERVER_CHARACTER_NAMES
 
 # Import extracted modules
 from .data.constants import (
@@ -93,7 +107,6 @@ from .data.constants import (
 )
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
-# TTS module removed - not used
 # Centralized optional dependencies. CACHE_AVAILABLE / FALLBACK_AVAILABLE /
 # TOKEN_TRACKER_AVAILABLE aren't referenced locally but are part of this
 # module's public surface (tests import them via
@@ -137,7 +150,19 @@ from .storage import (
     save_history,
     update_message_id,
 )
-from .tools import execute_tool_call, send_as_webhook
+from .tools import send_as_webhook
+
+# NOTE: tool-use execution is intentionally NOT wired into this turn loop.
+# The Anthropic streaming pipeline in ``api_handler.py`` currently surfaces
+# tool_use blocks through the third return slot (``_function_calls`` below)
+# as an always-empty list — the legacy Gemini code path that consumed
+# function calls was removed during the Claude migration, and no Claude
+# tool_result roundtrip has been wired in its place. ``execute_tool_call``
+# stays exported from ``cogs.ai_core.tools`` for direct CLI use, tests,
+# and dev probes (``scripts/dev/probe_ai_flow.py`` etc.); putting it back
+# into the AI's turn loop requires a proper assistant→tool_use→tool_result
+# alternation per the Anthropic API contract, not the previous text-blob
+# concat-into-reply approach.
 from .voice import (
     join_voice_channel as voice_join,
     leave_voice_channel as voice_leave,
@@ -187,6 +212,28 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 
+# Mention-strip pattern used in the on_message hot path. Pre-compiled here
+# rather than recompiling on every message — even with re's internal cache,
+# the lookup adds avoidable overhead at the per-message scale.
+PATTERN_USER_MENTION = re.compile(r"<@!?\d+>\s*")
+
+# Post-processing patterns used inside the response normalisation loop.
+# Module-level so they're built once at import rather than recompiled per
+# turn during streaming.
+PATTERN_DOUBLE_NEWLINE = re.compile(r"\n{3,}")
+PATTERN_LEADING_SPACE = re.compile(r"\n[ \t]+")
+
+# Mention-escape patterns. The ``(?!\u200b)`` lookahead is an
+# idempotency guard so re-applying these to already-escaped text doesn't
+# accumulate ZWS chars on retry paths. Use the explicit ``\u200b``
+# Python escape instead of a literal U+200B in source — invisible
+# characters in regex sources are an aging-comment trap (and ruff
+# PLE2515 catches them).
+PATTERN_AT_EVERYONE = re.compile("(?i)@(?!\u200b)everyone")
+PATTERN_AT_HERE = re.compile("(?i)@(?!\u200b)here")
+PATTERN_USER_TAG = re.compile("<@!?(?!\u200b)(\\d+)>")
+PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
+
 
 # NOTE: convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 # are imported from .emoji module (line 45) - DO NOT redefine here
@@ -214,7 +261,14 @@ class ChatManager(SessionMixin, ResponseMixin):
         self.seen_users: dict[int, set[str]] = {}  # Channel ID -> Set of user_keys
         self.client: anthropic.AsyncAnthropic | None = None
         self.target_model: str | None = None
-        self.processing_locks: dict[int, asyncio.Lock] = {}  # Channel ID -> Lock
+        # ``cli_mode`` mirrors the env-var read in ``setup_ai`` but is
+        # cheaper to consult on the hot path (``process_chat`` checks it
+        # on every message). True when ``CLAUDE_BACKEND=cli`` and the
+        # Discord-side path should route to ``discord_chat_claude_cli``
+        # instead of the SDK client.
+        self.cli_mode: bool = False
+        # NOTE: processing_locks is aliased to the MessageQueue's dict below
+        # (after _message_queue is constructed) so the two share one map.
 
         # Streaming mode settings
         self.streaming_enabled: dict[int, bool] = {}  # Channel ID -> Streaming enabled
@@ -236,6 +290,13 @@ class ChatManager(SessionMixin, ResponseMixin):
         self.pending_messages = self._message_queue.pending_messages
         self.cancel_flags = self._message_queue.cancel_flags
         self._lock_times = self._message_queue._lock_times
+        # Share ONE processing_locks dict with the queue. process_chat populates
+        # it when acquiring a channel's lock; MessageQueue.queue_message's
+        # MAX_CHANNELS eviction guard reads the same dict to skip channels that
+        # are actively being processed. They were previously two separate dicts,
+        # so the guard always saw an empty map and could evict an in-flight
+        # channel's pending queue.
+        self.processing_locks: dict[int, asyncio.Lock] = self._message_queue.processing_locks
         self._performance_metrics = self._performance._metrics
 
         self.setup_ai()
@@ -329,6 +390,36 @@ class ChatManager(SessionMixin, ResponseMixin):
 
     def setup_ai(self) -> None:
         """Initialize the Claude AI client."""
+        # CLAUDE_BACKEND=cli: skip SDK init and route Discord-side AI to
+        # the ``claude -p`` subprocess via ``discord_chat_claude_cli``.
+        # The SDK client stays None; downstream code branches on
+        # ``self.cli_mode`` to pick the right caller. Previously this
+        # branch left Discord-side AI replies dead — only the dashboard
+        # worked. Now the bot answers in Discord too, using the same
+        # subscription quota as the dashboard CLI chat.
+        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+            from .api.discord_chat_claude_cli import is_cli_backend_ready
+
+            self.client = None
+            self.target_model = CLAUDE_MODEL
+            self.cli_mode = True
+            ok, reason = is_cli_backend_ready()
+            if ok:
+                logger.info(
+                    "🤖 Discord-side Claude CLI mode active (model: %s)",
+                    self.target_model,
+                )
+            else:
+                # Don't return early — the bot still starts; the user-
+                # facing error fires only when a real message arrives,
+                # so an admin can install ``claude`` without restarting.
+                logger.warning(
+                    "⚠️ Discord-side CLI mode requested but Claude CLI not ready: %s. "
+                    "Messages will surface this error until ``claude`` is on PATH.",
+                    reason,
+                )
+            return
+
         # Try failover manager first (supports proxy/direct switching)
         try:
             from .api.api_failover import api_failover
@@ -460,7 +551,18 @@ class ChatManager(SessionMixin, ResponseMixin):
     # _is_asking_about_channels, _get_requested_history) are inherited from ResponseMixin
 
     async def _detect_search_intent(self, message: str) -> bool:
-        """Detect if message requires web search. Delegates to api_handler."""
+        """Detect if message requires web search. Delegates to api_handler.
+
+        In CLI mode the SDK client is None and the search-intent
+        classifier (which currently uses the SDK) is unavailable. The
+        bot's keyword pre-filter already handles the common cases
+        before we ever reach this slow path, so returning False here
+        just means "no web search" — the answer comes from the model's
+        own knowledge instead of a tool call. Better UX than spawning a
+        second subprocess for a yes/no classification.
+        """
+        if self.cli_mode:
+            return False
         if self.client is None or self.target_model is None:
             return False
         return await detect_search_intent(self.client, self.target_model, message)
@@ -480,8 +582,26 @@ class ChatManager(SessionMixin, ResponseMixin):
         config_params: dict[str, Any],
         send_channel: Any,
         channel_id: int | None = None,
+        user_id: int | None = None,
+        guild_id: int | None = None,
     ) -> tuple[str, str, list[Any]]:
-        """Call Claude API with streaming. Delegates to api_handler."""
+        """Call Claude API with streaming.
+
+        Routes to the CLI subprocess when ``CLAUDE_BACKEND=cli`` (no SDK
+        client available), or the SDK ``call_claude_api_streaming`` path
+        otherwise. Both paths return the same ``(text, indicator, tool_calls)``
+        triple so callers don't branch.
+        """
+        if self.cli_mode:
+            from .api.discord_chat_claude_cli import call_claude_cli_streaming
+
+            return await call_claude_cli_streaming(
+                contents=contents,
+                config_params=config_params,
+                send_channel=send_channel,
+                channel_id=channel_id,
+                cancel_flags=self.cancel_flags,
+            )
         if self.client is None or self.target_model is None:
             raise ValueError("Claude client not initialized")
         return await call_claude_api_streaming(
@@ -493,6 +613,8 @@ class ChatManager(SessionMixin, ResponseMixin):
             channel_id=channel_id,
             cancel_flags=self.cancel_flags,
             fallback_func=self._call_gemini_api,
+            user_id=user_id,
+            guild_id=guild_id,
         )
 
     async def _call_gemini_api(
@@ -500,8 +622,23 @@ class ChatManager(SessionMixin, ResponseMixin):
         contents: list[dict[str, Any]],
         config_params: dict[str, Any],
         channel_id: int | None = None,
+        user_id: int | None = None,
+        guild_id: int | None = None,
     ) -> tuple[str, str, list[Any]]:
-        """Call Claude API with retry logic. Delegates to api_handler."""
+        """Call Claude API with retry logic.
+
+        Routes to the CLI subprocess in CLI mode (same contract as the
+        streaming variant), or the SDK ``call_claude_api`` path
+        otherwise.
+        """
+        if self.cli_mode:
+            from .api.discord_chat_claude_cli import call_claude_cli
+
+            return await call_claude_cli(
+                contents=contents,
+                config_params=config_params,
+                channel_id=channel_id,
+            )
         if self.client is None or self.target_model is None:
             raise ValueError("Claude client not initialized")
         return await call_claude_api(
@@ -511,6 +648,8 @@ class ChatManager(SessionMixin, ResponseMixin):
             config_params=config_params,
             channel_id=channel_id,
             cancel_flags=self.cancel_flags,
+            user_id=user_id,
+            guild_id=guild_id,
         )
 
     def _process_response_text(
@@ -525,15 +664,7 @@ class ChatManager(SessionMixin, ResponseMixin):
         response_text = self._fix_ai_character_tag_comments(response_text)
 
         # Convert standalone character names to {{Name}} tags
-        if guild_id and guild_id in SERVER_CHARACTER_NAMES:
-            char_names = list(SERVER_CHARACTER_NAMES[guild_id].keys())
-            char_names.sort(key=len, reverse=True)
-            for char_name in char_names:
-                pattern = rf"^[ \t]*{re.escape(char_name)}[ \t]*$"
-                replacement = f"{{{{{char_name}}}}}"
-                response_text = re.sub(
-                    pattern, replacement, response_text, flags=re.MULTILINE | re.IGNORECASE
-                )
+        response_text = replace_character_names(response_text, guild_id)
 
         # Prepend search indicator
         if search_indicator:
@@ -571,15 +702,39 @@ class ChatManager(SessionMixin, ResponseMixin):
     async def _process_pending_messages(self, channel_id: int) -> None:
         """Process any pending messages for a channel.
         Uses MessageQueue module for message merging.
+
+        Convert the previous recursion (``process_chat`` → finally →
+        ``_process_pending_messages`` → ``process_chat`` → ...) into a
+        bounded while-loop. The recursion depth was bounded in practice
+        by the user's send rate, but a perfectly-timed message burst
+        could push it deep enough to hit Python's default recursion
+        limit on the AI turn's already-deep call stack. The loop runs
+        until the pending queue is empty for this channel.
         """
-        if not self._message_queue.has_pending(channel_id):
-            return
+        # Hard cap on iterations as a defence against a hypothetical bug
+        # where ``merge_pending_messages`` returns the same message
+        # forever — without it, an infinite loop would hold the bot
+        # locked on this channel.
+        max_iterations = 16
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            if not self._message_queue.has_pending(channel_id):
+                return
 
-        # Merge pending messages using MessageQueue
-        latest_msg, combined_message = self._message_queue.merge_pending_messages(channel_id)
+            # Merge pending messages using MessageQueue
+            latest_msg, combined_message = self._message_queue.merge_pending_messages(
+                channel_id
+            )
 
-        if latest_msg:
-            # Process the combined message
+            if not latest_msg:
+                return
+
+            # Process the combined message. ``process_chat``'s ``finally``
+            # block USED to recurse here; it now no-ops because
+            # ``_process_pending_messages`` itself loops, so we keep
+            # going only when new messages arrive between the
+            # process_chat awaits.
             await self.process_chat(
                 channel=latest_msg.channel,
                 user=latest_msg.user,
@@ -589,6 +744,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                 generate_response=latest_msg.generate_response,
                 user_message_id=latest_msg.user_message_id,
             )
+        # Guarded against a runaway merge bug — only reached when the
+        # loop counter runs out without ``has_pending`` ever returning
+        # False, i.e. ``merge_pending_messages`` consumed but
+        # repopulated the queue 16× in a row.
+        logger.warning(
+            "_process_pending_messages exceeded %d iterations for channel %s; "
+            "bailing to avoid lock starvation",
+            max_iterations,
+            channel_id,
+        )
 
     async def process_chat(
         self,
@@ -601,7 +766,11 @@ class ChatManager(SessionMixin, ResponseMixin):
         user_message_id: int | None = None,
     ) -> None:
         """Process chat message and generate AI response."""
-        if not self.client:
+        # In CLI mode the SDK client stays None but the CLI subprocess
+        # path can still answer. Allow either route through this gate;
+        # the actual choice happens in ``_call_gemini_api_streaming`` /
+        # ``_call_gemini_api`` below.
+        if not self.client and not self.cli_mode:
             return  # AI not initialized
 
         # Input length validation - prevent extremely large messages
@@ -617,6 +786,38 @@ class ChatManager(SessionMixin, ResponseMixin):
         send_channel = output_channel if output_channel else channel
         channel_id = context_channel.id
 
+        # Optional input guardrails. OFF by default so roleplay content is never
+        # silently altered/dropped. With INPUT_GUARDRAILS=1 the message is
+        # sanitized (secrets redacted, control chars stripped, length capped) and
+        # injection attempts are logged before the text reaches RAG/the prompt;
+        # it only REFUSES when INPUT_GUARDRAILS_ENFORCE=1 AND the input is flagged
+        # invalid (so "sanitize-only" is the safe middle setting). Unrestricted
+        # channels are already handled inside validate_input_for_channel.
+        if message and os.getenv("INPUT_GUARDRAILS", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from .processing.guardrails import validate_input_for_channel
+
+                ig_valid, ig_sanitized, ig_risk, ig_flags = validate_input_for_channel(
+                    message, channel_id
+                )
+                if ig_flags:
+                    logger.info(
+                        "🛡️ input guardrails flagged channel %s (risk=%.2f): %s",
+                        channel_id,
+                        ig_risk,
+                        ig_flags,
+                    )
+                message = ig_sanitized
+                if not ig_valid and os.getenv(
+                    "INPUT_GUARDRAILS_ENFORCE", ""
+                ).strip().lower() in ("1", "true", "yes"):
+                    logger.warning(
+                        "🛡️ input guardrails refused a message in channel %s", channel_id
+                    )
+                    return
+            except Exception:
+                logger.debug("input guardrails check failed (non-fatal)", exc_info=True)
+
         # Request deduplication - prevent double processing of same message
         request_key = self._deduplicator.generate_key(channel_id, user.id, message or "")
         if self._deduplicator.check_and_add(request_key):
@@ -631,8 +832,17 @@ class ChatManager(SessionMixin, ResponseMixin):
             self._deduplicator.remove_request(request_key)
             return
 
-        # Create lock for this channel if not exists (atomic operation to prevent race condition)
-        lock = self.processing_locks.setdefault(channel_id, asyncio.Lock())
+        # Create lock for this channel if not exists. We deliberately do NOT
+        # use ``setdefault(channel_id, asyncio.Lock())`` here because
+        # ``setdefault``'s second argument is always evaluated — every call
+        # allocates a fresh ``asyncio.Lock`` even when the existing one is
+        # returned, which produces meaningful garbage churn on busy
+        # channels. The check-then-set pattern is safe in single-threaded
+        # asyncio (no ``await`` between the read and the write).
+        lock = self.processing_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.processing_locks[channel_id] = lock
 
         # If already processing, queue this message and signal cancellation
         if lock.locked():
@@ -677,7 +887,6 @@ class ChatManager(SessionMixin, ResponseMixin):
         try:  # Manual lock management with timeout protection
             # Track lock acquisition time for timeout detection
             self._message_queue._lock_times[channel_id] = time.time()
-            # Reset cancel flag
             self._message_queue.reset_cancel(channel_id)
             typing_context = (
                 send_channel.typing() if generate_response else contextlib.nullcontext()
@@ -788,7 +997,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                         entity_names = re.findall(r"\{\{([^}]+)\}\}", display_message)
                         # Also search for known character names in the message
                         if not entity_names:
-                            # Search entities mentioned in text
+                            # Search entities mentioned in text.
+                            # 100-char slice is intentional: the entity search
+                            # index uses prefix matching, and longer queries
+                            # add latency without improving recall for the
+                            # short character names we're looking for.
                             entities = await entity_memory.search_entities(
                                 display_message[:100],
                                 channel_id=channel_id,
@@ -924,10 +1137,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # 6. Build contents with history (limit to recent messages for better context)
                     history = chat_data.get("history", [])
 
-                    # Limit history - Gemini 3.0 Pro has 2M token context
+                    # Limit history — Claude Opus 4.7 has a 1M token context window.
                     # Using maximum context for all contexts (RP, DM, normal servers)
-                    # to preserve AI personality and conversation continuity
-                    # Note: MAX_HISTORY_ITEMS constant defined in data/constants.py
+                    # to preserve AI personality and conversation continuity.
+                    # Note: MAX_HISTORY_ITEMS constant defined in data/constants.py.
 
                     # Auto-compress very long histories using summarizer
                     # COMPRESS_THRESHOLD should be slightly higher than MAX_HISTORY_ITEMS
@@ -1088,18 +1301,31 @@ class ChatManager(SessionMixin, ResponseMixin):
                     use_streaming = self.is_streaming_enabled(channel_id)
 
                     if use_streaming:
-                        # Use streaming API for real-time updates
+                        # Use streaming API for real-time updates. Third slot
+                        # is the legacy tool-call list from the Gemini era —
+                        # the Claude pipeline always returns ``[]`` here and
+                        # no consumer reads it; underscore-prefix to flag the
+                        # deliberate-drop to readers.
                         (
                             model_text,
                             search_indicator,
-                            function_calls,
+                            _function_calls,
                         ) = await self._call_gemini_api_streaming(
-                            contents, config_params, send_channel, channel_id
+                            contents,
+                            config_params,
+                            send_channel,
+                            channel_id,
+                            user_id=user.id,
+                            guild_id=guild_id,
                         )
                     else:
                         # Use normal API call
-                        model_text, search_indicator, function_calls = await self._call_gemini_api(
-                            contents, config_params, channel_id
+                        model_text, search_indicator, _function_calls = await self._call_gemini_api(
+                            contents,
+                            config_params,
+                            channel_id,
+                            user_id=user.id,
+                            guild_id=guild_id,
                         )
 
                     # Check for cancellation after API call
@@ -1125,8 +1351,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                         chat_data["history"].append(user_item)
                         new_entries.append(user_item)
 
-                        # Also save the model response if we got one (avoid wasting API tokens)
-                        if model_text and model_text.strip():
+                        # Save the model turn only when it's a COMPLETE reply.
+                        # A cancelled stream returns the partial text accumulated
+                        # before the interrupt; persisting that records a reply the
+                        # model never finished and poisons later turns. The
+                        # non-streaming call returns atomically, so a non-empty
+                        # result there is the full reply, worth keeping to avoid
+                        # re-billing. (The partial was already shown in Discord.)
+                        if model_text and model_text.strip() and not use_streaming:
                             model_item = {
                                 "role": "model",
                                 "parts": [model_text],
@@ -1171,58 +1403,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                         chat_data["history"].append(model_item)
                         new_entries.append(model_item)
 
-                    # 9.5 Handle Function Calls
-                    tool_outputs = []
-                    if function_calls:
-                        for tool_call in function_calls:
-                            logger.info("🛠️ Executing Tool: %s", tool_call.name)
-                            if isinstance(send_channel, discord.TextChannel):
-                                # Per-tool timeout: a single misbehaving tool
-                                # (e.g. a slow HTTP call inside execute_tool_call)
-                                # used to block the entire turn. 30s gives most
-                                # tools room to finish while still bounding the
-                                # worst case.
-                                try:
-                                    result = await asyncio.wait_for(
-                                        execute_tool_call(self.bot, send_channel, user, tool_call),
-                                        timeout=30.0,
-                                    )
-                                except TimeoutError:
-                                    logger.warning(
-                                        "⏱️ Tool %s timed out after 30s — skipping",
-                                        tool_call.name,
-                                    )
-                                    result = (
-                                        f"Tool '{tool_call.name}' timed out after 30s "
-                                        "and was skipped."
-                                    )
-                            else:
-                                result = "Tool execution is only available in guild text channels."
-                            tool_outputs.append(f"🔧 Tool '{tool_call.name}': {result}")
-
-                            # Sanitize tool result before persisting to history:
-                            #  - cap length (prevents history bloat from runaway tools)
-                            #  - strip NULs and other C0 control chars that can
-                            #    corrupt JSON storage or break downstream prompts
-                            raw_result = str(result)
-                            if len(raw_result) > 4000:
-                                raw_result = raw_result[:4000] + "…[truncated]"
-                            safe_result = "".join(
-                                ch for ch in raw_result if ch in {"\n", "\t"} or ord(ch) >= 0x20
-                            )
-
-                            # Add tool usage to history (represented as system/model info)
-                            tool_item = {
-                                "role": "model",
-                                "parts": [
-                                    f"[Executed Tool: {tool_call.name}]\nResult: {safe_result}"
-                                ],
-                                "timestamp": current_time,
-                            }
-                            chat_data["history"].append(tool_item)
-                            new_entries.append(tool_item)
-
-                    if not (model_text and model_text.strip()) and not function_calls:
+                    # NOTE: legacy "9.5 Handle Function Calls" block removed.
+                    # The Claude streaming path never surfaces tool_use blocks
+                    # to this layer (``_function_calls`` is the always-empty
+                    # third slot returned by ``api_handler``). If/when proper
+                    # Claude tool_use roundtrips get wired in, this is where
+                    # the assistant→tool_use→tool_result alternation should
+                    # be threaded back into ``chat_data["history"]``.
+                    if not (model_text and model_text.strip()):
                         logger.warning("⚠️ Skipped saving empty model response")
 
                     await save_history(
@@ -1302,12 +1490,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # 10. Process response text
                     response_text = str(model_text).strip() if model_text else ""
 
-                    # Append tool outputs to response text if any
-                    if tool_outputs:
-                        if response_text:
-                            response_text += "\n\n"
-                        response_text += "\n".join(tool_outputs)
-
+                    # (tool_outputs concat dropped along with the dead tool
+                    # execution block above)
                     response_text = self._process_response_text(
                         response_text, guild_id, search_indicator
                     )
@@ -1321,13 +1505,22 @@ class ChatManager(SessionMixin, ResponseMixin):
                             logger.info("🛡️ Guardrails applied: %s", warnings)
                         response_text = sanitized
 
-                    # Sanitize mentions in all AI output (defense-in-depth)
-                    # Must happen BEFORE split so webhook parts are also sanitized
-                    response_text = re.sub(r"(?i)@everyone", "@\u200beveryone", response_text)
-                    response_text = re.sub(r"(?i)@here", "@\u200bhere", response_text)
-                    # Also escape user/role mention patterns that AI might generate
-                    response_text = re.sub(r"<@!?(\d+)>", r"<@\u200b\1>", response_text)
-                    response_text = re.sub(r"<@&(\d+)>", r"<@&\u200b\1>", response_text)
+                    # Sanitize mentions in all AI output (defense-in-depth).
+                    # Must happen BEFORE split so webhook parts are also
+                    # sanitized. Negative-lookahead idempotency guards mirror
+                    # the canonical pattern in ``sanitization.py`` \u2014 without
+                    # them, re-running this on already-escaped text (e.g.
+                    # an emit-then-retry path) accumulates ``\u200b`` chars.
+                    # Non-raw replacement strings: ``\u200b`` becomes the
+                    # literal U+200B character (handled by Python) while
+                    # ``\\1`` keeps the backref escape for re's template
+                    # parser. Using a raw string here would pass ``\u200b``
+                    # verbatim into re's template parser, which doesn't
+                    # know ``\u`` and raises ``PatternError: bad escape``.
+                    response_text = PATTERN_AT_EVERYONE.sub("@\u200beveryone", response_text)
+                    response_text = PATTERN_AT_HERE.sub("@\u200bhere", response_text)
+                    response_text = PATTERN_USER_TAG.sub("<@\u200b\\1>", response_text)
+                    response_text = PATTERN_ROLE_TAG.sub("<@&\u200b\\1>", response_text)
 
                     # Check for {{Name}} syntax (Multi-Character Support)
                     # Split by {{Name}} blocks using precompiled pattern
@@ -1351,11 +1544,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                         if parts[0] and parts[0].strip():
                             await send_channel.send(parts[0].strip())
 
-                        # Iterate through the rest: odd indices are Names, even are Messages
+                        # Iterate through the rest: odd indices are Names, even are Messages.
+                        # ``range(1, len(parts), 2)`` already bounds ``i`` to
+                        # valid indices — the prior ``if i >= len(parts): break``
+                        # was dead defensive code.
                         last_msg_id = None
                         for i in range(1, len(parts), 2):
-                            if i >= len(parts):
-                                break
                             char_name = parts[i].strip() if parts[i] else ""
                             if not char_name:
                                 continue
@@ -1404,12 +1598,23 @@ class ChatManager(SessionMixin, ResponseMixin):
                             if split_at == -1 or split_at < 1000:
                                 split_at = 2000
                             # Walk forward past Thai combining marks so they
-                            # stay attached to their base character.
+                            # stay attached to their base character. Cap at
+                            # 2000 — a stream of combining marks at the
+                            # boundary would otherwise push the chunk past
+                            # Discord's 2000-char hard limit. If we hit the
+                            # cap, walk backward to the last non-combining
+                            # char so the resulting chunk fits.
                             while (
                                 split_at < len(remaining)
+                                and split_at < 2000
                                 and ord(remaining[split_at]) in THAI_COMBINING
                             ):
                                 split_at += 1
+                            if split_at >= 2000:
+                                rewind = split_at
+                                while rewind > 1 and ord(remaining[rewind - 1]) in THAI_COMBINING:
+                                    rewind -= 1
+                                split_at = rewind
                             sent_message = await send_channel.send(remaining[:split_at])
                             remaining = remaining[split_at:].lstrip("\n")
                     elif response_text:  # Only send if there is text left
@@ -1477,6 +1682,15 @@ class ChatManager(SessionMixin, ResponseMixin):
             self._message_queue._lock_times.pop(channel_id, None)
             # Drain pending messages even on error paths so a single failure
             # doesn't leave queued user messages stranded until the next turn.
+            # Log the failure instead of swallowing silently — if this raises
+            # repeatedly it means the queue is growing unboundedly and we
+            # want that to surface, not hide behind suppress().
             if self._message_queue.has_pending(channel_id):
-                with contextlib.suppress(Exception):
+                try:
                     await self._process_pending_messages(channel_id)
+                except Exception:
+                    logger.warning(
+                        "Draining pending messages failed for channel %s",
+                        channel_id,
+                        exc_info=True,
+                    )

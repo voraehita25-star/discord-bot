@@ -601,8 +601,12 @@ def validate_input_for_channel(
                 channel_id,
                 result.flags,
             )
+        # Enforce the same length cap as the normal path (line ~506) even in
+        # unrestricted mode — relaxing *content* filtering must not also lift
+        # the size bound, or a multi-MB message would flow unbounded into the
+        # prompt and blow the token budget.
+        sanitized = user_input[: input_guardrails.MAX_INPUT_LENGTH]
         # Sanitize control characters even in unrestricted mode
-        sanitized = user_input
         for pattern, _name, _score in input_guardrails._suspicious_patterns:
             sanitized = pattern.sub("", sanitized)
         # ALSO redact secrets — unrestricted mode disables content filtering

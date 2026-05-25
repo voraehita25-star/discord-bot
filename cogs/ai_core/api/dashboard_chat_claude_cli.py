@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sys
 import time
@@ -63,6 +64,7 @@ from .dashboard_common import (
     build_user_context,
     get_db,
     normalize_timestamp_to_bangkok,
+    strip_claude_internal_tags,
     strip_leading_timestamp,
 )
 from .dashboard_config import (
@@ -79,9 +81,34 @@ logger = logging.getLogger(__name__)
 # right .jsonl when the user deletes a Dashboard conversation after a restart.
 _CONVERSATION_SESSIONS: dict[str, str] = {}
 
+# Background tasks for session-file cleanup (LRU eviction unlinks the
+# evicted .jsonl). Pinned in a module-level set so they aren't GC'd
+# before completing — the asyncio runtime only holds a weak reference
+# to a task once you stop awaiting it.
+_PENDING_SESSION_CLEANUPS: set[asyncio.Task[bool]] = set()
+
+
+class _StaleSessionError(RuntimeError):
+    """``claude -p --resume <id>`` failed because the session is stale.
+
+    Subclass of ``RuntimeError`` so existing ``except RuntimeError`` paths
+    keep working. Replaces the previous attribute-injection trick
+    (``err.is_stale_session = True``) which bypassed type discipline and
+    confused static analysers. Callers should ``except _StaleSessionError``
+    explicitly when they want to drop the session id and retry.
+    """
+
 # Bound the conversation→session map so a long-running bot doesn't accumulate
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
+
+# Stream timeout used when ``thinking_enabled`` is set on the request. Opus
+# 4.7 with ``--effort max --betas interleaved-thinking`` legitimately spends
+# minutes reasoning on the Anthropic side before emitting any stdout, so the
+# non-thinking 300s default fires while the API call is still in flight and
+# surfaces as a spurious "Claude CLI timed out" toast. 1800s (30 min) covers
+# the long tail of hard reasoning prompts; override via env if needed.
+_THINKING_STREAM_TIMEOUT = max(300, int(os.getenv("DASHBOARD_STREAM_TIMEOUT_THINKING", "1800")))
 
 # Strong refs to in-flight sidecar-persistence tasks. Without this set the
 # tasks scheduled by ``_save_persisted_sessions`` are only weakly referenced
@@ -154,7 +181,15 @@ def _load_persisted_sessions() -> None:
         if not _SESSIONS_FILE.exists():
             return
         raw = _SESSIONS_FILE.read_text(encoding="utf-8")
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Persisted Claude CLI session map is corrupt JSON; "
+                "ignoring and starting with empty map (%s)",
+                _SESSIONS_FILE,
+            )
+            return
         if not isinstance(data, dict):
             return
         for k, v in data.items():
@@ -217,7 +252,11 @@ def _save_persisted_sessions() -> None:
     task.add_done_callback(_PERSIST_TASKS.discard)
 
 
-_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Must start with an alphanumeric: a session id beginning with '-' would be
+# parsed as a CLI flag by ``claude --resume <id>`` (argv injection). The rest
+# of the id is the usual UUID/hex+hyphen alphabet. Also blocks path-traversal
+# chars on the delete path (no '/', '\', '.').
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 async def delete_session_file(conversation_id: str) -> bool:
@@ -293,11 +332,13 @@ def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
             attempts += 1
             if old_lock.locked():
                 continue
-            popped = _CONVERSATION_LOCKS.pop(old_id, None)
-            if popped is None:
-                continue
+            # asyncio is single-threaded and no await happens between the
+            # items() snapshot and pop(), so pop() always succeeds here.
+            popped = _CONVERSATION_LOCKS.pop(old_id)
             if popped.locked():
-                # Raced — put it back and try another.
+                # Defensive: lock state could change if a coroutine
+                # acquired it during dict iteration in the same step.
+                # Put it back and try another.
                 _CONVERSATION_LOCKS[old_id] = popped
                 continue
             break
@@ -426,14 +467,41 @@ def _track_session(conversation_id: str, session_id: str) -> None:
     """
     if not conversation_id or not session_id:
         return
+    # Validate at the source. A session id that doesn't match the strict
+    # pattern (e.g. one starting with '-') would be parsed as a flag when we
+    # later run ``claude --resume <id>`` (argv injection), or could escape the
+    # projects folder on the delete path. Refuse to track it.
+    if not _SESSION_ID_PATTERN.match(session_id):
+        logger.warning("Refusing to track Claude session with suspicious id %r", session_id)
+        return
     # Pop first (if present) so the re-insert below puts the entry at the
     # end of insertion order. Without this, dict[key] = value keeps the
     # original position and a long-active conversation would be evicted
     # ahead of recently-touched ones.
     _CONVERSATION_SESSIONS.pop(conversation_id, None)
     if len(_CONVERSATION_SESSIONS) >= _MAX_TRACKED_SESSIONS:
-        oldest = next(iter(_CONVERSATION_SESSIONS))
-        _CONVERSATION_SESSIONS.pop(oldest, None)
+        oldest_conv = next(iter(_CONVERSATION_SESSIONS))
+        oldest_session = _CONVERSATION_SESSIONS.pop(oldest_conv, None)
+        # Also unlink the on-disk ``.jsonl`` for the evicted session.
+        # Without this, the in-memory entry is dropped but the Claude
+        # CLI's session file persists indefinitely, leaking disk over
+        # the bot's lifetime. ``delete_session_file`` is async — schedule
+        # the cleanup as a background task and pin it to a module-level
+        # set so it isn't garbage-collected before completing.
+        if oldest_session and oldest_conv:
+            with contextlib.suppress(RuntimeError):
+                # ``get_event_loop_policy().get_event_loop()`` is deprecated in
+                # 3.12+ and slated for removal in 3.14. ``get_running_loop`` is
+                # the right call here because the LRU-eviction path is reached
+                # only from inside the running async session-tracker.
+                loop = asyncio.get_running_loop()
+                cleanup_task = loop.create_task(
+                    delete_session_file(oldest_conv)
+                )
+                _PENDING_SESSION_CLEANUPS.add(cleanup_task)
+                cleanup_task.add_done_callback(
+                    _PENDING_SESSION_CLEANUPS.discard
+                )
     _CONVERSATION_SESSIONS[conversation_id] = session_id
     _save_persisted_sessions()
 
@@ -471,12 +539,22 @@ def _save_inline_images(
     if not images or not conversation_id:
         return []
 
-    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    # conversation_id is pre-validated against ``^[a-zA-Z0-9_\-]{1,128}$``
+    # at the WS handler entry — only the length cap is meaningful here.
+    safe_conv = conversation_id[:64]
     target_dir = _TEMP_IMAGE_ROOT / safe_conv
     target_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     timestamp = int(time.time() * 1000)
+    # Random suffix prevents filename collision when two parallel uploads
+    # in the same conversation hit the same millisecond and the same
+    # ``idx``. The previous ``{timestamp}_{idx}{ext}`` scheme could
+    # silently overwrite the first file with the second's bytes if
+    # _save_inline_images was called twice concurrently for the same
+    # conversation_id — Python's GIL doesn't help because the writes
+    # happen inside ``asyncio.to_thread`` workers.
+    rand_suffix = secrets.token_hex(4)
     for idx, raw in enumerate(images):
         if not isinstance(raw, str) or "," not in raw or not raw.startswith("data:"):
             continue
@@ -503,7 +581,7 @@ def _save_inline_images(
                 max_size_bytes,
             )
             continue
-        path = target_dir / f"{timestamp}_{idx}{ext}"
+        path = target_dir / f"{timestamp}_{rand_suffix}_{idx}{ext}"
         path.write_bytes(data)
         written.append(path)
     return written
@@ -517,7 +595,8 @@ def _cleanup_image_dir(conversation_id: str) -> None:
     """
     if not conversation_id:
         return
-    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    # conversation_id is pre-validated; only length cap is needed.
+    safe_conv = conversation_id[:64]
     target_dir = _TEMP_IMAGE_ROOT / safe_conv
     cutoff = time.time() - 60
     with contextlib.suppress(Exception):
@@ -560,12 +639,19 @@ def _save_inline_documents(
     if not documents or not conversation_id:
         return []
 
-    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    # conversation_id is pre-validated; only length cap is needed.
+    safe_conv = conversation_id[:64]
     target_dir = _TEMP_DOCS_ROOT / safe_conv
     target_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     timestamp = int(time.time() * 1000)
+    # Mirror the per-call random suffix used by ``_save_inline_images`` so
+    # two concurrent uploads in the same conversation at the same
+    # millisecond can't collide on the same filename. The previous
+    # ``{timestamp}_{idx}_{safe_name}`` scheme depended on the millisecond
+    # clock being unique enough; under load that's not a safe assumption.
+    rand_suffix = secrets.token_hex(4)
     for idx, raw in enumerate(documents):
         if not isinstance(raw, dict):
             continue
@@ -590,7 +676,7 @@ def _save_inline_documents(
         # Preserve the user's filename (sanitised) so Claude sees meaningful
         # names — makes prompt output more coherent than `doc_0.pdf`.
         safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)[:80] or f"doc_{idx}{ext}"
-        path = target_dir / f"{timestamp}_{idx}_{safe_name}"
+        path = target_dir / f"{timestamp}_{rand_suffix}_{idx}_{safe_name}"
 
         if kind == "binary" or is_binary_ext:
             # Binary: expect data URL format
@@ -634,7 +720,8 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
     """
     if not conversation_id:
         return
-    safe_conv = re.sub(r"[^A-Za-z0-9_\-]", "_", conversation_id)[:64]
+    # conversation_id is pre-validated; only length cap is needed.
+    safe_conv = conversation_id[:64]
     target_dir = _TEMP_DOCS_ROOT / safe_conv
     cutoff = time.time() - 60
     with contextlib.suppress(Exception):
@@ -699,8 +786,13 @@ def _build_full_prompt(
         if history_block:
             parts.append(f"# Conversation so far\n{history_block}")
 
+    # Use absolute POSIX-style paths so Claude's Read tool can locate files
+    # outside its CWD. The subprocess runs from `data/claude_cli_workdir/`,
+    # but attachments live under `data/tmp/dashboard_cli_*/<conv>/`. Passing
+    # only the basename (a previous regression) made Read fail with ENOENT
+    # and the model fell back to "I can't see the image".
     if image_paths:
-        path_lines = "\n".join(f"- {Path(p).name}" for p in image_paths)
+        path_lines = "\n".join(f"- {Path(p).resolve().as_posix()}" for p in image_paths)
         parts.append(
             "# Attached images\n"
             "The user attached the following image file(s). Use the Read tool "
@@ -709,7 +801,7 @@ def _build_full_prompt(
         )
 
     if doc_paths:
-        doc_lines = "\n".join(f"- {Path(p).name}" for p in doc_paths)
+        doc_lines = "\n".join(f"- {Path(p).resolve().as_posix()}" for p in doc_paths)
         parts.append(
             "# Attached documents\n"
             "The user attached the following document file(s) (PDF, text, code, "
@@ -806,6 +898,20 @@ def _make_subprocess_env() -> dict[str, str]:
         "no_proxy",
     }
     env = {k: v for k, v in os.environ.items() if k in _ALLOWED_ENV_KEYS}
+    # ``NODE_OPTIONS`` is allowlisted because the claude binary is Node-based
+    # and an operator may need to bump --max-old-space-size, but the same
+    # var also accepts ``--require ./malicious.js`` and
+    # ``--inspect=...:9229``. If an attacker ever gets parent env-write
+    # access (high bar), they could pivot through claude. Filter the
+    # value to a known-safe subset of flags.
+    if "NODE_OPTIONS" in env:
+        _SAFE_NODE_OPTS = ("--max-old-space-size=", "--max_old_space_size=", "--use-openssl-ca")
+        tokens = env["NODE_OPTIONS"].split()
+        filtered = [t for t in tokens if any(t.startswith(p) for p in _SAFE_NODE_OPTS)]
+        if filtered:
+            env["NODE_OPTIONS"] = " ".join(filtered)
+        else:
+            env.pop("NODE_OPTIONS", None)
     return env
 
 
@@ -849,8 +955,14 @@ def _build_claude_argv(
     ]
     if enable_thinking:
         argv.extend(["--effort", "max", "--betas", "interleaved-thinking"])
-    if session_id:
+    if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
+    elif session_id:
+        # Defense-in-depth: a session id that slipped past _track_session (e.g.
+        # via a tampered persisted-sessions file) and begins with '-' would be
+        # parsed as a flag here (argv injection). Drop --resume rather than risk
+        # it — the turn just starts a fresh server-side session.
+        logger.warning("Ignoring suspicious --resume session id %r", session_id)
     # Tools allow-list: zero by default (pure chat — fastest, no surprises).
     # Images require Read so Claude can view the temp files. /edit also uses
     # zero tools — Claude just emits SEARCH/REPLACE text in its reply.
@@ -864,6 +976,18 @@ def _build_claude_argv(
         )
     tools = "Read" if allow_read_for_images else ""
     argv.extend(["--allowedTools", tools])
+    if allow_read_for_images:
+        # Scope the Read tool's filesystem reach to ONLY the upload temp roots.
+        # Read can otherwise reach any absolute path the bot user can (e.g.
+        # ~/.claude/.credentials.json, .env, the SQLite DB) — that's how images
+        # under data/tmp/ are read today, but it also lets a prompt-injected
+        # document ask Claude to Read and exfiltrate secrets over the WS stream.
+        # --add-dir declares the allowed read roots; uploads live in
+        # per-conversation subdirs beneath them. mkdir so the flag resolves even
+        # before the first upload writes into the dir.
+        for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
+            _root.mkdir(parents=True, exist_ok=True)
+            argv.extend(["--add-dir", str(_root)])
     return argv
 
 
@@ -1041,8 +1165,55 @@ async def _run_claude_subprocess(
                 if thinking and on_thinking_delta is not None:
                     await on_thinking_delta(thinking)
 
+    # Drain stderr concurrently with stdout so the child can't deadlock
+    # when its stderr pipe buffer (default 64 KiB) fills before stdout
+    # closes. Without this, a verbose claude warning chain on a long
+    # turn would block the subprocess, which in turn blocks consume_stdout
+    # from ever seeing EOF — bot stalls until the wait_for timeout fires.
+    stderr_chunks: list[bytes] = []
+
+    async def consume_stderr() -> None:
+        if proc.stderr is None:
+            return
+        async for chunk in proc.stderr:
+            stderr_chunks.append(chunk)
+
+    stderr_task = asyncio.create_task(consume_stderr())
+
+    stdout_timed_out = False
     try:
-        await asyncio.wait_for(consume_stdout(), timeout=timeout)
+        try:
+            await asyncio.wait_for(consume_stdout(), timeout=timeout)
+        except TimeoutError:
+            # Track separately so the finally below can log stderr_chunks
+            # AFTER they've finished draining. The exception still propagates
+            # to the outer ``except TimeoutError`` in the chat handler.
+            stdout_timed_out = True
+            raise
+        finally:
+            # Always wait for the stderr drain to finish so we don't leak
+            # the task. If consume_stdout raised, give stderr a brief
+            # window to drain naturally before cancelling.
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(stderr_task, timeout=2.0)
+            if not stderr_task.done():
+                stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stderr_task
+            # If consume_stdout timed out, log whatever ended up on stderr
+            # before re-raising. Without this, ``bot.log`` stayed silent for
+            # the entire 300s/1800s window even though the subprocess had
+            # buffered diagnostic output (auth prompt, network stall, etc.)
+            # — the existing ``rc != 0`` log path is bypassed on TimeoutError.
+            if stdout_timed_out:
+                stderr_text = b"".join(stderr_chunks).decode(
+                    "utf-8", errors="replace"
+                )[:1000]
+                logger.warning(
+                    "⏱️ claude -p stdout silent for %ds; stderr_tail=%s",
+                    timeout,
+                    stderr_text or "<empty>",
+                )
         # Bound proc.wait() too — a misbehaving CLI could close stdout while
         # holding on to the process, hanging this coroutine indefinitely.
         # 5s is generous: by the time stdout closes, exit is normally instant.
@@ -1052,18 +1223,24 @@ async def _run_claude_subprocess(
             logger.warning("claude -p didn't exit 5s after stdout closed; killing")
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            rc = await proc.wait()
+            try:
+                rc = await asyncio.wait_for(proc.wait(), timeout=10.0)
+            except TimeoutError:
+                # Process is wedged even after SIGKILL — log loudly and
+                # surface a synthetic exit code so callers can react.
+                # Without the bound, ``proc.wait()`` could hang the request
+                # forever holding the conversation lock.
+                logger.error(
+                    "claude -p still alive 10s after kill; abandoning process"
+                )
+                rc = -1
         if rc != 0:
-            stderr_text = ""
-            if proc.stderr is not None:
-                err_bytes = await proc.stderr.read()
-                stderr_text = err_bytes.decode("utf-8", errors="replace")[:500]
+            stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")[:500]
             logger.error("claude -p failed (exit %d): %s", rc, stderr_text)
             # Mark stale-session errors so the caller can transparently retry
             # without the bad --resume id instead of bouncing the error to
             # the user.
             err_msg = f"claude -p exit {rc}: {stderr_text[:200]}"
-            err = RuntimeError(err_msg)
             lower = stderr_text.lower()
             if (
                 "--resume" in lower
@@ -1071,8 +1248,8 @@ async def _run_claude_subprocess(
                 or "is not a uuid" in lower
                 or "does not match any session" in lower
             ):
-                err.is_stale_session = True  # type: ignore[attr-defined]
-            raise err
+                raise _StaleSessionError(err_msg)
+            raise RuntimeError(err_msg)
     finally:
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
@@ -1132,7 +1309,24 @@ async def handle_chat_message_claude_cli(
     images_raw = data.get("images") or []
     documents_raw = data.get("documents") or []
 
-    if not content:
+    # Thinking-mode requests legitimately spend minutes on the Anthropic
+    # side (Opus 4.7 reasoning silently before any stdout event), so the
+    # caller's 300s default fires mid-call. Override here where we know
+    # thinking_enabled, leaving non-thinking turns on the tighter budget.
+    if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:
+        stream_timeout = _THINKING_STREAM_TIMEOUT
+
+    # Mirror the SDK backend (``dashboard_chat_claude.py``) which accepts
+    # empty content as long as there are images or documents to look
+    # at — the user's prompt is implicitly "review these attachments".
+    # Previously the CLI path rejected attachment-only turns with
+    # "Empty message" while the SDK path accepted them, surprising
+    # users who switched between backends.
+    has_attachments = bool(
+        (isinstance(images_raw, list) and images_raw)
+        or (isinstance(documents_raw, list) and documents_raw)
+    )
+    if not content and not has_attachments:
         await ws.send_json(
             {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
         )
@@ -1155,6 +1349,22 @@ async def handle_chat_message_claude_cli(
 
     # Cap image count to mirror the SDK backend's safety net.
     capped_images = images_raw[:max_images] if isinstance(images_raw, list) else []
+
+    # INFO breadcrumb: every claude-cli chat turn produces exactly one start
+    # line and one end line in bot.log so an operator can see request flow
+    # without flipping the whole logger to DEBUG (which would also flood the
+    # log with per-frame WS dispatch noise). Tracked here so an early-return
+    # validation rejection above stays silent — those send an error frame to
+    # the client and don't reach the subprocess.
+    start_ts = time.monotonic()
+    logger.info(
+        "💬 chat-cli start conv=%s thinking=%s content_len=%d images=%d docs=%d",
+        conversation_id,
+        thinking_enabled,
+        len(content),
+        len(capped_images),
+        len(documents_raw) if isinstance(documents_raw, list) else 0,
+    )
 
     # Save the user's turn to the DB up front, mirroring the SDK backend so
     # the conversation log stays consistent across backend toggles.
@@ -1233,7 +1443,6 @@ async def handle_chat_message_claude_cli(
         except Exception:
             logger.exception("Document extraction/persistence failed (CLI backend)")
 
-    # Build the prompt
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
     persona = str(preset.get("system_instruction", ""))
     if unrestricted_requested:
@@ -1401,7 +1610,7 @@ async def handle_chat_message_claude_cli(
                 # is a stale --resume session id. Forget it, rebuild the prompt
                 # with the full persona/history block (because Claude no longer
                 # has the context server-side), and try once more.
-                if getattr(err, "is_stale_session", False) and session_id:
+                if isinstance(err, _StaleSessionError) and session_id:
                     logger.info(
                         "Claude session %s is stale for conversation %s — retrying fresh",
                         session_id,
@@ -1463,10 +1672,16 @@ async def handle_chat_message_claude_cli(
             )
             return
         except RuntimeError as err:
+            # ``str(err)`` can echo raw subprocess stderr, including argv,
+            # absolute paths and env-derived diagnostics — log full detail
+            # for operators but only surface a stable message to the client.
+            logger.error(
+                "Claude CLI subprocess error: %s", err, exc_info=True
+            )
             await ws.send_json(
                 {
                     "type": "error",
-                    "message": str(err),
+                    "message": "Claude CLI failed; see server logs for details",
                     "conversation_id": conversation_id,
                 }
             )
@@ -1515,6 +1730,13 @@ async def handle_chat_message_claude_cli(
             }
         )
 
+    # Strip Claude Code internal XML markup that occasionally leaks into
+    # output (e.g. orphan ``</system-reminder>`` tags), then strip a
+    # leading ISO timestamp prefix if the model mimicked the
+    # historical-message format. Both pieces of housekeeping must
+    # happen BEFORE the response is persisted so the saved history
+    # doesn't carry the leaked markup into future turns.
+    full_response = strip_claude_internal_tags(full_response)
     full_response = strip_leading_timestamp(full_response)
 
     assistant_msg_id = 0
@@ -1583,6 +1805,19 @@ async def handle_chat_message_claude_cli(
                 "cache_read_input_tokens": cache_read,
             },
         }
+    )
+
+    # End breadcrumb — pairs with the start log above. Error paths already
+    # log via ``logger.exception`` / ``logger.error`` and return early, so
+    # only the happy path needs an explicit done line. Duration is wall-clock
+    # from after CLI-readiness check; tokens come from the ``result`` event.
+    logger.info(
+        "✅ chat-cli done conv=%s duration=%.1fs in=%d out=%d response_len=%d",
+        conversation_id,
+        time.monotonic() - start_ts,
+        in_tok,
+        out_tok,
+        len(full_response),
     )
 
 
@@ -1659,7 +1894,28 @@ async def handle_ai_edit_message_claude_cli(
     user_name = data.get("user_name", "User")
     thinking_enabled = bool(data.get("thinking_enabled"))
 
-    if not conversation_id or not target_message_id or not instruction:
+    # Match the chat handler: thinking-mode edits also need the longer
+    # budget so the API has time to actually reason before responding.
+    if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:
+        stream_timeout = _THINKING_STREAM_TIMEOUT
+
+    # Same alphanumeric/-/_ allowlist that the chat handler enforces (above).
+    # Without this, a malformed id from the AI-edit path would land in the
+    # session map and conversation lock dict before the chat path's regex
+    # had a chance to reject it — desync between the two state stores.
+    if not isinstance(conversation_id, str) or not re.match(
+        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+    ):
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "Invalid conversation ID",
+                "conversation_id": conversation_id,
+            }
+        )
+        return
+
+    if not target_message_id or not instruction:
         await ws.send_json(
             {
                 "type": "error",
@@ -1852,10 +2108,15 @@ async def handle_ai_edit_message_claude_cli(
             )
             return
         except RuntimeError as err:
+            # See chat handler: avoid leaking raw subprocess stderr to the
+            # client; log full detail for operators.
+            logger.error(
+                "Claude CLI edit subprocess error: %s", err, exc_info=True
+            )
             await ws.send_json(
                 {
                     "type": "error",
-                    "message": str(err),
+                    "message": "Claude CLI edit failed; see server logs for details",
                     "conversation_id": conversation_id,
                 }
             )
@@ -1890,7 +2151,13 @@ async def handle_ai_edit_message_claude_cli(
             }
         )
 
-    new_content = _apply_search_replace(original_content, edit_response.strip())
+    # Strip Claude Code internal markup before the SEARCH/REPLACE
+    # parser sees it. Otherwise a leaked ``</system-reminder>`` inside
+    # an AI patch block would survive into the saved message body.
+    new_content = _apply_search_replace(
+        original_content,
+        strip_claude_internal_tags(edit_response.strip()),
+    )
 
     # Guard against blanking the original message: if the patcher returned
     # an empty/whitespace-only result (no SEARCH/REPLACE blocks matched and

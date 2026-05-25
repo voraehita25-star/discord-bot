@@ -45,9 +45,29 @@ DASHBOARD_DEFAULT_AI_PROVIDER = _normalize_dashboard_ai_provider(
     os.getenv("DEFAULT_AI_PROVIDER", DEFAULT_DASHBOARD_AI_PROVIDER)
 )
 
-# Ensure data directories exist
-DB_DIR.mkdir(exist_ok=True)
-EXPORT_DIR.mkdir(exist_ok=True)
+# Data directories are created lazily by ``_ensure_db_dirs()`` (called from
+# ``Database.init_schema`` and the first export call) rather than at import
+# time. Previously the unconditional ``DB_DIR.mkdir`` here ran for every
+# importer — including pure-introspection imports (mypy, static analysis,
+# read-only container probe builds) — making the module unimportable in any
+# environment where ``data/`` isn't writable. The singleton ``db = Database()``
+# at the bottom of this file still constructs cleanly; only the FS-touching
+# step is deferred.
+
+
+def _ensure_db_dirs() -> None:
+    """Create the on-disk paths the DB writes to, if they don't already exist.
+
+    Called explicitly from ``init_schema`` and the export-staging path. Safe
+    to call repeatedly. Logs and continues on permission failure so a
+    misconfigured deployment surfaces the right error message rather than a
+    cryptic import traceback.
+    """
+    for path in (DB_DIR, EXPORT_DIR):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as exc:
+            logger.warning("Could not create data directory %s: %s", path, exc)
 
 
 class Database:
@@ -178,7 +198,17 @@ class Database:
                             max_retries,
                             e,
                         )
-                        await asyncio.sleep(2**attempt)  # Exponential backoff
+                        # Exponential backoff with jitter — multiple
+                        # concurrent retry tasks for separate channels
+                        # would otherwise sleep the same duration and
+                        # thunder back to the DB simultaneously. The
+                        # ±25% jitter is enough to desync without
+                        # meaningfully changing the wait budget.
+                        import random as _retry_random
+
+                        base_delay = 2**attempt
+                        jitter = _retry_random.uniform(-0.25, 0.25) * base_delay
+                        await asyncio.sleep(base_delay + jitter)
                     else:
                         logger.error("Auto-export failed after %d attempts: %s", max_retries, e)
 
@@ -234,7 +264,7 @@ class Database:
                 return
 
             dashboard_export_dir = EXPORT_DIR / "dashboard_chats"
-            dashboard_export_dir.mkdir(exist_ok=True)
+            dashboard_export_dir.mkdir(parents=True, exist_ok=True)
 
             conversation = await self.get_dashboard_conversation(conversation_id)
             if not conversation:
@@ -248,9 +278,15 @@ class Database:
             }
 
             output_file = dashboard_export_dir / f"{conversation_id}.json"
-            output_file.write_text(
-                json.dumps(export_data, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
+            # Run the JSON serialise + sync write off the event loop. The
+            # previous direct ``output_file.write_text`` blocked the loop
+            # for the full duration of a potentially-multi-MB dump; under
+            # load that visibly stalled WebSocket pings.
+            serialized = json.dumps(
+                export_data, ensure_ascii=False, indent=2, default=str
+            )
+            await asyncio.to_thread(
+                output_file.write_text, serialized, encoding="utf-8"
             )
             logger.debug("📤 Exported dashboard conversation: %s", conversation_id)
         except Exception:
@@ -274,7 +310,19 @@ class Database:
                 "💾 Awaiting %d in-flight export task(s) before shutdown...",
                 len(pending_tasks),
             )
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+            # Cap the wait so a stuck export (e.g. Windows file-lock
+            # contention) can't stall the shutdown sequence forever.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_tasks, return_exceptions=True),
+                    timeout=30.0,
+                )
+            except TimeoutError:
+                still_pending = sum(1 for t in pending_tasks if not t.done())
+                logger.warning(
+                    "💾 %d export task(s) still running after 30s — proceeding with shutdown",
+                    still_pending,
+                )
         self._export_tasks.clear()
 
         # Always run final export on shutdown to ensure data safety
@@ -314,6 +362,12 @@ class Database:
         if self._schema_initialized:
             return
 
+        # Create the on-disk paths the connection below will write to.
+        # Moved here from module import time so a read-only filesystem
+        # doesn't crash the import; if mkdir genuinely fails the next
+        # ``get_connection()`` will surface the actionable error.
+        _ensure_db_dirs()
+
         async with self.get_connection() as conn:
             # One-time database-wide PRAGMAs (only need to be set once per DB file)
             await conn.execute("PRAGMA journal_mode=WAL")
@@ -321,6 +375,12 @@ class Database:
             await conn.execute("PRAGMA wal_autocheckpoint=2000")
 
             # AI Chat History Table
+            #
+            # ``summarized_at`` (migration 015): nullable timestamp set by
+            # ``memory_consolidator`` when a row is rolled into a summary.
+            # The consolidator queries ``WHERE summarized_at IS NULL`` so a
+            # crash between summary save and delete no longer produces
+            # duplicate summaries on the next pass.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS ai_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -331,7 +391,8 @@ class Database:
                     content TEXT NOT NULL,
                     message_id INTEGER,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    summarized_at DATETIME
                 )
             """)
 
@@ -363,7 +424,6 @@ class Database:
                 ON ai_history(user_id)
             """)
 
-            # AI Session Metadata Table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS ai_metadata (
                     channel_id INTEGER PRIMARY KEY,
@@ -413,6 +473,7 @@ class Database:
                     url TEXT NOT NULL,
                     title TEXT,
                     added_by INTEGER,
+                    track_type TEXT,
                     added_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -538,7 +599,9 @@ class Database:
                     user_id INTEGER,
                     target_id INTEGER,
                     details TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    prev_hash TEXT,
+                    entry_hash TEXT
                 )
             """)
             await conn.execute("""
@@ -553,6 +616,21 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_audit_log_guild_created
                 ON audit_log(guild_id, created_at DESC)
             """)
+            # Append-only enforcement (tamper-resistance). Nothing in the
+            # codebase legitimately UPDATEs/DELETEs audit_log, so these triggers
+            # only ever fire on tampering. Combined with the prev_hash/entry_hash
+            # chain written by audit_log.py, after-the-fact edits are both
+            # blocked here and detectable via verify_chain().
+            await conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS audit_log_no_update "
+                "BEFORE UPDATE ON audit_log "
+                "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END"
+            )
+            await conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS audit_log_no_delete "
+                "BEFORE DELETE ON audit_log "
+                "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END"
+            )
 
             # AI Analytics Table
             await conn.execute("""
@@ -641,44 +719,75 @@ class Database:
                 )
             """)
 
-            # Add thinking column if not exists (migration)
-            try:
-                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN thinking TEXT")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'thinking' column: %s", e)
+            # Helper: pragma_table_info pre-check so we don't depend on
+            # SQLite's localised error message ("duplicate column" varies
+            # across versions and language packs). Idempotent ALTER without
+            # the substring sniff.
+            async def _add_column_if_missing(
+                table: str, column: str, ddl: str, *, label: str | None = None
+            ) -> None:
+                # Defense-in-depth: ``table``/``column`` are interpolated into the
+                # SQL below. Every current caller passes a hardcoded literal, but
+                # guard so a future caller can't turn this helper into an injection
+                # vector. ``str.isidentifier()`` matches the SQLite identifier shape
+                # (alnum + underscore, not starting with a digit).
+                if not table.isidentifier() or not column.isidentifier():
+                    raise ValueError(
+                        f"Invalid SQL identifier: table={table!r} column={column!r}"
+                    )
+                cursor = await conn.execute(f"PRAGMA table_info({table})")
+                existing = {row[1] for row in await cursor.fetchall()}
+                if column in existing:
+                    return
+                try:
+                    await conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+                except aiosqlite.OperationalError as e:
+                    logger.warning(
+                        "Unexpected error adding '%s' column: %s", label or column, e
+                    )
 
-            # Add mode column if not exists (migration)
-            try:
-                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN mode TEXT")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'mode' column: %s", e)
+            # Migration 015: ``summarized_at`` on ai_history. Idempotent
+            # add via the helper above; partial index so the consolidator's
+            # ``WHERE summarized_at IS NULL`` sweep stays O(unsummarised rows).
+            await _add_column_if_missing(
+                "ai_history", "summarized_at", "summarized_at DATETIME"
+            )
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_history_pending_summary
+                ON ai_history(channel_id, timestamp)
+                WHERE summarized_at IS NULL
+            """)
 
-            # Add images column if not exists (migration)
-            try:
-                await conn.execute("ALTER TABLE dashboard_messages ADD COLUMN images TEXT")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'images' column: %s", e)
+            # music_queue.track_type: persist each item's type ("url"/"search")
+            # so Spotify *search* items survive a restart. Without it, load drops
+            # the type and the bare search string ("Artist - Track audio") is fed
+            # to YTDLSource.from_url (which rejects non-http), silently skipping
+            # every Spotify track in a persisted queue after a restart.
+            await _add_column_if_missing(
+                "music_queue", "track_type", "track_type TEXT"
+            )
 
-            # Add is_pinned column if not exists (migration 013)
-            try:
-                await conn.execute(
-                    "ALTER TABLE dashboard_messages ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
-                )
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'is_pinned' column: %s", e)
+            # audit_log tamper-evidence chain columns (see audit_log.py).
+            await _add_column_if_missing("audit_log", "prev_hash", "prev_hash TEXT")
+            await _add_column_if_missing("audit_log", "entry_hash", "entry_hash TEXT")
 
-            # Add ai_provider column if not exists (migration)
-            try:
-                await conn.execute(
-                    "ALTER TABLE dashboard_conversations ADD COLUMN ai_provider TEXT NOT NULL DEFAULT 'claude'"
-                )
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'ai_provider' column: %s", e)
+            await _add_column_if_missing(
+                "dashboard_messages", "thinking", "thinking TEXT"
+            )
+            await _add_column_if_missing("dashboard_messages", "mode", "mode TEXT")
+            await _add_column_if_missing(
+                "dashboard_messages", "images", "images TEXT"
+            )
+            await _add_column_if_missing(
+                "dashboard_messages",
+                "is_pinned",
+                "is_pinned INTEGER NOT NULL DEFAULT 0",
+            )
+            await _add_column_if_missing(
+                "dashboard_conversations",
+                "ai_provider",
+                "ai_provider TEXT NOT NULL DEFAULT 'claude'",
+            )
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_dashboard_conv_updated
                 ON dashboard_conversations(updated_at DESC)
@@ -711,13 +820,11 @@ class Database:
 
             # ---- Migration 014: tags + liked ----
             # Add `liked` column to dashboard_messages if not present.
-            try:
-                await conn.execute(
-                    "ALTER TABLE dashboard_messages ADD COLUMN liked INTEGER NOT NULL DEFAULT 0"
-                )
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'liked' column: %s", e)
+            await _add_column_if_missing(
+                "dashboard_messages",
+                "liked",
+                "liked INTEGER NOT NULL DEFAULT 0",
+            )
 
             # Per-conversation tags table (many-to-many: one conv, many tags).
             await conn.execute("""
@@ -752,13 +859,11 @@ class Database:
             """)
 
             # Migration: add is_creator column if not exists
-            try:
-                await conn.execute(
-                    "ALTER TABLE dashboard_user_profile ADD COLUMN is_creator INTEGER DEFAULT 0"
-                )
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    logger.warning("Unexpected error adding 'is_creator' column: %s", e)
+            await _add_column_if_missing(
+                "dashboard_user_profile",
+                "is_creator",
+                "is_creator INTEGER DEFAULT 0",
+            )
 
             # Dashboard Long-term Memory Table
             await conn.execute("""
@@ -858,22 +963,47 @@ class Database:
                 if pending:
                     # Auto-backup before applying migrations
                     backup_dir = DB_DIR / "backups"
-                    backup_dir.mkdir(exist_ok=True)
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    # Include microseconds so two migrations triggered in
+                    # the same second (e.g. rapid restart, test parallelism)
+                    # produce distinct filenames instead of clobbering each
+                    # other.
                     backup_name = (
                         f"bot_database_v{current_ver}_"
-                        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%SZ')}.db"
+                        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%fZ')}.db"
                     )
                     backup_path = backup_dir / backup_name
                     import shutil
 
+                    # WAL mode means recent commits live in -wal/-shm, not the
+                    # main db file. Copying just the .db produces an
+                    # inconsistent backup missing the latest transactions.
+                    # Copy the WAL+SHM siblings too (best-effort — they may
+                    # be absent if the DB was checkpointed before backup).
                     shutil.copy2(self.db_path, backup_path)
+                    for suffix in ("-wal", "-shm"):
+                        sibling = Path(str(self.db_path) + suffix)
+                        if sibling.exists():
+                            try:
+                                shutil.copy2(sibling, Path(str(backup_path) + suffix))
+                            except OSError as e:
+                                logger.warning(
+                                    "Pre-migration backup: could not copy %s: %s",
+                                    sibling.name,
+                                    e,
+                                )
                     logger.info("💾 DB backup created before migration: %s", backup_name)
-                    # Keep only last 5 backups
+                    # Keep only last 5 backups. Also delete each pruned
+                    # backup's -wal/-shm siblings (copied above): the glob only
+                    # matches the .db file, so without this the sidecars would
+                    # accumulate unbounded.
                     backups = sorted(
                         backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime
                     )
                     for old_backup in backups[:-5]:
                         old_backup.unlink(missing_ok=True)
+                        for suffix in ("-wal", "-shm"):
+                            Path(str(old_backup) + suffix).unlink(missing_ok=True)
                 applied = await run_migrations(conn)
                 if applied:
                     logger.info("📦 %d migration(s) applied successfully", applied)
@@ -1037,6 +1167,12 @@ class Database:
                 await conn.execute("PRAGMA cache_size=250000")
                 await conn.execute("PRAGMA temp_store=MEMORY")
 
+            # ``conn`` is guaranteed non-None below: either the pool returned
+            # a live one, or aiosqlite.connect succeeded above. If connect
+            # had raised, the exception would have propagated past this
+            # point through the outer ``finally`` (releasing the semaphore)
+            # rather than reaching here with conn=None.
+
             # Re-assert foreign_keys=ON on every acquisition (both fresh and
             # pooled). Migration 010 toggles it OFF mid-run for a rebuild, and
             # SQLite ignores this pragma inside a transaction — so setting it
@@ -1176,7 +1312,14 @@ class Database:
                     logger.info("💚 Database recovered after reinitialization")
                     return True
             except Exception as reinit_error:
-                logger.error("💀 Database reinitialization failed: %s", reinit_error)
+                # Surface as CRITICAL — every health caller now treats the
+                # DB as dead, so this is operationally a service outage,
+                # not a transient warning.
+                logger.critical(
+                    "💀 Database reinitialization failed after retry: %s",
+                    reinit_error,
+                    exc_info=True,
+                )
                 return False
 
     async def _reinitialize_pool(self) -> None:
@@ -1301,7 +1444,14 @@ class Database:
         for attempt in range(max_retries):
             conn = None
             try:
-                await self._get_pool_semaphore().acquire()
+                # Pool semaphore acquire is bounded by DB_CONNECTION_TIMEOUT —
+                # without this, a poisoned/exhausted pool would hang every
+                # retry attempt indefinitely. ``get_connection`` (sibling)
+                # already has this wrap; keep both paths consistent.
+                await asyncio.wait_for(
+                    self._get_pool_semaphore().acquire(),
+                    timeout=DB_CONNECTION_TIMEOUT,
+                )
                 self._connection_count += 1
                 try:
                     conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
@@ -1347,12 +1497,22 @@ class Database:
                 raise last_error
             raise RuntimeError("Unknown database error occurred during connection")
 
-        # Yield exactly once - let caller exceptions propagate naturally
+        # Yield exactly once - let caller exceptions propagate naturally.
+        # Catch ``BaseException`` (not just ``aiosqlite.Error``) so the
+        # rollback also fires when caller code raises ValueError, KeyError,
+        # asyncio.CancelledError, etc. — otherwise the connection's pending
+        # transaction is closed without an explicit rollback, mismatching
+        # the sibling ``get_connection()`` path's contract.
         try:
             yield conn
             await conn.commit()
-        except aiosqlite.Error:
-            await conn.rollback()
+        except BaseException:
+            try:
+                await conn.rollback()
+            except Exception:
+                # Rollback is best-effort during cleanup; log and continue
+                # so the original caller exception isn't masked.
+                logger.exception("Rollback failed in get_connection_with_retry")
             raise
         finally:
             if conn is not None:
@@ -1374,8 +1534,16 @@ class Database:
             rowid = cursor.lastrowid
             return int(rowid) if rowid is not None else 0
 
-    async def get_all_rag_memories(self, channel_id: int | None = None) -> list[Any]:
-        """Get all memories for similarity search."""
+    async def get_all_rag_memories(self, channel_id: int | None = None) -> list[dict[str, Any]]:
+        """Get all memories for similarity search.
+
+        Returns plain ``dict`` rows (not ``aiosqlite.Row``). The connection
+        sets ``row_factory = aiosqlite.Row``, which has no ``.get()`` method;
+        rag.py accesses these via ``.get("id")``/``.get("embedding")``, so a
+        raw Row would raise ``AttributeError`` and break every search/index
+        path. Convert here once, matching the ``dict(row)`` idiom used by the
+        other query methods in this module.
+        """
         async with self.get_connection() as conn:
             if channel_id:
                 cursor = await conn.execute(
@@ -1387,7 +1555,7 @@ class Database:
                     "SELECT id, content, embedding, created_at FROM ai_long_term_memory"
                 )
             rows = await cursor.fetchall()
-            return list(rows)
+            return [dict(row) for row in rows]
 
     # ==================== AI History Operations ====================
 
@@ -1437,15 +1605,27 @@ class Database:
         if not messages:
             return 0
 
-        # Group messages by channel_id
+        # Group messages by channel_id. A falsy channel_id can't be stored, so
+        # count those separately and return the real number saved — previously
+        # they were dropped silently while the method still returned
+        # len(messages), reporting success for data that never landed.
         by_channel: dict[int, list[dict[str, Any]]] = {}
+        dropped = 0
         for msg in messages:
             ch = msg.get("channel_id")
-            if ch:
-                if ch not in by_channel:
-                    by_channel[ch] = []
-                by_channel[ch].append(msg)
+            if not ch:
+                dropped += 1
+                continue
+            by_channel.setdefault(ch, []).append(msg)
 
+        if dropped:
+            logger.warning(
+                "save_ai_messages_batch: dropped %d/%d message(s) with no channel_id",
+                dropped,
+                len(messages),
+            )
+
+        inserted = 0
         async with self.get_write_connection() as conn:
             for channel_id, channel_messages in by_channel.items():
                 # One-shot MAX(local_id) lookup per channel.
@@ -1466,7 +1646,11 @@ class Database:
                             msg.get("role"),
                             msg.get("content"),
                             msg.get("message_id"),
-                            msg.get("timestamp"),
+                            # A missing timestamp must not insert NULL: NULL bypasses
+                            # the column's CURRENT_TIMESTAMP default and sorts
+                            # inconsistently under ORDER BY timestamp. Match the
+                            # single-row save_ai_message path (UTC isoformat).
+                            msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                             next_local_id,
                         )
                     )
@@ -1478,13 +1662,14 @@ class Database:
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     rows_to_insert,
                 )
+                inserted += len(rows_to_insert)
             await conn.commit()
 
         # Trigger auto-export for each channel
         for channel_id in by_channel:
             self._schedule_export(channel_id)
 
-        return len(messages)
+        return inserted
 
     async def get_ai_history(
         self, channel_id: int, limit: int | None = None
@@ -1769,12 +1954,20 @@ class Database:
                 # trips for long queues and held the write lock for ages.
                 if queue:
                     rows = [
-                        (guild_id, i, t.get("url"), t.get("title"), t.get("added_by"))
+                        (
+                            guild_id,
+                            i,
+                            t.get("url"),
+                            t.get("title"),
+                            t.get("added_by"),
+                            t.get("type"),
+                        )
                         for i, t in enumerate(queue)
                     ]
                     await conn.executemany(
-                        """INSERT INTO music_queue (guild_id, position, url, title, added_by)
-                           VALUES (?, ?, ?, ?, ?)""",
+                        """INSERT INTO music_queue
+                           (guild_id, position, url, title, added_by, track_type)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
                         rows,
                     )
                 return True
@@ -1787,12 +1980,18 @@ class Database:
         try:
             async with self.get_connection() as conn:
                 cursor = await conn.execute(
-                    """SELECT url, title, added_by FROM music_queue
+                    """SELECT url, title, added_by, track_type FROM music_queue
                        WHERE guild_id = ? ORDER BY position""",
                     (guild_id,),
                 )
                 rows = await cursor.fetchall()
-                return [{"url": r[0], "title": r[1], "added_by": r[2]} for r in rows]
+                # Map track_type back to the "type" key the player reads
+                # (cog checks item.get("type") == "search"). Legacy rows written
+                # before this column existed have NULL → default to "url".
+                return [
+                    {"url": r[0], "title": r[1], "added_by": r[2], "type": r[3] or "url"}
+                    for r in rows
+                ]
         except Exception:
             logger.exception("Failed to load music queue")
             return []
@@ -2331,8 +2530,20 @@ class Database:
             rows = await cursor.fetchall()
             return [{"tag": row[0], "count": row[1]} for row in rows]
 
-    async def delete_dashboard_message(self, message_id: int) -> str | None:
-        """Delete a single dashboard message. Returns the conversation_id if deleted."""
+    async def delete_dashboard_message(
+        self,
+        message_id: int,
+        expected_conversation_id: str | None = None,
+    ) -> str | None:
+        """Delete a single dashboard message. Returns the conversation_id if deleted.
+
+        When ``expected_conversation_id`` is supplied, the delete is scoped to
+        that conversation — if the message belongs to a different conversation
+        the function returns ``None`` and no row is removed. Callers that have
+        already authenticated a conversation context (e.g. ``delete_pair`` in
+        the message handler) should pass it so a forged ``pair_message_id``
+        from a separate conversation can't be deleted through this code path.
+        """
         async with self.get_write_connection() as conn:
             # Get conversation_id before deleting
             row = await (
@@ -2344,6 +2555,8 @@ class Database:
             if not row:
                 return None
             conv_id = row[0]
+            if expected_conversation_id is not None and conv_id != expected_conversation_id:
+                return None
             await conn.execute("DELETE FROM dashboard_messages WHERE id = ?", (message_id,))
             # Update conversation's updated_at (UTC via CURRENT_TIMESTAMP for consistency)
             await conn.execute(
@@ -2455,7 +2668,7 @@ class Database:
         """Export all dashboard conversations to JSON files."""
         try:
             dashboard_export_dir = EXPORT_DIR / "dashboard_chats"
-            dashboard_export_dir.mkdir(exist_ok=True)
+            dashboard_export_dir.mkdir(parents=True, exist_ok=True)
 
             conversations = await self.get_dashboard_conversations(limit=1000)
 
@@ -2486,7 +2699,14 @@ class Database:
                     )
                     continue
                 output_file = (dashboard_export_dir / f"{safe_id}.json").resolve()
-                if not str(output_file).startswith(str(dashboard_export_dir.resolve())):
+                # ``Path.is_relative_to`` is the correct containment check
+                # — the previous ``str(...).startswith(...)`` accepts
+                # ``/data/db_export/dashboard_chats_evil/`` as "inside"
+                # ``/data/db_export/dashboard_chats`` because the latter
+                # is a prefix of the former. is_relative_to compares path
+                # components, not raw strings.
+                resolved_dir = dashboard_export_dir.resolve()
+                if not output_file.is_relative_to(resolved_dir):
                     logger.warning("Skipping suspicious conv_id: %s", conv_id)
                     continue
                 # Offload the sync write — for chat exports with thousands of
@@ -2826,7 +3046,7 @@ class Database:
                     # Special handling for ai_history - export per channel
                     if table == "ai_history":
                         ai_history_dir = EXPORT_DIR / "ai_history"
-                        ai_history_dir.mkdir(exist_ok=True)
+                        ai_history_dir.mkdir(parents=True, exist_ok=True)
 
                         # Get all channel IDs
                         cursor = await conn.execute("SELECT DISTINCT channel_id FROM ai_history")
@@ -2877,8 +3097,11 @@ class Database:
                     # whitelist is later edited to include something with
                     # a stray quote/space, this assertion blocks the
                     # f-string interpolation from becoming an injection.
-                    assert table.replace("_", "").isalnum(), f"Invalid table name {table!r}"
-                    cursor = await conn.execute(f"SELECT * FROM [{table}]")  # nosec B608  # asserted alnum, bracket-quoted
+                    # ``assert`` is stripped under ``python -O``; use a real
+                    # check so SQLi defense isn't optimized away.
+                    if not table.replace("_", "").isalnum():
+                        raise ValueError(f"Invalid table name {table!r}")
+                    cursor = await conn.execute(f"SELECT * FROM [{table}]")  # nosec B608  # validated alnum, bracket-quoted
                     rows = await cursor.fetchall()
                     data = [dict(row) for row in rows]
                     summary[table] = len(data)
@@ -2917,7 +3140,7 @@ class Database:
         try:
             # Create ai_history subdirectory
             ai_history_dir = EXPORT_DIR / "ai_history"
-            ai_history_dir.mkdir(exist_ok=True)
+            ai_history_dir.mkdir(parents=True, exist_ok=True)
 
             async with self.get_connection() as conn:
                 cursor = await conn.execute(
