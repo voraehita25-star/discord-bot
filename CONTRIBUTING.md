@@ -80,7 +80,7 @@ docs: update database schema documentation
 
    ```bash
    make lint          # ruff check
-   make test          # pytest (3,094 Python tests) — also run `npm test` (189 vitest) and `npm run test:e2e` (63 Playwright) in native_dashboard/
+   make test          # pytest (3,368 Python tests) — also run `npm test` (189 vitest) and `npm run test:e2e` (73 Playwright) in native_dashboard/
    make build-rust    # cargo test + clippy
    make build-go      # go test + go vet
    ```

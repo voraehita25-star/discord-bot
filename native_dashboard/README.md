@@ -20,7 +20,7 @@
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
 | 🧪 **Unit Tests** | 189 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
-| 🤖 **Headless E2E** | 63 Playwright tests in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots. Runs in CI on Chromium with python http.server + mocked Tauri IPC. |
+| 🤖 **Headless E2E** | 73 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection. Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -136,12 +136,15 @@ native_dashboard/
 │       └── *.test.ts             # 7 vitest files (128 tests total)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
-│   ├── dashboard-smoke.spec.ts   # 18 smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
-│   ├── interactions.spec.ts      # 16 user-flow tests (clicks, typing, keyboard nav)
-│   ├── a11y.spec.ts              # 4 axe-core audits — zero critical/serious WCAG 2.1 AA violations
-│   ├── visual-regression.spec.ts # 8 visual tests producing 9 screenshot baselines (chromium-win32, <0.5% pixel diff)
+│   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
+│   ├── interactions.spec.ts      # user-flow tests (clicks, typing, keyboard nav)
+│   ├── a11y.spec.ts              # axe-core audits — zero critical/serious WCAG 2.1 AA violations
+│   ├── visual-regression.spec.ts # visual tests + screenshot baselines (chromium-win32, <0.5% pixel diff)
 │   ├── visual-regression.spec.ts-snapshots/  # Baseline PNGs (checked into git)
-│   └── screenshots.spec.ts       # 13 capture targets for manual inspection
+│   ├── h5-importmap.spec.ts      # H5: import-map IPC resolves under withGlobalTauri:false
+│   ├── h7-csp.spec.ts            # H7: render under strict style-src 'self' (MathML, CSSOM)
+│   ├── dashboard-inspection.spec.ts # deep UI inspection (z-index, layout, console-error vigilance)
+│   └── screenshots.spec.ts       # capture targets for manual inspection
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer
@@ -223,7 +226,7 @@ npm run test:watch             # Watch mode
 npm run test:coverage          # With coverage report
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 63 Playwright tests (smoke + interactions + a11y + visual)
+npm run test:e2e               # Run all 73 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection
@@ -233,6 +236,22 @@ npm run test:e2e:screenshots   # Capture screenshots for manual inspection
 > (`tests-e2e/_fixtures/mock-tauri.ts`) so the static dashboard runs in pure Chromium —
 > no Tauri runtime required. Visual baselines live in
 > `tests-e2e/visual-regression.spec.ts-snapshots/` and are checked into git.
+
+#### Real Tauri Rust-IPC validation (no mock)
+
+To exercise the **actual** Rust IPC bridge (not the Chromium mock) — confirming `invoke()`
+round-trips and that the import-map IPC works under `withGlobalTauri: false` (H5) in the real
+WebView2 runtime — use the opt-in validator (run from the repo root):
+
+```bash
+cargo install tauri-driver --locked
+# msedgedriver matching the installed WebView2 runtime -> native_dashboard/.drivers/msedgedriver.exe
+pip install selenium
+cargo tauri build --no-bundle          # produces target/release/bot-dashboard.exe
+python scripts/dev/validate_ipc.py     # drives the built .exe, calls get_base_path + get_status
+```
+
+`.drivers/` is git-ignored. See `docs/TESTING.md` → "Opt-in Runtime Validators" for details.
 
 ### Output Files
 

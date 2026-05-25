@@ -1,6 +1,8 @@
 # Testing Guide
 
-> Last Updated: April 27, 2026 | Python 3.14+ | Python Tests: 3,094 ✅ (92 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 63 ✅ (5 Playwright spec files: smoke + interactions + a11y + visual regression) | Timeout: 30s per test
+> Last Updated: May 25, 2026 | Python 3.14+ | Python Tests: 3,368 ✅ (101 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+>
+> Counts drift as tests are added — run `make test` / `npm test` / `npm run test:e2e` for the live numbers.
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -30,7 +32,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (92 Python files, 3,094 tests)
+## Test Structure (101 Python files, 3,368 tests)
 
 ```text
 tests/
@@ -48,7 +50,7 @@ tests/
 ```
 
 > Earlier consolidation (~early 2026) merged `_extended`, `_more`, `_module` variants
-> into their base files and parametrized boilerplate tests. Current count: **92 files**.
+> into their base files and parametrized boilerplate tests. Current count: **101 files**.
 
 ## Frontend Test Structure (10 vitest files, 189 tests)
 
@@ -78,29 +80,33 @@ npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage report
 ```
 
-## Headless E2E Tests (5 Playwright files, 63 tests)
+## Headless E2E Tests (8 Playwright files, 73 tests)
 
 Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
 served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
 (`tests-e2e/_fixtures/mock-tauri.ts`) that mocks `window.__TAURI__.core.invoke` and the WebSocket
-stream — so no Tauri runtime, no bot process, no Discord token needed.
+stream — so no Tauri runtime, no bot process, no Discord token needed. (For a *real* Tauri Rust-IPC
+round-trip — no mock — see the `validate_ipc.py` validator below.)
 
 ```text
 native_dashboard/tests-e2e/
 ├── _fixtures/
 │   └── mock-tauri.ts            # Tauri IPC shim + WS mock + page-error tracker
-├── dashboard-smoke.spec.ts      # 18 smoke tests covering recent UI fixes
-├── interactions.spec.ts         # 16 user-flow tests (click/type/keyboard)
-├── a11y.spec.ts                 # 8 axe-core audits — zero critical/serious WCAG 2.1 AA violations
-├── visual-regression.spec.ts    # 8 baselines — pages, themes, modals
+├── dashboard-smoke.spec.ts      # smoke tests covering recent UI fixes
+├── interactions.spec.ts         # user-flow tests (click/type/keyboard)
+├── a11y.spec.ts                 # axe-core audits — zero critical/serious WCAG 2.1 AA violations
+├── visual-regression.spec.ts    # baselines — pages, themes, modals
 ├── visual-regression.spec.ts-snapshots/  # PNG baselines (chromium-win32, in git)
-└── screenshots.spec.ts          # 13 manual-inspection captures
+├── h5-importmap.spec.ts         # H5: import-map IPC resolves under withGlobalTauri:false
+├── h7-csp.spec.ts               # H7: render under strict `style-src 'self'` (MathML, CSSOM)
+├── dashboard-inspection.spec.ts # deep UI inspection (z-index, layout, console-error vigilance)
+└── screenshots.spec.ts          # manual-inspection captures
 ```
 
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 63 tests, headless Chromium
+npm run test:e2e                 # All 73 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures
@@ -109,6 +115,41 @@ npm run test:e2e:screenshots     # Just the screenshot captures
 CI: the `dashboard-test` job in `.github/workflows/ci.yml` runs vitest then Playwright.
 On failure, `playwright-report/` and `test-results/` are uploaded as artifacts (7-day retention)
 so the diff is debuggable without re-running locally.
+
+## Opt-in Runtime Validators (`scripts/dev/`)
+
+Unlike the hermetic, mocked pytest/vitest suites above, these scripts exercise the **real**
+code paths end-to-end — they spawn the real `claude` CLI, call the real Anthropic SDK, run the
+real document extractor, and drive the real Tauri app. They need auth / cost API calls, so they
+are **NOT** part of `make test` or CI — run them manually when validating a release or a change
+to those paths.
+
+```bash
+# Real AI / document / CLI paths (run from repo root)
+python scripts/dev/validate_runtime.py            # docx + cli + confine (default; no SDK billing)
+python scripts/dev/validate_runtime.py --all      # + anthropic SDK smoke (needs API credit)
+python scripts/dev/validate_runtime.py --docx     # pick individual checks
+#   --docx     DOCX extraction + XXE confinement   (no API; needs python-docx + defusedxml)
+#   --cli      Claude CLI smoke via the bot's real subprocess path   (1 CLI call)
+#   --confine  H1: a prompt-injected doc must NOT leak an out-of-dir file   (1 CLI call)
+#   --sdk      anthropic SDK smoke   (1 API call; needs ANTHROPIC_API_KEY with credit)
+
+# Real Tauri Rust-IPC round-trip (no mock) via WebDriver/WebView2
+python scripts/dev/validate_ipc.py                # get_base_path (raw bridge) + get_status (import-map)
+```
+
+`validate_ipc.py` prerequisites (one-time, Windows):
+
+```bash
+cargo install tauri-driver --locked
+# download msedgedriver matching the installed WebView2 runtime version into
+#   native_dashboard/.drivers/msedgedriver.exe   (https://msedgedriver.microsoft.com)
+pip install selenium
+cargo tauri build --no-bundle      # so target/release/bot-dashboard.exe exists
+```
+
+Both scripts exit 0 on success / 1 on failure (SDK billing errors are reported but don't fail the
+run), so they can be wired into a manual release-gate if desired.
 
 ## Test Categories
 
