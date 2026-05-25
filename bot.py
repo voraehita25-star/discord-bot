@@ -84,6 +84,11 @@ try:
 except ImportError:
     SENTRY_AVAILABLE = False
     capture_exception = None  # type: ignore[assignment]
+    # ``init_sentry`` was previously left as a free name in this branch,
+    # which would NameError if the code at the bottom of the module ever
+    # changed evaluation order. Stub it consistently with the other
+    # optional dependencies.
+    init_sentry = None  # type: ignore[assignment]
 
 # Import Self-Healer for smart duplicate detection
 try:
@@ -128,8 +133,11 @@ if sys.platform == "win32":
 # Initialize Logging
 setup_smart_logging()
 
-# PID file path
-PID_FILE = Path("bot.pid")
+# PID file path — anchored to this file's directory so it's stable across
+# launchers that change CWD (systemd, dashboard wrapper, IDE run configs).
+# A relative ``Path("bot.pid")`` would silently put the file under the
+# launcher's CWD and break duplicate-instance detection on next startup.
+PID_FILE = Path(__file__).resolve().parent / "bot.pid"
 
 # Read old PID before overwriting (for duplicate detection)
 _old_pid: int | None = None
@@ -145,8 +153,15 @@ if PID_FILE.exists():
 # Write current PID only when running as main script
 # (not on import from tests/scripts)
 def _write_pid_file() -> None:
-    """Write PID file for process tracking."""
-    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    """Write PID file for process tracking.
+
+    Uses tmp + ``os.replace`` so two startups racing past the duplicate-PID
+    check can't tear-write each other's PID — replace is atomic on the same
+    filesystem on both POSIX and Windows.
+    """
+    tmp_path = PID_FILE.with_suffix(PID_FILE.suffix + f".tmp.{os.getpid()}")
+    tmp_path.write_text(str(os.getpid()), encoding="utf-8")
+    tmp_path.replace(PID_FILE)
 
 
 def smart_startup_check() -> bool:
@@ -281,7 +296,8 @@ def bootstrap() -> None:
             "Set FFMPEG_PATH in .env, drop a binary at ./ffmpeg/bin/ffmpeg.exe, "
             "or install FFmpeg and add it to PATH."
         )
-        os.environ["FFMPEG_MISSING"] = "1"
+        global _FFMPEG_MISSING
+        _FFMPEG_MISSING = True
     else:
         logger.info("FFmpeg resolved to: %s", get_ffmpeg_executable())
 
@@ -299,6 +315,18 @@ def remove_pid() -> None:
 
 atexit.register(remove_pid)
 
+# Module-level flag set by ``bootstrap()`` when FFmpeg can't be resolved.
+# Replaces the previous ``os.environ["FFMPEG_MISSING"] = "1"`` pattern which
+# leaked the flag into every child process (subprocess spawns, etc.) — this
+# bool is local to the running interpreter only.
+_FFMPEG_MISSING: bool = False
+
+
+def _is_ffmpeg_missing() -> bool:
+    """Return whether bootstrap() flagged FFmpeg as unavailable."""
+    return _FFMPEG_MISSING
+
+
 # Use config as single source of truth for token
 TOKEN = settings.discord_token
 
@@ -309,6 +337,16 @@ class MusicBot(commands.AutoShardedBot):
 
     # Class attribute for start time
     start_time: float = 0.0
+
+    # Track background tasks and initialization state.
+    # Declared up here so setup_hook (and the rest of the class) sees the
+    # default values before any instance is constructed — previously these
+    # were declared after setup_hook in the source order, which worked at
+    # runtime but read confusingly.
+    _health_task: asyncio.Task | None = None
+    _metrics_started: bool = False
+    _shutdown_task: asyncio.Task | None = None
+    _default_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     async def setup_hook(self) -> None:
         # Optimize thread pool based on CPU count (default: 2x cores, min 8).
@@ -359,12 +397,19 @@ class MusicBot(commands.AutoShardedBot):
                 pass
 
         # Load Cogs
-        # Skip utility modules and old files that have been moved to submodules
-        skip_modules = ["__init__.py", "music_utils.py", "spotify_handler.py", "music.py"]
+        # Skip utility modules and old files that have been moved to submodules.
+        # ``music.py`` is no longer a flat file (now ``cogs/music/``), so it
+        # would never appear in ``cogs_dir.iterdir()`` results that match
+        # ``.py`` — kept here only as documentation that this name was
+        # previously a sibling cog. Future cleanup: remove if/when the
+        # historical context becomes irrelevant.
+        skip_modules = ["__init__.py", "music_utils.py", "spotify_handler.py"]
 
         # Load main cogs from cogs/ directory (sorted for deterministic order across platforms).
         # Sync iterdir is fine here: this runs once at startup, before the bot connects.
-        cogs_dir = Path("./cogs")
+        # Anchor to bot.py's directory so a launcher with a different CWD (systemd,
+        # dashboard wrapper, tests) still finds the cogs dir.
+        cogs_dir = Path(__file__).resolve().parent / "cogs"
         for filename in sorted(cogs_dir.iterdir()):
             if filename.suffix == ".py":
                 # Skip utility modules
@@ -379,7 +424,7 @@ class MusicBot(commands.AutoShardedBot):
                     logger.exception("❌ Failed to load %s", extension)
 
         # Load Music cog from music submodule
-        if os.getenv("FFMPEG_MISSING") != "1":
+        if not _is_ffmpeg_missing():
             try:
                 await self.load_extension("cogs.music")
                 logger.info("✅ Loaded Extension: cogs.music")
@@ -406,12 +451,6 @@ class MusicBot(commands.AutoShardedBot):
             except Exception:
                 logger.exception("❌ Dashboard WebSocket server error")
 
-    # Track background tasks and initialization state
-    _health_task: asyncio.Task | None = None
-    _metrics_started: bool = False
-    _shutdown_task: asyncio.Task | None = None
-    _default_executor: concurrent.futures.ThreadPoolExecutor | None = None
-
     def _register_bot_commands(self) -> None:
         """Register bot-level commands (called from __init__ so they survive restart)."""
 
@@ -433,7 +472,7 @@ class MusicBot(commands.AutoShardedBot):
             """Check bot health status (Owner only)."""
             import platform  # pylint: disable=import-outside-toplevel
 
-            uptime_seconds = time.time() - self.start_time if self.start_time else 0
+            uptime_seconds = time.monotonic() - self.start_time if self.start_time else 0
             hours, remainder = divmod(int(uptime_seconds), 3600)
             minutes, seconds = divmod(remainder, 60)
             uptime_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
@@ -520,8 +559,19 @@ class MusicBot(commands.AutoShardedBot):
             metrics.set_voice_clients(len(self.voice_clients))
             metrics.set_memory(psutil.Process().memory_info().rss)
             if not self._metrics_started:
-                if metrics.start_server(port=9090):
-                    logger.info("📊 Prometheus metrics available at http://localhost:9090")
+                # Allow deploys to override via PROMETHEUS_PORT; falls back to 9090.
+                try:
+                    metrics_port = int(os.getenv("PROMETHEUS_PORT", "9090"))
+                except ValueError:
+                    logger.warning(
+                        "Invalid PROMETHEUS_PORT=%r — falling back to 9090",
+                        os.getenv("PROMETHEUS_PORT"),
+                    )
+                    metrics_port = 9090
+                if metrics.start_server(port=metrics_port):
+                    logger.info(
+                        "📊 Prometheus metrics available at http://localhost:%d", metrics_port
+                    )
                 self._metrics_started = True
 
         # Start Memory Monitor (tuned for 32GB DDR5: warn 8GB, critical 16GB)
@@ -713,7 +763,8 @@ def create_bot() -> MusicBot:
 
 # Global bot instance (module-level for health hooks; recreated on restart)
 bot = create_bot()
-bot.start_time = time.time()
+# Use monotonic clock for uptime — wall-clock can jump backwards on NTP sync.
+bot.start_time = time.monotonic()
 
 # Setup Health API hooks
 if HEALTH_API_AVAILABLE and setup_health_hooks is not None:
@@ -731,8 +782,11 @@ def validate_token(token: str | None) -> bool:
     parts = token.split(".")
     if len(parts) != 3:
         return False
-    # Basic length check (tokens are usually 59+ chars)
-    return len(token) >= 50
+    # Length check — modern Discord bot tokens are ~70+ chars (token v2 is
+    # longer than v1). 50 was the v1 floor and would accept truncated or
+    # garbage strings as valid; raise it so the rejection at startup is
+    # informative rather than letting discord.py fail later with a 401.
+    return len(token) >= 70
 
 
 async def graceful_shutdown(
@@ -763,11 +817,19 @@ async def graceful_shutdown(
         except Exception:
             logger.exception("Error stopping Dashboard WebSocket server")
 
-    # Cancel health task if running
-    if bot._health_task is not None and not bot._health_task.done():
-        bot._health_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await bot._health_task
+    # Cancel health task if running. Use ``getattr`` rather than direct
+    # private-attribute access so the shutdown path tolerates Mock/test
+    # bots that don't define ``_health_task`` (real code attaches it, but
+    # graceful_shutdown is called from many tests with custom doubles).
+    _health_task = getattr(bot, "_health_task", None)
+    if _health_task is not None and not _health_task.done():
+        _health_task.cancel()
+        # Awaiting a cancelled task can re-raise non-cancel exceptions
+        # that were stored before the cancel landed. Suppress both so the
+        # shutdown path doesn't crash on a stale exception from a task
+        # that died seconds before signal arrived.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await _health_task
         logger.info("🛑 Health loop task cancelled")
 
     # Flush pending database exports before closing
@@ -804,9 +866,49 @@ async def graceful_shutdown(
     except Exception:
         logger.exception("Error closing alert manager")
 
-    # Close bot connection
+    # Stop the memory monitor task — without this the monitor coroutine
+    # holds a reference to the bot graph and survives ``bot.close()`` until
+    # the interpreter exits, blocking GC of cogs/sessions/locks. Hot
+    # reloads compounded the leak.
+    try:
+        from utils.reliability.memory_manager import memory_monitor
+
+        if hasattr(memory_monitor, "astop"):
+            await memory_monitor.astop()
+        elif hasattr(memory_monitor, "stop"):
+            memory_monitor.stop()
+    except ImportError:
+        pass
+    except Exception:
+        logger.exception("Error stopping memory monitor")
+
+    # Stop the webhook cache cleanup loop. ``start_webhook_cache_cleanup``
+    # is wired via the AI cog but ``stop_webhook_cache_cleanup`` was never
+    # called from anywhere — every clean shutdown emitted "Task was
+    # destroyed but it is pending!" warnings.
+    try:
+        from cogs.ai_core.response.webhook_cache import stop_webhook_cache_cleanup
+
+        await stop_webhook_cache_cleanup()
+    except ImportError:
+        pass
+    except Exception:
+        logger.exception("Error stopping webhook cache cleanup")
+
+    # Close bot connection. ``bot.is_closed()`` reflects the bot's own
+    # ``_closed`` flag but that's only set after ``close()`` actually
+    # completes; on the resume path the previous ``bot.run()`` may have
+    # returned via Ctrl+C with the loop torn down but ``_closed`` still
+    # False. Guard the close call so a freshly-closed loop doesn't
+    # raise ``RuntimeError: Event loop is closed`` deep inside aiohttp.
     if not bot.is_closed():
-        await bot.close()
+        try:
+            await bot.close()
+        except RuntimeError as close_err:
+            # The "Event loop is closed" / "no running event loop"
+            # variants land here — shutdown is best-effort at this
+            # point, so log and continue.
+            logger.warning("bot.close() skipped: %s", close_err)
 
     # Shut down the custom default executor if one was installed
     exec_ref = getattr(bot, "_default_executor", None)
@@ -850,8 +952,38 @@ def run_bot_with_confirmation() -> None:
             if not token:
                 logger.critical("❌ DISCORD_TOKEN is not set")
                 sys.exit(1)
+            # Re-validate the token on every loop iteration. The
+            # __main__ entry point validates once at startup, but on
+            # resume the user may have edited ``.env`` to fix a bad
+            # token — without this check, a malformed token bombs deep
+            # inside discord.py with a confusing stack trace.
+            if not validate_token(token):
+                logger.critical(
+                    "❌ Token format invalid — refusing to start. "
+                    "Check DISCORD_TOKEN in .env"
+                )
+                sys.exit(1)
             bot.run(token)
             break  # Normal exit
+        except discord.LoginFailure as exc:
+            # Bad token surfaces here rather than as a generic Exception.
+            # Without this branch the LoginFailure escaped the loop to
+            # the outer ``except Exception`` below, which logged and
+            # exited but skipped any "retry with refreshed .env" path
+            # the user might have set up. Log explicitly + exit clean.
+            logger.critical(
+                "❌ Discord login refused (bad token?): %s — refusing to retry",
+                exc,
+            )
+            sys.exit(1)
+        except OSError as exc:
+            # Transient network failure (DNS, refused connection) at
+            # gateway-connect time. ``bot.run`` re-raises these instead
+            # of retrying internally. Surface clearly and exit — the
+            # outer process manager (systemd / Docker / native_dashboard)
+            # is in a better position to restart-with-backoff than us.
+            logger.critical("❌ Network error contacting Discord: %s", exc)
+            sys.exit(1)
         except KeyboardInterrupt:
             if confirm_shutdown():
                 logger.info("🛑 Bot stopped by user (Ctrl+C)")
@@ -870,22 +1002,23 @@ def run_bot_with_confirmation() -> None:
                 break
             else:
                 logger.info("✅ Resuming bot operation...")
-                # Explicitly close old bot to free connections/tasks
+                # Tear down the previous bot fully: dashboard ws / health task /
+                # DB pool / URL fetcher / alert / memory monitor / webhook cache
+                # all need to be released before we spin up a fresh instance,
+                # otherwise we leak loop-bound resources across the restart.
                 old_bot = bot
                 try:
-                    if not old_bot.is_closed():
-                        asyncio.run(old_bot.close())
+                    asyncio.run(graceful_shutdown(bot_instance=old_bot))
                 except RuntimeError as e:
-                    # Loop still running in rare re-entrance scenarios - skip
-                    logger.warning("Could not close old bot instance: %s", e)
+                    logger.warning("Could not graceful-shutdown old bot instance: %s", e)
                 except Exception:
-                    logger.exception("Error closing old bot instance")
+                    logger.exception("Error during graceful shutdown of old bot instance")
                 # Re-read token in case .env was updated
                 load_dotenv(override=True)
                 token = os.getenv("DISCORD_TOKEN") or ""
                 # Recreate bot instance for restart
                 bot = create_bot()
-                bot.start_time = time.time()
+                bot.start_time = time.monotonic()
                 # Re-setup health hooks for new instance
                 if HEALTH_API_AVAILABLE and setup_health_hooks is not None:
                     setup_health_hooks(bot)  # type: ignore[arg-type]
@@ -915,11 +1048,13 @@ if __name__ == "__main__":
         for warn in secret_warnings:
             logger.warning("⚠️ %s", warn)
 
-    # Log feature flags summary
-    logger.info("📋 Feature Status:\n%s", feature_flags.summary())
-    # Register additional runtime features
-    feature_flags.register("ffmpeg", os.environ.get("FFMPEG_MISSING") != "1")
+    # Register additional runtime features BEFORE summary so the printed
+    # banner reflects ffmpeg/spotify state. Earlier ordering printed the
+    # summary first, omitting these flags from the observability log even
+    # though they were registered seconds later.
+    feature_flags.register("ffmpeg", not _is_ffmpeg_missing())
     feature_flags.register("spotify", bool(settings.spotipy_client_id))
+    logger.info("📋 Feature Status:\n%s", feature_flags.summary())
 
     if not validate_token(TOKEN):
         logger.critical("❌ Error: DISCORD_TOKEN is invalid or not set in .env")

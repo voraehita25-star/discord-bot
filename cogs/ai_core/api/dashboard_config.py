@@ -5,10 +5,32 @@ Dashboard WebSocket configuration, constants, and role presets.
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
-import os
+
+def _int_env(name: str, default: int) -> int:
+    """Read int from env with friendly fallback.
+
+    A typoed env var (e.g. ``WS_DASHBOARD_PORT=abc``) used to crash bot
+    startup with ``ValueError`` at import time. Now we log and use the
+    documented default instead so a misconfigured deploy still boots.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "⚠️ Env %s=%r is not a valid integer; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+
 
 # NOTE: .env is loaded early in bot.py (before any module imports).
 # Do NOT call load_dotenv() here to avoid loading a different .env
@@ -19,7 +41,7 @@ import os
 # ============================================================================
 
 WS_HOST = os.getenv("WS_DASHBOARD_HOST", "127.0.0.1")
-WS_PORT = int(os.getenv("WS_DASHBOARD_PORT", "8765"))
+WS_PORT = _int_env("WS_DASHBOARD_PORT", 8765)
 WS_REQUIRE_TLS = os.getenv("WS_REQUIRE_TLS", "false").lower() in ("true", "1", "yes")
 
 # Safety: refuse to bind on non-localhost without TLS, regardless of
@@ -49,7 +71,7 @@ if WS_HOST not in _WS_LOCALHOST_ADDRS:
 # 401 "invalid_api_key" error from the API.
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip() or None
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
-GEMINI_CONTEXT_WINDOW = int(os.getenv("GEMINI_CONTEXT_WINDOW", "1000000"))
+GEMINI_CONTEXT_WINDOW = _int_env("GEMINI_CONTEXT_WINDOW", 1000000)
 # For thinking mode, use the same model (gemini-3.1-pro supports thinking)
 
 # ============================================================================
@@ -58,8 +80,8 @@ GEMINI_CONTEXT_WINDOW = int(os.getenv("GEMINI_CONTEXT_WINDOW", "1000000"))
 
 CLAUDE_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-7")
-CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "128000"))
-CLAUDE_CONTEXT_WINDOW = int(os.getenv("CLAUDE_CONTEXT_WINDOW", "1000000"))
+CLAUDE_MAX_TOKENS = _int_env("CLAUDE_MAX_TOKENS", 128000)
+CLAUDE_CONTEXT_WINDOW = _int_env("CLAUDE_CONTEXT_WINDOW", 1000000)
 
 # Opus 4.7 effort level (low | medium | high | xhigh | max). Leave blank
 # to let the model pick adaptively. The `xhigh` tier is new in Opus 4.7
@@ -69,32 +91,65 @@ _CLAUDE_EFFORT_ALLOWED: frozenset[str] = frozenset({"low", "medium", "high", "xh
 _raw_effort = os.getenv("CLAUDE_EFFORT", "").strip().lower()
 CLAUDE_EFFORT: str | None = _raw_effort if _raw_effort in _CLAUDE_EFFORT_ALLOWED else None
 
-# API Failover — import here so dashboard can reference it
-try:
-    from .api_failover import api_failover
-
-    api_failover.initialize()
-    API_FAILOVER_AVAILABLE = True
-except Exception:
-    API_FAILOVER_AVAILABLE = False
-
-# Available AI providers for dashboard
-# Claude is available either via the SDK (CLAUDE_API_KEY) OR via the CLI
-# subprocess backend (CLAUDE_BACKEND=cli + CLAUDE_CODE_OAUTH_TOKEN), so we
-# also expose it when the CLI path is wired up — otherwise the dropdown
-# would hide Claude from a user who chose the subscription path.
-_CLAUDE_BACKEND_MODE = os.getenv("CLAUDE_BACKEND", "api").strip().lower()
+# Backend mode — defaults to "cli" so the bot uses the Claude Code
+# subscription rather than the per-token Anthropic API. Set
+# ``CLAUDE_BACKEND=api`` to opt back into SDK-based mode.
+_CLAUDE_BACKEND_MODE = os.getenv("CLAUDE_BACKEND", "cli").strip().lower()
 # In CLI mode the `claude` subprocess auto-picks up saved interactive-login
 # credentials, so requiring an explicit CLAUDE_CODE_OAUTH_TOKEN here would
 # falsely hide the provider from users who already ran `claude` locally.
 # The runtime is_cli_backend_ready() check still verifies the binary exists.
-_CLAUDE_CLI_AVAILABLE = _CLAUDE_BACKEND_MODE == "cli"
+#
+# NAMING NOTE: this flag indicates the user *selected* CLI mode (via the
+# CLAUDE_BACKEND env var); it does NOT verify the ``claude`` binary is
+# present and functional. That live check lives in
+# ``is_cli_backend_ready()`` so it can re-run after env / PATH changes.
+_CLAUDE_CLI_MODE_SELECTED = _CLAUDE_BACKEND_MODE == "cli"
+
+# Master switch: when CLAUDE_BACKEND=cli, ALL paid-API AI surfaces are
+# disabled (Anthropic SDK, Gemini SDK, memory consolidator, summarizer,
+# Discord-side RP/DM AI) and only the Claude CLI subscription remains
+# active. Subsystems that previously called the Anthropic SDK or Gemini
+# API short-circuit with a one-time warning; the dashboard chat falls
+# through to the existing CLI handler. To re-enable the API surface,
+# set CLAUDE_BACKEND=api in .env.
+API_AI_DISABLED: bool = _CLAUDE_CLI_MODE_SELECTED
+
+# API Failover — import here so dashboard can reference it. Skipped
+# entirely under CLI mode so we don't even instantiate the Anthropic
+# client (and thus never make an API call against ANTHROPIC_API_KEY).
+if API_AI_DISABLED:
+    API_FAILOVER_AVAILABLE = False
+else:
+    try:
+        from .api_failover import api_failover
+
+        api_failover.initialize()
+        API_FAILOVER_AVAILABLE = True
+    except Exception:
+        logger.exception(
+            "api_failover.initialize() failed; failover disabled "
+            "(dashboard will run on the single direct ANTHROPIC_API_KEY only)"
+        )
+        API_FAILOVER_AVAILABLE = False
 
 AVAILABLE_PROVIDERS: list[str] = []
-if GEMINI_API_KEY:
+# Gemini is paid-API-only — drop it from the dashboard dropdown when
+# the user has selected CLI-only mode, even if a GEMINI_API_KEY happens
+# to still be present in .env from a previous configuration.
+if GEMINI_API_KEY and not API_AI_DISABLED:
     AVAILABLE_PROVIDERS.append("gemini")
-if CLAUDE_API_KEY or _CLAUDE_CLI_AVAILABLE:
+if CLAUDE_API_KEY or _CLAUDE_CLI_MODE_SELECTED:
     AVAILABLE_PROVIDERS.append("claude")
+
+# All provider names the WS layer accepts as input. handle_update_provider
+# already validates against this set; the chat/edit handlers used to
+# silently fall back to Gemini for any unknown name, which made
+# misspellings invisible to the user. Under API_AI_DISABLED the set
+# narrows to the CLI-capable providers only.
+VALID_AI_PROVIDERS: frozenset[str] = (
+    frozenset({"claude"}) if API_AI_DISABLED else frozenset({"gemini", "claude"})
+)
 
 # Default provider: honor explicit env config first, otherwise prefer Claude.
 _configured_default_provider = os.getenv("DEFAULT_AI_PROVIDER", "").strip().lower()

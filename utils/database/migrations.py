@@ -201,6 +201,14 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
 
     if applied:
         logger.info("📦 Applied %d migration(s), now at version %d", applied, version)
+        # Migration 010 issues `PRAGMA foreign_keys=OFF` for a table rebuild.
+        # Its own trailing `PRAGMA foreign_keys=ON` is a no-op because it runs
+        # inside the still-open implicit transaction (SQLite ignores the pragma
+        # mid-transaction). Re-assert it here — after the final commit, with no
+        # transaction open — so this connection isn't returned with FK
+        # enforcement silently disabled. (The pool also re-asserts on every
+        # acquisition; this keeps the migration self-contained.)
+        await conn.execute("PRAGMA foreign_keys=ON")
     else:
         logger.debug("📦 Database schema is up to date (version %d)", current_version)
 

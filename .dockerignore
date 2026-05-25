@@ -28,9 +28,34 @@ env/
 *.swo
 
 # Environment files (IMPORTANT: don't include secrets in image)
+# Use a glob so .env.production / .env.staging / .env.backup / etc. are
+# also excluded — the previous explicit list silently shipped any non-
+# matching name into the layer via ``COPY . .``.
 .env
-.env.local
-.env.*.local
+.env.*
+!env.example
+
+# Auth / cookie files
+cookies.txt
+*.cookies
+.claude/
+.gemini/
+
+# SQLite databases (and WAL/SHM journal siblings) — these contain user
+# conversation history, embeddings, and dashboard chats; never bake
+# into image.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Sensitive AI persona / channel data per project .gitignore policy
+cogs/ai_core/data/faust_data.py
+cogs/ai_core/data/roleplay_data.py
+cogs/ai_core/data/unrestricted_channels.json
+assets/RP/
 
 # Logs and data (mounted as volumes instead)
 logs/
@@ -38,14 +63,17 @@ data/
 temp/
 *.log
 
-# Test files
+# Test files — excluded from the runtime image because they're CI-only
+# (pytest, fixtures, mocks). The production container never imports them.
 tests/
 test_*.py
 *_test.py
 pytest.ini
 .pytest_cache/
 
-# Documentation
+# Documentation — markdown is editor-time, not runtime. Add a ``!`` exception
+# for README.md if you ever decide to bundle it (e.g. for ``docker run --help``
+# style usage):  !README.md
 *.md
 docs/
 

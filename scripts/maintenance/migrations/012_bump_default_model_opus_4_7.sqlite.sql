@@ -14,6 +14,10 @@
 -- transaction and commits atomically with the schema_version row.
 
 -- -------- token_usage --------
+-- Idempotent re-apply guards (mirroring 003/007/010): a crash between
+-- INSERT and RENAME would otherwise orphan token_usage_new_v12 and break
+-- the rerun.
+DROP TABLE IF EXISTS token_usage_new_v12;
 CREATE TABLE token_usage_new_v12 (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -37,15 +41,21 @@ SELECT
     cached, created_at
 FROM token_usage;
 
-DROP TABLE token_usage;
+DROP TABLE IF EXISTS token_usage;
 ALTER TABLE token_usage_new_v12 RENAME TO token_usage;
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_user
     ON token_usage(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_token_usage_channel
     ON token_usage(channel_id, created_at DESC);
+-- Migration 007 created idx_token_usage_guild; the table-rebuild swap
+-- here drops it along with the old table. Recreate it explicitly so
+-- guild-scoped analytics queries don't fall back to a full-table scan.
+CREATE INDEX IF NOT EXISTS idx_token_usage_guild
+    ON token_usage(guild_id, created_at DESC);
 
 -- -------- ai_analytics --------
+DROP TABLE IF EXISTS ai_analytics_new_v12;
 CREATE TABLE ai_analytics_new_v12 (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -74,10 +84,14 @@ SELECT
     tool_calls, cache_hit, error, created_at
 FROM ai_analytics;
 
-DROP TABLE ai_analytics;
+DROP TABLE IF EXISTS ai_analytics;
 ALTER TABLE ai_analytics_new_v12 RENAME TO ai_analytics;
 
 CREATE INDEX IF NOT EXISTS idx_ai_analytics_user
     ON ai_analytics(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_analytics_guild
     ON ai_analytics(guild_id, created_at DESC);
+-- Channel-scoped lookups (per-conversation analytics) are common; without
+-- this index the table-rebuild would force a full scan after migration.
+CREATE INDEX IF NOT EXISTS idx_ai_analytics_channel
+    ON ai_analytics(channel_id, created_at DESC);

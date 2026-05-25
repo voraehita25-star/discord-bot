@@ -1082,6 +1082,13 @@ function startLogsRefresh(): void {
     if (logsRefreshInterval) {
         clearInterval(logsRefreshInterval);
     }
+    // Don't poll while the dashboard tab is hidden — the sakura
+    // visibility handler already pauses heavy work on hide; mirroring
+    // that here keeps the log path from burning IPC bandwidth and
+    // backend Mutex contention when nobody is looking.
+    if (document.visibilityState === 'hidden') {
+        return;
+    }
     logsRefreshInterval = window.setInterval(loadLogs, 1000);
 }
 
@@ -1091,6 +1098,16 @@ function stopLogsRefresh(): void {
         logsRefreshInterval = null;
     }
 }
+
+// Pause/resume log polling on visibility change so a backgrounded
+// dashboard window stops costing CPU + IPC roundtrips.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        stopLogsRefresh();
+    } else if (currentPage === 'logs') {
+        startLogsRefresh();
+    }
+});
 
 function toggleAutoScroll(): void {
     logsAutoScrollEnabled = !logsAutoScrollEnabled;
@@ -1436,6 +1453,7 @@ let cropState = {
 let boundOnDrag: ((e: MouseEvent) => void) | null = null;
 let boundOnDragTouch: ((e: TouchEvent) => void) | null = null;
 let boundEndDrag: (() => void) | null = null;
+let cropEscBound = false;  // ESC-to-close handler is bound once for the page lifetime
 let boundStartDrag: ((e: MouseEvent) => void) | null = null;
 let boundStartDragTouch: ((e: TouchEvent) => void) | null = null;
 let cropListenersAttached = false;
@@ -1463,12 +1481,21 @@ function openAvatarCropModal(imageUrl: string): void {
     cropImage.onload = () => {
         const cropArea = document.getElementById('crop-area');
         if (!cropArea) return;
-        
+
         const areaSize = 280;
+        // Guard against a broken image (naturalWidth/Height === 0). Without
+        // this, ``areaSize / 0`` produces Infinity, which then poisons every
+        // subsequent crop calculation with NaN and silently saves a blank
+        // canvas.
+        if (cropImage.naturalWidth <= 0 || cropImage.naturalHeight <= 0) {
+            showToast('ไม่สามารถโหลดรูปภาพได้', { type: 'error' });
+            closeCropModal();
+            return;
+        }
         const scale = Math.max(areaSize / cropImage.naturalWidth, areaSize / cropImage.naturalHeight);
         cropState.imgWidth = cropImage.naturalWidth * scale;
         cropState.imgHeight = cropImage.naturalHeight * scale;
-        
+
         // Center the image
         cropState.offsetX = (areaSize - cropState.imgWidth) / 2;
         cropState.offsetY = (areaSize - cropState.imgHeight) / 2;
@@ -1554,15 +1581,19 @@ function setupCropEventListeners(): void {
     modal.onclick = (e) => {
         if (e.target === modal) closeCropModal();
     };
-    // Escape key dismiss — only active while modal is open.
-    // Guard with a dataset flag so re-opening the crop modal doesn't stack
-    // duplicate document-level keydown listeners every time. Without this
-    // flag every avatar-crop session leaks one more listener for the rest
-    // of the page lifetime.
-    if (!modal.dataset.escBound) {
-        modal.dataset.escBound = '1';
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && modal.classList.contains('active')) closeCropModal();
+    // Escape-to-close: bind ONCE for the page lifetime. The handler looks the
+    // modal up by id (so it pins no element in a closure) and self-guards on
+    // ``.active`` (a cheap no-op while the modal is closed). This keeps ESC
+    // working no matter how the modal is re-opened — including a direct
+    // ``.active`` toggle that doesn't re-run this setup — and can't stack
+    // duplicate listeners. (Previously the handler was removed + nulled on
+    // close, so any re-open that skipped this setup left ESC dead.)
+    if (!cropEscBound) {
+        cropEscBound = true;
+        document.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key !== 'Escape') return;
+            const m = document.getElementById('avatar-crop-modal');
+            if (m && m.classList.contains('active')) closeCropModal();
         });
     }
 }
@@ -1700,7 +1731,7 @@ function saveCroppedAvatar(): void {
 function closeCropModal(): void {
     const modal = document.getElementById('avatar-crop-modal');
     if (modal) modal.classList.remove('active');
-    
+
     // Clean up listeners using stored bound functions
     if (boundOnDrag) {
         document.removeEventListener('mousemove', boundOnDrag);
@@ -1715,6 +1746,9 @@ function closeCropModal(): void {
         document.removeEventListener('touchmove', boundOnDragTouch);
         boundOnDragTouch = null;
     }
+    // The Escape handler is bound once for the page lifetime (see
+    // setupCropEventListeners) and self-guards on ``.active``, so there is
+    // nothing to detach here.
 }
 
 function removeAvatar(target: 'user' | 'ai' = 'user'): void {

@@ -121,7 +121,7 @@ cogs/ai_core/
 - `MessageQueue` — pending-message buffering and per-channel lock
 - `ResponseSender` — webhook + chunked response delivery
 
-`logic.py` is currently ~1,368 lines (verified `wc -l cogs/ai_core/logic.py`); each helper above lives in its own subpackage so the manager focuses on orchestration.
+`logic.py` is the largest module (the `ChatManager` orchestrator); each helper above lives in its own subpackage so the manager focuses on orchestration. (Run `wc -l cogs/ai_core/logic.py` for the current line count — a hard-coded figure drifts every refactor.)
 
 ### Performance Tracking
 

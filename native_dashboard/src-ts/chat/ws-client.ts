@@ -118,9 +118,20 @@ export class WebSocketClient {
 
         try {
             this.isConnecting = true;
+            // Guard against a hung Tauri `invoke` (backend deadlock): if it
+            // never resolves, the `.finally` below never runs, `isConnecting`
+            // stays true forever, and every future connect() is a silent
+            // no-op → permanent disconnect with no reconnect. Race each call
+            // against a timeout that falls back to the default so we always
+            // proceed (or fall through to scheduleReconnect()).
+            const withTimeout = <T>(p: Promise<T>, fallback: T): Promise<T> =>
+                Promise.race([
+                    p,
+                    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 8000)),
+                ]);
             Promise.all([
-                invoke<string>('get_ws_token').catch(() => ''),
-                invoke<string>('get_ws_endpoint').catch(() => DEFAULT_WS_ENDPOINT),
+                withTimeout(invoke<string>('get_ws_token').catch(() => ''), ''),
+                withTimeout(invoke<string>('get_ws_endpoint').catch(() => DEFAULT_WS_ENDPOINT), DEFAULT_WS_ENDPOINT),
             ]).then(([token, endpoint]) => {
                 this.wsToken = token || null;
                 const candidates = this.buildEndpointCandidates(endpoint || DEFAULT_WS_ENDPOINT);

@@ -54,6 +54,18 @@ from .data.constants import (
 
 logger = logging.getLogger(__name__)
 
+# Precompiled regexes for ``get_channel_history_preview`` — applied to
+# every history item in a tight loop, so compiling at module scope
+# avoids re-parsing the same six patterns on every preview request.
+_PREVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\[System Info\].*?\n"), ""),
+    (re.compile(r"\[Voice Status\][\s\S]*?Members:.*?\n"), ""),
+    (re.compile(r"\[Chat History Access\][\s\S]*?💡.*?\n"), ""),
+    (re.compile(r"\[Requested Chat History\][\s\S]*?---\n"), ""),
+    (re.compile(r"User Message:\s*"), ""),
+    (re.compile(r"\n+"), " "),
+)
+
 # Import database module
 try:
     import aiosqlite
@@ -301,6 +313,21 @@ async def _replace_history_db(
     """
     history = chat_data.get("history", [])
 
+    # Defense-in-depth: refuse to wipe a DB-backed channel down to zero rows.
+    # The diff path already guards against this (line 383-390); mirror that
+    # guard here so a force=True call from a buggy caller (or a chat_data
+    # whose history was accidentally cleared in-memory) doesn't silently
+    # destroy the persisted history. Callers that legitimately want to
+    # erase a channel should use ``delete_ai_history`` directly.
+    if not history and chat_data.get("_db_loaded"):
+        logger.error(
+            "❌ Refusing force-replace with empty history for channel %s "
+            "(chat_data was DB-loaded). Use delete_ai_history if a wipe "
+            "is actually intended.",
+            channel_id,
+        )
+        return
+
     # Apply the same cap auto-trim already enforces.
     if len(history) > MAX_HISTORY_ITEMS:
         history = history[-MAX_HISTORY_ITEMS:]
@@ -342,7 +369,6 @@ async def _replace_history_db(
             )
         await conn.commit()
 
-    # Save metadata
     thinking_enabled = chat_data.get("thinking_enabled", True)
     await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
     invalidate_cache(channel_id)
@@ -399,20 +425,31 @@ async def _save_history_db(
             last_db_dt = _parse_history_timestamp(last_db_msg.get("timestamp"))
 
             # Look for this message in history (iterate backwards). Match
-            # on timestamp + role + content-prefix so two assistant messages
+            # on timestamp + role + content-hash so two assistant messages
             # sent in the same second (same timestamp, same role) don't get
-            # collapsed into one. Without the content check, the second
-            # message would be silently dropped on the next save.
+            # collapsed into one. SHA-256 of the FULL joined content matches
+            # the dedup approach at the bottom of this function — using a
+            # 200-char prefix here silently dropped messages whose first
+            # 200 chars matched but tails diverged.
             def _content_key(item: dict) -> str:
-                parts = item.get("parts") or []
-                if not parts:
-                    return ""
-                first = parts[0]
-                if isinstance(first, str):
-                    return first[:200]
-                if isinstance(first, dict):
-                    return str(first.get("text", ""))[:200]
-                return str(first)[:200]
+                # ``item`` can come from either side:
+                #   - history (in-memory): has ``parts`` list (str/dict)
+                #   - db_history (persisted): has flat ``content`` string
+                content_value = item.get("content")
+                if content_value is not None:
+                    content = str(content_value)
+                else:
+                    parts = item.get("parts") or []
+                    pieces: list[str] = []
+                    for p in parts:
+                        if not p:
+                            continue
+                        if isinstance(p, dict):
+                            pieces.append(str(p.get("text", "")))
+                        else:
+                            pieces.append(str(p))
+                    content = "\n".join(pieces)
+                return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
 
             last_db_content_key = _content_key(last_db_msg)
             found_idx = -1
@@ -444,13 +481,14 @@ async def _save_history_db(
                 else:
                     # Build dedupe set from DB entries that share the boundary timestamp
                     # so we don't re-insert messages already persisted in the same second.
+                    # Use the same full-content hash as ``_content_key`` so the
+                    # history side and the DB side hash the same way.
                     db_boundary_keys: set[tuple[str, str]] = set()
                     for db_item in db_history:
                         db_dt = _parse_history_timestamp(db_item.get("timestamp"))
                         if db_dt is not None and db_dt >= last_db_dt:
                             db_role = db_item.get("role") or "user"
-                            db_content = db_item.get("content") or ""
-                            db_boundary_keys.add((db_role, db_content[:200]))
+                            db_boundary_keys.add((db_role, _content_key(db_item)))
 
                     candidates = [
                         m
@@ -497,8 +535,12 @@ async def _save_history_db(
         last_db_content_hash = None
         last_db_role = None
         if db_history:
+            # ``errors="replace"`` keeps the hash deterministic even when an
+            # older row contains a malformed surrogate from a previous bug —
+            # the default ``strict`` would raise here and abort the whole
+            # save_history path on a single corrupt historic record.
             last_db_content_hash = hashlib.sha256(
-                db_history[-1].get("content", "").encode()
+                db_history[-1].get("content", "").encode("utf-8", errors="replace")
             ).hexdigest()
             last_db_role = db_history[-1].get("role")
 
@@ -523,7 +565,10 @@ async def _save_history_db(
             # Hash the content once; reuse for both the per-batch dedupe key
             # and the just-in-DB comparison. Recomputing twice was wasteful on
             # long messages and trivially fixable.
-            raw_hash = hashlib.sha256(content.encode()).hexdigest()
+            # Match the ``errors="replace"`` strategy used for the DB-side
+            # hash above so live and historic strings hash identically and
+            # dedupe still works across malformed historic rows.
+            raw_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
             content_hash = f"{role}:{raw_hash}"
 
             # Skip if this exact content was just in DB (immediate duplicate)
@@ -577,11 +622,8 @@ async def _save_history_db(
         await db.prune_ai_history(channel_id, limit)
         logger.info("🧹 Pruned history for channel %s to %d messages", channel_id, limit)
 
-    # Save metadata
     thinking_enabled = chat_data.get("thinking_enabled", True)
     await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
-
-    # Invalidate cache after save to ensure fresh data on next read
     invalidate_cache(channel_id)
 
 
@@ -618,7 +660,6 @@ async def _save_history_json(
                 else:
                     history = history[-limit:]
 
-    # Write to file
     def _write():
         _ensure_data_dirs()
         filepath = DATA_DIR / f"ai_history_{channel_id}.json"
@@ -633,7 +674,6 @@ async def _save_history_json(
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _write)
 
-    # Save metadata
     metadata = {"thinking_enabled": chat_data.get("thinking_enabled", True)}
 
     def _write_meta():
@@ -642,8 +682,10 @@ async def _save_history_json(
         # Atomic write: temp file + rename, mirroring the history JSON path
         # above. A direct write_text() truncates the target before writing,
         # so a process kill mid-write leaves a zero-byte metadata file with
-        # no recovery path.
-        temp_filepath = filepath.with_suffix(".tmp")
+        # no recovery path. Use ``.json.tmp`` to match the history path's
+        # naming convention so cleanup tools that glob ``*.json.tmp`` catch
+        # orphans uniformly.
+        temp_filepath = filepath.with_suffix(".json.tmp")
         temp_filepath.write_text(
             json_dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -774,8 +816,14 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
     if DATABASE_AVAILABLE:
         metadata = await db.get_ai_metadata(channel_id)
         if metadata:
+            # Cache a DEEP COPY rather than the live dict. Previously the
+            # cache held a reference to the same object returned to the
+            # caller; if any caller mutated the dict (e.g. updating
+            # ``thinking_enabled`` in place), the next cache hit would
+            # serve the mutated value to other callers and the DB would
+            # silently diverge.
             with _cache_lock:
-                _metadata_cache[channel_id] = (now, metadata)
+                _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
             logger.info("📋 Loaded metadata from database for channel %s", channel_id)
             return copy.deepcopy(metadata)
 
@@ -783,7 +831,7 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
     metadata = await _load_metadata_json(bot, channel_id)
     if metadata:
         with _cache_lock:
-            _metadata_cache[channel_id] = (now, metadata)
+            _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
     return copy.deepcopy(metadata) if metadata else metadata
 
 
@@ -1063,14 +1111,14 @@ async def get_channel_history_preview(channel_id: int, limit: int = 10) -> list[
             # DB returns 'content' directly, not 'parts'
             content = item.get("content", "")
 
-            # Clean up system info prefixes for compact view
-            content = re.sub(r"\[System Info\].*?\n", "", content)
-            content = re.sub(r"\[Voice Status\][\s\S]*?Members:.*?\n", "", content)
-            content = re.sub(r"\[Chat History Access\][\s\S]*?💡.*?\n", "", content)
-            content = re.sub(r"\[Requested Chat History\][\s\S]*?---\n", "", content)
-            content = re.sub(r"User Message:\s*", "", content)
-            content = re.sub(r"\n+", " ", content)  # Replace newlines with space
-            content = content.strip()
+            # Clean up system info prefixes for compact view using
+            # module-level precompiled patterns. Skip the regex loop for
+            # empty content — none of the patterns produce output, so the
+            # iterations are wasted work.
+            if content:
+                for _pat, _repl in _PREVIEW_PATTERNS:
+                    content = _pat.sub(_repl, content)
+                content = content.strip()
 
             # Very short truncation (100 chars max)
             if len(content) > 100:

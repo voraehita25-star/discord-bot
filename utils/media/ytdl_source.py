@@ -382,6 +382,21 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # Handle search query if not a URL
         if not query.startswith(("http://", "https://")):
             query = f"ytsearch:{query}"
+        else:
+            # The input is a direct URL — apply the same SSRF guard as
+            # from_url() before handing it to yt-dlp, which would otherwise
+            # happily fetch http://127.0.0.1/ or the cloud metadata IP
+            # (169.254.169.254). The ytsearch: path above is exempt.
+            try:
+                from utils.web.url_fetcher import _is_private_url
+
+                if await _is_private_url(query):
+                    logger.warning("Rejecting search URL resolving to private/internal IP")
+                    return None
+            except ImportError:
+                # Fail closed for raw URLs if the SSRF helper can't be imported.
+                logger.warning("SSRF helper unavailable; refusing direct URL in search")
+                return None
 
         try:
             ytdl_hq = get_ytdl_hq()

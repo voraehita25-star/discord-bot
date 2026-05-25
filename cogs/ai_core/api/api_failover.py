@@ -27,6 +27,29 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 
+def _safe_error_summary(err: BaseException, max_len: int = 200) -> str:
+    """Render an exception as a redacted, length-bounded string for storage.
+
+    SDK exception strings can include the request URL (which on some proxy
+    configs embeds an auth token), the rendered Authorization header, or
+    response headers carrying API keys. ``health.last_error`` is broadcast
+    to every dashboard WS client via ``get_status()``, so any unredacted
+    leakage propagates to the UI. Funnel through the project-wide
+    secret-redaction filter and fall back gracefully if the import isn't
+    available (e.g. during test isolation).
+    """
+    raw = str(err)[:max_len]
+    try:
+        from utils.monitoring.logger import _redact_sensitive
+
+        return _redact_sensitive(raw)[:max_len]
+    except Exception:
+        # Fail safe: if redaction itself raises, drop everything past
+        # the exception type name. Better to lose context than leak a
+        # bearer token through this surface.
+        return type(err).__name__
+
+
 class EndpointType(StrEnum):
     DIRECT = "direct"
     PROXY = "proxy"
@@ -55,13 +78,27 @@ class EndpointHealth:
 
     @property
     def is_healthy(self) -> bool:
-        return self.consecutive_failures < APIFailoverManager.FAILURE_THRESHOLD
+        # Reach into ``APIFailoverManager`` lazily so this dataclass
+        # doesn't carry a hard import-order coupling to the manager
+        # class — the previous shape worked only because the property
+        # is evaluated lazily, but a static analyser can't tell that
+        # apart from a real circular reference. ``_FAILURE_THRESHOLD``
+        # is a module-level constant mirroring the manager's class
+        # attribute so the comparison stays decoupled.
+        return self.consecutive_failures < _FAILURE_THRESHOLD
 
     @property
     def failure_rate(self) -> float:
         if self.total_requests == 0:
             return 0.0
         return self.total_failures / self.total_requests
+
+
+# Module-level mirror of ``APIFailoverManager.FAILURE_THRESHOLD`` so
+# ``EndpointHealth.is_healthy`` can be evaluated without reaching back
+# into the manager class. The two MUST stay in sync — the manager
+# constructor reads from this constant.
+_FAILURE_THRESHOLD = 3
 
 
 # Status codes that should NOT trigger failover. 429 belongs here: rate
@@ -105,7 +142,14 @@ class APIFailoverManager:
 
     HEALTH_CHECK_INTERVAL = 120  # seconds between auto health checks
     RECOVERY_COOLDOWN = 60  # seconds before retrying a failed endpoint
-    FAILURE_THRESHOLD = 3  # consecutive failures before switching
+    # ``FAILURE_THRESHOLD`` mirrors the module-level ``_FAILURE_THRESHOLD``
+    # consumed by ``EndpointHealth.is_healthy`` — change both together.
+    FAILURE_THRESHOLD = _FAILURE_THRESHOLD  # consecutive failures before switching
+    # Grace period before closing a popped client. Long enough for the
+    # average ``messages.create`` round-trip to complete; short enough
+    # that we don't leak file descriptors after a real switch. 5s is
+    # the largest p99 we've seen for non-stream Anthropic requests.
+    _CLIENT_CLOSE_GRACE_SECONDS = 5.0
 
     def __init__(self) -> None:
         self._endpoints: dict[EndpointType, EndpointConfig] = {}
@@ -123,8 +167,22 @@ class APIFailoverManager:
         self._pending_close_tasks: set[asyncio.Task[Any]] = set()
 
     def initialize(self) -> None:
-        """Load endpoint configs from environment variables."""
+        """Load endpoint configs from environment variables.
+
+        No-op when CLAUDE_BACKEND=cli — under that mode all paid-API
+        AI surfaces are disabled and the manager stays inert (no
+        endpoints, no Anthropic clients). The dashboard chat falls
+        through to the CLI subprocess handler instead.
+        """
         if self._initialized:
+            return
+        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+            logger.info(
+                "🚫 API failover disabled (CLAUDE_BACKEND=cli) — "
+                "Anthropic SDK calls are short-circuited; only the Claude "
+                "CLI subscription path is active."
+            )
+            self._initialized = True
             return
         direct_key = os.getenv("ANTHROPIC_DIRECT_API_KEY", "")
         proxy_key = os.getenv("ANTHROPIC_PROXY_API_KEY", "")
@@ -150,7 +208,11 @@ class APIFailoverManager:
             self._health[EndpointType.PROXY] = EndpointHealth()
 
         if not self._endpoints:
-            # Fallback: use legacy ANTHROPIC_API_KEY
+            # Legacy fallback: triggered when NEITHER the multi-endpoint
+            # ANTHROPIC_DIRECT_API_KEY nor ANTHROPIC_PROXY_API_KEY env vars
+            # are present (older deployments only set ANTHROPIC_API_KEY).
+            # Routes the single legacy key through whichever endpoint type
+            # the legacy base URL hints at (PROXY if set, DIRECT otherwise).
             legacy_key = os.getenv("ANTHROPIC_API_KEY", "")
             legacy_base = os.getenv("ANTHROPIC_BASE_URL", "")
             if legacy_key:
@@ -241,7 +303,7 @@ class APIFailoverManager:
             if health:
                 health.consecutive_failures += 1
                 health.last_failure_time = time.monotonic()
-                health.last_error = str(error)[:200]
+                health.last_error = _safe_error_summary(error)
                 health.total_requests += 1
                 health.total_failures += 1
 
@@ -258,7 +320,7 @@ class APIFailoverManager:
             )
 
             failure_count = health.consecutive_failures if health else 0
-            last_error = health.last_error if health else str(error)[:200]
+            last_error = health.last_error if health else _safe_error_summary(error)
 
             if immediate or failure_count >= self.FAILURE_THRESHOLD:
                 other = self._get_other_endpoint()
@@ -316,19 +378,26 @@ class APIFailoverManager:
         self._active = target
 
         # Clear old client so a new one is created on next get_client().
-        # Schedule .close() on each popped client so its httpx connection
-        # pool is released; otherwise endpoint switches leak sockets.
+        # Schedule a *delayed* .close() on each popped client so its httpx
+        # connection pool is released — but only after a short grace
+        # period so any in-flight ``messages.create`` calls already
+        # holding a reference can complete. Closing immediately would
+        # raise ``httpx.RuntimeError: This client has been closed``
+        # inside the in-flight call's read path.
         # Keep a strong reference so the close task can't be GC'd before
         # the actual close completes (an unawaited fire-and-forget task is
         # eligible for collection mid-run).
+        # Drop the OUTGOING client so any next ``get_client()`` builds a fresh
+        # one for the new endpoint. Keep the TARGET client (if cached) — its
+        # connection pool and prompt cache are useful for the next call.
+        # Previously we popped both, forcing the new endpoint to start from
+        # cold every switchover.
         old_client = self._clients.pop(old, None)
-        target_client = self._clients.pop(target, None)
-        for popped in (old_client, target_client):
-            if popped is not None:
-                with contextlib.suppress(Exception):
-                    task = asyncio.create_task(popped.close())
-                    self._pending_close_tasks.add(task)
-                    task.add_done_callback(self._pending_close_tasks.discard)
+        if old_client is not None:
+            with contextlib.suppress(Exception):
+                task = asyncio.create_task(self._graceful_close(old_client))
+                self._pending_close_tasks.add(task)
+                task.add_done_callback(self._pending_close_tasks.discard)
 
         logger.info(
             "🔀 API endpoint switched: %s → %s (reason: %s)",
@@ -336,6 +405,43 @@ class APIFailoverManager:
             target.value,
             reason,
         )
+
+    async def _maybe_failover_from_probe(
+        self, failed: EndpointType, reason: str
+    ) -> None:
+        """Drive auto-failover when a health probe trips the threshold.
+
+        Mirrors the real-traffic failover path so probes participate in
+        the same state machine. No-op if the failed endpoint isn't the
+        active one or if no fallback is configured.
+        """
+        async with self._lock:
+            if self._active != failed:
+                return
+            other_endpoints = [t for t in self._endpoints if t != failed]
+            target = next(iter(other_endpoints), None)
+            if target is None:
+                return
+            await self._switch_to_locked(target, f"probe-failover: {reason}")
+        await self._notify_listeners(target, f"probe-failover: {reason}")
+
+    async def _graceful_close(self, client: anthropic.AsyncAnthropic) -> None:
+        """Close a popped client after a brief grace window.
+
+        Background: closing a client immediately while a coroutine is mid
+        ``messages.create`` raises ``httpx.RuntimeError: This client has
+        been closed`` inside the in-flight call's read path. The grace
+        delay gives in-flight requests time to finish naturally; new
+        requests already routed to the new endpoint via the swapped
+        ``self._active``.
+        """
+        try:
+            await asyncio.sleep(self._CLIENT_CLOSE_GRACE_SECONDS)
+        except asyncio.CancelledError:
+            # On shutdown, skip the wait and close immediately.
+            pass
+        with contextlib.suppress(Exception):
+            await client.close()
 
     async def _notify_listeners(self, target: EndpointType, reason: str) -> None:
         """Run all registered listeners (caller must NOT hold self._lock)."""
@@ -356,7 +462,13 @@ class APIFailoverManager:
         self,
         callback: Callable[[EndpointType, str], Coroutine[Any, Any, None]],
     ) -> None:
-        self._listeners = [cb for cb in self._listeners if cb is not callback]
+        # Use equality (==) rather than identity (is). Bound methods like
+        # ``self._on_endpoint_changed`` create a fresh wrapper object on
+        # every attribute access, so ``cb is callback`` is always False
+        # for two references to the same bound method — the previous
+        # ``is not`` filter silently kept stale listeners after WS
+        # restart, which produced log spam on every endpoint switch.
+        self._listeners = [cb for cb in self._listeners if cb != callback]
 
     async def health_check(self, endpoint: EndpointType | None = None) -> dict[str, Any]:
         """Perform a lightweight health check on an endpoint (or the active one)."""
@@ -365,11 +477,20 @@ class APIFailoverManager:
         if not config:
             return {"endpoint": target.value, "healthy": False, "error": "not configured"}
 
-        kwargs: dict[str, Any] = {"api_key": config.api_key}
-        if config.base_url:
-            kwargs["base_url"] = config.base_url
+        # Reuse the existing client for the target endpoint instead of
+        # spinning up a fresh ``AsyncAnthropic`` per probe. Per-probe
+        # clients defeat both prompt cache (cold start each time) and
+        # the connection pool. Fall back to a transient client if the
+        # endpoint hasn't been used yet (no cached client).
+        client = self._clients.get(target)
+        transient = False
+        if client is None:
+            kwargs: dict[str, Any] = {"api_key": config.api_key}
+            if config.base_url:
+                kwargs["base_url"] = config.base_url
+            client = anthropic.AsyncAnthropic(**kwargs)
+            transient = True
 
-        client = anthropic.AsyncAnthropic(**kwargs)
         try:
             start = time.monotonic()
             # Use a minimal count_tokens call as health check (cheapest API call)
@@ -382,10 +503,15 @@ class APIFailoverManager:
             )
             latency_ms = (time.monotonic() - start) * 1000
 
-            health = self._health.get(target)
-            if health:
-                health.consecutive_failures = 0
-                health.last_success_time = time.monotonic()
+            # Mutate the health bucket under the manager lock — record_failure/
+            # record_success on the real-request path hold self._lock for the
+            # same fields, so an unlocked write here races them and can corrupt
+            # consecutive_failures / double-trip the threshold.
+            async with self._lock:
+                health = self._health.get(target)
+                if health:
+                    health.consecutive_failures = 0
+                    health.last_success_time = time.monotonic()
 
             return {
                 "endpoint": target.value,
@@ -393,21 +519,60 @@ class APIFailoverManager:
                 "healthy": True,
                 "latency_ms": round(latency_ms, 1),
             }
+        except asyncio.CancelledError:
+            # Don't swallow cancellation as a "health failure" — re-raise so
+            # the surrounding probe-loop task can exit cleanly. Without
+            # this, shutting down the bot would record bogus failures on
+            # every endpoint and mark them all unhealthy.
+            raise
         except Exception as e:
-            health = self._health.get(target)
-            if health:
-                health.consecutive_failures += 1
-                health.last_failure_time = time.monotonic()
-                health.last_error = str(e)[:200]
+            redacted = _safe_error_summary(e)
+            # Mutate the health bucket under the manager lock (see the success
+            # path above) so this probe failure can't race record_failure on
+            # the real-request path.
+            async with self._lock:
+                health = self._health.get(target)
+                if health:
+                    health.consecutive_failures += 1
+                    health.last_failure_time = time.monotonic()
+                    health.last_error = redacted
+                    # Mirror the failure into the state machine so a
+                    # failing probe drives auto-failover the same way a
+                    # failing real request would. Previously the health
+                    # bucket recorded the failure but never tripped the
+                    # threshold check, so probes that all failed left the
+                    # active endpoint stuck even when a healthy fallback
+                    # existed. Use the locked path so listener dispatch
+                    # respects the same ordering as real failures.
+                    if health.consecutive_failures >= self.FAILURE_THRESHOLD:
+                        # Keep a strong reference (added to
+                        # ``_pending_close_tasks`` even though it's not a
+                        # close — the set acts as a generic "tasks the
+                        # manager spawned, mustn't be GC'd" anchor) so the
+                        # task isn't reclaimed mid-await. create_task only
+                        # schedules; _maybe_failover_from_probe acquires
+                        # self._lock when it runs, after we release it here.
+                        failover_task = asyncio.create_task(
+                            self._maybe_failover_from_probe(target, redacted)
+                        )
+                        self._pending_close_tasks.add(failover_task)
+                        failover_task.add_done_callback(
+                            self._pending_close_tasks.discard
+                        )
 
             return {
                 "endpoint": target.value,
                 "label": config.display_name,
                 "healthy": False,
-                "error": str(e)[:200],
+                "error": redacted,
             }
         finally:
-            await client.close()
+            # Only close the client we created here. Closing the cached
+            # client would defeat the whole point of pooling and break
+            # any in-flight ``messages.create`` referencing it.
+            if transient:
+                with contextlib.suppress(Exception):
+                    await client.close()
 
     def get_status(self) -> dict[str, Any]:
         """Get current failover status for dashboard display."""

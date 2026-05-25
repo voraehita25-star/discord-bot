@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
+from functools import lru_cache
 from typing import Any
 
 try:
@@ -34,6 +36,70 @@ from ..data.constants import (
 from .entity_memory import EntityFacts, entity_memory
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=512)
+def _compile_relationship_pattern(name: str, related_name: str) -> re.Pattern[str]:
+    """Compile the relationship-contradiction regex once per (name, related)
+    pair. Without caching, this gets rebuilt on every call to
+    ``detect_contradictions`` for every (entity, relationship) combination.
+    The bounded ``{0,200}`` / ``{0,80}`` spans prevent catastrophic
+    backtracking on adversarial input.
+    """
+    pattern = (
+        rf"{re.escape(name)}.{{0,200}}?{re.escape(related_name)}"
+        r".{0,80}?(พี่|น้อง|แฟน|เพื่อน|ศัตรู|แม่|พ่อ)"
+    )
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _find_matching_close(
+    text: str,
+    open_idx: int,
+    open_ch: str,
+    close_ch: str,
+    max_window: int,
+) -> int | None:
+    """Return the index just past the matching close char, or None.
+
+    Walks forward from ``open_idx`` (which must point at ``open_ch``),
+    tracks brace depth, and respects JSON-style string literals (so a
+    closing brace inside a string doesn't terminate the match early).
+    Returns the slice end index — i.e. ``text[open_idx:end]`` includes
+    the matching closer. Returns ``None`` if no balanced close is found
+    within ``max_window`` chars.
+
+    O(window) per call vs the previous O(window²) inner-loop pattern
+    that re-attempted ``json.loads`` on every position; that was a
+    real CPU hot path on adversarial AI replies.
+    """
+    if open_idx >= len(text) or text[open_idx] != open_ch:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    end_limit = min(len(text), open_idx + max_window)
+    for i in range(open_idx, end_limit):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
+
 
 # Fact extraction prompt
 FACT_EXTRACTION_PROMPT = """วิเคราะห์บทสนทนาต่อไปนี้และดึงข้อมูลสำคัญเกี่ยวกับตัวละครออกมา
@@ -80,6 +146,11 @@ class MemoryConsolidator:
         # get_entity and add/update_entity_facts when two extractions land on
         # the same name from concurrent channels.
         self._extraction_lock = asyncio.Lock()
+        # Per-channel lock for the whole consolidate() body. Without
+        # this, two callers can both snapshot consumed_count = N, both
+        # spend 60 seconds on the API, and both decrement by N — net
+        # 2*N decrement on 2*N consumed messages and double API spend.
+        self._channel_locks: dict[int, asyncio.Lock] = {}
 
         # Settings (from constants for consistency)
         self.consolidate_every_n_messages = CONSOLIDATE_EVERY_N_MESSAGES
@@ -89,9 +160,23 @@ class MemoryConsolidator:
         self.max_recent_messages = MAX_RECENT_MESSAGES_FOR_EXTRACTION
 
     def initialize(self, api_key: str) -> bool:
-        """Initialize the Anthropic client."""
+        """Initialize the Anthropic client.
+
+        Skipped under CLAUDE_BACKEND=cli — consolidation is an SDK-only
+        feature (the CLI doesn't expose the same one-shot extraction
+        prompt cleanly), so under CLI mode the consolidator stays inert
+        and ``record_message``/``consolidate`` become no-ops.
+        """
         if not ANTHROPIC_AVAILABLE:
             logger.warning("anthropic not available for memory consolidation")
+            return False
+
+        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+            logger.info(
+                "🚫 Memory Consolidator disabled (CLAUDE_BACKEND=cli) — "
+                "entity facts will not be extracted; existing entity_memory "
+                "rows remain searchable."
+            )
             return False
 
         if not api_key or not api_key.strip():
@@ -153,6 +238,22 @@ class MemoryConsolidator:
                     self._last_consolidation.pop(channel_id, None)
                     removed += 1
 
+            # Also evict the per-channel async lock — without this, the
+            # ``_channel_locks`` dict grows unbounded over a long-running
+            # bot's lifetime (one entry per channel ever consolidated,
+            # never reclaimed). Only drop locks that aren't currently held;
+            # an in-flight consolidation would deadlock if its lock object
+            # disappeared mid-await. Skip locked() entries — they'll be
+            # cleaned on a future pass when consolidation completes.
+            for channel_id in list(self._channel_locks.keys()):
+                if (
+                    channel_id not in self._message_counts
+                    and channel_id not in self._last_consolidation
+                ):
+                    lock = self._channel_locks.get(channel_id)
+                    if lock is not None and not lock.locked():
+                        self._channel_locks.pop(channel_id, None)
+
         return removed
 
     def should_consolidate(self, channel_id: int) -> bool:
@@ -183,6 +284,35 @@ class MemoryConsolidator:
         Returns number of entities updated.
         """
         if not self._client or not history:
+            return 0
+
+        # Hold ``_data_lock`` for the read-or-create so a concurrent
+        # ``cleanup_old_channels`` (which mutates the same dict under
+        # the same lock) can't race with us. The ``if not in`` shape
+        # without the lock could otherwise produce two distinct Lock
+        # objects for the same channel_id under thread-pool callers.
+        with self._data_lock:
+            channel_lock = self._channel_locks.get(channel_id)
+            if channel_lock is None:
+                channel_lock = asyncio.Lock()
+                self._channel_locks[channel_id] = channel_lock
+        # ``locked()`` short-circuit: if another consolidation is mid-flight
+        # for the same channel, skip rather than queue. Queuing would
+        # double-count consumed_count and double-spend the API.
+        if channel_lock.locked():
+            return 0
+
+        async with channel_lock:
+            return await self._consolidate_locked(channel_id, history, guild_id)
+
+    async def _consolidate_locked(
+        self, channel_id: int, history: list[dict[str, Any]], guild_id: int | None
+    ) -> int:
+        # Re-check the precondition under the lock — the public wrapper
+        # already verified ``self._client``, but the lock might have been
+        # held while ``shutdown`` cleared it.
+        client = self._client
+        if client is None:
             return 0
 
         # Snapshot the message count we're about to consume BEFORE the long
@@ -222,7 +352,7 @@ class MemoryConsolidator:
 
             try:
                 response = await asyncio.wait_for(
-                    self._client.messages.create(
+                    client.messages.create(
                         model=self.model,
                         max_tokens=1000,
                         messages=build_single_user_text_messages(prompt),
@@ -233,12 +363,14 @@ class MemoryConsolidator:
                 logger.warning("Consolidation API call timed out")
                 return 0
 
-            # Extract text from Claude response
-            response_text = ""
-            for block in response.content:
-                if block.type == "text":
-                    response_text = block.text
-                    break
+            # Extract text from Claude response. Concatenate ALL text blocks —
+            # Opus 4.7 with thinking mode often emits multiple separate text
+            # blocks for the same logical reply, and stopping at the first
+            # one would silently truncate the JSON extraction payload mid-
+            # output. Mirror the summarizer's join-all approach.
+            response_text = "".join(
+                block.text for block in response.content if block.type == "text"
+            )
 
             if not response_text:
                 return 0
@@ -334,7 +466,15 @@ class MemoryConsolidator:
         # Fallback 1: Try to find JSON object in response using json.loads
         # instead of manual brace matching (which can fail on braces inside strings)
         # Limit search to first 5 candidates and max 2000 char window to prevent
-        # excessive CPU consumption from adversarial inputs
+        # excessive CPU consumption from adversarial inputs.
+        #
+        # The previous shape was O(window²) per candidate: for every ``{``
+        # we scanned up to 2000 chars looking for any ``}``, attempting
+        # ``json.loads`` on each prefix. With 5 candidates × 2000 chars ×
+        # parse cost, an adversarial prompt could burn meaningful CPU.
+        # Switch to depth-counting: walk forward once per candidate,
+        # tracking brace depth (and respecting strings + escapes), and
+        # only attempt ``json.loads`` ONCE — at the matching closer.
         _MAX_CANDIDATES = 5
         _MAX_WINDOW = 2000
         candidates_checked = 0
@@ -342,37 +482,37 @@ class MemoryConsolidator:
             if candidates_checked >= _MAX_CANDIDATES:
                 break
             candidates_checked += 1
-            start = match.start()
-            for end in range(start + 2, min(len(response_text) + 1, start + _MAX_WINDOW)):
-                if response_text[end - 1] != "}":
-                    continue
-                try:
-                    result = json.loads(response_text[start:end])
-                    if isinstance(result, dict):
-                        if "entities" in result:
-                            return result
-                        if "name" in result:
-                            return {"entities": [result]}
-                except (json.JSONDecodeError, ValueError):
-                    continue
+            end = _find_matching_close(response_text, match.start(), "{", "}", _MAX_WINDOW)
+            if end is None:
+                continue
+            try:
+                result = json.loads(response_text[match.start():end])
+                if isinstance(result, dict):
+                    if "entities" in result:
+                        return result
+                    if "name" in result:
+                        return {"entities": [result]}
+            except (json.JSONDecodeError, ValueError):
+                continue
         logger.debug("JSON object fallback: no valid JSON object found")
 
-        # Fallback 2: Try to find JSON array in response
+        # Fallback 2: Try to find JSON array in response (depth-aware
+        # like the object fallback above; same O(window²) → O(window)
+        # improvement applies).
         candidates_checked = 0
         for match in re.finditer(r"\[", response_text):
             if candidates_checked >= _MAX_CANDIDATES:
                 break
             candidates_checked += 1
-            start = match.start()
-            for end in range(start + 2, min(len(response_text) + 1, start + _MAX_WINDOW)):
-                if response_text[end - 1] != "]":
-                    continue
-                try:
-                    result = json.loads(response_text[start:end])
-                    if isinstance(result, list):
-                        return {"entities": result}
-                except (json.JSONDecodeError, ValueError):
-                    continue  # Try next candidate
+            end = _find_matching_close(response_text, match.start(), "[", "]", _MAX_WINDOW)
+            if end is None:
+                continue
+            try:
+                result = json.loads(response_text[match.start():end])
+                if isinstance(result, list):
+                    return {"entities": result}
+            except (json.JSONDecodeError, ValueError):
+                continue  # Try next candidate
         logger.debug("JSON array fallback: no valid JSON array found")
 
         return None
@@ -446,6 +586,13 @@ class MemoryConsolidator:
         """
         contradictions = []
 
+        # Cap the input we run regexes against. The age/relationship
+        # patterns below use ``.*?`` with alternation tails — on a
+        # 100k-char message that scales catastrophically. Realistic
+        # consolidation windows are well under this cap.
+        if len(new_text) > 8192:
+            new_text = new_text[:8192]
+
         # Extract entity names from text
         name_patterns = re.findall(r"\{\{([^}]+)\}\}", new_text)
 
@@ -462,10 +609,13 @@ class MemoryConsolidator:
             # Check for age contradictions
             if facts.get("age"):
                 # Escape entity name — stored facts can contain regex
-                # metacharacters (`.`, `*`, `(`) that would otherwise crash
-                # re.search or cause catastrophic backtracking.
+                # metacharacters (`.`, `*`, `(`) that would otherwise
+                # crash re.search or cause catastrophic backtracking.
+                # Bound the .*? span to a fixed window so a
+                # pathological input with the entity name + 100k
+                # characters before the age literal can't burn CPU.
                 age_match = re.search(
-                    rf"{re.escape(name)}.*?(\d+)\s*(?:ปี|years?|ขวบ)",
+                    rf"{re.escape(name)}.{{0,200}}?(\d+)\s*(?:ปี|years?|ขวบ)",
                     new_text,
                     re.IGNORECASE,
                 )
@@ -485,12 +635,13 @@ class MemoryConsolidator:
             if facts.get("relationships"):
                 for related_name, relation in facts["relationships"].items():
                     # Check if text mentions a different relationship.
-                    # Escape both names for the same reason as above.
-                    rel_pattern = (
-                        rf"{re.escape(name)}.*?{re.escape(related_name)}"
-                        r".*?(พี่|น้อง|แฟน|เพื่อน|ศัตรู|แม่|พ่อ)"
-                    )
-                    rel_match = re.search(rel_pattern, new_text, re.IGNORECASE)
+                    # Pattern is cached by (name, related_name) to avoid
+                    # recompiling on every iteration; cache the compiled
+                    # pattern rather than the source string because
+                    # ``re.search`` re-parses uncached strings each call.
+                    rel_match = _compile_relationship_pattern(
+                        name, related_name
+                    ).search(new_text)
                     if rel_match:
                         mentioned_rel = rel_match.group(1)
                         if mentioned_rel not in relation:

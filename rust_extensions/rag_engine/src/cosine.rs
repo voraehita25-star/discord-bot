@@ -12,6 +12,18 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
 
+    // A zero-norm vector has undefined cosine. simsimd reports cosine
+    // *distance* 0 for two zero vectors, which the SIMD path below turns into
+    // similarity 1.0 — while the scalar fallback returns 0.0 (its denom
+    // guard). That disagreement would let a junk/zero embedding rank as a
+    // perfect match. Treat a zero vector as "no similarity" so both paths
+    // agree. `.all()` short-circuits on the first non-zero element, so
+    // non-degenerate vectors pay ~one comparison. (clippy::float_cmp exempts
+    // comparisons against a zero literal.)
+    if a.iter().all(|&x| x == 0.0) || b.iter().all(|&x| x == 0.0) {
+        return 0.0;
+    }
+
     // Try SIMD-accelerated computation first
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     {
@@ -101,6 +113,18 @@ mod tests {
         let v = vec![1.0, 2.0, 3.0, 4.0];
         let sim = cosine_similarity(&v, &v);
         assert!((sim - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_zero_vector() {
+        // Regression: a zero-norm vector must yield 0.0 on BOTH the SIMD and
+        // scalar paths. simsimd reports cosine distance 0 for zero vectors,
+        // which would otherwise surface as similarity 1.0 (a "perfect match").
+        let zero = vec![0.0_f32, 0.0, 0.0, 0.0];
+        let v = vec![1.0_f32, 2.0, 3.0, 4.0];
+        assert_eq!(cosine_similarity(&zero, &v), 0.0);
+        assert_eq!(cosine_similarity(&v, &zero), 0.0);
+        assert_eq!(cosine_similarity(&zero, &zero), 0.0);
     }
 
     #[test]

@@ -76,6 +76,62 @@ def strip_leading_timestamp(text: str) -> str:
     return _LEADING_TIMESTAMP_RE.sub("", text, count=1)
 
 
+# Internal Claude Code CLI XML markup that occasionally bleeds into model
+# output because the same model powers interactive Claude Code and the
+# ``claude -p`` subprocess we spawn. When the user input or context
+# coincidentally trips a "next-turn" prediction, the model emits these
+# tags even though we never opened them.
+#
+# Strip BOTH balanced ``<tag>...</tag>`` blocks AND orphan opening /
+# closing tags. The orphan strip is what catches ``</system-reminder>``
+# emitted at the tail of a response with no matching opener.
+_CLAUDE_INTERNAL_TAGS = (
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+    "user-prompt-submit-hook",
+    "task-notification",
+    "tool_use_error",
+    "function_calls",
+    "antml:function_calls",
+    "antml:parameter",
+    "antml:invoke",
+)
+_TAG_ALT = "|".join(_re.escape(t) for t in _CLAUDE_INTERNAL_TAGS)
+# Balanced pair: ``<tag>...</tag>`` (non-greedy on body, multiline).
+_BALANCED_TAG_RE = _re.compile(
+    rf"<({_TAG_ALT})\b[^>]*>.*?</\1>", _re.IGNORECASE | _re.DOTALL
+)
+# Orphan opening or closing tag — fires after the balanced pass so it
+# only catches unmatched stragglers.
+_ORPHAN_TAG_RE = _re.compile(
+    rf"</?(?:{_TAG_ALT})\b[^>]*/?>", _re.IGNORECASE
+)
+
+
+def strip_claude_internal_tags(text: str) -> str:
+    """Remove Claude Code internal XML markup that leaked into output.
+
+    Called on every CLI subprocess response before it reaches the user.
+    Two-pass: first drop full balanced blocks (their entire body is
+    Claude Code housekeeping, not user-visible content), then drop any
+    remaining orphan opening/closing tags so the user never sees
+    ``</system-reminder>`` or similar stragglers.
+    """
+    if not text:
+        return text
+    out = _BALANCED_TAG_RE.sub("", text)
+    out = _ORPHAN_TAG_RE.sub("", out)
+    return out
+
+
 class LeadingTimestampStripper:
     """Stateful stripper for streaming LLM output.
 

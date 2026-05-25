@@ -32,8 +32,9 @@ Connection Pool: 32 concurrent connections, 16-slot reuse queue, 30s acquire tim
 | message_id | INTEGER  |                                  |
 | timestamp  | DATETIME | DEFAULT CURRENT_TIMESTAMP        |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP        |
+| summarized_at | DATETIME |  NULL until consolidated (migration 015) |
 
-Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel_id, timestamp DESC)`, `idx_ai_history_local_id(channel_id, local_id)`, `idx_ai_history_user_id(user_id)`
+Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel_id, timestamp DESC)`, `idx_ai_history_local_id(channel_id, local_id)`, `idx_ai_history_user_id(user_id)`, `idx_ai_history_pending_summary(channel_id, timestamp) WHERE summarized_at IS NULL`
 
 #### ai_metadata
 
@@ -106,7 +107,7 @@ Indexes: `idx_user_facts_user(user_id, is_active)`, `idx_user_facts_category(use
 UNIQUE: `(name, channel_id, guild_id)`
 Indexes:
 
-- `idx_entity_name(guild_id, name)` — primary lookup by guild+name
+- `idx_entity_name(name)` — primary lookup by entity name
 - `idx_entity_guild_channel(guild_id, channel_id)` — channel-scoped retrieval
 - `idx_entity_updated_at(updated_at DESC)` — recency-ordered listing
 

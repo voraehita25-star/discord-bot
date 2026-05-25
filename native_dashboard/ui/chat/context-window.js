@@ -24,10 +24,41 @@ export class ContextWindowIndicator {
     load() {
         try {
             const raw = localStorage.getItem(LS_KEY);
-            if (raw) {
-                const obj = JSON.parse(raw);
-                this.cache = new Map(Object.entries(obj));
+            if (!raw)
+                return;
+            const parsed = JSON.parse(raw);
+            // Shape check — localStorage is user-writable, so a tampered or
+            // partially-corrupted value could be a string/array/null and
+            // crash ``Object.entries`` later. Refuse anything that isn't a
+            // plain non-null object.
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                return;
             }
+            const out = new Map();
+            for (const [k, v] of Object.entries(parsed)) {
+                if (typeof v !== 'object' || v === null)
+                    continue;
+                const u = v;
+                // Reject NaN/non-finite numbers — they would propagate into
+                // ``pct`` math and render "NaN%" in the UI forever until
+                // localStorage is cleared.
+                if (typeof u.input_tokens !== 'number' || !Number.isFinite(u.input_tokens))
+                    continue;
+                if (typeof u.output_tokens !== 'number' || !Number.isFinite(u.output_tokens))
+                    continue;
+                if (typeof u.context_window !== 'number' || !Number.isFinite(u.context_window))
+                    continue;
+                const total = typeof u.total_tokens === 'number' && Number.isFinite(u.total_tokens)
+                    ? u.total_tokens
+                    : u.input_tokens + u.output_tokens;
+                out.set(k, {
+                    input_tokens: u.input_tokens,
+                    output_tokens: u.output_tokens,
+                    total_tokens: total,
+                    context_window: u.context_window,
+                });
+            }
+            this.cache = out;
         }
         catch {
             // Ignore corrupt cache — starting fresh is harmless.
@@ -44,11 +75,22 @@ export class ContextWindowIndicator {
         if (!context_window || context_window <= 0)
             return;
         if (conversationId) {
+            // Move-to-end LRU: ``cache.set`` only refreshes insertion order
+            // when the key is new. For an existing key it keeps the
+            // original position, defeating the LRU trim in ``save()``
+            // which slices off the FRONT of the iteration order. Delete
+            // first so a re-update always lands at the end of the order.
+            this.cache.delete(conversationId);
             this.cache.set(conversationId, usage);
             this.save();
         }
         const total = input_tokens + output_tokens;
         const pct = Math.min((total / context_window) * 100, 100);
+        // The element ships with the `hidden` class (`display:none !important`
+        // in styles.css), which an inline style CANNOT override — so toggling
+        // only `style.display` left the bar invisible forever. Remove the
+        // class to actually reveal it; reset() re-adds it.
+        indicator.classList.remove('hidden');
         indicator.style.display = 'flex';
         fill.style.width = `${pct}%`;
         fill.classList.remove('usage-moderate', 'usage-high');
@@ -63,16 +105,25 @@ export class ContextWindowIndicator {
     /** Hide the bar (no conversation loaded / empty conversation). */
     reset() {
         const indicator = document.getElementById('context-window-indicator');
-        if (indicator)
+        if (indicator) {
+            indicator.classList.add('hidden');
             indicator.style.display = 'none';
+        }
     }
     /** Paint the bar from the cached reading for a conversation (or hide if none). */
     restore(conversationId) {
         const cached = this.cache.get(conversationId);
-        if (cached)
+        if (cached) {
+            // Touch the entry so a frequently-read conversation isn't
+            // evicted before never-read ones (Map ordering is otherwise
+            // by insertion only — see comment in ``update``).
+            this.cache.delete(conversationId);
+            this.cache.set(conversationId, cached);
             this.update(conversationId, cached);
-        else
+        }
+        else {
             this.reset();
+        }
     }
     /** Drop one conversation's cached usage (called on conversation delete). */
     forget(conversationId) {

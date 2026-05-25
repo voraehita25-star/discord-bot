@@ -6,6 +6,7 @@ These are standalone async functions called by the main WebSocket server.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from itertools import islice
@@ -15,6 +16,36 @@ if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
 MAX_PREFERENCE_KEYS = 50  # Prevent DoS via unbounded dict keys
+# Edit-message content cap. Mirrors ``WSDashboardServer.MAX_CONTENT_LENGTH``
+# so an edit of a previously-sent long message hits the same limit as the
+# original send. Kept in this module too because the WS handlers don't
+# import the server class — and a hardcoded literal in two places drifts
+# silently when one gets bumped.
+MAX_EDIT_CONTENT_LENGTH = 200_000
+
+# Unicode bidirectional override marks that ``str.isprintable`` returns
+# True for (U+200E/U+200F LRM/RLM, U+202A-U+202E LRE/RLE/PDF/LRO/RLO,
+# U+2066-U+2069 LRI/RLI/FSI/PDI). When rendered in a conversation title
+# they can visually reorder adjacent text, letting a malicious title
+# spoof another conversation's name in the sidebar. Frozen at module
+# scope so the rename handler doesn't rebuild it on every call.
+_BIDI_MARKS = frozenset(
+    chr(c)
+    for c in (
+        # Bidi overrides (the original set)
+        0x200E, 0x200F,
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069,
+        # Invisible / zero-width chars that ``str.isprintable()`` returns
+        # True for but visually hide content (homoglyph-with-padding
+        # attacks against display rendering).
+        0x200B,  # ZERO WIDTH SPACE
+        0x200C,  # ZERO WIDTH NON-JOINER
+        0x200D,  # ZERO WIDTH JOINER
+        0x2060,  # WORD JOINER
+        0xFEFF,  # ZERO WIDTH NO-BREAK SPACE (BOM)
+    )
+)
 
 from .dashboard_common import invalidate_user_context_cache, sanitize_profile_field
 from .dashboard_config import (
@@ -33,6 +64,32 @@ def _get_db():
     from .dashboard_config import Database
 
     return Database()
+
+
+# Per-conversation regenerate lock — held across the
+# ``update_dashboard_message`` / ``delete_dashboard_messages_after``
+# pair so a concurrent send can't slip a new message into the gap and
+# get wiped by the delete-after-pivot. Capped to bound dict growth in
+# long-running deployments; LRU eviction on first miss past the cap.
+_REGEN_LOCKS: dict[str, asyncio.Lock] = {}
+_REGEN_LOCKS_MAX = 256
+
+
+def _get_regen_lock(key: str) -> asyncio.Lock:
+    lock = _REGEN_LOCKS.get(key)
+    if lock is None:
+        # Evict the oldest entry if we're at the cap. Plain dict is
+        # insertion-ordered in CPython 3.7+, so ``next(iter(...))``
+        # gives us the LRU candidate. Skip eviction if its lock is
+        # held — releasing a held lock by GC would orphan waiters.
+        if len(_REGEN_LOCKS) >= _REGEN_LOCKS_MAX:
+            for candidate_key in list(_REGEN_LOCKS.keys()):
+                candidate = _REGEN_LOCKS.get(candidate_key)
+                if candidate is not None and not candidate.locked():
+                    _REGEN_LOCKS.pop(candidate_key, None)
+                    break
+        lock = _REGEN_LOCKS.setdefault(key, asyncio.Lock())
+    return lock
 
 
 # ============================================================================
@@ -73,9 +130,7 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         return
 
     # Validate conversation_id format (defense in depth - DB also validates)
-    if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
-    ):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
@@ -158,9 +213,7 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
-    ):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
@@ -210,9 +263,7 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
-    ):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
@@ -253,9 +304,7 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
-    ):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
@@ -271,7 +320,11 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
         )
         return
     # Strip non-printable characters (null bytes, control chars, etc.)
-    new_title = "".join(ch for ch in new_title if ch.isprintable()).strip()
+    # AND Unicode bidirectional override marks (see ``_BIDI_MARKS`` at
+    # module scope for the rationale).
+    new_title = "".join(
+        ch for ch in new_title if ch.isprintable() and ch not in _BIDI_MARKS
+    ).strip()
     if not new_title:
         await ws.send_json(
             {
@@ -327,9 +380,7 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
         return
 
     # Validate conversation_id format
-    if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
-    ):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
@@ -361,9 +412,22 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
 async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Edit a message's content. If regenerate=True for user messages, deletes all subsequent messages."""
     message_id = data.get("message_id")
-    content = data.get("content", "").strip()
+    raw_content = data.get("content", "")
+    # Coerce content to string before strip; a non-string payload (number,
+    # list) would otherwise crash on .strip().
+    content = str(raw_content).strip() if raw_content is not None else ""
     regenerate = data.get("regenerate", False)
     conversation_id = data.get("conversation_id")
+
+    # Reject unhashable conversation_id up front. The previous code used
+    # it as a key in ``_REGEN_LOCKS`` via ``_get_regen_lock`` — a dict
+    # payload like ``{"$": "system"}`` would raise TypeError when hashed
+    # and fall into the broad except as INTERNAL_ERROR.
+    if conversation_id is not None and not isinstance(conversation_id, (str, int)):
+        await ws.send_json(
+            {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID type"}
+        )
+        return
 
     if not message_id or not content or not DB_AVAILABLE:
         await ws.send_json(
@@ -375,13 +439,17 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
         )
         return
 
-    # Enforce content size limit
-    if len(content) > 50_000:
+    # Enforce content size limit. Matches the fresh-message limit in
+    # WSDashboardServer.MAX_CONTENT_LENGTH so a user editing a long
+    # message they previously sent doesn't hit a stricter cap on edit.
+    if len(content) > MAX_EDIT_CONTENT_LENGTH:
         await ws.send_json(
             {
                 "type": "error",
                 "code": "CONTENT_TOO_LONG",
-                "message": "Content too long (max 50,000 characters)",
+                "message": (
+                    f"Content too long (max {MAX_EDIT_CONTENT_LENGTH:,} characters)"
+                ),
             }
         )
         return
@@ -395,24 +463,37 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
     try:
         db = _get_db()
-        # Pass conversation_id to enforce ownership — without this the
-        # client could edit any message ID in any conversation by guessing.
-        updated = await db.update_dashboard_message(
-            message_id_int,
-            content,
-            expected_conversation_id=conversation_id,
-        )
-        if not updated:
-            await ws.send_json(
-                {"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"}
+        # Hold a per-conversation lock across update + delete so a
+        # concurrent send (from a second dashboard window or a tab
+        # reload that resends the same edit) can't insert a new message
+        # between ``update_dashboard_message`` and
+        # ``delete_dashboard_messages_after`` — the new message would
+        # otherwise be wiped by the delete-after-pivot, surprising the
+        # user.
+        regen_lock_key = conversation_id or f"_msg:{message_id_int}"
+        async with _get_regen_lock(regen_lock_key):
+            # Pass conversation_id to enforce ownership — without this the
+            # client could edit any message ID in any conversation by guessing.
+            updated = await db.update_dashboard_message(
+                message_id_int,
+                content,
+                expected_conversation_id=conversation_id,
             )
-            return
+            if not updated:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MSG_NOT_FOUND",
+                        "message": "Message not found",
+                    }
+                )
+                return
 
-        deleted_count = 0
-        if regenerate and conversation_id:
-            deleted_count = await db.delete_dashboard_messages_after(
-                conversation_id, message_id_int
-            )
+            deleted_count = 0
+            if regenerate and conversation_id:
+                deleted_count = await db.delete_dashboard_messages_after(
+                    conversation_id, message_id_int
+                )
 
         # Edit/regenerate diverges the DB from Claude's server-side --resume
         # transcript. If we leave the CLI session id in place, the next turn
@@ -536,18 +617,26 @@ async def handle_like_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 # ============================================================================
 
 _VALID_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+# Compile once at module load — ``_validate_conversation_id`` is called on
+# every WS message that carries a conv id (chat send, edit, delete, tag
+# add/remove, document attach, etc.), so even re's internal cache lookup
+# is avoidable overhead at that scale.
+_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
 
 def _validate_conversation_id(conversation_id: Any) -> bool:
-    return isinstance(conversation_id, str) and bool(
-        re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id)
-    )
+    return isinstance(conversation_id, str) and bool(_CONVERSATION_ID_RE.match(conversation_id))
 
 
 async def handle_add_conversation_tag(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Attach a tag to a conversation."""
     conversation_id = data.get("conversation_id")
-    tag = (data.get("tag") or "").strip().lower()
+    # ``data.get("tag")`` may return non-strings (number, list, dict) which
+    # would crash ``.strip()`` with AttributeError. Coerce to string up
+    # front so the validation regex below produces a clean rejection
+    # rather than an opaque INTERNAL_ERROR via the broad except handler.
+    raw_tag = data.get("tag")
+    tag = str(raw_tag).strip().lower() if raw_tag is not None else ""
 
     if not DB_AVAILABLE or not _validate_conversation_id(conversation_id):
         await ws.send_json(
@@ -587,7 +676,8 @@ async def handle_add_conversation_tag(ws: WebSocketResponse, data: dict[str, Any
 async def handle_remove_conversation_tag(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Detach a tag from a conversation."""
     conversation_id = data.get("conversation_id")
-    tag = (data.get("tag") or "").strip().lower()
+    raw_tag = data.get("tag")
+    tag = str(raw_tag).strip().lower() if raw_tag is not None else ""
 
     if not DB_AVAILABLE or not _validate_conversation_id(conversation_id):
         await ws.send_json(
@@ -640,6 +730,15 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
     message_id = data.get("message_id")
     delete_pair = data.get("delete_pair", False)
     pair_message_id = data.get("pair_message_id")
+    # Conversation scope: callers that have already authenticated a
+    # conversation context should pass it so a forged ``message_id`` from
+    # an unrelated conversation can't be deleted via this handler. Older
+    # clients that don't send it fall through to an unscoped delete (no
+    # behaviour change), but the dashboard's TS client always sends it.
+    expected_conv_raw = data.get("conversation_id")
+    expected_conv: str | None = None
+    if isinstance(expected_conv_raw, str) and _validate_conversation_id(expected_conv_raw):
+        expected_conv = expected_conv_raw
 
     if not message_id or not DB_AVAILABLE:
         await ws.send_json(
@@ -673,36 +772,54 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
 
     try:
         db = _get_db()
-        conv_id = await db.delete_dashboard_message(message_id_int)
+        conv_id = await db.delete_dashboard_message(
+            message_id_int,
+            expected_conversation_id=expected_conv,
+        )
         if not conv_id:
             await ws.send_json(
                 {"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"}
             )
             return
 
-        # Delete paired message if requested
+        # Delete paired message if requested. Defence-in-depth: the pair must
+        # live in the SAME conversation as the primary message — otherwise a
+        # caller knowing two unrelated message ids could delete one from each
+        # conversation in a single request. ``conv_id`` was returned by the
+        # primary delete above so we already have the authoritative scope.
         deleted_pair_id = None
         if pair_message_id_int is not None:
-            pair_conv_id = await db.delete_dashboard_message(pair_message_id_int)
+            pair_conv_id = await db.delete_dashboard_message(
+                pair_message_id_int,
+                expected_conversation_id=conv_id,
+            )
             if pair_conv_id:
                 deleted_pair_id = pair_message_id
 
         # Same divergence problem as edit: the DB now lacks messages that
         # Claude's --resume transcript still has, so the next CLI turn would
         # replay the deleted content. Drop the session pointer + jsonl.
+        cli_cleanup_failed = False
         try:
             from .dashboard_chat_claude_cli import delete_session_file as _delete_cli_session
 
             await _delete_cli_session(conv_id)
         except Exception:
+            cli_cleanup_failed = True
             logger.exception("Claude CLI session reset failed for %s", conv_id)
 
+        # Tell the client when CLI cleanup failed so the dashboard can
+        # surface a "next turn may replay deleted content; reload to
+        # force a fresh session" hint. Previously the divergence was
+        # silent — the user got "message deleted" success but their
+        # next message looked like the bot had a memory bug.
         await ws.send_json(
             {
                 "type": "message_deleted",
                 "message_id": message_id,
                 "pair_message_id": deleted_pair_id,
                 "conversation_id": conv_id,
+                "cli_session_diverged": cli_cleanup_failed,
             }
         )
     except Exception:
@@ -747,12 +864,15 @@ async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> Non
     # Enforce size limits. Type-check category BEFORE calling len() — a client
     # sending a non-string (number, list) used to crash with TypeError on the
     # len() call here before the allowlist branch could normalise it.
-    if len(content) > 2000:
+    # Cap matches the dashboard memory editor's pre-submit guard (10K) so
+    # the user never sees a confusing "max 2,000" toast after the UI
+    # already accepted their input.
+    if len(content) > 10_000:
         await ws.send_json(
             {
                 "type": "error",
                 "code": "CONTENT_TOO_LONG",
-                "message": "Memory content too long (max 2,000 characters)",
+                "message": "Memory content too long (max 10,000 characters)",
             }
         )
         return
@@ -810,14 +930,16 @@ async def handle_get_memories(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # thousands of memories would push a multi-MB frame on every
         # sidebar refresh. Frontend only renders a paginated list anyway.
         MAX_MEMORIES_PER_FRAME = 500
-        truncated = isinstance(memories, list) and len(memories) > MAX_MEMORIES_PER_FRAME
+        memories_is_list = isinstance(memories, list)
+        memories_count = len(memories) if memories_is_list else 0
+        truncated = memories_is_list and memories_count > MAX_MEMORIES_PER_FRAME
         payload = memories[:MAX_MEMORIES_PER_FRAME] if truncated else memories
         await ws.send_json(
             {
                 "type": "memories",
                 "memories": payload,
                 "truncated": truncated,
-                "total_count": len(memories) if isinstance(memories, list) else 0,
+                "total_count": memories_count,
             }
         )
     except Exception:
@@ -932,7 +1054,7 @@ async def handle_list_conversation_documents(ws: WebSocketResponse, data: dict[s
             }
         )
         return
-    if not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {
                 "type": "error",
@@ -1061,7 +1183,24 @@ async def handle_delete_document_memory(ws: WebSocketResponse, data: dict[str, A
             )
             return
         owner = row[0]
-        if conversation_id and owner and owner != conversation_id:
+        # Three-way scope rule:
+        #   - owner set + matches conversation_id: allowed
+        #   - owner set + different conversation_id: forbidden
+        #   - owner None (global doc): only allowed when caller is also
+        #     acting globally (conversation_id None). Previously the
+        #     ``owner and owner != conversation_id`` short-circuit treated
+        #     ``owner=None`` as a wildcard — ANY conversation could delete
+        #     global docs, which is an obvious privilege escalation.
+        if owner is None and conversation_id:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "FORBIDDEN",
+                    "message": "Global document cannot be deleted from a conversation scope",
+                }
+            )
+            return
+        if owner and conversation_id and owner != conversation_id:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1159,12 +1298,17 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
                 }
             )
             return
-        # Basic filename cleanup: strip control chars, trim, cap length.
+        # Basic filename cleanup: strip control chars AND path separators,
+        # trim, cap length. The path-separator strip is defence-in-depth —
+        # filenames are stored as display text and don't currently feed a
+        # filesystem write path, but stripping ``/``, ``\`` and ``..``
+        # sequences keeps that property safe against future code that does
+        # use the value as a path component.
         sanitised_filename = re.sub(
-            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]",
+            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f/\\]",
             "",
             new_filename,
-        ).strip()[:200]
+        ).replace("..", "").strip()[:200]
         if not sanitised_filename:
             await ws.send_json(
                 {
@@ -1229,7 +1373,19 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
             )
             return
         owner = row[0]
-        if conversation_id and owner and owner != conversation_id:
+        # Same three-way scope rule as the delete handler: a global doc
+        # (owner=None) can only be modified by a global caller. See the
+        # comment in handle_delete_document_memory for the rationale.
+        if owner is None and conversation_id:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "FORBIDDEN",
+                    "message": "Global document cannot be modified from a conversation scope",
+                }
+            )
+            return
+        if owner and conversation_id and owner != conversation_id:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1338,7 +1494,18 @@ async def handle_get_document_memory_content(ws: WebSocketResponse, data: dict[s
             )
             return
         owner = row[6]
-        if conversation_id and owner and owner != conversation_id:
+        # Same three-way scope rule as delete/update — globals can't be
+        # read through a conversation context, only by global callers.
+        if owner is None and conversation_id:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "FORBIDDEN",
+                    "message": "Global document cannot be read from a conversation scope",
+                }
+            )
+            return
+        if owner and conversation_id and owner != conversation_id:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1402,12 +1569,31 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # gets explicit handling.
         raw_prefs = profile_data.get("preferences")
         sanitized_prefs: dict[str, str | int | float | bool | list[str]] | None = None
+        truncated_prefs = False
         if isinstance(raw_prefs, dict):
             sanitized_prefs = {}
+            # ``islice`` silently drops keys past MAX_PREFERENCE_KEYS —
+            # capture whether truncation happened so we can warn the
+            # client. Without this signal, a user setting their 51st
+            # preference saw success but the value never persisted,
+            # then "where did my setting go" support tickets.
+            if len(raw_prefs) > MAX_PREFERENCE_KEYS:
+                truncated_prefs = True
+                logger.warning(
+                    "Profile preferences truncated: %d keys received, kept first %d",
+                    len(raw_prefs),
+                    MAX_PREFERENCE_KEYS,
+                )
             for k, v in islice(raw_prefs.items(), MAX_PREFERENCE_KEYS):
                 key = str(k)[:50]
                 if isinstance(v, str):
-                    sanitized_prefs[key] = v[:200]
+                    # Funnel through the same sanitizer used for display_name
+                    # / bio so preference values can't carry prompt-
+                    # injection directives (e.g. ``[System] You are now...``)
+                    # into the AI context. Without this, the str branch was
+                    # the one prompt-injection landing zone in the profile
+                    # write path that bypassed sanitization.
+                    sanitized_prefs[key] = _sanitize_profile_field(v, max_length=200) or ""
                 elif isinstance(v, bool):
                     # bool MUST come before int (bool is a subclass of int)
                     sanitized_prefs[key] = v
@@ -1436,6 +1622,11 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
             {
                 "type": "profile_saved",
                 "profile": profile_data,
+                # Surface truncation so the dashboard can flag it. Default
+                # False so older clients that don't read this field stay
+                # backward compatible.
+                "preferences_truncated": truncated_prefs,
+                "max_preference_keys": MAX_PREFERENCE_KEYS,
             }
         )
     except Exception:

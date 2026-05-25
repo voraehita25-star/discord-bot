@@ -21,6 +21,8 @@ KNOWN_TABLES: frozenset[str] = frozenset(
         "dashboard_messages",
         "dashboard_user_profile",
         "dashboard_memories",
+        "dashboard_conversation_tags",
+        "dashboard_document_memories",
         "entity_memories",
         "user_facts",
         "conversation_summaries",

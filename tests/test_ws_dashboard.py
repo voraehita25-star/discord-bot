@@ -270,11 +270,16 @@ class TestInputValidation:
                 "ai_provider": "gemini",
             },
         )
-        # Should get error about AI not configured (but history was accepted/truncated)
+        # Should get an error frame. Under CLAUDE_BACKEND=cli (the new
+        # default) gemini is dropped from VALID_AI_PROVIDERS so the
+        # validation fires "Invalid ai_provider" instead of the legacy
+        # "AI not configured" — accept either to keep the contract test
+        # robust to backend mode.
         errors = ws.find("error")
         assert any(
             "not configured" in e.get("message", "").lower()
             or "not available" in e.get("message", "").lower()
+            or "invalid ai_provider" in e.get("message", "").lower()
             for e in errors
         )
 

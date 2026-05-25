@@ -133,6 +133,17 @@ def init_sentry(
                         if isinstance(frame, dict):
                             # Drop locals; they're the prime exfil vector.
                             frame.pop("vars", None)
+                            # Also strip surrounding source code lines —
+                            # ``attach_stacktrace=True`` ships ``pre_context``,
+                            # ``context_line``, and ``post_context`` for each
+                            # frame, and a secret literally appearing in
+                            # source (rare but possible — e.g. an inline
+                            # default in a script) would otherwise reach
+                            # Sentry through this channel even with locals
+                            # disabled.
+                            frame.pop("pre_context", None)
+                            frame.pop("context_line", None)
+                            frame.pop("post_context", None)
 
                 for exc in (event.get("exception") or {}).get("values") or []:
                     stack = exc.get("stacktrace")
@@ -162,7 +173,10 @@ def init_sentry(
             # too so any SDK that respects it skips capture entirely.
             include_local_variables=False,
             before_breadcrumb=_scrub_breadcrumb,
-            before_send=_scrub_event,
+            # Sentry SDK types before_send via internal Event/Hint TypedDicts;
+            # we use plain dict for compatibility across SDK versions and the
+            # cost of carrying SDK type stubs.
+            before_send=_scrub_event,  # type: ignore[arg-type]
         )
 
         logger.info(
@@ -208,9 +222,18 @@ def capture_exception(
             if guild_id:
                 scope.set_tag("guild_id", str(guild_id))
 
-            # Add extra context
+            # Add extra context. Redact string values first — set_extra writes
+            # straight into the event's `extra` dict, which the before_send
+            # scrubber does not walk (it only covers message + stack locals),
+            # so a caller passing a token/key in context would otherwise leak it.
             if context:
+                try:
+                    from utils.monitoring.logger import _redact_sensitive as _redact
+                except Exception:
+                    _redact = None
                 for key, value in context.items():
+                    if _redact is not None and isinstance(value, str):
+                        value = _redact(value)
                     scope.set_extra(key, value)
 
             return sentry_sdk.capture_exception(error)

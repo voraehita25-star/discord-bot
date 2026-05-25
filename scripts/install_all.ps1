@@ -47,7 +47,12 @@ function Invoke-VerifiedDownload {
         -UseBasicParsing -MaximumRedirection 5 -ErrorAction Stop
 
     if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
-        Write-Host "  [WARN] Downloaded $OutFile without SHA-256 check (none provided)" -ForegroundColor Yellow
+        # No pin supplied — compute + show the SHA-256 so it can be pinned.
+        # (Verify the value against the vendor's official checksum, then pass it
+        # as -ExpectedHash so future runs fail-closed on a tampered download.)
+        $computed = (Get-FileHash -Path $OutFile -Algorithm SHA256).Hash.ToUpperInvariant()
+        Write-Host "  [WARN] No SHA-256 pin for this download. Computed: $computed" -ForegroundColor Yellow
+        Write-Host "         To pin: verify against the vendor checksum, then pass -ExpectedHash '$computed'." -ForegroundColor Yellow
         return
     }
 
@@ -131,7 +136,11 @@ if (Test-CommandExists "git") {
         Write-Info "Downloading Git installer..."
         $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.2/Git-2.47.1.2-64-bit.exe"
         $gitFile = "$DownloadDir\git-installer.exe"
-        Invoke-VerifiedDownload -Uri $gitUrl -OutFile $gitFile
+        # SHA-256 from the official Git for Windows release notes (v2.47.1.windows.2).
+        # When bumping the pinned version above, refresh this from the release's
+        # checksum table. A mismatch aborts the download (fail-closed).
+        $gitSha = "5F2350757F9781125CD660478B31C37698D9662AED25B4B02E92DA393289564C"
+        Invoke-VerifiedDownload -Uri $gitUrl -OutFile $gitFile -ExpectedHash $gitSha
         Write-Info "Running Git installer (silent)..."
         Start-Process -FilePath $gitFile -ArgumentList "/VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES" -Wait
     }

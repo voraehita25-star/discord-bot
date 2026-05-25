@@ -9,7 +9,7 @@
          iframe-loadable in the first place — no embedding surface to
          protect. Keeping it would just spam the console with a warning
          on every page load. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:*; object-src 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Y24CGBiNpvAHum+ZoXXPIUxmExgs7YP4BGdo45z8wdI='; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 wss://localhost:8765 wss://127.0.0.1:8765; object-src 'none';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
@@ -27,20 +27,26 @@
           crossorigin="anonymous"></script>
     <!-- DOMPurify for XSS-safe HTML sanitization (bundled locally for security) -->
     <script defer src="vendor/dompurify/purify.min.js"
-          integrity="sha384-pcBjnGbkyKeOXaoFkmJiuR9E08/6gkmus6/Strimnxtl3uk0Hx23v345pWyC/MMr"
+          integrity="sha384-AX0sZ/phUL4R6LAFP+mob0mJIWg2c3PX8wPn48ctytOl7XKfRQHbakBt5/QID7uh"
           crossorigin="anonymous"></script>
     <!-- Prism.js syntax highlighting (bundled locally, no autoloader — languages loaded on demand by chat-manager.ts). -->
     <link rel="stylesheet" href="vendor/prism/prism-tomorrow.min.css"
           integrity="sha384-wFjoQjtV1y5jVHbt0p35Ui8aV8GVpEZkyF99OXWqP/eNJDU93D3Ugxkoyh6Y2I4A"
           crossorigin="anonymous">
     <script defer src="vendor/prism/prism-core.min.js"
-          integrity="sha384-MXybTpajaBV0AkcBaCPT4KIvo0FzoCiWXgcihYsw4FUkEz0Pv3JGV6tk2G8vJtDc"
+          integrity="sha384-zLRFO4dwowZvh8kzutOb5AWhH7f39HeJp+N7PtHF1SQtTBnifRx0AtmvTYs3F4YV"
           crossorigin="anonymous"></script>
+    <!-- Import map: resolves the bare specifier @tauri-apps/api/core (used by
+         the dynamic-import IPC fallback in shared.ts) to the locally vendored
+         ESM build, so withGlobalTauri can be off (no window.__TAURI__ exposed
+         to every script). Inline content is hash-allowlisted in the CSP. -->
+    <script type="importmap">{"imports":{"@tauri-apps/api/core":"./vendor/tauri/core.js"}}</script>
 </head>
 
 <body>
-    <!-- Toast Container -->
-    <div id="toast-container"></div>
+    <!-- Toast Container — a persistent polite live region (must exist at load
+         to reliably announce dynamically-added toasts to screen readers). -->
+    <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
     <!-- Sakura Petals Animation -->
     <div id="sakura-container"></div>
@@ -168,7 +174,7 @@
                 </div>
 
                 <!-- API Endpoint Failover -->
-                <div class="api-failover-card" id="api-failover-section" style="display:none;">
+                <div class="api-failover-card hidden" id="api-failover-section">
                     <h2>🔀 API Endpoint</h2>
                     <div class="api-endpoints" id="api-endpoints">
                         <!-- Filled by JS -->

@@ -217,7 +217,12 @@ class TestClaudeDashboardRetry:
             )
 
         errors = ws.find("error")
-        assert any("unsupported image type" in message["message"].lower() for message in errors)
+        # Server now names the rejected MIME type explicitly so the user
+        # knows to convert; check for either the legacy generic message
+        # or the new HEIC-specific phrasing.
+        assert any(
+            "image/heic" in message["message"].lower() for message in errors
+        )
         assert any(
             "no supported text or images" in message["message"].lower() for message in errors
         )

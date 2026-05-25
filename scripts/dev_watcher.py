@@ -20,7 +20,11 @@ import datetime
 import json
 import logging
 
-logger = logging.getLogger(__name__)
+# Use the named "DevWatcher" logger throughout, so all module-level
+# logger.debug/info calls land in the file handler configured by
+# ``setup_logging``. The previous ``__name__`` logger had no handlers
+# attached and silently dropped every record.
+logger = logging.getLogger("DevWatcher")
 
 import os
 import signal
@@ -841,10 +845,12 @@ def main():
     if not config_path.exists():
         print(f"  {Colors.DIM}Tip: Create {CONFIG_FILE} to customize settings{Colors.RESET}")
 
-    # Setup event handler and observer
+    # Setup event handler and observer. Watch PROJECT_ROOT explicitly
+    # rather than ``.`` so a stray ``os.chdir`` somewhere else in the
+    # process doesn't drift the watch root.
     event_handler = BotRestarter(config, logger)
     observer = Observer(timeout=config.poll_interval)
-    observer.schedule(event_handler, path=".", recursive=True)
+    observer.schedule(event_handler, path=str(PROJECT_ROOT), recursive=True)
     observer.start()
 
     if sys.platform == "win32":

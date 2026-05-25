@@ -335,10 +335,13 @@ class StructuredLogger:
         """Internal logging method with context support."""
         record_extra = {}
 
-        # Get context from context variable
+        # Get context from context variable. Copy it onto the record rather
+        # than aliasing the live contextvar dict — otherwise a downstream
+        # handler/filter that mutates record.context would corrupt the
+        # context shared by the whole task.
         ctx = _log_context.get({})
         if ctx:
-            record_extra["context"] = ctx
+            record_extra["context"] = dict(ctx)
 
         if extra:
             record_extra["extra_data"] = extra

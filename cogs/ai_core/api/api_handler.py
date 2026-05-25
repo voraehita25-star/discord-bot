@@ -65,6 +65,13 @@ try:
 except ImportError:
 
     def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
+        """No-op fallback used when ``processing.guardrails`` is unavailable.
+
+        Explicit no-op (returns ``False``) rather than silently letting tests
+        pass — if the real ``is_silent_block`` ever changes its signature,
+        callers of this fallback should still type-check against the same
+        shape. Keep the signature in sync with the real implementation.
+        """
         return False
 
 
@@ -76,6 +83,19 @@ _CLAUDE_MAX_CONTENT_RETRIES = 5
 _CLAUDE_MAX_API_RETRIES = 8  # Max retries for transient API errors (rate limit, server error)
 _CLAUDE_MAX_STREAM_RETRIES = 6  # Max retries for streaming failures
 
+# Per-attempt cap on the user-facing wait. With base=1.0s and max=30s,
+# 5 content retries at exponential backoff adds up to ~62s of silent
+# wait before the fallback path runs. Worst-case latency feels like
+# the bot hung; surface a progress signal once delays accumulate past
+# this threshold.
+_CLAUDE_LONG_WAIT_THRESHOLD = 10.0
+
+
+def _claude_long_wait(attempt: int) -> bool:
+    """Return True when the next retry's delay crosses the user-perceptible
+    "feels like the bot is hung" threshold."""
+    return _claude_retry_delay_seconds(attempt) >= _CLAUDE_LONG_WAIT_THRESHOLD
+
 
 class _ClaudeMessage(TypedDict):
     role: ClaudeMessageRole
@@ -83,11 +103,10 @@ class _ClaudeMessage(TypedDict):
 
 
 def _claude_retry_delay_seconds(attempt: int, *, minimum_delay: float = 1.0) -> float:
-    delay = _CLAUDE_RETRY_BASE_DELAY
-    for _ in range(1, attempt):
-        if delay >= _CLAUDE_RETRY_MAX_DELAY:
-            break
-        delay = min(delay * 2, _CLAUDE_RETRY_MAX_DELAY)
+    # Exponential backoff: base * 2^(attempt-1), capped at max.
+    # attempt=1 → base, attempt=2 → 2*base, attempt=3 → 4*base, … then plateau.
+    exponent = max(0, attempt - 1)
+    delay = min(_CLAUDE_RETRY_BASE_DELAY * (2**exponent), _CLAUDE_RETRY_MAX_DELAY)
     return max(delay, minimum_delay)
 
 
@@ -119,7 +138,7 @@ def build_api_config(
     }
 
     # Enable adaptive thinking for RP/Faust modes when thinking is enabled
-    # Claude Opus 4.6 uses adaptive thinking (type: "adaptive") instead of
+    # Claude Opus 4.7 uses adaptive thinking (type: "adaptive") instead of
     # manual budget_tokens which is deprecated on this model.
     if (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         config_params["thinking"] = {"type": "adaptive"}
@@ -466,8 +485,17 @@ async def detect_search_intent(
     try:
         # Wrap the user message in a fenced block to make it harder for
         # injected instructions inside the message to escape the quoted region
-        # and override the classification rules below.
-        _safe_msg = message.replace("```", "ʼʼʼ")
+        # and override the classification rules below. We replace several
+        # markdown-fence variants — a bare ``replace("```", ...)`` left the
+        # door open to other heading/section markers (``## SYSTEM``,
+        # ``</message>`` etc.) that still visually escape the fence in the
+        # model's parsing.
+        _safe_msg = (
+            message.replace("```", "ʼʼʼ")
+            .replace("\n#", "\n\\#")
+            .replace("<|", "\\<|")
+            .replace("|>", "|\\>")
+        )
         prompt = f"""You need to decide: should I search the web to answer this message?
 
 Message (untrusted user input, between fences):
@@ -507,7 +535,7 @@ Reply ONE word: SEARCH or NO_SEARCH"""
 
         return needs_search
 
-    except (ValueError, TypeError, anthropic.APIError):
+    except (ValueError, TypeError, anthropic.APIError, RuntimeError):
         logger.exception("🔎 Search intent detection FAILED")
         return False  # Default to no search on error
 
@@ -579,6 +607,42 @@ def convert_to_claude_messages(
     return typed_messages
 
 
+async def _record_token_usage(
+    usage_obj: Any,
+    *,
+    user_id: int | None,
+    channel_id: int | None,
+    guild_id: int | None,
+    model: str,
+) -> None:
+    """Best-effort token-usage recording — never raises into the response path.
+
+    Feeds the cache-side ``TokenTracker`` (DB-backed, with cost calc), which was
+    previously never called from the live path (the recorder was dead). Skips
+    silently when context/usage is missing or the tracker is unavailable.
+    """
+    if usage_obj is None or channel_id is None:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from cogs.ai_core.cache.token_tracker import TokenUsage, token_tracker
+
+        await token_tracker.record_usage(
+            TokenUsage(
+                input_tokens=int(getattr(usage_obj, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(usage_obj, "output_tokens", 0) or 0),
+                timestamp=datetime.now(timezone.utc),
+                user_id=int(user_id) if user_id is not None else 0,
+                channel_id=int(channel_id),
+                guild_id=guild_id,
+                model=model,
+            )
+        )
+    except Exception:
+        logger.debug("token usage recording failed (non-fatal)", exc_info=True)
+
+
 async def call_claude_api_streaming(
     client: anthropic.AsyncAnthropic,
     target_model: str,
@@ -588,6 +652,8 @@ async def call_claude_api_streaming(
     channel_id: int | None = None,
     cancel_flags: dict[int, bool] | None = None,
     fallback_func: Any = None,
+    user_id: int | None = None,
+    guild_id: int | None = None,
 ) -> tuple[str, str, list[Any]]:
     """Call Claude API with streaming for real-time response updates.
 
@@ -618,7 +684,6 @@ async def call_claude_api_streaming(
             logger.warning("⚡ Circuit breaker OPEN - skipping streaming API call")
             return "⚠️ ระบบ AI กำลังพักฟื้น กรุณาลองใหม่ในอีกสักครู่", "", []
 
-        # Send initial placeholder
         placeholder_msg = await send_channel.send("💭 กำลังคิด...")
 
         # Convert contents to Claude format
@@ -710,6 +775,19 @@ async def call_claude_api_streaming(
                 chunks_received,
                 stream_duration,
             )
+            # H27: record token usage (best-effort). Accumulated usage lives on
+            # the stream's final message; guarded so it never breaks the reply.
+            try:
+                _final = await response_stream.get_final_message()
+                await _record_token_usage(
+                    getattr(_final, "usage", None),
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    guild_id=guild_id,
+                    model=target_model,
+                )
+            except Exception:
+                logger.debug("streaming token usage record skipped", exc_info=True)
             return model_text, search_indicator, function_calls
 
         except TimeoutError as e:
@@ -723,8 +801,17 @@ async def call_claude_api_streaming(
                     "🔄 Using partial streaming result (%d chars)",
                     len(current_model_text),
                 )
+                # A timeout — even when we recovered partial content — is
+                # still a degraded outcome from the circuit breaker's
+                # perspective: the SDK didn't deliver the full response
+                # within budget. Recording success here masked
+                # systematically slow streaming endpoints from the
+                # breaker, leaving them open to keep timing out. Record
+                # FAILURE on partial-recovery; the user still gets the
+                # partial content (we return it), but the breaker
+                # learns the endpoint is sick.
                 if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
-                    gemini_circuit.record_success()
+                    gemini_circuit.record_failure()
                 if placeholder_msg:
                     with contextlib.suppress(Exception):
                         await placeholder_msg.delete()
@@ -761,6 +848,23 @@ async def call_claude_api_streaming(
                 delay,
             )
 
+        except (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.BadRequestError,
+            anthropic.NotFoundError,
+        ) as e:
+            # Non-transient client errors: don't burn the retry budget or
+            # silently fall back to Gemini, which masks the real problem
+            # (wrong key, wrong model id, wrong tool schema). Surface and
+            # exit the streaming retry loop.
+            logger.error("❌ Claude rejected request (%s): %s", type(e).__name__, e)
+            if placeholder_msg:
+                with contextlib.suppress(Exception):
+                    await placeholder_msg.delete()
+            if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
+                gemini_circuit.record_failure()
+            return "", "", []
         except Exception as e:
             logger.warning("⚠️ Streaming failed, falling back to normal API: %s", e)
             if placeholder_msg:
@@ -801,6 +905,8 @@ async def call_claude_api(
     config_params: dict[str, Any],
     channel_id: int | None = None,
     cancel_flags: dict[int, bool] | None = None,
+    user_id: int | None = None,
+    guild_id: int | None = None,
 ) -> tuple[str, str, list[Any]]:
     """Call Claude API with retry logic, refusal detection, and multi-tiered fallback.
 
@@ -895,6 +1001,14 @@ async def call_claude_api(
                 gemini_circuit.record_success()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:
                 service_monitor.record_success("claude_api")
+            # H27: record token usage from this successful response (best-effort).
+            await _record_token_usage(
+                getattr(response, "usage", None),
+                user_id=user_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                model=target_model,
+            )
 
             # Extract text from Claude response
             temp_text = ""
@@ -966,7 +1080,16 @@ async def call_claude_api(
             continue
 
         except Exception as api_error:
-            logger.warning("⚠️ Claude API non-retryable failure: %s", api_error)
+            # Distinguish "API call raised" from "API returned empty" — the
+            # former needs to surface to the caller (auth error, schema
+            # error, etc.) instead of being indistinguishable from a
+            # genuinely empty response. ``logger.warning`` previously
+            # buried the error and returned ``("", "", [])``, leaving the
+            # user with a blank reply and no upstream signal.
+            logger.exception(
+                "⚠️ Claude API non-retryable failure (returning empty result): %s",
+                api_error,
+            )
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:

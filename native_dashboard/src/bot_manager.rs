@@ -640,8 +640,31 @@ impl BotManager {
     }
 
     pub fn stop(&mut self) -> Result<String, String> {
-        let pid = self.get_pid().ok_or("Bot is not running")?;
-        
+        let pid = match self.get_pid() {
+            Some(pid) => pid,
+            None => {
+                // No PID file. Normally that means the bot isn't running — but
+                // if bot.py crashed or hung during startup BEFORE it wrote
+                // bot.pid, we may still hold the Child handle from start().
+                // Without this branch, stop() returned "not running" and could
+                // never kill that process tree, leaving an orphan + a UI stuck
+                // on "starting". Kill the tracked child's tree here.
+                if let Some(mut c) = self.child.take() {
+                    let child_pid = c.id();
+                    let _ = Command::new(taskkill_path())
+                        .args(["/PID", &child_pid.to_string(), "/F", "/T"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output();
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    self.stop_dev_watcher();
+                    self.kill_orphan_bot_processes();
+                    return Ok("Bot stopped (no PID file; killed tracked startup process)".to_string());
+                }
+                return Err("Bot is not running".to_string());
+            }
+        };
+
         if !self.is_running() {
             return Err("Bot is not running".to_string());
         }

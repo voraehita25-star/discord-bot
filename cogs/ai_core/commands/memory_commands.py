@@ -92,6 +92,21 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ กรุณาระบุสิ่งที่ต้องการลืม เช่น `!forget แพ้ถั่ว`")
             return
 
+        if len(query) > 500:
+            await ctx.send("❌ ข้อความยาวเกินไป (สูงสุด 500 ตัวอักษร)")
+            return
+
+        # Sanitize like !remember — strip control characters before the query
+        # reaches the memory backend (consistency with remember_fact).
+        query = _CONTROL_CHARS_RE.sub("", query).strip()
+        if not query:
+            await ctx.send("❌ ข้อความสั้นเกินไปหลังทำความสะอาด")
+            return
+
+        # Neutralize backticks so the query can't break out of the inline code
+        # span in the embed description below.
+        safe_query = query.replace("`", "ʻ")
+
         try:
             from cogs.ai_core.memory.long_term_memory import long_term_memory
 
@@ -99,11 +114,13 @@ class MemoryCommands(commands.Cog):
 
             if success:
                 embed = discord.Embed(
-                    title="🗑️ ลืมแล้ว!", description=f"ลบข้อมูลที่เกี่ยวกับ: `{query}`", color=Colors.WARNING
+                    title="🗑️ ลืมแล้ว!",
+                    description=f"ลบข้อมูลที่เกี่ยวกับ: `{safe_query}`",
+                    color=Colors.WARNING,
                 )
                 await ctx.send(embed=embed)
             else:
-                await ctx.send(f"❓ ไม่พบข้อมูลที่ตรงกับ: `{query}`")
+                await ctx.send(f"❓ ไม่พบข้อมูลที่ตรงกับ: `{safe_query}`")
 
         except ImportError:
             await ctx.send("❌ ระบบความจำยังไม่พร้อมใช้งาน")

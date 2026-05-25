@@ -77,7 +77,12 @@ export function formatMessage(content: string): string {
         const idx = latexBlocks.length;
         try {
             if (katex) {
-                latexBlocks.push(`<div class="math-block">${katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })}</div>`);
+                // output:'mathml' — emit pure MathML (no inline-style HTML
+                // spans), so the chat body needs no `style-src 'unsafe-inline'`
+                // CSP grant. DOMPurify's ALLOWED_TAGS below already whitelists
+                // exactly these MathML elements; the HTML renderer's styled
+                // spans would have their style= stripped by DOMPurify anyway.
+                latexBlocks.push(`<div class="math-block">${katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, output: 'mathml' })}</div>`);
             } else {
                 latexBlocks.push(`<div class="math-block">$$${escapeHtml(tex)}$$</div>`);
             }
@@ -92,7 +97,7 @@ export function formatMessage(content: string): string {
         const idx = latexBlocks.length;
         try {
             if (katex) {
-                latexBlocks.push(`<span class="math-inline">${katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })}</span>`);
+                latexBlocks.push(`<span class="math-inline">${katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, output: 'mathml' })}</span>`);
             } else {
                 latexBlocks.push(`<span class="math-inline">$${escapeHtml(tex)}$</span>`);
             }
@@ -119,13 +124,15 @@ export function formatMessage(content: string): string {
     });
 
     // Extract code blocks into placeholders BEFORE converting \n to <br>.
-    // Include a copy button that reads the code from data-code-copy. We
-    // RE-escape the captured `code` here because the `&#96;` → backtick
-    // revert above un-escaped backticks, and the same regex also captures
-    // any `<`/`>`/`"` that escapeHtml turned into entities — those entities
-    // would render literally inside <code>/<pre>. The lang label is
-    // additionally restricted to [a-zA-Z0-9_-] so it can't break out of
-    // the surrounding class= attribute.
+    // Include a copy button that reads the code from data-code-copy. The
+    // captured `code` is ALREADY HTML-escaped (it was sliced out of `html`,
+    // which went through escapeHtml at line 106; only backticks were reverted
+    // at line 114). Do NOT escape it again — HTML entities decode to their
+    // character inside <pre>/<code> and in attribute values, so a second
+    // escapeHtml() would double-encode (`<` → `&lt;` → `&amp;lt;`) and make
+    // code blocks render/copy literal `&lt;` instead of `<`. The lang label
+    // is still restricted to [a-zA-Z0-9_-] so it can't break out of the
+    // surrounding class= attribute.
     const codeBlocks: string[] = [];
     const codePlaceholder = '\x01CODE_BLOCK_';
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
@@ -136,7 +143,8 @@ export function formatMessage(content: string): string {
         // rather than 'text' so existing tests continue to pass.
         const safeLang = String(lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
         const langLabel = safeLang || 'code';
-        const escapedCode = escapeHtml(code);
+        // Already escaped (see comment above) — use as-is to avoid double-encoding.
+        const escapedCode = code;
         codeBlocks.push(
             `<div class="code-block-wrapper">` +
             `<div class="code-block-header">` +
@@ -185,7 +193,7 @@ export function formatMessage(content: string): string {
             let tbl = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
             headerCells.forEach((cell, i) => {
                 const align = aligns[i] || 'left';
-                tbl += `<th style="text-align:${align}">${cell.trim()}</th>`;
+                tbl += `<th class="md-ta-${align}">${cell.trim()}</th>`;
             });
             tbl += '</tr></thead><tbody>';
             for (let r = 2; r < rows.length; r++) {
@@ -193,7 +201,7 @@ export function formatMessage(content: string): string {
                 tbl += '<tr>';
                 cells.forEach((cell, i) => {
                     const align = aligns[i] || 'left';
-                    tbl += `<td style="text-align:${align}">${cell.trim()}</td>`;
+                    tbl += `<td class="md-ta-${align}">${cell.trim()}</td>`;
                 });
                 tbl += '</tr>';
             }
@@ -255,16 +263,21 @@ export function formatMessage(content: string): string {
             // attacker injecting <img src=remote-tracking-pixel> via raw
             // HTML in markdown was previously rendered. Inline message
             // images are inserted by message-template before this runs.
-            // KaTeX elements
-            'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup',
-            'msub', 'mfrac', 'mover', 'munder', 'msqrt', 'mtext',
-            'annotation',
+            // KaTeX MathML output (output:'mathml'). Full presentation-MathML
+            // tag set KaTeX can emit, so complex formulae (tables, roots,
+            // sub/superscripts, spacing) survive sanitisation intact.
+            'math', 'semantics', 'annotation', 'mrow', 'mi', 'mo', 'mn',
+            'ms', 'mtext', 'mspace', 'msup', 'msub', 'msubsup', 'mfrac',
+            'mroot', 'msqrt', 'mover', 'munder', 'munderover', 'mtable',
+            'mtr', 'mtd', 'mstyle', 'mpadded', 'mphantom', 'menclose',
+            'merror',
         ],
         ALLOWED_ATTR: [
-            // 'style' is restricted by DOMPurify's built-in CSS sanitiser,
-            // which strips expression(), javascript:, behaviour:, etc.
-            // It's needed for table alignment (text-align: left|center|right).
-            'class', 'style', 'alt',
+            // Table alignment now uses CSS classes (md-ta-*), and KaTeX output is
+            // re-inserted post-sanitisation (trusted, never seen by DOMPurify), so
+            // 'style' is no longer needed here. Dropping it removes an inline-CSS
+            // injection surface from raw AI markdown (e.g. style="background:url(...)").
+            'class', 'alt',
             'title', 'colspan', 'rowspan',
             // KaTeX attributes
             'mathvariant', 'encoding', 'xmlns', 'display',

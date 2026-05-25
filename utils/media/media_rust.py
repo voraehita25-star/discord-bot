@@ -34,9 +34,19 @@ try:
     is_animated = getattr(_media_module, "is_animated", None)
     get_dimensions = getattr(_media_module, "get_dimensions", None)
     to_base64 = getattr(_media_module, "to_base64", None)
-    if RustMediaProcessor:
+    # Gate RUST_AVAILABLE on the FULL surface — including the standalone
+    # functions — not just the class. If the binding ships the class but
+    # one of the helpers is missing, callers using ``_use_rust`` would
+    # otherwise hit ``TypeError: 'NoneType' object is not callable`` on
+    # the hot path instead of falling back to PIL cleanly.
+    if RustMediaProcessor and is_animated and get_dimensions and to_base64:
         RUST_AVAILABLE = True
         logger.info("✅ Rust Media Processor loaded successfully")
+    elif RustMediaProcessor:
+        logger.warning(
+            "⚠️ Rust Media Processor partially loaded (missing helpers); "
+            "using PIL fallback to avoid runtime TypeError"
+        )
 except ImportError:
     logger.warning("⚠️ Rust Media Processor not available, using PIL fallback")
 
@@ -107,9 +117,23 @@ class MediaProcessorWrapper:
             prev_max_pixels = _PIL_Image.MAX_IMAGE_PIXELS
             _PIL_Image.MAX_IMAGE_PIXELS = 100_000_000
             try:
-                img = Image.open(io.BytesIO(data))
+                # Track every PIL Image object we allocate so the finally
+                # block can close all of them — ``img`` is reassigned by
+                # ``.resize()`` and ``.convert()`` and the previous code
+                # only closed the LAST binding, leaking the buffers held
+                # by Image.open() and any intermediate result.
+                opened: list = []
+                original = Image.open(io.BytesIO(data))
+                opened.append(original)
+                img = original
                 try:
                     orig_w, orig_h = img.size
+
+                    # Pathological PIL inputs can report zero dimensions
+                    # (corrupt headers / 0-byte images). Bail before the
+                    # division below would raise ZeroDivisionError.
+                    if orig_w == 0 or orig_h == 0:
+                        return data, orig_w, orig_h
 
                     # Calculate new dimensions
                     ratio = min(max_w / orig_w, max_h / orig_h)
@@ -126,6 +150,7 @@ class MediaProcessorWrapper:
                         return data, orig_w, orig_h
 
                     img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)  # type: ignore[assignment]
+                    opened.append(img)
 
                     # Save to bytes
                     output = io.BytesIO()
@@ -137,11 +162,18 @@ class MediaProcessorWrapper:
                         save_kwargs = {"quality": self.jpeg_quality}
                         if img.mode not in ("RGB", "L"):
                             img = img.convert("RGB")  # type: ignore[assignment]
+                            opened.append(img)
 
                     img.save(output, format=format_str, **save_kwargs)
                     return output.getvalue(), new_w, new_h
                 finally:
-                    img.close()
+                    for handle in opened:
+                        try:
+                            handle.close()
+                        except Exception:
+                            # Best-effort: PIL.close() on already-closed
+                            # images can raise OSError; we don't care.
+                            pass
             finally:
                 _PIL_Image.MAX_IMAGE_PIXELS = prev_max_pixels
 
@@ -194,10 +226,17 @@ class MediaProcessorWrapper:
         return base64.b64encode(data).decode("ascii")
 
     def from_base64(self, encoded: str) -> bytes:
-        """Decode base64 string to bytes."""
+        """Decode base64 string to bytes.
+
+        Normalize the URL-safe variant (``-``/``_`` for ``+``/``/``) so
+        the Python fallback decodes inputs the Rust path accepts —
+        otherwise a URL-safe payload from a caller that exercised the
+        Rust path crashes when falling back here.
+        """
         if self._use_rust:
             return self._processor.decode_base64(encoded)  # type: ignore[no-any-return]
-        return base64.b64decode(encoded)
+        normalized = encoded.replace("-", "+").replace("_", "/")
+        return base64.b64decode(normalized)
 
     def to_data_uri(self, data: bytes, mime_type: str = "image/jpeg") -> str:
         """Convert bytes to data URI."""

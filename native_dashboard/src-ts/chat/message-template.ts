@@ -167,12 +167,33 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     // be a base64 ``data:image/...`` URL — only let those (and https) through
     // so a compromised server can't inject ``javascript:`` or ``http://``
     // tracking pixels. escapeHtml still defuses quote/angle chars in src="".
+    //
+    // ``https://`` is restricted to a small allowlist of trusted CDN hosts.
+    // Previously ANY ``https://`` URL was accepted, which made a server-side
+    // injection sufficient to load arbitrary external pixels (privacy leak:
+    // viewer IP + UA reported to the attacker's server, even without
+    // script execution).
     let imagesHtml = '';
     if (msg.images && msg.images.length > 0) {
+        const _ALLOWED_IMG_HOSTS = new Set([
+            'cdn.discordapp.com',
+            'media.discordapp.net',
+            'i.imgur.com',
+            'images.unsplash.com',
+        ]);
+        const isAllowedExternalImage = (url: string): boolean => {
+            if (!url.startsWith('https://')) return false;
+            try {
+                const u = new URL(url);
+                return _ALLOWED_IMG_HOSTS.has(u.hostname.toLowerCase());
+            } catch {
+                return false;
+            }
+        };
         imagesHtml = `<div class="message-images">${msg.images
             .filter((img) => typeof img === 'string'
                 && ((img.startsWith('data:image/') && !img.toLowerCase().startsWith('data:image/svg'))
-                    || img.startsWith('https://')))
+                    || isAllowedExternalImage(img)))
             .map((img, idx) =>
                 `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`,
             )
@@ -199,13 +220,20 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
 
     // Action buttons. All carry data-msg-id / data-msg-idx so the click
     // delegation bound in ChatManager.renderMessages can dispatch correctly.
-    const msgId = msg.id != null ? msg.id : '';
+    // Coerce ``msg.id`` to a numeric string before interpolation — even though
+    // the WS schema types it as ``number``, a hostile or buggy server could
+    // ship a string with an embedded ``"`` that would break out of the
+    // ``data-msg-id="..."`` attribute and run inline event handlers.
+    const _rawId = msg.id;
+    const _idNum = typeof _rawId === 'number' ? _rawId : Number(_rawId);
+    const msgId: string = Number.isFinite(_idNum) && _idNum >= 0 ? String(Math.trunc(_idNum)) : '';
+    const msgIdxSafe: string = String(Math.trunc(Number(msgIdx) || 0));
     const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">📋 Copy</button>`;
-    const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="Edit">✏️ Edit</button>`;
+    const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="Edit">✏️ Edit</button>`;
     const aiEditBtn = (!isUser && msgId)
-        ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" title="AI Edit">✨ AI Edit</button>`
+        ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="AI Edit">✨ AI Edit</button>`
         : '';
-    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdx}" data-role="${escapeHtml(msg.role)}" title="Delete">🗑️ Delete</button>`;
+    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" data-role="${escapeHtml(msg.role)}" title="Delete">🗑️ Delete</button>`;
     const pinLabel = msg.is_pinned ? 'Unpin' : 'Pin';
     const pinBtn = msgId
         ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">📌 ${pinLabel}</button>`

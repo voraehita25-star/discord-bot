@@ -6,7 +6,9 @@ Extracted from logic.py for better modularity.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import io
 import logging
 import warnings
@@ -20,8 +22,15 @@ from PIL import Image
 # Decompression-bomb hardening: cap pixel count and convert PIL's
 # DecompressionBombWarning into a hard error so existing except clauses trip
 # instead of silently letting a 100MP image through.
+#
+# Use ``filterwarnings("error", category=...)`` rather than
+# ``simplefilter("error", ...)``. ``simplefilter`` REPLACES the entire warning
+# filter list with this single rule, wiping out any operator-configured
+# filters (PYTHONWARNINGS env, ``-W`` flags, or pyproject.toml ``filterwarnings``).
+# ``filterwarnings`` PREPENDS to the existing list so other modules' filter
+# decisions survive this import.
 Image.MAX_IMAGE_PIXELS = 30_000_000  # ~30MP cap (Pillow default is ~89MP)
-warnings.simplefilter("error", Image.DecompressionBombWarning)
+warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
 
 from .data import SERVER_CHARACTER_NAMES
 
@@ -36,6 +45,20 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+# Module-level executor for GIF→MP4 encoding. Previously every call
+# constructed a fresh ``ThreadPoolExecutor(max_workers=1)`` and (on
+# timeout) abandoned it via ``shutdown(wait=False)``, leaking a thread
+# per slow GIF. A shared pool with two workers caps the concurrency
+# regardless of caller burstiness; the timeout path no longer needs to
+# kill the executor — the worker thread is released back to the pool
+# when ffmpeg eventually finishes.
+import concurrent.futures as _futures
+
+_GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="gif-encode",
+)
 
 # ==================== Image Caching ====================
 
@@ -310,6 +333,15 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         # We run imwrite in a thread-pool executor so we can enforce the
         # timeout without blocking the calling event loop (callers are async)
         # and without depending on Unix-only signal.alarm.
+        #
+        # Caveat: ``imwrite`` shells out to ffmpeg, and Python can't
+        # interrupt a busy native thread. On timeout we abandon the
+        # executor with ``wait=False`` so the caller returns promptly,
+        # but the underlying ffmpeg keeps running until it finishes on
+        # its own. That's acceptable (the spawned process exits without
+        # consumers) and is strictly better than the previous behaviour
+        # where ``with executor:`` blocked the caller for the full
+        # encode regardless of the supposed 60s cap.
         import concurrent.futures
 
         video_buffer = io.BytesIO()
@@ -325,24 +357,31 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
                     pixelformat="yuv420p",
                 )
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_encode)
-                try:
-                    future.result(timeout=60.0)
-                except concurrent.futures.TimeoutError:
-                    logger.warning("GIF -> MP4 encode timed out after 60s")
-                    # `future.cancel()` only works on not-yet-started
-                    # futures — the worker is already running so it's a
-                    # no-op here. Exiting the `with` block waits for the
-                    # thread; return None so the caller falls back to a
-                    # static image while the doomed thread finishes.
-                    return None
+            future = _GIF_ENCODE_EXECUTOR.submit(_encode)
+            try:
+                future.result(timeout=60.0)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "GIF -> MP4 encode timed out after 60s; thread continues in background"
+                )
+                # The worker thread keeps running until ffmpeg finishes,
+                # but the caller gets None now and can fall back to a
+                # static image. With the shared pool the thread returns
+                # to the pool when it completes — no leak.
+                return None
 
             video_buffer.seek(0)
             logger.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
-            return video_buffer.read()
-        finally:
+            result_bytes = video_buffer.read()
+            # Shared module-level executor — no per-call shutdown.
             video_buffer.close()
+            return result_bytes
+        finally:
+            with contextlib.suppress(ValueError):
+                # ``video_buffer`` is also closed on the success path;
+                # double-close raises ValueError("I/O operation on closed
+                # file") in some implementations. Suppress it.
+                video_buffer.close()
 
     except (OSError, ValueError, Image.DecompressionBombError, RuntimeError) as e:
         logger.warning("Failed to convert GIF to video: %s", e)
@@ -572,6 +611,18 @@ async def process_attachments(
             try:
                 text_data = await attachment.read()
 
+                # Validate actual downloaded size. The pre-check above is
+                # skipped when ``attachment.size`` is None, so guard here too
+                # (mirrors the image path below) to avoid decoding/chunking an
+                # oversized file into memory.
+                if len(text_data) > MAX_ATTACHMENT_SIZE:
+                    logger.warning(
+                        "Skipping text attachment '%s' — actual size %d exceeds limit",
+                        attachment.filename,
+                        len(text_data),
+                    )
+                    continue
+
                 # Decode with fallback encodings
                 content = None
                 for encoding in ["utf-8", "utf-8-sig", "utf-16", "cp1252", "latin-1"]:
@@ -634,15 +685,29 @@ async def process_attachments(
                     )
                     continue
 
-                # Check if it's an animated GIF
-                if attachment.content_type == "image/gif" and IMAGEIO_AVAILABLE:
-                    if is_animated_gif(image_data):
-                        # Convert animated GIF to video
-                        video_bytes = convert_gif_to_video(image_data)
-                        if video_bytes:
-                            video_parts.append({"data": video_bytes, "mime_type": "video/mp4"})
-                            logger.info("Converted animated GIF to video from %s", user_name)
-                            continue
+                # Check if it's an animated GIF. Inspect the actual bytes
+                # rather than trusting ``attachment.content_type`` — Discord
+                # sets the mime from the upload extension/header, which
+                # may lie (e.g. ``screenshot.png`` that's actually an
+                # animated GIF). ``is_animated_gif`` reads the GIF magic
+                # bytes + frame count, so it correctly returns False for
+                # non-GIF inputs and we don't waste a video-encode pass.
+                if IMAGEIO_AVAILABLE and is_animated_gif(image_data):
+                    # Convert animated GIF to video. ``convert_gif_to_video``
+                    # uses a ThreadPoolExecutor internally but calls
+                    # ``future.result()`` synchronously — that BLOCKS the
+                    # calling thread for up to 60s. Inside an ``async def``
+                    # the calling thread is the event loop, so we run the
+                    # whole helper in a worker thread to keep the loop
+                    # responsive across all channels while encode runs.
+                    loop = asyncio.get_running_loop()
+                    video_bytes = await loop.run_in_executor(
+                        None, convert_gif_to_video, image_data
+                    )
+                    if video_bytes:
+                        video_parts.append({"data": video_bytes, "mime_type": "video/mp4"})
+                        logger.info("Converted animated GIF to video from %s", user_name)
+                        continue
 
                 # Regular static image
                 with Image.open(io.BytesIO(image_data)) as image:
@@ -650,7 +715,14 @@ async def process_attachments(
                     image_copy = image.copy()
                 image_parts.append(image_copy)
                 logger.info("Processed image from %s", user_name)
-            except (OSError, discord.HTTPException) as e:
+            except (OSError, discord.HTTPException, Image.DecompressionBombError) as e:
+                # ``DecompressionBombError`` is raised by the module-level
+                # ``warnings.filterwarnings("error", ...)`` when an image
+                # exceeds the 30MP cap. It inherits from ``Exception``
+                # rather than ``OSError`` so without explicit catch it
+                # would propagate up to logic.py's catch-all and surface
+                # as a generic "AI error" message — the user would never
+                # see that their image was the actual problem.
                 logger.warning("Failed to process attachment: %s", e)
 
     return image_parts, video_parts, text_parts

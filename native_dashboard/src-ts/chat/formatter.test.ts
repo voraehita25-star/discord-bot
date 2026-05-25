@@ -160,9 +160,11 @@ describe('formatMessage — tables', () => {
             '| 1 | 2 | 3 |',
         ].join('\n');
         const html = formatMessage(src);
-        expect(html).toMatch(/text-align:\s*left/);
-        expect(html).toMatch(/text-align:\s*center/);
-        expect(html).toMatch(/text-align:\s*right/);
+        // Alignment is emitted as CSS classes (md-ta-*) rather than inline
+        // style="text-align:…" so the chat body needs no inline-style CSP grant.
+        expect(html).toMatch(/md-ta-left/);
+        expect(html).toMatch(/md-ta-center/);
+        expect(html).toMatch(/md-ta-right/);
     });
 });
 

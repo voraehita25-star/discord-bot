@@ -14,6 +14,35 @@ from typing import Any
 
 from ..data.constants import STATE_CLEANUP_MAX_AGE_HOURS, STATE_CLEANUP_MAX_CHANNELS
 
+# Module-level compiled patterns. These run once per RP message inside
+# extract_states_from_response; compiling on every call shows up in
+# RP-heavy traces.
+_CHARACTER_BLOCK_RE = re.compile(r"\{\{([^}]+)\}\}(.*?)(?=\{\{|$)", re.DOTALL)
+_SYS_MARKER_RE = re.compile(
+    r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*"
+)
+_LOCATION_RE = re.compile(
+    r"(?:^|[\s])(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่)\s*"
+    r"[\"']?([^\"',.!?\n]{3,30})[\"']?"
+)
+_ACTIVITY_RE = re.compile(r"(?:^|[\s])(?:กำลัง|พยายาม)\s+([^,.!?\n]{3,50})")
+_DIALOGUE_RE = re.compile(r'"([^"]{5,200})"' r"|" r"'([^']{5,200})'")
+_ACTION_RE = re.compile(r">\s*([^<\n]{10,150})")
+
+# Emotion lexicon, evaluated once at import time rather than rebuilt on
+# every RP message in ``update_from_response``. The values are looked up
+# with ``any(p in content for p in patterns)`` so a plain dict of
+# tuples is cheap to iterate.
+_EMOTION_PATTERNS: dict[str, tuple[str, ...]] = {
+    "happy": ("ยิ้ม", "หัวเราะ", "ดีใจ", "มีความสุข", "ร่าเริง"),
+    "sad": ("เศร้า", "ร้องไห้", "น้ำตา", "เสียใจ"),
+    "angry": ("โกรธ", "หงุดหงิด", "โมโห", "ฉุนเฉียว"),
+    "embarrassed": ("อาย", "เขิน", "หน้าแดง", "ประหม่า"),
+    "scared": ("กลัว", "ตกใจ", "หวาดกลัว", "สะดุ้ง"),
+    "confused": ("งง", "สับสน", "มึน"),
+    "excited": ("ตื่นเต้น", "ใจเต้น", "ลุ้น"),
+}
+
 
 @dataclass
 class CharacterState:
@@ -101,9 +130,17 @@ class CharacterStateTracker:
                 # Filter out channels with empty states to avoid min() on empty sequence
                 channels_with_states = [cid for cid in self._states if self._states[cid]]
                 if channels_with_states:
+                    # LRU semantics: evict the channel whose MOST recently
+                    # accessed character is the oldest. The previous code
+                    # used ``min(...)`` over per-channel timestamps which
+                    # would evict an active channel just because ONE of
+                    # its characters hadn't been touched recently — not
+                    # what "least recently used" means at the channel
+                    # level. The matching cleanup pass at line ~340
+                    # already uses ``max`` for this reason.
                     oldest_channel = min(
                         channels_with_states,
-                        key=lambda cid: min(
+                        key=lambda cid: max(
                             (s.last_accessed for s in self._states[cid].values()),
                             default=0,
                         ),
@@ -155,16 +192,12 @@ class CharacterStateTracker:
         updated = []
 
         # Pattern: {{CharacterName}} followed by content
-        character_blocks = re.findall(r"\{\{([^}]+)\}\}(.*?)(?=\{\{|$)", response_text, re.DOTALL)
+        character_blocks = _CHARACTER_BLOCK_RE.findall(response_text)
 
         # Helper: scrub control chars + bracketed system markers from any
         # captured field. Stored values are later interpolated back into the
         # prompt via get_states_for_prompt(), so unsanitised input becomes a
         # stored prompt-injection vector.
-        _SYS_MARKER_RE = re.compile(
-            r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*"
-        )
-
         def _scrub_state_value(s: str, *, max_len: int) -> str:
             # Drop ASCII control chars except \n / \t.
             cleaned = "".join(ch for ch in s if ch >= " " or ch in ("\n", "\t"))
@@ -191,11 +224,7 @@ class CharacterStateTracker:
             # grab bare prepositions ("ที่"/"ใน") mid-sentence and capture
             # the next 30 chars as a "location". Match must follow a
             # whitespace boundary or start.
-            location_match = re.search(
-                r"(?:^|[\s])(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่)\s*"
-                r"[\"']?([^\"',.!?\n]{3,30})[\"']?",
-                content,
-            )
+            location_match = _LOCATION_RE.search(content)
             if location_match:
                 state_updates["location"] = _scrub_state_value(
                     location_match.group(1),
@@ -203,28 +232,16 @@ class CharacterStateTracker:
                 )
 
             # Activity detection — same anchor + length tightening.
-            activity_match = re.search(
-                r"(?:^|[\s])(?:กำลัง|พยายาม)\s+([^,.!?\n]{3,50})",
-                content,
-            )
+            activity_match = _ACTIVITY_RE.search(content)
             if activity_match:
                 state_updates["activity"] = _scrub_state_value(
                     activity_match.group(1),
                     max_len=120,
                 )
 
-            # Emotion detection
-            emotion_patterns = {
-                "happy": ["ยิ้ม", "หัวเราะ", "ดีใจ", "มีความสุข", "ร่าเริง"],
-                "sad": ["เศร้า", "ร้องไห้", "น้ำตา", "เสียใจ"],
-                "angry": ["โกรธ", "หงุดหงิด", "โมโห", "ฉุนเฉียว"],
-                "embarrassed": ["อาย", "เขิน", "หน้าแดง", "ประหม่า"],
-                "scared": ["กลัว", "ตกใจ", "หวาดกลัว", "สะดุ้ง"],
-                "confused": ["งง", "สับสน", "มึน"],
-                "excited": ["ตื่นเต้น", "ใจเต้น", "ลุ้น"],
-            }
-
-            for emotion, patterns in emotion_patterns.items():
+            # Emotion detection — uses the module-level ``_EMOTION_PATTERNS``
+            # so the lexicon isn't rebuilt on every RP message.
+            for emotion, patterns in _EMOTION_PATTERNS.items():
                 if any(p in content for p in patterns):
                     state_updates["emotion"] = emotion
                     break
@@ -233,23 +250,19 @@ class CharacterStateTracker:
             # quote char on both sides) so "hello' world" doesn't match
             # across the wrong delimiter. Two separate alternations cover
             # the single- and double-quoted cases independently.
-            dialogue_match = re.search(
-                r'"([^"]{5,200})"' r"|" r"'([^']{5,200})'",
-                content,
-            )
+            dialogue_match = _DIALOGUE_RE.search(content)
             if dialogue_match:
                 grabbed = dialogue_match.group(1) or dialogue_match.group(2) or ""
                 state_updates["last_dialogue"] = _scrub_state_value(grabbed, max_len=200)
 
             # Extract last action (first > marked text)
-            action_match = re.search(r">\s*([^<\n]{10,150})", content)
+            action_match = _ACTION_RE.search(content)
             if action_match:
                 state_updates["last_action"] = _scrub_state_value(
                     action_match.group(1),
                     max_len=200,
                 )
 
-            # Update state
             if state_updates:
                 self.set_state(char_name, channel_id, **state_updates)
                 updated.append(char_name)
@@ -320,13 +333,19 @@ class CharacterStateTracker:
         cutoff = time.time() - (max_age_hours * 3600)
 
         with self._lock:
-            # Remove old states
+            # Remove old states. Use ``last_accessed`` (not
+            # ``updated_at``) to decide what's "old" — a frequently-read
+            # state legitimately has a stale ``updated_at`` because read
+            # paths bump only ``last_accessed``. The previous shape used
+            # ``updated_at`` which evicted hot read-only states. Mirrors
+            # the LRU eviction further down (line 348) which already
+            # uses ``last_accessed``.
             for channel_id in list(self._states.keys()):
                 states = self._states.get(channel_id)
                 if states is None:
                     continue
                 # Check if all states are old
-                if all(s.updated_at < cutoff for s in states.values()):
+                if all(s.last_accessed < cutoff for s in states.values()):
                     self._states.pop(channel_id, None)
                     self._last_scene.pop(channel_id, None)
                     removed += 1

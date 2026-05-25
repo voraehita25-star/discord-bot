@@ -164,41 +164,52 @@ class AIAnalytics:
             cache_hit: Whether response was from cache
             error: Error message if failed
         """
-        # Update in-memory stats under lock
+        # Update in-memory stats under lock.
+        # Hold BOTH locks: the async lock serialises against other async
+        # mutators, and the sync lock serialises against sync readers on
+        # other threads (``get_summary``/``reset_stats`` take
+        # ``_sync_stats_lock``). Without the sync lock, a concurrent
+        # ``_get_summary_unlocked`` iterating ``intent_counts.items()`` while
+        # this method inserts a new intent key raises
+        # ``RuntimeError: dictionary changed size during iteration``. The
+        # block contains no ``await``, so holding the threading lock here
+        # cannot stall the event loop. Lock order (async then sync) matches
+        # ``log_response_quality``.
         async with self._stats_lock:
-            self._stats["total_interactions"] += 1
-            self._stats["total_response_time_ms"] += response_time_ms
-            self._stats["intent_counts"][intent] += 1
-            self._stats["total_input_chars"] += len(input_text)
-            self._stats["total_output_chars"] += len(output_text)
+            with self._sync_stats_lock:
+                self._stats["total_interactions"] += 1
+                self._stats["total_response_time_ms"] += response_time_ms
+                self._stats["intent_counts"][intent] += 1
+                self._stats["total_input_chars"] += len(input_text)
+                self._stats["total_output_chars"] += len(output_text)
 
-            if cache_hit:
-                self._stats["cache_hits"] += 1
-            if error:
-                self._stats["errors"] += 1
+                if cache_hit:
+                    self._stats["cache_hits"] += 1
+                if error:
+                    self._stats["errors"] += 1
 
-            # Track hourly (with cleanup to prevent unbounded growth).
-            # Use UTC so the bucket key matches the UTC timestamps stored on
-            # InteractionLog rows (was naive local time, drifted across DST).
-            hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
-            self._stats["hourly_counts"][hour_key] += 1
+                # Track hourly (with cleanup to prevent unbounded growth).
+                # Use UTC so the bucket key matches the UTC timestamps stored
+                # on InteractionLog rows (was naive local time, drifted DST).
+                hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+                self._stats["hourly_counts"][hour_key] += 1
 
-            # Cleanup old hourly keys if too many
-            if len(self._stats["hourly_counts"]) > self.MAX_HOURLY_KEYS:
-                sorted_keys = sorted(self._stats["hourly_counts"].keys())
-                keys_to_remove = sorted_keys[: len(sorted_keys) - self.MAX_HOURLY_KEYS]
-                for key in keys_to_remove:
-                    del self._stats["hourly_counts"][key]
+                # Cleanup old hourly keys if too many
+                if len(self._stats["hourly_counts"]) > self.MAX_HOURLY_KEYS:
+                    sorted_keys = sorted(self._stats["hourly_counts"].keys())
+                    keys_to_remove = sorted_keys[: len(sorted_keys) - self.MAX_HOURLY_KEYS]
+                    for key in keys_to_remove:
+                        del self._stats["hourly_counts"][key]
 
-            # Limit intent_counts growth
-            if len(self._stats["intent_counts"]) > self.MAX_INTENT_KEYS:
-                # Keep top intents by count
-                sorted_intents = sorted(
-                    self._stats["intent_counts"].items(), key=lambda x: x[1], reverse=True
-                )
-                self._stats["intent_counts"] = defaultdict(
-                    int, dict(sorted_intents[: self.MAX_INTENT_KEYS])
-                )
+                # Limit intent_counts growth
+                if len(self._stats["intent_counts"]) > self.MAX_INTENT_KEYS:
+                    # Keep top intents by count
+                    sorted_intents = sorted(
+                        self._stats["intent_counts"].items(), key=lambda x: x[1], reverse=True
+                    )
+                    self._stats["intent_counts"] = defaultdict(
+                        int, dict(sorted_intents[: self.MAX_INTENT_KEYS])
+                    )
 
         # Log to database if available
         if DB_AVAILABLE:
@@ -221,6 +232,13 @@ class AIAnalytics:
 
     async def _save_to_db(self, **kwargs) -> None:
         """Save interaction to database."""
+        # ``DB_AVAILABLE`` was True at import time but the module-level ``db``
+        # can still be None if the runtime never initialised it (e.g. tests
+        # that import this module without the DB layer). Without the guard,
+        # ``db.get_write_connection()`` would raise AttributeError on every
+        # analytics flush and noise the logs.
+        if db is None:
+            return
         async with db.get_write_connection() as conn:
             await conn.execute(
                 """

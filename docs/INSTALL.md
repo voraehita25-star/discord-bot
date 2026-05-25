@@ -109,10 +109,13 @@ nano .env     # Linux
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | ✅ | Token จาก Discord Developer Portal |
-| `ANTHROPIC_API_KEY` | ⚠️ | API Key จาก Anthropic — บังคับสำหรับ Discord AI cog. ใน dashboard chat ถ้าใช้ `CLAUDE_BACKEND=cli` ก็ไม่จำเป็น |
-| `CLAUDE_BACKEND` | ❌ | (Optional) Backend ของ dashboard chat: `api` (default — anthropic SDK + per-token billing) หรือ `cli` (spawn `claude -p` ใช้โควต้า Claude Code Max subscription แทน) |
+| `ANTHROPIC_API_KEY` | ⚠️ | API Key จาก Anthropic — ต้องตั้งเฉพาะตอน `CLAUDE_BACKEND=api`. โหมดดีฟอลต์ `cli` อ่าน credentials จาก Claude Code login ในเครื่องแทน |
+| `CLAUDE_BACKEND` | ❌ | (Optional) Mode การคุยกับ Claude: `cli` (default — spawn `claude -p` ใช้โควต้า Claude Code Max subscription, ไม่เสียค่า per-token) หรือ `api` (anthropic SDK + per-token billing, เปิดใช้ Discord AI replies + memory consolidator + summarizer) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | (Optional) ตั้งเฉพาะตอนใช้ `CLAUDE_BACKEND=cli` และ bot รันคนละ OS user กับที่ login Claude Code (เช่น service account / Docker) |
-| `GEMINI_API_KEY` | ❌ | (Optional) API Key จาก Google AI Studio สำหรับ embeddings/RAG |
+| `GEMINI_API_KEY` | ❌ | (Optional) API Key จาก Google AI Studio สำหรับ RAG embeddings (โหลดเฉพาะตอน `CLAUDE_BACKEND=api`) |
+| `RAG_ALLOW_LEGACY_PICKLE` | ❌ | (Optional) Opt-in อนุญาตให้โหลด FAISS sidecar `.npy` (pickle) แบบเก่า ปิดดีฟอลต์เพื่อกัน RCE จากไฟล์บนดิสก์ ตั้งเฉพาะตอน migrate deployment เก่าที่เชื่อถือได้ |
+| `BOT_MEMORY_WARNING_MB` | ❌ | (Optional) Soft memory threshold เป็น MiB (default: 1024) ปรับตามขนาด container/VM |
+| `BOT_MEMORY_CRITICAL_MB` | ❌ | (Optional) Hard memory threshold เป็น MiB (default: 1536) |
 | `CREATOR_ID` | ✅ | Discord User ID ของเจ้าของบอท |
 | `SPOTIPY_CLIENT_ID` | ❌ | (Optional) Spotify API Client ID |
 | `SPOTIPY_CLIENT_SECRET` | ❌ | (Optional) Spotify API Secret |

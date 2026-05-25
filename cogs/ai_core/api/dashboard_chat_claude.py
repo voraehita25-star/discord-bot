@@ -20,27 +20,61 @@ from zoneinfo import ZoneInfo
 import anthropic
 from anthropic.types.message_param import MessageParam
 
+from ..claude_payloads import (
+    CLAUDE_IMAGE_MEDIA_TYPES,
+    ClaudeContentBlockParam,
+    ClaudeMessageRole,
+    build_claude_base64_image_block,
+    build_claude_message,
+    build_claude_pdf_document_block,
+    build_claude_text_block,
+    build_claude_text_document_block,
+    build_split_cached_system_prompt,
+)
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
-# API Failover integration
+# API Failover integration. Narrow to ``ImportError`` only — the
+# previous broad ``except Exception`` silently swallowed any
+# initialisation bug inside ``api_failover`` (TypeError, AttributeError,
+# etc.) as "failover unavailable", so a real wiring regression would
+# look like a benign disable instead of a crash that surfaces in CI.
 try:
     from .api_failover import api_failover as _api_failover
 
     _FAILOVER_AVAILABLE = True
-except Exception:
+except ImportError:
     _FAILOVER_AVAILABLE = False
     _api_failover = None  # type: ignore[assignment]
 
-# Retryable errors: overloaded (529) and rate limit (429)
-_RETRYABLE_ERRORS = (anthropic.InternalServerError, anthropic.RateLimitError)
+# Retryable errors: overloaded (529), rate limit (429), and transient
+# network failures. APIConnectionError covers DNS / TCP / TLS hiccups and
+# APITimeoutError is what the SDK raises when its own client-side timeout
+# fires before the server responds. Without these, a single flaky packet
+# aborts the whole turn instead of retrying with backoff.
+_RETRYABLE_ERRORS = (
+    anthropic.InternalServerError,
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+)
 _RETRY_BASE_DELAY = 2  # seconds
 _RETRY_MAX_DELAY = 30  # seconds
 
 # Claude API hard limit for images
 _CLAUDE_IMAGE_LIMIT = 5 * 1024 * 1024  # 5MB
+
+# Image MIME allowlist — module-level so we don't rebuild this set inside
+# the per-image validation loop on every chat turn.
+_ALLOWED_IMAGE_MIMES = frozenset(CLAUDE_IMAGE_MEDIA_TYPES)
+
+# Conversation ID validator — same shape as the dashboard_handlers one,
+# duplicated here intentionally to avoid pulling that whole module in
+# (circular import risk via shared handlers).
+_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 
 
 def _compress_image_for_claude(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
@@ -97,8 +131,22 @@ def _compress_image_for_claude(image_bytes: bytes, mime_type: str) -> tuple[byte
             return buf.getvalue(), "image/jpeg"
         scale *= 0.75
 
-    # Last resort: return whatever we got
-    return buf.getvalue(), "image/jpeg"
+    # Last resort: still oversized after every compress/downscale pass.
+    # Returning the bloated buffer used to silently trigger a Claude API
+    # 400 ("image too large"), which the failover layer treated as a
+    # transient error and retried — wasting quota in a tight loop. Log a
+    # warning so the operator can see it and raise a clear ValueError so
+    # the caller can route it to a "image too large" UI message.
+    final_size = buf.tell()
+    logger.warning(
+        "📷 Image still %d bytes after compression+downscale (limit=%d); rejecting",
+        final_size,
+        _CLAUDE_IMAGE_LIMIT,
+    )
+    raise ValueError(
+        f"image too large: {final_size} bytes after compression "
+        f"(Claude limit is {_CLAUDE_IMAGE_LIMIT} bytes)"
+    )
 
 
 def _apply_search_replace(original: str, ai_response: str) -> str:
@@ -158,17 +206,6 @@ def _retry_delay_seconds(attempt: int) -> int:
     return delay
 
 
-from ..claude_payloads import (
-    CLAUDE_IMAGE_MEDIA_TYPES,
-    ClaudeContentBlockParam,
-    ClaudeMessageRole,
-    build_claude_base64_image_block,
-    build_claude_message,
-    build_claude_pdf_document_block,
-    build_claude_text_block,
-    build_claude_text_document_block,
-    build_split_cached_system_prompt,
-)
 from .dashboard_common import (
     LeadingTimestampStripper,
     bangkok_now_iso,
@@ -227,13 +264,20 @@ async def handle_chat_message_claude(
     is_regeneration = data.get("is_regeneration", False)
     is_failover_retry = _failover_retry
 
-    # Validate conversation_id format (defense in depth)
+    # Validate conversation_id format (defense in depth). Reuse the
+    # module-level compiled pattern instead of recompiling per call.
     if conversation_id and (
         not isinstance(conversation_id, str)
-        or not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id)
+        or not _CONVERSATION_ID_RE.match(conversation_id)
     ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
+
+    # ``history`` must be a list of dicts. A client sending ``"history": "x"``
+    # would otherwise slice the string character-by-character below and
+    # produce garbage MessageParam entries that Anthropic rejects with 400.
+    if not isinstance(history, list):
+        history = []
 
     # Enforce input size limits
     if len(content) > max_content_length:
@@ -289,7 +333,10 @@ async def handle_chat_message_claude(
                 )
                 is_regeneration = False
         except Exception:
-            logger.warning("Failed to validate is_regeneration; treating as new message")
+            logger.warning(
+                "Failed to validate is_regeneration; treating as new message",
+                exc_info=True,
+            )
             is_regeneration = False
 
     # Save user message to DB (skip for regeneration — the edited message already exists)
@@ -301,7 +348,7 @@ async def handle_chat_message_claude(
                 conversation_id, "user", content, images=images or None
             )
         except Exception as e:
-            logger.warning("Failed to save user message: %s", e)
+            logger.warning("Failed to save user message: %s", e, exc_info=True)
 
     # Persistent document memory — extract + save uploaded PDFs / DOCX /
     # text files so future turns see the content without re-upload. Claude
@@ -359,11 +406,19 @@ async def handle_chat_message_claude(
                 if msg.get("created_at"):
                     text = f"[{normalize_timestamp_to_bangkok(msg['created_at'])}] {text}"
                 if msg.get("images"):
-                    text += f"\n[User had attached {len(msg['images'])} image(s) in this message, message_id={msg['id']}]"
+                    # Deliberately do NOT include `msg['id']` here — the
+                    # primary key is a server-side handle and surfacing it in
+                    # the AI-visible prompt invites the model to be tricked
+                    # into operating on arbitrary message ids via injection.
+                    text += f"\n[User had attached {len(msg['images'])} image(s) in this message]"
                 messages.append(build_claude_message(role, text))
             _db_history_loaded = True
         except Exception as e:
-            logger.warning("Failed to load DB history, falling back to frontend history: %s", e)
+            logger.warning(
+                "Failed to load DB history, falling back to frontend history: %s",
+                e,
+                exc_info=True,
+            )
 
     if not _db_history_loaded:
         for msg in history:
@@ -378,18 +433,36 @@ async def handle_chat_message_claude(
         try:
             if "," in img_data:
                 header, b64_data = img_data.split(",", 1)
-                mime_type = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
+                # Defensive parse: a malformed ``data:`` URL like
+                # ``data;base64,XXX`` (note ``;`` instead of ``:``)
+                # would IndexError on ``[1]`` because the first segment
+                # has no colon. The previous shape only checked for a
+                # colon ANYWHERE in the header, not in the first
+                # ``;``-delimited piece, so it crashed on this input.
+                first_segment = header.split(";")[0]
+                if ":" in first_segment:
+                    mime_type = first_segment.split(":", 1)[1] or "image/png"
+                else:
+                    mime_type = "image/png"
             else:
                 b64_data = img_data
                 mime_type = "image/png"
 
-            # Validate MIME type against allowlist
-            _ALLOWED_IMAGE_MIMES = set(CLAUDE_IMAGE_MEDIA_TYPES)
+            # Validate MIME type against allowlist. Claude's Anthropic API
+            # only accepts JPEG/PNG/GIF/WebP — HEIC/HEIF would be silently
+            # accepted by the Gemini path, so call out the difference so
+            # the user knows to convert and retry rather than blame "the
+            # AI doesn't see my photo".
             if mime_type not in _ALLOWED_IMAGE_MIMES:
                 logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
-                await ws.send_json(
-                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
-                )
+                if mime_type in ("image/heic", "image/heif"):
+                    msg = (
+                        f"Claude doesn't accept {mime_type} — please convert to "
+                        "JPEG or PNG and retry."
+                    )
+                else:
+                    msg = f"Unsupported image type: {mime_type}"
+                await ws.send_json({"type": "error", "message": msg})
                 continue
 
             # Validate base64 string length BEFORE decoding to prevent memory exhaustion
@@ -423,8 +496,26 @@ async def handle_chat_message_claude(
                 )
                 continue
 
-            # Compress if exceeding Claude's 5MB API limit
-            image_bytes, mime_type = _compress_image_for_claude(image_bytes, mime_type)
+            # Compress if exceeding Claude's 5MB API limit. Raises
+            # ValueError if even max compression+downscale can't fit;
+            # surface that to the client so the user knows the image was
+            # dropped instead of silently triggering a 400 retry storm.
+            # PIL work is offloaded to a thread — a 10 MB image
+            # compress+resize sequence is hundreds of ms of CPU and would
+            # otherwise stall the event loop, blocking every other WS client.
+            try:
+                image_bytes, mime_type = await asyncio.to_thread(
+                    _compress_image_for_claude, image_bytes, mime_type
+                )
+            except ValueError as e:
+                logger.warning("Image rejected after compression: %s", e)
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "Image too large to send to Claude (over 5MB even after compression)",
+                    }
+                )
+                continue
             b64_data = base64.b64encode(image_bytes).decode("ascii")
 
             image_block = build_claude_base64_image_block(b64_data, mime_type)
@@ -447,7 +538,10 @@ async def handle_chat_message_claude(
     for doc in documents:
         if not isinstance(doc, dict):
             continue
-        doc_name = re.sub(r"[^A-Za-z0-9._\-\s]", "_", str(doc.get("name", "attachment")))[:200]
+        doc_name = (
+            re.sub(r"[^A-Za-z0-9._\-\s]", "_", str(doc.get("name", "attachment")))
+            .strip(".\\/ ")[:200]
+        )
         doc_kind = doc.get("kind")
         doc_data = doc.get("data")
         if not isinstance(doc_data, str) or not doc_data:
@@ -533,8 +627,6 @@ async def handle_chat_message_claude(
         )
     )
 
-    # Build system prompt
-
     # Build unrestricted mode injection if enabled
     unrestricted_injection = ""
     allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
@@ -577,7 +669,23 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Build mode info for display
     mode_info: list[str] = []
 
-    _model_display = CLAUDE_MODEL.replace("claude-", "Claude ").replace("-", " ").title()
+    # Format model id like `claude-opus-4-7` → `Claude Opus 4.7`. The naive
+    # `replace("-", " ").title()` produces `Claude Opus 4 7` (two version
+    # tokens look like separate words). Split out the numeric trailer and
+    # rejoin it with a dot so the version reads correctly.
+    _model_parts = CLAUDE_MODEL.replace("claude-", "").split("-")
+    _model_numeric: list[str] = []
+    _model_words: list[str] = []
+    for _p in _model_parts:
+        if _p.isdigit():
+            _model_numeric.append(_p)
+        else:
+            _model_words.append(_p)
+    _name_part = " ".join(w.title() for w in _model_words)
+    _version_part = ".".join(_model_numeric) if _model_numeric else ""
+    _model_display = (
+        f"Claude {_name_part} {_version_part}".strip() if _version_part else f"Claude {_name_part}".strip()
+    )
     mode_info.insert(0, f"🟣 {_model_display}")
 
     if thinking_enabled:
@@ -787,8 +895,12 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             # Pre-bind so the asyncio.sleep(delay) at loop bottom never
             # touches an unbound local. Both except branches reassign it
             # before the sleep is reached, but a future edit could add a
-            # path that falls through unchanged.
+            # path that falls through unchanged. Pre-bind retry_notice for
+            # the same reason — it's only assigned in the two known except
+            # branches and a future non-retryable except path would otherwise
+            # hit ws.send_json with UnboundLocalError.
             delay = 1.0
+            retry_notice = ""
             while attempt <= _MAX_STREAM_RETRIES:
                 try:
                     if stream_timeout > 0:
@@ -1035,7 +1147,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             )
     except Exception as e:
         error_str = str(e)
-        logger.error("❌ Claude streaming error: %s", type(e).__name__)
+        logger.error("❌ Claude streaming error: %s", type(e).__name__, exc_info=True)
 
         # Detect quota/billing limit — no point retrying or failing over.
         # Substring check is fragile (Anthropic wording can change) but the
@@ -1049,17 +1161,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             or "quota" in _err_lower
             or "credit balance" in _err_lower
         )
-        if not is_quota_error:
-            try:
-                import anthropic as _anthropic_mod
-
-                if (
-                    isinstance(e, _anthropic_mod.APIStatusError)
-                    and getattr(e, "status_code", 0) == 429
-                ):
-                    is_quota_error = True
-            except Exception:
-                pass
+        if not is_quota_error and (
+            isinstance(e, anthropic.APIStatusError) and getattr(e, "status_code", 0) == 429
+        ):
+            is_quota_error = True
         if is_quota_error:
             try:
                 await ws.send_json(
@@ -1131,6 +1236,28 @@ async def handle_ai_edit_message_claude(
     if not conversation_id or not target_message_id or not instruction:
         await ws.send_json({"type": "error", "message": "Missing data for AI edit"})
         return
+
+    # Parity with the Gemini handler — same conversation_id format
+    # check and instruction-length cap. Without these, the Claude path
+    # accepted malformed IDs and oversized instructions that the Gemini
+    # twin already rejected at the door.
+    if not isinstance(conversation_id, str) or not re.match(
+        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+    ):
+        await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
+        return
+
+    max_instruction_length = 10_000
+    if len(instruction) > max_instruction_length:
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": f"Instruction too long (max {max_instruction_length} characters)",
+            }
+        )
+        return
+    if user_name and len(str(user_name)) > 200:
+        user_name = str(user_name)[:200]
 
     if not claude_client:
         await ws.send_json({"type": "error", "message": "Claude AI not available"})
@@ -1351,6 +1478,9 @@ async def handle_ai_edit_message_claude(
 
         async def _consume_claude_edit_stream():
             attempt = 1
+            # Pre-bind so the asyncio.sleep(delay) at loop bottom can never
+            # touch an unbound local. Mirror the chat-stream guard above.
+            delay = 1.0
 
             while attempt <= _MAX_EDIT_RETRIES:
                 try:
@@ -1408,8 +1538,10 @@ async def handle_ai_edit_message_claude(
         # Update the message in DB. Pass conversation_id so the UPDATE only
         # matches when the row is in the conversation the AI was editing —
         # prevents an attacker (or a bug) from coercing this path into
-        # rewriting messages in a different conversation.
-        if final_content:
+        # rewriting messages in a different conversation. Also refuse to
+        # write whitespace-only content (truthy but useless) so a bad AI
+        # response can't blank the user's message.
+        if final_content and final_content.strip():
             try:
                 db = _get_db()
                 await db.update_dashboard_message(
@@ -1419,6 +1551,11 @@ async def handle_ai_edit_message_claude(
                 )
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
+        elif full_response:
+            logger.warning(
+                "AI edit produced empty/whitespace content; keeping original message %s",
+                target_message_id_int,
+            )
 
         await ws.send_json(
             {

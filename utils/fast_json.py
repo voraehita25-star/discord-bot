@@ -92,6 +92,7 @@ except ImportError:
         indent: int | None = None,
         default: Any = None,
         sort_keys: bool = False,
+        **kwargs: Any,
     ) -> str:
         """Serialize Python object to JSON string (standard json).
 
@@ -101,14 +102,27 @@ except ImportError:
         reject — meaning calls would succeed in production (orjson
         installed) but raise TypeError in tests (no orjson), or vice
         versa. Listing every arg explicitly keeps the two branches in
-        lockstep.
+        lockstep; ``**kwargs`` is accepted but rejected loudly to match
+        the orjson branch's behavior.
         """
+        if kwargs:
+            raise TypeError(
+                f"fast_json.json_dumps: unsupported kwargs {sorted(kwargs)} under stdlib json"
+            )
+        # Force ``allow_nan=False`` to match the orjson branch, which
+        # raises ``TypeError`` on NaN/Infinity. The default
+        # ``allow_nan=True`` emits ``NaN`` / ``Infinity`` tokens (non-
+        # standard JSON) — fine for stdlib readers but unparseable by any
+        # strict JSON parser, including orjson loading the same file.
+        # Loud failure is better than producing files only some paths can
+        # read.
         return _json.dumps(
             obj,
             ensure_ascii=ensure_ascii,
             indent=indent,
             default=default,
             sort_keys=sort_keys,
+            allow_nan=False,
         )
 
     def json_dumps_bytes(obj: Any, *, default: Any = None) -> bytes:
@@ -121,5 +135,7 @@ def is_orjson_enabled() -> bool:
     return _ORJSON_ENABLED
 
 
-# Convenience exports
-__all__ = ["_ORJSON_ENABLED", "is_orjson_enabled", "json_dumps", "json_dumps_bytes", "json_loads"]
+# Convenience exports. Drop the private ``_ORJSON_ENABLED`` from
+# ``__all__`` — callers should use the public ``is_orjson_enabled()``
+# helper instead so the underlying flag stays an implementation detail.
+__all__ = ["is_orjson_enabled", "json_dumps", "json_dumps_bytes", "json_loads"]

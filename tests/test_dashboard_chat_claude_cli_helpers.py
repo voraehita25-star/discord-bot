@@ -267,8 +267,11 @@ class TestBuildFullPrompt:
             doc_paths=None,
             is_resumed_session=False,
         )
-        assert "pic.png" in out
         assert "Attached images" in out
+        # Must include the FULL absolute POSIX path — bare basename is not
+        # findable from the subprocess CWD, which broke vision in CLI mode
+        # (see commit history around "image not visible" regression).
+        assert img.resolve().as_posix() in out
 
     def test_lists_doc_paths(self, tmp_path):
         doc = tmp_path / "spec.pdf"
@@ -284,8 +287,9 @@ class TestBuildFullPrompt:
             doc_paths=[doc],
             is_resumed_session=False,
         )
-        assert "spec.pdf" in out
         assert "Attached documents" in out
+        # Same reasoning as test_lists_image_paths: full path required.
+        assert doc.resolve().as_posix() in out
 
     def test_current_message_at_end(self):
         out = cli._build_full_prompt(

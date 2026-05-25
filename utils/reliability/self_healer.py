@@ -12,6 +12,7 @@ Features:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import logging
@@ -45,6 +46,85 @@ def _kill_authorized(authorized: bool) -> tuple[bool, str]:
     return False, (
         f"Refusing bulk-kill: pass authorized=True or set {_KILL_AUTH_ENV_VAR}=1 to confirm."
     )
+
+
+# Lockfile for serialising single-instance enforcement (see
+# ``_singleton_enforcement_lock``). Separate from PID_FILE — it's an OS advisory
+# lock, never read for content.
+_SINGLETON_LOCK_FILE = "bot.singleton.lock"
+
+
+@contextlib.contextmanager
+def _singleton_enforcement_lock(timeout: float = 5.0):
+    """Hold an OS advisory lock during single-instance enforcement.
+
+    Two bots starting at the same instant would otherwise each see the other as
+    "an existing instance" and kill it — leaving BOTH dead. Serialising the
+    kill step fixes that: the first holder kills the rest and survives; the
+    others are killed (or find nothing to do) before they enforce.
+
+    Two safety properties make this safe to add to the startup-critical path:
+
+    * **Stale-safe** — it's an OS advisory lock (``msvcrt`` on Windows,
+      ``fcntl`` on POSIX), automatically released when the holding process
+      exits. A crash can never leave a lock that blocks future starts.
+    * **Fails open** — if locking is unavailable or errors for any reason we
+      yield anyway, so startup is never blocked (worst case = the previous
+      no-lock behaviour).
+
+    Yields ``True`` if the lock was actually held, ``False`` if we proceeded
+    without it.
+    """
+    fh = None
+    locked = False
+    try:
+        fh = Path(_SINGLETON_LOCK_FILE).open("a+")  # noqa: SIM115 — closed in finally
+        deadline = time.time() + timeout
+        if sys.platform == "win32":
+            import msvcrt
+
+            while time.time() < deadline:
+                try:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        else:
+            import fcntl
+
+            while time.time() < deadline:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(0.1)
+    except Exception:
+        # Fail open — never block startup because of a locking problem.
+        locked = False
+    try:
+        yield locked
+    finally:
+        if fh is not None:
+            if locked:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        fh.seek(0)
+                        with contextlib.suppress(OSError):
+                            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        with contextlib.suppress(OSError):
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            with contextlib.suppress(Exception):
+                fh.close()
 
 
 class SelfHealer:
@@ -572,8 +652,12 @@ class SelfHealer:
                         killed_count = self.kill_all_bots(authorized=True)
                         action_result["details"] = f"Killed all {killed_count} bot instances"
                     else:
-                        # Keep oldest, kill duplicates
-                        killed_count = self.kill_duplicate_bots(keep_newest=False)
+                        # Keep the NEWEST instance, kill older duplicates. This
+                        # matches ensure_single_instance (the restart path keeps
+                        # the freshly-started process), so a git-pull+restart —
+                        # or auto-heal racing that restart — doesn't kill the new
+                        # process and leave a stale one running.
+                        killed_count = self.kill_duplicate_bots(keep_newest=True)
                         action_result["details"] = f"Killed {killed_count} duplicate bot(s)"
                     action_result["success"] = True
 
@@ -623,22 +707,35 @@ class SelfHealer:
             return True, "No other instances found - Starting..."
 
         if kill_existing:
-            self.log("warning", f"Found {len(other_bots)} existing instance(s) - killing them")
+            # Serialise the kill with an OS advisory lock so two bots starting
+            # simultaneously don't kill EACH OTHER (each would otherwise see the
+            # other as an existing instance). Stale-safe + fails open.
+            with _singleton_enforcement_lock():
+                # Re-scan inside the lock: a concurrent start that ran just
+                # before us may already have cleared the duplicates, in which
+                # case we must NOT kill (there's nothing left but us).
+                bots_now = self.find_all_bot_processes()
+                other_now = [b for b in bots_now if b["pid"] != self.my_pid]
+                if not other_now:
+                    self.log("info", "Duplicates already cleared by a concurrent start - proceeding")
+                    return True, "No other instances found - Starting..."
 
-            # Also kill any dev_watchers to prevent auto-restart
-            watchers = self.find_all_dev_watchers()
-            other_watchers = [w for w in watchers if w["pid"] != self.my_pid]
+                self.log("warning", f"Found {len(other_now)} existing instance(s) - killing them")
 
-            for watcher in other_watchers:
-                self.kill_process(watcher["pid"])
+                # Also kill any dev_watchers to prevent auto-restart
+                watchers = self.find_all_dev_watchers()
+                other_watchers = [w for w in watchers if w["pid"] != self.my_pid]
 
-            for bot in other_bots:
-                self.kill_process(bot["pid"])
+                for watcher in other_watchers:
+                    self.kill_process(watcher["pid"])
 
-            self.clean_pid_file()
-            time.sleep(1)  # Wait for resources to be released
+                for bot in other_now:
+                    self.kill_process(bot["pid"])
 
-            return True, f"Stopped {len(other_bots)} old instances - Restarting..."
+                self.clean_pid_file()
+                time.sleep(1)  # Wait for resources to be released
+
+                return True, f"Stopped {len(other_now)} old instances - Restarting..."
 
         if other_bots:
             pid = other_bots[0]["pid"]

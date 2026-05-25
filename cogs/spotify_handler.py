@@ -11,6 +11,7 @@ because the is_available() check ensures sp is not None at runtime.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 import discord
 import spotipy
-from requests.exceptions import (
+from requests.exceptions import (  # type: ignore[import-untyped, unused-ignore]
     ConnectionError as RequestsConnectionError,
     ReadTimeout,
 )
@@ -56,7 +57,18 @@ class SpotifyHandler:
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
         self.sp: spotipy.Spotify | None = None
+        # Serialise ``_setup_client`` so two concurrent retry paths can't
+        # both recreate the client, leak a freshly-built one to GC, and
+        # leave bound-method ``func`` arguments pointing at a now-closed
+        # ``requests.Session``. Lazily allocated because the handler is
+        # constructed before the event loop in some test setups.
+        self._setup_lock: asyncio.Lock | None = None
         self._setup_client()
+
+    def _get_setup_lock(self) -> asyncio.Lock:
+        if self._setup_lock is None:
+            self._setup_lock = asyncio.Lock()
+        return self._setup_lock
 
     def _setup_client(self) -> None:
         """Initialize Spotify client with credentials from environment.
@@ -106,8 +118,17 @@ class SpotifyHandler:
                     auth_manager=SpotifyClientCredentials(
                         client_id=client_id, client_secret=client_secret
                     ),
-                    requests_timeout=60,  # Increased timeout for slow connections
-                    retries=5,  # More built-in retries
+                    # Bound spotipy's internal request timeout so a stalled
+                    # connection can't pin the executor thread for the full
+                    # 60s window (which also pins the run_in_executor await
+                    # and stalls ffmpeg/discord traffic). 15s is generous
+                    # for Spotify's normal latency.
+                    requests_timeout=15,
+                    # Limit spotipy's own retries — we wrap calls in
+                    # ``_api_call_with_retry`` (MAX_RETRIES=3) on top of
+                    # this, so retries=5 × MAX_RETRIES = up to 15 retries
+                    # per user request. retries=2 caps worst-case at ~6.
+                    retries=2,
                 )
                 logger.info("✅ Spotify Client Initialized")
             except (spotipy.SpotifyException, ValueError):
@@ -168,7 +189,11 @@ class SpotifyHandler:
                 result = await asyncio.get_running_loop().run_in_executor(
                     None, functools.partial(func, *captured_args, **captured_kwargs)
                 )
-                # Record success for circuit breaker
+                # Record success ONCE for the whole user request — independent
+                # of how many internal retries happened. This is the inverse
+                # of the failure path below: the circuit breaker tracks
+                # "user-visible Spotify call outcomes", not "every transport
+                # blip the bot quietly retried past".
                 if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
                     spotify_circuit.record_success()
                 return result
@@ -177,13 +202,12 @@ class SpotifyHandler:
                 ReadTimeout,
                 RemoteDisconnected,
                 ProtocolError,
-                ConnectionResetError,
+                # ``ConnectionResetError`` is a subclass of ``OSError``; the
+                # explicit entry is redundant but kept for grep-ability —
+                # ``OSError`` catches every transient socket-level failure
+                # raised by urllib3.
                 OSError,
             ) as e:
-                # Record failure for circuit breaker
-                if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
-                    spotify_circuit.record_failure()
-
                 if attempt < self.MAX_RETRIES - 1:
                     # Exponential backoff: 2s, 4s, 8s
                     delay = self.RETRY_DELAY * (2**attempt)
@@ -196,19 +220,51 @@ class SpotifyHandler:
                     )
                     await asyncio.sleep(delay)
 
-                    # Recreate client on 2nd+ failure (token might be stale)
+                    # Recreate client on 2nd+ failure (token might be stale).
+                    # Serialise so two parallel retry paths don't both invoke
+                    # ``_setup_client`` and leak one of the freshly-built
+                    # Spotify objects. Skip the rebuild if another coroutine
+                    # already swapped ``self.sp`` while we were waiting on
+                    # the lock — re-binding the bound-method ``func`` to the
+                    # fresh client is enough.
                     if attempt >= 1:
-                        logger.info("🔄 Recreating Spotify client...")
-                        self._setup_client()
-                        if self.sp is None:
-                            logger.error("Failed to recreate Spotify client")
-                            raise ConnectionError("Spotify client recreation failed") from None
-                        # Re-bind func to the new client if it was a bound method
-                        if hasattr(func, "__self__") and isinstance(func.__self__, spotipy.Spotify):
-                            func = getattr(self.sp, func.__name__)
+                        bound_target = getattr(func, "__self__", None)
+                        async with self._get_setup_lock():
+                            if self.sp is None or self.sp is bound_target:
+                                logger.info("🔄 Recreating Spotify client...")
+                                self._setup_client()
+                            if self.sp is None:
+                                logger.error("Failed to recreate Spotify client")
+                                if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
+                                    spotify_circuit.record_failure()
+                                raise ConnectionError(
+                                    "Spotify client recreation failed"
+                                ) from None
+                            # Re-bind func to the current ``self.sp`` if it
+                            # was a bound method. Inside the lock the target
+                            # cannot be swapped out from under us mid-rebind.
+                            if isinstance(bound_target, spotipy.Spotify):
+                                func = getattr(self.sp, func.__name__)
                 else:
+                    # Only record failure ONCE — when retries are exhausted.
+                    # Previously we recorded every transient retry which made
+                    # a single flaky-network user request burn the breaker's
+                    # whole failure budget (3 retries == 3 failures), tripping
+                    # the open state for everyone else.
+                    if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
+                        spotify_circuit.record_failure()
                     logger.error("Spotify connection failed after %d attempts", self.MAX_RETRIES)
                     raise
+
+        # Unreachable when MAX_RETRIES >= 1 (the loop either returns,
+        # raises in the final-attempt branch, or sleeps + continues).
+        # Guard anyway so a future MAX_RETRIES=0 misconfiguration
+        # doesn't silently fall off the end and return None into a
+        # caller that expects a real result.
+        raise RuntimeError(
+            f"_api_call_with_retry exhausted with MAX_RETRIES={self.MAX_RETRIES} "
+            "without producing a result"
+        )
 
     async def process_spotify_url(
         self, ctx: Context, query: str, queue: list[dict[str, Any]]
@@ -248,7 +304,11 @@ class SpotifyHandler:
         ) as e:
             # Catch a wider net so circuit-breaker ConnectionError + low-level
             # OSError surface as a friendly Spotify error instead of crashing
-            # the command handler.
+            # the command handler. ``OSError`` is intentionally broad here
+            # because the requests stack wraps low-level networking errors
+            # in OSError subclasses (BrokenPipeError, ConnectionResetError);
+            # callers that need narrower handling should not rely on
+            # ``process_spotify_url`` to surface a specific subtype.
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ข้อผิดพลาด Spotify",
                 description=(
@@ -258,7 +318,11 @@ class SpotifyHandler:
             )
             embed.set_footer(text="ลองใหม่อีกครั้ง หรือใช้ชื่อเพลงแทน")
             await ctx.send(embed=embed)
-            logger.error("Spotify error: %s", e)
+            # Use ``logger.exception`` so the traceback is captured for
+            # the broader OSError category — without it, debugging an
+            # unexpected OSError subclass requires re-running the whole
+            # command path.
+            logger.exception("Spotify error: %s", e)
             return False
 
     async def _handle_track(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
@@ -311,7 +375,10 @@ class SpotifyHandler:
         if album.get("images") and len(album["images"]) > 0:
             embed.set_thumbnail(url=album["images"][0]["url"])
 
-        duration_ms = track.get("duration_ms", 0)
+        # `.get(..., 0)` only covers a MISSING key; Spotify can return
+        # ``duration_ms: null`` (e.g. some episodes/local tracks), and
+        # ``None // 1000`` raises TypeError. ``or 0`` coerces null too.
+        duration_ms = track.get("duration_ms") or 0
         embed.add_field(name=f"{Emojis.MICROPHONE} ศิลปิน", value=artist_name, inline=True)
         album_name = album.get("name", "Unknown Album")[:25]
         embed.add_field(name=f"{Emojis.DISC} อัลบั้ม", value=album_name, inline=True)
@@ -358,6 +425,14 @@ class SpotifyHandler:
 
         try:
             results = await self._api_call_with_retry(get_all_playlist_tracks, query)
+        except asyncio.CancelledError:
+            # If the user navigated away or the parent command was
+            # cancelled, the loading embed would otherwise sit forever
+            # showing "กำลังโหลด..." even though no work is happening.
+            # Clean up before re-raising the cancellation.
+            with contextlib.suppress(discord.NotFound, discord.HTTPException):
+                await msg.delete()
+            raise
         except (RequestsConnectionError, ReadTimeout) as e:
             # Try to delete loading message, but don't fail if already deleted
             try:

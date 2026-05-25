@@ -1,0 +1,44 @@
+# Canonical line endings — without this, Windows clones with
+# core.autocrlf=true rewrite every text file's EOL on checkout, producing
+# noisy "LF will be replaced by CRLF" warnings in `git status` and
+# polluting diffs across the whole repo. Pin every text file to LF in
+# the index regardless of host platform, then per-extension overrides
+# below restore CRLF for files that must be Windows-style.
+* text=auto eol=lf
+
+# Windows-only script files keep CRLF — cmd.exe/PowerShell are happiest
+# with native EOL and contributors editing on Windows shouldn't see
+# their changes "lose" the CRLF on commit.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+
+# Common text formats — explicit eol=lf so a contributor's editor
+# can't accidentally re-introduce CRLF on save.
+*.py    text eol=lf
+*.md    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.ts    text eol=lf
+*.js    text eol=lf
+*.rs    text eol=lf
+*.sql   text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+
+# Tauri regenerates these from native_dashboard/capabilities/*.json at build
+# time. They're committed for IDE/Cargo cache friendliness, but should never
+# be hand-edited — drift between the source capability and the generated
+# schema would otherwise look like a bug. Mark as generated so GitHub /
+# linguist hide them from diff stats and reviewers know not to scrutinise.
+native_dashboard/gen/schemas/*.json linguist-generated=true diff=auto
+
+# Generated dashboard JS — emitted by tsc. Mark generated so reviewers
+# focus on .ts sources rather than scrutinising the compile output, and
+# linguist excludes it from language stats.
+native_dashboard/ui/**/*.js     linguist-generated=true
+native_dashboard/ui/**/*.js.map linguist-generated=true binary

@@ -97,7 +97,9 @@ class MessageQueue:
         """
         with self._queue_lock:
             lock = self.processing_locks.get(channel_id)
-        return lock.locked() if lock else False
+            # Read ``locked()`` inside the queue_lock so another thread can't
+            # delete the lock between the dict lookup and the locked() probe.
+            return lock.locked() if lock else False
 
     def queue_message(
         self,
@@ -281,7 +283,10 @@ class MessageQueue:
 
         # Merge all messages
         if len(pending) > 1:
-            all_messages = [f"[{msg.user.display_name}]: {msg.message}" for msg in pending]
+            all_messages = [
+                f"[{getattr(msg.user, 'display_name', None) or getattr(msg.user, 'name', 'Unknown')}]: {msg.message}"
+                for msg in pending
+            ]
             combined_message = "\n".join(all_messages)
             logger.info(
                 "📝 Merged %d pending messages for channel %s",
@@ -362,18 +367,20 @@ class MessageQueue:
         return self._lock_times.get(channel_id)
 
     def cleanup_stale_locks(self, max_age: float = 300.0) -> int:
-        """Clean up locks that have been held too long.
+        """Warn about locks that have been held too long. Does NOT release them.
 
-        Note: This only cleans up lock metadata. If a lock is truly stale
-        (held for too long), we log a warning but do NOT force-release it
-        since the coroutine holding it may still be running slowly.
-        The lock will be released when the coroutine finishes or errors.
+        Despite the legacy ``cleanup_`` prefix, this method only emits a
+        warning log line per stale lock and returns the count of stale
+        locks observed. It does NOT mutate ``processing_locks`` or release
+        anything, because the coroutine still holding the lock may simply
+        be running slowly and force-releasing would let a second handler
+        run concurrently with the first.
 
         Args:
-            max_age: Maximum age in seconds before warning
+            max_age: Maximum age in seconds before emitting a warning.
 
         Returns:
-            Number of stale locks detected (not released)
+            Number of stale locks detected (not released).
         """
         now = time.time()
         with self._queue_lock:
@@ -435,6 +442,24 @@ class MessageQueue:
         if cleaned > 0:
             logger.debug("🧹 Cleaned up %d unused channel locks", cleaned)
         return cleaned
+
+    def clear_channel(self, channel_id: int) -> None:
+        """Drop all per-channel state (pending messages, cancel flag,
+        lock metadata, lock object) for ``channel_id`` atomically.
+
+        Public surface for callers like the ``reset_ai`` command and
+        the ``on_guild_channel_delete`` listener — previously those
+        sites reached into ``self.pending_messages`` /
+        ``self.cancel_flags`` / ``self._lock_times`` directly, which
+        broke encapsulation and silently regressed if any of those
+        attributes were ever renamed. Holds ``_queue_lock`` so the
+        clear is atomic across all four maps.
+        """
+        with self._queue_lock:
+            self.pending_messages.pop(channel_id, None)
+            self.cancel_flags.pop(channel_id, None)
+            self.processing_locks.pop(channel_id, None)
+            self._lock_times.pop(channel_id, None)
 
 
 # Module-level instance for easy access

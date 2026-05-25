@@ -6,6 +6,11 @@
 
 PRAGMA foreign_keys=OFF;
 
+-- Idempotent re-apply guard: a crash between INSERT and RENAME below
+-- would otherwise leave dashboard_conversations_new orphaned on disk
+-- and the rerun would fail with "table already exists", requiring
+-- manual DB intervention.
+DROP TABLE IF EXISTS dashboard_conversations_new;
 CREATE TABLE dashboard_conversations_new (
     id TEXT PRIMARY KEY,
     title TEXT,
@@ -41,7 +46,7 @@ SELECT
     COALESCE(NULLIF(ai_provider, ''), 'claude')
 FROM dashboard_conversations;
 
-DROP TABLE dashboard_conversations;
+DROP TABLE IF EXISTS dashboard_conversations;
 
 ALTER TABLE dashboard_conversations_new RENAME TO dashboard_conversations;
 

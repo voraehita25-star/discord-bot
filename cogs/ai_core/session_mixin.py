@@ -12,7 +12,6 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from .data import (
-    FAUST_DM_INSTRUCTION,
     FAUST_INSTRUCTION,
     GUILD_ID_RP,
     ROLEPLAY_ASSISTANT_INSTRUCTION,
@@ -71,18 +70,31 @@ class SessionMixin:
             guild_id: Optional guild ID for context.
 
         Returns:
-            Chat session data dict or None if client not initialized.
+            Chat session data dict or None if neither the SDK client nor
+            the CLI subprocess backend is initialised.
         """
-        if not self.client:
+        # CLI mode has no SDK client (``self.client`` stays None) but the
+        # CLI subprocess in ``discord_chat_claude_cli`` still answers, so
+        # don't gate the session here on the SDK client. The original
+        # check predates CLI mode and now produces a spurious
+        # "Could not create chat session." error every Discord message
+        # when CLAUDE_BACKEND=cli.
+        if not self.client and not getattr(self, "cli_mode", False):
             return None
 
         if channel_id not in self.chats:
-            # Select system instruction based on Guild
-            system_instruction = FAUST_INSTRUCTION  # Default to Faust
+            # Select system instruction based on Guild.
+            # DM mode previously used the brief FAUST_DM_INSTRUCTION
+            # addendum (~600 chars) which dropped the full persona —
+            # appearance, Gesellschaft, third-person speech, roleplay
+            # format. Per user direction DM now uses the same full
+            # FAUST_INSTRUCTION as guild channels so the AI's identity
+            # is consistent across contexts. ``FAUST_DM_INSTRUCTION`` is
+            # retained as an exported constant for backward compat with
+            # downstream code/tests but no longer drives DM behaviour.
+            system_instruction = FAUST_INSTRUCTION  # Default to Faust (also DM)
 
-            if guild_id is None:  # DM - Use casual Faust mode
-                system_instruction = FAUST_DM_INSTRUCTION
-            elif guild_id == GUILD_ID_RP:  # Roleplay Server
+            if guild_id == GUILD_ID_RP:  # Roleplay Server
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
 
             # Append server-specific lore if available

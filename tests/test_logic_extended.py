@@ -224,8 +224,16 @@ class TestToolsImport:
     """Tests for tools imports."""
 
     def test_execute_tool_call_import(self):
-        """Test execute_tool_call is imported."""
-        from cogs.ai_core.logic import execute_tool_call
+        """Test execute_tool_call is still callable from its canonical location.
+
+        The function was previously re-exported via ``cogs.ai_core.logic``
+        because the legacy Gemini turn-loop dispatched tool calls inline. The
+        Claude pipeline doesn't surface tool_use blocks at this layer (see
+        the ``_function_calls`` deliberate-drop in ``logic.py``), so the
+        helper now lives only under ``cogs.ai_core.tools`` for direct CLI /
+        test / dev-probe consumers.
+        """
+        from cogs.ai_core.tools import execute_tool_call
 
         assert callable(execute_tool_call)
 
@@ -240,8 +248,8 @@ class TestServerCharactersImport:
     """Tests for SERVER_CHARACTER_NAMES import."""
 
     def test_server_characters_import(self):
-        """Test SERVER_CHARACTER_NAMES is imported."""
-        from cogs.ai_core.logic import SERVER_CHARACTER_NAMES
+        """Test SERVER_CHARACTER_NAMES is exposed by the data package."""
+        from cogs.ai_core.data import SERVER_CHARACTER_NAMES
 
         assert SERVER_CHARACTER_NAMES is not None
 
@@ -630,9 +638,14 @@ class TestSetupAI:
 
             assert manager.client is None
 
-    def test_setup_ai_with_api_key(self):
-        """Test setup_ai with API key."""
+    def test_setup_ai_with_api_key(self, monkeypatch):
+        """Test setup_ai with API key (API mode)."""
         from cogs.ai_core.logic import ChatManager
+
+        # Default is now CLAUDE_BACKEND=cli, which short-circuits SDK
+        # init. Force API mode for this test that's specifically about
+        # the SDK fallback path.
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
 
         mock_bot = MagicMock()
         mock_client = MagicMock()

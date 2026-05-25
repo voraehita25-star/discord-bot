@@ -22,12 +22,16 @@ export interface ChatConversation {
     tags?: string[];   // #22 — per-conversation tag list
 }
 
+import type { DocumentPayload } from './document-attach.js';
+
 export interface ChatMessage {
     id?: number;
     role: 'user' | 'assistant';
     content: string;
     created_at: string;
     images?: string[];   // Base64 encoded images
+    documents?: DocumentPayload[]; // Attached PDF/text/etc. — persisted so
+                                   // regenerate-after-edit can resend them
     thinking?: string;   // AI thought process
     mode?: string;       // Mode used (Thinking, Unrestricted, etc.)
     is_pinned?: boolean; // Marked important by user (#20)

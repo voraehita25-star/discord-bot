@@ -7,6 +7,7 @@ Features L1 in-memory (OrderedDict) and L2 persistent (SQLite) cache layers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -777,6 +778,21 @@ class L2SqliteCache:
                 logger.debug("Cache close error", exc_info=True)
             self._conn = None
 
+    def checkpoint(self) -> None:
+        """Flush the WAL into the main DB file (``PRAGMA wal_checkpoint(TRUNCATE)``).
+
+        ``synchronous=NORMAL`` + WAL means a hard crash can lose commits still
+        sitting in the WAL. Call this on graceful shutdown (after the pending
+        writes have landed) so the last cache entries are durable — WITHOUT
+        closing the connection, which would break L2 after a cog hot-reload
+        since the module-global instance is reused.
+        """
+        if self._conn:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                logger.debug("L2 cache checkpoint error", exc_info=True)
+
 
 # ==================== Global Instances ====================
 
@@ -849,19 +865,24 @@ async def flush_l2_pending(timeout: float = 5.0) -> int:
     Returns the number of futures flushed. Never raises — individual future
     exceptions are logged and swallowed so shutdown can proceed.
     """
-    if not _l2_pending_futures:
-        return 0
-    pending = list(_l2_pending_futures)
-    try:
-        done, _pending_set = await asyncio.wait(pending, timeout=timeout)
-    except Exception as wait_exc:  # pragma: no cover — defensive
-        logger.warning("flush_l2_pending: wait failed: %s", wait_exc)
-        return 0
-    for fut in done:
-        fut_exc = fut.exception()
-        if fut_exc is not None:
-            logger.warning("L2 persist future raised: %s", fut_exc)
-    return len(done)
+    flushed = 0
+    if _l2_pending_futures:
+        pending = list(_l2_pending_futures)
+        try:
+            done, _pending_set = await asyncio.wait(pending, timeout=timeout)
+            for fut in done:
+                fut_exc = fut.exception()
+                if fut_exc is not None:
+                    logger.warning("L2 persist future raised: %s", fut_exc)
+            flushed = len(done)
+        except Exception as wait_exc:  # pragma: no cover — defensive
+            logger.warning("flush_l2_pending: wait failed: %s", wait_exc)
+    # Checkpoint the WAL so the just-flushed (and any earlier) writes are durable
+    # before the loop closes — synchronous=NORMAL can otherwise lose them on a
+    # hard crash. Run in a thread since it's a blocking sqlite call.
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(_l2_cache.checkpoint)
+    return flushed
 
 
 # Install L2 persistence as a per-instance hook on the global ai_cache.

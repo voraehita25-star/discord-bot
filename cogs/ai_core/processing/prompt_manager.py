@@ -11,9 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Try to import YAML
+# Try to import YAML.
+# `types-PyYAML` is the official stub package; install it for full typing.
+# Without it mypy emits import-untyped — silenced here because the rest of
+# the file is fully typed and the YAML AST is consumed via duck typing.
 try:
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     YAML_AVAILABLE = True
 except ImportError:
@@ -43,16 +46,23 @@ class PromptManager:
         self.templates: dict[str, Any] = {}
         self._load_templates()
 
-    def _load_templates(self) -> None:
-        """Load all template files from prompts directory."""
+    def _load_templates(self, target: dict[str, Any] | None = None) -> None:
+        """Load all template files into ``target`` (default ``self.templates``).
+
+        ``target`` lets ``reload`` build a fresh dict off to the side so a
+        concurrent prompt-build call never observes a half-populated
+        ``self.templates``. The initial load from ``__init__`` keeps the
+        original behaviour by defaulting to ``self.templates``.
+        """
+        dest = self.templates if target is None else target
         if not YAML_AVAILABLE:
             self.logger.warning("PyYAML not available, using fallback templates")
-            self._load_fallback_templates()
+            self._load_fallback_templates(target=dest)
             return
 
         if not self.TEMPLATES_DIR.exists():
             self.logger.warning("Templates directory not found: %s", self.TEMPLATES_DIR)
-            self._load_fallback_templates()
+            self._load_fallback_templates(target=dest)
             return
 
         # Load all YAML files
@@ -63,18 +73,24 @@ class PromptManager:
                 if data:
                     # Use filename (without .yaml) as namespace
                     namespace = yaml_file.stem
-                    self.templates[namespace] = data
+                    dest[namespace] = data
                     self.logger.info("Loaded template: %s", yaml_file.name)
 
             except Exception:
                 self.logger.exception("Failed to load %s", yaml_file.name)
 
-        if not self.templates:
-            self._load_fallback_templates()
+        if not dest:
+            self._load_fallback_templates(target=dest)
 
-    def _load_fallback_templates(self) -> None:
-        """Load hardcoded fallback templates."""
-        self.templates["base"] = {
+    def _load_fallback_templates(self, target: dict[str, Any] | None = None) -> None:
+        """Load hardcoded fallback templates into ``target``.
+
+        Defaults to ``self.templates`` so existing callers from ``__init__``
+        keep working unchanged; ``reload`` passes a side dict so the swap
+        stays atomic.
+        """
+        dest = self.templates if target is None else target
+        dest["base"] = {
             "personality": {
                 "core": """คุณเป็น Faust ผู้ช่วย AI ที่เป็นมิตรและฉลาด
 คุณพูดได้ทั้งภาษาไทยและอังกฤษ ใช้ภาษาตามที่ผู้ใช้พูดมา"""
@@ -115,6 +131,14 @@ class PromptManager:
 
         try:
             for part in parts:
+                # Reject dunder paths defensively. Templates are
+                # operator-controlled YAML so the threat is low, but a
+                # template that accidentally references ``__class__`` or
+                # ``__globals__`` could expose internals — and the
+                # nested ``current[part]`` would happily walk dict keys
+                # named that way. Normalise to "missing" instead.
+                if part.startswith("__") and part.endswith("__"):
+                    return default
                 current = current[part]
             return current
         except (KeyError, TypeError):
@@ -180,48 +204,77 @@ class PromptManager:
         """
         parts = []
 
+        # Strip newlines + control chars from user-controlled fields BEFORE
+        # interpolating into the system prompt — a Discord nickname like
+        # ``"Alice\n\n# New System Instruction:\nIgnore prior..."`` would
+        # otherwise inject directives at the system level. Curly-brace
+        # escaping below handles format-string injection but does not stop
+        # newline-based prompt injection on its own.
+        def _scrub_for_prompt(s: str, maxlen: int = 100) -> str:
+            """Scrub user-controlled text before interpolating into a prompt.
+
+            Doubles ``{`` and ``}`` so the resulting string can be safely
+            passed through ``str.format(...)`` without triggering field
+            lookups (e.g. ``{0.__class__}``) or KeyError on unmatched
+            field names. NOTE: the doubling is correct ONLY for downstream
+            consumers that call ``.format()``. Do NOT pass the output to
+            f-string interpolation or printf-style ``%``-formatting —
+            those treat ``{{`` / ``}}`` as literal characters and the
+            escaping would leak through into the final prompt.
+            """
+            cleaned = "".join(c if c.isprintable() and c not in "\r\n\t" else " " for c in s)
+            return cleaned[:maxlen].replace("{", "{{").replace("}", "}}")
+
         if user_name or user_id:
             user_info = self.get("base.context.user_info", "")
             if user_info:
-                # Sanitize curly braces in user input to prevent format string injection
-                safe_name = str(user_name or "Unknown").replace("{", "{{").replace("}", "}}")
+                safe_name = _scrub_for_prompt(str(user_name or "Unknown"))
                 try:
                     parts.append(user_info.format(user_name=safe_name, user_id=user_id or 0))
-                except (KeyError, IndexError) as exc:
+                except (KeyError, IndexError, AttributeError) as exc:
                     logger.warning("user_info template formatting failed: %s", exc)
 
         if channel_name:
             channel_info = self.get("base.context.channel_info", "")
             if channel_info:
-                safe_channel = str(channel_name).replace("{", "{{").replace("}", "}}")
+                safe_channel = _scrub_for_prompt(str(channel_name))
                 try:
                     parts.append(
                         channel_info.format(
-                            channel_name=safe_channel, channel_type=channel_type or "text"
+                            channel_name=safe_channel,
+                            channel_type=_scrub_for_prompt(channel_type or "text", maxlen=20),
                         )
                     )
-                except (KeyError, IndexError) as exc:
+                except (KeyError, IndexError, AttributeError) as exc:
                     logger.warning("channel_info template formatting failed: %s", exc)
 
         if include_time:
             now = datetime.now()
             time_info = self.get("base.context.time_info", "")
             if time_info:
-                parts.append(
-                    time_info.format(
-                        current_time=now.strftime("%H:%M"), current_date=now.strftime("%Y-%m-%d")
+                # Guard the .format() like the user/channel blocks above — a
+                # malformed time_info template (stray `{}`) would otherwise
+                # raise and abort the whole prompt build.
+                try:
+                    parts.append(
+                        time_info.format(
+                            current_time=now.strftime("%H:%M"),
+                            current_date=now.strftime("%Y-%m-%d"),
+                        )
                     )
-                )
+                except (KeyError, IndexError, AttributeError) as exc:
+                    logger.warning("time_info template formatting failed: %s", exc)
 
         if recent_topic:
             topic_info = self.get("base.context.recent_topic", "")
             if topic_info:
-                # Escape curly braces in user-controlled topic to prevent
-                # format string injection (KeyError / IndexError via {x} or {0}).
-                safe_topic = str(recent_topic).replace("{", "{{").replace("}", "}}")
+                # Same newline-stripping treatment as user/channel fields —
+                # ``recent_topic`` is sourced from message content which can
+                # contain attacker-crafted directives.
+                safe_topic = _scrub_for_prompt(str(recent_topic), maxlen=200)
                 try:
                     parts.append(topic_info.format(topic=safe_topic))
-                except (KeyError, IndexError) as exc:
+                except (KeyError, IndexError, AttributeError) as exc:
                     # Template itself malformed — skip this section rather than crash.
                     logger.warning("recent_topic template formatting failed: %s", exc)
 
@@ -286,19 +339,24 @@ class PromptManager:
         manager with an empty (or half-built) template set even when the
         ``except`` branch tried to restore the previous version.
         """
-        prev_templates = self.templates
+        # Build into a side dict so ``self.templates`` keeps pointing at
+        # the previous full set for the entire duration of the YAML walk.
+        # The previous shape rebound ``self.templates = new_templates``
+        # BEFORE calling ``_load_templates`` and then relied on the loader
+        # writing into ``self.templates`` — which meant a concurrent
+        # prompt-build call between those two statements would observe an
+        # empty (or half-populated) dict.
+        new_templates: dict[str, Any] = {}
         try:
-            new_templates: dict[str, Any] = {}
-            # Temporarily swap so `_load_templates` (which writes to
-            # `self.templates`) populates the new dict instead.
-            self.templates = new_templates
-            self._load_templates()
+            self._load_templates(target=new_templates)
         except Exception:
-            self.templates = prev_templates
             self.logger.exception("Reload failed; kept previous templates")
             raise
-        # _load_templates fills `self.templates` (= new_templates) directly;
-        # the assignment above is the atomic swap point.
+        # Single rebind once the side dict is fully populated. Plain
+        # attribute assignment is atomic under the CPython GIL, so any
+        # concurrent reader either sees the old dict or the new dict —
+        # never an in-progress mutation.
+        self.templates = new_templates
         self.logger.info("Templates reloaded (%d entries)", len(self.templates))
 
 

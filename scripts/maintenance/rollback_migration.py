@@ -35,6 +35,7 @@ Design notes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 import sqlite3
 import sys
@@ -208,14 +209,48 @@ def cmd_restore(args: argparse.Namespace) -> int:
         shutil.copy2(DB_PATH, safety)
         print(f"✓ Safety snapshot: {safety.name}")
 
-    shutil.copy2(backup, DB_PATH)
-    # Wipe stale WAL/SHM so SQLite starts clean against the restored file.
+    # Restore atomically: copy backup to a sibling temp first, then unlink
+    # stale WAL/SHM, then ``os.replace`` the temp over the live DB. Doing
+    # the copy in place (the previous behaviour) could leave a half-written
+    # DB on a power loss between copy start and end. Doing the WAL unlink
+    # AFTER the live DB was overwritten created a second window where a
+    # crash leaves a fresh-content .db plus a stale WAL — SQLite's recovery
+    # then replays the WAL into the restored file and corrupts it.
+    tmp_target = DB_PATH.with_suffix(DB_PATH.suffix + ".restoring")
+    try:
+        shutil.copy2(backup, tmp_target)
+    except OSError as e:
+        print(f"FATAL: could not stage restored DB at {tmp_target.name}: {e}")
+        return 1
+
+    # Wipe stale WAL/SHM BEFORE swapping in the restored file. SQLite's
+    # recovery on next open will reject a mismatched WAL header, but the
+    # safer guarantee is that no WAL exists at all when the new file lands.
     for path in (wal, shm):
         if path.exists():
             try:
                 path.unlink()
             except OSError as e:
-                print(f"  (warning: could not remove {path.name}: {e})")
+                print(f"FATAL: could not remove {path.name}: {e}")
+                print(
+                    "  Aborting before the swap — the live DB is unchanged. "
+                    "Remove the stale WAL/SHM manually and retry. The safety "
+                    "snapshot is in data/backups/pre_rollback_*.db."
+                )
+                with contextlib.suppress(OSError):
+                    tmp_target.unlink()
+                return 1
+
+    # Final atomic swap. ``Path.replace`` is atomic on the same filesystem
+    # on both POSIX and Windows, so either the old DB or the new one is
+    # live — never a partial mix.
+    try:
+        tmp_target.replace(DB_PATH)
+    except OSError as e:
+        print(f"FATAL: atomic rename failed: {e}")
+        with contextlib.suppress(OSError):
+            tmp_target.unlink()
+        return 1
 
     new_ver = _get_schema_version(DB_PATH)
     print(f"✓ Restored to schema version {new_ver}")

@@ -61,7 +61,10 @@ while ($true) {
 
     # Start bot
     try {
-        $BotProcess = Start-Process -FilePath "python" -ArgumentList $BotScript -NoNewWindow -PassThru -WorkingDirectory $ProjectRoot
+        # Quote the script path — $BotScript contains a space ("C:\BOT Discord\bot.py").
+        # -ArgumentList passes its value to the new process verbatim (no auto-quoting),
+        # so without the embedded quotes Python receives "C:\BOT" as the script path.
+        $BotProcess = Start-Process -FilePath "python" -ArgumentList "`"$BotScript`"" -NoNewWindow -PassThru -WorkingDirectory $ProjectRoot
 
         # Wait for process
         $BotProcess.WaitForExit()

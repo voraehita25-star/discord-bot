@@ -17,7 +17,9 @@ thiserror.workspace = true
 parking_lot.workspace = true
 memmap2.workspace = true
 bytemuck.workspace = true
-fs2 = "0.4"
+# fs2 dropped — file locking now uses stdlib ``File::lock_exclusive`` /
+# ``unlock`` (stable since Rust 1.89), which is per-fd on Linux via
+# flock(2) instead of fs2's per-process fcntl locks.
 
 # SIMD optimizations
 simsimd = "6.5"

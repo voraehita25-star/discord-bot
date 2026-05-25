@@ -93,19 +93,25 @@ class AlertManager:
         last_sent = self._last_alert_times.get(alert_type, 0.0)
         return (now - last_sent) >= self._cooldown
 
-    async def _try_acquire_cooldown(self, alert_type: str) -> bool:
+    async def _try_acquire_cooldown(self, alert_type: str) -> tuple[bool, float]:
         """Atomic check-and-update of the per-type cooldown timestamp.
 
-        Returns True if the alert is allowed to fire (and reserves the
-        slot). The previous split implementation read + wrote the dict
-        in two separate steps, so two concurrent callers could both
-        pass the check.
+        Returns ``(acquired, previous_ts)``. ``acquired`` is True if the alert
+        is allowed to fire (and the slot is reserved). ``previous_ts`` is the
+        timestamp that occupied the slot beforehand — pass it to
+        ``_rollback_cooldown`` if the subsequent send FAILS, so a transient
+        delivery error doesn't silence the alert for a full cooldown window
+        (critical for outage alerts, whose webhook POST is most likely to fail
+        exactly when the outage that triggered them is happening).
+
+        The previous split implementation read + wrote the dict in two
+        separate steps, so two concurrent callers could both pass the check.
         """
         now = time.time()
         async with self._cooldown_lock:
             last_sent = self._last_alert_times.get(alert_type, 0.0)
             if (now - last_sent) < self._cooldown:
-                return False
+                return False, last_sent
             # Evict oldest entry if we're at the cap. This is best-effort —
             # the next caller can always re-add an entry.
             if (
@@ -124,7 +130,21 @@ class AlertManager:
                 )
                 self._last_alert_times.pop(oldest_key, None)
             self._last_alert_times[alert_type] = now
-            return True
+            return True, last_sent
+
+    async def _rollback_cooldown(self, alert_type: str, previous_ts: float) -> None:
+        """Undo a cooldown reservation after a failed send so it can retry.
+
+        Restores the prior timestamp (so retries are still gated on the last
+        *successful* send, not on a failed attempt), or clears the slot if it
+        had none. Only restores when our reservation is still the most recent
+        one, to avoid clobbering a concurrent successful send.
+        """
+        async with self._cooldown_lock:
+            if previous_ts:
+                self._last_alert_times[alert_type] = previous_ts
+            else:
+                self._last_alert_times.pop(alert_type, None)
 
     async def send_alert(
         self,
@@ -152,7 +172,11 @@ class AlertManager:
 
         # Atomic cooldown reservation — also commits the timestamp on
         # success so we don't double-acquire below in the success branch.
-        if not await self._try_acquire_cooldown(alert_type):
+        # Keep the prior timestamp so we can roll the reservation back if the
+        # send fails (otherwise a transient failure mutes this alert type for
+        # a full cooldown window).
+        acquired, prev_cooldown_ts = await self._try_acquire_cooldown(alert_type)
+        if not acquired:
             logger.debug("Alert skipped (cooldown): %s", title)
             return False
 
@@ -203,12 +227,14 @@ class AlertManager:
                     return True
                 else:
                     logger.warning("Alert failed (HTTP %d): %s", resp.status, title)
+                    await self._rollback_cooldown(alert_type, prev_cooldown_ts)
                     return False
         except Exception:
             # Don't put `e` (repr of which may include the webhook URL on
             # some aiohttp errors) into the log line — use exception() so
             # the traceback goes through the secret-redaction filter.
             logger.exception("Failed to send alert (title=%s)", title[:100])
+            await self._rollback_cooldown(alert_type, prev_cooldown_ts)
             return False
 
     async def alert_circuit_breaker_open(self, breaker_name: str) -> bool:

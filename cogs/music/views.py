@@ -99,7 +99,10 @@ class MusicControlView(discord.ui.View):
             return
 
         voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
-        if voice_client.is_playing():
+        # Allow skipping a PAUSED track too — calling stop() while paused still
+        # fires the after-callback that advances the queue. The text `skip`
+        # command already accepts both states; this keeps the button in sync.
+        if voice_client.is_playing() or voice_client.is_paused():
             self.cog._gs(self.guild_id).loop = False  # Disable loop
             voice_client.stop()
             await interaction.response.send_message("⏭️ ข้ามเพลง", ephemeral=True)

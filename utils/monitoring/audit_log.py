@@ -6,8 +6,11 @@ Tracks administrative actions for security and accountability.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,13 +30,78 @@ logger = logging.getLogger(__name__)
 # Fallback JSONL file used when the DB layer is unavailable. We append-only
 # so audit history isn't silently lost when sqlite is broken at import time.
 _FALLBACK_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "audit_fallback.jsonl"
-_FALLBACK_LOCK = asyncio.Lock()
+# Lazy-init lock so the binding to a running event loop happens at first
+# call rather than import time — constructing an asyncio.Lock at import
+# time has historically tripped tests that load this module before
+# starting the loop, and any future Python that tightens loop-policy
+# behaviour at import time would break it again.
+_FALLBACK_LOCK: asyncio.Lock | None = None
+
+
+def _get_fallback_lock() -> asyncio.Lock:
+    global _FALLBACK_LOCK
+    if _FALLBACK_LOCK is None:
+        _FALLBACK_LOCK = asyncio.Lock()
+    return _FALLBACK_LOCK
 
 
 def _scrub_str(v: Any) -> Any:
     if isinstance(v, str):
         return v.replace("\r", " ").replace("\n", " ")[:500]
     return v
+
+
+# Tamper-evidence chain. Each audit row stores entry_hash = HMAC(key, prev_hash
+# + fields). With AUDIT_LOG_HMAC_KEY set (a secret NOT stored in the DB), an
+# attacker who edits/deletes a row can't recompute the chain without the key;
+# without the key it degrades to a plain SHA-256 chain that still catches naive
+# edits. The append-only triggers (database.py) block in-place edits outright;
+# the chain makes deletions / out-of-band writes detectable via verify_chain().
+_AUDIT_HMAC_KEY = os.getenv("AUDIT_LOG_HMAC_KEY", "")
+_jsonl_prev_hash = ""  # running prev_hash for the JSONL-fallback chain (per process)
+
+
+def _compute_entry_hash(
+    prev_hash: str,
+    action_type: Any,
+    guild_id: Any,
+    user_id: Any,
+    target_id: Any,
+    details: Any,
+    created_at: Any,
+) -> str:
+    """HMAC-SHA256 (keyed) or SHA-256 (unkeyed) over prev_hash + the row fields."""
+    canonical = "\x1f".join(
+        str(x)
+        for x in (prev_hash, action_type, guild_id, user_id, target_id, details, created_at)
+    )
+    data = canonical.encode("utf-8", errors="replace")
+    if _AUDIT_HMAC_KEY:
+        return hmac.new(_AUDIT_HMAC_KEY.encode("utf-8"), data, hashlib.sha256).hexdigest()
+    return hashlib.sha256(data).hexdigest()
+
+
+def _add_jsonl_chain(entry: dict[str, Any]) -> dict[str, Any]:
+    """Attach prev_hash/entry_hash to a JSONL-fallback entry.
+
+    Uses a per-process running hash (resets on restart — the JSONL fallback is
+    a degraded DB-down path; the DB chain is the authoritative one).
+    """
+    global _jsonl_prev_hash
+    prev = _jsonl_prev_hash
+    h = _compute_entry_hash(
+        prev,
+        entry.get("action"),
+        entry.get("guild_id"),
+        entry.get("user_id"),
+        entry.get("target_id"),
+        entry.get("details"),
+        entry.get("ts"),
+    )
+    entry["prev_hash"] = prev
+    entry["entry_hash"] = h
+    _jsonl_prev_hash = h
+    return entry
 
 
 async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
@@ -51,7 +119,7 @@ async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
             f.write(line)
 
     try:
-        async with _FALLBACK_LOCK:
+        async with _get_fallback_lock():
             _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(entry, ensure_ascii=False) + "\n"
             await asyncio.to_thread(_do_write, line)
@@ -112,7 +180,7 @@ class AuditLogger:
                 "details": _scrub_str(details),
                 "fallback_reason": "db_unavailable",
             }
-            return await _write_fallback_entry(entry)
+            return await _write_fallback_entry(_add_jsonl_chain(entry))
 
         try:
             # Embed target_type into details JSON if provided
@@ -126,13 +194,31 @@ class AuditLogger:
                     # If details is not valid JSON, wrap it
                     full_details = json.dumps({"original": details, "target_type": target_type})
 
+            # Set created_at explicitly (not via the column DEFAULT) so the
+            # exact value is part of the hash and stays verifiable later.
+            created_at = datetime.now(timezone.utc).isoformat()
             async with db.get_write_connection() as conn:
+                # Read the tail hash and insert under the same write lock so the
+                # chain can't interleave with a concurrent audit write.
+                cur = await conn.execute(
+                    "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+                )
+                last = await cur.fetchone()
+                prev_hash = (last[0] if last and last[0] else "") or ""
+                entry_hash = _compute_entry_hash(
+                    prev_hash, action, guild_id, user_id, target_id, full_details, created_at
+                )
                 await conn.execute(
                     """
-                    INSERT INTO audit_log (guild_id, user_id, action_type, target_id, details)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO audit_log
+                        (guild_id, user_id, action_type, target_id, details,
+                         created_at, prev_hash, entry_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                    (guild_id, user_id, action, target_id, full_details),
+                    (
+                        guild_id, user_id, action, target_id, full_details,
+                        created_at, prev_hash, entry_hash,
+                    ),
                 )
                 await conn.commit()
 
@@ -140,8 +226,27 @@ class AuditLogger:
             return True
 
         except Exception:
-            logger.exception("Failed to log audit action")
-            return False
+            logger.exception("Failed to log audit action; falling back to JSONL")
+            # DB write failed at runtime (disk full, lock timeout, …).
+            # Drop the entry into the JSONL fallback so the audit trail
+            # isn't lost. Previously this returned False and the entry
+            # vanished, defeating the whole point of an audit log.
+            try:
+                entry = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts_epoch": time.time(),
+                    "user_id": user_id,
+                    "action": _scrub_str(action),
+                    "guild_id": guild_id,
+                    "target_type": _scrub_str(target_type),
+                    "target_id": target_id,
+                    "details": _scrub_str(details),
+                    "fallback_reason": "db_write_failed",
+                }
+                return await _write_fallback_entry(_add_jsonl_chain(entry))
+            except Exception:
+                logger.exception("Audit JSONL fallback also failed")
+                return False
 
     async def get_recent_actions(self, guild_id: int, limit: int = 50) -> list[dict[str, Any]]:
         """Get recent actions for a guild.
@@ -175,6 +280,48 @@ class AuditLogger:
         except Exception:
             logger.exception("Failed to get audit log")
             return []
+
+    async def verify_chain(self) -> tuple[bool, int | None]:
+        """Verify the audit hash chain. Returns ``(ok, first_bad_id)``.
+
+        Walks rows oldest→newest, recomputing each ``entry_hash`` from the
+        running prev_hash + fields. A mismatch (or a broken prev_hash link)
+        means a row was edited or one was deleted. Legacy rows written before
+        chaining have NULL hashes and are skipped (the chain starts at the
+        first hashed row).
+        """
+        if not DB_AVAILABLE or db is None:
+            return True, None
+        try:
+            async with db.get_connection() as conn:
+                cur = await conn.execute(
+                    "SELECT id, action_type, guild_id, user_id, target_id, details, "
+                    "created_at, prev_hash, entry_hash FROM audit_log ORDER BY id ASC"
+                )
+                rows = await cur.fetchall()
+        except Exception:
+            logger.exception("verify_chain: query failed")
+            return False, None
+        prev = ""
+        for r in rows:
+            entry_hash = r["entry_hash"]
+            if entry_hash is None:
+                continue  # legacy pre-chain row — skip, chain starts later
+            if (r["prev_hash"] or "") != prev:
+                return False, r["id"]
+            expect = _compute_entry_hash(
+                prev,
+                r["action_type"],
+                r["guild_id"],
+                r["user_id"],
+                r["target_id"],
+                r["details"],
+                r["created_at"],
+            )
+            if expect != entry_hash:
+                return False, r["id"]
+            prev = entry_hash
+        return True, None
 
 
 # Global audit logger instance

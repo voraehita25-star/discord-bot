@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 import discord
@@ -73,6 +75,11 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot, Context
 
 
+# Mention-strip pattern used in the on_message hot path. Compiled at
+# module scope so we don't pay the regex-cache lookup cost on every event.
+_USER_MENTION_RE = re.compile(r"<@!?\d+>\s*")
+
+
 class AI(commands.Cog):
     """AI Chat Cog - Provides AI conversation capabilities via Claude."""
 
@@ -104,6 +111,11 @@ class AI(commands.Cog):
         self.cleanup_task: asyncio.Task | None = None
         self._pending_request_cleanup_task: asyncio.Task | None = None
         self._cache_cleanup_task: asyncio.Task | None = None
+        # Strong references for fire-and-forget background bookkeeping tasks
+        # (token tracker init, etc.) so they aren't GC'd before completion.
+        # Initialised here so the attribute is always present without the
+        # hasattr-check dance in cog_load.
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Cache for verified webhook IDs to avoid repeated API calls
         # Maps webhook_id -> (is_known_proxy: bool, expires_at: float)
         self._webhook_verify_cache: dict[int, tuple[bool, float]] = {}
@@ -163,6 +175,21 @@ class AI(commands.Cog):
         # Start RAG FAISS periodic save (every 5 min)
         rag_system.start_periodic_save(interval=300.0)
 
+        # Optionally auto-start the conversation-summary archiver. It archives
+        # old ai_history into summaries and TRIMS raw history every 6h, so it is
+        # OFF by default — opt in with MEMORY_CONSOLIDATOR_AUTOSTART=1. The
+        # summaries table is created lazily by consolidate_channel regardless, so
+        # the manual !consolidate command works without this.
+        if os.getenv("MEMORY_CONSOLIDATOR_AUTOSTART", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from cogs.ai_core.memory.memory_consolidator import summary_archiver
+
+                await summary_archiver.init_schema()
+                summary_archiver.start_background_task(interval_hours=6.0)
+                logger.info("📚 Memory consolidator auto-started (6h interval)")
+            except Exception:
+                logger.exception("Failed to auto-start memory consolidator")
+
         # Start pending request cleanup task
         self._pending_request_cleanup_task = asyncio.create_task(
             self._cleanup_pending_requests_loop()
@@ -191,12 +218,14 @@ class AI(commands.Cog):
             # finishes. add_done_callback alone doesn't keep the Task alive
             # — Python may collect it and emit "Task was destroyed but it is
             # pending!" warnings, dropping the actual init work.
-            if not hasattr(self, "_bg_tasks"):
-                self._bg_tasks: set[asyncio.Task[Any]] = set()
             _bg_task = asyncio.create_task(token_tracker.init_from_db())
             self._bg_tasks.add(_bg_task)
             _bg_task.add_done_callback(self._bg_tasks.discard)
             _bg_task.add_done_callback(self._on_bg_task_done)
+            # Start the periodic in-memory prune loop. It was previously never
+            # started (dead-lifecycle); now that record_usage is fed from the
+            # API layer (H27) the TTL pruning is meaningful.
+            token_tracker.start_cleanup_task()
         except ImportError:
             pass
 
@@ -226,20 +255,53 @@ class AI(commands.Cog):
         # Cancel any background bookkeeping tasks tracked in _bg_tasks
         # (e.g. token_tracker.init_from_db). They're best-effort, so
         # cancellation + suppress is fine.
-        bg_tasks = getattr(self, "_bg_tasks", None)
-        if bg_tasks:
-            for t in list(bg_tasks):
+        if self._bg_tasks:
+            for t in list(self._bg_tasks):
                 if not t.done():
                     t.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(*bg_tasks, return_exceptions=True)
+                await asyncio.gather(*self._bg_tasks, return_exceptions=True)
 
         # Stop webhook cache cleanup task
         await stop_webhook_cache_cleanup()
 
+        # Stop the module-level rate-limiter cleanup task started in
+        # cog_load. Without this, every reload spawned a new cleanup
+        # loop while the old one kept running — task count grew
+        # linearly with reload count.
+        # Kept as a broad catch (rather than narrowed to RuntimeError /
+        # CancelledError) because test fixtures patch ``rate_limiter`` as
+        # a plain MagicMock — awaiting it raises ``TypeError`` which would
+        # otherwise abort unload. Logged so a real failure here isn't
+        # silent.
+        try:
+            await rate_limiter.stop_cleanup_task()
+        except Exception as exc:
+            logger.debug(
+                "rate_limiter.stop_cleanup_task suppressed during cog_unload: %s", exc
+            )
+
+        try:
+            from cogs.ai_core.cache.token_tracker import token_tracker
+
+            await token_tracker.stop_cleanup_task()
+        except Exception as exc:
+            logger.debug(
+                "token_tracker.stop_cleanup_task suppressed during cog_unload: %s", exc
+            )
+
         # Stop RAG periodic save and force final save
         await rag_system.stop_periodic_save()
         await rag_system.force_save_index()
+
+        # Stop the memory consolidator if it was auto-started (idempotent —
+        # stop_background_task no-ops when the task was never created).
+        try:
+            from cogs.ai_core.memory.memory_consolidator import summary_archiver
+
+            await summary_archiver.stop_background_task()
+        except Exception:
+            logger.debug("memory consolidator stop suppressed during cog_unload", exc_info=True)
 
         # Save all active sessions before unload
         await self.chat_manager.save_all_sessions()
@@ -428,10 +490,21 @@ class AI(commands.Cog):
         self.chat_manager.processing_locks.pop(channel_id, None)
         self.chat_manager.streaming_enabled.pop(channel_id, None)
         self.chat_manager.current_typing_msg.pop(channel_id, None)
-        self.chat_manager._message_queue.pending_messages.pop(channel_id, None)
-        self.chat_manager._message_queue.cancel_flags.pop(channel_id, None)
-        self.chat_manager._message_queue.processing_locks.pop(channel_id, None)
-        self.chat_manager._message_queue._lock_times.pop(channel_id, None)
+        # Use the public ``clear_channel`` API instead of reaching into
+        # private ``_message_queue`` state — keeps the encapsulation
+        # boundary stable across MessageQueue refactors.
+        self.chat_manager._message_queue.clear_channel(channel_id)
+
+        # In CLI mode, also forget the Claude --resume session_id so the
+        # next message starts a fresh subprocess context. Without this,
+        # the CLI would keep replaying the prior conversation server-side
+        # even though the bot's local history has been wiped.
+        if getattr(self.chat_manager, "cli_mode", False):
+            from cogs.ai_core.api.discord_chat_claude_cli import (
+                reset_channel_session,
+            )
+
+            reset_channel_session(channel_id)
 
         await ctx.send("🧹 ล้างความจำ AI ในห้องนี้เรียบร้อยแล้ว เริ่มต้นคุยใหม่ได้เลย!")
 
@@ -462,10 +535,10 @@ class AI(commands.Cog):
         self.chat_manager.processing_locks.pop(channel.id, None)
         self.chat_manager.streaming_enabled.pop(channel.id, None)
         self.chat_manager.current_typing_msg.pop(channel.id, None)
-        self.chat_manager._message_queue.pending_messages.pop(channel.id, None)
-        self.chat_manager._message_queue.cancel_flags.pop(channel.id, None)
-        self.chat_manager._message_queue.processing_locks.pop(channel.id, None)
-        self.chat_manager._message_queue._lock_times.pop(channel.id, None)
+        # Use the public ``clear_channel`` API instead of reaching into
+        # private ``_message_queue`` state — see ``reset_ai`` for the
+        # rationale.
+        self.chat_manager._message_queue.clear_channel(channel.id)
 
     async def _resolve_prefix_tuple(self, message: discord.Message) -> tuple[str, ...]:
         """Resolve bot.command_prefix into a tuple of prefix strings.
@@ -538,10 +611,8 @@ class AI(commands.Cog):
             return
 
         # Check cache first to avoid rate-limited webhook API calls
-        import time as _time
-
         cached = self._webhook_verify_cache.get(webhook_id)
-        if cached and cached[1] > _time.time():
+        if cached and cached[1] > time.time():
             is_known_proxy = cached[0]
         else:
             should_cache = True
@@ -549,11 +620,54 @@ class AI(commands.Cog):
                 webhooks = await webhook_channel.webhooks()
                 for wh in webhooks:
                     if wh.id == webhook_id:
-                        if wh.user and wh.user.bot and wh.user.id in self._ALLOWED_WEBHOOK_BOT_IDS:
+                        # Trust check via TWO independent signals:
+                        # 1. ``wh.user`` is the webhook creator. For
+                        #    Tupperbox/PluralKit webhooks the creator
+                        #    is the proxy bot itself, but a server admin
+                        #    could create a webhook manually for the bot
+                        #    to use — in which case ``wh.user`` is the
+                        #    admin, not the proxy bot, and the original
+                        #    check would silently fail-open if the admin
+                        #    happened to be in the allowlist for any
+                        #    other reason.
+                        # 2. ``wh.application_id`` (when set) names the
+                        #    *bot application* that owns the webhook,
+                        #    which is the actually-trustworthy field
+                        #    discord.py exposes for proxy bots. We
+                        #    require it to land in the allowlist as the
+                        #    primary signal; ``wh.user.id`` is a
+                        #    secondary fallback for proxies that don't
+                        #    set application_id.
+                        creator_id = wh.user.id if (wh.user and wh.user.bot) else None
+                        application_id = getattr(wh, "application_id", None)
+                        if (
+                            application_id in self._ALLOWED_WEBHOOK_BOT_IDS
+                            or creator_id in self._ALLOWED_WEBHOOK_BOT_IDS
+                        ):
                             is_known_proxy = True
                         break
             except discord.Forbidden:
                 # Don't cache the negative result — permissions can change.
+                # Log once per channel so an operator can see why every
+                # Tupperbox/PluralKit message is being silently rejected:
+                # without ``Manage Webhooks`` the verify path can't list
+                # the channel's webhooks, so we can never confirm the
+                # webhook belongs to an allowed proxy bot and the message
+                # is dropped. Tracked in ``_webhook_forbidden_logged`` so
+                # we don't spam the log on every proxy message.
+                if not hasattr(self, "_webhook_forbidden_logged"):
+                    self._webhook_forbidden_logged: set[int] = set()
+                if webhook_channel.id not in self._webhook_forbidden_logged:
+                    self._webhook_forbidden_logged.add(webhook_channel.id)
+                    logger.warning(
+                        "🔒 Cannot verify webhook %s in #%s (%s): missing "
+                        "Manage Webhooks permission. Proxy-bot messages "
+                        "from Tupperbox/PluralKit will be dropped here "
+                        "until the bot is granted that permission.",
+                        webhook_id,
+                        webhook_channel.name,
+                        webhook_channel.id,
+                    )
                 return
             except discord.HTTPException:
                 should_cache = False
@@ -563,7 +677,7 @@ class AI(commands.Cog):
             # del would KeyError on the loser. After pruning expired entries, if
             # still full, evict the entry with the soonest expiry (LRU-ish) so
             # we don't blow away the entire cache on a hot path.
-            now = _time.time()
+            now = time.time()
             if should_cache:
                 if len(self._webhook_verify_cache) >= self._WEBHOOK_CACHE_MAX_SIZE:
                     expired = [k for k, v in self._webhook_verify_cache.items() if v[1] <= now]
@@ -601,10 +715,19 @@ class AI(commands.Cog):
         # Check prefix and command manually. Resolve via the bot's command
         # registry instead of a hardcoded list — this used to silently fall
         # out of sync if a chat command was renamed/added.
+        # Honor the bot's configured prefix(es) instead of hardcoding "!" —
+        # ``_resolve_prefix_tuple`` handles callable prefixes correctly so
+        # the webhook path matches the regular ``on_message`` handler.
+        prefix_tuple = await self._resolve_prefix_tuple(message)
         message_content = message.content or ""
         content = message_content.strip()
-        if content and content.startswith("!"):
-            parts = content[1:].split(" ", 1)
+        prefix_match = next(
+            (p for p in prefix_tuple if p and content.startswith(p)),
+            None,
+        )
+        if prefix_match:
+            after_prefix = content[len(prefix_match):]
+            parts = after_prefix.split(" ", 1)
             cmd = parts[0].lower() if parts[0] else ""
             if not cmd:
                 return
@@ -613,9 +736,18 @@ class AI(commands.Cog):
                 return
             # Only chat-style commands have an output that benefits from the
             # webhook proxy path; the rest fall through to normal handling.
-            if registered.name not in {"chat", "ask", "gemini"}:
+            # ``gemini`` was a stale alias from before the Claude migration —
+            # no command registers it today, so leaving it in just clutters
+            # the allowlist; restrict to what's actually defined.
+            if registered.name not in {"chat", "ask"}:
                 return
 
+            # Bucket names are historical — they were named ``gemini_*``
+            # back when Gemini was the only API provider. The bot now
+            # uses Claude, but renaming the buckets would invalidate
+            # in-flight rate-limit windows for every running deployment
+            # (the rate limiter keys persistent state by bucket name).
+            # Leave the names as-is and document the meaning instead.
             if not await check_rate_limit("gemini_api", message, send_message=False):
                 return
             if not await check_rate_limit("gemini_global", message, send_message=False):
@@ -788,7 +920,7 @@ class AI(commands.Cog):
 
         # Check if message is a command (even with mention before prefix)
         message_content = message.content or ""
-        content_without_mention = re.sub(r"<@!?\d+>\s*", "", message_content).strip()
+        content_without_mention = _USER_MENTION_RE.sub("", message_content).strip()
         prefix_tuple = await self._resolve_prefix_tuple(message)
         is_command = message_content.startswith(prefix_tuple) or (
             content_without_mention and content_without_mention.startswith(prefix_tuple)
@@ -919,6 +1051,7 @@ class AI(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="link_memory", aliases=["lm", "linkmem"])
+    @commands.is_owner()
     async def link_memory_cmd(
         self, ctx: commands.Context, source_channel: str | None = None
     ) -> None:
@@ -928,11 +1061,6 @@ class AI(commands.Cog):
             !link_memory <channel_id>  - Copy memory from specified channel
             !link_memory list          - List all channels with memory
         """
-        # Check if user is owner
-        if ctx.author.id != self.OWNER_ID:
-            await ctx.send("⛔ คำสั่งนี้ใช้ได้เฉพาะเจ้าของบอทเท่านั้น")
-            return
-
         # List mode
         if source_channel and source_channel.lower() == "list":
             channel_ids = await get_all_channel_ids()
@@ -964,10 +1092,19 @@ class AI(commands.Cog):
             )
             return
 
-        # Parse channel ID
+        # Parse channel ID. Accept ``<#123>`` mention shape or a raw
+        # numeric ID; reject role/user mention markers (``<@&…>`` /
+        # ``<@…>``) that ``.strip("<>#")`` would silently turn into an
+        # int and treat as a channel ID.
+        if source_channel.startswith("<@"):
+            await ctx.send(
+                "❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข"
+            )
+            return
         try:
-            # Support both raw ID and mention format
             source_id = int(source_channel.strip("<>#"))
+            if source_id <= 0:
+                raise ValueError("non-positive snowflake")
         except ValueError:
             await ctx.send("❌ Channel ID ไม่ถูกต้อง กรุณาใส่ตัวเลข ID")
             return
@@ -992,7 +1129,6 @@ class AI(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-        # Wait for confirmation
         def check(m):
             return (
                 m.author.id == self.OWNER_ID
@@ -1038,6 +1174,7 @@ class AI(commands.Cog):
             await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการเชื่อมต่อ memory")
 
     @commands.command(name="resend", aliases=["rs", "resendmsg"])
+    @commands.is_owner()
     async def resend_last_message(self, ctx: commands.Context, local_id: int | None = None) -> None:
         """Resend the last AI message (or specified by local_id) from database.
 
@@ -1047,11 +1184,6 @@ class AI(commands.Cog):
             !resend       - Resend last AI message
             !resend 189   - Resend message with local_id 189
         """
-        # Check if user is owner
-        if ctx.author.id != self.OWNER_ID:
-            await ctx.send("⛔ คำสั่งนี้ใช้ได้เฉพาะเจ้าของบอทเท่านั้น")
-            return
-
         # Determine target channel for RP redirection
         target_channel_id = ctx.channel.id
         if ctx.guild and ctx.guild.id == GUILD_ID_RP:
@@ -1115,6 +1247,17 @@ class AI(commands.Cog):
         try:
             # Split by {{Name}} pattern (same as logic.py)
             split_parts = self._RESEND_CHARACTER_PATTERN.split(content)
+            # Cap the number of {{Name}} blocks to prevent runaway webhook
+            # spam from a malformed stored message (mirrors logic.py's cap).
+            # Each block produces 2 elements (name + message) plus narrator,
+            # so 60 elements ≈ 30 blocks.
+            if len(split_parts) > 60:
+                logger.warning(
+                    "⚠️ Truncating resend {{Name}} blocks for channel %s: %d parts -> 60",
+                    target_channel_id,
+                    len(split_parts),
+                )
+                split_parts = split_parts[:60]
             max_len = self._DISCORD_MAX_MESSAGE_LEN
 
             async def _send_chunked(text: str) -> None:
@@ -1154,6 +1297,7 @@ class AI(commands.Cog):
             await status_msg.edit(content="❌ เกิดข้อผิดพลาดในการส่งข้อความใหม่")
 
     @commands.hybrid_command(name="move_memory", aliases=["mm", "movemem"])  # type: ignore[arg-type]
+    @commands.is_owner()
     async def move_memory_cmd(
         self, ctx: commands.Context, source_channel: str | None = None
     ) -> None:
@@ -1165,11 +1309,6 @@ class AI(commands.Cog):
             !move_memory <channel_id>  - Move memory from specified channel
             !move_memory list          - List all channels with memory
         """
-        # Check if user is owner
-        if ctx.author.id != self.OWNER_ID:
-            await ctx.send("⛔ คำสั่งนี้ใช้ได้เฉพาะเจ้าของบอทเท่านั้น")
-            return
-
         # List mode
         if source_channel and source_channel.lower() == "list":
             channel_ids = await get_all_channel_ids()
@@ -1201,10 +1340,19 @@ class AI(commands.Cog):
             )
             return
 
-        # Parse channel ID
+        # Parse channel ID. Accept ``<#123>`` mention shape or a raw
+        # numeric ID; reject role/user mention markers (``<@&…>`` /
+        # ``<@…>``) that ``.strip("<>#")`` would silently turn into an
+        # int and treat as a channel ID.
+        if source_channel.startswith("<@"):
+            await ctx.send(
+                "❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข"
+            )
+            return
         try:
-            # Support both raw ID and mention format
             source_id = int(source_channel.strip("<>#"))
+            if source_id <= 0:
+                raise ValueError("non-positive snowflake")
         except ValueError:
             await ctx.send("❌ Channel ID ไม่ถูกต้อง กรุณาใส่ตัวเลข ID")
             return
@@ -1231,7 +1379,6 @@ class AI(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-        # Wait for confirmation
         def check(m):
             return (
                 m.author.id == self.OWNER_ID
@@ -1285,29 +1432,33 @@ class AI(commands.Cog):
     @commands.is_owner()
     async def reload_config_cmd(self, ctx):
         """
-        Reload configuration without restarting the bot.
+        Reload rate-limit overrides without restarting the bot.
 
         Usage: !reload_config
+
+        Note: this only refreshes things that explicitly hot-reload from
+        the environment (currently ``rate_limiter.reload_limits()``).
+        ``importlib.reload(config)`` was removed because every importer
+        captured the module's ``settings`` instance via ``from config import
+        settings``, so reloading the module rebinds ``config.settings`` to
+        a NEW object that downstream code never sees — making the previous
+        "✅ Config reloaded" toast a lie. Restart the bot to pick up other
+        env-var changes.
         """
         try:
-            from importlib import reload
-
-            import config as config_module
-
-            reload(config_module)
-
-            # Update rate limiter settings if needed
             from utils.reliability.rate_limiter import rate_limiter
 
             rate_limiter.reload_limits()
 
             await ctx.send(
-                "✅ Config reloaded successfully!\nNote: Some settings may require bot restart."
+                "✅ Rate-limit overrides reloaded.\n"
+                "ℹ️ Other config changes (Discord token, intents, AI keys) "
+                "still need a full bot restart."
             )
-            logger.info("🔄 Config reloaded by owner")
+            logger.info("🔄 Rate limits reloaded by owner")
         except Exception:
-            logger.exception("Failed to reload config")
-            await ctx.send("❌ Failed to reload config — check logs for details")
+            logger.exception("Failed to reload rate limits")
+            await ctx.send("❌ Failed to reload — check logs for details")
 
     @commands.command(name="dashboard", aliases=["stats"])
     @commands.is_owner()
@@ -1369,9 +1520,18 @@ class AI(commands.Cog):
             for key, data in perf.items():
                 if data["count"] > 0:
                     perf_lines.append(f"{key}: {data['avg_ms']:.0f}ms")
+            # Discord embed field values cap at 1024 chars. With 4 lines
+            # of ~30 chars each this is comfortable, but if a key gets
+            # renamed to something long or the format changes, the
+            # embed.add_field call could 400 with HTTPException. Truncate
+            # defensively at 1000 (1024 minus the ``"```\n"``+``"```"``
+            # backtick wrappers + a tiny safety margin).
+            perf_value = "```\n" + "\n".join(perf_lines[:4]) + "```"
+            if len(perf_value) > 1000:
+                perf_value = perf_value[:997] + "..."
             embed.add_field(
                 name="⚡ Performance",
-                value="```\n" + "\n".join(perf_lines[:4]) + "```",
+                value=perf_value,
                 inline=True,
             )
 
@@ -1424,6 +1584,9 @@ class AI(commands.Cog):
                 await ctx.send("❌ Database not available")
                 return
 
+            # Bound ``days`` so a typo like 999999 can't try to load a
+            # decade of audit logs into memory or run the DB out of WAL.
+            days = max(1, min(int(days), 365))
             logs = await shared_db.get_audit_logs(days=days)
 
             if not logs:
@@ -1486,17 +1649,19 @@ class AI(commands.Cog):
         try:
             from cogs.ai_core.memory.history_manager import history_manager
 
-            lock = self.chat_manager.processing_locks.setdefault(channel_id, asyncio.Lock())
-            async with lock:
-                # Use smart_trim_by_tokens
+            # Avoid constructing a throwaway ``asyncio.Lock()`` on every
+            # call — ``setdefault`` evaluates its default eagerly even when
+            # the key already exists, which leaks an unused lock per hit.
+            locks = self.chat_manager.processing_locks
+            if channel_id not in locks:
+                locks[channel_id] = asyncio.Lock()
+            async with locks[channel_id]:
                 trimmed = await history_manager.smart_trim_by_tokens(
                     history, max_tokens=max_tokens, reserve_tokens=2000
                 )
 
-                # Update history
                 chat_data["history"] = trimmed
 
-                # Save to storage
                 from cogs.ai_core.storage import save_history
 
                 await save_history(self.bot, channel_id, chat_data)

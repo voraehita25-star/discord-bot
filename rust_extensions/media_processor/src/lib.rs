@@ -75,25 +75,7 @@ impl MediaProcessor {
     fn load<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
 
-        // Check dimensions before full decode to prevent decompression bombs
-        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|e| PyValueError::new_err(format!("Failed to detect image format: {}", e)))?;
-        match reader.into_dimensions() {
-            Ok((w, h)) => {
-                if (w as u64) * (h as u64) > 100_000_000 {
-                    return Err(PyValueError::new_err(format!(
-                        "Image too large: {}x{} exceeds 100MP limit", w, h
-                    )));
-                }
-            }
-            Err(e) => {
-                // If we can't read dimensions, reject the image as a safety precaution
-                return Err(PyValueError::new_err(format!(
-                    "Cannot determine image dimensions (possible decompression bomb): {}", e
-                )));
-            }
-        }
+        check_bomb_dimensions(bytes)?;
 
         let img = image::load_from_memory(bytes)
             .map_err(|e| PyValueError::new_err(format!("Failed to load image: {}", e)))?;
@@ -116,6 +98,7 @@ impl MediaProcessor {
     /// Resize image to fit within max dimensions
     fn resize<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, max_width: Option<u32>, max_height: Option<u32>) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
+        check_bomb_dimensions(bytes)?;
         let max_w = max_width.unwrap_or(self.max_dimension);
         let max_h = max_height.unwrap_or(self.max_dimension);
 
@@ -128,6 +111,7 @@ impl MediaProcessor {
     /// Resize image to exact dimensions (with cropping)
     fn resize_exact<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, width: u32, height: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
+        check_bomb_dimensions(bytes)?;
 
         let result = resize_image(bytes, width, height, ResizeMode::Fill, self.jpeg_quality)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -138,6 +122,7 @@ impl MediaProcessor {
     /// Create thumbnail
     fn thumbnail<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, size: u32) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
+        check_bomb_dimensions(bytes)?;
 
         let result = resize_image(bytes, size, size, ResizeMode::Fit, self.jpeg_quality)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -180,25 +165,48 @@ impl MediaProcessor {
         Ok(PyBytes::new(py, &bytes))
     }
 
-    /// Batch resize multiple images (parallel, releases GIL)
-    fn batch_resize<'py>(&self, py: Python<'py>, images: Vec<Bound<'py, PyBytes>>, max_width: u32, max_height: u32) -> PyResult<Vec<ImageData>> {
+    /// Batch resize multiple images (parallel, releases GIL).
+    ///
+    /// Processes inputs in chunks to bound peak memory: previously the
+    /// full ``Vec<Vec<u8>>`` of decoded image bytes was held in memory
+    /// at once, so a 100-image batch of 5 MB JPEGs would spike to
+    /// ~500 MB before resize. We now decode-and-resize one chunk at a
+    /// time, releasing the chunk's allocations before pulling the next.
+    fn batch_resize<'py>(
+        &self,
+        py: Python<'py>,
+        images: Vec<Bound<'py, PyBytes>>,
+        max_width: u32,
+        max_height: u32,
+    ) -> PyResult<Vec<ImageData>> {
         use rayon::prelude::*;
 
-        let bytes_list: Vec<Vec<u8>> = images.iter()
-            .map(|b| b.as_bytes().to_vec())
-            .collect();
-
+        const BATCH_CHUNK_SIZE: usize = 8;
         let quality = self.jpeg_quality;
+        let mut output = Vec::with_capacity(images.len());
 
-        // Release the GIL during CPU-intensive parallel processing
-        let results = py.detach(|| {
-            bytes_list
-                .par_iter()
-                .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
-                .collect::<Result<Vec<ImageData>, _>>()
-        });
-
-        results.map_err(|e| PyValueError::new_err(e.to_string()))
+        for chunk in images.chunks(BATCH_CHUNK_SIZE) {
+            let bytes_list: Vec<Vec<u8>> =
+                chunk.iter().map(|b| b.as_bytes().to_vec()).collect();
+            // Enforce the 100MP decompression-bomb cap on every input
+            // before we hand the chunk to rayon. The single-image
+            // entry points (load / resize / resize_exact / thumbnail)
+            // all call this; previously the batch path bypassed it,
+            // letting a single hostile image inside a batch allocate
+            // unbounded pixel buffers on the rayon worker pool.
+            for bytes in &bytes_list {
+                check_bomb_dimensions(bytes)?;
+            }
+            let chunk_results = py.detach(|| {
+                bytes_list
+                    .par_iter()
+                    .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
+                    .collect::<Result<Vec<ImageData>, _>>()
+            });
+            let chunk_results = chunk_results.map_err(|e| PyValueError::new_err(e.to_string()))?;
+            output.extend(chunk_results);
+        }
+        Ok(output)
     }
 
     /// Get format from image bytes
@@ -223,6 +231,39 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Reject decompression-bomb inputs by reading the header dimensions before
+/// the full decode allocates pixel memory. ``u64::checked_mul`` guards
+/// against ``u32::MAX * u32::MAX`` overflowing past the 100MP check.
+/// All public entry points that decode untrusted bytes go through this so
+/// the 100MP cap is enforced uniformly (load, resize, resize_exact,
+/// thumbnail).
+fn check_bomb_dimensions(bytes: &[u8]) -> PyResult<()> {
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| PyValueError::new_err(format!("Failed to detect image format: {}", e)))?;
+    match reader.into_dimensions() {
+        Ok((w, h)) => {
+            let product = (w as u64).checked_mul(h as u64).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "Image dimensions overflow: {}x{}",
+                    w, h
+                ))
+            })?;
+            if product > 100_000_000 {
+                return Err(PyValueError::new_err(format!(
+                    "Image too large: {}x{} exceeds 100MP limit",
+                    w, h
+                )));
+            }
+            Ok(())
+        }
+        Err(e) => Err(PyValueError::new_err(format!(
+            "Cannot determine image dimensions (possible decompression bomb): {}",
+            e
+        ))),
+    }
+}
+
 /// Python module
 #[pymodule]
 fn media_processor(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -234,8 +275,11 @@ fn media_processor(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_get_dimensions, m)?)?;
     m.add_function(wrap_pyfunction!(py_to_base64, m)?)?;
 
-    // Version info
-    m.add("__version__", "0.1.0")?;
+    // Version info — sourced from Cargo's compile-time env so the
+    // exposed ``__version__`` can't drift away from Cargo.toml. The
+    // workspace inherits ``version.workspace = true`` so a single bump
+    // updates both the Cargo metadata and the Python-visible value.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("__author__", "voraehita25-star")?;
 
     Ok(())

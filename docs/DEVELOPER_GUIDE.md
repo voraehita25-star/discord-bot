@@ -399,15 +399,21 @@ User Message
 
 ### Environment Variables (.env)
 
+See `env.example` for the full annotated reference. Minimum viable subset:
+
 ```env
 # Discord
 DISCORD_TOKEN=your_token
 GUILD_ID_MAIN=123456789
 GUILD_ID_RP=123456789
 
-# Gemini API
-GEMINI_API_KEY=your_api_key
-GEMINI_MODEL=gemini-3.1-pro-preview
+# Claude (CLI mode is the default — uses your Claude Code subscription;
+# leave ANTHROPIC_API_KEY blank in this mode)
+CLAUDE_BACKEND=cli
+# ANTHROPIC_API_KEY=sk-ant-...   # only when CLAUDE_BACKEND=api
+
+# Gemini (Optional — only used when CLAUDE_BACKEND=api, for RAG embeddings)
+# GEMINI_API_KEY=your_api_key
 
 # Spotify (Optional)
 SPOTIPY_CLIENT_ID=your_client_id
@@ -425,8 +431,9 @@ CREATOR_ID=your_discord_id
 
 - `GUILD_ID_*` - Server IDs
 - `CHANNEL_ID_*` - Channel IDs
-- `GEMINI_API_KEY` - API key
-- `GAME_SEARCH_KEYWORDS` - Keywords ที่ force Google Search
+- `ANTHROPIC_API_KEY` / `CLAUDE_BACKEND` - Claude credentials (see env.example)
+- `GEMINI_API_KEY` - Gemini key for RAG embeddings (only used when `CLAUDE_BACKEND=api`)
+- `GAME_SEARCH_KEYWORDS` - Keywords ที่ force search
 
 **Processing Limits:**
 
@@ -530,10 +537,11 @@ if is_unrestricted(channel_id):
 
 FAISS-based memory retrieval:
 
-- **Embedding:** Gemini embeddings (`text-embedding-004` via `GEMINI_API_KEY`)
+- **Embedding:** Gemini embeddings (`text-embedding-004` via `GEMINI_API_KEY`) — only loaded when `CLAUDE_BACKEND=api`. In the default `cli` mode the RAG add/query path is disabled at the cog level.
 - **Backend:** Optional Rust extension (`rag_engine.pyd`, ~10–25× faster) with Python fallback
 - **Hybrid Search:** Semantic + keyword + time decay
 - **Auto-indexing:** Conversations automatically indexed
+- **Persistence:** FAISS index + JSON id-map sidecar in `data/faiss/`. Legacy `.npy` (pickle) sidecars are refused at load unless `RAG_ALLOW_LEGACY_PICKLE=1` — pickle from disk is an RCE sink.
 
 ### 4. Streaming (`logic.py`)
 
@@ -642,7 +650,7 @@ memory_monitor.start()  # Background cleanup at 80% threshold
 - TTL-based automatic expiration
 - LRU eviction when max size reached
 - WeakRef caching for auto memory release
-- Memory threshold monitoring (80% warning, 90% cleanup)
+- Memory threshold monitoring in absolute MiB (defaults: 1024 warning, 1536 critical; env-tunable via `BOT_MEMORY_WARNING_MB` / `BOT_MEMORY_CRITICAL_MB`)
 - Background cleanup tasks
 
 ### Shutdown Manager (`shutdown_manager.py`) 🆕
@@ -748,8 +756,8 @@ async def process_message(msg):
 | `ai_history` | Chat history per channel |
 | `ai_metadata` | Session settings |
 | `entity_memories` | Character/entity facts |
-| `long_term_facts` | Permanent user facts |
-| `rag_memories` | Vector embeddings |
+| `user_facts` | Permanent user facts |
+| `ai_long_term_memory` | Vector embeddings (RAG) |
 | `music_queue` | Persistent queue |
 | `guild_settings` | Per-server config |
 

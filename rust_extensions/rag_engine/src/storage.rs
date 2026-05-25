@@ -3,7 +3,14 @@
 use memmap2::{MmapMut, MmapOptions};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
-use fs2::FileExt;
+// File locking via the stdlib (stable since Rust 1.89). The previous
+// ``fs2 = "0.4"`` dependency used ``fcntl(F_SETLK)`` POSIX advisory
+// locks on Linux, which are PER-PROCESS, not per-fd: two ``open(2)``
+// calls from the same process would both acquire the "exclusive" lock
+// silently. Stdlib's ``File::lock_exclusive`` uses ``flock(2)`` (per-fd)
+// on Linux and ``LockFileEx`` (per-handle) on Windows, giving the
+// concurrency guarantee the comment promises. fs2 is also unmaintained
+// (last release 2019).
 
 use crate::errors::RagError;
 
@@ -67,6 +74,10 @@ impl VectorStorage {
             )
             .ok_or_else(|| RagError::Serialization("File size overflow".to_string()))?;
 
+        // ``truncate(false)`` is the OpenOptions default but we set it
+        // explicitly to make the no-truncate intent visible at the call
+        // site — accidentally adding ``.truncate(true)`` here would wipe
+        // every stored vector on startup.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -74,13 +85,17 @@ impl VectorStorage {
             .truncate(false)
             .open(path.as_ref())?;
 
-        // Acquire exclusive file lock to prevent concurrent modification
-        file.lock_exclusive().map_err(|e| {
+        // Acquire exclusive file lock to prevent concurrent modification.
+        // Stdlib ``File::lock`` (stable since 1.89) takes an exclusive
+        // advisory lock on the underlying OS handle; on Linux this is
+        // ``flock(2)`` (per-fd), on Windows ``LockFileEx`` (per-handle).
+        file.lock().map_err(|e| {
             RagError::Serialization(format!("Failed to acquire file lock: {}", e))
         })?;
 
         // Check existing file: only grow, never truncate existing data
         let existing_len = file.metadata()?.len();
+        let was_fresh = existing_len == 0;
         if existing_len > 0 && file_size_u64 < existing_len {
             // File already exists and is larger than requested capacity.
             // Use the existing file size to avoid truncating stored vectors.
@@ -102,9 +117,29 @@ impl VectorStorage {
         let magic = &header_bytes[0..4];
 
         if magic != Self::MAGIC {
-            // New file, write header
-            Self::write_header(&mut mmap, dimension, 0);
-            mmap.flush()?;
+            if was_fresh {
+                // Fresh file — the zero-filled bytes don't match MAGIC,
+                // so write a valid header. This is the legitimate
+                // "create new index" path.
+                Self::write_header(&mut mmap, dimension, 0);
+                mmap.flush()?;
+            } else {
+                // File pre-existed but the magic bytes don't match. This
+                // is either (a) a different format / corrupted header,
+                // or (b) a partial-write crash. Refuse to silently
+                // overwrite the data — the previous behaviour was
+                // ``write_header(...)`` which clobbered whatever real
+                // bytes lived there with no backup, no warning. Surface
+                // an explicit error so the operator can investigate /
+                // restore from backup before any further damage.
+                return Err(RagError::Serialization(format!(
+                    "Pre-existing file at this path has unrecognised magic bytes \
+                     ({:?} vs expected {:?}); refusing to overwrite. \
+                     Move/restore the file before re-opening.",
+                    magic,
+                    Self::MAGIC
+                )));
+            }
         }
 
         // Decode header explicitly via little-endian byte conversions. This
@@ -143,12 +178,24 @@ impl VectorStorage {
     /// Reject relative paths that try to climb above the working directory or
     /// reference Windows drive prefixes (``C:``, ``\\?\`` etc.) — both are a
     /// path-traversal vector when callers pass a string straight through.
+    ///
+    /// NOTE: Rejecting absolute paths is intentionally strict. The Python
+    /// wrapper (``rag_engine_wrapper.py``) is expected to cwd into the
+    /// project root before invoking any function here, so storage paths
+    /// always resolve relative to that root. Callers that need an
+    /// install-wide cache directory must arrange the cwd themselves
+    /// rather than passing an absolute path.
     fn validate_path(p: &Path) -> Result<(), RagError> {
         if p.is_absolute() {
             return Err(RagError::Serialization(
                 "Storage path must be relative to the project root".to_string(),
             ));
         }
+        // Reject empty paths and paths consisting only of ``.`` segments
+        // (e.g. ``./``, ``./.``) — these resolve to the cwd which is not a
+        // valid file target and silently surfaces as a misleading I/O
+        // error later in ``OpenOptions::open``.
+        let mut saw_real_segment = false;
         for component in p.components() {
             use std::path::Component;
             match component {
@@ -163,14 +210,40 @@ impl VectorStorage {
                         "Storage path may not contain a drive prefix".to_string(),
                     ));
                 }
-                _ => {}
+                Component::Normal(_) => {
+                    saw_real_segment = true;
+                }
+                Component::CurDir | Component::RootDir => {}
+            }
+        }
+        if !saw_real_segment {
+            return Err(RagError::Serialization(
+                "Storage path must contain at least one filename segment".to_string(),
+            ));
+        }
+        // If the file already exists, canonicalise it and confirm it lives
+        // under the current working directory. This catches symlinks
+        // pointing outside the project root that the component scan above
+        // can't see.
+        if p.exists() {
+            let canonical = std::fs::canonicalize(p).map_err(|e| RagError::Serialization(
+                format!("Failed to canonicalize storage path: {}", e),
+            ))?;
+            let base = std::env::current_dir().map_err(|e| RagError::Serialization(
+                format!("Failed to read cwd: {}", e),
+            ))?;
+            let base_canonical = std::fs::canonicalize(&base).unwrap_or(base);
+            if !canonical.starts_with(&base_canonical) {
+                return Err(RagError::Serialization(
+                    "Storage path resolves outside the project root".to_string(),
+                ));
             }
         }
         Ok(())
     }
 
-    /// Encode the header into the mmap's first 64 bytes using little-endian
-    /// byte order regardless of host architecture.
+    /// Encode the header into the mmap's first HEADER_SIZE (68) bytes using
+    /// little-endian byte order regardless of host architecture.
     fn write_header(mmap: &mut MmapMut, dimension: usize, count: u64) {
         let mut buf = [0u8; Self::HEADER_SIZE];
         buf[0..4].copy_from_slice(&Self::MAGIC);
@@ -212,6 +285,16 @@ impl VectorStorage {
         // similarity score that touches this row, and serde_json refuses to
         // serialise them so a future RagEngine::save() over the same data
         // would also fail. Match RagEngine::add()'s validation.
+        //
+        // NOTE: ``is_finite`` does NOT reject subnormals (denormalised
+        // floats below 1.17e-38). A vector full of subnormals is
+        // numerically valid but semantically near-zero — embeddings of
+        // that magnitude carry no meaningful signal and slow down
+        // CPU-side similarity math on platforms that fall back to
+        // microcode for subnormal arithmetic. We keep them for now
+        // because the embedding generator should never produce them in
+        // practice (Gemini embeddings are normalised to unit length),
+        // but flag here so a future regression is easier to diagnose.
         if vector.iter().any(|v| !v.is_finite()) {
             return Err(RagError::Serialization(
                 "vector contains non-finite values (NaN/Inf)".to_string(),
@@ -261,10 +344,20 @@ impl VectorStorage {
             // force fsync so the data actually hits disk before we update
             // and fsync the header. Without this, a power loss can leave a
             // bumped count pointing at vector bytes that were never durable.
-            mmap.flush()?;
-            if let Some(file) = &self.file {
-                file.sync_all()?;
-            }
+            //
+            // PERF NOTE: Per-push fsync gives single-vector crash safety
+            // at the cost of two fsyncs per ``push()`` call. Batch flush
+            // (e.g. accumulate N pushes then one fsync, with a write-ahead
+            // marker in the header) is a future optimization opportunity
+            // for bulk-load paths where consistency for the whole batch is
+            // acceptable. The interactive add-one-document path stays here.
+            // Update the in-memory header BEFORE the durability flush so a
+            // partial write leaves either the old header (count unchanged)
+            // or the new vector + new header — never the new vector with
+            // the old header (which would silently leak the slot on next
+            // load). The previous order also did two fsyncs per push;
+            // collapse to one so the bulk-insert hot path doesn't pay
+            // 2× syscall + journal-flush cost.
             self.count += 1;
             Self::write_header(mmap, self.dimension, self.count as u64);
             mmap.flush()?;

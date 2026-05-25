@@ -3,15 +3,33 @@
  * Imported by both app.ts and chat-manager.ts — no circular dependencies.
  */
 import { DEFAULT_AI_AVATAR } from './faust_avatar.js';
-// Use global Tauri API (withGlobalTauri: true in tauri.conf.json)
-export const invoke = (cmd, args) => {
+// Resolve invoke at call time. ``withGlobalTauri`` is OFF (tauri.conf.json), so
+// the app no longer exposes ``window.__TAURI__`` to every script context — a
+// same-origin XSS can't reach ``invoke`` to call privileged commands. IPC goes
+// through the dynamic ``import('@tauri-apps/api/core')`` below, which the webview
+// resolves via the import map in ``index.html`` (the bare specifier → the locally
+// vendored ESM build under ``ui/vendor/tauri/``; the inline import map is
+// hash-allowlisted in the CSP). A failed import is caught and surfaced as a clear
+// rejection, not a crashed module — and reverting is just flipping
+// ``withGlobalTauri`` back to true (the window branch below then serves IPC).
+//
+// The ``window.__TAURI__`` branch is kept FIRST for Playwright e2e fixtures
+// (``mock-tauri.ts``) that inject a fake global before page scripts; in the real
+// app it's undefined and we fall through to the import.
+export const invoke = async (cmd, args) => {
     // Guard `typeof window` — vitest can fire setTimeout callbacks after
     // the JSDOM environment has been torn down, leaving `window` undefined.
     if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
         return window.__TAURI__.core.invoke(cmd, args);
     }
-    console.warn('Tauri not available, using mock');
-    return Promise.reject(new Error('Tauri not available'));
+    try {
+        const tauriCore = await import('@tauri-apps/api/core');
+        return tauriCore.invoke(cmd, args);
+    }
+    catch {
+        console.warn('Tauri not available, using mock');
+        return Promise.reject(new Error('Tauri not available'));
+    }
 };
 // ============================================================================
 // Error Logger - Logs frontend errors to file for debugging
@@ -32,21 +50,38 @@ export class ErrorLogger {
         this.setupGlobalErrorHandlers();
     }
     setupGlobalErrorHandlers() {
-        // Catch unhandled errors
-        window.onerror = (message, source, lineno, colno, error) => {
-            this.log('UNCAUGHT_ERROR', String(message), error?.stack || `at ${source}:${lineno}:${colno}`);
-            return false;
-        };
-        // Catch unhandled promise rejections
-        window.onunhandledrejection = (event) => {
+        // Use ``addEventListener`` rather than ``window.onerror = ...``.
+        // The assignment form REPLACES any prior handler (Tauri's own
+        // dev error reporter, third-party telemetry shims, browser
+        // devtools). addEventListener stacks alongside them, so the
+        // dashboard's logger doesn't blackhole errors that the host
+        // tooling expects to see.
+        window.addEventListener('error', (event) => {
+            const error = event.error;
+            this.log('UNCAUGHT_ERROR', String(event.message), error?.stack || `at ${event.filename}:${event.lineno}:${event.colno}`);
+        });
+        window.addEventListener('unhandledrejection', (event) => {
             const reason = event.reason;
             const message = reason?.message || String(reason);
             const stack = reason?.stack || 'No stack trace';
             this.log('UNHANDLED_REJECTION', message, stack);
-        };
-        // Override console.error to also log to file
+        });
+        // Override console.error to also log to file. The override
+        // can recurse into itself if any code path inside the
+        // ``catch`` triggers a fresh ``console.error`` (e.g. an Error
+        // toString that throws, or a JSON serialization helper that
+        // logs). The ``inOverride`` re-entry guard breaks the loop —
+        // when re-entrance is detected we fall straight through to
+        // the original ``console.error`` without any of our extra
+        // bookkeeping.
         const originalConsoleError = console.error;
+        let inOverride = false;
         console.error = (...args) => {
+            if (inOverride) {
+                originalConsoleError.apply(console, args);
+                return;
+            }
+            inOverride = true;
             try {
                 originalConsoleError.apply(console, args);
                 const message = args.map(arg => {
@@ -67,6 +102,9 @@ export class ErrorLogger {
             }
             catch {
                 originalConsoleError.apply(console, ['ErrorLogger override failed']);
+            }
+            finally {
+                inOverride = false;
             }
         };
     }
@@ -99,8 +137,9 @@ export class ErrorLogger {
                         }, 0);
                     });
                 }
-                catch (e) {
-                    // Silently fail if logging fails
+                catch (_e) {
+                    // Silently fail if logging fails — name unused param
+                    // with leading underscore so noUnusedParameters keeps quiet.
                 }
             }
         }
@@ -169,12 +208,28 @@ export function isSafeAvatarUrl(url) {
             return false;
         }
     }
+    // SVG data URIs are dangerous: <svg onload=...> embedded in src
+    // doesn't execute in <img>, but if the same URL ever flows to a
+    // background-image, iframe.src, or a future component that fetches
+    // and inlines, the script in the SVG runs. Reject explicitly so the
+    // allowlist is unambiguous and future-proof.
+    if (lower.startsWith('data:image/svg+xml') ||
+        lower.startsWith('data:image/svg ') ||
+        lower.startsWith('data:image/svg;')) {
+        return false;
+    }
+    // No plain http:// — a tampered/server-pushed avatar string of
+    // http://attacker/pixel becomes a plaintext IP+User-Agent beacon on the
+    // next render (no script needed). Legit avatars are local canvas data:
+    // URIs or https; keep those plus same-origin relative paths only.
+    // Same-origin relative paths only. Reject '../' — it serves no legitimate
+    // avatar purpose and is a traversal-shaped string we don't want flowing
+    // into an <img src> within the webview's asset scope. Legit avatars are
+    // local canvas data: URIs, https, or './'/'/' same-origin paths.
     return (lower.startsWith('data:image/') ||
-        lower.startsWith('http://') ||
         lower.startsWith('https://') ||
         lower.startsWith('/') ||
-        lower.startsWith('./') ||
-        lower.startsWith('../'));
+        lower.startsWith('./'));
 }
 /**
  * Returns the URL HTML-escaped for safe use inside an innerHTML template
@@ -211,6 +266,26 @@ export function loadSettings() {
         if (saved) {
             const defaultAiAvatar = settings.aiAvatar; // Keep default Faust avatar
             settings = { ...settings, ...JSON.parse(saved) };
+            // Defensive: a corrupt/tampered localStorage blob must not poison
+            // runtime. Coerce the fields that drive timers / the theme attr /
+            // chart buffers, so e.g. a string or negative refreshInterval can't
+            // become setInterval(…, NaN) → a 0ms runaway loop, or an unknown
+            // theme silently break styling. (try/catch above only guards the
+            // JSON parse, not the shape.)
+            const VALID_INTERVALS = [1000, 2000, 5000, 10000];
+            if (typeof settings.refreshInterval !== 'number' ||
+                !VALID_INTERVALS.includes(settings.refreshInterval)) {
+                settings.refreshInterval = 2000;
+            }
+            if (settings.theme !== 'dark' && settings.theme !== 'light') {
+                settings.theme = 'dark';
+            }
+            if (typeof settings.chartHistory !== 'number' ||
+                !Number.isFinite(settings.chartHistory) ||
+                settings.chartHistory < 10 ||
+                settings.chartHistory > 600) {
+                settings.chartHistory = 60;
+            }
             // Migration: Only set default Faust avatar if saved aiAvatar is empty/undefined
             // Don't override custom avatars that users have set
             if (!settings.aiAvatar) {
@@ -281,16 +356,25 @@ export function showToast(message, options = { type: 'info' }) {
         return;
     const toast = document.createElement('div');
     toast.className = `toast toast-${options.type}`;
+    // a11y: errors interrupt (assertive alert); the container's polite
+    // live region announces the rest. Without any role, AT users never hear
+    // success/error feedback.
+    if (options.type === 'error') {
+        toast.setAttribute('role', 'alert');
+        toast.setAttribute('aria-live', 'assertive');
+    }
     const icons = {
         success: '\u2705',
         error: '\u274C',
         warning: '\u26A0\uFE0F',
         info: '\u2139\uFE0F'
     };
+    // ?? '' so an unknown ``options.type`` doesn't render the literal
+    // string "undefined" into the toast \u2014 falls back to a silent icon.
     toast.innerHTML = `
-        <span class="toast-icon">${icons[options.type]}</span>
+        <span class="toast-icon">${icons[options.type] ?? ''}</span>
         <span class="toast-message">${escapeHtml(message)}</span>
-        <button class="toast-close">\u00D7</button>
+        <button class="toast-close" aria-label="Dismiss">\u00D7</button>
     `;
     // Use addEventListener instead of inline onclick (CSP blocks inline scripts)
     toast.querySelector('.toast-close')?.addEventListener('click', () => toast.remove());
@@ -330,6 +414,11 @@ export function setup3DInteractions() {
  *
  * Also fires optional sound + haptic feedback (respects user settings).
  */
+// Per-element marker: any element we've already checked + patched once gets
+// added to this set, so we skip the (expensive) ``getComputedStyle`` call on
+// subsequent clicks. ``WeakSet`` lets garbage collection reclaim removed
+// elements automatically.
+const _rippleCheckedElements = new WeakSet();
 function setupButtonRipple() {
     document.addEventListener('click', (e) => {
         const target = e.target;
@@ -354,9 +443,14 @@ function setupButtonRipple() {
         // position:absolute ripple needs a positioned parent — ensure buttons
         // without explicit position still contain the ripple. Most already do
         // via .btn { position: relative } in the base styles.
-        const computedPos = getComputedStyle(btn).position;
-        if (computedPos === 'static')
-            btn.style.position = 'relative';
+        // ``getComputedStyle`` forces layout, so we only call it the first
+        // time we see each element; the WeakSet remembers the verdict.
+        if (!_rippleCheckedElements.has(btn)) {
+            const computedPos = getComputedStyle(btn).position;
+            if (computedPos === 'static')
+                btn.style.position = 'relative';
+            _rippleCheckedElements.add(btn);
+        }
         btn.appendChild(ripple);
         ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
         // Backstop in case animationend never fires (browser tab suspend, animation
@@ -381,11 +475,19 @@ function setupCardTilt() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches)
         return;
     const selector = '.stat-card, .role-card';
-    const bound = new WeakSet();
+    // ``WeakMap<card, AbortController>`` so both the listeners AND the
+    // bookkeeping entry are GC'd together when the card element drops out
+    // of the DOM and any other reference dies. Without an AbortController
+    // the per-card pointermove/leave listeners kept the card alive in
+    // memory even after it had been detached from the document, so a long
+    // session that re-rendered role cards N times retained N×listeners
+    // worth of closure state.
+    const controllers = new WeakMap();
     const bindTo = (card) => {
-        if (bound.has(card))
+        if (controllers.has(card))
             return;
-        bound.add(card);
+        const ctrl = new AbortController();
+        controllers.set(card, ctrl);
         let raf = 0;
         const onMove = (e) => {
             const rect = card.getBoundingClientRect();
@@ -404,8 +506,17 @@ function setupCardTilt() {
             cancelAnimationFrame(raf);
             card.style.transform = '';
         };
-        card.addEventListener('pointermove', onMove);
-        card.addEventListener('pointerleave', onLeave);
+        const opts = { signal: ctrl.signal };
+        card.addEventListener('pointermove', onMove, opts);
+        card.addEventListener('pointerleave', onLeave, opts);
+    };
+    const unbindFrom = (card) => {
+        const ctrl = controllers.get(card);
+        if (ctrl) {
+            ctrl.abort();
+            controllers.delete(card);
+        }
+        card.style.transform = '';
     };
     // Bind to existing + observe for new ones added by dynamic rendering.
     document.querySelectorAll(selector).forEach(bindTo);
@@ -417,6 +528,18 @@ function setupCardTilt() {
                 if (node.matches?.(selector))
                     bindTo(node);
                 node.querySelectorAll?.(selector).forEach(bindTo);
+            });
+            m.removedNodes.forEach((node) => {
+                // Detached cards drag listeners along; abort the per-card
+                // signal so the closure can be GC'd. The browser already
+                // disconnects listeners when an element is removed, but the
+                // listener closure keeps the element reachable from the
+                // observer's perspective until aborted.
+                if (!(node instanceof HTMLElement))
+                    return;
+                if (node.matches?.(selector))
+                    unbindFrom(node);
+                node.querySelectorAll?.(selector).forEach(unbindFrom);
             });
         }
     });
@@ -464,8 +587,14 @@ function setupSakuraParallax() {
     const container = document.getElementById('sakura-container');
     if (!container)
         return;
+    // AbortController so the global pointermove listener can be unbound on
+    // page tear-down. Without it the listener (+ its closure capturing
+    // ``container``) stays alive for the document's whole lifetime even
+    // after navigating away from the chat page, keeping every petal-field
+    // DOM node it referenced reachable.
     let raf = 0;
     const STRENGTH = 20; // max px the whole petal field shifts by
+    const ctrl = new AbortController();
     window.addEventListener('pointermove', (e) => {
         const nx = (e.clientX / window.innerWidth) - 0.5; // -0.5..0.5
         const ny = (e.clientY / window.innerHeight) - 0.5;
@@ -475,7 +604,11 @@ function setupSakuraParallax() {
             container.style.setProperty('--parallax-x', `${(-nx * STRENGTH).toFixed(2)}px`);
             container.style.setProperty('--parallax-y', `${(-ny * STRENGTH * 0.5).toFixed(2)}px`);
         });
-    }, { passive: true });
+    }, { passive: true, signal: ctrl.signal });
+    window.addEventListener('beforeunload', () => {
+        ctrl.abort();
+        cancelAnimationFrame(raf);
+    }, { once: true });
 }
 export function animateNumber(el, to, options = {}) {
     if (!el)
@@ -582,6 +715,19 @@ export function playClickSound() {
         gain.gain.setValueAtTime(0.0001, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.005);
         gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+        // Disconnect on completion so the audio graph nodes are eligible for
+        // GC instead of lingering on the destination chain. Forgetting to
+        // disconnect for every click was a slow leak in the WebAudio worker.
+        osc.onended = () => {
+            try {
+                osc.disconnect();
+            }
+            catch { /* already gone */ }
+            try {
+                gain.disconnect();
+            }
+            catch { /* already gone */ }
+        };
         osc.start(ctx.currentTime);
         osc.stop(ctx.currentTime + 0.1);
     }

@@ -160,8 +160,12 @@ class SummaryArchiver:
                 break
             except Exception as e:
                 consecutive_errors += 1
-                # Cap exponent to prevent astronomical intermediate values
-                capped_errors = min(consecutive_errors, 10)
+                # Cap exponent to prevent astronomical intermediate values.
+                # 6 still gives a 64× factor (more than enough headroom
+                # under any sane ``interval_hours``) while keeping the
+                # intermediate exponent well below int-overflow / overflow
+                # warning territory. 10 was theatre.
+                capped_errors = min(consecutive_errors, 6)
                 backoff = min(interval_hours * 3600, 60 * (2**capped_errors))
                 self.logger.error(
                     "Consolidation error (attempt %d, backoff %.0fs): %s",
@@ -187,18 +191,36 @@ class SummaryArchiver:
         if not DB_AVAILABLE or db is None:
             return None
 
+        # Ensure the conversation_summaries table exists. SummaryArchiver.init_schema()
+        # is not wired into bot startup, so a manual !consolidate on a fresh DB
+        # would otherwise hit "no such table". init_schema is idempotent
+        # (CREATE TABLE IF NOT EXISTS), so this lazy call is safe and cheap.
+        await self.init_schema()
+
         # Get old messages to consolidate
         cutoff_time = datetime.now(tz=timezone.utc) - timedelta(
             hours=self.SUMMARY_AGE_THRESHOLD_HOURS
         )
 
         async with db.get_connection() as conn:
+            # ISO-8601 strings sort lexically, so a plain string compare
+            # uses the timestamp index. Wrapping ``timestamp`` in
+            # ``datetime()`` would force a full table scan — its sibling
+            # ``consolidate_all_channels`` already calls this out.
+            #
+            # ``summarized_at IS NULL`` (migration 015): skip rows already
+            # rolled into a prior summary so we never produce duplicate
+            # summary rows on re-run. The partial index
+            # ``idx_ai_history_pending_summary`` only contains unsummarised
+            # rows so this filter doesn't cost a scan.
             cursor = await conn.execute(
                 """
                 SELECT id, role, content, timestamp
                 FROM ai_history
-                WHERE channel_id = ? AND datetime(timestamp) < datetime(?)
-                ORDER BY datetime(timestamp) ASC, id ASC
+                WHERE channel_id = ?
+                  AND timestamp < ?
+                  AND summarized_at IS NULL
+                ORDER BY timestamp ASC, id ASC
             """,
                 (channel_id, cutoff_time.isoformat()),
             )
@@ -242,41 +264,63 @@ class SummaryArchiver:
         # Save to database
         summary_id = await self._save_summary(result)
 
-        # Only delete original messages if summary was successfully saved
-        # AND deletion is explicitly enabled (opt-in) — extractive summaries can
-        # lose information, so default is to keep originals and just record the summary.
+        # After the summary commits we MUST exclude these rows from the
+        # next consolidation pass, otherwise a re-run would re-summarise
+        # them and produce a duplicate. Two strategies:
+        #
+        # 1. Default — MARK the rows by stamping ``summarized_at`` (lossless
+        #    and idempotent: re-running ``consolidate_channel`` is now a
+        #    no-op for already-marked rows even if the very next mark fails
+        #    halfway through).
+        # 2. ``CONSOLIDATOR_DELETE_ORIGINALS=1`` — hard-delete after the
+        #    mark, freeing storage. Mark-then-delete is safer than
+        #    delete-only: a crash between mark and delete leaves rows that
+        #    are correctly excluded from future passes (no duplicate
+        #    summary), they just stay on disk until the next opt-in run.
         delete_originals = os.getenv("CONSOLIDATOR_DELETE_ORIGINALS", "0").lower() in (
             "1",
             "true",
             "yes",
         )
-        if summary_id is not None and delete_originals:
+        if summary_id is not None:
             message_ids = [row["id"] for row in rows]
-            # If delete fails after the summary commit, the summary row
-            # already references content that still lives in ai_history —
-            # not catastrophic, but log loudly so an operator can replay
-            # the cleanup. A crash between save and delete is recoverable
-            # the same way (re-run consolidate_channel will skip already-
-            # summarized rows on next pass).
             try:
-                await self._delete_consolidated_messages(message_ids)
+                await self._mark_consolidated_messages(message_ids)
             except Exception:
                 self.logger.error(
-                    "❌ Summary %d saved but delete of %d originals failed for "
-                    "channel %d — re-run consolidation to clean up",
+                    "❌ Summary %d saved but mark-summarized of %d rows failed for "
+                    "channel %d — next pass may re-summarise. Investigate DB write path.",
                     summary_id,
                     len(message_ids),
                     channel_id,
                     exc_info=True,
                 )
-        elif summary_id is None:
+            else:
+                if delete_originals:
+                    try:
+                        await self._delete_consolidated_messages(message_ids)
+                    except Exception:
+                        # Mark already succeeded so the rows won't be
+                        # re-summarised; the only consequence here is that
+                        # storage isn't reclaimed yet. Logged but not fatal.
+                        self.logger.error(
+                            "❌ Summary %d / mark OK but hard-delete of %d "
+                            "originals failed for channel %d — rows remain "
+                            "on disk; safe to retry.",
+                            summary_id,
+                            len(message_ids),
+                            channel_id,
+                            exc_info=True,
+                        )
+                else:
+                    self.logger.debug(
+                        "Summary saved for channel %d; originals marked summarized "
+                        "(set CONSOLIDATOR_DELETE_ORIGINALS=1 to also hard-delete)",
+                        channel_id,
+                    )
+        else:
             self.logger.warning(
                 "⚠️ Summary save failed for channel %d — keeping original messages",
-                channel_id,
-            )
-        else:
-            self.logger.debug(
-                "Summary saved for channel %d; originals preserved (set CONSOLIDATOR_DELETE_ORIGINALS=1 to enable deletion)",
                 channel_id,
             )
 
@@ -301,7 +345,7 @@ class SummaryArchiver:
                 """
                 SELECT channel_id, COUNT(*) as count
                 FROM ai_history
-                WHERE timestamp < ?
+                WHERE timestamp < ? AND summarized_at IS NULL
                 GROUP BY channel_id
                 HAVING count >= ?
             """,
@@ -323,6 +367,10 @@ class SummaryArchiver:
         """Get recent summaries for a channel."""
         if not DB_AVAILABLE or db is None:
             return []
+
+        # Lazily ensure the table exists (see consolidate_channel) so a query
+        # issued before any consolidation has run doesn't hit "no such table".
+        await self.init_schema()
 
         async with db.get_connection() as conn:
             cursor = await conn.execute(
@@ -546,6 +594,41 @@ class SummaryArchiver:
                     await conn.execute(
                         f"DELETE FROM ai_history WHERE id IN ({placeholders})",  # nosec B608  # placeholders is '?,?,...'; values via batch
                         batch,
+                    )
+                await conn.commit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                raise
+
+    async def _mark_consolidated_messages(self, message_ids: list[int]) -> None:
+        """Stamp ``summarized_at`` on rows we just rolled into a summary.
+
+        Default replacement for the previous "hard-delete after save" flow.
+        Re-applies idempotently: rows already marked stay at their first
+        stamp (the ``WHERE summarized_at IS NULL`` filter ensures we never
+        clobber a historical mark with a later one). Wrapping the whole
+        batch in one transaction keeps mark-then-future-delete cleanly
+        recoverable — if mark commits and the optional hard-delete then
+        fails, the rows are out of the consolidation queue regardless.
+        """
+        if not DB_AVAILABLE or db is None or not message_ids:
+            return
+
+        marked_at = datetime.now(tz=timezone.utc).isoformat()
+        batch_size = 900
+        async with db.get_write_connection() as conn:
+            try:
+                for i in range(0, len(message_ids), batch_size):
+                    batch = message_ids[i : i + batch_size]
+                    placeholders = ",".join("?" * len(batch))
+                    await conn.execute(
+                        # ``IS NULL`` so a row that was somehow marked
+                        # between our SELECT and now keeps its earlier
+                        # stamp instead of getting overwritten.
+                        f"UPDATE ai_history SET summarized_at = ? "  # nosec B608 - placeholders is '?,?,...'; values via params
+                        f"WHERE summarized_at IS NULL AND id IN ({placeholders})",
+                        [marked_at, *batch],
                     )
                 await conn.commit()
             except Exception:
