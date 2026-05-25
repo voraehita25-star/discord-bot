@@ -74,7 +74,7 @@ jobs:
     - name: Scan for hardcoded secrets
       # Third-party action — SHA-pin to insulate CI from upstream
       # supply-chain compromise (retag, deleted release, etc.).
-      uses: trufflesecurity/trufflehog@a94d152bf65bebf5baa486d3d4dfee520af2ceed  # v3.88.2
+      uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab  # v3.95.3
       with:
         extra_args: --only-verified
 
