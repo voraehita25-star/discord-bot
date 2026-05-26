@@ -91,7 +91,11 @@ export class ImageAttachManager {
         `).join('');
         container.querySelectorAll('.remove-image').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const idx = parseInt(e.target.dataset.idx || '0');
+                // currentTarget (the button the listener is bound to) not target:
+                // future-proofs against an icon element being added inside the
+                // button, and matches document-attach.ts. Radix 10 keeps parseInt
+                // deterministic (no accidental octal on a leading-zero idx).
+                const idx = parseInt(e.currentTarget.dataset.idx || '0', 10);
                 this.remove(idx);
             });
         });

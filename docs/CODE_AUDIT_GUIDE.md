@@ -292,8 +292,9 @@ pip install -r requirements.txt
 
 ### 3. Environment Variables
 
-- `DISCORD_TOKEN` - Required
-- `GEMINI_API_KEY` - Required
+- `DISCORD_TOKEN` - Required (บอตไม่สตาร์ทถ้าไม่มี — ดู `validate_required_secrets`)
+- `ANTHROPIC_API_KEY` - จำเป็นเฉพาะ `CLAUDE_BACKEND=api`; ค่าเริ่มต้น `cli` ใช้ Claude Code subscription แทน (ไม่ต้องใช้คีย์)
+- `GEMINI_API_KEY` - Optional (embeddings/RAG; ถ้าไม่ตั้งระบบจะ degrade อย่าง graceful)
 - ดูรายละเอียดใน `config.py`
 
 ### 4. Database Issues

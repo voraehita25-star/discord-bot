@@ -359,3 +359,4 @@ File extension is `.sqlite.sql` (not `.sql`) — the VS Code mssql extension fla
 | 012_bump_default_model_opus_4_7.sqlite.sql | Bump default model to claude-opus-4-7 on token_usage + ai_analytics |
 | 013_dashboard_pin_message.sqlite.sql | Record is_pinned column + partial index for dashboard_messages |
 | 014_dashboard_tags_and_likes.sqlite.sql | Add `liked` column to dashboard_messages + new `dashboard_conversation_tags` table |
+| 015_ai_history_summarized_at.sqlite.sql | Add nullable `summarized_at` column + partial index to ai_history (consolidator dedup — `WHERE summarized_at IS NULL`) |

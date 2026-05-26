@@ -442,7 +442,7 @@ CREATOR_ID=your_discord_id
 | `HISTORY_LIMIT_DEFAULT` | 1500 | Approx **token** budget per channel for kept context |
 | `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) — token budget |
 | `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) — token budget |
-| `LOCK_TIMEOUT` | 30s | Max wait for per-channel lock acquisition (`constants.py`) |
+| `LOCK_TIMEOUT` | 180s | Max wait for per-channel lock acquisition (`constants.py`; must exceed `API_TIMEOUT`) |
 | `API_TIMEOUT` | 120s | Max wait for the upstream chat API (Claude) |
 | `STREAMING_TIMEOUT_INITIAL` | 30s | Initial chunk timeout |
 | `MAX_HISTORY_ITEMS` | 2000 | Max items in in-memory chat history |
@@ -849,7 +849,7 @@ async def mycommand(self, ctx):
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
 6. **Webhook Cache:** Auto-cleared when channels are deleted via `on_guild_channel_delete` listener
 7. **History Cache:** Uses `copy.deepcopy()` to prevent mutation of cached nested objects
-8. **Cache Size Limit:** Max 1000 channels cached, oldest entries evicted when exceeded
+8. **Cache Size Limit:** Max 2000 channels cached (`MAX_CACHE_SIZE`), oldest entries evicted when exceeded
 9. **Permission Checks:** Music commands require `connect` and `speak` permissions in target channel
 10. **Memory Bounds:** Rate limiter (10k buckets), message queue (5k channels), state tracker have eviction limits
 11. **Specific Exceptions:** All `except Exception` blocks replaced with specific exception types for better debugging

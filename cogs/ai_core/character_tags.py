@@ -26,6 +26,12 @@ def _compile_guild_pattern(names: tuple[str, ...]) -> re.Pattern[str]:
     # ``re.escape("") = ""`` which produces ``||`` in the alternation,
     # matching every position in the input and corrupting unrelated text.
     filtered = tuple(n for n in names if n)
+    if not filtered:
+        # No usable names → return a never-matching pattern. An empty
+        # alternation would compile to ``()`` and match every line,
+        # corrupting unrelated text. (The public caller already guards
+        # this, but keep the helper safe if called directly.)
+        return re.compile(r"(?!)")
     sorted_names = sorted(filtered, key=len, reverse=True)
     alternation = "|".join(re.escape(n) for n in sorted_names)
     return re.compile(

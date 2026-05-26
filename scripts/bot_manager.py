@@ -906,7 +906,9 @@ def _tail_lines(path: Path, n: int = 20, encoding: str = "utf-8") -> list[str]:
 def view_logs():
     """View recent logs"""
     for f_name in ["bot.log", "bot_errors.log", "logs/self_healer.log"]:
-        log_path = Path(f_name)
+        # Anchor to PROJECT_ROOT so logs are found regardless of the CWD the
+        # manager was launched from (STATUS_FILE/PID_FILE are anchored too).
+        log_path = PROJECT_ROOT / f_name
         if log_path.exists():
             print(f"\n{Colors.BRIGHT_CYAN}═══ {f_name} (Last 20 lines) ═══{Colors.RESET}")
             try:

@@ -212,11 +212,6 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 
-# Mention-strip pattern used in the on_message hot path. Pre-compiled here
-# rather than recompiling on every message — even with re's internal cache,
-# the lookup adds avoidable overhead at the per-message scale.
-PATTERN_USER_MENTION = re.compile(r"<@!?\d+>\s*")
-
 # Post-processing patterns used inside the response normalisation loop.
 # Module-level so they're built once at import rather than recompiled per
 # turn during streaming.
@@ -1110,12 +1105,26 @@ class ChatManager(SessionMixin, ResponseMixin):
                         elif isinstance(part, Image.Image):
                             try:
                                 current_parts.append(self._pil_to_inline_data(part))
+                            except Exception as conv_exc:
+                                # One unconvertible image shouldn't nuke the whole
+                                # turn (and silently drop the other parts) — log
+                                # and skip it, keeping the rest of the message.
+                                logger.warning(
+                                    "Skipping unconvertible character-reference image: %s",
+                                    conv_exc,
+                                )
                             finally:
                                 part.close()
 
                     for img in image_parts:
                         try:
                             current_parts.append(self._pil_to_inline_data(img))
+                        except Exception as conv_exc:
+                            # Skip a single bad attachment image instead of
+                            # failing the whole turn and dropping the others.
+                            logger.warning(
+                                "Skipping unconvertible attachment image: %s", conv_exc
+                            )
                         finally:
                             img.close()
 

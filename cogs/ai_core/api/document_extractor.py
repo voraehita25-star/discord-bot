@@ -37,26 +37,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# Defuse python-docx's XML parser. python-docx uses lxml under the hood; without
-# this guard, a DOCX with crafted external entity references can read local
-# files, hit internal URLs, or chew CPU via billion-laughs expansion. We import
-# defusedxml.lxml which provides a hardened replacement etree, then monkey-patch
-# docx.oxml.parser.etree before the first docx.Document(...) call so the parse
-# uses the safe variant. If defusedxml is missing we disable DOCX entirely.
+# python-docx parses DOCX (a ZIP of XML) with lxml. Its parser is built with
+# ``resolve_entities=False`` (verified: ``docx.oxml.parser.oxml_parser``) and
+# lxml defaults to ``no_network=True``, so external-entity (XXE) and
+# billion-laughs expansion are blocked at parse time — pinned by
+# ``test_docx_parser_does_not_expand_xml_entities``. Combined with the streaming
+# zip-bomb guard in ``_extract_docx`` below, DOCX is safe whenever python-docx
+# imports. (A ``defusedxml.lxml`` monkey-patch used to be applied here, but it
+# ran *after* ``oxml_parser`` was already built — a no-op — and only emitted a
+# DeprecationWarning, since ``defusedxml.lxml`` is deprecated upstream.)
 try:
-    import defusedxml.lxml as _defused_lxml
-    from defusedxml.common import EntitiesForbidden
-    from defusedxml.lxml import _etree as _defused_etree
+    import docx as _docx_probe  # noqa: F401 - module-level availability probe
 
     DOCX_DISABLED = False
 except ImportError:
-    _defused_lxml = None
-    _defused_etree = None
-    EntitiesForbidden = Exception
     DOCX_DISABLED = True
-    logger.critical(
-        "defusedxml not installed — DOCX extraction is DISABLED to avoid XXE risk. "
-        "Install defusedxml to re-enable DOCX support."
+    logger.warning(
+        "python-docx not installed — DOCX extraction is DISABLED. "
+        "Install python-docx to enable DOCX support."
     )
 
 
@@ -259,16 +257,9 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
 
     try:
         import docx
-        import docx.oxml.parser as _docx_parser
     except ImportError:
         logger.warning("python-docx not installed — DOCX extraction unavailable")
         return None
-
-    # Swap python-docx's lxml.etree for the defused variant before parsing.
-    # Done lazily here (rather than at module import) so installs that don't
-    # have python-docx still load this module cleanly.
-    if _defused_etree is not None:
-        _docx_parser.etree = _defused_etree
 
     # Zip-bomb guard. DOCX is a ZIP container; python-docx itself does not
     # cap per-entry decompression. A 1 KiB DOCX whose [Content_Types].xml
@@ -336,10 +327,10 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
 
     try:
         document = docx.Document(BytesIO(docx_bytes))
-    except EntitiesForbidden:
-        logger.warning("DOCX %s rejected: contains forbidden XML entities (XXE guard)", filename)
-        return None
     except Exception as e:
+        # python-docx parses with resolve_entities=False, so external-entity /
+        # billion-laughs payloads are never expanded (no XXE). A malformed or
+        # otherwise unparseable doc lands here and is safely rejected.
         logger.warning("python-docx failed to parse %s: %s", filename, e)
         return None
 
