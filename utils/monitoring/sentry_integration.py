@@ -261,8 +261,18 @@ def capture_message(
 
     try:
         with sentry_sdk.new_scope() as scope:
+            # Redact string context values before set_extra — same as
+            # capture_exception. set_extra writes straight into the event's
+            # `extra` dict, which the before_send scrubber does not walk, so
+            # an unredacted token/key in context would otherwise leak.
             if context:
+                try:
+                    from utils.monitoring.logger import _redact_sensitive as _redact
+                except Exception:
+                    _redact = None
                 for key, value in context.items():
+                    if _redact is not None and isinstance(value, str):
+                        value = _redact(value)
                     scope.set_extra(key, value)
 
             return sentry_sdk.capture_message(message, level=level)  # type: ignore[arg-type]

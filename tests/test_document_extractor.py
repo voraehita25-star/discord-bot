@@ -426,6 +426,29 @@ class TestExtractDocxMocked:
             assert "First paragraph" in result.text
             assert "Second paragraph" in result.text
 
+    def test_docx_parser_does_not_expand_xml_entities(self):
+        """XXE / billion-laughs guard: the lxml parser python-docx uses must not
+        expand XML entities. We rely on python-docx's own ``resolve_entities=
+        False`` parser (verified) rather than the deprecated, no-op
+        ``defusedxml.lxml`` monkey-patch — this test pins that protection so a
+        future python-docx default change can't silently reintroduce XXE."""
+        if de.DOCX_DISABLED:
+            pytest.skip("python-docx unavailable in this env")
+        from docx.oxml.parser import parse_xml
+
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE r [<!ENTITY foo "ENTITY_WAS_EXPANDED">]>'
+            b"<r>&foo;</r>"
+        )
+        try:
+            el = parse_xml(xml)
+        except Exception:
+            return  # parser rejected the entity-bearing doc outright — also safe
+        # With resolve_entities=False the internal entity is NOT substituted into
+        # text; an external SYSTEM entity would likewise never be fetched.
+        assert "ENTITY_WAS_EXPANDED" not in (el.text or "")
+
 
 class TestExtractTextEdgeCases:
     def test_returns_none_for_empty_after_normalise(self):

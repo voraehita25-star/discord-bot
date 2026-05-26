@@ -199,7 +199,13 @@ class SessionMixin:
     async def save_all_sessions(self) -> None:
         """Save all active sessions to persistent storage."""
         for channel_id in list(self.chats.keys()):
-            await save_history(self.bot, channel_id, self.chats[channel_id])
+            # The session may be evicted by cleanup_inactive_sessions during an
+            # await in a previous iteration — re-fetch and skip if it's gone so
+            # a concurrent eviction can't KeyError out of the whole save loop.
+            chat_data = self.chats.get(channel_id)
+            if chat_data is None:
+                continue
+            await save_history(self.bot, channel_id, chat_data)
         logger.info("All AI sessions saved.")
 
     async def cleanup_inactive_sessions(self) -> None:

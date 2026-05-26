@@ -146,6 +146,33 @@ class TestCaptureMessage:
         finally:
             sentry_integration.SENTRY_AVAILABLE = original
 
+    def test_capture_message_redacts_context(self):
+        """capture_message must redact string context values (parity with
+        capture_exception) so a secret passed in context can't leak to Sentry."""
+        from utils.monitoring import sentry_integration
+
+        if not sentry_integration.SENTRY_AVAILABLE:
+            pytest.skip("Sentry SDK not available")
+
+        mock_scope = MagicMock()
+        with (
+            patch("sentry_sdk.new_scope") as mock_new_scope,
+            patch("sentry_sdk.capture_message", return_value="event-id"),
+            patch(
+                "utils.monitoring.logger._redact_sensitive",
+                side_effect=lambda _v: "[REDACTED]",
+            ),
+        ):
+            mock_new_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
+            mock_new_scope.return_value.__exit__ = MagicMock(return_value=False)
+
+            sentry_integration.capture_message(
+                "boom", context={"api_key": "sk-ant-supersecret"}
+            )
+
+        # The string value must have been redacted before reaching set_extra.
+        mock_scope.set_extra.assert_called_once_with("api_key", "[REDACTED]")
+
 
 class TestSetUserContext:
     """Tests for set_user_context function."""

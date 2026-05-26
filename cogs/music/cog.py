@@ -2477,17 +2477,21 @@ class Music(commands.Cog):
         if not await asyncio.to_thread(temp_dir.exists):
             return 0, 0
 
-        # Get list of files currently in use
-        def _collect_in_use() -> set[str]:
-            in_use: set[str] = set()
-            for _, gs in self._guild_states.items():
-                track_info = gs.current_track
-                if track_info and "filename" in track_info:
-                    # Normalize path to handle potential differences
-                    in_use.add(str(Path(track_info["filename"]).resolve()))
-            return in_use
+        # Snapshot current_track filenames on the event loop first — iterating
+        # self._guild_states inside a worker thread can raise "dictionary
+        # changed size during iteration" if a guild state is added/removed
+        # concurrently. Only the Path.resolve() filesystem I/O is deferred.
+        raw_in_use = [
+            gs.current_track["filename"]
+            for gs in self._guild_states.values()
+            if gs.current_track and "filename" in gs.current_track
+        ]
 
-        in_use_files = await asyncio.to_thread(_collect_in_use)
+        def _resolve_in_use(names: list[str]) -> set[str]:
+            # Normalize paths to handle potential differences
+            return {str(Path(n).resolve()) for n in names}
+
+        in_use_files = await asyncio.to_thread(_resolve_in_use, raw_in_use)
 
         deleted_count = 0
         freed_bytes = 0

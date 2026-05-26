@@ -15,13 +15,27 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Absolute path to taskkill.exe so we don't fall through to a poisoned
 /// PATH entry. On every supported Windows build this lives in System32.
+///
+/// The `%SystemRoot%` env var is validated the same way `open_folder` in
+/// main.rs validates it: accept the env value only if it canonicalizes to
+/// the same target as `C:\Windows`. A poisoned `SystemRoot=C:\Attacker`
+/// would otherwise let an attacker-planted `taskkill.exe` run with our
+/// privileges; falling back to the hardcoded default closes that gap.
 fn taskkill_path() -> String {
-    if let Ok(systemroot) = std::env::var("SystemRoot") {
-        format!("{}\\System32\\taskkill.exe", systemroot)
-    } else {
+    let sysroot_canonical = std::env::var("SystemRoot")
+        .ok()
+        .and_then(|s| std::fs::canonicalize(&s).ok());
+    let default_root_canonical = std::fs::canonicalize("C:\\Windows").ok();
+    match (sysroot_canonical, default_root_canonical.as_ref()) {
+        (Some(env_root), Some(def_root)) if &env_root == def_root => env_root
+            .join("System32")
+            .join("taskkill.exe")
+            .to_string_lossy()
+            .into_owned(),
         // Fallback to the canonical default — virtually every Windows
-        // install has SystemRoot=C:\Windows.
-        String::from("C:\\Windows\\System32\\taskkill.exe")
+        // install has SystemRoot=C:\Windows, and if the env var is missing
+        // or fails to canonicalize-match we must not trust it.
+        _ => String::from("C:\\Windows\\System32\\taskkill.exe"),
     }
 }
 

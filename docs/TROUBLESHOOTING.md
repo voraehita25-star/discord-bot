@@ -23,8 +23,8 @@ tail -f logs/bot_errors.log
 1. **Missing `.env` file** — Copy `env.example` (note: no leading dot) and fill in required values:
 
    ```ini
-   DISCORD_TOKEN=...
-   ANTHROPIC_API_KEY=...
+   DISCORD_TOKEN=...           # required — บอตไม่สตาร์ทถ้าไม่มี
+   ANTHROPIC_API_KEY=...       # เฉพาะ CLAUDE_BACKEND=api (ค่าเริ่มต้น cli ไม่ต้องใช้คีย์)
    ```
 
 2. **Duplicate process running** — The self-healer checks for duplicates:
@@ -187,8 +187,12 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 
 | Variable | Description |
 | -------- | ----------- |
-| `DISCORD_TOKEN` | Discord bot token |
-| `ANTHROPIC_API_KEY` | Claude API key |
+| `DISCORD_TOKEN` | Discord bot token — บอตไม่สตาร์ทถ้าไม่มี (ตัวเดียวที่ required จริง) |
+
+> **`ANTHROPIC_API_KEY` ไม่ได้ required เสมอไป.** จำเป็นเฉพาะตอน `CLAUDE_BACKEND=api`; ค่าเริ่มต้น `cli`
+> ใช้ Claude Code subscription (ไม่ต้องใช้คีย์). ถ้าไม่ตั้งเลย ฟีเจอร์ AI จะถูกปิดแต่บอตยังรันได้
+> (ดู `config.py` → `validate_required_secrets` / `validate_optional_secrets`). `GEMINI_API_KEY`
+> เป็น optional ล้วน (embeddings/RAG; degrade ได้ถ้าไม่มี).
 
 ### AI Configuration
 

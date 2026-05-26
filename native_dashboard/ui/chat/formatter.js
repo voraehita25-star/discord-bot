@@ -56,8 +56,11 @@ export function formatMessage(content) {
     }
     // Extract block LaTeX ($$...$$). The pattern allows `\$` (escaped dollar)
     // inside the formula so equations like `$$\frac{1}{\$x}$$` survive
-    // extraction instead of slipping past as plain text.
-    let processed = content.replace(/\$\$((?:[^$]|\\\$)+)\$\$/g, (_match, tex) => {
+    // extraction instead of slipping past as plain text. The alternation is
+    // written `[^$\\] | \\.` (not `[^$] | \\\$`) so a backslash always starts
+    // the escape branch — removing the ambiguity that let the old pattern
+    // backtrack super-linearly (ReDoS) on adversarial `$$\$\$\$…` input.
+    let processed = content.replace(/\$\$((?:[^$\\]|\\.)+)\$\$/g, (_match, tex) => {
         const idx = latexBlocks.length;
         try {
             if (katex) {
