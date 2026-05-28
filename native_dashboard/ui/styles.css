@@ -4585,11 +4585,34 @@ html[data-theme="light"] .sidebar {
     backdrop-filter: blur(14px) saturate(1.1);
 }
 
-/* Logo floats with gentle Y rotation */
+/* Logo floats with gentle Y rotation.
+ *
+ * NOTE: do NOT use ``var(--shadow-md-3d)`` here — that token ships with
+ * an ``inset 0 1px 0 rgba(255, 255, 255, X)`` highlight strip that's
+ * meant to add 3D depth to opaque cards. On the .logo's translucent
+ * pink/purple gradient background the inset white line shows as a
+ * visible horizontal "cut" across the top of the container. Build the
+ * drop-shadow stack explicitly without the inset for the logo only.
+ */
 .logo {
-    box-shadow: var(--shadow-md-3d), 0 0 24px var(--glow-pink);
+    box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.12),
+        0 6px 12px rgba(0, 0, 0, 0.12),
+        0 12px 24px rgba(0, 0, 0, 0.08),
+        0 0 24px var(--glow-pink);
     transform-style: preserve-3d;
     position: relative;
+}
+
+html[data-theme="light"] .logo {
+    /* Same idea for light theme — the original ``--shadow-md-3d``'s
+       inset 1px white-at-90%-opacity highlight is even more visible on
+       the light logo bg. Use a clean drop-shadow stack instead. */
+    box-shadow:
+        0 2px 4px rgba(31, 36, 48, 0.05),
+        0 6px 12px rgba(31, 36, 48, 0.06),
+        0 12px 24px rgba(31, 36, 48, 0.06),
+        0 0 24px var(--glow-pink);
 }
 
 .logo-icon {
