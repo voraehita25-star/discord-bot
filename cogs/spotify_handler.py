@@ -405,26 +405,23 @@ class SpotifyHandler:
         )
         msg = await ctx.send(embed=loading_embed)
 
-        def get_all_playlist_tracks(url):
-            # Use self.sp directly (not a captured local) so retries
-            # after client recreation use the fresh client instance
-            results = self.sp.playlist_tracks(url)
-            tracks = results.get("items", []) if results else []
-            # Limit total tracks to prevent memory issues
-            # Also check results is not None to prevent infinite loop if sp.next() returns None
-            while results and results.get("next") and len(tracks) < self.MAX_PLAYLIST_TRACKS:
-                # Note: sleep is inside executor, which is acceptable
-                # as it doesn't block the main event loop
-                import time
-
-                time.sleep(self.RATE_LIMIT_DELAY)
-                results = self.sp.next(results)
-                if results and results.get("items"):
-                    tracks.extend(results["items"])
-            return tracks[: self.MAX_PLAYLIST_TRACKS]  # Ensure limit
-
+        # Paginate one page at a time and wrap *each* page in the retry
+        # helper. The previous shape bundled every page into a single
+        # closure handed to ``_api_call_with_retry`` — a transient error on
+        # page 7 of 12 then restarted pagination from page 1, paying for
+        # the first 6 pages again. Mirrors the per-page retry used by
+        # ``_handle_album`` so the two large-collection paths behave the
+        # same way under flaky network conditions.
         try:
-            results = await self._api_call_with_retry(get_all_playlist_tracks, query)
+            first_page = await self._api_call_with_retry(self.sp.playlist_tracks, query)
+            tracks = list(first_page.get("items", []) if first_page else [])
+            cur = first_page
+            while cur and cur.get("next") and len(tracks) < self.MAX_PLAYLIST_TRACKS:
+                await asyncio.sleep(self.RATE_LIMIT_DELAY)
+                cur = await self._api_call_with_retry(self.sp.next, cur)
+                if cur and cur.get("items"):
+                    tracks.extend(cur["items"])
+            results = tracks[: self.MAX_PLAYLIST_TRACKS]
         except asyncio.CancelledError:
             # If the user navigated away or the parent command was
             # cancelled, the loading embed would otherwise sit forever

@@ -163,7 +163,11 @@ if ($pythonVer -match "3\.14") {
         winget install Python.Python.3.14 --accept-source-agreements --accept-package-agreements -h
     } else {
         Write-Info "Downloading Python 3.14 installer..."
-        $pythonUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a3-amd64.exe"
+        # IMPORTANT: pin a STABLE release. The previous URL pulled
+        # ``3.14.0a3`` (alpha 3) which would silently install a pre-release
+        # for any operator without winget. As of 2026-05, ``3.14.5`` is
+        # the latest stable patch; bump when a newer one ships.
+        $pythonUrl = "https://www.python.org/ftp/python/3.14.5/python-3.14.5-amd64.exe"
         $pythonFile = "$DownloadDir\python-installer.exe"
         Invoke-VerifiedDownload -Uri $pythonUrl -OutFile $pythonFile
         Write-Info "Running Python installer (silent, adding to PATH)..."
@@ -171,7 +175,12 @@ if ($pythonVer -match "3\.14") {
     }
     Refresh-Path
     $pythonVer = try { python --version 2>&1 } catch { "" }
-    if ($pythonVer -match "3\.1") { Write-OK "Python installed: $pythonVer" }
+    # Reject pre-release tags (``a``/``b``/``rc``) so an alpha smuggled
+    # in via a stale URL doesn't pass the post-install assertion.
+    if ($pythonVer -match "Python 3\.14\.\d+\s*$") { Write-OK "Python installed: $pythonVer" }
+    elseif ($pythonVer -match "Python 3\.14") {
+        Write-Fail "Python pre-release detected: $pythonVer — please install a stable 3.14.x release"
+    }
     else { Write-Fail "Python not found in PATH. May need terminal restart." }
 }
 

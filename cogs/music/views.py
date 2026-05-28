@@ -54,7 +54,16 @@ class MusicControlView(discord.ui.View):
 
         return True
 
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="music_pause")
+    # NOTE: ``custom_id`` is intentionally omitted on every button. This
+    # view is short-lived (``timeout=180.0``) and is never registered via
+    # ``bot.add_view``, so persistence is not desired. A *shared* literal
+    # custom_id (the old ``"music_pause"`` / ``"music_skip"`` / ...) made
+    # Discord dispatch interactions to the first live ``MusicControlView``
+    # instance in the process, which mutated the *wrong guild's* state when
+    # multiple servers had embeds open simultaneously. Without custom_id,
+    # discord.py generates a per-component random one, scoping interactions
+    # correctly to the originating view.
+    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary)
     async def pause_resume_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -91,7 +100,7 @@ class MusicControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ ไม่มีเพลงให้หยุดชั่วคราว", ephemeral=True)
 
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary, custom_id="music_skip")
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Skip current track."""
         if not interaction.guild or not interaction.guild.voice_client:
@@ -109,7 +118,7 @@ class MusicControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ ไม่มีเพลงให้ข้าม", ephemeral=True)
 
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Stop playback and clear queue."""
         # Mutate the existing deque in place — assigning a fresh deque
@@ -120,6 +129,12 @@ class MusicControlView(discord.ui.View):
         gs.queue.clear()
         gs.loop = False
         gs.current_track = None
+        # Persist the now-empty queue. Without this the text-command path
+        # (``!stop``) and the button diverge: a bot restart after a button
+        # stop would resurrect whatever was last persisted, even though the
+        # user explicitly cleared the queue.
+        with contextlib.suppress(Exception):
+            self.cog._schedule_queue_save(self.guild_id)
 
         if interaction.guild and interaction.guild.voice_client:
             voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
@@ -140,16 +155,20 @@ class MusicControlView(discord.ui.View):
 
         self.stop()  # Stop the view
 
-    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary, custom_id="music_loop")
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
     async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Toggle loop mode."""
-        current_loop = self.cog._gs(self.guild_id).loop
-        self.cog._gs(self.guild_id).loop = not current_loop
+        # Snapshot the guild state once. Re-reading ``self.cog._gs(...).loop``
+        # after every ``await`` would let a concurrent ``!loop`` / skip flip
+        # the flag mid-handler, producing an embed whose button style and
+        # follow-up text disagree about the current loop state.
+        gs = self.cog._gs(self.guild_id)
+        previous_loop = gs.loop
+        new_loop = not previous_loop
+        gs.loop = new_loop
 
         button.style = (
-            discord.ButtonStyle.success
-            if self.cog._gs(self.guild_id).loop
-            else discord.ButtonStyle.secondary
+            discord.ButtonStyle.success if new_loop else discord.ButtonStyle.secondary
         )
         # `edit_message` can raise NotFound (message deleted by user) or
         # HTTPException (permissions changed). If it does, the interaction
@@ -158,9 +177,9 @@ class MusicControlView(discord.ui.View):
         try:
             await interaction.response.edit_message(view=self)
         except discord.HTTPException:
-            self.cog._gs(self.guild_id).loop = current_loop
+            gs.loop = previous_loop
             return
-        msg = "🔁 เปิดโหมดวนซ้ำ" if self.cog._gs(self.guild_id).loop else "➡️ ปิดโหมดวนซ้ำ"
+        msg = "🔁 เปิดโหมดวนซ้ำ" if new_loop else "➡️ ปิดโหมดวนซ้ำ"
         with contextlib.suppress(discord.HTTPException):
             await interaction.followup.send(msg, ephemeral=True)
 

@@ -659,9 +659,14 @@ fn allowed_base_roots(exe_path: &Option<std::path::PathBuf>) -> Vec<std::path::P
     if let Some(desktop) = dirs::desktop_dir() {
         roots.push(desktop);
     }
-    if let Some(downloads) = dirs::download_dir() {
-        roots.push(downloads);
-    }
+    // ``Downloads`` is deliberately NOT in the allowlist: it is one of the
+    // most attacker-influenceable folders on a Windows host (browser
+    // downloads, mail attachments, drive-by zips). A malicious archive
+    // expanding into ``~/Downloads/discord-bot-final/bot.py`` would
+    // otherwise be silently trusted by ``bot_path.txt``, letting the
+    // dashboard launch attacker-controlled code as the logged-in user.
+    // Operators who legitimately keep their bot under Downloads can move
+    // it to ``Documents``, ``Desktop``, or set ``BOT_BASE_PATH``.
     if let Some(exe) = exe_path.as_ref().and_then(|p| p.parent()) {
         roots.push(exe.to_path_buf());
     }

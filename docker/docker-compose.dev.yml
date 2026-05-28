@@ -36,8 +36,15 @@ services:
       - ../utils:/app/utils:ro
       - ../bot.py:/app/bot.py:ro
 
-    # Expose extra ports for debugging
+    # Expose extra ports for debugging.
+    # IMPORTANT: bind to 127.0.0.1 explicitly so Docker's port-forward
+    # does NOT publish these on every host interface. The in-process
+    # services (Health API, WS Dashboard, Prometheus exporter) enforce
+    # localhost-only binding inside the container, but Docker's default
+    # ``"8080:8080"`` form publishes on host ``0.0.0.0:8080`` and the
+    # in-process protection becomes a no-op. ``"127.0.0.1:HOST:CONTAINER"``
+    # restores the loopback-only intent on the host side too.
     ports:
-      - "8080:8080"   # Health API
-      - "8765:8765"   # WebSocket Dashboard
-      - "9090:9090"   # Prometheus metrics
+      - "127.0.0.1:8080:8080"   # Health API
+      - "127.0.0.1:8765:8765"   # WebSocket Dashboard
+      - "127.0.0.1:9090:9090"   # Prometheus metrics

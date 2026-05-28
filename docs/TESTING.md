@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: May 25, 2026 | Python 3.14+ | Python Tests: 3,368 ✅ (101 files) + 1 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: May 28, 2026 | Python 3.14+ | Python Tests: 3,371 ✅ (103 files) + 8 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run `make test` / `npm test` / `npm run test:e2e` for the live numbers.
 
@@ -32,7 +32,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (101 Python files, 3,368 tests)
+## Test Structure (103 Python files, 3,371 tests)
 
 ```text
 tests/
@@ -50,7 +50,7 @@ tests/
 ```
 
 > Earlier consolidation (~early 2026) merged `_extended`, `_more`, `_module` variants
-> into their base files and parametrized boilerplate tests. Current count: **101 files**.
+> into their base files and parametrized boilerplate tests. Current count: **103 files**.
 
 ## Frontend Test Structure (10 vitest files, 189 tests)
 

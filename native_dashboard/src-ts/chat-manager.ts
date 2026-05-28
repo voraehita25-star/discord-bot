@@ -656,6 +656,11 @@ export class ChatManager {
                     if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'assistant' && !this.messages[this.messages.length - 1].content) {
                         this.messages.pop();
                     }
+                    // Re-enable the composer. If failover succeeds, a fresh
+                    // ``stream_start`` will arrive shortly and re-disable.
+                    // Without this, an all-endpoints-down failover left the
+                    // input locked with no recovery path short of a refresh.
+                    this.setInputEnabled(true);
                     break;
                 }
 
@@ -739,14 +744,22 @@ export class ChatManager {
                 break;
 
             case 'conversation_starred':
-                const conv = this.conversations.find(c => c.id === data.id);
-                if (conv) conv.is_starred = data.starred as boolean;
-                // Also update currentConversation if it's the same one
-                if (this.currentConversation && this.currentConversation.id === data.id) {
-                    this.currentConversation.is_starred = data.starred as boolean;
+                // Block-scoped so ``const conv`` doesn't collide with any
+                // future case-local ``conv`` declaration in this switch
+                // (each adjacent case here uses ``{ ... }`` for the same
+                // reason). Without the block, declaring ``conv`` in two
+                // cases is a SyntaxError because the switch body is a
+                // single block scope.
+                {
+                    const conv = this.conversations.find(c => c.id === data.id);
+                    if (conv) conv.is_starred = data.starred as boolean;
+                    // Also update currentConversation if it's the same one
+                    if (this.currentConversation && this.currentConversation.id === data.id) {
+                        this.currentConversation.is_starred = data.starred as boolean;
+                    }
+                    this.renderConversationList();
+                    this.updateStarButton();
                 }
-                this.renderConversationList();
-                this.updateStarButton();
                 break;
 
             case 'conversation_exported':
@@ -1395,7 +1408,9 @@ export class ChatManager {
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         if (thinkingContent) {
             thinkingContent.appendChild(document.createTextNode(text));
-            this.scrollToBottom();
+            // Per-chunk scroll: do NOT bump the new-message badge — the
+            // streaming message is a SINGLE response, not N new messages.
+            this.scrollToBottom(false, false);
         }
     }
 
@@ -1441,7 +1456,9 @@ export class ChatManager {
             // append a text node instead of concatenating onto
             // ``textContent`` so chunk N doesn't re-copy chunks 1..N-1.
             streamingText.appendChild(document.createTextNode(text));
-            this.scrollToBottom();
+            // Per-chunk scroll: do NOT bump the new-message badge — the
+            // streaming message is a SINGLE response, not N new messages.
+            this.scrollToBottom(false, false);
         }
     }
 
@@ -1989,12 +2006,24 @@ export class ChatManager {
         if (btn) btn.disabled = !enabled;
     }
 
-    scrollToBottom(force: boolean = false): void {
+    /**
+     * Scroll the chat container to the bottom (or note a new arrival in
+     * the FAB badge if the user is scrolled up).
+     *
+     * @param force        Bypass the "user is scrolled up" check and snap
+     *                     to bottom regardless. Used by the FAB click and
+     *                     explicit "send" flows.
+     * @param countAsNewMessage  When ``true`` and the user is scrolled up,
+     *                     bump the FAB badge by 1. Streaming chunk handlers
+     *                     pass ``false`` so a single response with N chunks
+     *                     doesn't inflate the badge to "99+" when the
+     *                     intent is "1 new message".
+     */
+    scrollToBottom(force: boolean = false, countAsNewMessage: boolean = true): void {
         if (!force && this.userScrolledUp) {
-            // User is scrolled up — increment the badge so they can see how
-            // many new messages arrived while they were reading older ones.
-            // Without this the FAB badge stayed permanently at 0 (dead UI).
-            this.newMessagesWhileScrolledUp += 1;
+            if (countAsNewMessage) {
+                this.newMessagesWhileScrolledUp += 1;
+            }
             this.updateScrollFab(true);
             return;
         }
@@ -2690,6 +2719,10 @@ export class ChatManager {
         const modal = document.getElementById('new-chat-modal');
         if (modal) {
             modal.classList.add('active');
+            // Mirror the visual ``.active`` state onto ``aria-hidden`` so
+            // screen readers see the modal as opened. The base HTML ships
+            // with ``aria-hidden="true"``; remove it when shown.
+            modal.removeAttribute('aria-hidden');
             this.selectedRole = 'general';
             // Restore saved preferences for new chat
             const savedThinking = localStorage.getItem('dashboard_thinking') === 'true';
@@ -2706,12 +2739,20 @@ export class ChatManager {
                     : this.aiProvider;
             }
             this.updateRoleSelection();
+            // Move keyboard focus into the dialog so SR users know they're
+            // inside a modal context and the first focusable is the first
+            // role option (the selected one).
+            const selected = modal.querySelector<HTMLElement>('.role-card.selected');
+            (selected ?? modal.querySelector<HTMLElement>('button')) ?.focus();
         }
     }
 
     closeModal(): void {
         const modal = document.getElementById('new-chat-modal');
-        if (modal) modal.classList.remove('active');
+        if (modal) {
+            modal.classList.remove('active');
+            modal.setAttribute('aria-hidden', 'true');
+        }
     }
 
     selectRole(role: string): void {
@@ -2721,7 +2762,13 @@ export class ChatManager {
 
     updateRoleSelection(): void {
         document.querySelectorAll('.role-card').forEach(card => {
-            card.classList.toggle('selected', (card as HTMLElement).dataset.role === this.selectedRole);
+            const isSelected = (card as HTMLElement).dataset.role === this.selectedRole;
+            card.classList.toggle('selected', isSelected);
+            // Mirror the visual ``.selected`` class onto the ARIA radio
+            // state so screen-reader users get the same signal as sighted
+            // users. The cards are real <button role="radio"> now (was
+            // <div role="button"> before the 2026-05-28 a11y pass).
+            card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
         });
     }
 
@@ -2778,14 +2825,26 @@ export class ChatManager {
         document.querySelectorAll('.role-card').forEach(card => {
             const select = () => this.selectRole((card as HTMLElement).dataset.role || 'general');
             card.addEventListener('click', select);
-            // role-cards are <div role="button" tabindex="0">; without this
-            // they're focusable but Enter/Space don't activate them.
+            // Cards are now real <button role="radio"> elements; <button>
+            // already handles Enter/Space activation natively. We keep the
+            // explicit keydown handler ONLY for the arrow-key navigation
+            // pattern expected of a radiogroup (Up/Left = previous,
+            // Down/Right = next, Home/End = first/last).
             card.addEventListener('keydown', (e) => {
                 const ke = e as KeyboardEvent;
-                if (ke.key === 'Enter' || ke.key === ' ') {
-                    ke.preventDefault();
-                    select();
-                }
+                const cards = Array.from(document.querySelectorAll<HTMLElement>('.role-card'));
+                const idx = cards.indexOf(card as HTMLElement);
+                if (idx === -1) return;
+                let nextIdx = idx;
+                if (ke.key === 'ArrowDown' || ke.key === 'ArrowRight') nextIdx = (idx + 1) % cards.length;
+                else if (ke.key === 'ArrowUp' || ke.key === 'ArrowLeft') nextIdx = (idx - 1 + cards.length) % cards.length;
+                else if (ke.key === 'Home') nextIdx = 0;
+                else if (ke.key === 'End') nextIdx = cards.length - 1;
+                else return;
+                ke.preventDefault();
+                const target = cards[nextIdx];
+                this.selectRole(target.dataset.role || 'general');
+                target.focus();
             });
         });
 

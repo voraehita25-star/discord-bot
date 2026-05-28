@@ -357,6 +357,15 @@ class BotHealthData:
 # Global health data instance
 health_data = BotHealthData()
 
+# Cap concurrent ``/health/deep`` requests so a slowloris-style flood can't
+# spawn unbounded threads against the stdlib ``ThreadingHTTPServer`` (which
+# has no per-server concurrency limit). Each deep check blocks for up to
+# 2s on ``fut.result(timeout=2.0)``; without a semaphore, 1k concurrent
+# probes burn 1k OS threads. ``BoundedSemaphore`` so over-release fails
+# loudly rather than silently inflating the cap.
+_DEEP_HEALTH_MAX_CONCURRENT = 8
+_DEEP_HEALTH_SEM = threading.BoundedSemaphore(_DEEP_HEALTH_MAX_CONCURRENT)
+
 
 class HealthRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler for health endpoints."""
@@ -744,10 +753,23 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 self._send_text_response("UNHEALTHY", 503)
 
         elif path == "/health/deep":
-            # Deep health check - tests all subsystems
-            deep_result = self._perform_deep_health_check()
-            status = 200 if deep_result["healthy"] else 503
-            self._send_json_response(deep_result, status)
+            # Deep health check - tests all subsystems. Bound concurrency
+            # via the module-level semaphore so a flood of concurrent
+            # probes can't spawn unbounded threads. Use a short non-blocking
+            # acquire — if we're already at the cap, fail-closed with 503
+            # rather than queue and let memory grow.
+            if not _DEEP_HEALTH_SEM.acquire(blocking=False):
+                self._send_json_response(
+                    {"healthy": False, "error": "deep health check is busy"},
+                    503,
+                )
+                return
+            try:
+                deep_result = self._perform_deep_health_check()
+                status = 200 if deep_result["healthy"] else 503
+                self._send_json_response(deep_result, status)
+            finally:
+                _DEEP_HEALTH_SEM.release()
 
         elif path == "/metrics":
             # Prometheus-style metrics
@@ -802,23 +824,16 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             self._send_json_response(ai_stats)
 
         else:
-            # 404 Not Found
-            self._send_json_response(
-                {
-                    "error": "Not Found",
-                    "available_endpoints": [
-                        "/health - Full health check",
-                        "/health/live - Liveness probe",
-                        "/health/ready - Readiness probe",
-                        "/health/status - Simple OK/UNHEALTHY",
-                        "/health/deep - Deep health check (DB, APIs)",
-                        "/metrics - Prometheus metrics",
-                        "/stats - Quick statistics",
-                        "/ai/stats - AI performance metrics",
-                    ],
-                },
-                404,
-            )
+            # 404 Not Found. Do NOT enumerate available endpoints — when
+            # ``HEALTH_API_TOKEN`` is set, an unauthenticated caller that
+            # hits an unknown path would otherwise receive the full
+            # protected-endpoint surface (the auth check above only
+            # triggers for paths in ``_PROTECTED_ENDPOINTS``, so a 404
+            # path returns BEFORE auth runs). Returning a bare 404 here
+            # closes the enumeration channel without breaking legitimate
+            # tooling: operators reading the docs already know the
+            # endpoint set.
+            self._send_json_response({"error": "Not Found"}, 404)
 
     def _generate_prometheus_metrics(self) -> str:
         """Generate Prometheus-compatible metrics."""

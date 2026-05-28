@@ -1,75 +1,17 @@
 # =============================================================================
-# Docker Build Exclusions
-# Patterns to exclude from Docker build context for faster builds
+# Docker Build Exclusions — STUB ONLY
 # =============================================================================
-
-# Git
-.git
-.gitignore
-.gitattributes
-
-# Python cache
-__pycache__
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Virtual environments
-venv/
-.venv/
-ENV/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Environment files (IMPORTANT: don't include secrets in image)
-.env
-.env.local
-.env.*.local
-
-# Logs and data (mounted as volumes instead)
-logs/
-data/
-temp/
-*.log
-
-# Test files
-tests/
-test_*.py
-*_test.py
-pytest.ini
-.pytest_cache/
-
-# Documentation
-*.md
-docs/
-
-# Development files
-scripts/
-tools/
-*.bat
-*.ps1
-*.vbs
-
-# Gemini/AI artifacts
-.gemini/
-
-# Other
-*.bak
-*.tmp
-*.temp
-Thumbs.db
-.DS_Store
-
-# Large build artifacts (not needed in Python-only Docker image)
-native_dashboard/
-rust_extensions/target/
-go_services/health_api/health_api
-go_services/url_fetcher/url_fetcher
-.github/
-assets/icons/
+#
+# This file is intentionally a stub. ``docker-compose.yml`` sets
+# ``context: ..``, so Docker reads ``.dockerignore`` from the *project
+# root*, NOT from this directory. Edits here have no effect on the build
+# image.
+#
+# To change what is excluded from the Docker build context, edit
+# ``../.dockerignore`` (the project-root file). This stub is kept only
+# so contributors who instinctively look in ``docker/`` see this notice
+# instead of silently editing a dead file and believing the change
+# applies.
+#
+# Cross-reference: ../.dockerignore is the authoritative exclusion list.
+# =============================================================================

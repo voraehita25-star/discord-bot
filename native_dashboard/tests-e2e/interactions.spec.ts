@@ -46,19 +46,25 @@ test.describe('Theme toggle', () => {
     });
 
     test('theme persists across reload (via settings)', async ({ page }) => {
+        const themeBefore = await page.locator('html').getAttribute('data-theme');
         const toggle = page.locator('button:has-text("Toggle Theme")').first();
         await toggle.click();
+        await page.waitForTimeout(150);
         const themeAfterToggle = await page.locator('html').getAttribute('data-theme');
+        // Sanity: the toggle MUST have flipped the attribute. If this fails
+        // the rest of the persistence assertion is meaningless.
+        expect(themeAfterToggle, 'Toggle must change data-theme').not.toBe(themeBefore);
         await page.reload();
         await page.waitForTimeout(300);
-        // Reload reads localStorage settings; theme should match.
-        // The mock returns 'dark' from get_settings, but localStorage may
-        // override. Either way, the theme attribute should be present.
         const themeAfterReload = await page.locator('html').getAttribute('data-theme');
         expect(themeAfterReload).toMatch(/dark|light/);
-        // Doesn't strictly assert persistence (mock IPC overrides), just that
-        // reload doesn't strand the theme attribute.
-        expect([themeAfterToggle, 'dark', 'light']).toContain(themeAfterReload);
+        // Real persistence assertion: post-reload theme must equal the
+        // post-toggle theme. (The old `expect([themeAfterToggle, 'dark', 'light']).toContain(...)`
+        // accepted literally any theme value and provided zero guarantee.)
+        expect(
+            themeAfterReload,
+            `Theme didn't persist: before=${themeBefore} afterToggle=${themeAfterToggle} afterReload=${themeAfterReload}`,
+        ).toBe(themeAfterToggle);
     });
 });
 
@@ -117,11 +123,19 @@ test.describe('Chat input behaviors', () => {
             () => (window as unknown as { __mockWsLastSent?: { frames: string[] } })
                 .__mockWsLastSent?.frames ?? [],
         );
-        // Either a real frame or none if currentConversation wasn't accepted.
-        // At minimum, the input should be cleared on send.
         const inputValue = await input.inputValue();
-        // Pass if either: frame was sent OR input still has the text (no crash)
-        expect(frames.length >= 0 || inputValue === '').toBe(true);
+        // Either the message reached the WS layer (frame sent) OR the input
+        // retained the message text (UI saw the keystroke but the streaming
+        // gate refused to emit) — both indicate the keystroke wasn't swallowed.
+        // `frames.length >= 0` is always true and was the bug we're replacing;
+        // require > 0 here.
+        expect(
+            frames.length > 0 || inputValue.includes('Test message'),
+            `Enter neither sent a WS frame (${frames.length}) nor retained input ('${inputValue}')`,
+        ).toBe(true);
+        // And separately: the page must not have crashed/blanked.
+        const bodyLen = await page.evaluate(() => document.body.innerHTML.length);
+        expect(bodyLen).toBeGreaterThan(0);
     });
 
     test('Shift+Enter adds newline instead of sending', async ({ page }) => {
@@ -139,7 +153,9 @@ test.describe('Chat input behaviors', () => {
         await openChatWithVisibleInput(page);
         // Focus via Tab to trigger :focus-visible
         await page.locator('body').click({ position: { x: 1, y: 1 } });
-        // Tab through until we land on chat-input
+        // Tab through until we land on chat-input — must be reachable in a
+        // normal Tab sequence (regression guard against accidentally adding
+        // tabindex=-1 or visibility:hidden to the chat input wrapper).
         for (let i = 0; i < 30; i++) {
             await page.keyboard.press('Tab');
             const isFocused = await page.evaluate(
@@ -150,22 +166,19 @@ test.describe('Chat input behaviors', () => {
         const isFocused = await page.evaluate(
             () => document.activeElement?.id === 'chat-input',
         );
-        // Even if Tab doesn't reach it (other focusables in the way), we can
-        // verify CSS rule exists for :focus-visible.
-        if (isFocused) {
-            const ring = await page.locator('#chat-input').evaluate((el) => {
-                const cs = getComputedStyle(el);
-                return {
-                    outline: cs.outline,
-                    outlineWidth: cs.outlineWidth,
-                    boxShadow: cs.boxShadow,
-                };
-            });
-            const hasIndicator =
-                (ring.outlineWidth !== '0px' && ring.outline !== 'none') ||
-                (ring.boxShadow !== 'none' && ring.boxShadow !== '');
-            expect(hasIndicator).toBe(true);
-        }
+        expect(isFocused, 'Tab must reach #chat-input within 30 keystrokes').toBe(true);
+        const ring = await page.locator('#chat-input').evaluate((el) => {
+            const cs = getComputedStyle(el);
+            return {
+                outline: cs.outline,
+                outlineWidth: cs.outlineWidth,
+                boxShadow: cs.boxShadow,
+            };
+        });
+        const hasIndicator =
+            (ring.outlineWidth !== '0px' && ring.outline !== 'none') ||
+            (ring.boxShadow !== 'none' && ring.boxShadow !== '');
+        expect(hasIndicator, `No focus indicator: ${JSON.stringify(ring)}`).toBe(true);
     });
 });
 
@@ -203,28 +216,33 @@ test.describe('Modal interactions', () => {
 
     test('rename modal in chat page: Escape closes (when shown via chatManager flow)', async ({ page }) => {
         await page.click('[data-page="chat"]');
-        // Show rename modal via the proper API so the Escape handler binds.
+        // Show rename modal via the public API. `convModals` is a private
+        // field on ChatManager, but renameConversation() is the documented
+        // entry point (called by the pencil button in the chat header), so
+        // tests should use it the same way production does.
         await page.evaluate(() => {
             const cm = (window as unknown as {
                 chatManager?: {
-                    convModals?: { showRename: (id: string) => void };
+                    renameConversation?: (id: string) => void;
                     currentConversation?: { id: string; title: string };
                     isStreaming?: boolean;
                     conversations?: Array<{ id: string; title: string }>;
                 };
             }).chatManager;
-            if (cm?.convModals) {
+            if (cm?.renameConversation) {
                 cm.conversations = [{ id: 'test-1', title: 'Test Conv' }];
                 cm.isStreaming = false;
-                cm.convModals.showRename('test-1');
+                cm.renameConversation('test-1');
             }
         });
-        const modalVisible = await page.locator('#rename-modal.active').count();
-        // If shown successfully, Escape should close it.
-        if (modalVisible > 0) {
-            await page.keyboard.press('Escape');
-            await expect(page.locator('#rename-modal')).not.toHaveClass(/active/);
-        }
+        // The modal MUST become visible — if it doesn't, that's a real
+        // regression in showRename() or its DOM wiring, not a reason to skip.
+        await expect(
+            page.locator('#rename-modal'),
+            'showRename() must add .active to #rename-modal',
+        ).toHaveClass(/active/);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#rename-modal')).not.toHaveClass(/active/);
     });
 });
 
@@ -238,13 +256,22 @@ test.describe('Conversation list interactions', () => {
             if (ov) ov.style.display = 'none';
         });
         const newBtn = page.locator('#btn-new-chat-main');
-        if ((await newBtn.count()) > 0) {
-            await newBtn.click({ force: true });
-            await page.waitForTimeout(300);
-            const modalCount = await page.locator('.modal.active').count();
-            const convCount = await page.locator('.conversation-item').count();
-            expect(modalCount + convCount).toBeGreaterThanOrEqual(0);
-        }
+        // The button MUST exist — it's part of the chat page chrome, not a
+        // conditional element. If this count is 0 that's a real regression
+        // in the chat page template.
+        await expect(newBtn).toHaveCount(1);
+        await newBtn.click({ force: true });
+        await page.waitForTimeout(300);
+        const modalCount = await page.locator('.modal.active').count();
+        const convCount = await page.locator('.conversation-item').count();
+        // The "+ New Chat" button must either (a) open a role-preset modal
+        // or (b) create a conversation directly. Doing neither would be a
+        // regression: the previous expect(modalCount + convCount).toBeGreaterThanOrEqual(0)
+        // was tautologically true.
+        expect(
+            modalCount > 0 || convCount > 0,
+            `+ New Chat opened ${modalCount} modal(s) and produced ${convCount} conversation(s) — expected at least one`,
+        ).toBe(true);
     });
 });
 

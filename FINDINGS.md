@@ -1,4 +1,82 @@
-# Code Review Findings — 2026-05-15
+# Code Review Findings
+
+Severity: **C**=Critical · **H**=High · **M**=Medium · **L**=Low
+
+---
+
+# 2026-05-28 — Full-repo audit (post 2026-05-26 audit)
+
+216 source files reviewed across 12 parallel agents (excluding tests + auto-generated
+`native_dashboard/ui/*.js`). Each file read end-to-end (~84,489 LoC total). **29 issues
+fixed** across the categories below — full test verification ran clean (3,371 pytest +
+189 vitest + Go + Rust `cargo check`).
+
+## CRITICAL (1)
+
+| # | File | Line | Issue | Fix |
+|---|------|-----:|-------|-----|
+| C1 | cogs/ai_core/api/dashboard_chat_claude_cli.py | 1086 | Mutated private `proc.stdout._limit` — fragile across asyncio versions; `LimitOverrunError` from `async for` if patch silently failed | Use documented `limit=` kwarg on `create_subprocess_exec` |
+
+## HIGH (13)
+
+| # | File | Line | Issue | Fix |
+|---|------|-----:|-------|-----|
+| H1 | cogs/music/views.py | 57,94,112,143 | Static `custom_id="music_pause"` etc. dispatched interactions to wrong guild's view instance | Drop `custom_id` (view is non-persistent) |
+| H2 | cogs/music/cog.py | 1509 | `join` command missing `@guild_only` — DM crashes at `ctx.guild.me` | Add `@commands.guild_only()` |
+| H3 | cogs/music/cog.py | 2552 | `clearcache` missing `guild_only` (uses `manage_guild` which needs guild) | Add `@commands.guild_only()` |
+| H4 | cogs/music/cog.py | 234-257 | `_safe_run_coroutine._on_done` caught `Exception`, missing CancelledError-as-BaseException; coroutine leak when loop None | Catch `BaseException`; `coro.close()` in fallback |
+| H5 | cogs/music/cog.py | 463 | `load_queue` set `volume = float(...)` without `isfinite` — JSON `NaN`/`Infinity` corrupts PCMVolumeTransformer | `isfinite` guard + clamp 0–2 |
+| H6 | cogs/music/cog.py | 1199 | `ValueError` from `search_source` uncaught → queue freeze | Add `ValueError` to handler tuple |
+| H7 | cogs/spotify_handler.py | 408-424 | Playlist pagination bundled all pages into one closure → page-7 failure retries from page 1 | Wrap each `self.sp.next()` in `_api_call_with_retry` (mirrors album path) |
+| H8 | cogs/ai_core/session_mixin.py | 265 | `cleanup_inactive_sessions` popped `processing_locks` without `locked()` check → in-flight turn lost serialization | Skip eviction when lock held |
+| H9 | cogs/ai_core/ai_cog.py | 478 | `reset_ai` popped locks during in-flight processing | Bounded `lock.acquire(timeout=10)` first, then release+pop |
+| H10 | cogs/ai_core/memory/entity_memory.py | 276-291 | UPSERT clobbered user-curated `confidence`/`source` with AI-extracted values | Preserve when existing `source == "user"` |
+| H11 | docker/Dockerfile.prod | 13 | `go mod download 2>/dev/null \|\| true` silenced checksum mismatch | Drop silencing |
+| H12 | docker/docker-compose.dev.yml | 40-43 | Ports `8080`/`8765`/`9090` published `0.0.0.0` → in-process loopback enforcement bypassed | Bind `127.0.0.1:HOST:CONTAINER` |
+| H13 | docker/.dockerignore | (whole) | Misleading dead file — Docker reads root `.dockerignore` (build context `..`); edits here silently ignored | Replaced with stub + pointer to active file |
+| H14 | scripts/install_all.ps1 | 166-176 | Hardcoded `python-3.14.0a3` (alpha 3); version check `3\.14` accepted alpha | Pin stable 3.14.5; regex rejects pre-release tags |
+| H15 | scripts/dev_watcher.py | 332-334 | Bare `except Exception → sys.exit(1)` swallowed `psutil.AccessDenied` (cross-user PID) | Catch `AccessDenied` separately with guidance |
+| H16 | native_dashboard/src/bot_manager.rs | 101-122 | `python_cmd = "python"` + `current_dir(base_path)` → Windows legacy search could launch attacker-planted `python.exe` in CWD | Resolve PATH → absolute before spawn |
+| H17 | native_dashboard/src/main.rs | 651-674 | `Downloads/` in trusted-roots allowlist for `bot_path.txt` — malicious archive → code execution | Remove `download_dir()` |
+
+## MEDIUM (~10)
+
+| # | File | Line | Issue | Fix |
+|---|------|-----:|-------|-----|
+| M1 | docker/Dockerfile.prod | 58-61 | Warmup `cargo build \|\| true` hid stderr | Keep stderr, echo non-fatal message |
+| M2 | utils/monitoring/health_api.py | 746 | `/health/deep` uncapped concurrent threads → slowloris DoS | `BoundedSemaphore(8)` + 503 on full |
+| M3 | utils/monitoring/health_api.py | 804 | 404 enumerated endpoints before auth → unauth caller maps protected surface | Bare `"Not Found"` |
+| M4 | scripts/dev_watcher.py | 626-642 | Default `ignore_patterns` with trailing-slash (`"assets/"`, `"data/"`) + prefix (`"history_"`) were silently dead | Strip trailing slash; add `_`-suffix prefix-match |
+| M5 | scripts/maintenance/find_unused.py | 55-64 | `from . import x` not resolved to sibling file → false-positive unused reports | Iterate `node.names` when `node.module is None` |
+| M6 | cogs/music/views.py | 116-128 | `stop_button` missing `_schedule_queue_save` → bot restart resurrects "stopped" queue | Call schedule_queue_save |
+| M7 | cogs/music/views.py | 143-165 | `loop_button` re-read state 4× across awaits | Snapshot `gs` once into local |
+| M8 | native_dashboard/src-ts/chat-manager.ts | 1380,1398,1444 | Per-chunk `scrollToBottom()` inflated FAB badge counter | New `countAsNewMessage` arg; chunks pass `false` |
+| M9 | native_dashboard/src-ts/chat/ws-client.ts | 106 | Manual `connect()` after budget exhausted didn't reset `reconnectAttempts` | Reset to 0 on connect entry |
+| M10 | native_dashboard/src-ts/chat/ws-client.ts | 247 | non-string `event.data` (Blob/ArrayBuffer) `JSON.parse`'d as `"[object Blob]"` | Skip non-string frames |
+| M11 | native_dashboard/src-ts/chat-manager.ts | 652 | `_failover_cleanup` break skipped `setInputEnabled(true)` → composer locked permanently if failover failed | Re-enable on cleanup path |
+| M12 | native_dashboard/src-ts/chat-manager.ts | 741 | `case 'conversation_starred'` declared `const conv` outside `{ }` — future case-local `conv` becomes SyntaxError | Wrap in block scope |
+
+## NOT FIXED (reasons documented)
+
+- `get_entity` `OR channel_id IS NULL` — *intentional fallback*, ORDER BY prefers channel-specific; not a cross-tenant leak.
+- `tauri.conf.json` `ws://` in CSP — `127.0.0.1` pin + loopback non-MITM-able; supports default no-TLS deploy.
+- `storage.rs:113` mmap SIGBUS — documented known-risk; no portable mitigation.
+- `dashboard_chat_claude_cli.py` manual `lock.acquire()` — Python 3.11+ closed the assignment race; project targets 3.14.
+- `rag.py` FAISS lock contention — design trade-off (consistency vs throughput); architectural rewrite out of scope.
+
+## Verification (2026-05-28)
+
+| Suite | Result |
+|------|--------|
+| `pytest tests/` (Python) | **3,371 passed**, 8 skipped, 0 failed |
+| `vitest run` (TypeScript) | **189 passed** (10 test files), 0 failed |
+| `tsc --noEmit` | 0 errors |
+| `go test ./...` | ok health_api, ok url_fetcher |
+| `cargo check` (native_dashboard + rust_extensions) | clean, 0 errors (after MSVC vcvars loaded) |
+
+---
+
+# 2026-05-15 — Earlier audit (preserved)
 
 156 source files reviewed across 9 parallel agents (excluding tests). Each file read end-to-end.
 

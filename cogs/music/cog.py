@@ -17,6 +17,7 @@ import contextlib
 import itertools
 import json
 import logging
+import math
 import random
 import time
 import traceback
@@ -239,22 +240,36 @@ class Music(commands.Cog):
         because this method is called from non-async callback threads where
         asyncio.get_event_loop() may return the wrong loop).
         """
+        scheduled = False
         try:
             loop = self.bot.loop
             if loop and loop.is_running() and not loop.is_closed():
                 # Attach a done callback so coroutine exceptions don't get
-                # silently swallowed by a discarded Future.
+                # silently swallowed by a discarded Future. Catch BaseException
+                # because asyncio.CancelledError (raised on bot shutdown)
+                # inherits from BaseException on Py3.8+ — a bare ``except
+                # Exception`` would let cancellation escape into the threadpool
+                # callback machinery.
                 def _on_done(fut):
                     try:
                         fut.result()
-                    except Exception as e:
+                    except BaseException as e:
                         logger.warning("safe_run_coroutine error: %s", e)
 
                 future = asyncio.run_coroutine_threadsafe(coro, loop)
                 future.add_done_callback(_on_done)
+                scheduled = True
         except (RuntimeError, AttributeError):
             # Event loop closed or bot shutting down - silently ignore
             pass
+        if not scheduled:
+            # Loop is gone (shutdown / closed). The coroutine object would
+            # otherwise be GC'd while pending, emitting a noisy
+            # ``RuntimeWarning: coroutine '...' was never awaited``. Close
+            # it explicitly so the warning is suppressed and any caller-side
+            # cleanup (e.g. file deletion) is not left pending forever.
+            with contextlib.suppress(Exception):
+                coro.close()
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
@@ -446,7 +461,17 @@ class Music(commands.Cog):
             queue = data["queue"]
             if queue:
                 self._gs(guild_id).queue = collections.deque(queue[:500])  # Enforce max size
-                self._gs(guild_id).volume = float(data.get("volume", 0.5))
+                # NaN/Inf would corrupt PCMVolumeTransformer; fall back to default.
+                # ``queue.py:set_volume`` enforces the same finiteness invariant on
+                # the live-mutation path — mirror it here for the persisted-state path.
+                vol_raw = data.get("volume", 0.5)
+                try:
+                    vol_f = float(vol_raw)
+                except (TypeError, ValueError):
+                    vol_f = 0.5
+                if not math.isfinite(vol_f):
+                    vol_f = 0.5
+                self._gs(guild_id).volume = max(0.0, min(2.0, vol_f))
                 self._gs(guild_id).loop = bool(data.get("loop", False))
                 self._gs(guild_id).mode_247 = bool(data.get("mode_247", False))
                 logger.info(
@@ -1171,10 +1196,13 @@ class Music(commands.Cog):
                     await ctx.send(embed=embed)
                     logger.error("Play error (audio/file): %s\n%s", e, traceback.format_exc())
                     _retry_next = True
-                except yt_dlp.DownloadError as e:
+                except (yt_dlp.DownloadError, ValueError) as e:
                     # A bad URL / 4xx from YouTube would otherwise propagate
                     # uncaught, kill _play_next_once, and freeze the queue
                     # behind a now-popped track. Skip to the next item instead.
+                    # ``ValueError`` covers private-IP / unsupported-scheme
+                    # rejections from ``url_safety`` and yt-dlp argument bugs
+                    # that would otherwise also escape the retry loop.
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Download Error",
                         description="โหลดเพลงนี้ไม่ได้ ข้ามไปเพลงถัดไป",
@@ -1507,6 +1535,7 @@ class Music(commands.Cog):
                     await self.cleanup_guild_data(guild_id)
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"])  # type: ignore[arg-type]
+    @commands.guild_only()
     @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def join(self, ctx):
         """เข้าร่วมช่องเสียง."""
@@ -2549,6 +2578,7 @@ class Music(commands.Cog):
         return await asyncio.get_running_loop().run_in_executor(None, _cleanup)
 
     @commands.hybrid_command(name="clearcache", aliases=["cc", "clean"])  # type: ignore[arg-type]
+    @commands.guild_only()
     @commands.has_permissions(manage_guild=True)
     async def clearcache(self, ctx):
         """ล้างไฟล์ขยะที่ไม่ได้ใช้งาน."""

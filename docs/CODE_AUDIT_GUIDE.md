@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot
-> **Last Updated:** May 25, 2026 | **Tests:** 3,368 Python ✅ + 189 frontend vitest ✅ + 73 Playwright ✅ | **Skipped:** 1 ✅ | **Python Test Files:** 101 | **Frontend Test Files:** 10 vitest + 8 Playwright e2e
+> **Last Updated:** May 28, 2026 | **Tests:** 3,371 Python ✅ + 189 frontend vitest ✅ + 73 Playwright ✅ | **Skipped:** 8 ✅ | **Python Test Files:** 103 | **Frontend Test Files:** 10 vitest + 8 Playwright e2e
 >
 > Tooling configs live in `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`, `[tool.coverage]`. There is no separate `requirements-dev.txt` — dev tooling installs are listed in `Makefile`'s `install` target.
 
@@ -345,6 +345,7 @@ python scripts/maintenance/check_db.py
 | 2026-03-25 | ME | Phase 13: `rag_engine/lib.rs` path traversal in save()/load() | ✅ Fixed |
 | 2026-03-25 | ME | Phase 13: `database.py` missing indexes for knowledge_entries, error_logs | ✅ Fixed |
 | 2026-03-25 | ME | Phase 13: `database.py` audit_log index DESC + composite guild index | ✅ Fixed |
+| 2026-05-28 | ME | Full-repo line-by-line audit (216 src files, 12 parallel agents) — 29 issues fixed: 1 C (asyncio `_limit` private mutation) + 13 H (music guild_only, custom_id collision, NaN/Inf volume, spotify pagination retry, processing_locks pop-while-held, entity_memory user-curated UPSERT clobber, Dockerfile silenced errors, dev compose 0.0.0.0 bind, dead docker/.dockerignore, install_all.ps1 Python alpha pin, dev_watcher AccessDenied, bot_manager.rs CWD-PATH exec, Downloads in trusted roots) + 12 M (health_api 404 enum, deep-health DoS, ignore_patterns trailing-slash, find_unused from-dot resolution, FAB badge inflation, ws reconnect reset, conv-id capture, etc.). Test verify: 3,371 pytest + 189 vitest + Go + cargo check all clean. Full table in `FINDINGS.md`. | ✅ Fixed |
 
 ---
 

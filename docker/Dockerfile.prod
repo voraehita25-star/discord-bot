@@ -10,7 +10,11 @@ WORKDIR /build
 
 # Copy Go module files first for layer caching
 COPY go_services/go.mod go_services/go.sum* ./go_services/
-RUN cd go_services && go mod download 2>/dev/null || true
+# Do NOT silence/ignore failures: a checksum mismatch or network split is a
+# real supply-chain signal, and ``|| true`` would silently let the later
+# ``go build`` resolve dependencies on the fly from whatever upstream
+# responds, defeating ``go.sum`` integrity. Fail the layer loudly.
+RUN cd go_services && go mod download
 
 # Copy Go source and build
 COPY go_services/ ./go_services/
@@ -54,11 +58,19 @@ COPY rust_extensions/Cargo.toml rust_extensions/Cargo.lock* ./rust_extensions/
 COPY rust_extensions/media_processor/Cargo.toml ./rust_extensions/media_processor/
 COPY rust_extensions/rag_engine/Cargo.toml ./rust_extensions/rag_engine/
 
-# Create stub src for dependency caching
+# Create stub src for dependency caching. ``maturin``-built PyO3 crates
+# are *library* crates so the stub is an empty file rather than a
+# ``fn main() {}`` binary stub. The warmup build is best-effort: failures
+# here just mean the real build below pays the full compile cost. We
+# preserve stderr (no ``2>/dev/null``) so warmup problems are visible in
+# the layer log, but treat a non-zero exit as non-fatal because the
+# subsequent ``cargo build --release`` on the real source is the
+# authoritative build.
 RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src && \
-    echo "fn main() {}" > rust_extensions/media_processor/src/lib.rs && \
-    echo "fn main() {}" > rust_extensions/rag_engine/src/lib.rs && \
-    cd rust_extensions && cargo build --release 2>/dev/null || true
+    : > rust_extensions/media_processor/src/lib.rs && \
+    : > rust_extensions/rag_engine/src/lib.rs && \
+    (cd rust_extensions && cargo build --release) || \
+        echo "[warmup] cargo build --release failed; continuing to authoritative build"
 
 # Copy real Rust source and rebuild
 COPY rust_extensions/ ./rust_extensions/
