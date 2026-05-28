@@ -1032,6 +1032,13 @@ async def _run_claude_subprocess(
         spawn_kwargs["creationflags"] = 0x00000200
     else:
         spawn_kwargs["start_new_session"] = True
+    # Set the StreamReader buffer cap at construction (documented `limit=`
+    # kwarg) so `async for line in proc.stdout` does not raise
+    # LimitOverrunError on the default 64 KiB ceiling when claude emits a
+    # large NDJSON frame. The pre-construction limit is the *only* way to
+    # raise this ceiling without mutating private `_limit` attributes that
+    # may rename across asyncio versions.
+    MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE,
@@ -1039,6 +1046,7 @@ async def _run_claude_subprocess(
         stderr=asyncio.subprocess.PIPE,
         env=env,
         cwd=str(_CLAUDE_CLI_WORKDIR),
+        limit=MAX_STDOUT_LINE_BYTES,
         **spawn_kwargs,
     )
 
@@ -1064,13 +1072,6 @@ async def _run_claude_subprocess(
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
 
-    # Hard cap on a single NDJSON line — claude shouldn't produce more
-    # than a few MB per event; anything larger is either a runaway model
-    # or a malformed binary blob. Without this, asyncio's StreamReader
-    # default of 64 KiB raises LimitOverrunError on the first oversized
-    # frame and aborts the whole stream.
-    MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
-
     # Track which content-block indices are thinking blocks so the
     # `content_block_stop` handler only fires `on_thinking_block_stop` for
     # those (text/tool block stops would otherwise spuriously close the
@@ -1081,10 +1082,6 @@ async def _run_claude_subprocess(
         nonlocal final_session_id, final_usage
         if proc.stdout is None:
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
-        # Drop the per-line buffer cap so model JSON deltas with embedded
-        # base64 / long text aren't truncated. We still bound below.
-        with contextlib.suppress(AttributeError):
-            proc.stdout._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
         async for raw_line in proc.stdout:
             if len(raw_line) > MAX_STDOUT_LINE_BYTES:
                 logger.warning(

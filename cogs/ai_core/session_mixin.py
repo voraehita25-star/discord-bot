@@ -254,6 +254,16 @@ class SessionMixin:
                                 continue
 
                             # Re-check after await: channel may have been re-accessed
+                            # AND must not have an in-flight processing lock — popping
+                            # a held lock would let the next message arriving for this
+                            # channel create a *parallel* lock, losing the per-channel
+                            # serialization that ``process_chat`` depends on (two AI
+                            # turns mutating the same chat_data / DB rows).
+                            existing_lock = self.processing_locks.get(channel_id)
+                            if existing_lock is not None and existing_lock.locked():
+                                # A turn is in flight; let it finish so the next
+                                # cleanup pass evicts cleanly.
+                                continue
                             if (
                                 channel_id in self.last_accessed
                                 and time.time() - self.last_accessed[channel_id] > timeout

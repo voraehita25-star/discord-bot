@@ -329,6 +329,19 @@ def check_and_stop_existing_bot() -> None:
 
         except psutil.NoSuchProcess:
             Path(PID_FILE).unlink(missing_ok=True)
+        except psutil.AccessDenied:
+            # Common case: stale PID file points at a process owned by
+            # another user (e.g. the bot was started under a different
+            # account, or the user just switched sessions). Distinct from
+            # a generic crash; surface the cause so the operator can
+            # decide whether to ``sudo``/``Run As`` or hand-edit the PID
+            # file rather than chase a useless traceback.
+            print(
+                f"{Colors.RED}  [X] Cannot terminate: process is owned by another user "
+                f"(insufficient permissions). Stop the bot from its owning session, "
+                f"or remove the stale PID file manually.{Colors.RESET}"
+            )
+            sys.exit(1)
         except Exception as e:
             print(f"{Colors.RED}  [X] Failed to stop: {e}{Colors.RESET}")
             sys.exit(1)
@@ -617,28 +630,57 @@ if WATCHDOG_AVAILABLE:
             file extensions, NOT raw substrings. Substring matching used
             to overmatch — e.g. pattern ``data`` ignored ``metadata.py``,
             and ``.json`` ignored ``data/foo.jsonbackup``.
+
+            Pattern forms understood:
+              * ``.ext`` — extension match against ``Path.suffixes``.
+              * ``name*`` / ``*.ext`` / ``[abc]`` — fnmatch on basename.
+              * ``foo`` — exact match against a path component, stem,
+                or basename.
+              * ``foo/`` / ``foo\\`` — same as ``foo`` but the trailing
+                slash makes intent explicit. The slash is stripped before
+                comparison so ``data/`` matches a ``data`` component.
+              * ``prefix_`` (trailing underscore, no separator) — prefix
+                match against the basename, e.g. ``history_`` matches
+                ``history_2026.json``.
             """
             p = Path(path)
             parts = {part.lower() for part in p.parts}
             suffixes = {s.lower() for s in p.suffixes}
             stem_lower = p.stem.lower()
+            name_lower = p.name.lower()
 
             for pattern in self.config.ignore_patterns:
                 pat = pattern.lower().strip()
                 if not pat:
                     continue
+                # Strip a trailing OS path separator so ``data/`` / ``data\``
+                # behave the same as ``data`` — Path.parts never carries
+                # trailing slashes, so the literal form would never match
+                # any real path. Preserves operator intent ("this is a
+                # directory pattern") while making the comparison work.
+                pat_norm = pat.rstrip("/\\")
+                if not pat_norm:
+                    continue
                 # Extension pattern (e.g., ".json", ".log")
-                if pat.startswith(".") and pat in suffixes:
+                if pat_norm.startswith(".") and pat_norm in suffixes:
                     return True
                 # Glob-like wildcards — fall back to fnmatch on basename
-                if any(ch in pat for ch in ("*", "?", "[")):
+                if any(ch in pat_norm for ch in ("*", "?", "[")):
                     import fnmatch as _fn
 
-                    if _fn.fnmatch(p.name.lower(), pat):
+                    if _fn.fnmatch(name_lower, pat_norm):
                         return True
                     continue
-                # Otherwise treat as a directory/file-name component match.
-                if pat in parts or pat == stem_lower or pat == p.name.lower():
+                # Path-component / basename match (the trailing slash from
+                # the source pattern was stripped above).
+                if pat_norm in parts or pat_norm == stem_lower or pat_norm == name_lower:
+                    return True
+                # Prefix-match shorthand: patterns ending in ``_`` are
+                # historical (e.g. ``history_``). Match against basename
+                # and stem so ``history_2026.json`` triggers ``history_``.
+                if pat_norm.endswith("_") and (
+                    name_lower.startswith(pat_norm) or stem_lower.startswith(pat_norm)
+                ):
                     return True
 
             # Check hidden directories

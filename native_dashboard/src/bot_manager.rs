@@ -103,10 +103,52 @@ impl BotManager {
                 if venv_python.exists() {
                     venv_python.to_string_lossy().to_string()
                 } else {
-                    "python".to_string()
+                    // Last-resort fallback: resolve "python" through PATH NOW
+                    // so the later ``Command::new(&self.python_cmd)`` doesn't
+                    // do its own search with ``current_dir`` set to
+                    // ``base_path`` — on older Windows policies that include
+                    // CWD in the executable search, a malicious ``python.exe``
+                    // dropped next to ``bot.py`` would otherwise be launched
+                    // instead of the system Python.
+                    if let Some(resolved) = Self::resolve_python_in_path() {
+                        resolved
+                    } else {
+                        // Truly no Python found — let the spawn attempt fail
+                        // loudly with the bare name so the operator sees the
+                        // missing-tool error rather than a silent fallback.
+                        "python".to_string()
+                    }
                 }
             });
         Self { base_path, sys, python_cmd, child: None, dev_watcher_child: None }
+    }
+
+    /// Search PATH for ``python.exe`` and return its absolute path. Returns
+    /// ``None`` if no candidate is found, the caller is expected to handle
+    /// that case (typically by letting the eventual ``Command::new`` fail
+    /// with a clear "not found" error rather than silently launching
+    /// whatever the OS resolves at spawn time — on Windows with legacy
+    /// search policies, that could include the CWD we pass via
+    /// ``current_dir``, which lets an attacker plant ``python.exe`` next
+    /// to ``bot.py`` and gain code execution).
+    fn resolve_python_in_path() -> Option<String> {
+        let path_var = std::env::var_os("PATH")?;
+        let candidates = ["python.exe", "python3.exe"];
+        for dir in std::env::split_paths(&path_var) {
+            for cand in &candidates {
+                let full = dir.join(cand);
+                if let Ok(canonical) = full.canonicalize() {
+                    let fname = canonical
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    if fname == "python.exe" || fname == "python3.exe" {
+                        return Some(canonical.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Reap a stored Child if its underlying process has exited. Always non-blocking.

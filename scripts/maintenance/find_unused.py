@@ -62,6 +62,18 @@ def extract_imports(filepath):
                 resolved = ".".join(base)
                 if resolved:
                     imports.add(resolved)
+                # ``from . import foo`` / ``from .. import foo`` carries no
+                # module — the imported NAMES are what point at sibling
+                # files. Without resolving each alias against the package
+                # path, sibling modules (e.g. ``foo/bar/__init__.py``
+                # doing ``from . import x``) were silently flagged as
+                # unused because the edge from __init__ to x.py never
+                # made it into the import graph.
+                if node.module is None:
+                    for alias in node.names:
+                        sibling = ".".join([*base, alias.name])
+                        if sibling:
+                            imports.add(sibling)
     return imports
 
 

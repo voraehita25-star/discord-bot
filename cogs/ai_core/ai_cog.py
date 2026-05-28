@@ -472,6 +472,23 @@ class AI(commands.Cog):
         """Reset Chat History (Owner Only)."""
         channel_id = ctx.channel.id
 
+        # If a turn is currently processing this channel, take its lock so
+        # we evict cleanly after it finishes rather than yanking the lock
+        # from under it — popping a held lock lets the next message create
+        # a parallel one and lose per-channel serialization. Bounded wait
+        # so the owner doesn't see the command hang forever on a stuck
+        # turn; if we time out, fall through to the wipe anyway (the live
+        # turn will fail on its next DB write, which is the safer outcome
+        # than a hung command).
+        existing_lock = self.chat_manager.processing_locks.get(channel_id)
+        if existing_lock is not None:
+            with contextlib.suppress(TimeoutError, Exception):
+                async with asyncio.timeout(10):
+                    await existing_lock.acquire()
+                # Release immediately; we just wanted to drain the queue.
+                with contextlib.suppress(RuntimeError):
+                    existing_lock.release()
+
         # Remove from memory. Use pop() — `if x in d: del d[x]` races with
         # the LRU evictor in _enforce_channel_limit which can delete the
         # key between the check and the del, raising KeyError.

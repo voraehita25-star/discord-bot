@@ -263,6 +263,46 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.test.yml ru
 docker compose -f docker/docker-compose.yml logs -f bot
 ```
 
+> ⚠️ **`.dockerignore` location:** `docker-compose.yml` uses `context: ..`, so
+> Docker reads the **project-root** `.dockerignore`, NOT `docker/.dockerignore`
+> (which is a stub with a redirect notice). To change build exclusions, edit
+> the root file.
+
+> 🔒 **Dev compose port binding:** As of 2026-05-28 the `docker-compose.dev.yml`
+> port maps use the `127.0.0.1:HOST:CONTAINER` form. Without the host-IP
+> prefix Docker would publish `8080/8765/9090` on `0.0.0.0`, bypassing the
+> in-process loopback enforcement on Health API / WS Dashboard.
+
+## Rust / Native Build
+
+### `link.exe failed: exit code 1` / `LIB not set`
+
+`cargo build` ใน `rust_extensions/` หรือ `native_dashboard/` ต้องการ MSVC
+toolchain (link.exe + Windows SDK). ติดตั้ง Visual Studio Build Tools 2022
+ก่อน — ดู `docs/INSTALL.md` § "MSVC C++ Build Tools".
+
+หลัง install ทุก shell ต้อง import env ก่อน build:
+
+```powershell
+cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && set' | ForEach-Object {
+    if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] }
+}
+$env:PYO3_PYTHON = (Get-Command python).Source
+```
+
+### `error: linker `link.exe` not found`
+
+PowerShell session ไม่ได้ import vcvars64. ดูคำสั่งด้านบน.
+
+### `PyInit_*` symbol error in PyO3 build
+
+`PYO3_PYTHON` ไม่ได้ set หรือ pointing ไปยัง Python version ที่ผิด — ต้อง
+ตรงกับ ABI ของ project (3.14+). Pin โดย:
+
+```powershell
+$env:PYO3_PYTHON = "C:\BOT Discord\.venv\Scripts\python.exe"
+```
+
 ## Log Files
 
 | File | Content |

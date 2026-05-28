@@ -23,10 +23,14 @@
 **Windows:**
 
 ```bash
-# ดาวน์โหลดจาก https://python.org
+# ดาวน์โหลดจาก https://python.org (เลือก stable release เช่น 3.14.5)
 # หรือใช้ winget
 winget install Python.Python.3.14
 ```
+
+> ⚠️ **อย่าใช้ pre-release builds** (เช่น `3.14.0a3` alpha). `scripts/install_all.ps1`
+> ตรวจสอบ tag ปฏิเสธ alpha/beta/rc แล้ว แต่ถ้าโหลดด้วยมือต้องเช็คเอง — ABI ของ
+> alpha ไม่ผูกพันกับ stable, PyO3 wheels จะ link ผิด
 
 **Linux:**
 
@@ -263,10 +267,38 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Windows: ดาวน์โหลดจาก https://rustup.rs
 ```
 
+2. **MSVC C++ Build Tools** (Windows เท่านั้น):
+
+Rust's `x86_64-pc-windows-msvc` target ต้องการ `link.exe` + Windows SDK
+จาก Visual Studio Build Tools — `cargo build` จะ fail หาก env ไม่ load
+ผ่าน `vcvars64.bat`. Download bootstrapper แล้ว install workload:
+
+```powershell
+# Download bootstrapper (~5 MB)
+Invoke-WebRequest "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $env:TEMP\vs_BuildTools.exe
+
+# Silent install: VCTools + Windows 11 SDK + CMake (~3-5 GB, 10-20 นาที)
+& $env:TEMP\vs_BuildTools.exe --quiet --wait --norestart --nocache `
+    --add Microsoft.VisualStudio.Workload.VCTools `
+    --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+    --add Microsoft.VisualStudio.Component.VC.CMake.Project `
+    --includeRecommended
+```
+
+หลัง install ทุก shell ที่จะรัน `cargo build`/`test`/`clippy` ใน
+`rust_extensions/` หรือ `native_dashboard/` ต้อง import env ก่อน:
+
+```powershell
+# PowerShell one-liner
+cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && set' | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] } }
+$env:PYO3_PYTHON = (Get-Command python).Source  # PyO3 ต้องการ python interpreter ที่ pinned
+```
+
 ### Build Rust Extensions
 
 ```powershell
-# จาก project root
+# จาก project root (หลัง import vcvars64 + set PYO3_PYTHON ตามด้านบน)
 .\scripts\build_rust.ps1 -Release
 ```
 
@@ -361,4 +393,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: April 2026 | Version: 3.3.15*
+*Last Updated: May 28, 2026 | Version: 3.3.15*

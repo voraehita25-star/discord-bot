@@ -249,25 +249,32 @@ class EntityMemoryManager:
                 # outer caller owns the rollback decision.
                 _own_tx = not in_tx
                 # Explicit check for existing entity to handle NULL values
-                # in UNIQUE constraint (SQLite treats NULLs as distinct)
+                # in UNIQUE constraint (SQLite treats NULLs as distinct).
+                # Also fetch the row's current ``confidence`` / ``source``
+                # so an AI-extracted re-add doesn't silently downgrade a
+                # user-curated entry (``source="user"``, confidence=1.0).
                 if channel_id is None and guild_id is None:
                     check_cursor = await conn.execute(
-                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id IS NULL",
+                        "SELECT id, confidence, source FROM entity_memories "
+                        "WHERE name = ? AND channel_id IS NULL AND guild_id IS NULL",
                         (name,),
                     )
                 elif channel_id is None:
                     check_cursor = await conn.execute(
-                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id = ?",
+                        "SELECT id, confidence, source FROM entity_memories "
+                        "WHERE name = ? AND channel_id IS NULL AND guild_id = ?",
                         (name, guild_id),
                     )
                 elif guild_id is None:
                     check_cursor = await conn.execute(
-                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id IS NULL",
+                        "SELECT id, confidence, source FROM entity_memories "
+                        "WHERE name = ? AND channel_id = ? AND guild_id IS NULL",
                         (name, channel_id),
                     )
                 else:
                     check_cursor = await conn.execute(
-                        "SELECT id FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id = ?",
+                        "SELECT id, confidence, source FROM entity_memories "
+                        "WHERE name = ? AND channel_id = ? AND guild_id = ?",
                         (name, channel_id, guild_id),
                     )
                 existing_row = await check_cursor.fetchone()
@@ -275,8 +282,26 @@ class EntityMemoryManager:
                 try:
                     if existing_row:
                         # UPDATE existing entity (no access_count increment here;
-                        # get_entity already incremented it when called before add_entity)
+                        # get_entity already incremented it when called before add_entity).
                         existing_id = existing_row[0]
+                        existing_confidence = existing_row[1]
+                        existing_source = existing_row[2]
+                        # Preserve user-curated metadata: when the row was
+                        # last touched by ``source="user"``, never let an
+                        # AI-extracted re-add overwrite ``confidence`` or
+                        # ``source``. ``facts`` and ``entity_type`` still
+                        # update so the AI can enrich the row with new
+                        # information — but the user's authority over
+                        # provenance/confidence is sticky.
+                        if (
+                            existing_source == "user"
+                            and source != "user"
+                        ):
+                            final_confidence = existing_confidence
+                            final_source = existing_source
+                        else:
+                            final_confidence = confidence
+                            final_source = source
                         await conn.execute(
                             """
                             UPDATE entity_memories SET
@@ -287,7 +312,14 @@ class EntityMemoryManager:
                                 updated_at = ?
                             WHERE id = ?
                             """,
-                            (entity_type, facts_json, confidence, source, now, existing_id),
+                            (
+                                entity_type,
+                                facts_json,
+                                final_confidence,
+                                final_source,
+                                now,
+                                existing_id,
+                            ),
                         )
                         await conn.commit()
                         entity_id = existing_id
