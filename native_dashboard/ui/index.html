@@ -44,70 +44,78 @@
 </head>
 
 <body>
+    <!-- Skip-link: first focusable element so keyboard users can bypass the
+         sidebar nav on every reload (otherwise Tab cycles through 6 nav
+         items + theme toggle + status badge before reaching content). -->
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+
     <!-- Toast Container — a persistent polite live region (must exist at load
          to reliably announce dynamically-added toasts to screen readers). -->
     <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
-    <!-- Sakura Petals Animation -->
-    <div id="sakura-container"></div>
+    <!-- Sakura Petals Animation (decorative — hidden from assistive tech) -->
+    <div id="sakura-container" aria-hidden="true"></div>
 
     <div class="app">
         <!-- Sidebar -->
-        <nav class="sidebar">
+        <nav class="sidebar" aria-label="Main navigation">
             <div class="logo">
-                <span class="logo-icon">🤖</span>
-                <span class="logo-text">봇 대시보드</span>
+                <span class="logo-icon" aria-hidden="true">🤖</span>
+                <span class="logo-text" lang="ko">봇 대시보드</span>
             </div>
 
-            <div class="nav-items">
-                <button class="nav-item active" data-page="status">
-                    <span class="nav-icon">📊</span>
+            <ul class="nav-items" role="list">
+                <li><button class="nav-item active" type="button" data-page="status" aria-current="page" aria-keyshortcuts="Control+1">
+                    <span class="nav-icon" aria-hidden="true">📊</span>
                     <span>Status</span>
-                    <kbd class="shortcut">Ctrl+1</kbd>
-                </button>
-                <button class="nav-item" data-page="chat">
-                    <span class="nav-icon">💬</span>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+1</kbd>
+                </button></li>
+                <li><button class="nav-item" type="button" data-page="chat" aria-keyshortcuts="Control+2">
+                    <span class="nav-icon" aria-hidden="true">💬</span>
                     <span>AI Chat</span>
-                    <kbd class="shortcut">Ctrl+2</kbd>
-                </button>
-                <button class="nav-item" data-page="memories">
-                    <span class="nav-icon">🧠</span>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+2</kbd>
+                </button></li>
+                <li><button class="nav-item" type="button" data-page="memories" aria-keyshortcuts="Control+3">
+                    <span class="nav-icon" aria-hidden="true">🧠</span>
                     <span>Memories</span>
-                    <kbd class="shortcut">Ctrl+3</kbd>
-                </button>
-                <button class="nav-item" data-page="logs">
-                    <span class="nav-icon">📜</span>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+3</kbd>
+                </button></li>
+                <li><button class="nav-item" type="button" data-page="logs" aria-keyshortcuts="Control+4">
+                    <span class="nav-icon" aria-hidden="true">📜</span>
                     <span>Logs</span>
-                    <kbd class="shortcut">Ctrl+4</kbd>
-                </button>
-                <button class="nav-item" data-page="database">
-                    <span class="nav-icon">💾</span>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+4</kbd>
+                </button></li>
+                <li><button class="nav-item" type="button" data-page="database" aria-keyshortcuts="Control+5">
+                    <span class="nav-icon" aria-hidden="true">💾</span>
                     <span>Database</span>
-                    <kbd class="shortcut">Ctrl+5</kbd>
-                </button>
-                <button class="nav-item" data-page="settings">
-                    <span class="nav-icon">⚙️</span>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+5</kbd>
+                </button></li>
+                <li><button class="nav-item" type="button" data-page="settings" aria-keyshortcuts="Control+6">
+                    <span class="nav-icon" aria-hidden="true">⚙️</span>
                     <span>Settings</span>
-                    <kbd class="shortcut">Ctrl+6</kbd>
-                </button>
-            </div>
+                    <kbd class="shortcut" aria-hidden="true">Ctrl+6</kbd>
+                </button></li>
+            </ul>
 
-            <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+            <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Toggle theme">
                 <span id="theme-icon" aria-hidden="true">🌙</span>
                 <span>Toggle Theme</span>
             </button>
 
-            <div class="status-badge" id="status-badge">
-                <span class="status-dot"></span>
+            <!-- aria-live so SRs announce online/offline transitions. The dot
+                 is decorative (color-only); the text inside #status-badge
+                 conveys the same state. -->
+            <div class="status-badge" id="status-badge" aria-live="polite" aria-atomic="true">
+                <span class="status-dot" aria-hidden="true"></span>
                 <span class="status-text">Offline</span>
             </div>
         </nav>
 
         <!-- Main Content -->
-        <main class="content">
+        <main class="content" id="main-content" tabindex="-1">
             <!-- Status Page -->
-            <section id="page-status" class="page active">
-                <h1>Bot Control</h1>
+            <section id="page-status" class="page active" aria-labelledby="page-status-heading">
+                <h1 id="page-status-heading">Bot Control</h1>
 
                 <div class="control-card">
                     <div class="control-info">
@@ -345,25 +353,25 @@
                     </div>
 
                 <!-- New Conversation Modal -->
-                <div class="modal" id="new-chat-modal">
+                <div class="modal" id="new-chat-modal" role="dialog" aria-modal="true" aria-labelledby="new-chat-modal-title" aria-hidden="true">
                     <div class="modal-overlay"></div>
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h2>🎭 New Conversation</h2>
-                            <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+                            <h2 id="new-chat-modal-title">🎭 New Conversation</h2>
+                            <button class="modal-close" type="button" id="modal-close" aria-label="Close">&times;</button>
                         </div>
                         <div class="modal-body">
                             <p>Select an AI role:</p>
-                            <div class="role-cards">
-                                <div class="role-card selected" data-role="general" role="button" tabindex="0" aria-label="General Assistant">
-                                    <div class="role-card-emoji">🤖</div>
-                                    <div class="role-card-name">General Assistant</div>
-                                    <div class="role-card-desc">Helpful AI for general tasks</div>
-                                </div>
-                                <div class="role-card" data-role="faust" role="button" tabindex="0" aria-label="Faust">
-                                    <div class="role-card-emoji">👻</div>
-                                    <div class="role-card-name">Faust</div>
-                                    <div class="role-card-desc">Sinner #2 from Limbus Company</div>
+                            <div class="role-cards" role="radiogroup" aria-label="Select an AI role">
+                                <button type="button" class="role-card selected" data-role="general" role="radio" aria-checked="true" aria-labelledby="role-card-general-name" aria-describedby="role-card-general-desc">
+                                    <div class="role-card-emoji" aria-hidden="true">🤖</div>
+                                    <div class="role-card-name" id="role-card-general-name">General Assistant</div>
+                                    <div class="role-card-desc" id="role-card-general-desc">Helpful AI for general tasks</div>
+                                </button>
+                                <button type="button" class="role-card" data-role="faust" role="radio" aria-checked="false" aria-labelledby="role-card-faust-name" aria-describedby="role-card-faust-desc">
+                                    <div class="role-card-emoji" aria-hidden="true">👻</div>
+                                    <div class="role-card-name" id="role-card-faust-name">Faust</div>
+                                    <div class="role-card-desc" id="role-card-faust-desc">Sinner #2 from Limbus Company</div>
                                 </div>
                             </div>
                             <div class="modal-options">
@@ -381,45 +389,45 @@
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button class="btn" id="modal-cancel">Cancel</button>
-                            <button class="btn btn-primary" id="modal-create">Start Chat</button>
+                            <button class="btn" type="button" id="modal-cancel">Cancel</button>
+                            <button class="btn btn-primary" type="button" id="modal-create">Start Chat</button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Delete Confirmation Modal -->
-                <div class="modal" id="delete-confirm-modal">
+                <div class="modal" id="delete-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-confirm-modal-title" aria-describedby="delete-confirm-modal-desc" aria-hidden="true">
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
-                            <h2>🗑️ Delete Conversation?</h2>
+                            <h2 id="delete-confirm-modal-title">🗑️ Delete Conversation?</h2>
                         </div>
                         <div class="modal-body">
-                            <p>This action cannot be undone. All messages will be permanently deleted.</p>
+                            <p id="delete-confirm-modal-desc">This action cannot be undone. All messages will be permanently deleted.</p>
                         </div>
                         <div class="modal-footer">
-                            <button class="btn" id="delete-cancel">Cancel</button>
-                            <button class="btn btn-danger" id="delete-confirm">Delete</button>
+                            <button class="btn" type="button" id="delete-cancel">Cancel</button>
+                            <button class="btn btn-danger" type="button" id="delete-confirm">Delete</button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Rename Conversation Modal -->
-                <div class="modal" id="rename-modal">
+                <div class="modal" id="rename-modal" role="dialog" aria-modal="true" aria-labelledby="rename-modal-title" aria-hidden="true">
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
-                            <h2>✏️ Rename Conversation</h2>
+                            <h2 id="rename-modal-title">✏️ Rename Conversation</h2>
                         </div>
                         <div class="modal-body">
                             <div class="form-group">
                                 <label for="rename-input">Conversation Name</label>
-                                <input type="text" id="rename-input" class="form-input" placeholder="Enter new name..." maxlength="100">
+                                <input type="text" id="rename-input" class="form-input" placeholder="Enter new name..." maxlength="100" autocomplete="off">
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button class="btn" id="rename-cancel">Cancel</button>
-                            <button class="btn btn-primary" id="rename-confirm">Rename</button>
+                            <button class="btn" type="button" id="rename-cancel">Cancel</button>
+                            <button class="btn btn-primary" type="button" id="rename-confirm">Rename</button>
                         </div>
                     </div>
                 </div>
@@ -427,14 +435,14 @@
                 <!-- Attached Files Modal — lists every document (PDF / text / code)
                      saved to persistent memory for the current conversation.
                      Switches between list view and editor view in-place. -->
-                <div class="modal" id="chat-files-modal">
+                <div class="modal" id="chat-files-modal" role="dialog" aria-modal="true" aria-labelledby="chat-files-modal-title" aria-hidden="true">
                     <div class="modal-overlay" data-close-files></div>
                     <div class="modal-content chat-files-modal-content">
                         <!-- LIST VIEW -->
                         <div class="chat-files-view" id="chat-files-list-view">
                             <div class="modal-header">
-                                <h2>📎 Attached Files</h2>
-                                <button class="modal-close" id="chat-files-close" data-close-files aria-label="Close">&times;</button>
+                                <h2 id="chat-files-modal-title">📎 Attached Files</h2>
+                                <button class="modal-close" type="button" id="chat-files-close" data-close-files aria-label="Close">&times;</button>
                             </div>
                             <div class="modal-body">
                                 <p class="chat-files-subtitle" id="chat-files-subtitle">Loading…</p>
@@ -516,12 +524,12 @@
                 </div>
 
                 <!-- Add Memory Modal -->
-                <div class="modal" id="add-memory-modal">
+                <div class="modal" id="add-memory-modal" role="dialog" aria-modal="true" aria-labelledby="add-memory-modal-title" aria-hidden="true">
                     <div class="modal-overlay"></div>
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h2>🧠 Add Memory</h2>
-                            <button class="modal-close" id="memory-modal-close" aria-label="Close">&times;</button>
+                            <h2 id="add-memory-modal-title">🧠 Add Memory</h2>
+                            <button class="modal-close" type="button" id="memory-modal-close" aria-label="Close">&times;</button>
                         </div>
                         <div class="modal-body">
                             <div class="form-group">
@@ -812,12 +820,12 @@
     </div>
 
     <!-- Keyboard Shortcuts Modal (opened with ?) -->
-    <div id="shortcuts-modal" class="modal">
+    <div id="shortcuts-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-modal-title" aria-hidden="true">
         <div class="modal-overlay" data-close-shortcuts></div>
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h2>⌨️ Keyboard Shortcuts</h2>
-                <button class="modal-close" data-close-shortcuts aria-label="Close">&times;</button>
+                <h2 id="shortcuts-modal-title">⌨️ Keyboard Shortcuts</h2>
+                <button class="modal-close" type="button" data-close-shortcuts aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="shortcuts-list">
@@ -838,27 +846,27 @@
     </div>
 
     <!-- Avatar Cropper Modal -->
-    <div id="avatar-crop-modal" class="modal">
+    <div id="avatar-crop-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="avatar-crop-modal-title" aria-hidden="true">
         <div class="modal-overlay" data-close-avatar-crop></div>
         <div class="modal-content avatar-crop-content">
             <div class="modal-header">
-                <h2>✂️ Crop Avatar</h2>
-                <button class="modal-close" id="avatar-crop-close" aria-label="Close">&times;</button>
+                <h2 id="avatar-crop-modal-title">✂️ Crop Avatar</h2>
+                <button class="modal-close" type="button" id="avatar-crop-close" aria-label="Close">&times;</button>
             </div>
             <div class="crop-container">
-                <div class="crop-area" id="crop-area">
+                <div class="crop-area" id="crop-area" aria-describedby="crop-position-hint">
                     <img id="crop-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Crop preview">
-                    <div class="crop-circle" id="crop-circle"></div>
+                    <div class="crop-circle" id="crop-circle" aria-hidden="true"></div>
                 </div>
                 <div class="crop-controls">
                     <label for="crop-zoom">Zoom</label>
-                    <input type="range" id="crop-zoom" min="100" max="300" value="100" aria-label="Zoom level">
-                    <div class="crop-position-hint">Drag image to position</div>
+                    <input type="range" id="crop-zoom" min="100" max="300" value="100" aria-label="Zoom level" aria-valuetext="100%">
+                    <div class="crop-position-hint" id="crop-position-hint">Drag image to position</div>
                 </div>
             </div>
             <div class="modal-actions">
-                <button class="btn btn-secondary" id="btn-crop-cancel">Cancel</button>
-                <button class="btn btn-primary" id="btn-crop-save">✅ Save Avatar</button>
+                <button class="btn btn-secondary" type="button" id="btn-crop-cancel">Cancel</button>
+                <button class="btn btn-primary" type="button" id="btn-crop-save">✅ Save Avatar</button>
             </div>
         </div>
     </div>

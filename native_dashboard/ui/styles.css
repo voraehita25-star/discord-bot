@@ -8,6 +8,42 @@
     display: none !important;
 }
 
+/* ``.nav-items`` is a <ul> (for list semantics + screen-reader item count)
+   but visually it must look like the previous div+button stack, so kill
+   the default disc bullets and zero out the list padding/margin. */
+.nav-items {
+    list-style: none;
+}
+.nav-items > li {
+    list-style: none;
+    /* Old markup nested buttons directly under .nav-items; the <li>
+       wrappers must collapse to zero so they don't push siblings. */
+    display: contents;
+}
+
+/* Skip-link — first focusable in <body>. Visually hidden until focused so it
+   doesn't pollute the layout, but immediately announces itself to keyboard
+   and screen-reader users (WCAG 2.4.1 Bypass Blocks). */
+.skip-link {
+    position: absolute;
+    top: -100px;
+    left: 8px;
+    z-index: 100000;
+    padding: 12px 20px;
+    background: var(--accent-purple);
+    color: #ffffff;
+    border-radius: 8px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: top 0.15s ease;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+    top: 8px;
+    outline: 2px solid var(--accent-pink);
+    outline-offset: 2px;
+}
+
 :root {
     /* Dark Theme (Default) - Anime Purple/Pink */
     --bg-primary: #1a0a2e;
@@ -26,6 +62,11 @@
     --glow-purple: rgba(168, 85, 247, 0.4);
     --card-bg: linear-gradient(135deg, rgba(30, 15, 50, 0.85), rgba(20, 10, 40, 0.9));
     --sidebar-bg: linear-gradient(180deg, rgba(30, 15, 50, 0.95), rgba(20, 10, 35, 0.98));
+    /* Aliases used by older rules (.load-more-btn, .loading-spinner) that
+       referenced undefined vars and fell back to fixed hex literals. Defining
+       them here makes the rules theme-aware. */
+    --bg-hover: rgba(80, 50, 120, 0.55);
+    --accent-color: var(--accent-purple);
 }
 
 /* Light Theme - Clean & Professional (WCAG AA contrast tuned) */
@@ -48,6 +89,9 @@ html[data-theme="light"],
     --glow-purple: rgba(91, 33, 182, 0.15);
     --card-bg: linear-gradient(180deg, #ffffff, #f8f9ff);
     --sidebar-bg: linear-gradient(180deg, #ffffff, #f5f7ff);
+    /* Light-theme overrides for the aliases defined in :root. */
+    --bg-hover: #e8ecf5;
+    --accent-color: var(--accent-purple);
 }
 
 /* Light theme specific overrides */
@@ -59,15 +103,29 @@ html[data-theme="light"] .nav-item {
     color: #4a4a6a;
 }
 
+/* Light-theme override for the main content surface. The dark-mode default
+   uses a translucent dark layer (rgba(10,5,20,0.4)) on top of body, which
+   in light mode would paint a near-black wash over the light page bg —
+   the original cause of the "light theme looks dark" bug. */
+html[data-theme="light"] .content {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+/* (Light-theme override for ``body::before`` is at line ~4502 — already
+   handled by the original CSS. No duplicate needed here.) */
+
 html[data-theme="light"] .nav-item:hover {
-    background: rgba(124, 58, 237, 0.1);
-    color: #7c3aed;
+    background: rgba(91, 33, 182, 0.08);
+    /* Use the darkened ``--accent-purple`` (#5b21b6) defined for light theme
+       instead of the original ``#7c3aed`` (3.6:1 on tinted bg — fails WCAG
+       AA for normal text). The new value scores ~7:1. */
+    color: var(--accent-purple);
 }
 
 html[data-theme="light"] .nav-item.active {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(214, 51, 132, 0.1));
-    color: #7c3aed;
-    border-left-color: #7c3aed;
+    background: linear-gradient(135deg, rgba(91, 33, 182, 0.14), rgba(190, 42, 111, 0.08));
+    color: var(--accent-purple);
+    border-left-color: var(--accent-purple);
 }
 
 html[data-theme="light"] .stat-card,
@@ -150,7 +208,8 @@ html[data-theme="light"] .logo {
 }
 
 html[data-theme="light"] .logo-text {
-    color: #7c3aed;
+    /* See ``.nav-item:hover`` above for the contrast rationale. */
+    color: var(--accent-purple);
 }
 
 html[data-theme="light"] h1, 
@@ -331,7 +390,10 @@ body {
 /* Keyboard Shortcuts in Nav */
 .shortcut {
     margin-left: auto;
-    font-size: 10px;
+    /* Bumped from 10px so the chord label stays readable; the kbd badge
+       is decorative for sighted users (assistive tech sees the parent
+       button's aria-keyshortcuts instead). */
+    font-size: 11px;
     padding: 2px 6px;
     background: rgba(168, 85, 247, 0.2);
     border-radius: 4px;
@@ -2355,21 +2417,23 @@ h2 {
 }
 
 .delete-message-btn:hover {
-border-color: #e74c3c;
-color: #e74c3c;
+    /* Use the theme-aware accent token; the previous hard-coded ``#e74c3c``
+       didn't follow light-theme's darkened ``--accent-red`` (#b91c1c). */
+    border-color: var(--accent-red);
+    color: var(--accent-red);
 }
 
 .edit-message-btn,
 .delete-message-btn {
-background: var(--card-bg);
-border: 1px solid var(--border-color);
-cursor: pointer;
-font-size: 12px;
-padding: 4px 10px;
-border-radius: 6px;
-color: var(--text-secondary);
-transition: all 0.2s ease;
-margin-left: 4px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+    margin-left: 4px;
 }
 
 /* Inline edit textarea */
@@ -3553,16 +3617,20 @@ html[data-theme="light"] .role-card:hover {
 }
 
 .attached-image-preview .remove-image {
+    /* Sized to clear the 24px WCAG 2.5.5 tap-target floor while keeping
+       the visual "X" centered. The previous 18×18 + 10px font failed both
+       size and readability bars. */
     position: absolute;
-    top: -5px;
-    right: -5px;
-    width: 18px;
-    height: 18px;
+    top: -8px;
+    right: -8px;
+    width: 24px;
+    height: 24px;
     background: var(--accent-red);
     color: white;
     border: none;
     border-radius: 50%;
-    font-size: 10px;
+    font-size: 13px;
+    line-height: 1;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -3620,22 +3688,26 @@ html[data-theme="light"] .role-card:hover {
 
 .attached-doc-preview .doc-meta {
     color: var(--text-secondary);
-    font-size: 10px;
+    /* Bumped from 10px so secondary metadata remains legible. 11px paired
+       with the uppercase letter-spacing here stays compact without falling
+       below the readability floor. */
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
 }
 
 .attached-doc-preview .remove-doc {
+    /* Sized to clear the 24px WCAG 2.5.5 tap-target floor; was 18px. */
     position: absolute;
-    top: -6px;
-    right: -6px;
-    width: 18px;
-    height: 18px;
+    top: -8px;
+    right: -8px;
+    width: 24px;
+    height: 24px;
     background: var(--accent-red);
     color: white;
     border: none;
     border-radius: 50%;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
     display: flex;
@@ -5132,8 +5204,15 @@ html[data-theme="light"] .toast::before {
 
 /* Ensure noise is clipped to rounded corners + content sits above it.
  * The overflow:hidden is critical so the ::before can't spill past
- * rounded corners. Position:relative provides the positioning context. */
-.sidebar,
+ * rounded corners. Position:relative provides the positioning context.
+ *
+ * NOTE: ``.sidebar`` is intentionally excluded from this clipping group —
+ * its child ``.nav-item::before`` rail sits at ``left: -4px`` to bleed
+ * out the sidebar's left edge as a visual indicator on the active item.
+ * Adding ``overflow: hidden`` to the sidebar clips that rail to nothing.
+ * Same applies to ``.toast`` only in cases where children need to bleed
+ * (none today; kept clipped).
+ */
 .control-card,
 .quick-actions,
 .api-failover-card,
@@ -5143,6 +5222,16 @@ html[data-theme="light"] .toast::before {
 .toast {
     position: relative;
     overflow: hidden;
+}
+
+/* Sidebar gets the noise-texture but NOT overflow:hidden — see comment
+   on the group above. The pseudo's ``inset: 0`` + ``border-radius``
+   inherited from .sidebar is enough to keep the noise inside the
+   rounded corners on visual grounds; pixel-perfect corner clipping on
+   the noise is a non-goal because the sidebar's background already
+   covers everything beneath. */
+.sidebar {
+    position: relative;
 }
 
 /* .modal-content gets the same noise-texture corner clipping, but must NOT

@@ -96,6 +96,13 @@ export class WebSocketClient {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }
+        // Reset the reconnect counter on a user-initiated connect. Without
+        // this, once ``scheduleReconnect`` has exhausted its budget (e.g.
+        // the bot was offline for a while), a later manual ``connect()``
+        // — including the navigation-triggered call when the user opens
+        // the chat page after restarting the bot — would still be capped
+        // and refuse to retry on its first transient failure.
+        this.reconnectAttempts = 0;
         try {
             this.isConnecting = true;
             // Guard against a hung Tauri `invoke` (backend deadlock): if it
@@ -206,9 +213,18 @@ export class WebSocketClient {
             socket.onmessage = (event) => {
                 if (this.ws !== socket)
                     return;
+                // The frontend protocol is text-only JSON; binary frames
+                // (Blob / ArrayBuffer) would otherwise be stringified to
+                // ``"[object Blob]"`` and waste a ``JSON.parse`` cycle —
+                // or, worse, a multi-megabyte Blob would be buffered in
+                // memory just for that. Drop non-string frames outright.
+                if (typeof event.data !== 'string') {
+                    console.warn('Ignoring non-string WebSocket frame:', typeof event.data);
+                    return;
+                }
                 // Reject oversized frames to prevent memory exhaustion.
                 // Length is measured in UTF-16 code units, not bytes.
-                if (typeof event.data === 'string' && event.data.length > MAX_MESSAGE_LENGTH) {
+                if (event.data.length > MAX_MESSAGE_LENGTH) {
                     console.warn('Dropped oversized WebSocket message:', event.data.length, 'code units');
                     return;
                 }

@@ -2719,6 +2719,10 @@ export class ChatManager {
         const modal = document.getElementById('new-chat-modal');
         if (modal) {
             modal.classList.add('active');
+            // Mirror the visual ``.active`` state onto ``aria-hidden`` so
+            // screen readers see the modal as opened. The base HTML ships
+            // with ``aria-hidden="true"``; remove it when shown.
+            modal.removeAttribute('aria-hidden');
             this.selectedRole = 'general';
             // Restore saved preferences for new chat
             const savedThinking = localStorage.getItem('dashboard_thinking') === 'true';
@@ -2735,12 +2739,20 @@ export class ChatManager {
                     : this.aiProvider;
             }
             this.updateRoleSelection();
+            // Move keyboard focus into the dialog so SR users know they're
+            // inside a modal context and the first focusable is the first
+            // role option (the selected one).
+            const selected = modal.querySelector<HTMLElement>('.role-card.selected');
+            (selected ?? modal.querySelector<HTMLElement>('button')) ?.focus();
         }
     }
 
     closeModal(): void {
         const modal = document.getElementById('new-chat-modal');
-        if (modal) modal.classList.remove('active');
+        if (modal) {
+            modal.classList.remove('active');
+            modal.setAttribute('aria-hidden', 'true');
+        }
     }
 
     selectRole(role: string): void {
@@ -2750,7 +2762,13 @@ export class ChatManager {
 
     updateRoleSelection(): void {
         document.querySelectorAll('.role-card').forEach(card => {
-            card.classList.toggle('selected', (card as HTMLElement).dataset.role === this.selectedRole);
+            const isSelected = (card as HTMLElement).dataset.role === this.selectedRole;
+            card.classList.toggle('selected', isSelected);
+            // Mirror the visual ``.selected`` class onto the ARIA radio
+            // state so screen-reader users get the same signal as sighted
+            // users. The cards are real <button role="radio"> now (was
+            // <div role="button"> before the 2026-05-28 a11y pass).
+            card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
         });
     }
 
@@ -2807,14 +2825,26 @@ export class ChatManager {
         document.querySelectorAll('.role-card').forEach(card => {
             const select = () => this.selectRole((card as HTMLElement).dataset.role || 'general');
             card.addEventListener('click', select);
-            // role-cards are <div role="button" tabindex="0">; without this
-            // they're focusable but Enter/Space don't activate them.
+            // Cards are now real <button role="radio"> elements; <button>
+            // already handles Enter/Space activation natively. We keep the
+            // explicit keydown handler ONLY for the arrow-key navigation
+            // pattern expected of a radiogroup (Up/Left = previous,
+            // Down/Right = next, Home/End = first/last).
             card.addEventListener('keydown', (e) => {
                 const ke = e as KeyboardEvent;
-                if (ke.key === 'Enter' || ke.key === ' ') {
-                    ke.preventDefault();
-                    select();
-                }
+                const cards = Array.from(document.querySelectorAll<HTMLElement>('.role-card'));
+                const idx = cards.indexOf(card as HTMLElement);
+                if (idx === -1) return;
+                let nextIdx = idx;
+                if (ke.key === 'ArrowDown' || ke.key === 'ArrowRight') nextIdx = (idx + 1) % cards.length;
+                else if (ke.key === 'ArrowUp' || ke.key === 'ArrowLeft') nextIdx = (idx - 1 + cards.length) % cards.length;
+                else if (ke.key === 'Home') nextIdx = 0;
+                else if (ke.key === 'End') nextIdx = cards.length - 1;
+                else return;
+                ke.preventDefault();
+                const target = cards[nextIdx];
+                this.selectRole(target.dataset.role || 'general');
+                target.focus();
             });
         });
 
