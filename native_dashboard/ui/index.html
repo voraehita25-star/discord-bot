@@ -163,12 +163,18 @@
                     <h2>📈 Performance Graphs</h2>
                     <div class="charts-grid">
                         <div class="chart-card">
-                            <h3>Memory Usage</h3>
-                            <canvas id="memory-chart"></canvas>
+                            <h3 id="memory-chart-title">Memory Usage</h3>
+                            <!-- aria-labelledby + role="img" gives SR users a
+                                 named region; the .chart-summary sibling
+                                 provides the actual data points in textual
+                                 form (kept in sync by app.ts on each push). -->
+                            <canvas id="memory-chart" role="img" aria-labelledby="memory-chart-title" aria-describedby="memory-chart-summary"></canvas>
+                            <p class="chart-summary visually-hidden" id="memory-chart-summary" aria-live="polite">No data yet</p>
                         </div>
                         <div class="chart-card">
-                            <h3>Message Count</h3>
-                            <canvas id="messages-chart"></canvas>
+                            <h3 id="messages-chart-title">Message Count</h3>
+                            <canvas id="messages-chart" role="img" aria-labelledby="messages-chart-title" aria-describedby="messages-chart-summary"></canvas>
+                            <p class="chart-summary visually-hidden" id="messages-chart-summary" aria-live="polite">No data yet</p>
                         </div>
                     </div>
                 </div>

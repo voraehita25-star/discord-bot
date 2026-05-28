@@ -8,6 +8,21 @@
     display: none !important;
 }
 
+/* Visually hidden but still in the a11y tree — for screen-reader-only
+   text (chart data summaries, status announcements that don't need to be
+   on-screen, etc.). Standard WCAG-safe clip-rect technique. */
+.visually-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+
 /* ``.nav-items`` is a <ul> (for list semantics + screen-reader item count)
    but visually it must look like the previous div+button stack, so kill
    the default disc bullets and zero out the list padding/margin. */
@@ -58,6 +73,15 @@
     --accent-green: #4ade80;
     --accent-red: #f87171;
     --accent-orange: #fb923c;
+    /* RGB triplets that mirror the accents above so rgba() literals scattered
+       through the file can be theme-aware via `rgba(var(--accent-X-rgb), 0.x)`.
+       Keep these in sync with the accent hex values. */
+    --accent-pink-rgb: 255, 107, 157;
+    --accent-purple-rgb: 168, 85, 247;
+    --accent-cyan-rgb: 34, 211, 238;
+    --accent-green-rgb: 74, 222, 128;
+    --accent-red-rgb: 248, 113, 113;
+    --accent-orange-rgb: 251, 146, 60;
     --glow-pink: rgba(255, 107, 157, 0.4);
     --glow-purple: rgba(168, 85, 247, 0.4);
     --card-bg: linear-gradient(135deg, rgba(30, 15, 50, 0.85), rgba(20, 10, 40, 0.9));
@@ -85,6 +109,14 @@ html[data-theme="light"],
     --accent-green: #15803d;      /* darkened from #16a34a */
     --accent-red: #b91c1c;        /* darkened from #dc2626 */
     --accent-orange: #c2410c;     /* darkened from #ea580c */
+    /* Light-theme overrides of the rgb triplets so rgba(var(--accent-X-rgb), a)
+       picks up the darker swatches when the user flips to light mode. */
+    --accent-pink-rgb: 190, 42, 111;
+    --accent-purple-rgb: 91, 33, 182;
+    --accent-cyan-rgb: 3, 102, 114;
+    --accent-green-rgb: 21, 128, 61;
+    --accent-red-rgb: 185, 28, 28;
+    --accent-orange-rgb: 194, 65, 12;
     --glow-pink: rgba(190, 42, 111, 0.15);
     --glow-purple: rgba(91, 33, 182, 0.15);
     --card-bg: linear-gradient(180deg, #ffffff, #f8f9ff);
@@ -280,7 +312,7 @@ html[data-theme="light"] kbd {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     backdrop-filter: blur(10px);
     transform: translateX(120%);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     opacity: 0;
 }
 
@@ -321,22 +353,22 @@ html[data-theme="light"] kbd {
 
 .toast-success {
     border-color: var(--accent-green);
-    background: linear-gradient(135deg, rgba(74, 222, 128, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg, rgba(var(--accent-green-rgb), 0.15), var(--bg-secondary));
 }
 
 .toast-error {
     border-color: var(--accent-red);
-    background: linear-gradient(135deg, rgba(248, 113, 113, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg, rgba(var(--accent-red-rgb), 0.15), var(--bg-secondary));
 }
 
 .toast-warning {
     border-color: var(--accent-orange);
-    background: linear-gradient(135deg, rgba(251, 146, 60, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg, rgba(var(--accent-orange-rgb), 0.15), var(--bg-secondary));
 }
 
 .toast-info {
     border-color: var(--accent-cyan);
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg, rgba(var(--accent-cyan-rgb), 0.15), var(--bg-secondary));
 }
 
 body {
@@ -378,11 +410,11 @@ body {
     border-radius: 12px;
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
 }
 
 .theme-toggle:hover {
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     border-color: var(--accent-purple);
     color: var(--text-primary);
 }
@@ -395,7 +427,7 @@ body {
        button's aria-keyshortcuts instead). */
     font-size: 11px;
     padding: 2px 6px;
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     border-radius: 4px;
     color: var(--text-secondary);
     font-family: monospace;
@@ -444,19 +476,19 @@ body {
     font-size: 15px;
     cursor: pointer;
     border-radius: 12px;
-    transition: all 0.25s ease;
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
     text-align: left;
 }
 
 .nav-item:hover {
-    background: rgba(168, 85, 247, 0.15);
+    background: rgba(var(--accent-purple-rgb), 0.15);
     border-color: var(--border-color);
     color: var(--text-primary);
     transform: translateX(4px);
 }
 
 .nav-item.active {
-    background: linear-gradient(135deg, rgba(255, 107, 157, 0.2), rgba(168, 85, 247, 0.2));
+    background: linear-gradient(135deg, rgba(var(--accent-pink-rgb), 0.2), rgba(var(--accent-purple-rgb), 0.2));
     border-color: var(--accent-pink);
     color: var(--accent-pink);
     box-shadow: 0 0 20px var(--glow-pink);
@@ -471,8 +503,8 @@ body {
     align-items: center;
     gap: 10px;
     padding: 14px 18px;
-    background: linear-gradient(135deg, rgba(248, 113, 113, 0.2), rgba(30, 15, 50, 0.8));
-    border: 1px solid rgba(248, 113, 113, 0.4);
+    background: linear-gradient(135deg, rgba(var(--accent-red-rgb), 0.2), rgba(30, 15, 50, 0.8));
+    border: 1px solid rgba(var(--accent-red-rgb), 0.4);
     border-radius: 12px;
     margin-top: auto;
 }
@@ -499,8 +531,8 @@ body {
 }
 
 .status-badge.online {
-    background: linear-gradient(135deg, rgba(74, 222, 128, 0.2), rgba(30, 15, 50, 0.8));
-    border-color: rgba(74, 222, 128, 0.4);
+    background: linear-gradient(135deg, rgba(var(--accent-green-rgb), 0.2), rgba(30, 15, 50, 0.8));
+    border-color: rgba(var(--accent-green-rgb), 0.4);
 }
 
 .status-badge.online .status-dot {
@@ -587,11 +619,39 @@ body {
 h1 {
     font-size: 32px;
     margin-bottom: 28px;
+    /* Solid color FALLBACK first. Browsers that don't honour
+       ``background-clip: text`` (or any future user-agent that disables
+       it) will see the bright cyan-leaning ``--text-primary`` instead of
+       transparent black on dark bg. The gradient at the bottom is the
+       "enhancement" — when it applies, the solid fill is overridden by
+       ``-webkit-text-fill-color: transparent``. The cyan endpoint of the
+       gradient passes WCAG AA against the dark background (~8:1); the
+       pink endpoint is closer to 3:1 which only passes for "large text"
+       (this h1 is 32px @ 700 → "large", so it qualifies). */
+    color: var(--text-primary);
     background: linear-gradient(90deg, var(--accent-pink), var(--accent-purple), var(--accent-cyan));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     text-shadow: 0 0 40px var(--glow-pink);
+}
+
+/* When the user prefers higher contrast, drop the gradient entirely so
+   the heading meets WCAG AAA. ``forced-colors`` (Windows High Contrast)
+   automatically maps to system text colors too. */
+@media (prefers-contrast: more) {
+    h1 {
+        background: none;
+        -webkit-text-fill-color: var(--text-primary);
+        color: var(--text-primary);
+    }
+}
+@media (forced-colors: active) {
+    h1 {
+        background: none;
+        -webkit-text-fill-color: CanvasText;
+        color: CanvasText;
+    }
 }
 
 h2 {
@@ -640,7 +700,7 @@ h2 {
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease, opacity 0.25s ease;
     position: relative;
     overflow: hidden;
 }
@@ -674,33 +734,33 @@ h2 {
 .btn-primary {
     background: linear-gradient(135deg, var(--accent-green), #22c55e);
     border-color: var(--accent-green);
-    box-shadow: 0 4px 15px rgba(74, 222, 128, 0.3);
+    box-shadow: 0 4px 15px rgba(var(--accent-green-rgb), 0.3);
 }
 
 .btn-primary:hover {
-    box-shadow: 0 6px 25px rgba(74, 222, 128, 0.5);
+    box-shadow: 0 6px 25px rgba(var(--accent-green-rgb), 0.5);
 }
 
 .btn-danger {
     background: linear-gradient(135deg, var(--accent-red), #ef4444);
     border-color: var(--accent-red);
-    box-shadow: 0 4px 15px rgba(248, 113, 113, 0.3);
+    box-shadow: 0 4px 15px rgba(var(--accent-red-rgb), 0.3);
 }
 
 .btn-danger:hover {
-    box-shadow: 0 6px 25px rgba(248, 113, 113, 0.5);
+    box-shadow: 0 6px 25px rgba(var(--accent-red-rgb), 0.5);
 }
 
 .btn-secondary {
     background: linear-gradient(135deg, var(--accent-purple), #9333ea);
     border-color: var(--accent-purple);
-    box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
+    box-shadow: 0 4px 15px rgba(var(--accent-purple-rgb), 0.3);
 }
 
 .btn-warning {
     background: linear-gradient(135deg, var(--accent-orange), #f97316);
     border-color: var(--accent-orange);
-    box-shadow: 0 4px 15px rgba(251, 146, 60, 0.3);
+    box-shadow: 0 4px 15px rgba(var(--accent-orange-rgb), 0.3);
 }
 
 /* Stats Grid */
@@ -718,12 +778,12 @@ h2 {
     padding: 24px;
     text-align: center;
     backdrop-filter: blur(10px);
-    transition: all 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
 .stat-card:hover {
     transform: translateY(-4px);
-    box-shadow: 0 12px 40px rgba(168, 85, 247, 0.2);
+    box-shadow: 0 12px 40px rgba(var(--accent-purple-rgb), 0.2);
     border-color: var(--accent-purple);
 }
 
@@ -791,7 +851,7 @@ h2 {
     border-radius: 14px;
     padding: 18px;
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
     position: relative;
 }
 
@@ -801,13 +861,13 @@ h2 {
 }
 
 .api-endpoint-item.active {
-    border-color: #22d3ee;
-    box-shadow: 0 0 20px rgba(34, 211, 238, 0.15);
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 20px rgba(var(--accent-cyan-rgb), 0.15);
 }
 
 .api-endpoint-item.unhealthy {
-    border-color: #ef4444;
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
+    border-color: var(--accent-red);
+    box-shadow: 0 0 20px rgba(var(--accent-red-rgb), 0.15);
 }
 
 .api-endpoint-item .ep-label {
@@ -832,18 +892,18 @@ h2 {
 }
 
 .api-endpoint-item.active .ep-badge {
-    background: rgba(34, 211, 238, 0.2);
-    color: #22d3ee;
+    background: rgba(var(--accent-cyan-rgb), 0.2);
+    color: var(--accent-cyan);
 }
 
 .api-endpoint-item .ep-badge.healthy {
-    background: rgba(34, 197, 94, 0.2);
-    color: #22c55e;
+    background: rgba(var(--accent-green-rgb), 0.2);
+    color: var(--accent-green);
 }
 
 .api-endpoint-item .ep-badge.unhealthy-badge {
-    background: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
+    background: rgba(var(--accent-red-rgb), 0.2);
+    color: var(--accent-red);
 }
 
 .api-endpoint-item .ep-stats {
@@ -867,8 +927,8 @@ h2 {
     animation: fadeInDown 0.3s ease;
 }
 
-.api-health-result .healthy { color: #22c55e; }
-.api-health-result .unhealthy { color: #ef4444; }
+.api-health-result .healthy { color: var(--accent-green); }
+.api-health-result .unhealthy { color: var(--accent-red); }
 
 /* Renamed from a duplicate `fadeIn` at line ~811 — the second definition was
  * overriding the global page fade-in (line 513) so every page entry animated
@@ -944,12 +1004,12 @@ h2 {
 }
 
 .log-line:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .log-line.error {
     color: var(--accent-red);
-    text-shadow: 0 0 10px rgba(248, 113, 113, 0.5);
+    text-shadow: 0 0 10px rgba(var(--accent-red-rgb), 0.5);
 }
 
 .log-line.warning {
@@ -970,7 +1030,7 @@ h2 {
     font-size: 14px;
     padding: 4px 12px;
     margin-left: 12px;
-    background: linear-gradient(135deg, rgba(248, 113, 113, 0.3), rgba(255, 107, 157, 0.2));
+    background: linear-gradient(135deg, rgba(var(--accent-red-rgb), 0.3), rgba(var(--accent-pink-rgb), 0.2));
     border: 1px solid var(--accent-red);
     border-radius: 20px;
     animation: livePulse 1.5s ease-in-out infinite;
@@ -983,11 +1043,11 @@ h2 {
 @keyframes livePulse {
     0%, 100% {
         opacity: 1;
-        box-shadow: 0 0 10px rgba(248, 113, 113, 0.5);
+        box-shadow: 0 0 10px rgba(var(--accent-red-rgb), 0.5);
     }
     50% {
         opacity: 0.7;
-        box-shadow: 0 0 20px rgba(248, 113, 113, 0.8);
+        box-shadow: 0 0 20px rgba(var(--accent-red-rgb), 0.8);
     }
 }
 
@@ -1050,20 +1110,20 @@ h2 {
     background: rgba(50, 25, 80, 0.4);
     border-radius: 12px;
     border: 1px solid transparent;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     cursor: pointer;
     user-select: none;
 }
 
 .data-item:hover {
     border-color: var(--border-color);
-    background: rgba(168, 85, 247, 0.15);
+    background: rgba(var(--accent-purple-rgb), 0.15);
 }
 
 .data-item.selected {
     border-color: var(--accent-cyan);
-    background: rgba(34, 211, 238, 0.12);
-    box-shadow: 0 0 12px rgba(34, 211, 238, 0.15);
+    background: rgba(var(--accent-cyan-rgb), 0.12);
+    box-shadow: 0 0 12px rgba(var(--accent-cyan-rgb), 0.15);
 }
 
 .data-item-left {
@@ -1092,15 +1152,15 @@ h2 {
 
 /* Danger Zone */
 .danger-zone {
-    background: linear-gradient(135deg, rgba(248, 113, 113, 0.15), rgba(30, 15, 50, 0.9));
-    border: 1px solid rgba(248, 113, 113, 0.4);
+    background: linear-gradient(135deg, rgba(var(--accent-red-rgb), 0.15), rgba(30, 15, 50, 0.9));
+    border: 1px solid rgba(var(--accent-red-rgb), 0.4);
     border-radius: 20px;
     padding: 28px;
 }
 
 .danger-zone h2 {
     color: var(--accent-red);
-    text-shadow: 0 0 20px rgba(248, 113, 113, 0.5);
+    text-shadow: 0 0 20px rgba(var(--accent-red-rgb), 0.5);
 }
 
 .danger-zone p {
@@ -1288,7 +1348,7 @@ h2 {
 .anime-char {
     position: absolute;
     opacity: 0.15;
-    filter: drop-shadow(0 0 30px rgba(168, 85, 247, 0.3));
+    filter: drop-shadow(0 0 30px rgba(var(--accent-purple-rgb), 0.3));
     transition: opacity 0.5s ease, transform 0.5s ease;
 }
 
@@ -1467,7 +1527,7 @@ h2 {
 .setting-input:focus,
 .setting-textarea:focus {
     border-color: var(--accent-purple);
-    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.1);
+    box-shadow: 0 0 0 3px rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .setting-input:focus-visible,
@@ -1475,7 +1535,7 @@ h2 {
     /* Outline comes from the global *:focus-visible rule. Re-stating box-shadow
      * here so it composes with the outline cleanly under keyboard focus. */
     border-color: var(--accent-purple);
-    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.1);
+    box-shadow: 0 0 0 3px rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .setting-input::placeholder,
@@ -1632,7 +1692,7 @@ h2 {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 28px;
-    transition: all 0.3s ease;
+    transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .toggle-slider::before {
@@ -1644,7 +1704,7 @@ h2 {
     bottom: 3px;
     background: var(--text-secondary);
     border-radius: 50%;
-    transition: all 0.3s ease;
+    transition: transform 0.3s ease, background 0.3s ease;
 }
 
 .toggle-switch input:checked + .toggle-slider {
@@ -1676,7 +1736,7 @@ h2 {
     padding: 6px 12px;
     font-size: 12px;
     font-family: 'Consolas', monospace;
-    background: linear-gradient(135deg, var(--bg-tertiary), rgba(168, 85, 247, 0.2));
+    background: linear-gradient(135deg, var(--bg-tertiary), rgba(var(--accent-purple-rgb), 0.2));
     border: 1px solid var(--border-color);
     border-radius: 8px;
     color: var(--accent-cyan);
@@ -1904,19 +1964,19 @@ h2 {
     padding: 12px;
     border-radius: 12px;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease;
     margin-bottom: 8px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid transparent;
 }
 
 .conversation-item:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     border-color: var(--border-color);
 }
 
 .conversation-item.active {
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(255, 107, 157, 0.1));
+    background: linear-gradient(135deg, rgba(var(--accent-purple-rgb), 0.2), rgba(var(--accent-pink-rgb), 0.1));
     border-color: var(--accent-purple);
 }
 
@@ -2121,7 +2181,7 @@ h2 {
 }
 
 .context-bar-fill.usage-high {
-    background: #f87171;
+    background: var(--accent-red);
 }
 
 .context-bar-label {
@@ -2147,19 +2207,19 @@ h2 {
     font-size: 13px;
     cursor: pointer;
     outline: none;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .select-provider-inline:hover,
 .select-provider:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     border-color: var(--accent-purple);
 }
 
 .select-provider-inline:focus,
 .select-provider:focus {
     border-color: var(--accent-purple);
-    box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.2);
+    box-shadow: 0 0 0 2px rgba(var(--accent-purple-rgb), 0.2);
 }
 
 .select-provider option {
@@ -2175,11 +2235,11 @@ h2 {
     padding: 8px 12px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.05);
-    transition: all 0.2s ease;
+    transition: background 0.2s ease;
 }
 
 .thinking-toggle:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .thinking-toggle input {
@@ -2204,11 +2264,11 @@ h2 {
 }
 
 .btn-icon:hover {
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
 }
 
 .btn-icon.btn-danger:hover {
-    background: rgba(248, 113, 113, 0.2);
+    background: rgba(var(--accent-red-rgb), 0.2);
 }
 
 /* Chat Messages */
@@ -2405,13 +2465,13 @@ h2 {
     padding: 4px 10px;
     border-radius: 6px;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
 .copy-message-btn:hover,
 .edit-message-btn:hover,
 .delete-message-btn:hover {
-    background: rgba(168, 85, 247, 0.12);
+    background: rgba(var(--accent-purple-rgb), 0.12);
     color: var(--text-primary);
     border-color: var(--accent-purple);
 }
@@ -2473,7 +2533,7 @@ h2 {
     border: 1px solid var(--border-color);
     cursor: pointer;
     font-size: 13px;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
 }
 
 .edit-save-btn {
@@ -2504,7 +2564,7 @@ h2 {
 
 .edit-cancel-btn:hover {
     color: var(--text-primary);
-    background: rgba(168, 85, 247, 0.12);
+    background: rgba(var(--accent-purple-rgb), 0.12);
 }
 
 /* AI Edit button in message actions */
@@ -2516,7 +2576,7 @@ h2 {
     padding: 4px 10px;
     border-radius: 6px;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
     margin-left: 4px;
 }
 
@@ -2600,13 +2660,13 @@ h2 {
     color: var(--text-secondary);
     cursor: pointer;
     font-size: 13px;
-    transition: all 0.2s;
+    transition: background 0.2s, color 0.2s;
     white-space: nowrap;
 }
 
 .ai-edit-cancel-btn:hover {
     color: var(--text-primary);
-    background: rgba(168, 85, 247, 0.12);
+    background: rgba(var(--accent-purple-rgb), 0.12);
 }
 
 .message-images {
@@ -2646,13 +2706,13 @@ margin-bottom: 8px;
 }
 
 .chat-message.user .message-content {
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.15), rgba(74, 222, 128, 0.1));
-    border-color: rgba(34, 211, 238, 0.3);
+    background: linear-gradient(135deg, rgba(var(--accent-cyan-rgb), 0.15), rgba(var(--accent-green-rgb), 0.1));
+    border-color: rgba(var(--accent-cyan-rgb), 0.3);
 }
 
 .chat-message.assistant .message-content {
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(255, 107, 157, 0.05));
-    border-color: rgba(168, 85, 247, 0.2);
+    background: linear-gradient(135deg, rgba(var(--accent-purple-rgb), 0.1), rgba(var(--accent-pink-rgb), 0.05));
+    border-color: rgba(var(--accent-purple-rgb), 0.2);
 }
 
 /* Streaming message */
@@ -2686,7 +2746,7 @@ margin-bottom: 8px;
 }
 
 .message-content code:not(pre code) {
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     padding: 2px 6px;
     border-radius: 4px;
 }
@@ -2704,20 +2764,20 @@ margin-bottom: 8px;
 }
 
 .pin-message-btn:hover {
-    background: rgba(251, 146, 60, 0.1);
+    background: rgba(var(--accent-orange-rgb), 0.1);
     color: var(--accent-orange);
     border-color: var(--accent-orange);
 }
 
 .pin-message-btn.pinned {
-    background: rgba(251, 146, 60, 0.18);
+    background: rgba(var(--accent-orange-rgb), 0.18);
     color: var(--accent-orange);
     border-color: var(--accent-orange);
 }
 
 .chat-message:has(.pin-message-btn.pinned) {
     border-left: 3px solid var(--accent-orange);
-    background: linear-gradient(90deg, rgba(251, 146, 60, 0.05), transparent 30%);
+    background: linear-gradient(90deg, rgba(var(--accent-orange-rgb), 0.05), transparent 30%);
 }
 
 /* Inline setting hint (e.g. "restart required") shown next to the label */
@@ -2737,7 +2797,7 @@ margin-bottom: 8px;
     gap: 6px;
     padding: 6px 12px;
     border-bottom: 1px solid var(--border-color);
-    background: rgba(168, 85, 247, 0.04);
+    background: rgba(var(--accent-purple-rgb), 0.04);
     align-items: center;
     min-height: 32px;
 }
@@ -2752,7 +2812,7 @@ margin-bottom: 8px;
     gap: 4px;
     padding: 2px 8px;
     border-radius: 12px;
-    background: rgba(168, 85, 247, 0.15);
+    background: rgba(var(--accent-purple-rgb), 0.15);
     color: var(--accent-purple);
     font-size: 12px;
     font-weight: 500;
@@ -2804,14 +2864,14 @@ margin-bottom: 8px;
 }
 
 .like-message-btn:hover {
-    background: rgba(248, 113, 113, 0.1);
+    background: rgba(var(--accent-red-rgb), 0.1);
     color: var(--accent-red);
     border-color: var(--accent-red);
     transform: scale(1.05);
 }
 
 .like-message-btn.liked {
-    background: rgba(248, 113, 113, 0.15);
+    background: rgba(var(--accent-red-rgb), 0.15);
     color: var(--accent-red);
     border-color: var(--accent-red);
 }
@@ -2833,7 +2893,7 @@ margin-bottom: 8px;
 }
 
 .show-earlier-btn:hover {
-    background: rgba(168, 85, 247, 0.08);
+    background: rgba(var(--accent-purple-rgb), 0.08);
     color: var(--text-primary);
     border-color: var(--accent-purple);
     border-style: solid;
@@ -2952,7 +3012,7 @@ mark.chat-search-hit.active {
 .export-format-btn:hover {
     transform: translateY(-2px);
     border-color: var(--accent-purple);
-    background: rgba(168, 85, 247, 0.08);
+    background: rgba(var(--accent-purple-rgb), 0.08);
 }
 
 .export-format-btn .format-icon {
@@ -2983,9 +3043,9 @@ mark.chat-search-hit.active {
     border-radius: 50%;
     flex-shrink: 0;
     background: linear-gradient(90deg,
-        rgba(168, 85, 247, 0.08) 0%,
-        rgba(168, 85, 247, 0.2) 50%,
-        rgba(168, 85, 247, 0.08) 100%);
+        rgba(var(--accent-purple-rgb), 0.08) 0%,
+        rgba(var(--accent-purple-rgb), 0.2) 50%,
+        rgba(var(--accent-purple-rgb), 0.08) 100%);
     background-size: 200% 100%;
     animation: skeleton-pulse 1.4s infinite;
 }
@@ -3001,9 +3061,9 @@ mark.chat-search-hit.active {
     height: 12px;
     border-radius: 4px;
     background: linear-gradient(90deg,
-        rgba(168, 85, 247, 0.08) 0%,
-        rgba(168, 85, 247, 0.2) 50%,
-        rgba(168, 85, 247, 0.08) 100%);
+        rgba(var(--accent-purple-rgb), 0.08) 0%,
+        rgba(var(--accent-purple-rgb), 0.2) 50%,
+        rgba(var(--accent-purple-rgb), 0.08) 100%);
     background-size: 200% 100%;
     animation: skeleton-pulse 1.4s infinite;
 }
@@ -3046,7 +3106,7 @@ mark.chat-search-hit.active {
 .drop-active {
     outline: 2px dashed var(--accent-purple);
     outline-offset: -4px;
-    background: rgba(168, 85, 247, 0.08);
+    background: rgba(var(--accent-purple-rgb), 0.08);
     transition: outline-color 0.15s, background 0.15s;
 }
 
@@ -3148,7 +3208,7 @@ mark.chat-search-hit.active {
 }
 
 .message-content .code-copy-btn:hover {
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     color: var(--text-primary);
 }
 
@@ -3181,7 +3241,7 @@ mark.chat-search-hit.active {
     overflow-x: auto;
     padding: 16px;
     margin: 12px 0;
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     border-radius: 8px;
     text-align: center;
 }
@@ -3226,7 +3286,7 @@ mark.chat-search-hit.active {
     resize: none;
     max-height: 150px;
     line-height: 1.5;
-    transition: all 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 #chat-input:focus {
@@ -3249,7 +3309,7 @@ mark.chat-search-hit.active {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
 .btn-send:hover:not(:disabled) {
@@ -3378,11 +3438,11 @@ mark.chat-search-hit.active {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, color 0.2s ease;
 }
 
 .modal-close:hover {
-    background: rgba(248, 113, 113, 0.2);
+    background: rgba(var(--accent-red-rgb), 0.2);
     color: var(--accent-red);
 }
 
@@ -3410,17 +3470,17 @@ mark.chat-search-hit.active {
     border: 2px solid var(--border-color);
     cursor: pointer;
     text-align: center;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .role-card:hover {
     border-color: var(--accent-purple);
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .role-card.selected {
     border-color: var(--accent-pink);
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(255, 107, 157, 0.1));
+    background: linear-gradient(135deg, rgba(var(--accent-purple-rgb), 0.15), rgba(var(--accent-pink-rgb), 0.1));
     box-shadow: 0 4px 20px var(--glow-pink);
 }
 
@@ -3444,7 +3504,7 @@ mark.chat-search-hit.active {
 /* Faust-specific color */
 .role-card[data-role="faust"].selected {
     border-color: #ffb1b4;
-    background: linear-gradient(135deg, rgba(255, 177, 180, 0.15), rgba(255, 107, 157, 0.1));
+    background: linear-gradient(135deg, rgba(255, 177, 180, 0.15), rgba(var(--accent-pink-rgb), 0.1));
     box-shadow: 0 4px 20px rgba(255, 177, 180, 0.3);
 }
 
@@ -3551,11 +3611,11 @@ html[data-theme="light"] .role-card:hover {
     color: var(--text-secondary);
     padding: 4px 8px;
     border-radius: 6px;
-    transition: all 0.2s;
+    transition: background 0.2s, color 0.2s;
 }
 
 .chat-input-options .checkbox-label:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
 }
 
 .chat-input-options .checkbox-label input {
@@ -3572,11 +3632,11 @@ html[data-theme="light"] .role-card:hover {
 
 /* Unrestricted mode special styling */
 .chat-input-options .checkbox-label.unrestricted-toggle input:checked + .checkbox-icon {
-    color: #ff6b6b;
+    color: var(--accent-red);
 }
 
 .chat-input-options .checkbox-label.unrestricted-toggle input:checked ~ .checkbox-text {
-    color: #ff6b6b;
+    color: var(--accent-red);
 }
 
 .btn-attach {
@@ -3586,11 +3646,11 @@ html[data-theme="light"] .role-card:hover {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background 0.2s, border-color 0.2s;
 }
 
 .btn-attach:hover {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     border-color: var(--accent-purple);
 }
 
@@ -3818,11 +3878,11 @@ html[data-theme="light"] .role-card:hover {
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.2s var(--ease-smooth);
+    transition: background 0.2s var(--ease-smooth), border-color 0.2s var(--ease-smooth);
 }
 
 .chat-file-row .file-delete:hover {
-    background: rgba(248, 113, 113, 0.12);
+    background: rgba(var(--accent-red-rgb), 0.12);
     border-color: var(--accent-red);
 }
 
@@ -3959,12 +4019,12 @@ html[data-theme="light"] .role-card:hover {
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.2s var(--ease-smooth);
+    transition: background 0.2s var(--ease-smooth), border-color 0.2s var(--ease-smooth);
     margin-right: 6px;
 }
 
 .chat-file-row .file-edit:hover {
-    background: rgba(34, 211, 238, 0.12);
+    background: rgba(var(--accent-cyan-rgb), 0.12);
     border-color: var(--accent-cyan);
 }
 
@@ -4020,7 +4080,7 @@ html[data-theme="light"] .role-card:hover {
     border-radius: 20px;
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
     font-size: 0.9rem;
 }
 
@@ -4046,7 +4106,7 @@ html[data-theme="light"] .role-card:hover {
     border: 1px solid var(--border-color);
     border-radius: 12px;
     padding: 16px;
-    transition: all 0.2s;
+    transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .memory-card:hover {
@@ -4065,7 +4125,7 @@ html[data-theme="light"] .role-card:hover {
     font-size: 0.75rem;
     padding: 4px 10px;
     border-radius: 12px;
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     color: var(--accent-purple);
     text-transform: capitalize;
 }
@@ -4098,7 +4158,7 @@ html[data-theme="light"] .role-card:hover {
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.8rem;
-    transition: all 0.2s;
+    transition: background 0.2s, color 0.2s;
 }
 
 .memory-delete-btn:hover {
@@ -4206,7 +4266,7 @@ html[data-theme="light"] #add-memory-modal select {
     border-left: 3px solid var(--accent-purple);
     margin: 8px 0;
     padding: 8px 16px;
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     border-radius: 0 8px 8px 0;
     color: var(--text-secondary);
     font-style: italic;
@@ -4238,7 +4298,7 @@ html[data-theme="light"] .thinking-content blockquote {
 }
 
 .md-table th {
-    background: rgba(168, 85, 247, 0.2);
+    background: rgba(var(--accent-purple-rgb), 0.2);
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
@@ -4250,7 +4310,7 @@ html[data-theme="light"] .thinking-content blockquote {
 }
 
 .md-table tbody tr:hover td {
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
 }
 
 /* Markdown table column alignment (:--- / :---: / ---:). Replaces the old
@@ -4312,7 +4372,7 @@ html[data-theme="light"] .thinking-content .md-hr {
     font-size: 0.7rem;
     padding: 2px 8px;
     border-radius: 10px;
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(255, 107, 157, 0.2));
+    background: linear-gradient(135deg, rgba(var(--accent-purple-rgb), 0.2), rgba(var(--accent-pink-rgb), 0.2));
     color: var(--accent-purple);
     margin-left: 8px;
     white-space: nowrap;
@@ -4325,17 +4385,17 @@ html[data-theme="light"] .thinking-content .md-hr {
        is itself exempt from CSP. */
     display: none;
     margin-bottom: 12px;
-    border: 1px solid rgba(168, 85, 247, 0.3);
+    border: 1px solid rgba(var(--accent-purple-rgb), 0.3);
     border-radius: 8px;
     overflow: hidden;
-    background: rgba(168, 85, 247, 0.05);
+    background: rgba(var(--accent-purple-rgb), 0.05);
 }
 
 .thinking-header {
     padding: 8px 12px;
     font-size: 0.85rem;
     color: var(--accent-purple);
-    background: rgba(168, 85, 247, 0.1);
+    background: rgba(var(--accent-purple-rgb), 0.1);
     font-weight: 500;
     display: flex;
     align-items: center;
@@ -4486,7 +4546,7 @@ body::before {
     background:
         radial-gradient(ellipse at 20% 0%, var(--glow-pink), transparent 45%),
         radial-gradient(ellipse at 80% 100%, var(--glow-purple), transparent 50%),
-        radial-gradient(ellipse at 100% 30%, rgba(34, 211, 238, 0.08), transparent 50%);
+        radial-gradient(ellipse at 100% 30%, rgba(var(--accent-cyan-rgb), 0.08), transparent 50%);
     opacity: 0.6;
     pointer-events: none;
     z-index: 0;
@@ -4651,19 +4711,19 @@ html[data-theme="light"] .sidebar {
 }
 
 .btn-primary:hover:not(:disabled) {
-    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(74, 222, 128, 0.45);
+    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(var(--accent-green-rgb), 0.45);
 }
 
 .btn-danger:hover:not(:disabled) {
-    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(248, 113, 113, 0.45);
+    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(var(--accent-red-rgb), 0.45);
 }
 
 .btn-secondary:hover:not(:disabled) {
-    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(168, 85, 247, 0.45);
+    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(var(--accent-purple-rgb), 0.45);
 }
 
 .btn-warning:hover:not(:disabled) {
-    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(251, 146, 60, 0.45);
+    box-shadow: var(--shadow-lg-3d), 0 0 28px rgba(var(--accent-orange-rgb), 0.45);
 }
 
 /* Ripple element injected by JS — positioned via CSS variables */
@@ -4846,7 +4906,7 @@ html[data-theme="light"] .modal-overlay {
  * ---------------------------------------------------------------------*/
 .api-endpoint-item {
     transform-style: preserve-3d;
-    transition: all 0.35s var(--ease-out-expo);
+    transition: transform 0.35s var(--ease-out-expo), box-shadow 0.35s var(--ease-out-expo), border-color 0.35s var(--ease-out-expo);
     box-shadow: var(--shadow-sm-3d);
 }
 
@@ -4892,8 +4952,8 @@ select:focus,
      * rule lower in this file. */
     outline: none;
     box-shadow:
-        0 0 0 3px rgba(168, 85, 247, 0.25),
-        0 0 16px rgba(168, 85, 247, 0.3),
+        0 0 0 3px rgba(var(--accent-purple-rgb), 0.25),
+        0 0 16px rgba(var(--accent-purple-rgb), 0.3),
         var(--shadow-sm-3d);
     border-color: var(--accent-purple);
     transition: box-shadow 0.25s var(--ease-smooth), border-color 0.25s var(--ease-smooth);
@@ -4969,24 +5029,57 @@ html[data-theme="light"] * {
     outline-offset: 3px;
     box-shadow:
         var(--shadow-lg-3d),
-        0 0 0 4px rgba(34, 211, 238, 0.35);
+        0 0 0 4px rgba(var(--accent-cyan-rgb), 0.35);
 }
 
 /* -----------------------------------------------------------------------
  * Skeleton loader — shimmer placeholder
- * Usage: <div class="skeleton" style="width: 120px; height: 20px;"></div>
+ *
+ * CSP NOTE: This app ships with ``style-src 'self'`` (no
+ * ``unsafe-inline``), so inline ``style="width: ..px"`` attributes are
+ * BLOCKED by the browser. Instead of inline sizing, pair the
+ * ``.skeleton`` base class with ``data-w=N`` / ``data-h=N`` attributes
+ * (matched by the attribute selectors below) to pick a discrete size.
+ *
+ * Usage: <div class="skeleton" data-w="120" data-h="20"></div>
+ *
+ * Need a width not in the predefined set? Add a new selector to the
+ * attribute-selector list below — keeping sizing CSP-safe is preferred
+ * over loosening the style-src directive.
  * ---------------------------------------------------------------------*/
 .skeleton {
     background: linear-gradient(
         90deg,
         var(--bg-tertiary) 25%,
-        rgba(168, 85, 247, 0.15) 50%,
+        rgba(var(--accent-purple-rgb), 0.15) 50%,
         var(--bg-tertiary) 75%);
     background-size: 200% 100%;
     animation: skeleton-shimmer 1.8s ease-in-out infinite;
     border-radius: 8px;
     display: inline-block;
 }
+
+/* Predefined sizes — see the comment block above for usage. The
+   ``data-w="100p"`` form means 100% (filling the parent), which is the
+   most common case for inline replacements of a known-width text line. */
+.skeleton[data-w="40"]   { width: 40px; }
+.skeleton[data-w="60"]   { width: 60px; }
+.skeleton[data-w="80"]   { width: 80px; }
+.skeleton[data-w="100"]  { width: 100px; }
+.skeleton[data-w="120"]  { width: 120px; }
+.skeleton[data-w="140"]  { width: 140px; }
+.skeleton[data-w="160"]  { width: 160px; }
+.skeleton[data-w="200"]  { width: 200px; }
+.skeleton[data-w="240"]  { width: 240px; }
+.skeleton[data-w="100p"] { width: 100%; }
+.skeleton[data-h="12"]   { height: 12px; }
+.skeleton[data-h="14"]   { height: 14px; }
+.skeleton[data-h="16"]   { height: 16px; }
+.skeleton[data-h="18"]   { height: 18px; }
+.skeleton[data-h="20"]   { height: 20px; }
+.skeleton[data-h="24"]   { height: 24px; }
+.skeleton[data-h="32"]   { height: 32px; }
+.skeleton[data-h="40"]   { height: 40px; }
 
 @keyframes skeleton-shimmer {
     0%   { background-position: 200% 0; }
@@ -5059,10 +5152,10 @@ html[data-theme="light"] h3 {
 
 @keyframes send-ready-pulse {
     0%, 100% {
-        box-shadow: var(--shadow-md-3d), 0 0 0 0 rgba(168, 85, 247, 0.45);
+        box-shadow: var(--shadow-md-3d), 0 0 0 0 rgba(var(--accent-purple-rgb), 0.45);
     }
     50% {
-        box-shadow: var(--shadow-md-3d), 0 0 0 10px rgba(168, 85, 247, 0);
+        box-shadow: var(--shadow-md-3d), 0 0 0 10px rgba(var(--accent-purple-rgb), 0);
     }
 }
 
@@ -5140,7 +5233,7 @@ html[data-theme="light"] h3 {
     background: linear-gradient(
         90deg,
         var(--bg-tertiary) 0%,
-        rgba(168, 85, 247, 0.22) 50%,
+        rgba(var(--accent-purple-rgb), 0.22) 50%,
         var(--bg-tertiary) 100%) !important;
     background-size: 200% 100% !important;
     animation: skeleton-shimmer 1.6s ease-in-out infinite !important;

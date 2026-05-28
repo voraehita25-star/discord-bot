@@ -1,6 +1,20 @@
 import type { Page } from '@playwright/test';
 
 /**
+ * Per-command overrides for the IPC bridge. Stored on
+ * ``window.__mockTauriOverrides`` so tests can swap a single command's
+ * behavior without rebuilding the whole bridge.
+ *
+ * Two override shapes:
+ *   - return:  resolve with this value (any shape — useful for malformed data).
+ *   - reject:  reject with an Error containing this message.
+ */
+export interface MockTauriOverride {
+    return?: unknown;
+    reject?: string;
+}
+
+/**
  * Inject a mock `window.__TAURI__` IPC bridge + a fake WebSocket before
  * any page script runs. Without these the dashboard JS would either crash on
  * the missing bridge or sit forever waiting for a backend.
@@ -8,14 +22,33 @@ import type { Page } from '@playwright/test';
  * The mocks are intentionally shallow — they return enough of the right shape
  * to let the UI render and accept user input. Tests that need richer
  * behavior can layer additional invoke handlers via page.evaluate().
+ *
+ * Failure-path tests use ``setInvokeOverride`` / ``setInvokeReject`` to swap
+ * a single command's response (or make it reject) without re-installing the
+ * entire bridge.
  */
 export async function installDashboardMocks(page: Page): Promise<void> {
     await page.addInitScript(() => {
+        // ----- Per-test override table (populated by setInvokeOverride). -----
+        // Keyed by command name. Each invoke() consults this first; if a
+        // matching entry exists it wins over the default response.
+        (window as unknown as {
+            __mockTauriOverrides: Record<string, { return?: unknown; reject?: string }>;
+        }).__mockTauriOverrides = {};
+
         // ----- Tauri invoke mock -----
         // Returns sensible defaults for every command the app calls during
         // bootstrap (settings load, theme detection, etc). Unknown commands
         // resolve to null so the catch-all UI paths don't throw.
         const tauriInvoke = async <T>(cmd: string, _args?: Record<string, unknown>): Promise<T> => {
+            // Honor test-supplied overrides first.
+            const ov = (window as unknown as {
+                __mockTauriOverrides?: Record<string, { return?: unknown; reject?: string }>;
+            }).__mockTauriOverrides?.[cmd];
+            if (ov) {
+                if (ov.reject !== undefined) throw new Error(ov.reject);
+                return ov.return as T;
+            }
             const defaults: Record<string, unknown> = {
                 get_settings: {
                     theme: 'dark',
@@ -176,4 +209,55 @@ export async function getSentFrames(page: Page): Promise<string[]> {
         return ((window as unknown as { __mockWsLastSent?: { frames: string[] } })
             .__mockWsLastSent?.frames ?? []).slice();
     });
+}
+
+/**
+ * Replace a single invoke command's response value. Pass `null` to revert
+ * to the default (or call `clearInvokeOverride`). Useful for testing the
+ * malformed-data path: ``await setInvokeOverride(page, 'get_status', null)``.
+ */
+export async function setInvokeOverride(
+    page: Page,
+    cmd: string,
+    value: unknown,
+): Promise<void> {
+    await page.evaluate(
+        ({ cmd, value }) => {
+            const ov = (window as unknown as {
+                __mockTauriOverrides?: Record<string, { return?: unknown; reject?: string }>;
+            }).__mockTauriOverrides;
+            if (ov) ov[cmd] = { return: value };
+        },
+        { cmd, value },
+    );
+}
+
+/**
+ * Make a single invoke command reject with the given message. The dashboard
+ * normally surfaces this as a toast (e.g. start_bot failure).
+ */
+export async function setInvokeReject(
+    page: Page,
+    cmd: string,
+    message: string,
+): Promise<void> {
+    await page.evaluate(
+        ({ cmd, message }) => {
+            const ov = (window as unknown as {
+                __mockTauriOverrides?: Record<string, { return?: unknown; reject?: string }>;
+            }).__mockTauriOverrides;
+            if (ov) ov[cmd] = { reject: message };
+        },
+        { cmd, message },
+    );
+}
+
+/** Remove a per-command override (revert to the default response). */
+export async function clearInvokeOverride(page: Page, cmd: string): Promise<void> {
+    await page.evaluate((cmd) => {
+        const ov = (window as unknown as {
+            __mockTauriOverrides?: Record<string, { return?: unknown; reject?: string }>;
+        }).__mockTauriOverrides;
+        if (ov) delete ov[cmd];
+    }, cmd);
 }

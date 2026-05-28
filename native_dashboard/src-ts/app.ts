@@ -7,7 +7,7 @@
  * Shared utilities in shared.ts.
  */
 
-import type { BotStatus, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings, ToastOptions } from './types.js';
+import type { BotStatus, DbStats, ChannelInfo, UserInfo, ChartDataPoint, Settings, ToastOptions } from './types.js';
 import {
     invoke,
     errorLogger,
@@ -30,48 +30,21 @@ import {
     initChatManager,
     initMemoryManager,
 } from './chat-manager.js';
+import {
+    DataCache,
+    addChartDataPoint,
+    filterLogs,
+    getLogLevel,
+    debounce as debounceFn,
+} from './app-helpers.js';
 
 // ============================================================================
 // Performance Cache System
 // ============================================================================
-
-class DataCache {
-    private cache: Map<string, CacheEntry<unknown>> = new Map();
-    private readonly maxSize = 200;
-
-    set<T>(key: string, data: T, ttlMs: number = 5000): void {
-        // Evict oldest entries if at capacity
-        if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
-            const oldest = this.cache.keys().next().value;
-            if (oldest !== undefined) this.cache.delete(oldest);
-        }
-        this.cache.set(key, {
-            data,
-            timestamp: Date.now(),
-            ttl: ttlMs
-        });
-    }
-
-    get<T>(key: string): T | null {
-        const entry = this.cache.get(key);
-        if (!entry) return null;
-        
-        if (Date.now() - entry.timestamp > entry.ttl) {
-            this.cache.delete(key);
-            return null;
-        }
-        
-        return entry.data as T;
-    }
-
-    invalidate(key: string): void {
-        this.cache.delete(key);
-    }
-
-    clear(): void {
-        this.cache.clear();
-    }
-}
+// DataCache lives in ./app-helpers.ts so both the runtime and the unit-test
+// suite (src-ts/app.test.ts) exercise the same implementation. The shared
+// instance below is the one the runtime uses to memoize bot-status / db-stats
+// IPC responses for ~1.5s.
 
 const dataCache = new DataCache();
 
@@ -92,7 +65,7 @@ const MAX_CHART_POINTS = 60;
 
 // Settings with defaults
 
-const debounceTimers: Map<string, number> = new Map();
+const debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
 // ============================================================================
 // Initialization
@@ -298,16 +271,9 @@ function initCharts(): void {
     window.addEventListener('resize', debounce(updateCharts, 'resize', 250));
 }
 
-function addChartDataPoint(history: ChartDataPoint[], value: number): void {
-    history.push({
-        timestamp: Date.now(),
-        value
-    });
-    
-    while (history.length > MAX_CHART_POINTS) {
-        history.shift();
-    }
-}
+// addChartDataPoint lives in ./app-helpers.ts (imported above). The runtime
+// passes MAX_CHART_POINTS through as the third argument; the unit test pins
+// its own maxPoints to keep the assertion bounds tight.
 
 function drawChart(canvasId: string, data: ChartDataPoint[], color: string, label: string): void {
     const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
@@ -423,6 +389,27 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 function updateCharts(): void {
     drawChart('memory-chart', memoryHistory, 'rgba(255, 107, 157, 1)', 'Memory MB');
     drawChart('messages-chart', messagesHistory, 'rgba(34, 211, 238, 1)', 'Messages');
+    // Keep the SR-only chart summaries in sync with the canvas data so
+    // ``aria-describedby`` + ``aria-live="polite"`` actually says
+    // something useful to a screen reader (the canvas itself is opaque
+    // to assistive tech). Pure latest-value summary so the live region
+    // doesn't shout every micro-tick; longer-term history is captured in
+    // the human-readable label above the chart.
+    updateChartSummary('memory-chart-summary', memoryHistory, 'MB');
+    updateChartSummary('messages-chart-summary', messagesHistory, 'messages');
+}
+
+function updateChartSummary(id: string, history: ChartDataPoint[], unit: string): void {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (history.length === 0) {
+        el.textContent = 'No data yet';
+        return;
+    }
+    const latest = history[history.length - 1].value;
+    const max = history.reduce((m, p) => Math.max(m, p.value), 0);
+    const min = history.reduce((m, p) => Math.min(m, p.value), latest);
+    el.textContent = `Current ${latest.toFixed(1)} ${unit}, range ${min.toFixed(1)} – ${max.toFixed(1)} ${unit} over last ${history.length} samples`;
 }
 
 // ============================================================================
@@ -746,18 +733,13 @@ function restartRefreshLoop(): void {
     startRefreshLoop();
 }
 
-// Debounce helper for performance
+// Debounce helper — thin wrapper that binds the runtime's shared debounceTimers
+// map to the pure debounce() in ./app-helpers.ts. Keeping the binding here means
+// every caller in this module fights over the same set of keys (correct: e.g.
+// 'resize' must coalesce across components) while the helper itself stays
+// testable in isolation.
 function debounce(fn: () => void, key: string, delay: number): () => void {
-    return () => {
-        const existing = debounceTimers.get(key);
-        if (existing) {
-            clearTimeout(existing);
-        }
-        debounceTimers.set(key, window.setTimeout(() => {
-            fn();
-            debounceTimers.delete(key);
-        }, delay));
-    };
+    return debounceFn(fn, key, delay, debounceTimers);
 }
 
 // Batch DOM updates for performance
@@ -794,10 +776,10 @@ async function updateStatus(): Promise<void> {
         // a warm cache (e.g. Ctrl+R immediately followed by the interval
         // tick), compressing the history into bunched-up clusters.
         if (!cachedStatus) {
-            addChartDataPoint(memoryHistory, status.memory_mb);
+            addChartDataPoint(memoryHistory, status.memory_mb, MAX_CHART_POINTS);
         }
         if (!cachedDbStats) {
-            addChartDataPoint(messagesHistory, dbStats.total_messages);
+            addChartDataPoint(messagesHistory, dbStats.total_messages, MAX_CHART_POINTS);
         }
 
         // Batch all DOM updates
@@ -1041,22 +1023,16 @@ async function loadLogs(): Promise<void> {
             return;
         }
 
-        // Use DocumentFragment for better performance
+        // Use DocumentFragment for better performance. filterLogs/getLogLevel
+        // live in ./app-helpers.ts so they can be unit-tested without a DOM —
+        // see src-ts/app.test.ts for the level-classification cases.
         const fragment = document.createDocumentFragment();
-
-        logs.forEach((line: string) => {
-            let level = 'info';
-            if (line.includes('ERROR')) level = 'error';
-            else if (line.includes('WARNING')) level = 'warning';
-            else if (line.includes('DEBUG')) level = 'debug';
-
-            if (filter === 'all' || line.includes(filter)) {
-                const div = document.createElement('div');
-                div.className = `log-line ${level}`;
-                div.textContent = line;
-                fragment.appendChild(div);
-            }
-        });
+        for (const line of filterLogs(logs, filter)) {
+            const div = document.createElement('div');
+            div.className = `log-line ${getLogLevel(line)}`;
+            div.textContent = line;
+            fragment.appendChild(div);
+        }
 
         container.innerHTML = '';
         container.appendChild(fragment);

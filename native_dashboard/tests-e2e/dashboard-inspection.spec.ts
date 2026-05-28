@@ -31,6 +31,20 @@ const findings: InspectionFinding[] = [];
 // Real nav items rendered in ui/index.html (not the speculative list I had).
 const PAGES = ['status', 'chat', 'memories', 'logs', 'database', 'settings'];
 
+/**
+ * Console-error messages that come from the Playwright/mock environment, not
+ * from a real dashboard regression. Matched against `finding.detail`.
+ *
+ *   __TAURI__ / invoke    — IPC bridge is mocked; runtime checks for the
+ *                            window.__TAURI__ global and warns when absent.
+ *   WebSocket             — the chat WS is a stubbed MockWebSocket; failed-
+ *                            reconnect attempts surface as console.error.
+ *   Failed to load resource — static asset hiccups during page tear-down.
+ *   Refused to apply inline style / frame-ancestors — Playwright Chromium's
+ *                            CSP differs from Tauri WebView2; benign.
+ */
+const KNOWN_NOISE = /__TAURI__|invoke|WebSocket|Failed to load resource|Refused to apply inline style|frame-ancestors|sourcemap|Source map error/i;
+
 function attachLogging(page: Page, pageName: string): void {
     page.on('console', (msg: ConsoleMessage) => {
         const t = msg.type();
@@ -369,5 +383,51 @@ test.describe('Dashboard UI deep inspection', () => {
             // eslint-disable-next-line no-console
             console.log(`  [${f.kind}] ${f.page}: ${f.detail}`);
         }
+
+        // ----- Real assertions ---------------------------------------------
+        // Previously this afterAll only wrote findings to disk, which meant
+        // EVERY test passed even when the dashboard threw runtime errors,
+        // overflowed the viewport, or rendered broken <img> elements. Now we
+        // fail on the kinds that indicate a real regression.
+        //
+        // expect.soft is used so a single CI run surfaces *all* problems
+        // instead of stopping at the first.
+        const filterDetail = (kind: InspectionFinding['kind']): InspectionFinding[] =>
+            findings.filter((f) => f.kind === kind);
+
+        const consoleErrors = filterDetail('console-error').filter(
+            (e) => !KNOWN_NOISE.test(String(e.detail ?? '')),
+        );
+        const jsRuntime = filterDetail('js-runtime').filter(
+            (e) => !KNOWN_NOISE.test(String(e.detail ?? '')),
+        );
+        const networkFailures = filterDetail('network-failure').filter(
+            (e) => !KNOWN_NOISE.test(String(e.detail ?? '')),
+        );
+        const overflows = filterDetail('layout');
+        const brokenImages = filterDetail('broken-image');
+        const a11yIssues = filterDetail('a11y');
+
+        const fmt = (xs: InspectionFinding[]): string =>
+            xs.map((f) => `  [${f.page}] ${f.detail}`).join('\n');
+
+        expect
+            .soft(consoleErrors, `Unexpected console errors (${consoleErrors.length}):\n${fmt(consoleErrors)}`)
+            .toEqual([]);
+        expect
+            .soft(jsRuntime, `Unhandled JS runtime exceptions (${jsRuntime.length}):\n${fmt(jsRuntime)}`)
+            .toEqual([]);
+        expect
+            .soft(networkFailures, `Unexpected network failures (${networkFailures.length}):\n${fmt(networkFailures)}`)
+            .toEqual([]);
+        expect
+            .soft(overflows, `Layout overflow / z-index issues (${overflows.length}):\n${fmt(overflows)}`)
+            .toEqual([]);
+        expect
+            .soft(brokenImages, `Broken <img> with empty src (${brokenImages.length}):\n${fmt(brokenImages)}`)
+            .toEqual([]);
+        expect
+            .soft(a11yIssues, `Accessibility issues (${a11yIssues.length}):\n${fmt(a11yIssues)}`)
+            .toEqual([]);
     });
 });
