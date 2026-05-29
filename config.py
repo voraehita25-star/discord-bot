@@ -47,7 +47,7 @@ class BotSettings:
         default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"), repr=False
     )
     anthropic_base_url: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL"))
-    claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-7"))
+    claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-opus-4-8"))
 
     # Gemini AI (used for RAG embeddings only)
     gemini_api_key: str | None = field(

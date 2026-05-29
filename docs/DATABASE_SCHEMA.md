@@ -330,7 +330,7 @@ Index: `idx_music_queue_guild(guild_id, position)`
 | output_length    | INTEGER  |                           |
 | response_time_ms | REAL     |                           |
 | intent           | TEXT     |                           |
-| model            | TEXT     | DEFAULT 'claude-opus-4-7' (was `'gemini'`, bumped via migration 012) |
+| model            | TEXT     | DEFAULT 'claude-opus-4-8' (was `'gemini'`, bumped via migrations 012 → 016) |
 | tool_calls       | INTEGER  | DEFAULT 0                 |
 | cache_hit        | BOOLEAN  | DEFAULT 0                 |
 | error            | TEXT     |                           |
@@ -348,7 +348,7 @@ Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_gu
 | guild_id      | INTEGER  |                                  |
 | input_tokens  | INTEGER  | NOT NULL                         |
 | output_tokens | INTEGER  | NOT NULL                         |
-| model         | TEXT     | DEFAULT 'claude-opus-4-7'        |
+| model         | TEXT     | DEFAULT 'claude-opus-4-8'        |
 | cached        | BOOLEAN  | DEFAULT 0                        |
 | created_at    | DATETIME | DEFAULT CURRENT_TIMESTAMP        |
 

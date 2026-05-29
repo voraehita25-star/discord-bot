@@ -248,7 +248,7 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
 def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
     """Decode base64 DOCX and pull paragraph text via python-docx."""
     if DOCX_DISABLED:
-        logger.warning("DOCX extraction disabled (defusedxml missing): %s", filename)
+        logger.warning("DOCX extraction disabled (python-docx not installed): %s", filename)
         return None
 
     docx_bytes = _decode_data_url(data_field)

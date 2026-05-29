@@ -182,7 +182,7 @@ Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id
 | output_length | INTEGER | |
 | response_time_ms | REAL | |
 | intent | TEXT | |
-| model | TEXT | DEFAULT 'claude-opus-4-7' |
+| model | TEXT | DEFAULT 'claude-opus-4-8' |
 | tool_calls | INTEGER | DEFAULT 0 |
 | cache_hit | BOOLEAN | DEFAULT 0 |
 | error | TEXT | |
@@ -200,7 +200,7 @@ Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_gu
 | guild_id | INTEGER | |
 | input_tokens | INTEGER | NOT NULL |
 | output_tokens | INTEGER | NOT NULL |
-| model | TEXT | DEFAULT 'claude-opus-4-7' |
+| model | TEXT | DEFAULT 'claude-opus-4-8' |
 | cached | BOOLEAN | DEFAULT 0 |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
@@ -360,3 +360,4 @@ File extension is `.sqlite.sql` (not `.sql`) — the VS Code mssql extension fla
 | 013_dashboard_pin_message.sqlite.sql | Record is_pinned column + partial index for dashboard_messages |
 | 014_dashboard_tags_and_likes.sqlite.sql | Add `liked` column to dashboard_messages + new `dashboard_conversation_tags` table |
 | 015_ai_history_summarized_at.sqlite.sql | Add nullable `summarized_at` column + partial index to ai_history (consolidator dedup — `WHERE summarized_at IS NULL`) |
+| 016_bump_default_model_opus_4_8.sqlite.sql | Bump default model to claude-opus-4-8 on token_usage + ai_analytics (historical rows preserved via COALESCE) |

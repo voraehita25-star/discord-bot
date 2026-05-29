@@ -26,7 +26,7 @@ dev: ## Run the bot with dev watcher
 
 # ======================== Testing ========================
 
-test: ## Run all Python tests (~15s, 3007 tests)
+test: ## Run all Python tests (~15s, 3371 tests)
 	python -m pytest tests/ -v --tb=short
 
 test-quick: ## Run tests without verbose output

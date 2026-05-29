@@ -30,7 +30,7 @@ from ..data import (
     FAUST_INSTRUCTION,
     ROLEPLAY_ASSISTANT_INSTRUCTION,
 )
-from ..data.constants import CLAUDE_MAX_TOKENS
+from ..data.constants import CLAUDE_EFFORT, CLAUDE_MAX_TOKENS
 
 # Import circuit breaker for API protection
 try:
@@ -967,6 +967,12 @@ async def call_claude_api(
             thinking_config = config_params.get("thinking")
             if thinking_config:
                 api_kwargs["thinking"] = thinking_config
+
+            # Forward effort (Opus-tier reasoning depth, defaults to "max"). On
+            # adaptive-thinking models (Opus 4.7+/4.8) effort governs how deeply
+            # the model reasons; only sent when configured to a valid tier.
+            if CLAUDE_EFFORT:
+                api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
 
             api_timeout = 120.0
             try:

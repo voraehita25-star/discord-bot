@@ -12,7 +12,7 @@ Production-ready Discord bot with Claude AI chat, music player, and advanced mem
 
 | Feature | Description |
 | ------- | ----------- |
-| 🤖 **AI Chat** | Claude (claude-opus-4-7, 1M context) powered conversations with memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
+| 🤖 **AI Chat** | Claude (claude-opus-4-8, 1M context, Max thinking) powered conversations with memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
 | 📎 **Document Attachments (Dashboard)** | Drag-drop PDF / DOCX / text / code (20+ types, 32 MB cap). Extracted text persists in SQLite per-conversation — no need to re-upload RP material |
@@ -71,7 +71,7 @@ python bot.py
 | -------- | -------- | ----------- |
 | `DISCORD_TOKEN` | ✅ | Discord bot token |
 | `ANTHROPIC_API_KEY` | ⚠️ | Anthropic API key. Only required when `CLAUDE_BACKEND=api`. The default `cli` mode reads credentials from your Claude Code login instead. |
-| `CLAUDE_BACKEND` | ❌ | Claude backend mode: `cli` (default — spawn `claude -p`, uses your Claude Code Max subscription quota, no per-token charge) or `api` (anthropic SDK + per-token billing, enables Discord-side AI replies + memory consolidator + summarizer). |
+| `CLAUDE_BACKEND` | ❌ | Claude backend mode: `cli` (default — spawn `claude -p`, uses your Claude Code Max subscription quota, no per-token charge) or `api` (anthropic SDK + per-token billing). Discord AI replies + dashboard chat work in **both** modes; `api` additionally enables the memory consolidator + history summarizer (both disabled under `cli`). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | Only needed for `CLAUDE_BACKEND=cli` when the bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
 | `GEMINI_API_KEY` | ❌ | Google Gemini API key for embeddings/RAG (only used when `CLAUDE_BACKEND=api`). |
 | `RAG_ALLOW_LEGACY_PICKLE` | ❌ | Opt-in flag to load pre-v3.3 FAISS `.npy` (pickle) sidecar files. Off by default — pickle deserialization is an RCE sink. Only enable when migrating a trusted old deployment. |
@@ -123,7 +123,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Python suite (3,368 pytest); native_dashboard/tests-e2e/ for Playwright (73 e2e + a11y + visual)
+├── tests/              # Python suite (3,371 pytest); native_dashboard/tests-e2e/ for Playwright (73 e2e + a11y + visual)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -308,4 +308,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.3.15 | **Python:** 3.14+ | **Tests:** 3,368 pytest ✅ + 189 vitest ✅ + 73 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** May 25, 2026
+**Version:** 3.4.0 | **Python:** 3.14+ | **Tests:** 3,371 pytest ✅ + 189 vitest ✅ + 73 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** May 29, 2026

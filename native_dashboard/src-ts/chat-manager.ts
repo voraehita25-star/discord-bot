@@ -398,6 +398,13 @@ export class ChatManager {
             const detail = await invoke<NativeConversationDetail>('get_dashboard_conversation_detail_native', {
                 conversationId: id,
             });
+            // Drop a late-arriving fallback load if the user already switched to
+            // a different conversation while this invoke was in flight. Mirrors
+            // the ``conversation_loaded`` WS-path guard so the offline/SQLite
+            // path can't replace the now-current view with a stale one.
+            if (this.pendingConversationLoadId !== null && this.pendingConversationLoadId !== id) {
+                return;
+            }
             if (!detail.conversation) {
                 errorLogger.log('NATIVE_CONVERSATION_LOAD_ERROR', `Conversation ${id} not found in SQLite fallback`);
                 showToast('Conversation not found', { type: 'error' });

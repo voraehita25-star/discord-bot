@@ -3,7 +3,7 @@
 
 [project]
 name = "discord-bot"
-version = "3.3.15"
+version = "3.4.0"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
 requires-python = ">=3.14"
 

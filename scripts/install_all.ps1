@@ -279,7 +279,7 @@ if (Test-CommandExists "go") {
         winget install GoLang.Go --accept-source-agreements --accept-package-agreements -h
     } else {
         Write-Info "Downloading Go installer..."
-        $goUrl = "https://go.dev/dl/go1.23.5.windows-amd64.msi"
+        $goUrl = "https://go.dev/dl/go1.26.3.windows-amd64.msi"
         $goFile = "$DownloadDir\go-installer.msi"
         Invoke-VerifiedDownload -Uri $goUrl -OutFile $goFile
         Write-Info "Installing Go (silent)..."

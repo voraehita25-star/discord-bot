@@ -65,7 +65,7 @@ class TestBotSettings:
 
             assert settings.discord_token == ""
             assert settings.gemini_api_key is None
-            assert settings.claude_model == "claude-opus-4-7"
+            assert settings.claude_model == "claude-opus-4-8"
             assert settings.auto_disconnect_delay == 180
             assert settings.default_volume == 0.5
             assert settings.max_queue_size == 500

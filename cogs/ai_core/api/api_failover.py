@@ -496,7 +496,7 @@ class APIFailoverManager:
             # Use a minimal count_tokens call as health check (cheapest API call)
             await asyncio.wait_for(
                 client.messages.count_tokens(
-                    model=os.getenv("CLAUDE_MODEL", "claude-opus-4-7"),
+                    model=os.getenv("CLAUDE_MODEL", "claude-opus-4-8"),
                     messages=[{"role": "user", "content": "ping"}],
                 ),
                 timeout=15,

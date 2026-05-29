@@ -6,7 +6,7 @@
 
 | Feature | Description |
 |---------|-------------|
-| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). 1M-token context window active by default when using CLI backend. 200K chars/message cap (raised from 50K). |
+| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). Opus 4.8 provides a 1M-token context window natively on both backends. 200K chars/message cap (raised from 50K). |
 | 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
 | 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
 | ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |
@@ -133,7 +133,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 7 vitest files (128 tests total)
+│       └── *.test.ts             # 10 vitest files (189 tests total)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)

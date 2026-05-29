@@ -225,6 +225,25 @@ from .dashboard_config import (
     GENERAL_UNRESTRICTED_FRAMING,
 )
 
+# Models that use adaptive thinking (``thinking: {type: "adaptive"}``) rather than
+# the deprecated manual ``budget_tokens`` form. Opus 4.7+ (incl. 4.8) REJECT
+# ``budget_tokens`` with a 400, so matching them here is essential. Older
+# extended-thinking-only models (Opus 4.5/4.1, Sonnet 4.5) fall through to the
+# budget_tokens branch for backward compatibility.
+_ADAPTIVE_THINKING_MODELS: tuple[str, ...] = (
+    "opus-4-8",
+    "opus-4-7",
+    "opus-4-6",
+    "sonnet-4-6",
+    "mythos",
+)
+
+
+def _uses_adaptive_thinking(model: str) -> bool:
+    """True if the model uses adaptive thinking instead of manual budget_tokens."""
+    model_lower = model.lower()
+    return any(tag in model_lower for tag in _ADAPTIVE_THINKING_MODELS)
+
 
 async def handle_chat_message_claude(
     ws: WebSocketResponse,
@@ -724,13 +743,12 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
 
     # Thinking config:
-    # - Opus 4.7 REJECTS `type: "enabled"` with budget_tokens. Use adaptive
-    #   thinking instead; effort controls thinking depth.
-    # - Older models (Opus 4.6, Sonnet 4.6, Opus 4.5) still accept the
-    #   enabled+budget_tokens form, kept for backward compatibility.
+    # - Opus 4.7+ (incl. 4.8) REJECT `type: "enabled"` with budget_tokens. Use
+    #   adaptive thinking instead; effort (above) controls thinking depth.
+    # - Older models (Opus 4.5, Sonnet 4.5) still accept the enabled+budget_tokens
+    #   form, kept for backward compatibility.
     if thinking_enabled:
-        _model_lower = CLAUDE_MODEL.lower()
-        if "opus-4-7" in _model_lower or "mythos" in _model_lower:
+        if _uses_adaptive_thinking(CLAUDE_MODEL):
             api_kwargs["thinking"] = {"type": "adaptive"}
         else:
             _think_budget = min(32000, CLAUDE_MAX_TOKENS - 1024)
@@ -1374,8 +1392,7 @@ async def handle_ai_edit_message_claude(
         api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
 
     if thinking_enabled:
-        _model_lower = CLAUDE_MODEL.lower()
-        if "opus-4-7" in _model_lower or "mythos" in _model_lower:
+        if _uses_adaptive_thinking(CLAUDE_MODEL):
             api_kwargs["thinking"] = {"type": "adaptive"}
         else:
             _think_budget = min(32000, CLAUDE_MAX_TOKENS - 1024)

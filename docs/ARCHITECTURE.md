@@ -94,8 +94,8 @@
 | From → To | Protocol | Details |
 | ----------- | ---------- | --------- |
 | Bot ↔ Discord | WS/HTTP | discord.py AutoShardedBot |
-| Bot → Claude API | HTTP | api_failover.py — direct + proxy failover; hybrid prompt caching (explicit system + automatic history, 5-min ephemeral). Used by the Discord AI cog and by the dashboard chat when `CLAUDE_BACKEND=api` (default). |
-| Dashboard → Claude CLI | subprocess | Optional subscription-based path (`CLAUDE_BACKEND=cli`): spawns `claude -p --output-format stream-json` and bills against the user's Claude Code Max plan instead of per-token API. Dashboard chat only — Discord-side AI features still use the SDK path above. |
+| Bot → Claude API | HTTP | api_failover.py — direct + proxy failover; hybrid prompt caching (explicit system + automatic history, 5-min ephemeral). Active when `CLAUDE_BACKEND=api` (not the default): serves Discord AI cog + dashboard chat, and is **required** for the memory consolidator + history summarizer (both disabled under `cli`). |
+| Bot/Dashboard → Claude CLI | subprocess | **Default path** (`CLAUDE_BACKEND=cli`): spawns `claude -p --output-format stream-json` and bills against the user's Claude Code Max plan instead of per-token API. Serves **both** Discord-side AI replies and dashboard chat. The consolidator + summarizer are skipped in this mode (they need the SDK path above). |
 | Bot → Gemini API | HTTP | RAG embeddings, dashboard chat |
 | Dashboard ↔ Bot | WebSocket | :8765, HMAC auth via `DASHBOARD_WS_TOKEN` |
 | Bot → url_fetcher | HTTP | Python → Go service on :8081 |

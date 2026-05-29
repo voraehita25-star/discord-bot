@@ -198,13 +198,13 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `CLAUDE_MODEL` | `claude-opus-4-7` | Claude model name |
+| `CLAUDE_MODEL` | `claude-opus-4-8` | Claude model name |
 | `CLAUDE_MAX_TOKENS` | `128000` | Max output tokens per response |
-| `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 4.7 supports 1M with subscription auth (`CLAUDE_BACKEND=cli`) or `betas: context-1m` header on direct API |
+| `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 4.8 supports 1M natively (no beta header, no long-context premium) on both the CLI subscription path and the direct API |
 | `CLAUDE_BACKEND` | `cli` | Claude path for BOTH Discord chat and dashboard chat: `cli` (`claude -p` subprocess, Max subscription quota — default, no `ANTHROPIC_API_KEY` required) or `api` (Anthropic SDK, per-token billing — needs `ANTHROPIC_API_KEY`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `""` | Only needed when `CLAUDE_BACKEND=cli` and bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
-| `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-7` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
-| `CLAUDE_EFFORT` | `high` | Effort level: `low` / `medium` / `high` / `xhigh` / `max` |
+| `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-8` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
+| `CLAUDE_EFFORT` | `max` | Effort level: `low` / `medium` / `high` / `xhigh` / `max`. Defaults to `max` for deepest reasoning; lower it to reduce cost/latency. |
 | `GEMINI_API_KEY` | `""` | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |
