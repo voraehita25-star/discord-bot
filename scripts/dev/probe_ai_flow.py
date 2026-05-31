@@ -200,31 +200,6 @@ def probe_history_manager_trim() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. response_sender: closing-fence balance after every chunk
-# ---------------------------------------------------------------------------
-def probe_response_sender_fence_balance() -> None:
-    print("\n[response_sender] each chunk has balanced fences")
-    from cogs.ai_core.response.response_sender import ResponseSender
-
-    s = ResponseSender()
-
-    # Long fence-rich payload
-    payload = (
-        "intro\n```python\n" + "x = 1\n" * 80 + "```\n\n"
-        "mid text\n```js\n" + "let y = 2;\n" * 80 + "```\n"
-        "tail\n"
-    )
-    chunks = s.split_content(payload, max_length=200)
-    for i, c in enumerate(chunks):
-        fences = c.count("```")
-        check(
-            f"chunk {i} balanced fences (count={fences})",
-            fences % 2 == 0,
-            f"chunk={c[:50]!r}...",
-        )
-
-
-# ---------------------------------------------------------------------------
 # 6. Logic flow: end-to-end mocked AI turn
 # ---------------------------------------------------------------------------
 async def probe_ai_logic_flow() -> None:
@@ -354,7 +329,6 @@ async def main_async() -> None:
     await probe_fetch_url_blocks_private()
     await probe_storage_dedup()
     probe_history_manager_trim()
-    probe_response_sender_fence_balance()
     await probe_ai_logic_flow()
     await probe_rag_roundtrip()
     probe_webhook_cache_ttl()

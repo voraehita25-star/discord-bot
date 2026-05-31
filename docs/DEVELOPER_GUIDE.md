@@ -73,12 +73,10 @@ BOT/
 │       ├── core/             # 🏗️ Core Components
 │       │   ├── __init__.py
 │       │   ├── performance.py # 📊 Performance tracking
-│       │   ├── message_queue.py # 📬 Message queue
-│       │   └── context_builder.py # AI context building
+│       │   └── message_queue.py # 📬 Message queue
 │       │
 │       ├── response/         # 📤 Response Handling
 │       │   ├── __init__.py
-│       │   ├── response_sender.py # Webhook sending, chunking
 │       │   ├── response_mixin.py  # Response processing mixin
 │       │   └── webhook_cache.py   # Webhook caching
 │       │
@@ -118,9 +116,7 @@ BOT/
 │       ├── processing/       # 🔄 Request Processing
 │       │   ├── __init__.py
 │       │   ├── guardrails.py # ⚠️ Safety (is_silent_block) & unrestricted mode
-│       │   ├── intent_detector.py # Message intent classification
-│       │   ├── prompt_manager.py # System prompt templates
-│       │   └── self_reflection.py # Response quality checks
+│       │   └── intent_detector.py # Message intent classification
 │       │
 │       └── cache/            # 📊 Caching & Analytics
 │           ├── __init__.py
@@ -208,7 +204,6 @@ BOT/
 │   ├── test_music_queue.py   # 🆕 QueueManager tests
 │   ├── test_performance_tracker.py
 │   ├── test_rate_limiter.py
-│   ├── test_self_reflection.py # 🆕 SelfReflector tests
 │   ├── test_shutdown_manager.py # 🆕 Graceful shutdown tests
 │   ├── test_spotify_handler.py # 🆕 SpotifyHandler tests
 │   ├── test_spotify_integration.py

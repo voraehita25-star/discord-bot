@@ -6,11 +6,10 @@ Reorganized into subdirectories (v3.3.7):
 - api/       - Claude API handlers
 - cache/     - Caching and analytics
 - commands/  - Debug, memory, server commands
-- core/      - Performance, message queue, context building
+- core/      - Performance, message queue
 - data/      - Constants and configuration
 - memory/    - RAG, entity memory, history
 - processing/ - Guardrails, intent detection
-- prompts/   - System prompts
 - response/  - Response sending, webhooks
 - tools/     - Tool definitions and execution
 """
@@ -28,7 +27,6 @@ from .commands import DebugCommands, MemoryCommands, ServerCommands
 from .core import PERFORMANCE_SAMPLES_MAX
 
 # Modular components (direct imports from subfolders)
-from .core.context_builder import AIContext, ContextBuilder, context_builder
 from .core.message_queue import MessageQueue, PendingMessage, message_queue
 from .core.performance import (
     PerformanceTracker,
@@ -42,7 +40,6 @@ from .memory.conversation_branch import branch_manager
 from .memory.history_manager import HistoryManager
 from .memory.rag import rag_system
 from .memory.summarizer import summarizer
-from .processing.prompt_manager import prompt_manager
 
 # Optional processing modules — gracefully degrade if dependencies are missing
 try:
@@ -56,7 +53,6 @@ except ImportError:
     detect_intent = None  # type: ignore[assignment]
 
 from .response import ResponseMixin
-from .response.response_sender import ResponseSender, SendResult, response_sender
 from .tools import execute_tool_call, get_tool_definitions, send_as_webhook
 
 __all__ = [
@@ -71,8 +67,6 @@ __all__ = [
     "AIAnalytics",
     "AICache",
     # Modular components
-    "AIContext",
-    "ContextBuilder",
     "DebugCommands",
     "HistoryManager",
     "MemoryCommands",
@@ -81,8 +75,6 @@ __all__ = [
     "PerformanceTracker",
     "RequestDeduplicator",
     "ResponseMixin",
-    "ResponseSender",
-    "SendResult",
     "ServerCommands",
     "ai_analytics",
     "ai_cache",
@@ -90,16 +82,12 @@ __all__ = [
     # New subdirectory exports
     "build_api_config",
     "call_claude_api",
-    "context_builder",
     "detect_intent",
     "execute_tool_call",
     "get_tool_definitions",
     "message_queue",
     "performance_tracker",
-    "prompt_manager",
-    "rag_system",
     "request_deduplicator",
-    "response_sender",
     "send_as_webhook",
     "summarizer",
     "validate_response",

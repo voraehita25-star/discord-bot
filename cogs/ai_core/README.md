@@ -38,12 +38,10 @@ cogs/ai_core/
 ├── core/              # 🏗️ Core components
 │   ├── __init__.py
 │   ├── performance.py # 📊 Performance tracking
-│   ├── message_queue.py # 📬 Message queue
-│   └── context_builder.py # AI context building
+│   └── message_queue.py # 📬 Message queue
 │
 ├── response/          # 📤 Response handling
 │   ├── __init__.py
-│   ├── response_sender.py # Webhook sending, chunking
 │   ├── response_mixin.py  # Response processing mixin
 │   └── webhook_cache.py   # Webhook caching
 │
@@ -81,12 +79,7 @@ cogs/ai_core/
 ├── processing/        # 🔄 Request processing
 │   ├── __init__.py
 │   ├── guardrails.py  # ⚠️ Safety (is_silent_block) & unrestricted mode
-│   ├── intent_detector.py # Intent classification
-│   ├── prompt_manager.py  # Loads system prompts from prompts/*.yaml
-│   └── self_reflection.py # Response quality
-│
-├── prompts/           # 📝 System prompt templates (YAML)
-│   └── base.yaml      # Base persona/system prompt
+│   └── intent_detector.py # Intent classification
 │
 └── cache/             # 📊 Caching & Analytics
     ├── __init__.py
@@ -109,8 +102,6 @@ cogs/ai_core/
 | `AIAnalytics` | `cache/analytics.py` | Usage metrics |
 | `PerformanceTracker` | `core/performance.py` | Performance metrics tracking |
 | `MessageQueue` | `core/message_queue.py` | Message queue management |
-| `ContextBuilder` | `core/context_builder.py` | AI context building |
-| `ResponseSender` | `response/response_sender.py` | Response sending with webhooks |
 
 ## Modular Components Integration
 
@@ -119,7 +110,6 @@ cogs/ai_core/
 - `PerformanceTracker` — metrics collection
 - `RequestDeduplicator` — prevents duplicate requests for the same channel+message
 - `MessageQueue` — pending-message buffering and per-channel lock
-- `ResponseSender` — webhook + chunked response delivery
 
 `logic.py` is the largest module (the `ChatManager` orchestrator); each helper above lives in its own subpackage so the manager focuses on orchestration. (Run `wc -l cogs/ai_core/logic.py` for the current line count — a hard-coded figure drifts every refactor.)
 
@@ -157,36 +147,6 @@ await message_queue.acquire_lock_with_timeout(channel_id, timeout=30.0)
 message_queue.release_lock(channel_id)
 ```
 
-### Context Building
-
-```python
-from cogs.ai_core.core.context_builder import ContextBuilder
-
-builder = ContextBuilder(
-    memory_manager=rag_system,
-    entity_memory=entity_memory,
-    state_tracker=state_tracker,
-)
-
-ctx = await builder.build_context(channel_id, user_id, message, guild=guild)
-system_context = ctx.build_system_context()
-```
-
-### Response Sending
-
-```python
-from cogs.ai_core.response.response_sender import response_sender
-
-result = await response_sender.send_response(
-    channel=channel,
-    content="Long response...",
-    avatar_name="Faust",
-    use_webhook=True,
-)
-if result.success:
-    print(f"Sent via {result.sent_via}, chunks: {result.chunk_count}")
-```
-
 ## Native Extensions
 
 AI Core รองรับ Rust extensions สำหรับ performance:
@@ -221,7 +181,7 @@ from cogs.ai_core.logic import ChatManager
 chat_manager = ChatManager(bot)
 
 # Process a message — sends the response via webhook/channel as a side effect
-# (returns None; use response_sender / webhook_cache to inspect what went out).
+# (returns None; use webhook_cache to inspect what went out).
 await chat_manager.process_chat(
     channel, user, message, attachments
 )
@@ -274,8 +234,6 @@ Three rounds of audits surfaced 17 bugs; key behavioural fixes:
   `get_usage_in_period`.
 - **`storage.py` dedup hashes full content.** Was hashing only the first
   500 chars, so two long messages sharing a prefix collapsed into one row.
-- **`response_sender` is code-fence-aware.** `_detect_open_fence()` re-opens
-  ` ``` ` in the next chunk so long replies don't break formatting on Discord.
 - **Webhook cache uses `pop(k, None)` + LRU evict** instead of `clear()`,
   preventing in-flight webhook deletion from racing the cleanup task.
 - **RAG embeddings skip empty/whitespace text** before hitting the API.

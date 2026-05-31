@@ -1,5 +1,5 @@
-"""Deeper AI probes: concurrency, API retry path, response_sender edge cases,
-context_builder SSRF, memory subsystem. Run after probe_ai_fixes.py.
+"""Deeper AI probes: concurrency, API retry path, memory subsystem.
+Run after probe_ai_fixes.py.
 """
 
 from __future__ import annotations
@@ -111,123 +111,6 @@ async def probe_message_queue_pending() -> None:
     check("signal_cancel + is_cancelled returns True", q.is_cancelled(cid))
     q.reset_cancel(cid)
     check("reset_cancel resets to False", not q.is_cancelled(cid))
-
-
-# ---------------------------------------------------------------------------
-# 3. response_sender: edge cases for split_content
-# ---------------------------------------------------------------------------
-def probe_response_sender_edges() -> None:
-    print("\n[response_sender] split_content edge cases")
-    from cogs.ai_core.response.response_sender import ResponseSender
-
-    s = ResponseSender()
-
-    # Empty
-    check("empty string -> single empty chunk", s.split_content("") == [""])
-
-    # Exactly at boundary
-    text = "a" * 100
-    chunks = s.split_content(text, max_length=100)
-    check("at-boundary content stays one chunk", chunks == [text])
-
-    # Just over boundary
-    text2 = "a" * 101
-    chunks2 = s.split_content(text2, max_length=100)
-    check("over-boundary splits into 2+ chunks", len(chunks2) >= 2)
-    check("all chunks within max_length", all(len(c) <= 100 for c in chunks2))
-
-    # Multiple fences
-    payload = "intro\n```python\nx=1\n```\nmid\n```js\nlet y=2\n```\nend"
-    chunks3 = s.split_content(payload, max_length=30)
-    # Each chunk respects max_length
-    check(
-        "multi-fence content respects max_length",
-        all(len(c) <= 30 for c in chunks3),
-        f"max len: {max(len(c) for c in chunks3)}",
-    )
-
-    # Verify even-fence-count chunks (each chunk's fences balanced)
-    for i, c in enumerate(chunks3):
-        fences = c.count("```")
-        check(
-            f"chunk {i} has balanced fences (count={fences})",
-            fences % 2 == 0,
-            f"chunk={c!r}",
-        )
-
-    # Long unicode with wide chars
-    thai = "สวัสดีครับ ทดสอบยาว " * 50
-    chunks4 = s.split_content(thai, max_length=100)
-    check(
-        "unicode content split correctly, all <= max_length",
-        all(len(c) <= 100 for c in chunks4),
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. response_sender: extract_character_tag
-# ---------------------------------------------------------------------------
-def probe_response_sender_character_tag() -> None:
-    print("\n[response_sender] extract_character_tag")
-    from cogs.ai_core.response.response_sender import ResponseSender
-
-    s = ResponseSender()
-
-    name, content = s.extract_character_tag("[Lyra]: hello there")
-    check(
-        "simple tag extracted",
-        name == "Lyra" and content == "hello there",
-        f"got: {name}, {content}",
-    )
-
-    name, content = s.extract_character_tag("no tag here")
-    check("no tag -> name is None", name is None and content == "no tag here")
-
-    name, content = s.extract_character_tag("[Multi Word Name]: line\nmore")
-    check(
-        "multi-word name extracted",
-        name == "Multi Word Name" and content == "line\nmore",
-        f"got: {name}, {content}",
-    )
-
-
-# ---------------------------------------------------------------------------
-# 5. context_builder: hostname validator (SSRF guard)
-# ---------------------------------------------------------------------------
-async def probe_context_builder_ssrf() -> None:
-    print("\n[context_builder] SSRF / private hostname rejection")
-    from cogs.ai_core.core import context_builder as cb
-
-    # Block list: Should reject obvious internal targets
-    blocks = [
-        "http://localhost/admin",
-        "http://127.0.0.1:8080/secret",
-        "http://10.0.0.5/internal",
-        "http://169.254.169.254/latest/meta-data",
-        "http://192.168.1.1",
-        "file:///etc/passwd",
-        "ftp://attacker.com",
-    ]
-    for url in blocks:
-        # Most context_builders expose either a sync `is_safe_url` or do
-        # the check inside fetch_url. Probe the public surface.
-        is_safe = None
-        if hasattr(cb, "_is_safe_url"):
-            is_safe = cb._is_safe_url(url)
-        elif hasattr(cb, "is_safe_url"):
-            is_safe = cb.is_safe_url(url)
-        else:
-            print("  [SKIP] no is_safe_url helper exposed")
-            return
-        check(f"reject {url!r}", is_safe is False, f"got is_safe={is_safe}")
-
-    safe = ["https://example.com/", "https://api.openai.com"]
-    for url in safe:
-        if hasattr(cb, "_is_safe_url"):
-            is_safe = cb._is_safe_url(url)
-        elif hasattr(cb, "is_safe_url"):
-            is_safe = cb.is_safe_url(url)
-        check(f"allow {url!r}", is_safe is True, f"got is_safe={is_safe}")
 
 
 # ---------------------------------------------------------------------------
@@ -473,9 +356,6 @@ async def probe_tool_executor_permission() -> None:
 async def main_async() -> None:
     await probe_message_queue_concurrency()
     await probe_message_queue_pending()
-    probe_response_sender_edges()
-    probe_response_sender_character_tag()
-    await probe_context_builder_ssrf()
     await probe_rag_empty_store()
     await probe_long_term_memory_cycle()
     probe_state_tracker_roundtrip()

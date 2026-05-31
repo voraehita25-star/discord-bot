@@ -118,59 +118,6 @@ def probe_rag_zero_norm() -> None:
 
 
 # ---------------------------------------------------------------------------
-# response_sender oversize chunk fence wrap
-# ---------------------------------------------------------------------------
-def probe_response_sender_oversize() -> None:
-    print("\n[response_sender] oversize-chunk inside fence")
-    from cogs.ai_core.response.response_sender import ResponseSender
-
-    sender = ResponseSender()
-
-    # split_content uses a hardcoded max_chunks=20. To force the
-    # truncation branch we need >20 chunks worth of content.
-    # max_length=300 → ~290 effective per chunk → need ~6000+ chars
-    # all inside a never-closed fence so open_fence_lang stays set.
-    code = "x = 1  # filler line content\n" * 400  # ~11200 chars
-    payload = "intro line\n```python\n" + code  # opens but never closes
-
-    chunks = sender.split_content(payload, max_length=300)
-
-    check("at least one chunk produced", len(chunks) >= 1)
-    # Hardcoded cap is 20; truncation appends 1 extra slot.
-    check(
-        "chunks count <= 21 (max_chunks=20 + truncation slot)",
-        len(chunks) <= 21,
-        f"got {len(chunks)}",
-    )
-
-    # We expect the truncation branch to fire here (payload > cap*max_len)
-    last = chunks[-1]
-    check("last chunk contains '...' truncation marker", "..." in last)
-
-    # The truncated chunk should reopen and close the fence so Discord
-    # doesn't render the tail as plain text outside any code block.
-    starts_with_fence = last.startswith("```python\n")
-    ends_with_close = last.endswith("\n```")
-    check(
-        "truncated chunk reopens '```python' (no plain-text bleed)",
-        starts_with_fence,
-        f"start: {last[:25]!r}",
-    )
-    check(
-        "truncated chunk closes the fence ('\\n```' suffix)",
-        ends_with_close,
-        f"end: {last[-15:]!r}",
-    )
-
-    # All chunks must respect max_length
-    check(
-        "every chunk respects max_length",
-        all(len(c) <= 300 for c in chunks),
-        f"max len: {max(len(c) for c in chunks)}",
-    )
-
-
-# ---------------------------------------------------------------------------
 # tool_executor None-arg validation
 # ---------------------------------------------------------------------------
 async def probe_tool_executor_none_args() -> None:
@@ -384,7 +331,6 @@ def probe_media_processor_gif() -> None:
 async def main_async() -> None:
     probe_rag_age_days()
     probe_rag_zero_norm()
-    probe_response_sender_oversize()
     await probe_tool_executor_none_args()
     probe_state_tracker_locking()
     await probe_session_save_timeout()
