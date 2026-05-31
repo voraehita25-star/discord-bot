@@ -629,7 +629,6 @@ def cached_with_ttl(
                 return v
             except TypeError:
                 return f"<id:{id(v)}>"
-            return v
 
         coerced_args = tuple(_coerce(a) for a in args)
         coerced_kwargs = sorted(

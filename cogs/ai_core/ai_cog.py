@@ -277,18 +277,14 @@ class AI(commands.Cog):
         try:
             await rate_limiter.stop_cleanup_task()
         except Exception as exc:
-            logger.debug(
-                "rate_limiter.stop_cleanup_task suppressed during cog_unload: %s", exc
-            )
+            logger.debug("rate_limiter.stop_cleanup_task suppressed during cog_unload: %s", exc)
 
         try:
             from cogs.ai_core.cache.token_tracker import token_tracker
 
             await token_tracker.stop_cleanup_task()
         except Exception as exc:
-            logger.debug(
-                "token_tracker.stop_cleanup_task suppressed during cog_unload: %s", exc
-            )
+            logger.debug("token_tracker.stop_cleanup_task suppressed during cog_unload: %s", exc)
 
         # Stop RAG periodic save and force final save
         await rag_system.stop_periodic_save()
@@ -545,6 +541,15 @@ class AI(commands.Cog):
 
         Handles callable, str, and list prefix types with fallback to '!'.
         """
+
+        def _clean(items: tuple[str, ...]) -> tuple[str, ...]:
+            # Drop empty/whitespace-only prefixes: ``"".startswith(p)`` and
+            # ``str.startswith(("", ...))`` are always True, which would make
+            # the DM/mention handlers treat EVERY message as a command and
+            # silently drop it. Fall back to "!" if nothing survives.
+            cleaned = tuple(p for p in items if p)
+            return cleaned or ("!",)
+
         prefix = self.bot.command_prefix
         if callable(prefix):
             try:
@@ -553,16 +558,16 @@ class AI(commands.Cog):
                 if asyncio.iscoroutine(result):
                     result = await result
                 if isinstance(result, str):
-                    return (result,)
+                    return _clean((result,))
                 if isinstance(result, list | tuple):
-                    return tuple(str(item) for item in result)
+                    return _clean(tuple(str(item) for item in result))
                 return ("!",)
             except Exception:
                 return ("!",)  # Fallback if callable fails
         elif isinstance(prefix, str):
-            return (prefix,)
+            return _clean((prefix,))
         else:
-            return tuple(prefix) if prefix else ("!",)
+            return _clean(tuple(prefix)) if prefix else ("!",)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -726,7 +731,7 @@ class AI(commands.Cog):
             None,
         )
         if prefix_match:
-            after_prefix = content[len(prefix_match):]
+            after_prefix = content[len(prefix_match) :]
             parts = after_prefix.split(" ", 1)
             cmd = parts[0].lower() if parts[0] else ""
             if not cmd:
@@ -1097,9 +1102,7 @@ class AI(commands.Cog):
         # ``<@…>``) that ``.strip("<>#")`` would silently turn into an
         # int and treat as a channel ID.
         if source_channel.startswith("<@"):
-            await ctx.send(
-                "❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข"
-            )
+            await ctx.send("❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข")
             return
         try:
             source_id = int(source_channel.strip("<>#"))
@@ -1345,9 +1348,7 @@ class AI(commands.Cog):
         # ``<@…>``) that ``.strip("<>#")`` would silently turn into an
         # int and treat as a channel ID.
         if source_channel.startswith("<@"):
-            await ctx.send(
-                "❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข"
-            )
+            await ctx.send("❌ Channel ID ไม่ถูกต้อง — รับเฉพาะ channel mention `<#…>` หรือ ID ตัวเลข")
             return
         try:
             source_id = int(source_channel.strip("<>#"))

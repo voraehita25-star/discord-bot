@@ -109,13 +109,14 @@ except ImportError:
             raise TypeError(
                 f"fast_json.json_dumps: unsupported kwargs {sorted(kwargs)} under stdlib json"
             )
-        # Force ``allow_nan=False`` to match the orjson branch, which
-        # raises ``TypeError`` on NaN/Infinity. The default
-        # ``allow_nan=True`` emits ``NaN`` / ``Infinity`` tokens (non-
-        # standard JSON) — fine for stdlib readers but unparseable by any
-        # strict JSON parser, including orjson loading the same file.
-        # Loud failure is better than producing files only some paths can
-        # read.
+        # Force ``allow_nan=False`` so non-finite floats raise instead of
+        # emitting ``NaN`` / ``Infinity`` tokens (non-standard JSON that a
+        # strict parser — including orjson loading the same file — rejects).
+        # NOTE: the orjson branch does NOT raise on NaN/Infinity; it writes
+        # ``null`` (orjson has no allow_nan option). So the backends are not
+        # byte-identical on non-finite input (orjson → ``null``, stdlib →
+        # ValueError); we deliberately prefer a loud failure on the rare
+        # no-orjson fallback path over silently writing a lossy ``null``.
         return _json.dumps(
             obj,
             ensure_ascii=ensure_ascii,
@@ -126,8 +127,14 @@ except ImportError:
         )
 
     def json_dumps_bytes(obj: Any, *, default: Any = None) -> bytes:
-        """Serialize Python object to JSON bytes (standard json)."""
-        return _json.dumps(obj, default=default).encode("utf-8")
+        """Serialize Python object to JSON bytes (standard json).
+
+        Mirrors ``json_dumps``' ``allow_nan=False`` so this fallback can't
+        emit non-standard ``NaN`` / ``Infinity`` tokens that the orjson
+        loader (or any strict parser) would choke on — keeping it
+        consistent with the string ``json_dumps`` above.
+        """
+        return _json.dumps(obj, default=default, allow_nan=False).encode("utf-8")
 
 
 def is_orjson_enabled() -> bool:

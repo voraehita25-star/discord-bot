@@ -374,11 +374,35 @@ class Music(commands.Cog):
 
     async def _save_queue_json(self, guild_id: int) -> None:
         """Legacy JSON save as fallback. Runs blocking I/O in a thread."""
-        await asyncio.to_thread(self._save_queue_json_sync, guild_id)
+        # Snapshot guild state on the event-loop thread so the worker thread
+        # never touches self._guild_states (which _gs() mutates via setdefault).
+        # A concurrent cleanup_guild_data/cog_unload on the loop would otherwise
+        # race the worker's unsynchronized dict read/setdefault.
+        gs = self._gs(guild_id)
+        snapshot = {
+            "queue": list(gs.queue),
+            "volume": gs.volume,
+            "loop": gs.loop,
+            "mode_247": gs.mode_247,
+        }
+        await asyncio.to_thread(self._save_queue_json_sync, guild_id, snapshot)
 
-    def _save_queue_json_sync(self, guild_id: int) -> None:
-        """Synchronous JSON save implementation."""
-        queue = self._gs(guild_id).queue
+    def _save_queue_json_sync(self, guild_id: int, snapshot: dict | None = None) -> None:
+        """Synchronous JSON save implementation.
+
+        With ``snapshot`` (the production path via ``_save_queue_json``) this
+        touches NO shared state — safe in a worker thread. ``snapshot=None``
+        falls back to reading via ``_gs`` for direct same-thread callers.
+        """
+        if snapshot is None:
+            gs = self._gs(guild_id)
+            snapshot = {
+                "queue": list(gs.queue),
+                "volume": gs.volume,
+                "loop": gs.loop,
+                "mode_247": gs.mode_247,
+            }
+        queue = snapshot["queue"]
         if not queue:
             filepath = Path(f"data/queue_{guild_id}.json")
             if filepath.exists():
@@ -388,9 +412,9 @@ class Music(commands.Cog):
 
         data = {
             "queue": list(queue),  # Convert deque to list for JSON serialization
-            "volume": self._gs(guild_id).volume,
-            "loop": self._gs(guild_id).loop,
-            "mode_247": self._gs(guild_id).mode_247,
+            "volume": snapshot["volume"],
+            "loop": snapshot["loop"],
+            "mode_247": snapshot["mode_247"],
         }
 
         try:
@@ -1584,7 +1608,7 @@ class Music(commands.Cog):
         # schemes, and reject http(s) URLs that target loopback / private
         # networks. Plain text searches (no scheme) bypass this — yt-dlp
         # only treats text without ``://`` as a search query.
-        if query and "://" in query:
+        if query and ("://" in query or query.lstrip().startswith("//")):
             from .url_safety import is_url_query_safe_async
 
             ok, reason = await is_url_query_safe_async(query)

@@ -406,9 +406,15 @@ class SpotifyHandler:
         msg = await ctx.send(embed=loading_embed)
 
         def get_all_playlist_tracks(url):
-            # Use self.sp directly (not a captured local) so retries
-            # after client recreation use the fresh client instance
-            results = self.sp.playlist_tracks(url)
+            # Capture the current client into a local so this whole pagination
+            # uses ONE consistent client, even if another thread recreates
+            # self.sp mid-loop (e.g. a concurrent operation's retry calling
+            # _setup_client). Reading self.sp repeatedly across the loop could
+            # otherwise mix an old session's cursor with a new client.
+            # _api_call_with_retry re-invokes this closure on retry, so a
+            # recreated client is still picked up on the next attempt.
+            sp = self.sp
+            results = sp.playlist_tracks(url)
             tracks = results.get("items", []) if results else []
             # Limit total tracks to prevent memory issues
             # Also check results is not None to prevent infinite loop if sp.next() returns None
@@ -418,7 +424,7 @@ class SpotifyHandler:
                 import time
 
                 time.sleep(self.RATE_LIMIT_DELAY)
-                results = self.sp.next(results)
+                results = sp.next(results)
                 if results and results.get("items"):
                     tracks.extend(results["items"])
             return tracks[: self.MAX_PLAYLIST_TRACKS]  # Ensure limit

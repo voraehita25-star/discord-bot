@@ -146,6 +146,19 @@ function renderSingleMessage(msg, msgIdx, mctx) {
             .map((img, idx) => `<img src="${escapeHtml(img)}" alt="attached" class="message-image" data-img-idx="${idx}">`)
             .join('')}</div>`;
     }
+    // Document attachments — one chip per attached file so a turn that carried
+    // a PDF/text doc is visible in history. Session-scoped: the backend stores
+    // docs at conversation scope (dashboard_document_memories), not per message,
+    // so these show on send + within the session but not after a full reload.
+    let docsHtml = '';
+    if (Array.isArray(msg.documents) && msg.documents.length > 0) {
+        docsHtml = `<div class="message-docs">${msg.documents
+            .map((d) => {
+            const name = (d && typeof d.name === 'string') ? d.name : 'document';
+            return `<span class="message-doc-chip" title="${escapeHtml(name)}">📎 ${escapeHtml(name)}</span>`;
+        })
+            .join('')}</div>`;
+    }
     // Thinking container (collapsed by default; click-to-expand is wired in ChatManager).
     let thinkingHtml = '';
     if (!isUser && msg.thinking) {
@@ -197,6 +210,7 @@ function renderSingleMessage(msg, msgIdx, mctx) {
                 </div>
                 ${thinkingHtml}
                 ${imagesHtml}
+                ${docsHtml}
                 <div class="message-content">${deps.formatMessage(deps.stripThinkTags(msg.content))}</div>
                 ${actionsHtml}
             </div>

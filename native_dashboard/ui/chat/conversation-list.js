@@ -75,7 +75,7 @@ export class ConversationList {
                     ${avatarHtml}
                     <div class="conv-info">
                         <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
-                        <span class="conv-meta">${conv.message_count || 0} messages</span>
+                        <span class="conv-meta">${Number(conv.message_count) || 0} messages</span>
                     </div>
                     ${conv.is_starred ? '<span class="conv-star">⭐</span>' : ''}
                 </div>

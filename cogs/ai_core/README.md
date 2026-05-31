@@ -241,6 +241,18 @@ python -m pytest tests/test_webhooks.py -v
 
 ## Recent Updates
 
+### v3.4.0 — Claude Opus 4.8 (1M context, Max thinking) (May 29, 2026)
+
+- **Default model → `claude-opus-4-8`** across `api/dashboard_config.py`,
+  `api/api_failover.py` health check, and `data/constants_env.py`.
+- **`CLAUDE_EFFORT` defaults to `max`** with adaptive thinking; effort is now
+  forwarded on the Discord API path too, not just the dashboard.
+- **Adaptive-thinking detection hardened** — extracted `_uses_adaptive_thinking()`;
+  Opus 4.7+/4.8 (adaptive-only) no longer fall through to the removed
+  `budget_tokens` path, which 400s on 4.8.
+- **`api/document_extractor.py`** — fixed a stale diagnostic log
+  ("defusedxml missing" → "python-docx not installed").
+
 ### v3.3.15 — AI/Memory Audit (April 27, 2026)
 
 Three rounds of audits surfaced 17 bugs; key behavioural fixes:

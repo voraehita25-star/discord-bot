@@ -366,7 +366,6 @@ export class ChatManager {
     private editStreamRafId: number | null = null;
     private userScrolledUp: boolean = false;  // True when user manually scrolls up during streaming
     private draftSaveTimer: number | null = null;  // Debounced localStorage draft writer
-    private allTagsCache: { tag: string; count: number }[] = [];  // #22 populated by 'all_tags' message
     // Most-recent conversation id passed to ``loadConversation``. The
     // ``conversation_loaded`` WS handler compares against this to drop
     // stale frames when the user switches conversations rapidly.
@@ -620,20 +619,25 @@ export class ChatManager {
                 break;
 
             case 'thinking_chunk':
-                this.appendThinkingChunk(data.content as string);
+                this.appendThinkingChunk(typeof data.content === 'string' ? data.content : '');
                 break;
 
             case 'thinking_end':
-                this.finalizeThinking(data.full_thinking as string);
+                this.finalizeThinking(typeof data.full_thinking === 'string' ? data.full_thinking : '');
                 break;
 
-            case 'chunk':
+            case 'chunk': {
+                // Guard the cast: a missing `content` field (protocol drift /
+                // failover) must not inject a literal "undefined" text node or
+                // throw downstream in stripThinkTags.
+                const chunkText = typeof data.content === 'string' ? data.content : '';
                 if (this.isEditStreaming) {
-                    this.appendEditStreamChunk(data.content as string);
+                    this.appendEditStreamChunk(chunkText);
                 } else {
-                    this.appendChunk(data.content as string);
+                    this.appendChunk(chunkText);
                 }
                 break;
+            }
 
             case 'stream_end':
                 // Drop a stream_end for a conversation the user has navigated
@@ -668,7 +672,7 @@ export class ChatManager {
 
                 if (this.isEditStreaming && data.is_edit) {
                     // AI edit complete: finalize the edited message
-                    this.finalizeEditStreaming(data.full_response as string, data.target_message_id as number);
+                    this.finalizeEditStreaming(typeof data.full_response === 'string' ? data.full_response : '', data.target_message_id as number);
                     this.isEditStreaming = false;
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
@@ -690,7 +694,7 @@ export class ChatManager {
                     showToast('AI edit was interrupted', { type: 'error' });
                     break;
                 }
-                this.finalizeStreamingMessage(data.full_response as string);
+                this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
                 // Backfill DB IDs so newly-sent messages become editable/deletable
                 if (data.assistant_message_id) {
                     const lastMsg = this.messages[this.messages.length - 1];
@@ -848,12 +852,24 @@ export class ChatManager {
                 break;
 
             case 'all_tags':
-                // Cached for future tag-picker UI; not rendered yet.
-                this.allTagsCache = data.tags as { tag: string; count: number }[];
+                // Tag list arrives here; a future tag-picker UI can consume it.
+                // Not stored yet (no reader) to keep state minimal.
                 break;
 
             case 'status':
-                // Informational status message (e.g., "retrying...")
+                // Transient backend status (e.g. "retrying…"): surface briefly
+                // so the user sees progress instead of an apparent stall.
+                if (typeof data.message === 'string' && data.message) {
+                    showToast(data.message, { type: 'info', duration: 2500 });
+                }
+                break;
+
+            case 'info':
+                // Backend informational notice (e.g. endpoint unavailable).
+                // Previously fell through to `default` and was dropped silently.
+                if (typeof data.message === 'string' && data.message) {
+                    showToast(data.message, { type: 'info' });
+                }
                 break;
 
             case 'error':
@@ -861,6 +877,9 @@ export class ChatManager {
                 errorLogger.log('AI_SERVER_ERROR', data.message as string, JSON.stringify(data));
                 showToast(data.message as string, { type: 'error' });
                 this.isStreaming = false;
+                // Clear the stream-conversation guard so a later stream_end for
+                // a NEW turn isn't evaluated against this stale id.
+                this.streamingConversationId = null;
                 this.setInputEnabled(true);
                 // Clean up stuck streaming message on error
                 const stuckErrorMsg = document.getElementById('streaming-message');
@@ -1412,7 +1431,6 @@ export class ChatManager {
         // Store for later use in finalizeStreamingMessage
         this.currentThinking = fullThinking;
         
-        const thinkingContainer = document.querySelector('#streaming-message .thinking-container') as HTMLElement;
         const thinkingHeader = document.querySelector('#streaming-message .thinking-header') as HTMLElement;
         const thinkingContent = document.querySelector('#streaming-message .thinking-content') as HTMLElement;
         
@@ -2393,7 +2411,12 @@ export class ChatManager {
 
     /** Remove a single row from the modal (called after delete ack). */
     removeChatFileRow(id: number): void {
-        const row = document.querySelector(`.chat-file-row[data-id="${id}"]`);
+        // Coerce to a plain integer before interpolating into the selector: the
+        // WS frame supplies `id` via an unchecked `as number` cast, so a
+        // non-numeric value could otherwise break out of the attribute selector.
+        const safeId = Math.trunc(Number(id));
+        if (!Number.isFinite(safeId)) return;
+        const row = document.querySelector(`.chat-file-row[data-id="${safeId}"]`);
         row?.remove();
         // If that was the last row, flip to empty state.
         const list = document.getElementById('chat-files-list');
@@ -2474,7 +2497,7 @@ export class ChatManager {
             const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
             const userName = settings.userName || 'User';
 
-            this.send({
+            const sent = this.send({
                 type: 'ai_edit_message',
                 conversation_id: this.currentConversation?.id,
                 target_message_id: msg.id,
@@ -2484,6 +2507,12 @@ export class ChatManager {
                 user_name: userName,
                 ai_provider: this.aiProvider,
             });
+            // Close the streaming gate so a normal message can't be sent
+            // concurrently before the backend's stream_start arrives.
+            if (sent) {
+                this.isStreaming = true;
+                this.setInputEnabled(false);
+            }
         };
 
         editBar.querySelector('.ai-edit-submit-btn')?.addEventListener('click', submitEdit);
@@ -2676,7 +2705,7 @@ export class ChatManager {
         const editedDocs = (editedMsg as ChatMessage & { documents?: unknown[] }).documents;
         const originalDocs = (editedDocs && editedDocs.length > 0) ? editedDocs : undefined;
 
-        this.send({
+        const sent = this.send({
             type: 'message',
             conversation_id: this.currentConversation.id,
             content: editedMsg.content,
@@ -2691,6 +2720,13 @@ export class ChatManager {
             ai_provider: this.aiProvider,
             is_regeneration: true,  // Skip duplicate user message save in backend
         });
+        // Close the streaming gate immediately (mirrors sendMessage) so a
+        // second send can't slip through before the backend's stream_start
+        // frame arrives. Only lock if the frame actually went out.
+        if (sent) {
+            this.isStreaming = true;
+            this.setInputEnabled(false);
+        }
     }
 
     showNewChatModal(): void {
@@ -2728,7 +2764,11 @@ export class ChatManager {
 
     updateRoleSelection(): void {
         document.querySelectorAll('.role-card').forEach(card => {
-            card.classList.toggle('selected', (card as HTMLElement).dataset.role === this.selectedRole);
+            const isSelected = (card as HTMLElement).dataset.role === this.selectedRole;
+            card.classList.toggle('selected', isSelected);
+            // Reflect selection to assistive tech (role="button" + aria-pressed
+            // makes each card an accessible toggle button).
+            card.setAttribute('aria-pressed', String(isSelected));
         });
     }
 

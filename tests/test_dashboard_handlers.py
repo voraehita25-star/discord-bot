@@ -357,6 +357,95 @@ class TestEditMessage:
             cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
 
     @pytest.mark.asyncio
+    async def test_cli_regeneration_does_not_duplicate_user_message(self, ws, mock_db):
+        """Regenerate-after-edit (is_regeneration=True) must NOT re-persist the
+        user turn under the CLI backend. handle_edit_message already updated the
+        message and deleted everything after it, so the edited user turn is the
+        last DB row. The CLI handler previously ignored is_regeneration and saved
+        a second copy — the duplicate-user-message bug. Mirrors the validated
+        skip in the SDK backend.
+        """
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+
+        mock_db.save_dashboard_message = AsyncMock(return_value=99)
+        # Last DB row is the edited user message whose content matches → the
+        # is_regeneration validation passes and the flag stays True.
+        mock_db.get_dashboard_messages = AsyncMock(
+            return_value=[{"id": 1, "role": "user", "content": "edited text"}]
+        )
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "set"})
+        mock_db.update_dashboard_conversation = AsyncMock()
+
+        with (
+            patch.object(cli_mod, "get_db", return_value=mock_db),
+            patch.object(cli_mod, "DB_AVAILABLE", True),
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
+            patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
+            patch.object(cli_mod, "_track_session"),
+            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", "", None))),
+            patch.object(cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))),
+        ):
+            await cli_mod.handle_chat_message_claude_cli(
+                ws,
+                {
+                    "conversation_id": "c1",
+                    "content": "edited text",
+                    "role_preset": "general",
+                    "history": [],
+                    "is_regeneration": True,
+                },
+                None,
+            )
+
+        user_saves = [
+            call
+            for call in mock_db.save_dashboard_message.call_args_list
+            if len(call.args) >= 2 and call.args[1] == "user"
+        ]
+        assert user_saves == [], "is_regeneration=True must skip re-saving the user message (CLI backend)"
+
+    @pytest.mark.asyncio
+    async def test_cli_normal_message_saves_user_once(self, ws, mock_db):
+        """Baseline guard: a NORMAL message (no is_regeneration) persists the
+        user turn exactly once — proving the regeneration skip above didn't
+        break ordinary persistence."""
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli_mod
+
+        mock_db.save_dashboard_message = AsyncMock(return_value=99)
+        mock_db.get_dashboard_messages = AsyncMock(return_value=[])
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "set"})
+        mock_db.update_dashboard_conversation = AsyncMock()
+
+        with (
+            patch.object(cli_mod, "get_db", return_value=mock_db),
+            patch.object(cli_mod, "DB_AVAILABLE", True),
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
+            patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
+            patch.object(cli_mod, "_track_session"),
+            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", "", None))),
+            patch.object(cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))),
+        ):
+            await cli_mod.handle_chat_message_claude_cli(
+                ws,
+                {
+                    "conversation_id": "c1",
+                    "content": "hello",
+                    "role_preset": "general",
+                    "history": [],
+                },
+                None,
+            )
+
+        user_saves = [
+            call
+            for call in mock_db.save_dashboard_message.call_args_list
+            if len(call.args) >= 2 and call.args[1] == "user"
+        ]
+        assert len(user_saves) == 1, "a normal message must persist the user turn exactly once"
+
+    @pytest.mark.asyncio
     async def test_plain_edit_also_resets_cli_session(self, ws, mock_db):
         """Even without regenerate=True the DB content diverges from the
         Claude --resume transcript, so the session pointer must be dropped."""

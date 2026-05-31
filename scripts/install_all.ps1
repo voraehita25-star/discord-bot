@@ -163,7 +163,7 @@ if ($pythonVer -match "3\.14") {
         winget install Python.Python.3.14 --accept-source-agreements --accept-package-agreements -h
     } else {
         Write-Info "Downloading Python 3.14 installer..."
-        $pythonUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a3-amd64.exe"
+        $pythonUrl = "https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe"
         $pythonFile = "$DownloadDir\python-installer.exe"
         Invoke-VerifiedDownload -Uri $pythonUrl -OutFile $pythonFile
         Write-Info "Running Python installer (silent, adding to PATH)..."

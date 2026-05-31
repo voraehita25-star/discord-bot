@@ -52,6 +52,8 @@ func init() {
 		"0.0.0.0/8",              // Current network
 		"100.64.0.0/10",          // Shared address space
 		"255.255.255.255/32",     // Broadcast
+		"224.0.0.0/4",            // Multicast (parity with Python blocklist)
+		"240.0.0.0/4",            // Reserved/future (parity with Python blocklist)
 		"::1/128",                // IPv6 loopback
 		"fc00::/7",               // IPv6 unique local
 		"fe80::/10",              // IPv6 link-local
@@ -110,10 +112,12 @@ func isPrivateURL(rawURL string) (bool, error) {
 	// Resolve hostname to IP and check
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
-		// Don't block on DNS resolution failure — ssrfSafeDialContext will
-		// re-resolve and validate at connect time.  Blocking here causes
-		// false positives when DNS is temporarily unreachable.
-		return false, fmt.Errorf("DNS resolution failed (will retry at connect): %v", err)
+		// Fail CLOSED on DNS failure (block), matching the Python guard in
+		// utils/web/url_fetcher.py. Relying only on the dial-time check is
+		// fragile (pooled connections can skip the dialer — see
+		// DisableKeepAlives on the transport), and an unresolvable host
+		// can't be fetched anyway, so blocking here loses nothing.
+		return true, fmt.Errorf("DNS resolution failed (blocked): %v", err)
 	}
 	for _, ip := range ips {
 		if isPrivateIP(ip) {
@@ -208,7 +212,13 @@ func ssrfSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 func NewFetcher() *Fetcher {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
-		DialContext:           ssrfSafeDialContext(dialer),
+		DialContext: ssrfSafeDialContext(dialer),
+		// Disable HTTP keep-alive so EVERY request re-dials through
+		// ssrfSafeDialContext. Idle/pooled connections are keyed by
+		// host:port, not the validated IP, so reusing one would skip the
+		// dial-time SSRF re-validation (a DNS-rebind hole). Cost is a new
+		// handshake per fetch — acceptable for a bot's occasional fetches.
+		DisableKeepAlives:     true,
 		MaxIdleConns:          200,
 		MaxIdleConnsPerHost:   20,
 		MaxConnsPerHost:       50,

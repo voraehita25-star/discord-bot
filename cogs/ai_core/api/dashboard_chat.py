@@ -64,6 +64,8 @@ async def handle_chat_message(
     max_history_messages: int = 100,
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
+    max_documents: int = 5,
+    max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
 ) -> None:
     """Handle incoming chat message and stream response."""
@@ -76,6 +78,7 @@ async def handle_chat_message(
     unrestricted_mode_requested = data.get("unrestricted_mode", False)  # Unrestricted mode
     history = data.get("history", [])
     images = data.get("images", [])  # Base64 encoded images
+    documents = data.get("documents") or []  # Uploaded PDF / text / code attachments
     user_name = data.get("user_name", "User")
     is_regeneration = data.get("is_regeneration", False)
 
@@ -119,6 +122,38 @@ async def handle_chat_message(
             )
         except Exception as e:
             logger.warning("Failed to save user message: %s", e)
+
+    # Persistent document memory — extract + save uploaded PDFs / text / code so
+    # the content reaches THIS turn (build_user_context below folds the extracted
+    # text into memories_context) AND every later turn in this conversation, on
+    # any backend. The Claude backends already do this; the Gemini backend
+    # previously dropped `documents` entirely (silent data loss / cross-backend
+    # asymmetry). Skip only on a regenerate-after-edit resend — the original turn
+    # already persisted them. Runs BEFORE build_user_context, mirroring the SDK.
+    documents = documents[:max_documents] if isinstance(documents, list) else []
+    if documents and DB_AVAILABLE and not is_regeneration:
+        try:
+            from .document_extractor import extract_and_persist
+
+            _ddb = _get_db()
+            saved_docs = await extract_and_persist(
+                documents,
+                db=_ddb,
+                source_conversation_id=conversation_id,
+            )
+            if saved_docs:
+                try:
+                    await ws.send_json(
+                        {
+                            "type": "document_saved",
+                            "documents": saved_docs,
+                            "conversation_id": conversation_id,
+                        }
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception("Document extraction/persistence failed (Gemini backend)")
 
     # Build context with user identity and memories, scoped to this conversation
     # so uploaded documents don't leak between RP threads.
@@ -509,6 +544,19 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                             output_tokens = _out
 
             await asyncio.wait_for(_consume_stream(), timeout=stream_timeout)
+
+            # If the stream ended while still inside a thinking block (model
+            # emitted only reasoning and no answer text), close the thinking UI
+            # so the client spinner doesn't hang waiting for a thinking_end.
+            if is_thinking:
+                is_thinking = False
+                await ws.send_json(
+                    {
+                        "type": "thinking_end",
+                        "conversation_id": conversation_id,
+                        "full_thinking": thinking_content,
+                    }
+                )
 
             # No tool calls → normal completion, exit loop
             if not _tool_calls:
@@ -974,6 +1022,19 @@ async def handle_ai_edit_message(
                     )
 
         await asyncio.wait_for(_consume_edit_stream(), timeout=stream_timeout)
+
+        # If the stream ended while still inside a thinking block (model
+        # emitted only reasoning and no answer text), close the thinking UI so
+        # the client spinner doesn't hang waiting for a thinking_end.
+        if is_thinking:
+            is_thinking = False
+            await ws.send_json(
+                {
+                    "type": "thinking_end",
+                    "conversation_id": conversation_id,
+                    "full_thinking": thinking_content,
+                }
+            )
 
         # Update the message in DB. Pass conversation_id so the UPDATE only
         # matches when the row is in the conversation the AI was editing —

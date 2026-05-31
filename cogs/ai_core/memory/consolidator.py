@@ -138,6 +138,10 @@ class MemoryConsolidator:
 
     def __init__(self):
         self._client: anthropic.AsyncAnthropic | None = None
+        # Placeholder handle for a background consolidation task. Currently
+        # unwired in this class (the live background loop is SummaryArchiver
+        # in memory_consolidator.py), but kept as part of the documented
+        # init contract — test_consolidator.test_init_defaults asserts it.
         self._task: asyncio.Task | None = None
         self._message_counts: dict[int, int] = {}  # channel_id: message_count
         self._last_consolidation: dict[int, float] = {}  # channel_id: timestamp
@@ -390,14 +394,6 @@ class MemoryConsolidator:
                 if success:
                     updated += 1
 
-            # Decrement (don't zero) the counter so messages that arrived
-            # while the API call was in flight survive into the next window.
-            # We saturate at 0 in case the counter was reduced elsewhere.
-            with self._data_lock:
-                current = self._message_counts.get(channel_id, 0)
-                self._message_counts[channel_id] = max(0, current - consumed_count)
-                self._last_consolidation[channel_id] = time.time()
-
             if updated > 0:
                 logger.info("🧠 Consolidated %d entities for channel %s", updated, channel_id)
 
@@ -410,6 +406,18 @@ class MemoryConsolidator:
             # Log with traceback for unexpected errors
             logger.error("Memory consolidation failed unexpectedly: %s", e, exc_info=True)
             return 0
+        finally:
+            # Always reconcile the counter — even when extraction yielded
+            # nothing (too-short / timeout / empty / no-entities / parse
+            # error). The snapshotted messages WERE consumed by this attempt;
+            # not decrementing leaves the count at/above threshold so
+            # should_consolidate keeps re-firing a full 60s API call on EVERY
+            # subsequent message. Subtract (don't zero) so messages that
+            # arrived during the await survive into the next window.
+            with self._data_lock:
+                current = self._message_counts.get(channel_id, 0)
+                self._message_counts[channel_id] = max(0, current - consumed_count)
+                self._last_consolidation[channel_id] = time.time()
 
     def _history_to_text(self, history: list[dict[str, Any]]) -> str:
         """Convert history to text for extraction."""
@@ -621,7 +629,14 @@ class MemoryConsolidator:
                 )
                 if age_match:
                     mentioned_age = int(age_match.group(1))
-                    if mentioned_age != facts["age"]:
+                    # facts["age"] may be a str — the AI extractor returns
+                    # untyped JSON, so coerce before comparing; otherwise
+                    # 19 != "19" fires a spurious contradiction every check.
+                    try:
+                        stored_age = int(facts["age"])
+                    except (TypeError, ValueError):
+                        stored_age = None
+                    if stored_age is not None and mentioned_age != stored_age:
                         contradictions.append(
                             {
                                 "entity": name,

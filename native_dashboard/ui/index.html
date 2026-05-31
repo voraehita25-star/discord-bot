@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="ko" data-theme="dark">
 
 <head>
     <meta charset="UTF-8">
@@ -11,7 +11,7 @@
          on every page load. -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Y24CGBiNpvAHum+ZoXXPIUxmExgs7YP4BGdo45z8wdI='; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 wss://localhost:8765 wss://127.0.0.1:8765; object-src 'none';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>디스코드 봇 대시보드</title>
+    <title lang="ko">디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
     <!-- KaTeX for LaTeX math rendering (bundled locally for security).
          SRI hashes detect tampering with the vendor bundle. Regenerate if you upgrade:
@@ -51,12 +51,14 @@
     <!-- Sakura Petals Animation -->
     <div id="sakura-container"></div>
 
+    <a class="skip-link" href="#main-content">메인 콘텐츠로 건너뛰기</a>
+
     <div class="app">
         <!-- Sidebar -->
-        <nav class="sidebar">
+        <nav class="sidebar" aria-label="주 메뉴">
             <div class="logo">
                 <span class="logo-icon">🤖</span>
-                <span class="logo-text">봇 대시보드</span>
+                <span class="logo-text" lang="ko">봇 대시보드</span>
             </div>
 
             <div class="nav-items">
@@ -104,7 +106,7 @@
         </nav>
 
         <!-- Main Content -->
-        <main class="content">
+        <main class="content" id="main-content">
             <!-- Status Page -->
             <section id="page-status" class="page active">
                 <h1>Bot Control</h1>
@@ -247,7 +249,7 @@
                                         <span class="chat-role-name" id="chat-role-name">General Assistant</span>
                                     </div>
                                 </div>
-                                <span class="chat-connection-status" id="chat-connection-status"></span>
+                                <span class="chat-connection-status" id="chat-connection-status" role="status" aria-live="polite"></span>
                                 <div class="context-window-indicator hidden" id="context-window-indicator" title="Context Window Usage">
                                     <div class="context-bar-container">
                                         <div class="context-bar-fill" id="context-bar-fill"></div>
@@ -345,7 +347,7 @@
                     </div>
 
                 <!-- New Conversation Modal -->
-                <div class="modal" id="new-chat-modal">
+                <div class="modal" id="new-chat-modal" role="dialog" aria-modal="true" aria-label="New Conversation">
                     <div class="modal-overlay"></div>
                     <div class="modal-content">
                         <div class="modal-header">
@@ -355,12 +357,12 @@
                         <div class="modal-body">
                             <p>Select an AI role:</p>
                             <div class="role-cards">
-                                <div class="role-card selected" data-role="general" role="button" tabindex="0" aria-label="General Assistant">
+                                <div class="role-card selected" data-role="general" role="button" tabindex="0" aria-pressed="true" aria-label="General Assistant">
                                     <div class="role-card-emoji">🤖</div>
                                     <div class="role-card-name">General Assistant</div>
                                     <div class="role-card-desc">Helpful AI for general tasks</div>
                                 </div>
-                                <div class="role-card" data-role="faust" role="button" tabindex="0" aria-label="Faust">
+                                <div class="role-card" data-role="faust" role="button" tabindex="0" aria-pressed="false" aria-label="Faust">
                                     <div class="role-card-emoji">👻</div>
                                     <div class="role-card-name">Faust</div>
                                     <div class="role-card-desc">Sinner #2 from Limbus Company</div>
@@ -388,7 +390,7 @@
                 </div>
 
                 <!-- Delete Confirmation Modal -->
-                <div class="modal" id="delete-confirm-modal">
+                <div class="modal" id="delete-confirm-modal" role="dialog" aria-modal="true" aria-label="Delete Conversation">
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
@@ -405,7 +407,7 @@
                 </div>
 
                 <!-- Rename Conversation Modal -->
-                <div class="modal" id="rename-modal">
+                <div class="modal" id="rename-modal" role="dialog" aria-modal="true" aria-label="Rename Conversation">
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
@@ -427,7 +429,7 @@
                 <!-- Attached Files Modal — lists every document (PDF / text / code)
                      saved to persistent memory for the current conversation.
                      Switches between list view and editor view in-place. -->
-                <div class="modal" id="chat-files-modal">
+                <div class="modal" id="chat-files-modal" role="dialog" aria-modal="true" aria-label="Attached Files">
                     <div class="modal-overlay" data-close-files></div>
                     <div class="modal-content chat-files-modal-content">
                         <!-- LIST VIEW -->
@@ -516,7 +518,7 @@
                 </div>
 
                 <!-- Add Memory Modal -->
-                <div class="modal" id="add-memory-modal">
+                <div class="modal" id="add-memory-modal" role="dialog" aria-modal="true" aria-label="Add Memory">
                     <div class="modal-overlay"></div>
                     <div class="modal-content">
                         <div class="modal-header">
@@ -785,7 +787,7 @@
 
                 <div class="settings-card">
                     <h2>ℹ️ About</h2>
-                    <p><strong>디스코드 봇 대시보드</strong></p>
+                    <p><strong lang="ko">디스코드 봇 대시보드</strong></p>
                     <p>Version 2.0.0 - Enhanced Edition</p>
                     <p>Built with Tauri + Rust + TypeScript</p>
                     <div class="features-list">
@@ -812,7 +814,7 @@
     </div>
 
     <!-- Keyboard Shortcuts Modal (opened with ?) -->
-    <div id="shortcuts-modal" class="modal">
+    <div id="shortcuts-modal" class="modal" role="dialog" aria-modal="true" aria-label="Keyboard Shortcuts">
         <div class="modal-overlay" data-close-shortcuts></div>
         <div class="modal-content modal-small">
             <div class="modal-header">
@@ -838,7 +840,7 @@
     </div>
 
     <!-- Avatar Cropper Modal -->
-    <div id="avatar-crop-modal" class="modal">
+    <div id="avatar-crop-modal" class="modal" role="dialog" aria-modal="true" aria-label="Crop Avatar">
         <div class="modal-overlay" data-close-avatar-crop></div>
         <div class="modal-content avatar-crop-content">
             <div class="modal-header">

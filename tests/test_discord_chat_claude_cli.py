@@ -235,8 +235,10 @@ class TestStreamingSuccessPath:
     @pytest.mark.asyncio
     async def test_streaming_runs_with_max_effort_thinking(self) -> None:
         """Regression: Discord CLI replies must build argv with `--effort max`
-        + interleaved-thinking (enable_thinking=True), so the bot reasons at
-        max effort like a dashboard conversation with thinking on."""
+        (enable_thinking=True), so the bot reasons at max effort like a
+        dashboard conversation with thinking on. We must NOT pass custom betas:
+        the subscription-mode CLI rejects them with a stderr warning that masks
+        real stdout errors."""
         captured_argv: list[str] = []
         placeholder = MagicMock()
         placeholder.edit = AsyncMock()
@@ -274,7 +276,8 @@ class TestStreamingSuccessPath:
             )
         assert "--effort" in captured_argv
         assert "max" in captured_argv
-        assert "interleaved-thinking" in captured_argv
+        assert "--betas" not in captured_argv
+        assert "interleaved-thinking" not in captured_argv
 
     @pytest.mark.asyncio
     async def test_cancellation_returns_empty_even_with_partial_text(self) -> None:

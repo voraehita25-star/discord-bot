@@ -633,9 +633,14 @@ class ServiceHealthMonitor:
             total = len(results)
             success_count = sum(results)
             last_error = self._last_errors.get(service, "")
+            # Derive health from THIS snapshot under the lock. Calling
+            # is_healthy() here would re-acquire the lock on a fresh (possibly
+            # mutated) snapshot, so success_rate and healthy could otherwise
+            # reflect two different populations.
+            healthy = total == 0 or (1.0 - success_count / total) < self._failure_threshold
 
         return {
-            "healthy": self.is_healthy(service),
+            "healthy": healthy,
             "requests": total,
             "success_rate": success_count / max(1, total),
             "last_error": last_error,

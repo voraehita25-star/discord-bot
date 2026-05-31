@@ -98,12 +98,27 @@ class _StaleSessionError(RuntimeError):
     explicitly when they want to drop the session id and retry.
     """
 
+
+class _OverloadedError(RuntimeError):
+    """``claude -p`` failed with a transient Anthropic-side overload/rate-limit
+    (HTTP 429 or 529).
+
+    Subclass of ``RuntimeError`` so existing ``except RuntimeError`` paths keep
+    working. Callers that want to surface an actionable "servers busy, try
+    again" message instead of a generic failure should ``except
+    _OverloadedError`` first. We deliberately do NOT auto-retry: ``claude``
+    already retries 429/529 with backoff internally before exiting non-zero, so
+    an immediate re-spawn would just hit the same overloaded servers (or wait
+    another long backoff).
+    """
+
+
 # Bound the conversation→session map so a long-running bot doesn't accumulate
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
 
 # Stream timeout used when ``thinking_enabled`` is set on the request. Opus
-# 4.7 with ``--effort max --betas interleaved-thinking`` legitimately spends
+# 4.8 with ``--effort max`` legitimately spends
 # minutes reasoning on the Anthropic side before emitting any stdout, so the
 # non-thinking 300s default fires while the API call is still in flight and
 # surfaces as a spurious "Claude CLI timed out" toast. 1800s (30 min) covers
@@ -925,12 +940,22 @@ def _build_claude_argv(
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
-    When ``enable_thinking`` is True we pass ``--effort max`` and the
-    ``interleaved-thinking`` beta header. This makes Opus 4.7 actually
-    reason internally; the *content* of that reasoning is still redacted
-    by Anthropic in subscription mode (only the start/stop markers reach
-    us), but the model spends real reasoning effort which improves answer
-    quality on hard questions.
+    When ``enable_thinking`` is True we pass ``--effort max``. This makes
+    Opus 4.8 actually reason internally; the *content* of that reasoning is
+    still redacted by Anthropic in subscription mode (only the start/stop
+    markers reach us), but the model spends real reasoning effort which
+    improves answer quality on hard questions.
+
+    We do NOT pass ``--betas interleaved-thinking`` here. This subprocess only
+    ever authenticates with the Max subscription (``_make_subprocess_env``
+    forwards ``CLAUDE_CODE_OAUTH_TOKEN`` but never ``ANTHROPIC_API_KEY``), and
+    the CLI rejects custom betas for non-API-key users — it prints
+    "Custom betas are only available for API key users. Ignoring provided
+    betas." to stderr and ignores the flag. That warning is pure noise: because
+    it is the only thing on stderr, it used to *mask* the real failure (which
+    claude reports on stdout as the stream-json ``result`` event) whenever the
+    process exited non-zero. ``--effort max`` alone already drives Opus 4.8's
+    max thinking in subscription mode, so dropping the beta costs nothing.
     """
     argv: list[str] = [
         claude_exe,
@@ -952,9 +977,20 @@ def _build_claude_argv(
         "--mcp-config",
         str(_ensure_empty_mcp_config()),
         "--strict-mcp-config",
+        # Pin the permission mode to "default" so the Read-tool confinement
+        # (--allowedTools Read + --add-dir <temp roots>) actually holds even if
+        # the operator's settings.json sets defaultMode=bypassPermissions.
+        # --add-dir pre-approves the temp dirs (attachments still read without a
+        # prompt); arbitrary paths (e.g. ~/.claude/.credentials.json) are denied
+        # rather than silently allowed by an inherited bypass mode.
+        "--permission-mode",
+        "default",
     ]
     if enable_thinking:
-        argv.extend(["--effort", "max", "--betas", "interleaved-thinking"])
+        # Only --effort max — NOT --betas interleaved-thinking. See the
+        # docstring: custom betas are ignored (and noisily warned about) in
+        # subscription mode, and that warning used to mask real stdout errors.
+        argv.extend(["--effort", "max"])
     if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
     elif session_id:
@@ -1063,6 +1099,12 @@ async def _run_claude_subprocess(
 
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
+    # The REAL failure cause, captured from the stream-json `result` event on
+    # stdout (claude reports API/runtime errors there, not on stderr). Used by
+    # the rc!=0 path below to log/raise the actual error instead of whatever
+    # benign warning happened to land on stderr.
+    final_error_text = ""
+    final_error_status: int | None = None
 
     # Hard cap on a single NDJSON line — claude shouldn't produce more
     # than a few MB per event; anything larger is either a runaway model
@@ -1078,7 +1120,7 @@ async def _run_claude_subprocess(
     thinking_block_indices: set[int] = set()
 
     async def consume_stdout() -> None:
-        nonlocal final_session_id, final_usage
+        nonlocal final_session_id, final_usage, final_error_text, final_error_status
         if proc.stdout is None:
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
         # Drop the per-line buffer cap so model JSON deltas with embedded
@@ -1118,6 +1160,19 @@ async def _run_claude_subprocess(
                 usage = event.get("usage")
                 if isinstance(usage, dict):
                     final_usage = usage
+                # …and, on failure, the actual error. claude sets is_error and
+                # (for HTTP failures) api_error_status here, with a human-
+                # readable message in `result` — e.g. "API Error: 529
+                # Overloaded …" or "There's an issue with the selected model …".
+                # stderr, by contrast, often holds only the ignored-betas
+                # warning, so this is the diagnostic the rc!=0 path should use.
+                if event.get("is_error"):
+                    status = event.get("api_error_status")
+                    if isinstance(status, int):
+                        final_error_status = status
+                    res = event.get("result")
+                    if isinstance(res, str) and res.strip():
+                        final_error_text = res.strip()[:500]
                 continue
 
             # Streaming token deltas live under the "stream_event" wrapper.
@@ -1190,6 +1245,16 @@ async def _run_claude_subprocess(
             # to the outer ``except TimeoutError`` in the chat handler.
             stdout_timed_out = True
             raise
+        except (asyncio.LimitOverrunError, ValueError) as _overflow:
+            # A single NDJSON frame exceeded the StreamReader limit (the 16 MiB
+            # cap, or asyncio's 64 KiB default if the cap assignment failed).
+            # readline() raises before yielding the line, so it can't be dropped
+            # per-frame — end the stream with whatever streamed so far rather
+            # than letting it abort as a generic "backend failed".
+            logger.warning(
+                "claude -p stdout frame exceeded reader limit; ending stream early: %s",
+                _overflow,
+            )
         finally:
             # Always wait for the stderr drain to finish so we don't leak
             # the task. If consume_stdout raised, give stderr a brief
@@ -1236,19 +1301,42 @@ async def _run_claude_subprocess(
                 rc = -1
         if rc != 0:
             stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")[:500]
-            logger.error("claude -p failed (exit %d): %s", rc, stderr_text)
+            # The real cause is almost always on STDOUT as the stream-json
+            # `result` event (captured above), NOT on stderr. stderr usually
+            # carries only benign warnings — chiefly the "Custom betas are only
+            # available for API key users" notice — so logging stderr alone (as
+            # we used to) named a red herring while the true failure (529
+            # Overloaded, model_not_found, …) went unlogged. Prefer the stdout
+            # error; fall back to stderr (where a stale --resume reports "No
+            # conversation found with session ID: …") then to a placeholder.
+            status_note = (
+                f" [api_error_status={final_error_status}]" if final_error_status else ""
+            )
+            detail = final_error_text or stderr_text or "<no diagnostic output>"
+            logger.error(
+                "claude -p failed (exit %d)%s: %s | stderr=%s",
+                rc,
+                status_note,
+                detail,
+                stderr_text or "<empty>",
+            )
+            err_msg = f"claude -p exit {rc}{status_note}: {detail[:200]}"
             # Mark stale-session errors so the caller can transparently retry
-            # without the bad --resume id instead of bouncing the error to
-            # the user.
-            err_msg = f"claude -p exit {rc}: {stderr_text[:200]}"
-            lower = stderr_text.lower()
+            # without the bad --resume id. Scan BOTH the stdout error and
+            # stderr: API errors surface in the result text, but a stale
+            # --resume lands "…session ID…" on stderr.
+            haystack = f"{final_error_text}\n{stderr_text}".lower()
             if (
-                "--resume" in lower
-                or "session id" in lower
-                or "is not a uuid" in lower
-                or "does not match any session" in lower
+                "--resume" in haystack
+                or "session id" in haystack
+                or "is not a uuid" in haystack
+                or "does not match any session" in haystack
             ):
                 raise _StaleSessionError(err_msg)
+            # Transient Anthropic-side overload/rate-limit (HTTP 429/529).
+            # Surface a distinct, user-actionable error instead of a generic one.
+            if final_error_status in (429, 529) or "overloaded" in haystack:
+                raise _OverloadedError(err_msg)
             raise RuntimeError(err_msg)
     finally:
         if proc.returncode is None:
@@ -1308,6 +1396,37 @@ async def handle_chat_message_claude_cli(
     thinking_enabled = bool(data.get("thinking_enabled"))
     images_raw = data.get("images") or []
     documents_raw = data.get("documents") or []
+
+    # ``is_regeneration`` (the regenerate-after-edit flow) means this user turn
+    # ALREADY exists in the DB: handle_edit_message updated its content and
+    # deleted every message after it. Persisting it again here is exactly what
+    # caused the duplicate-user-message bug under the CLI backend (this handler
+    # previously ignored the flag entirely). Validate the claim — the last DB
+    # row must be a user message whose content matches — so a client can't
+    # abuse the flag to skip persistence (mirrors the SDK backend).
+    is_regeneration = bool(data.get("is_regeneration", False))
+    if is_regeneration and DB_AVAILABLE and conversation_id:
+        try:
+            _rdb = get_db()
+            _recent = await _rdb.get_dashboard_messages(conversation_id)
+            _last = _recent[-1] if _recent else None
+            _last_content = (_last or {}).get("content") or ""
+            _last_stripped = strip_leading_timestamp(_last_content) if _last_content else ""
+            if not (
+                _last
+                and _last.get("role") == "user"
+                and (_last_content == content or _last_stripped == content)
+            ):
+                logger.warning(
+                    "is_regeneration=True (CLI) did not match last user msg; treating as new message",
+                )
+                is_regeneration = False
+        except Exception:
+            logger.warning(
+                "Failed to validate is_regeneration (CLI); treating as new message",
+                exc_info=True,
+            )
+            is_regeneration = False
 
     # Thinking-mode requests legitimately spend minutes on the Anthropic
     # side (Opus 4.7 reasoning silently before any stdout event), so the
@@ -1373,7 +1492,7 @@ async def handle_chat_message_claude_cli(
     # the dashboard render `[2026-04-23T...] hello` to the user, which is
     # the bug previously observed in CLI mode.
     user_msg_id: int | None = None
-    if DB_AVAILABLE and conversation_id:
+    if DB_AVAILABLE and conversation_id and not is_regeneration:
         try:
             db = get_db()
             # Don't pass `mode=` for user turns — SDK backend omits it too;
@@ -1419,7 +1538,7 @@ async def handle_chat_message_claude_cli(
     # content without the user re-uploading. This runs alongside the temp
     # file save above: Claude still reads the full binary THIS turn for
     # maximum fidelity; the DB snapshot is a text-only fallback for later.
-    if capped_docs and DB_AVAILABLE:
+    if capped_docs and DB_AVAILABLE and not is_regeneration:
         try:
             from .document_extractor import extract_and_persist
 
@@ -1595,6 +1714,35 @@ async def handle_chat_message_claude_cli(
         if lock is not None:
             await lock.acquire()
             lock_acquired = True
+            # Re-read the session id now that we hold the lock. A concurrent
+            # first turn for this same (previously session-less) conversation
+            # may have established a session while we waited; the read at the
+            # top of this function happened BEFORE the lock, so without this
+            # re-check we'd spawn a SECOND fresh session, orphan the first
+            # one's session file, and overwrite its id in _CONVERSATION_SESSIONS.
+            # Resume the established session instead (with a minimal prompt).
+            if conversation_id and not is_resumed:
+                _latest_session = _CONVERSATION_SESSIONS.get(conversation_id)
+                if _latest_session:
+                    session_id = _latest_session
+                    is_resumed = True
+                    argv = _build_claude_argv(
+                        claude_exe,
+                        session_id=session_id,
+                        allow_read_for_images=need_read,
+                        enable_thinking=thinking_enabled,
+                    )
+                    full_prompt = _build_full_prompt(
+                        persona=persona,
+                        user_context=user_context,
+                        memories_context=memories_context,
+                        history=history,
+                        history_limit=max_history_messages,
+                        current_message=content,
+                        image_paths=image_paths,
+                        doc_paths=doc_paths,
+                        is_resumed_session=True,
+                    )
         try:
             try:
                 new_session_id, usage = await _run_claude_subprocess(
@@ -1671,6 +1819,27 @@ async def handle_chat_message_claude_cli(
                 }
             )
             return
+        except _OverloadedError:
+            # Transient server-side overload (HTTP 429/529). claude already
+            # retried with backoff before giving up, so we don't re-spawn here —
+            # we tell the user it's temporary and they can resend. Must precede
+            # the generic ``except RuntimeError`` below (it's a subclass).
+            logger.warning(
+                "Claude CLI: Anthropic API overloaded for conversation %s; "
+                "advising client to retry",
+                conversation_id,
+            )
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": (
+                        "Anthropic's servers are temporarily overloaded. "
+                        "Please resend your message in a moment."
+                    ),
+                    "conversation_id": conversation_id,
+                }
+            )
+            return
         except RuntimeError as err:
             # ``str(err)`` can echo raw subprocess stderr, including argv,
             # absolute paths and env-derived diagnostics — log full detail
@@ -1705,30 +1874,39 @@ async def handle_chat_message_claude_cli(
             await asyncio.to_thread(_cleanup_image_dir, conversation_id)
         if doc_paths and conversation_id:
             await asyncio.to_thread(_cleanup_docs_dir, conversation_id)
+        # Also delete THIS turn's own attachment files directly. The dir sweeps
+        # above skip files <60s old (so a concurrent turn isn't robbed of its
+        # inputs), which means a single-turn conversation would never clean up
+        # its own just-written attachments. The subprocess is done with them.
+        for _attach in (*image_paths, *(doc_paths or [])):
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(_attach.unlink)
+        # Emit thinking_end on EVERY exit path (success AND the early-return
+        # error/timeout handlers above, which otherwise bypass the success-path
+        # event and leave the 💭 panel spinning). Substitute when redacted.
+        if thinking_started:
+            if not full_thinking:
+                full_thinking = (
+                    "💭 Claude reasoned through this internally. The Claude Code "
+                    "subscription redacts thought content from headless output — "
+                    "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
+                    "see the full thought process."
+                )
+            with contextlib.suppress(Exception):
+                await ws.send_json(
+                    {
+                        "type": "thinking_end",
+                        "full_thinking": full_thinking,
+                        "conversation_id": conversation_id,
+                    }
+                )
 
     # Save session id for next turn so Claude keeps context server-side.
     if conversation_id and new_session_id:
         _track_session(conversation_id, new_session_id)
 
-    # Surface a "thinking complete" event so the UI can collapse the panel.
-    # If the model reasoned but the content was redacted (subscription mode
-    # always redacts), substitute a short explanation so the user sees why
-    # the panel is empty rather than a blank box.
-    if thinking_started:
-        if not full_thinking:
-            full_thinking = (
-                "💭 Claude reasoned through this internally. The Claude Code "
-                "subscription redacts thought content from headless output — "
-                "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
-                "see the full thought process."
-            )
-        await ws.send_json(
-            {
-                "type": "thinking_end",
-                "full_thinking": full_thinking,
-                "conversation_id": conversation_id,
-            }
-        )
+    # (thinking_end is emitted in the finally above so it also fires on the
+    # error/timeout return paths — see the panel-close block there.)
 
     # Strip Claude Code internal XML markup that occasionally leaks into
     # output (e.g. orphan ``</system-reminder>`` tags), then strip a
@@ -2134,22 +2312,24 @@ async def handle_ai_edit_message_claude_cli(
     finally:
         if edit_lock is not None and edit_lock_acquired:
             edit_lock.release()
-
-    if thinking_started:
-        if not edit_thinking:
-            edit_thinking = (
-                "💭 Claude reasoned through this internally. The Claude Code "
-                "subscription redacts thought content from headless output — "
-                "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
-                "see the full thought process."
-            )
-        await ws.send_json(
-            {
-                "type": "thinking_end",
-                "full_thinking": edit_thinking,
-                "conversation_id": conversation_id,
-            }
-        )
+        # Emit thinking_end on every exit path (parity with the chat handler) —
+        # the error/timeout returns above otherwise leave the 💭 panel open.
+        if thinking_started:
+            if not edit_thinking:
+                edit_thinking = (
+                    "💭 Claude reasoned through this internally. The Claude Code "
+                    "subscription redacts thought content from headless output — "
+                    "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
+                    "see the full thought process."
+                )
+            with contextlib.suppress(Exception):
+                await ws.send_json(
+                    {
+                        "type": "thinking_end",
+                        "full_thinking": edit_thinking,
+                        "conversation_id": conversation_id,
+                    }
+                )
 
     # Strip Claude Code internal markup before the SEARCH/REPLACE
     # parser sees it. Otherwise a leaked ``</system-reminder>`` inside

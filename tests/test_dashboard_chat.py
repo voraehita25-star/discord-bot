@@ -260,6 +260,77 @@ class TestChatStreaming:
         assert mock_db.save_dashboard_message.call_count >= 2
 
     @pytest.mark.asyncio
+    async def test_documents_are_persisted(self, ws):
+        """Regression: the Gemini backend must extract + persist uploaded
+        documents. It previously dropped `documents` entirely — silent data
+        loss and a cross-backend asymmetry vs the Claude backends (a doc
+        attached on Gemini never reached document memory / the Files panel /
+        later turns). Persisting also feeds the text into this turn's context.
+        """
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
+        client = self._make_client([FakeChunk(text="Reply")])
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock()
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+        fake_extract = AsyncMock(return_value=[{"id": 1, "filename": "spec.pdf"}])
+        docs = [{"name": "spec.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat.build_user_context",
+                new=AsyncMock(return_value=("ctx", "", False)),
+            ),
+            patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
+        ):
+            await handle_chat_message(
+                ws,
+                {"content": "summarize the doc", "conversation_id": "conv-doc", "documents": docs},
+                client,
+            )
+
+        fake_extract.assert_awaited_once()
+        assert fake_extract.await_args.args[0] == docs
+        assert len(ws.find("document_saved")) == 1
+
+    @pytest.mark.asyncio
+    async def test_regeneration_skips_document_persist(self, ws):
+        """is_regeneration must NOT re-persist documents — the original turn
+        already did (mirrors the user-message skip)."""
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
+        client = self._make_client([FakeChunk(text="Reply")])
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock()
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+        fake_extract = AsyncMock(return_value=[{"id": 1}])
+        docs = [{"name": "spec.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat.build_user_context",
+                new=AsyncMock(return_value=("ctx", "", False)),
+            ),
+            patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
+        ):
+            await handle_chat_message(
+                ws,
+                {
+                    "content": "x",
+                    "conversation_id": "conv-doc",
+                    "documents": docs,
+                    "is_regeneration": True,
+                },
+                client,
+            )
+
+        fake_extract.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_stream_auto_title(self, ws):
         """Test auto-setting title from first user message."""
         from cogs.ai_core.api.dashboard_chat import handle_chat_message

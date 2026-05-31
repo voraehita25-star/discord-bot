@@ -110,7 +110,12 @@ class SummaryArchiver:
         if not DB_AVAILABLE or db is None:
             return
 
-        async with db.get_connection() as conn:
+        # DDL must route through the single-writer connection and commit
+        # explicitly — mirrors ``long_term_memory.init_schema``. Using the read
+        # pool without a commit can leave the CREATE uncommitted (and risks a
+        # "database is locked" error under WAL on Windows), so the table would
+        # silently fail to persist on a fresh DB.
+        async with db.get_write_connection() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_summaries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,6 +134,7 @@ class SummaryArchiver:
                 CREATE INDEX IF NOT EXISTS idx_summaries_channel
                 ON conversation_summaries(channel_id)
             """)
+            await conn.commit()
 
         self.logger.info("📚 Memory consolidator schema initialized")
 

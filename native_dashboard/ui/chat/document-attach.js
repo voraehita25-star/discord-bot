@@ -16,8 +16,8 @@
  * Hard caps:
  *   - 32 MB per file (matches Claude API `document` block limit)
  *   - 5 files per message (matches image attach behaviour)
- *   - 20,000-char truncation on preview filename (prevents giant names
- *     blowing out the UI — doesn't touch the actual file content)
+ * Long file names are ellipsised by CSS in the preview strip; the full name
+ * is preserved in the payload and the `title` tooltip (no content truncation).
  */
 import { escapeHtml, showToast } from '../shared.js';
 // Mirrors backend constants — keep in sync with dashboard_chat_claude_cli.py
@@ -182,7 +182,7 @@ export class DocumentAttachManager {
         `).join('');
         container.querySelectorAll('.remove-doc').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const idx = parseInt(e.currentTarget.dataset.idx || '0');
+                const idx = parseInt(e.currentTarget.dataset.idx || '0', 10);
                 this.remove(idx);
             });
         });

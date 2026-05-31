@@ -727,6 +727,7 @@ async def call_claude_api_streaming(
                 messages=messages,
             )
 
+            _stream_final_message = None
             async with stream as response_stream:
                 async for text in response_stream.text_stream:
                     current_chunks_received += 1
@@ -758,6 +759,13 @@ async def call_claude_api_streaming(
                             except Exception as edit_error:
                                 logger.debug("Failed to update streaming message: %s", edit_error)
 
+                # Capture the final message WHILE the stream context is still
+                # open. get_final_message() reads the stream's accumulated
+                # state, which isn't contractually available after the
+                # ``async with`` exits (works today only via SDK caching).
+                with contextlib.suppress(Exception):
+                    _stream_final_message = await response_stream.get_final_message()
+
             model_text = current_model_text
             chunks_received = current_chunks_received
 
@@ -778,9 +786,8 @@ async def call_claude_api_streaming(
             # H27: record token usage (best-effort). Accumulated usage lives on
             # the stream's final message; guarded so it never breaks the reply.
             try:
-                _final = await response_stream.get_final_message()
                 await _record_token_usage(
-                    getattr(_final, "usage", None),
+                    getattr(_stream_final_message, "usage", None),
                     user_id=user_id,
                     channel_id=channel_id,
                     guild_id=guild_id,

@@ -188,6 +188,15 @@ class LeadingTimestampStripper:
         self._done = True
         return out
 
+    def reset(self) -> None:
+        """Discard buffered state so the stripper can be reused on a retry.
+
+        Without this, a partial ``[2026...`` buffered on a failed attempt is
+        prepended to the next attempt's clean continuation when it flushes.
+        """
+        self._buffer = ""
+        self._done = False
+
 
 def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
     """Sanitize user profile fields to prevent system instruction injection.

@@ -286,8 +286,7 @@ async def handle_chat_message_claude(
     # Validate conversation_id format (defense in depth). Reuse the
     # module-level compiled pattern instead of recompiling per call.
     if conversation_id and (
-        not isinstance(conversation_id, str)
-        or not _CONVERSATION_ID_RE.match(conversation_id)
+        not isinstance(conversation_id, str) or not _CONVERSATION_ID_RE.match(conversation_id)
     ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
@@ -557,10 +556,9 @@ async def handle_chat_message_claude(
     for doc in documents:
         if not isinstance(doc, dict):
             continue
-        doc_name = (
-            re.sub(r"[^A-Za-z0-9._\-\s]", "_", str(doc.get("name", "attachment")))
-            .strip(".\\/ ")[:200]
-        )
+        doc_name = re.sub(r"[^A-Za-z0-9._\-\s]", "_", str(doc.get("name", "attachment"))).strip(
+            ".\\/ "
+        )[:200]
         doc_kind = doc.get("kind")
         doc_data = doc.get("data")
         if not isinstance(doc_data, str) or not doc_data:
@@ -703,7 +701,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     _name_part = " ".join(w.title() for w in _model_words)
     _version_part = ".".join(_model_numeric) if _model_numeric else ""
     _model_display = (
-        f"Claude {_name_part} {_version_part}".strip() if _version_part else f"Claude {_name_part}".strip()
+        f"Claude {_name_part} {_version_part}".strip()
+        if _version_part
+        else f"Claude {_name_part}".strip()
     )
     mode_info.insert(0, f"🟣 {_model_display}")
 
@@ -970,6 +970,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 is_thinking = False
                 input_tokens = 0
                 output_tokens = 0
+                # Reset the timestamp stripper too: a partial "[2026..." it
+                # buffered on the failed attempt would otherwise be prepended
+                # to this attempt's clean continuation when its buffer flushes.
+                ts_stripper.reset()
 
                 if partial:
                     if thinking_enabled:
@@ -1008,6 +1012,20 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             )
 
         await _consume_claude_stream()
+
+        # If the stream ended while still inside a thinking block (retries
+        # exhausted mid-reasoning, or an abort before content_block_stop),
+        # close the thinking UI so the client spinner doesn't hang. Mirrors
+        # the Gemini handler's end-of-stream flush.
+        if is_thinking:
+            is_thinking = False
+            await ws.send_json(
+                {
+                    "type": "thinking_end",
+                    "conversation_id": conversation_id,
+                    "full_thinking": thinking_content,
+                }
+            )
 
         # Log prompt-caching effectiveness for this request. A healthy
         # cache_read_tokens value means Anthropic reused the cached prefix
@@ -1196,6 +1214,15 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 pass
             return
 
+        # A ConnectionResetError here means the CLIENT WebSocket dropped mid-
+        # stream (aiohttp raises it from ws.send_json on a closing transport),
+        # not an Anthropic-endpoint failure. Abort without recording it against
+        # failover health — otherwise a disconnect flips the active endpoint
+        # and re-runs a full generation for a client that is already gone.
+        if isinstance(e, ConnectionResetError):
+            logger.info("Dashboard client disconnected mid-stream; aborting (no failover).")
+            return
+
         if _FAILOVER_AVAILABLE and not is_failover_retry:
             switched = await _api_failover.record_failure(e)
             if switched:
@@ -1370,7 +1397,19 @@ async def handle_ai_edit_message_claude(
 
     # Build mode info
     mode_info: list[str] = []
-    _model_display = CLAUDE_MODEL.replace("claude-", "Claude ").replace("-", " ").title()
+    # Format model id like `claude-opus-4-8` → `Claude Opus 4.8`. Mirrors the
+    # main chat handler: the naive `replace("-", " ").title()` renders the
+    # version as two separate word tokens ("Claude Opus 4 8").
+    _model_parts = CLAUDE_MODEL.replace("claude-", "").split("-")
+    _model_numeric = [p for p in _model_parts if p.isdigit()]
+    _model_words = [p for p in _model_parts if not p.isdigit()]
+    _name_part = " ".join(w.title() for w in _model_words)
+    _version_part = ".".join(_model_numeric)
+    _model_display = (
+        f"Claude {_name_part} {_version_part}".strip()
+        if _version_part
+        else f"Claude {_name_part}".strip()
+    )
     mode_info.append(f"🟣 {_model_display}")
     mode_info.append("✏️ AI Edit")
     if thinking_enabled:
@@ -1547,6 +1586,18 @@ async def handle_ai_edit_message_claude(
 
         await _consume_claude_edit_stream()
 
+        # Close a dangling thinking block if the edit stream ended mid-
+        # reasoning (parity with the chat handler / Gemini path).
+        if is_thinking:
+            is_thinking = False
+            await ws.send_json(
+                {
+                    "type": "thinking_end",
+                    "conversation_id": conversation_id,
+                    "full_thinking": thinking_content,
+                }
+            )
+
         # Apply search/replace patches if present, otherwise use full response
         final_content = (
             _apply_search_replace(original_content, full_response) if full_response else ""
@@ -1604,6 +1655,11 @@ async def handle_ai_edit_message_claude(
             logger.debug("WebSocket send failed during Claude AI edit timeout handling")
     except Exception as e:
         logger.exception("❌ Claude AI edit streaming error")
+        # Client WS disconnect (ConnectionResetError from ws.send_json) is not
+        # an endpoint failure — abort without polluting failover health.
+        if isinstance(e, ConnectionResetError):
+            logger.info("Dashboard client disconnected during AI edit; aborting (no failover).")
+            return
         if _FAILOVER_AVAILABLE:
             await _api_failover.record_failure(e)
         try:

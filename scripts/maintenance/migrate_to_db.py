@@ -184,12 +184,16 @@ async def migrate_metadata(channel_id: int, filepath: Path, dry_run: bool = Fals
 
 def create_backup() -> Path | None:
     """Create a backup of the data directory."""
-    data_dir = Path("data")
+    # Anchor to the project root rather than the CWD so the backup lands next
+    # to the real data/ dir even if create_backup() is ever called before
+    # async_main()'s os.chdir(PROJECT_ROOT).
+    _root = Path(__file__).resolve().parents[2]
+    data_dir = _root / "data"
     if not data_dir.exists():
         return None
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = Path(f"data_backup_{timestamp}")
+    backup_dir = _root / f"data_backup_{timestamp}"
 
     shutil.copytree(data_dir, backup_dir)
     return backup_dir

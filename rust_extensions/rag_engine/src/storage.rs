@@ -162,9 +162,19 @@ impl VectorStorage {
             });
         }
 
-        // Use the larger of requested capacity or existing count
+        // Use the larger of requested capacity, existing count, OR the
+        // capacity the on-disk file can actually hold. When an existing file
+        // is larger than the requested capacity we keep it (the set_len skip
+        // above) and the mmap covers the whole file — so push() must be free
+        // to fill it instead of stopping at the smaller requested capacity and
+        // rejecting valid writes with CapacityExceeded.
         let hdr_count = hdr_count as usize;
-        let effective_capacity = capacity.max(hdr_count);
+        let file_capacity = if vector_size > 0 {
+            mmap.len().saturating_sub(Self::HEADER_SIZE) / vector_size
+        } else {
+            0
+        };
+        let effective_capacity = capacity.max(hdr_count).max(file_capacity);
 
         Ok(Self {
             mmap: Some(mmap),

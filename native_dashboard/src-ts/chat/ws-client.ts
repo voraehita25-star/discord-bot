@@ -53,6 +53,9 @@ export class WebSocketClient {
     private pingInterval: number | null = null;
     private pongPending: boolean = false;
     private missedPongs: number = 0;
+    // Once the fast-retry budget is spent we keep retrying at the capped
+    // interval but warn the user only once (avoid toast spam).
+    private maxAttemptsNotified: boolean = false;
 
     constructor(private readonly callbacks: WsClientCallbacks) {}
 
@@ -193,6 +196,7 @@ export class WebSocketClient {
                 }
                 this.connected = true;
                 this.reconnectAttempts = 0;
+                this.maxAttemptsNotified = false;
                 this.pongPending = false;
                 this.missedPongs = 0;
                 this.callbacks.onConnectStateChange?.(true);
@@ -211,7 +215,7 @@ export class WebSocketClient {
                     errorLogger.log(
                         'WEBSOCKET_FALLBACK',
                         `WebSocket connection to ${wsUrl} closed before opening; retrying ${nextUrl}`,
-                        JSON.stringify({ code: event.code, reason: event.reason || '' }),
+                        JSON.stringify({ code: event.code, reason: (event.reason || '').slice(0, 512) }),
                     );
                     this.connectWithUrl(nextUrl, remaining);
                     return;
@@ -279,12 +283,21 @@ export class WebSocketClient {
         }
 
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.warn('Max reconnect attempts reached');
-            this.callbacks.onConnectStateChange?.(false);
-            showToast(
-                'Connection to AI server lost. Please restart the bot and reload the dashboard.',
-                { type: 'error', duration: 10000 },
-            );
+            // Past the fast-retry budget: keep retrying at the capped 30s
+            // interval so the dashboard self-heals when the bot comes back
+            // (no manual page reload needed). Warn the user only once.
+            if (!this.maxAttemptsNotified) {
+                this.maxAttemptsNotified = true;
+                this.callbacks.onConnectStateChange?.(false);
+                showToast(
+                    'Connection to AI server lost — retrying in the background. Restart the bot if it stays offline.',
+                    { type: 'warning', duration: 8000 },
+                );
+            }
+            this.reconnectTimeout = window.setTimeout(() => {
+                this.reconnectTimeout = null;
+                this.connect();
+            }, 30000);
             return;
         }
 

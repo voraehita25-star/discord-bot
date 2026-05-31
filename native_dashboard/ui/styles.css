@@ -281,12 +281,32 @@ html[data-theme="light"] kbd {
 }
 
 body {
-    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Segoe UI', 'Malgun Gothic', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
     background: var(--bg-primary);
     color: var(--text-primary);
     height: 100vh;
     overflow: hidden;
     transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* Accessibility: keyboard skip-link — visually hidden until focused, then
+   slides into view so keyboard users can jump past the nav to the content. */
+.skip-link {
+    position: absolute;
+    left: 8px;
+    top: -48px;
+    z-index: 1000;
+    padding: 8px 16px;
+    background: var(--accent-primary, #5865f2);
+    color: #fff;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+    transition: top 0.2s ease;
+}
+.skip-link:focus {
+    top: 8px;
+    outline: 2px solid #fff;
 }
 
 .app {
@@ -331,7 +351,7 @@ body {
 /* Keyboard Shortcuts in Nav */
 .shortcut {
     margin-left: auto;
-    font-size: 10px;
+    font-size: 11px;
     padding: 2px 6px;
     background: rgba(168, 85, 247, 0.2);
     border-radius: 4px;
@@ -2562,6 +2582,29 @@ margin-bottom: 8px;
     border: 1px solid var(--border-color);
 }
 
+/* Document-attachment chips shown under a message (📎 filename). */
+.message-docs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.message-doc-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 240px;
+    padding: 3px 10px;
+    font-size: 0.8rem;
+    border-radius: 999px;
+    background: var(--surface-2, rgba(127, 127, 127, 0.15));
+    border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+    color: var(--text-secondary, inherit);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .message-image:hover {
     transform: scale(1.05);
 }
@@ -2661,9 +2704,10 @@ margin-bottom: 8px;
     display: block;
     font-size: 11px;
     color: var(--text-secondary);
-    opacity: 0.75;
+    opacity: 0.7;
     font-weight: normal;
     margin-top: 2px;
+    margin-left: 6px;
 }
 
 /* Conversation tags bar (#22) */
@@ -3562,7 +3606,7 @@ html[data-theme="light"] .role-card:hover {
     color: white;
     border: none;
     border-radius: 50%;
-    font-size: 10px;
+    font-size: 11px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -3620,7 +3664,7 @@ html[data-theme="light"] .role-card:hover {
 
 .attached-doc-preview .doc-meta {
     color: var(--text-secondary);
-    font-size: 10px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
 }
@@ -3662,7 +3706,7 @@ html[data-theme="light"] .role-card:hover {
     border-radius: 10px;
     background: var(--accent-purple);
     color: white;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -5199,13 +5243,7 @@ html[data-theme="light"] .toast::before {
 /* -----------------------------------------------------------------------
  * Settings — sound + haptic toggle cards
  * ---------------------------------------------------------------------*/
-.setting-hint-inline {
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-left: 6px;
-    font-weight: normal;
-    opacity: 0.7;
-}
+/* (.setting-hint-inline consolidated into its earlier definition above) */
 
 
 /* Preserve prefers-reduced-motion for NEW animations too */

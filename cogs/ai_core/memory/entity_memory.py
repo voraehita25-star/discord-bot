@@ -76,29 +76,40 @@ class EntityFacts:
 
     def to_prompt_text(self) -> str:
         """Convert to human-readable text for prompt injection."""
+
+        # Cap each field so a single over-long extracted value (or one
+        # injected via a poisoned conversation) can't blow up the prompt /
+        # context budget. Mirrors the truncation discipline state_tracker
+        # already applies to its analogous fields.
+        def _cap(value: object, limit: int = 500) -> str:
+            text = str(value)
+            return text if len(text) <= limit else text[:limit] + "…"
+
         lines = []
         if self.description:
-            lines.append(f"คำอธิบาย: {self.description}")
+            lines.append(f"คำอธิบาย: {_cap(self.description)}")
         if self.age:
-            lines.append(f"อายุ: {self.age} ปี")
+            lines.append(f"อายุ: {_cap(self.age, 32)} ปี")
         if self.occupation:
-            lines.append(f"อาชีพ: {self.occupation}")
+            lines.append(f"อาชีพ: {_cap(self.occupation, 120)}")
         if self.personality:
-            lines.append(f"นิสัย: {self.personality}")
+            lines.append(f"นิสัย: {_cap(self.personality)}")
         if self.appearance:
-            lines.append(f"รูปลักษณ์: {self.appearance}")
+            lines.append(f"รูปลักษณ์: {_cap(self.appearance)}")
         if self.relationships:
             rel_str = ", ".join([f"{k}: {v}" for k, v in self.relationships.items()])
-            lines.append(f"ความสัมพันธ์: {rel_str}")
+            lines.append(f"ความสัมพันธ์: {_cap(rel_str)}")
         if self.location_type:
-            lines.append(f"ประเภทสถานที่: {self.location_type}")
+            lines.append(f"ประเภทสถานที่: {_cap(self.location_type, 120)}")
         if self.address:
-            lines.append(f"ที่อยู่: {self.address}")
+            lines.append(f"ที่อยู่: {_cap(self.address)}")
         if self.owner:
-            lines.append(f"เจ้าของ: {self.owner}")
+            lines.append(f"เจ้าของ: {_cap(self.owner, 120)}")
         if self.custom:
-            for k, v in self.custom.items():
-                lines.append(f"{k}: {v}")
+            # Bound the number of custom rows too — an attacker-influenced
+            # extraction could otherwise pack hundreds of keys in here.
+            for k, v in list(self.custom.items())[:20]:
+                lines.append(f"{_cap(k, 64)}: {_cap(v, 300)}")
         return "\n".join(lines)
 
 

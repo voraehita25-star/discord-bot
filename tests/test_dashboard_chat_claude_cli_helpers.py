@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import time
 from pathlib import Path
@@ -369,7 +370,12 @@ class TestBuildClaudeArgv:
         )
         assert "--effort" in argv
         assert "max" in argv
-        assert "interleaved-thinking" in argv
+        # Regression guard: we must NOT pass --betas interleaved-thinking. This
+        # subprocess always authenticates with the Max subscription (no
+        # ANTHROPIC_API_KEY in the env allowlist), so the CLI rejects custom
+        # betas with a stderr warning that previously masked the real failure.
+        assert "--betas" not in argv
+        assert "interleaved-thinking" not in argv
 
     def test_no_thinking_flag_by_default(self):
         argv = cli._build_claude_argv(
@@ -469,3 +475,198 @@ class TestEncodeProjectDirnameExtra:
     def test_replaces_colon(self):
         out = cli._encode_claude_project_dirname(Path("c:\\users\\me"))
         assert ":" not in out
+
+
+# ---------------------------------------------------------------------------
+# _run_claude_subprocess — error reporting & classification
+#
+# The real failure cause is emitted on STDOUT as the stream-json `result`
+# event (is_error / api_error_status / result text); stderr usually holds only
+# the benign "Custom betas are only available for API key users" warning. These
+# tests drive the real helper against a fake subprocess to lock in that rc!=0
+# reports/classifies the stdout error rather than the stderr red herring.
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """Minimal async-iterable over a fixed list of byte chunks (a pipe)."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self) -> _FakeStream:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+
+class _FakeStdin:
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeProc:
+    """Stand-in for the asyncio subprocess transport."""
+
+    def __init__(self, stdout_lines: list[bytes], stderr_chunks: list[bytes], rc: int) -> None:
+        self.stdout = _FakeStream(stdout_lines)
+        self.stderr = _FakeStream(stderr_chunks)
+        self.stdin = _FakeStdin()
+        self._rc = rc
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        self.returncode = self._rc
+        return self._rc
+
+    def kill(self) -> None:  # pragma: no cover - clean exit never reaches this
+        pass
+
+
+def _ndjson(*events: dict) -> list[bytes]:
+    """Encode dict events as the NDJSON byte lines claude writes to stdout."""
+    return [(json.dumps(e) + "\n").encode("utf-8") for e in events]
+
+
+async def _run_with_fake(
+    monkeypatch,
+    tmp_path,
+    *,
+    stdout_lines: list[bytes],
+    stderr_chunks: list[bytes],
+    rc: int,
+):
+    proc = _FakeProc(stdout_lines, stderr_chunks, rc)
+
+    async def fake_exec(*_a, **_k):
+        return proc
+
+    monkeypatch.setattr(cli, "_CLAUDE_CLI_WORKDIR", tmp_path)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return await cli._run_claude_subprocess(
+        ["claude", "-p"],
+        "hello",
+        on_text_delta=None,
+        on_thinking_delta=None,
+        timeout=30,
+    )
+
+
+# The ignored-betas warning that used to be reported as the "error".
+_BETAS_WARNING = (
+    b"Warning: Custom betas are only available for API key users. "
+    b"Ignoring provided betas.\n"
+)
+
+
+class TestRunClaudeSubprocessErrors:
+    async def test_overload_529_raises_overloaded_error(self, monkeypatch, tmp_path):
+        stdout = _ndjson(
+            {"type": "system", "subtype": "init", "session_id": "sess-1"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 529,
+                "result": "API Error: 529 Overloaded. This is a server-side issue.",
+            },
+        )
+        with pytest.raises(cli._OverloadedError) as exc:
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[_BETAS_WARNING],
+                rc=1,
+            )
+        # The raised message names the real cause + status, not the betas warning.
+        assert "529" in str(exc.value)
+        assert "betas" not in str(exc.value).lower()
+
+    async def test_rate_limit_429_raises_overloaded_error(self, monkeypatch, tmp_path):
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "api_error_status": 429,
+                "result": "API Error: 429 rate limit",
+            },
+        )
+        with pytest.raises(cli._OverloadedError):
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[_BETAS_WARNING],
+                rc=1,
+            )
+
+    async def test_generic_api_error_surfaces_stdout_text(self, monkeypatch, tmp_path):
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "api_error_status": 404,
+                "result": "There's an issue with the selected model (foo).",
+            },
+        )
+        with pytest.raises(RuntimeError) as exc:
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[_BETAS_WARNING],
+                rc=1,
+            )
+        # Not overload, not stale — a plain RuntimeError carrying the stdout text.
+        assert not isinstance(exc.value, cli._OverloadedError)
+        assert not isinstance(exc.value, cli._StaleSessionError)
+        assert "selected model" in str(exc.value)
+        assert "betas" not in str(exc.value).lower()
+
+    async def test_stale_resume_on_stderr_raises_stale(self, monkeypatch, tmp_path):
+        # The stale --resume message lands on STDERR; the result event carries
+        # no human-readable text. Detection must still scan stderr.
+        stdout = _ndjson(
+            {"type": "result", "subtype": "error_during_execution", "is_error": True},
+        )
+        stderr = [b"No conversation found with session ID: 0000\n"]
+        with pytest.raises(cli._StaleSessionError):
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=stderr,
+                rc=1,
+            )
+
+    async def test_success_returns_session_and_usage(self, monkeypatch, tmp_path):
+        stdout = _ndjson(
+            {"type": "system", "subtype": "init", "session_id": "sess-ok"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "api_error_status": None,
+                "result": "OK",
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            },
+        )
+        sid, usage = await _run_with_fake(
+            monkeypatch,
+            tmp_path,
+            stdout_lines=stdout,
+            stderr_chunks=[],
+            rc=0,
+        )
+        assert sid == "sess-ok"
+        assert usage == {"input_tokens": 5, "output_tokens": 2}

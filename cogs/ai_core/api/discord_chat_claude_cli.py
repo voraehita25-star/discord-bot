@@ -42,6 +42,7 @@ import discord
 
 from .dashboard_chat_claude_cli import (
     _build_claude_argv,
+    _OverloadedError,
     _run_claude_subprocess,
     _StaleSessionError,
     is_cli_backend_ready,
@@ -106,7 +107,7 @@ def _sanitize_dialog_segment(text: str) -> str:
 _DISCORD_EDIT_INTERVAL = 1.0
 
 # Hard ceiling on a single turn end-to-end. Discord CLI replies run with
-# extended thinking (`--effort max` + interleaved-thinking, see the
+# extended thinking (`--effort max`, see the
 # _build_claude_argv calls below), which can reason for minutes on hard
 # questions — so match the dashboard's 1800s thinking cap. The old 600s
 # assumed thinking was off and would kill a max-effort turn mid-reason.
@@ -114,7 +115,7 @@ _DISCORD_EDIT_INTERVAL = 1.0
 _DISCORD_STREAM_TIMEOUT = 1800.0
 
 # Soft cap on prompt size sent to the CLI. Claude Code CLI itself can
-# handle Opus 4.7's 1M context, but very large prompts inflate both
+# handle Opus 4.8's 1M context, but very large prompts inflate both
 # latency and quota; clip the history portion the same way logic.py
 # clips ``contents`` before this layer sees them.
 _DISCORD_PROMPT_MAX_CHARS = 200_000
@@ -433,6 +434,17 @@ async def call_claude_cli_streaming(
                         "⚠️ Claude CLI ใช้เวลาตอบนานเกินกำหนด กรุณาลองใหม่"
                     )
                 break
+            except _OverloadedError:
+                # Transient Anthropic overload (429/529). claude already retried
+                # internally, so don't loop again — show a clear retry hint.
+                logger.warning(
+                    "Claude CLI: Anthropic API overloaded for channel %s",
+                    channel_id,
+                )
+                accumulated_text = (
+                    "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
+                )
+                break
             except Exception:
                 logger.exception("Claude CLI subprocess failed for channel %s", channel_id)
                 accumulated_text = "⚠️ Claude CLI ขัดข้อง กรุณาดู log ของบอท"
@@ -542,6 +554,12 @@ async def call_claude_cli(
             except TimeoutError:
                 logger.warning("Claude CLI timed out (non-stream)")
                 accumulated_text = accumulated_text or ""
+                break
+            except _OverloadedError:
+                logger.warning("Claude CLI: Anthropic API overloaded (non-stream)")
+                accumulated_text = (
+                    "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
+                )
                 break
             except Exception:
                 logger.exception("Claude CLI subprocess failed (non-stream)")

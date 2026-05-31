@@ -400,7 +400,12 @@ export async function showConfirmDialog(message: string): Promise<boolean> {
 }
 
 export function showToast(message: string, options: ToastOptions = { type: 'info' }): void {
-    if (!settings.notifications) return;
+    // Errors and warnings always surface — they report real failures (bot
+    // start failed, load failed, connection lost, …) the user must see even
+    // with notifications muted. Only info/success toasts respect the toggle.
+    if (!settings.notifications && options.type !== 'error' && options.type !== 'warning') {
+        return;
+    }
 
     const container = document.getElementById('toast-container');
     if (!container) return;

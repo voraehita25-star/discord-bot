@@ -282,6 +282,15 @@ class ShutdownManager:
             self._state.handlers_run += 1
             return True
 
+        except asyncio.CancelledError:
+            # Phase-budget cancellation lands here — CancelledError is a
+            # BaseException, so the TimeoutError/Exception clauses below don't
+            # catch it. Signal a cooperative handler to stop before
+            # propagating; otherwise a sync handler waiting on stop_event keeps
+            # running on its executor thread after we've given up on it.
+            stop_event.set()
+            raise
+
         except TimeoutError:
             # Signal a cooperative handler to stop. A non-cooperative one keeps
             # running on its executor thread (Python can't kill it) — see the

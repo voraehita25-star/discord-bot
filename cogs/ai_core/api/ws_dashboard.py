@@ -140,7 +140,7 @@ class DashboardWebSocketServer:
     )
     # Raised from 50K → 200K: matches the direct-API backend ceiling and lets
     # users paste large RP context (character sheets / world bibles / full
-    # scenes) in a single message. Claude Opus 4.7 1M context window has
+    # scenes) in a single message. Claude Opus 4.8 1M context window has
     # plenty of headroom — 200K chars ≈ 50-80K tokens, ~8% of the window.
     MAX_CONTENT_LENGTH = 200_000  # characters
     MAX_HISTORY_MESSAGES = 100
@@ -208,13 +208,9 @@ class DashboardWebSocketServer:
         # default was "api", so an unset env var disabled API clients here
         # but left `_CLAUDE_BACKEND == "api"` — downstream branches that
         # check the module constant would route to a non-initialised SDK.
-        _api_disabled = (
-            os.getenv("CLAUDE_BACKEND", "api").strip().lower() == "cli"
-        )
+        _api_disabled = os.getenv("CLAUDE_BACKEND", "api").strip().lower() == "cli"
         if _api_disabled:
-            logger.info(
-                "🚫 Dashboard WS: Gemini disabled (CLAUDE_BACKEND=cli)"
-            )
+            logger.info("🚫 Dashboard WS: Gemini disabled (CLAUDE_BACKEND=cli)")
         elif GEMINI_API_KEY:
             self.gemini_client = genai.Client(api_key=GEMINI_API_KEY)
             logger.info("🤖 Dashboard WS: Gemini client initialized")
@@ -382,7 +378,14 @@ class DashboardWebSocketServer:
             if not task.done():
                 task.cancel()
         if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            # Bound the wait so a task that ignores CancelledError (e.g. a
+            # blocked subprocess in the CLI handler) can't hang shutdown
+            # forever — mirrors the per-client disconnect path's 5s cap.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*self._background_tasks, return_exceptions=True),
+                    timeout=5.0,
+                )
         self._background_tasks.clear()
 
         # Detach the failover listener so a server restart doesn't leave a
@@ -569,9 +572,7 @@ class DashboardWebSocketServer:
                 parts = auth_header.split(" ", 1)
                 if len(parts) == 2 and parts[0].lower() == "bearer":
                     auth_match = hmac.compare_digest(parts[1], expected_token)
-            token_match = (
-                hmac.compare_digest(query_token, expected_token) if query_token else False
-            )
+            token_match = hmac.compare_digest(query_token, expected_token) if query_token else False
             if not auth_match and not token_match:
                 # Use a fresh ``time.monotonic()`` here rather than
                 # the ``now`` captured at function entry — a slow
@@ -851,7 +852,8 @@ class DashboardWebSocketServer:
                             # handle_chat_message only sees the task
                             # AFTER create_task). Reject before spawning.
                             current_inflight = sum(
-                                1 for t, cid in self._client_tasks.items()
+                                1
+                                for t, cid in self._client_tasks.items()
                                 if cid == client_id and not t.done()
                             )
                             if current_inflight >= 4:
@@ -1181,8 +1183,7 @@ class DashboardWebSocketServer:
                     "type": "info",
                     "code": "PROVIDER_FALLBACK",
                     "message": (
-                        "ℹ️ Claude backend is not configured; replying with "
-                        "Gemini instead."
+                        "ℹ️ Claude backend is not configured; replying with Gemini instead."
                     ),
                 }
             )
@@ -1198,8 +1199,7 @@ class DashboardWebSocketServer:
                     "type": "error",
                     "code": "NO_BACKEND_AVAILABLE",
                     "message": (
-                        "ไม่มี AI backend พร้อมใช้งาน "
-                        "(Claude CLI/SDK ล้มเหลว และ Gemini ไม่ได้ตั้งค่า)"
+                        "ไม่มี AI backend พร้อมใช้งาน (Claude CLI/SDK ล้มเหลว และ Gemini ไม่ได้ตั้งค่า)"
                     ),
                 }
             )
@@ -1213,6 +1213,8 @@ class DashboardWebSocketServer:
             max_history_messages=self.MAX_HISTORY_MESSAGES,
             max_images=self.MAX_IMAGES,
             max_image_size_bytes=self.MAX_IMAGE_SIZE_BYTES,
+            max_documents=self.MAX_DOCUMENTS,
+            max_document_size_bytes=self.MAX_DOCUMENT_SIZE_BYTES,
             stream_timeout=self.STREAM_TIMEOUT,
         )
 
@@ -1261,12 +1263,24 @@ class DashboardWebSocketServer:
                 {
                     "type": "info",
                     "code": "PROVIDER_FALLBACK",
+                    "message": ("ℹ️ Claude backend is not configured; editing with Gemini instead."),
+                }
+            )
+
+        # Mirror ``handle_chat_message``'s guard: if Claude fell through and
+        # Gemini is also unconfigured, ``self.gemini_client`` is None and the
+        # handler would crash inside the SDK with no user-facing message.
+        if self.gemini_client is None:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "NO_BACKEND_AVAILABLE",
                     "message": (
-                        "ℹ️ Claude backend is not configured; editing with "
-                        "Gemini instead."
+                        "ไม่มี AI backend พร้อมใช้งาน (Claude CLI/SDK ล้มเหลว และ Gemini ไม่ได้ตั้งค่า)"
                     ),
                 }
             )
+            return
 
         await _handle_ai_edit_message(
             ws,

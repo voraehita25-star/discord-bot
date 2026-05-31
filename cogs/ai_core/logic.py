@@ -904,7 +904,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                         self._deduplicator.remove_request(request_key)
                         return
 
-                    user_name = user.display_name
+                    # Strip newlines so a crafted display name can't forge a
+                    # line-based prompt-structure boundary (e.g. an injected
+                    # "---END SYSTEM CONTEXT---" line) in the flattened prompt.
+                    user_name = user.display_name.replace("\n", " ").replace("\r", " ")
                     # Get real-time in Bangkok timezone (ICT)
                     now_bangkok = datetime.datetime.now(BANGKOK_TZ)
                     now = now_bangkok.strftime("%A, %d %B %Y %H:%M:%S (ICT)")
@@ -982,7 +985,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                             rag_context = "\n\n[Long-term Memory]\n" + "\n".join(
                                 f"- {m}" for m in memories
                             )
-                    except OSError:
+                    except Exception:
+                        # RAG is a non-critical enhancement: a backend
+                        # failure (FAISS RuntimeError, numpy ValueError, DB
+                        # OSError, …) must degrade to "no memory", never
+                        # abort the whole turn via the outer broad handler.
                         logger.exception("RAG search failed")
 
                     # --- Entity Memory: Retrieve verified character/location facts ---
@@ -1146,7 +1153,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # 6. Build contents with history (limit to recent messages for better context)
                     history = chat_data.get("history", [])
 
-                    # Limit history — Claude Opus 4.7 has a 1M token context window.
+                    # Limit history — Claude Opus 4.8 has a 1M token context window.
                     # Using maximum context for all contexts (RP, DM, normal servers)
                     # to preserve AI personality and conversation continuity.
                     # Note: MAX_HISTORY_ITEMS constant defined in data/constants.py.
@@ -1551,7 +1558,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                     if len(parts) > 1:
                         # parts[0] is the text before the first {{...}} (Narrator/Intro)
                         if parts[0] and parts[0].strip():
-                            await send_channel.send(parts[0].strip())
+                            await send_channel.send(
+                                parts[0].strip(),
+                                allowed_mentions=discord.AllowedMentions.none(),
+                            )
 
                         # Iterate through the rest: odd indices are Names, even are Messages.
                         # ``range(1, len(parts), 2)`` already bounds ``i`` to
@@ -1598,7 +1608,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         remaining = response_text
                         while remaining:
                             if len(remaining) <= 2000:
-                                sent_message = await send_channel.send(remaining)
+                                sent_message = await send_channel.send(
+                                    remaining, allowed_mentions=discord.AllowedMentions.none()
+                                )
                                 break
                             # Find best split point near 2000 chars
                             split_at = remaining.rfind("\n", 0, 2000)
@@ -1624,10 +1636,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 while rewind > 1 and ord(remaining[rewind - 1]) in THAI_COMBINING:
                                     rewind -= 1
                                 split_at = rewind
-                            sent_message = await send_channel.send(remaining[:split_at])
+                            sent_message = await send_channel.send(
+                                remaining[:split_at],
+                                allowed_mentions=discord.AllowedMentions.none(),
+                            )
                             remaining = remaining[split_at:].lstrip("\n")
                     elif response_text:  # Only send if there is text left
-                        sent_message = await send_channel.send(response_text)
+                        sent_message = await send_channel.send(
+                            response_text, allowed_mentions=discord.AllowedMentions.none()
+                        )
 
                     # Update history with Message ID if available
                     if sent_message and chat_data.get("history"):

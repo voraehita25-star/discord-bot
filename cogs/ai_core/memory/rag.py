@@ -562,6 +562,9 @@ class MemorySystem:
     # search. The TTL is short enough that newly stored facts surface
     # in the next query without operator action.
     _ALL_MEMORIES_TTL_SECONDS = 30.0
+    # Bound the per-channel snapshot cache (each value can hold thousands of
+    # rows) so a bot spanning many guilds doesn't retain them all forever.
+    _ALL_MEMORIES_MAX_CHANNELS = 256
 
     def __init__(self):
         self.client = None
@@ -661,6 +664,7 @@ class MemorySystem:
         rows = list(rows or [])
         if channel_id is not None:
             self._all_memories_cache[channel_id] = (now + self._ALL_MEMORIES_TTL_SECONDS, rows)
+            self._evict_all_memories_cache_if_needed(now)
         # Same defensive copy on cache-miss return so callers can mutate
         # freely without aliasing into the cache.
         return list(rows)
@@ -675,6 +679,23 @@ class MemorySystem:
             self._all_memories_cache.clear()
         else:
             self._all_memories_cache.pop(channel_id, None)
+
+    def _evict_all_memories_cache_if_needed(self, now: float) -> None:
+        """Bound the per-channel snapshot cache.
+
+        Each value can hold thousands of memory rows, so an unbounded dict
+        keyed by every channel ever searched leaks memory in a bot spanning
+        many guilds. Drop expired entries first, then evict the entries
+        expiring soonest until back under the cap.
+        """
+        cache = self._all_memories_cache
+        if len(cache) <= self._ALL_MEMORIES_MAX_CHANNELS:
+            return
+        for cid in [c for c, (exp, _rows) in cache.items() if exp <= now]:
+            cache.pop(cid, None)
+        while len(cache) > self._ALL_MEMORIES_MAX_CHANNELS:
+            oldest = min(cache, key=lambda c: cache[c][0])
+            cache.pop(oldest, None)
 
     async def generate_embedding(self, text: str) -> np.ndarray | None:
         """Generate vector embedding for text using Gemini API."""
@@ -1057,11 +1078,13 @@ class MemorySystem:
         # between the DB save and the FAISS add. That's safe because
         # ``_ensure_index`` reads ALL rows from the DB — the just-saved
         # row will be included, so the rebuild picks it up. The
-        # FAISS add below would then add a duplicate entry; the
-        # ``add_single`` path dedupes on ``id_map`` so the dup is
-        # silently dropped. (The previous "hold lock across both"
-        # shape blocked search for the entire DB write window — the
-        # consistency win there wasn't worth the latency hit.)
+        # FAISS add below would then add a duplicate entry. ``add_single``
+        # does NOT dedupe (it unconditionally appends to keep the
+        # ``ntotal == len(id_map)`` invariant cheap), so the dup persists
+        # until the next full rebuild — at worst a memory ranks via two FAISS
+        # hits, which the RRF merge + result cap make benign. (The previous
+        # "hold lock across both" shape blocked search for the entire DB write
+        # window — that consistency win wasn't worth the latency hit.)
         result = await db.save_rag_memory(
             content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
         )
@@ -1295,6 +1318,23 @@ class MemorySystem:
             if not semantic_results:
                 semantic_results = await self._linear_search_raw(query_vec, limit * 2, all_memories)
 
+        # Build a channel-local id→row map from all_memories (every row for
+        # this channel — the query has no LIMIT). Used to (1) scope semantic
+        # hits to this channel and (2) resolve result rows that fell outside
+        # the 500-row _memories_cache batch below.
+        _chan_by_id = {m.get("id"): m for m in all_memories if m.get("id") is not None}
+
+        # Scope semantic hits to THIS channel. The FAISS index is global
+        # (built from get_all_rag_memories(None)), so search_async can return
+        # IDs belonging to OTHER channels — a cross-channel memory leak. The
+        # keyword and linear paths already operate on the channel-filtered
+        # all_memories; mirror that here. channel_id is None means an
+        # intentional cross-channel search — skip the filter.
+        if semantic_results and channel_id is not None:
+            semantic_results = [
+                (mid, score) for (mid, score) in semantic_results if mid in _chan_by_id
+            ]
+
         # Keyword search
         keyword_results = self._keyword_search(query, all_memories, limit * 2)
 
@@ -1324,7 +1364,11 @@ class MemorySystem:
             if len(results) >= limit:
                 break
 
-            mem = self._memories_cache.get(mem_id)
+            # Resolve from the global LRU cache first, then fall back to the
+            # full channel snapshot — a FAISS/keyword hit whose row sat beyond
+            # the 500-row _memories_cache batch above would otherwise be
+            # silently dropped from the results.
+            mem = self._memories_cache.get(mem_id) or _chan_by_id.get(mem_id)
             if not mem:
                 continue
 

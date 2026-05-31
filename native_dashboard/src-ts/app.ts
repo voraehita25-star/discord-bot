@@ -7,10 +7,9 @@
  * Shared utilities in shared.ts.
  */
 
-import type { BotStatus, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings, ToastOptions } from './types.js';
+import type { BotStatus, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings } from './types.js';
 import {
     invoke,
-    errorLogger,
     escapeHtml,
     isSafeAvatarUrl,
     settings,
@@ -24,7 +23,6 @@ import {
     showConfirmDialog,
 } from './shared.js';
 import {
-    ChatManager,
     chatManager,
     memoryManager,
     initChatManager,
@@ -202,6 +200,32 @@ function initKeyboardShortcuts(): void {
         // Escape closes the shortcuts modal if open
         if (e.key === 'Escape') {
             document.getElementById('shortcuts-modal')?.classList.remove('active');
+        }
+
+        // Focus trap: keep Tab within the open modal (.modal.active) so keyboard
+        // focus can't escape behind the overlay. Every modal uses the .active
+        // class to show, so this single handler covers all of them.
+        if (e.key === 'Tab') {
+            const modal = document.querySelector('.modal.active');
+            if (modal) {
+                const focusables = Array.from(
+                    modal.querySelectorAll<HTMLElement>(
+                        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+                    ),
+                ).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement);
+                if (focusables.length > 0) {
+                    const first = focusables[0];
+                    const last = focusables[focusables.length - 1];
+                    const activeEl = document.activeElement as HTMLElement | null;
+                    if (e.shiftKey && (activeEl === first || !modal.contains(activeEl))) {
+                        e.preventDefault();
+                        last.focus();
+                    } else if (!e.shiftKey && (activeEl === last || !modal.contains(activeEl))) {
+                        e.preventDefault();
+                        first.focus();
+                    }
+                }
+            }
         }
     });
 
@@ -458,6 +482,10 @@ function initSakuraAnimation(): void {
     const container = document.getElementById('sakura-container');
     if (!container) return;
     if (!sakuraEnabled) return;
+    // Respect prefers-reduced-motion: the CSS zeroes animation durations, but
+    // without this the JS would still churn ~30 DOM nodes/sec for zero visible
+    // payoff. Bail entirely so reduced-motion users pay no animation cost.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
     const petalShapes: string[] = [
         `<svg viewBox="0 0 40 40"><path d="M20 0 C25 10, 35 15, 40 20 C35 25, 25 30, 20 40 C15 30, 5 25, 0 20 C5 15, 15 10, 20 0" fill="currentColor"/></svg>`,
@@ -696,7 +724,14 @@ function switchPage(page: string): void {
 
     document.querySelectorAll('.nav-item').forEach(item => {
         const itemPage = (item as HTMLElement).dataset.page;
-        item.classList.toggle('active', itemPage === page);
+        const isActive = itemPage === page;
+        item.classList.toggle('active', isActive);
+        // a11y: expose the selected page to assistive tech, not just visually.
+        if (isActive) {
+            item.setAttribute('aria-current', 'page');
+        } else {
+            item.removeAttribute('aria-current');
+        }
     });
 
     document.querySelectorAll('.page').forEach(p => {
@@ -1433,6 +1468,9 @@ function handleAvatarUpload(file: File, target: 'user' | 'ai' = 'user'): void {
         const dataUrl = e.target?.result as string;
         openAvatarCropModal(dataUrl);
     };
+    reader.onerror = () => {
+        showToast('Failed to read image file', { type: 'error' });
+    };
     reader.readAsDataURL(file);
 }
 
@@ -1503,6 +1541,12 @@ function openAvatarCropModal(imageUrl: string): void {
         updateCropPreview();
     };
     
+    cropImage.onerror = () => {
+        // Without this, a decode failure leaves onload (and its naturalWidth
+        // guard) unfired while the modal still opens on a blank image.
+        showToast('Failed to load image', { type: 'error' });
+        closeCropModal();
+    };
     cropImage.src = imageUrl;
     zoomSlider.value = '100';
     modal.classList.add('active');
@@ -1665,9 +1709,7 @@ function saveCroppedAvatar(): void {
     const circleRadius = 100;
     
     const scale = cropState.zoom / 100;
-    const imgWidth = cropState.imgWidth * scale;
-    const imgHeight = cropState.imgHeight * scale;
-    
+
     // Calculate source position relative to image
     const srcX = (areaCenter - circleRadius - cropState.offsetX) / scale * (cropImage.naturalWidth / cropState.imgWidth);
     const srcY = (areaCenter - circleRadius - cropState.offsetY) / scale * (cropImage.naturalHeight / cropState.imgHeight);
@@ -1850,12 +1892,9 @@ function loadAllData(): void {
 // API Failover UI
 // ============================================================================
 
-let lastFailoverStatus: Record<string, unknown> | null = null;
-
 function initApiFailoverUI(): void {
     // Listen for failover status updates from chat-manager
     window.addEventListener('api-failover-status', ((e: CustomEvent) => {
-        lastFailoverStatus = e.detail;
         renderApiFailoverUI(e.detail);
     }) as EventListener);
 

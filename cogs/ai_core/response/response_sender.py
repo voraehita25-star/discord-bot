@@ -394,7 +394,7 @@ class ResponseSender:
                             username=avatar_name or "AI",
                             avatar_url=avatar_url,
                             wait=True,
-                            allowed_mentions=allowed_mentions,
+                            allowed_mentions=allowed_mentions or discord.AllowedMentions.none(),
                         ),
                         timeout=WEBHOOK_SEND_TIMEOUT,
                     )

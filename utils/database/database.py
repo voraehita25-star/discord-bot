@@ -1545,7 +1545,7 @@ class Database:
         other query methods in this module.
         """
         async with self.get_connection() as conn:
-            if channel_id:
+            if channel_id is not None:
                 cursor = await conn.execute(
                     "SELECT id, content, embedding, created_at FROM ai_long_term_memory WHERE channel_id = ?",
                     (channel_id,),

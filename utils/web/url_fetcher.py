@@ -123,7 +123,10 @@ async def _get_shared_session() -> aiohttp.ClientSession:
             connector = aiohttp.TCPConnector(
                 limit=20,
                 ttl_dns_cache=300,
-                enable_cleanup_closed=True,
+                # ``enable_cleanup_closed`` is a no-op on Python 3.12.7+/
+                # 3.13.1+ (the asyncio SSL-leak bug it worked around is
+                # fixed upstream) and aiohttp 3.13 ignores it — dropped to
+                # avoid the spurious DeprecationWarning on Python 3.14.
                 resolver=resolver,
             )
             # ``trust_env=False`` ignores ``HTTP_PROXY``/``HTTPS_PROXY``

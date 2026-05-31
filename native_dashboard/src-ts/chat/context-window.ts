@@ -75,7 +75,19 @@ export class ContextWindowIndicator {
         if (!indicator || !fill || !label) return;
 
         const { input_tokens, output_tokens, context_window } = usage;
-        if (!context_window || context_window <= 0) return;
+        // Validate on WRITE, mirroring load(): a single WS frame with a
+        // NaN/negative token count would otherwise be cached + persisted and
+        // render "NaN%" forever on every later restore().
+        if (
+            !Number.isFinite(input_tokens) ||
+            !Number.isFinite(output_tokens) ||
+            !Number.isFinite(context_window) ||
+            context_window <= 0 ||
+            input_tokens < 0 ||
+            output_tokens < 0
+        ) {
+            return;
+        }
 
         if (conversationId) {
             // Move-to-end LRU: ``cache.set`` only refreshes insertion order
@@ -89,7 +101,7 @@ export class ContextWindowIndicator {
         }
 
         const total = input_tokens + output_tokens;
-        const pct = Math.min((total / context_window) * 100, 100);
+        const pct = Math.max(0, Math.min((total / context_window) * 100, 100));
 
         // The element ships with the `hidden` class (`display:none !important`
         // in styles.css), which an inline style CANNOT override — so toggling

@@ -519,7 +519,11 @@ async def execute_tool_call(
         # still want a backstop so a malformed payload doesn't kill the
         # whole AI turn.
         logger.error("Tool execution error: %s", e, exc_info=True)
-        return f"Error executing {fname}: {e}"
+        # Return only the exception TYPE to the AI turn, not str(e): a
+        # discord.HTTPException's message can carry the raw API response body
+        # (internal URLs, error metadata). Operators still get full detail via
+        # the logger.error above with exc_info.
+        return f"Error executing {fname}: {type(e).__name__}"
 
 
 async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):  # pylint: disable=unused-argument

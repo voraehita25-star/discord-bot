@@ -199,21 +199,30 @@ _SECRET_PATTERNS_CI = re.compile(
     # has the entire chunk (including ``"key":"``) replaced by
     # ``[REDACTED]``, breaking JSON validity for downstream parsers.
     #
-    # NOTE on the lookbehinds: each is anchored by an extra
-    # ``(?<![A-Za-z0-9_])`` boundary group to avoid false matches
-    # against substrings inside larger words (e.g. ``monkey: <hex>``
-    # used to redact via the ``key`` lookbehind). Python lookbehinds
-    # must be fixed-width, so we chain a 1-char negative lookbehind
-    # before each keyword.
+    # NOTE on the lookbehinds: each keyword needs a word boundary BEFORE
+    # it so a keyword embedded in a larger word (e.g. ``monkey: <hex>``
+    # matching on the ``key`` suffix) does not trigger redaction. The
+    # previous form placed a bare ``(?<![A-Za-z0-9_])`` next to
+    # ``(?<=key)``; both lookbehinds evaluate at the SAME position (right
+    # after the keyword), so it asserted the last keyword char was BOTH
+    # ``y`` AND not-alphanumeric — a contradiction that made every branch
+    # match nothing, leaking opaque ``password=…`` / ``token=…`` /
+    # ``authorization:…`` secrets unredacted. Fold the keyword into one
+    # fixed-width negative lookbehind instead: ``(?<![A-Za-z0-9_]key)``
+    # rejects ``<wordchar>key`` while ``(?<=key)`` confirms the keyword is
+    # present. The leading ``['\"]?`` then consumes an optional close-quote
+    # so JSON ``"key":"…"`` and bare ``key=…`` forms both redact the value
+    # while keeping the keyword visible.
     r"(?:"
-    r"(?<![A-Za-z0-9_])(?<=key)|"
-    r"(?<![A-Za-z0-9_])(?<=token)|"
-    r"(?<![A-Za-z0-9_])(?<=secret)|"
-    r"(?<![A-Za-z0-9_])(?<=password)|"
-    r"(?<![A-Za-z0-9_])(?<=apikey)|"
-    r"(?<![A-Za-z0-9_])(?<=api_key)|"
-    r"(?<![A-Za-z0-9_])(?<=authorization)"
-    r")[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}['\"]?"
+    r"(?<![A-Za-z0-9_]key)(?<=key)|"
+    r"(?<![A-Za-z0-9_]token)(?<=token)|"
+    r"(?<![A-Za-z0-9_]secret)(?<=secret)|"
+    r"(?<![A-Za-z0-9_]password)(?<=password)|"
+    r"(?<![A-Za-z0-9_]apikey)(?<=apikey)|"
+    r"(?<![A-Za-z0-9_]api_key)(?<=api_key)|"
+    r"(?<![A-Za-z0-9_]authorization)(?<=authorization)|"
+    r"(?<![A-Za-z0-9_]bearer)(?<=bearer)"
+    r")['\"]?[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}['\"]?"
     r"|"
     # Anthropic API keys (sk-ant-api03-..., sk-ant-...) — kept BEFORE the
     # generic sk- pattern so the longer match wins.

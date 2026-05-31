@@ -74,11 +74,24 @@ def main() -> None:
     # would always see "0 results" in this bucket otherwise.
     repo_root_folder = PROJECTS / encode_claude_actual(ROOT)
 
-    surveys = [
-        ("Bot-expected workdir folder (encoder uses underscore)", bot_folder),
-        ("Claude actual workdir folder (encoder dashes underscore)", claude_folder),
+    # ``encode_bot_style`` and ``encode_claude_actual`` are intentionally
+    # identical now (Claude Code's real encoder also maps ``_`` → ``-``), so
+    # bot_folder and claude_folder resolve to the SAME directory. Dedupe by
+    # resolved path so one folder isn't surveyed — and its jsonl files
+    # double-counted into ``total`` — twice.
+    candidate_surveys = [
+        ("Bot/Claude workdir folder", bot_folder),
+        ("Claude actual workdir folder", claude_folder),
         ("Repo-root folder (legacy pre-isolation orphans)", repo_root_folder),
     ]
+    surveys: list[tuple[str, Path]] = []
+    _seen_paths: set[str] = set()
+    for label, folder in candidate_surveys:
+        key = str(folder.resolve())
+        if key in _seen_paths:
+            continue
+        _seen_paths.add(key)
+        surveys.append((label, folder))
 
     total = 0
     for label, folder in surveys:
