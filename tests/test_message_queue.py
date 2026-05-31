@@ -307,6 +307,41 @@ class TestMessageQueueMerge:
         assert "[User1]" in combined
         assert "[User2]" in combined
 
+    def test_merge_combines_attachments(self):
+        """Merging must union attachments from every pending message, not just the last."""
+        from cogs.ai_core.core.message_queue import MessageQueue
+
+        queue = MessageQueue()
+        channel = MagicMock()
+        user = MagicMock()
+        user.display_name = "User"
+
+        queue.queue_message(12345, channel, user, "first", attachments=["img1"])
+        queue.queue_message(12345, channel, user, "second", attachments=["img2", "img3"])
+
+        latest, _combined = queue.merge_pending_messages(12345)
+
+        assert latest is not None
+        # Earlier message's attachment must survive, not just the latest's.
+        assert latest.attachments == ["img1", "img2", "img3"]
+
+    def test_merge_caps_attachments(self):
+        """Merged attachments are capped to avoid an unbounded vision payload."""
+        from cogs.ai_core.core.message_queue import _MAX_MERGED_ATTACHMENTS, MessageQueue
+
+        queue = MessageQueue()
+        channel = MagicMock()
+        user = MagicMock()
+        user.display_name = "User"
+
+        for i in range(_MAX_MERGED_ATTACHMENTS + 5):
+            queue.queue_message(12345, channel, user, f"m{i}", attachments=[f"img{i}"])
+
+        latest, _combined = queue.merge_pending_messages(12345)
+
+        assert latest is not None
+        assert len(latest.attachments) == _MAX_MERGED_ATTACHMENTS
+
     def test_merge_empty(self):
         """Test merge_pending_messages with no messages."""
         from cogs.ai_core.core.message_queue import MessageQueue

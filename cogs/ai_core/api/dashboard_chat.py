@@ -82,6 +82,18 @@ async def handle_chat_message(
     user_name = data.get("user_name", "User")
     is_regeneration = data.get("is_regeneration", False)
 
+    # Defensive type-guards (mirror the SDK backend's): a client sending
+    # "history": "x" would be sliced as a string and iterated char-by-char,
+    # and "images": 5 would raise inside len(). Coerce non-list inputs to []
+    # so a malformed payload degrades to "no history/images" instead of
+    # producing junk content blocks or a swallowed TypeError.
+    if not isinstance(history, list):
+        history = []
+    if not isinstance(images, list):
+        images = []
+    if not isinstance(documents, list):
+        documents = []
+
     # Validate conversation_id format (defense in depth)
     if conversation_id and (
         not isinstance(conversation_id, str)

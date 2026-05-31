@@ -144,7 +144,6 @@ from .memory.rag import rag_system
 from .memory.state_tracker import state_tracker
 from .memory.summarizer import summarizer
 from .response.response_mixin import ResponseMixin
-from .response.response_sender import ResponseSender
 from .session_mixin import SessionMixin
 from .storage import (
     save_history,
@@ -229,6 +228,35 @@ PATTERN_AT_HERE = re.compile("(?i)@(?!\u200b)here")
 PATTERN_USER_TAG = re.compile("<@!?(?!\u200b)(\\d+)>")
 PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
 
+# Game-search keyword matching. ASCII keywords are matched on boundaries so
+# short tokens ("ego", "stats", "cost", "00") don't fire inside unrelated words
+# ("cat\u200begory", "1000") \u2014 the previous ``kw in text`` substring test forced a
+# web search on a lot of false positives. Thai keywords keep substring matching
+# because Thai is written without spaces. Split + compile once at import.
+_GAME_KW_ASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if kw.isascii())
+_GAME_KW_NONASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if not kw.isascii())
+_GAME_KW_ASCII_RE = (
+    re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in _GAME_KW_ASCII) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+    if _GAME_KW_ASCII
+    else None
+)
+
+
+def _is_game_search_query(text: str) -> bool:
+    """True when a message references game data that should force a web search.
+
+    ASCII keywords match on word boundaries; Thai keywords match as substrings.
+    """
+    if not text:
+        return False
+    if _GAME_KW_ASCII_RE is not None and _GAME_KW_ASCII_RE.search(text):
+        return True
+    lowered = text.lower()
+    return any(kw in lowered for kw in _GAME_KW_NONASCII)
+
 
 # NOTE: convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 # are imported from .emoji module (line 45) - DO NOT redefine here
@@ -275,7 +303,6 @@ class ChatManager(SessionMixin, ResponseMixin):
         self._message_queue = MessageQueue()
         self._performance = PerformanceTracker()
         self._deduplicator = RequestDeduplicator()
-        self._response_sender = ResponseSender()
 
         # Strong references to fire-and-forget background tasks (consolidation, LRU save)
         # to prevent them being GC'd mid-execution (event loop only holds weak refs).
@@ -826,6 +853,32 @@ class ChatManager(SessionMixin, ResponseMixin):
             )
             self._deduplicator.remove_request(request_key)
             return
+
+        # Optional per-user token-quota enforcement. OFF by default — this bot
+        # runs on a Max subscription with no per-token billing, so blocking the
+        # owner on a token budget would be counter-productive. With
+        # AI_TOKEN_QUOTA_ENFORCE=1 the per-user/channel/guild limits in
+        # token_tracker are applied before spending tokens; an over-quota
+        # request gets a Thai warning and is dropped. Inert under
+        # CLAUDE_BACKEND=cli — the CLI path records no usage, so check_limits
+        # has nothing to count against and always allows.
+        if os.getenv("AI_TOKEN_QUOTA_ENFORCE", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from cogs.ai_core.cache.token_tracker import token_tracker as _token_tracker
+
+                _quota_guild_id = getattr(getattr(context_channel, "guild", None), "id", None)
+                _allowed, _quota_warning = await _token_tracker.check_limits(
+                    user.id, channel_id=channel_id, guild_id=_quota_guild_id
+                )
+                if not _allowed:
+                    await send_channel.send(
+                        _quota_warning or "⚠️ โควต้าการใช้งาน AI หมดแล้ว กรุณาลองใหม่ภายหลัง",
+                        delete_after=30,
+                    )
+                    self._deduplicator.remove_request(request_key)
+                    return
+            except Exception:
+                logger.debug("token quota check failed (non-fatal)", exc_info=True)
 
         # Create lock for this channel if not exists. We deliberately do NOT
         # use ``setdefault(channel_id, asyncio.Lock())`` here because
@@ -1473,35 +1526,41 @@ class ChatManager(SessionMixin, ResponseMixin):
                         except (KeyError, ValueError, TypeError, re.error) as e:
                             logger.debug("State tracker update failed: %s", e)
 
-                    # Record message for memory consolidation
-                    memory_consolidator.record_message(context_channel.id)
+                    # Record message for memory consolidation — but only when
+                    # the consolidator is actually active. Under CLAUDE_BACKEND=cli
+                    # (the default) the SDK client is never initialised, so
+                    # consolidate() no-ops without resetting the counter; gating
+                    # on ``enabled`` avoids spawning a throwaway task on every
+                    # message once the threshold is first crossed.
+                    if memory_consolidator.enabled:
+                        memory_consolidator.record_message(context_channel.id)
 
-                    # Check if consolidation should run (auto-extract facts every N messages)
-                    if memory_consolidator.should_consolidate(context_channel.id):
-                        try:
-                            # Create task with proper error handling to avoid orphaned tasks
-                            task = asyncio.create_task(
-                                memory_consolidator.consolidate(
-                                    context_channel.id, chat_data.get("history", []), guild_id
-                                ),
-                                name=f"consolidate_{context_channel.id}",
-                            )
+                        # Check if consolidation should run (auto-extract facts every N messages)
+                        if memory_consolidator.should_consolidate(context_channel.id):
+                            try:
+                                # Create task with proper error handling to avoid orphaned tasks
+                                task = asyncio.create_task(
+                                    memory_consolidator.consolidate(
+                                        context_channel.id, chat_data.get("history", []), guild_id
+                                    ),
+                                    name=f"consolidate_{context_channel.id}",
+                                )
 
-                            # Keep strong reference to avoid GC of fire-and-forget task
-                            self._background_tasks.add(task)
-                            task.add_done_callback(self._background_tasks.discard)
+                                # Keep strong reference to avoid GC of fire-and-forget task
+                                self._background_tasks.add(task)
+                                task.add_done_callback(self._background_tasks.discard)
 
-                            # Add callback to log any unhandled exceptions
-                            def _handle_consolidation_error(t: asyncio.Task) -> None:
-                                if t.cancelled():
-                                    return
-                                exc = t.exception()
-                                if exc:
-                                    logger.warning("Memory consolidation task failed: %s", exc)
+                                # Add callback to log any unhandled exceptions
+                                def _handle_consolidation_error(t: asyncio.Task) -> None:
+                                    if t.cancelled():
+                                        return
+                                    exc = t.exception()
+                                    if exc:
+                                        logger.warning("Memory consolidation task failed: %s", exc)
 
-                            task.add_done_callback(_handle_consolidation_error)
-                        except (RuntimeError, asyncio.InvalidStateError) as e:
-                            logger.debug("Memory consolidation trigger failed: %s", e)
+                                task.add_done_callback(_handle_consolidation_error)
+                            except (RuntimeError, asyncio.InvalidStateError) as e:
+                                logger.debug("Memory consolidation trigger failed: %s", e)
 
                     # 10. Process response text
                     response_text = str(model_text).strip() if model_text else ""

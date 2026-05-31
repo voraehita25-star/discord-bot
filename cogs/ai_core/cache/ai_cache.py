@@ -108,6 +108,19 @@ class AICache:
         self._cache_lock = threading.Lock()  # Thread-safe lock for cache operations
         self.logger = logging.getLogger("AICache")
 
+        # Clamp to sane minimums: a ttl <= 0 makes every entry instantly
+        # expired (the cache serves nothing); a max_size <= 0 disables LRU
+        # eviction (unbounded growth). A bad resource_config.json value
+        # shouldn't silently break the cache — coerce + warn instead.
+        if self.ttl <= 0:
+            self.logger.warning("AICache ttl=%s invalid; using %s", self.ttl, self.DEFAULT_TTL)
+            self.ttl = self.DEFAULT_TTL
+        if self.max_size <= 0:
+            self.logger.warning(
+                "AICache max_size=%s invalid; using %s", self.max_size, self.DEFAULT_MAX_SIZE
+            )
+            self.max_size = self.DEFAULT_MAX_SIZE
+
         # Stats
         self._hits = 0
         self._misses = 0
@@ -441,6 +454,15 @@ class AICache:
                 intent=intent or "",
                 normalized_message=normalized,
             )
+            # Carry forward the hit count + adaptive-TTL multiplier from any
+            # existing entry for this key. A refresh shouldn't demote a hot
+            # entry back to cold — otherwise the adaptive-TTL feature (which
+            # keys off ``hits``) never engages for exactly the frequently
+            # re-set keys it's meant to keep alive longer.
+            prev = self.cache.get(key)
+            if prev is not None:
+                entry.hits = prev.hits
+                entry.ttl_multiplier = prev.ttl_multiplier
             self.cache[key] = entry
 
         # Optional persistence hook (e.g. write-through to L2). Set on the

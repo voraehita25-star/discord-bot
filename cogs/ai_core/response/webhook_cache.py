@@ -198,4 +198,9 @@ __all__ = [
     "set_cached_webhook",
     "start_webhook_cache_cleanup",
     "stop_webhook_cache_cleanup",
+    # Optional self-healing restart helper. Not called in the current AI-cog
+    # flow (cog_load starts the task with the loop already running), but
+    # exported so a host that starts the cache before its loop exists can call
+    # it from on_ready to recover the never-started cleanup task.
+    "webhook_cache_healthcheck",
 ]

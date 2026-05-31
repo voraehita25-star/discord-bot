@@ -106,9 +106,19 @@ async def execute_tool_call(
         String describing the result of the tool call
     """
     fname = tool_call.name
-    # A tool_call with no inputs can arrive with args=None (or the attribute
-    # absent); default to {} so the args.get(...) lookups below don't raise.
-    args = getattr(tool_call, "args", None) or {}
+    # Anthropic ``tool_use`` blocks expose arguments on ``.input``; the legacy
+    # Gemini function-call objects (and the test doubles) use ``.args``. Prefer
+    # a dict-valued ``.input`` (Anthropic), else fall back to ``.args`` so this
+    # dispatcher works for BOTH backends if/when Claude tool-use is wired into
+    # the turn loop — without reading ``.input`` a Claude ToolUseBlock would
+    # always see ``args == {}`` and bounce on the per-field "missing argument"
+    # guards. The ``isinstance(dict)`` checks matter: a bare MagicMock
+    # auto-creates a truthy ``.input`` that isn't real argument data, and a
+    # tool_call with no inputs can arrive with the attribute absent/None.
+    raw_args = getattr(tool_call, "input", None)
+    if not isinstance(raw_args, dict):
+        raw_args = getattr(tool_call, "args", None)
+    args = raw_args if isinstance(raw_args, dict) else {}
 
     guild = origin_channel.guild
 

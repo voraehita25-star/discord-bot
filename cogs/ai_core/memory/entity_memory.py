@@ -201,7 +201,12 @@ class EntityMemoryManager:
             return self._initialized  # type: ignore[no-any-return]
 
         try:
-            async with db_manager.get_connection() as conn:
+            # DDL must route through the single-writer connection — matching
+            # long_term_memory / memory_consolidator. Using the read pool
+            # without the write lock can leave the CREATE uncommitted and
+            # races two cogs' first-init into "table doesn't exist" / SQLITE_BUSY
+            # under WAL on Windows.
+            async with db_manager.get_write_connection() as conn:
                 await conn.execute(self.CREATE_TABLE_SQL)
                 for sql in self.CREATE_INDEX_SQL.strip().split(";"):
                     if sql.strip():

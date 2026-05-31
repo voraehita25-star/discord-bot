@@ -16,6 +16,13 @@ from ..data.constants import LOCK_TIMEOUT, MAX_CHANNELS, MAX_PENDING_PER_CHANNEL
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on how many attachments survive a multi-message merge. A rapid
+# burst can queue up to MAX_PENDING_PER_CHANNEL messages, each with several
+# images; without a cap the merged turn could ship dozens of images into one
+# vision request. 10 matches Discord's per-message attachment limit and is
+# already generous for a single model call.
+_MAX_MERGED_ATTACHMENTS = 10
+
 
 @dataclass
 class PendingMessage:
@@ -288,6 +295,27 @@ class MessageQueue:
                 for msg in pending
             ]
             combined_message = "\n".join(all_messages)
+            # Merge attachments from ALL pending messages onto the latest one.
+            # The caller reads ``latest_msg.attachments``; without this union a
+            # user who sent several images across rapid messages (while the
+            # channel was locked) would silently lose every image except the
+            # last message's. Cap the merged list so a 50-deep queue of
+            # image-laden messages can't push an unbounded payload into the
+            # vision request.
+            merged_attachments: list[Any] = []
+            for msg in pending:
+                if msg.attachments:
+                    merged_attachments.extend(msg.attachments)
+            if merged_attachments:
+                if len(merged_attachments) > _MAX_MERGED_ATTACHMENTS:
+                    logger.info(
+                        "📎 Capping merged attachments for channel %s: %d -> %d",
+                        channel_id,
+                        len(merged_attachments),
+                        _MAX_MERGED_ATTACHMENTS,
+                    )
+                    merged_attachments = merged_attachments[:_MAX_MERGED_ATTACHMENTS]
+                latest_msg.attachments = merged_attachments
             logger.info(
                 "📝 Merged %d pending messages for channel %s",
                 len(pending),

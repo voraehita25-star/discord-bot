@@ -195,6 +195,21 @@ class MemoryConsolidator:
             logger.exception("Failed to initialize Memory Consolidator")
             return False
 
+    @property
+    def enabled(self) -> bool:
+        """True only when an SDK client is initialised (consolidation can run).
+
+        Under ``CLAUDE_BACKEND=cli`` (the default) :meth:`initialize` returns
+        early and ``_client`` stays None, so :meth:`consolidate` is a no-op.
+        Callers must gate ``record_message`` / ``should_consolidate`` on this:
+        otherwise the counter climbs past the threshold, ``should_consolidate``
+        stays True forever, and the live turn loop spawns a throwaway
+        consolidation task on *every* subsequent message (the counter is only
+        reset inside ``_consolidate_locked``'s ``finally``, which the
+        client-None early return at the top of ``consolidate`` never reaches).
+        """
+        return self._client is not None
+
     def record_message(self, channel_id: int) -> None:
         """Record that a message was processed for this channel."""
         with self._data_lock:

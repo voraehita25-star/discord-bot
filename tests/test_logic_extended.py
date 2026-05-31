@@ -56,16 +56,6 @@ class TestMixinImports:
         assert SessionMixin is not None
 
 
-class TestResponseSenderImport:
-    """Tests for ResponseSender import."""
-
-    def test_response_sender_import(self):
-        """Test ResponseSender is imported."""
-        from cogs.ai_core.logic import ResponseSender
-
-        assert ResponseSender is not None
-
-
 class TestMessageQueueImport:
     """Tests for MessageQueue import."""
 

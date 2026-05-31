@@ -643,6 +643,61 @@ async def _record_token_usage(
         logger.debug("token usage recording failed (non-fatal)", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# Failover wiring for the Discord SDK path.
+#
+# Previously only the dashboard handlers drove the APIFailoverManager state
+# machine, so a dead Direct endpoint kept failing every Discord request
+# forever — the manager never saw those failures and never switched to Proxy.
+# These best-effort helpers let the Discord ``call_claude_api*`` paths feed the
+# same state machine and pick up an endpoint switch on retry.
+#
+# All three lazy-import the singleton (no module-level import → no cycle) and
+# no-op when failover isn't initialised — which is exactly the case under
+# CLAUDE_BACKEND=cli (the default), so this is inert there.
+# ---------------------------------------------------------------------------
+async def _failover_record_success() -> None:
+    """Tell the failover manager the active endpoint just succeeded (best-effort)."""
+    try:
+        from .api_failover import api_failover
+
+        if api_failover._initialized and api_failover.active_config:
+            await api_failover.record_success()
+    except Exception:
+        logger.debug("failover record_success skipped", exc_info=True)
+
+
+async def _failover_record_failure(error: BaseException) -> bool:
+    """Report a failure to the failover manager; return True if it switched endpoints."""
+    try:
+        from .api_failover import api_failover
+
+        if api_failover._initialized and api_failover.active_config:
+            return bool(await api_failover.record_failure(error))
+    except Exception:
+        logger.debug("failover record_failure skipped", exc_info=True)
+    return False
+
+
+def _failover_current_client(default: anthropic.AsyncAnthropic) -> anthropic.AsyncAnthropic:
+    """Return the failover manager's current active client, or ``default`` if unavailable.
+
+    Used to pick up an endpoint switch mid-retry: the manager builds a fresh
+    client for the new endpoint, but the ``client`` arg these functions were
+    called with is the pre-switch one.
+    """
+    try:
+        from .api_failover import api_failover
+
+        if api_failover._initialized and api_failover.active_config:
+            current = api_failover.get_client()
+            if current is not None:
+                return current
+    except Exception:
+        logger.debug("failover get_client skipped", exc_info=True)
+    return default
+
+
 async def call_claude_api_streaming(
     client: anthropic.AsyncAnthropic,
     target_model: str,
@@ -691,11 +746,16 @@ async def call_claude_api_streaming(
         system_prompt = config_params.get("system_instruction", "")
         max_tokens = config_params.get("max_tokens", CLAUDE_MAX_TOKENS)
 
-        # Streaming does not use extended thinking (remove if present)
+        # Streaming sends a deliberately minimal request: no extended thinking
+        # and no ``output_config``/effort either. Both are omitted on purpose
+        # for real-time responsiveness — extended reasoning delays the first
+        # visible chunk, which defeats the point of streaming. The
+        # non-streaming path (call_claude_api) applies thinking + effort for
+        # depth; the difference is intentional, not an oversight.
         streaming_config = copy.deepcopy(config_params)
         if "thinking" in streaming_config:
             streaming_config.pop("thinking")
-            logger.info("🌊 Streaming mode: Disabled thinking for real-time updates")
+            logger.info("🌊 Streaming mode: Disabled thinking + effort for real-time updates")
     except Exception as e:
         logger.warning("⚠️ Streaming setup failed, falling back to normal API: %s", e)
         if placeholder_msg:
@@ -771,6 +831,7 @@ async def call_claude_api_streaming(
 
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_success()
+            await _failover_record_success()
 
             if placeholder_msg:
                 with contextlib.suppress(Exception):
@@ -819,6 +880,7 @@ async def call_claude_api_streaming(
                 # learns the endpoint is sick.
                 if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                     gemini_circuit.record_failure()
+                await _failover_record_failure(e)
                 if placeholder_msg:
                     with contextlib.suppress(Exception):
                         await placeholder_msg.delete()
@@ -826,6 +888,8 @@ async def call_claude_api_streaming(
 
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
+            if await _failover_record_failure(e):
+                client = _failover_current_client(client)
             delay = _claude_retry_delay_seconds(stream_attempt)
             logger.warning(
                 "⚠️ Claude streaming timeout on attempt %d after %d chunks: %s. Retrying in %.1fs",
@@ -843,6 +907,8 @@ async def call_claude_api_streaming(
         ) as e:
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
+            if await _failover_record_failure(e):
+                client = _failover_current_client(client)
             delay = _claude_retry_delay_seconds(
                 stream_attempt,
                 minimum_delay=5.0 if isinstance(e, anthropic.RateLimitError) else 1.0,
@@ -871,6 +937,7 @@ async def call_claude_api_streaming(
                     await placeholder_msg.delete()
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
+            await _failover_record_failure(e)
             return "", "", []
         except Exception as e:
             logger.warning("⚠️ Streaming failed, falling back to normal API: %s", e)
@@ -879,6 +946,7 @@ async def call_claude_api_streaming(
                     await placeholder_msg.delete()
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
+            await _failover_record_failure(e)
             if fallback_func:
                 return await fallback_func(contents, config_params, channel_id)  # type: ignore[no-any-return]
             return "", "", []
@@ -1005,6 +1073,8 @@ async def call_claude_api(
                     gemini_circuit.record_failure()
                 if ERROR_RECOVERY_AVAILABLE and service_monitor:
                     service_monitor.record_failure("claude_api", "timeout")
+                if await _failover_record_failure(TimeoutError("Claude API timeout")):
+                    client = _failover_current_client(client)
                 await asyncio.sleep(delay)
                 api_attempt += 1
                 continue
@@ -1014,6 +1084,7 @@ async def call_claude_api(
                 gemini_circuit.record_success()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:
                 service_monitor.record_success("claude_api")
+            await _failover_record_success()
             # H27: record token usage from this successful response (best-effort).
             await _record_token_usage(
                 getattr(response, "usage", None),
@@ -1068,6 +1139,8 @@ async def call_claude_api(
                 gemini_circuit.record_failure()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:
                 service_monitor.record_failure("claude_api", "rate_limit")
+            if await _failover_record_failure(e):
+                client = _failover_current_client(client)
             await asyncio.sleep(delay)
             api_attempt += 1
             continue
@@ -1088,6 +1161,8 @@ async def call_claude_api(
                 gemini_circuit.record_failure()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:
                 service_monitor.record_failure("claude_api", str(api_error)[:100])
+            if await _failover_record_failure(api_error):
+                client = _failover_current_client(client)
             await asyncio.sleep(delay)
             api_attempt += 1
             continue
@@ -1107,6 +1182,7 @@ async def call_claude_api(
                 gemini_circuit.record_failure()
             if ERROR_RECOVERY_AVAILABLE and service_monitor:
                 service_monitor.record_failure("claude_api", str(api_error)[:100])
+            await _failover_record_failure(api_error)
             break
 
         # Fallback strategies for empty responses

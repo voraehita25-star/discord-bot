@@ -63,6 +63,14 @@ except ImportError:
 # dominate the prompt budget when re-injected.
 MAX_EXTRACTED_CHARS = 500_000
 
+# Reject documents whose DECODED bytes exceed this before parsing. pypdf can
+# allocate several times the raw byte size while building its object model, so
+# a ~40 MB upload can amplify into far more RAM. The DOCX path has its own
+# streaming decompression-bomb guard; this is the matching cap for the PDF /
+# text paths so PDF isn't the asymmetric weak spot. 50 MB comfortably covers
+# legitimate RP-campaign PDFs while bounding worst-case allocation.
+_MAX_DECODED_DOC_BYTES = 50 * 1024 * 1024
+
 # Truncation marker appended when extracted text is sliced. The slice budget
 # subtracts this so the final ``len(text) <= MAX_EXTRACTED_CHARS`` invariant
 # actually holds — previously the marker pushed the final length ~18 chars
@@ -145,6 +153,18 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
     """
     pdf_bytes = _decode_data_url(data_field)
     if pdf_bytes is None:
+        return None
+
+    # Reject oversized PDFs before handing the bytes to pypdf (which can
+    # allocate several times the raw size while parsing). Mirrors the DOCX
+    # decompression-bomb guard so PDF isn't the asymmetric weak spot.
+    if len(pdf_bytes) > _MAX_DECODED_DOC_BYTES:
+        logger.warning(
+            "Rejecting oversized PDF %s (%d decoded bytes > %d cap)",
+            filename,
+            len(pdf_bytes),
+            _MAX_DECODED_DOC_BYTES,
+        )
         return None
 
     # Lazy import — pypdf is ~1 MB and we only need it here. Keeps the

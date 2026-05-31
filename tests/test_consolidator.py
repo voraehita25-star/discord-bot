@@ -125,6 +125,18 @@ class TestMemoryConsolidatorMethods:
         result = consolidator.should_consolidate(channel_id)
         assert result is True
 
+    def test_enabled_reflects_client_state(self):
+        """`enabled` is False until an SDK client is set (CLI mode stays inert)."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        consolidator = MemoryConsolidator()
+        # Fresh instance / CLI mode: no client -> disabled, so the live loop
+        # must not record messages or spawn consolidation tasks.
+        assert consolidator.enabled is False
+
+        consolidator._client = object()  # simulate initialize() in API mode
+        assert consolidator.enabled is True
+
     def test_should_consolidate_by_time(self):
         """Test should_consolidate returns True when time threshold met."""
         import time

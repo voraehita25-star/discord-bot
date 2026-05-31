@@ -89,6 +89,11 @@ class AIDebug(commands.Cog):
             )
         except ImportError:
             cache_info = "Cache not available"
+        except (AttributeError, KeyError, TypeError) as e:
+            # Don't let a CacheStats schema drift (missing/renamed field) take
+            # down the entire !ai_debug command — degrade just this panel.
+            self.logger.debug("Cache stats panel unavailable: %s", e)
+            cache_info = "Cache stats unavailable"
 
         embed.add_field(name="💾 Cache", value=f"```\n{cache_info}```", inline=True)
 

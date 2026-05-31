@@ -1645,6 +1645,7 @@ async def handle_chat_message_claude_cli(
     full_response = ""
     full_thinking = ""
     thinking_started = False
+    thinking_ended = False
 
     async def on_text(text: str) -> None:
         nonlocal full_response
@@ -1684,6 +1685,39 @@ async def handle_chat_message_claude_cli(
             return
         thinking_started = True
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
+
+    async def _emit_thinking_end() -> None:
+        """Emit the thinking_end WS event once, collapsing the 💭 panel.
+
+        Idempotent via ``thinking_ended`` so the block-stop callback (which
+        fires the moment reasoning ends) and the finally below (which covers
+        error/timeout exits that never reached block-stop) can't double-emit.
+        """
+        nonlocal thinking_ended, full_thinking
+        if not thinking_started or thinking_ended:
+            return
+        thinking_ended = True
+        if not full_thinking:
+            full_thinking = (
+                "💭 Claude reasoned through this internally. The Claude Code "
+                "subscription redacts thought content from headless output — "
+                "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
+                "see the full thought process."
+            )
+        with contextlib.suppress(Exception):
+            await ws.send_json(
+                {
+                    "type": "thinking_end",
+                    "full_thinking": full_thinking,
+                    "conversation_id": conversation_id,
+                }
+            )
+
+    async def on_thinking_block_stop() -> None:
+        # Reasoning block closed → the visible answer is about to stream.
+        # Collapse the 💭 panel NOW (matching the SDK backend, which flips on
+        # the first text delta) instead of leaving it spinning until end-of-turn.
+        await _emit_thinking_end()
 
     claude_exe = _resolve_claude_executable() or "claude"
     # The Read tool must be enabled whenever Claude needs to open any attached
@@ -1751,6 +1785,7 @@ async def handle_chat_message_claude_cli(
                     on_text_delta=on_text,
                     on_thinking_delta=on_thinking_text,
                     on_thinking_block_start=on_thinking_block_start,
+                    on_thinking_block_stop=on_thinking_block_stop,
                     timeout=stream_timeout,
                 )
             except RuntimeError as err:
@@ -1806,6 +1841,7 @@ async def handle_chat_message_claude_cli(
                         on_text_delta=on_text,
                         on_thinking_delta=on_thinking_text,
                         on_thinking_block_start=on_thinking_block_start,
+                        on_thinking_block_stop=on_thinking_block_stop,
                         timeout=stream_timeout,
                     )
                 else:
@@ -1881,25 +1917,11 @@ async def handle_chat_message_claude_cli(
         for _attach in (*image_paths, *(doc_paths or [])):
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(_attach.unlink)
-        # Emit thinking_end on EVERY exit path (success AND the early-return
-        # error/timeout handlers above, which otherwise bypass the success-path
-        # event and leave the 💭 panel spinning). Substitute when redacted.
-        if thinking_started:
-            if not full_thinking:
-                full_thinking = (
-                    "💭 Claude reasoned through this internally. The Claude Code "
-                    "subscription redacts thought content from headless output — "
-                    "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
-                    "see the full thought process."
-                )
-            with contextlib.suppress(Exception):
-                await ws.send_json(
-                    {
-                        "type": "thinking_end",
-                        "full_thinking": full_thinking,
-                        "conversation_id": conversation_id,
-                    }
-                )
+        # Close the 💭 panel on any exit path that didn't already close it via
+        # on_thinking_block_stop (error/timeout returns before reasoning ended,
+        # or a backend that never fires block-stop). Idempotent —
+        # _emit_thinking_end no-ops if it already ran on this turn.
+        await _emit_thinking_end()
 
     # Save session id for next turn so Claude keeps context server-side.
     if conversation_id and new_session_id:
@@ -2210,6 +2232,7 @@ async def handle_ai_edit_message_claude_cli(
     edit_response = ""
     edit_thinking = ""
     thinking_started = False
+    thinking_ended = False
 
     async def on_text(text: str) -> None:
         nonlocal edit_response
@@ -2245,6 +2268,33 @@ async def handle_ai_edit_message_claude_cli(
         thinking_started = True
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
 
+    async def _emit_thinking_end() -> None:
+        """Emit thinking_end once, collapsing the 💭 panel (idempotent)."""
+        nonlocal thinking_ended, edit_thinking
+        if not thinking_started or thinking_ended:
+            return
+        thinking_ended = True
+        if not edit_thinking:
+            edit_thinking = (
+                "💭 Claude reasoned through this internally. The Claude Code "
+                "subscription redacts thought content from headless output — "
+                "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
+                "see the full thought process."
+            )
+        with contextlib.suppress(Exception):
+            await ws.send_json(
+                {
+                    "type": "thinking_end",
+                    "full_thinking": edit_thinking,
+                    "conversation_id": conversation_id,
+                }
+            )
+
+    async def on_thinking_block_stop() -> None:
+        # Collapse the 💭 panel the moment reasoning ends (parity with the SDK
+        # backend and the chat handler) instead of waiting for end-of-turn.
+        await _emit_thinking_end()
+
     claude_exe = _resolve_claude_executable() or "claude"
     # Edits don't use the conversation's session id — they're a one-shot
     # transformation, not a continuation of the chat.
@@ -2274,6 +2324,7 @@ async def handle_ai_edit_message_claude_cli(
                 on_text_delta=on_text,
                 on_thinking_delta=on_thinking_text,
                 on_thinking_block_start=on_thinking_block_start,
+                on_thinking_block_stop=on_thinking_block_stop,
                 timeout=stream_timeout,
             )
         except TimeoutError:
@@ -2312,24 +2363,10 @@ async def handle_ai_edit_message_claude_cli(
     finally:
         if edit_lock is not None and edit_lock_acquired:
             edit_lock.release()
-        # Emit thinking_end on every exit path (parity with the chat handler) —
-        # the error/timeout returns above otherwise leave the 💭 panel open.
-        if thinking_started:
-            if not edit_thinking:
-                edit_thinking = (
-                    "💭 Claude reasoned through this internally. The Claude Code "
-                    "subscription redacts thought content from headless output — "
-                    "switch to CLAUDE_BACKEND=api with an Anthropic API key to "
-                    "see the full thought process."
-                )
-            with contextlib.suppress(Exception):
-                await ws.send_json(
-                    {
-                        "type": "thinking_end",
-                        "full_thinking": edit_thinking,
-                        "conversation_id": conversation_id,
-                    }
-                )
+        # Close the 💭 panel on any exit path that didn't already close it via
+        # on_thinking_block_stop. Idempotent — _emit_thinking_end no-ops if it
+        # already ran on this turn.
+        await _emit_thinking_end()
 
     # Strip Claude Code internal markup before the SEARCH/REPLACE
     # parser sees it. Otherwise a leaked ``</system-reminder>`` inside

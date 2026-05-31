@@ -356,6 +356,10 @@ class AIAnalytics:
                 self._stats["quality_scores"] = []
                 self._stats["quality_sum"] = 0.0
                 self._stats["quality_count"] = 0
+                # Lifetime rating count — never trimmed, unlike quality_count
+                # which is reset to the rolling-1000 window length below. Keeps
+                # total_ratings honest after more than 1000 ratings.
+                self._stats["quality_total"] = 0
                 self._stats["positive_reactions"] = 0
                 self._stats["negative_reactions"] = 0
 
@@ -363,6 +367,7 @@ class AIAnalytics:
             scores.append(quality.score)
             self._stats["quality_sum"] += quality.score
             self._stats["quality_count"] += 1
+            self._stats["quality_total"] = self._stats.get("quality_total", 0) + 1
 
             if quality.user_reaction == "👍":
                 self._stats["positive_reactions"] += 1
@@ -393,11 +398,16 @@ class AIAnalytics:
                     "negative_reactions": 0,
                 }
             quality_sum = self._stats.get("quality_sum", 0.0)
+            # Lifetime count for total_ratings; fall back to the window count
+            # for stats recorded before quality_total existed.
+            quality_total = self._stats.get("quality_total", quality_count)
             positive = self._stats.get("positive_reactions", 0)
             negative = self._stats.get("negative_reactions", 0)
         return {
+            # average_score is over the most recent <=1000 ratings (rolling);
+            # total_ratings is the lifetime count so it never stalls at 1000.
             "average_score": quality_sum / quality_count,
-            "total_ratings": quality_count,
+            "total_ratings": quality_total,
             "positive_reactions": positive,
             "negative_reactions": negative,
         }
