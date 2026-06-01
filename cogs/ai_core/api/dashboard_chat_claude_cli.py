@@ -927,6 +927,31 @@ def _make_subprocess_env() -> dict[str, str]:
             env["NODE_OPTIONS"] = " ".join(filtered)
         else:
             env.pop("NODE_OPTIONS", None)
+
+    # --- Boot-latency reductions (see docs/reviews CLI-perf investigation) ---
+    # Force-disable Claude Code's non-essential boot-time network traffic:
+    # the auto-update check, Statsig telemetry, Sentry error reporting, and the
+    # bug/feedback pings. Each is an outbound round-trip on EVERY `claude -p`
+    # boot — pure latency for a chat backend that spawns claude per turn, for
+    # zero benefit. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC bundles
+    # DISABLE_AUTOUPDATER + DISABLE_TELEMETRY + DISABLE_ERROR_REPORTING +
+    # DISABLE_BUG_COMMAND. We SET it (not just allowlist it) so the speedup
+    # doesn't depend on operator configuration.
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+
+    # When an explicit OAuth token is available, point CLAUDE_CONFIG_DIR at a
+    # dedicated minimal config dir for the bot. That skips loading the operator's
+    # global ~/.claude settings.json — hooks, enabledPlugins, LSP servers — which
+    # otherwise load on every spawn and are the bulk of the cold start. Auth
+    # comes from the token, so the absent credentials.json in the clean dir is
+    # fine. Gated on the token AND on the operator NOT having set their own
+    # CLAUDE_CONFIG_DIR, so saved-credential (interactive-login) auth and any
+    # deliberate operator override both keep working untouched.
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN") and "CLAUDE_CONFIG_DIR" not in env:
+        _clean_cfg = _CLAUDE_CLI_WORKDIR / "claude_home"
+        with contextlib.suppress(OSError):
+            _clean_cfg.mkdir(parents=True, exist_ok=True)
+            env["CLAUDE_CONFIG_DIR"] = str(_clean_cfg)
     return env
 
 
