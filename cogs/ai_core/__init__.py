@@ -36,7 +36,6 @@ from .core.performance import (
 )
 from .data import FAUST_INSTRUCTION, ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
 from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
-from .memory.conversation_branch import branch_manager
 from .memory.history_manager import HistoryManager
 from .memory.rag import rag_system
 from .memory.summarizer import summarizer
@@ -78,7 +77,6 @@ __all__ = [
     "ServerCommands",
     "ai_analytics",
     "ai_cache",
-    "branch_manager",
     # New subdirectory exports
     "build_api_config",
     "call_claude_api",

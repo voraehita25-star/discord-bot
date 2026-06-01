@@ -72,7 +72,6 @@ cogs/ai_core/
 │   ├── entity_memory.py   # Character/entity facts
 │   ├── long_term_memory.py # Permanent user facts
 │   ├── memory_consolidator.py # Memory consolidation
-│   ├── conversation_branch.py # Branch management
 │   ├── state_tracker.py   # RP character states
 │   └── consolidator.py    # Background task
 │

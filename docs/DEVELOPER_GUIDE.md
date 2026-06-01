@@ -109,7 +109,6 @@ BOT/
 │       │   ├── entity_memory.py # Character/entity facts
 │       │   ├── long_term_memory.py # Permanent user facts
 │       │   ├── memory_consolidator.py # Memory consolidation
-│       │   ├── conversation_branch.py # Conversation branching
 │       │   ├── state_tracker.py # RP character states
 │       │   └── consolidator.py # Fact extraction from history
 │       │

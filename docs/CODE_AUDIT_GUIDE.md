@@ -136,7 +136,6 @@ python -m pytest tests/ -v
 | `entity_memory.py` | Entity/facts extraction |
 | `long_term_memory.py` | Permanent facts storage |
 | `memory_consolidator.py` | Memory consolidation |
-| `conversation_branch.py` | Conversation branching |
 | `state_tracker.py` | Character state tracking |
 | `consolidator.py` | Memory consolidator (alt) |
 
