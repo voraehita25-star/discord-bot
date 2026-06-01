@@ -103,6 +103,22 @@ MAX_RAG_REBUILD = 100_000
 LINEAR_SEARCH_MIN_SIMILARITY = 0.5  # Minimum similarity to include in results
 LINEAR_SEARCH_RELEVANCE_THRESHOLD = 0.65  # Threshold for relevance filtering
 
+# Relevance floor for the SEMANTIC (FAISS) path inside hybrid_search. RRF ranking
+# has no absolute-relevance signal, so without this a query unrelated to anything
+# stored still pulls its top-k cosine matches into the prompt as "[Long-term
+# Memory]" noise that can mislead the model. The cosine scores from FAISS are
+# absolute (normalized vectors), so a floor here is meaningful; keyword hits are
+# a separate lexical-relevance signal and are NOT gated by it. The linear
+# fallback already floors at LINEAR_SEARCH_MIN_SIMILARITY. Tunable via
+# RAG_SEMANTIC_MIN_SIMILARITY (set 0 to disable); the 0.25 default drops only
+# near-unrelated matches so recall is barely affected.
+try:
+    RAG_SEMANTIC_MIN_SIMILARITY = max(
+        0.0, min(1.0, float(os.getenv("RAG_SEMANTIC_MIN_SIMILARITY", "0.25")))
+    )
+except ValueError:
+    RAG_SEMANTIC_MIN_SIMILARITY = 0.25
+
 
 @dataclass
 class MemoryResult:
@@ -1253,6 +1269,21 @@ class MemorySystem:
 
         return results
 
+    @staticmethod
+    def _apply_semantic_floor(
+        semantic_results: list[tuple[int, float]], floor: float
+    ) -> list[tuple[int, float]]:
+        """Drop semantic hits whose absolute cosine score is below ``floor``.
+
+        ``floor <= 0`` disables the gate (returns the list unchanged). Used by
+        :meth:`hybrid_search` to keep weakly-relevant memories out of the prompt;
+        the cosine scores are absolute (FAISS on normalized vectors) so the
+        cutoff is meaningful, unlike the rank-based RRF scores produced after.
+        """
+        if not semantic_results or floor <= 0:
+            return semantic_results
+        return [(mid, score) for (mid, score) in semantic_results if score >= floor]
+
     async def hybrid_search(
         self,
         query: str,
@@ -1334,6 +1365,17 @@ class MemorySystem:
             semantic_results = [
                 (mid, score) for (mid, score) in semantic_results if mid in _chan_by_id
             ]
+
+        # Relevance floor on the SEMANTIC hits BEFORE fusion. The cosine scores
+        # here are absolute (FAISS on normalized vectors); the RRF scores
+        # produced below are not, so this is the only place an absolute-relevance
+        # cutoff is meaningful. Without it, a query unrelated to everything
+        # stored still surfaces its top-k cosine matches as prompt noise. The
+        # linear fallback already applies its own (stricter) floor, so this
+        # mainly guards the FAISS path. Keyword hits below stay untouched.
+        semantic_results = self._apply_semantic_floor(
+            semantic_results, RAG_SEMANTIC_MIN_SIMILARITY
+        )
 
         # Keyword search
         keyword_results = self._keyword_search(query, all_memories, limit * 2)

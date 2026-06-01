@@ -18,6 +18,27 @@ class TestRAGConstants:
 
         assert EMBEDDING_MODEL == "models/text-embedding-004"
 
+    def test_semantic_min_similarity_constant(self):
+        """RAG_SEMANTIC_MIN_SIMILARITY is a clamped float in [0, 1]."""
+        from cogs.ai_core.memory.rag import RAG_SEMANTIC_MIN_SIMILARITY
+
+        assert isinstance(RAG_SEMANTIC_MIN_SIMILARITY, float)
+        assert 0.0 <= RAG_SEMANTIC_MIN_SIMILARITY <= 1.0
+
+    def test_semantic_floor_drops_low_cosine(self):
+        """The relevance floor removes semantic hits below the cutoff."""
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        out = MemorySystem._apply_semantic_floor([(1, 0.9), (2, 0.1), (3, 0.5)], 0.25)
+        assert out == [(1, 0.9), (3, 0.5)]
+
+    def test_semantic_floor_disabled_passthrough(self):
+        """floor <= 0 disables the gate (results unchanged)."""
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        data = [(1, 0.1), (2, 0.05)]
+        assert MemorySystem._apply_semantic_floor(data, 0.0) == data
+
     def test_embedding_dim(self):
         """Test EMBEDDING_DIM constant."""
         from cogs.ai_core.memory.rag import EMBEDDING_DIM
