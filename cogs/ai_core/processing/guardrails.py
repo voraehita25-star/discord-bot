@@ -642,14 +642,13 @@ def validate_response_for_channel(response: str, channel_id: int) -> tuple[bool,
     return result.is_valid, result.sanitized_content, result.warnings
 
 
-def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
+def is_silent_block(response: str) -> bool:
     """Detect if response appears to be a silent block from the API.
 
     Only checks for truly empty responses, not short ones.
 
     Args:
         response: The response text to check.
-        expected_min_length: Minimum expected length (unused, kept for API compat).
 
     Returns:
         True if response is empty or whitespace-only.

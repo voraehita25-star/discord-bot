@@ -132,9 +132,6 @@ class IntentDetector:
                 (re.compile(pattern, re.IGNORECASE), sub_cat, conf)
                 for pattern, sub_cat, conf in patterns
             ]
-        self._pronoun_pattern = re.compile(
-            r"\b(?:มัน|นั่น|นี่|เขา|เธอ|พวกเขา|it|that|this|they|them|he|she)\b", re.IGNORECASE
-        )
 
     def detect(self, message: str) -> IntentResult:
         """
@@ -190,49 +187,6 @@ class IntentDetector:
             sub_category=sub_cat,
             detected_patterns=detected,
         )
-
-    def is_simple_greeting(self, message: str) -> bool:
-        """
-        Quick check if message is just a simple greeting.
-        Can be used to provide cached responses.
-        """
-        result = self.detect(message)
-        return (
-            result.intent == Intent.GREETING
-            and result.confidence >= 0.8
-            and len(message.split()) <= 5
-        )
-
-    def requires_context(self, message: str) -> bool:
-        """
-        Check if message likely requires conversation context.
-        """
-        result = self.detect(message)
-
-        # These intents typically need context
-        context_intents = {Intent.ROLEPLAY, Intent.QUESTION, Intent.EMOTIONAL}
-
-        if result.intent in context_intents:
-            return True
-
-        # Check for pronouns that reference previous context
-        return bool(self._pronoun_pattern.search(message))
-
-    def get_prompt_modifier(self, intent: Intent) -> str:
-        """
-        Get a prompt modifier based on detected intent.
-        Used to optimize system instructions.
-        """
-        modifiers = {
-            Intent.GREETING: "Respond warmly and briefly. Be friendly.",
-            Intent.QUESTION: "Provide a clear, helpful answer. Be informative.",
-            Intent.COMMAND: "Execute the requested action. Be precise and confirm actions.",
-            Intent.ROLEPLAY: "Stay in character. Use appropriate formatting.",
-            Intent.EMOTIONAL: "Be empathetic and supportive. Acknowledge feelings.",
-            Intent.CASUAL: "Be conversational and natural.",
-            Intent.UNKNOWN: "",
-        }
-        return modifiers.get(intent, "")
 
 
 # Global instance

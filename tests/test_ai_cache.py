@@ -66,12 +66,6 @@ class TestAICacheConstants:
 
         assert AICache.SIMILARITY_THRESHOLD == 0.85
 
-    def test_semantic_threshold(self):
-        """Test SEMANTIC_THRESHOLD constant."""
-        from cogs.ai_core.cache.ai_cache import AICache
-
-        assert AICache.SEMANTIC_THRESHOLD == 0.9
-
 
 class TestAICacheInit:
     """Tests for AICache initialization."""
@@ -269,56 +263,6 @@ class TestAICacheSingleton:
         from cogs.ai_core.cache.ai_cache import AICache, ai_cache
 
         assert isinstance(ai_cache, AICache)
-
-
-class TestContextHasher:
-    """Tests for ContextHasher class."""
-
-    def test_hash_history_empty(self):
-        """Test hash_history with empty history."""
-        from cogs.ai_core.cache.ai_cache import ContextHasher
-
-        result = ContextHasher.hash_history([])
-
-        assert isinstance(result, str)
-
-    def test_hash_history_with_messages(self):
-        """Test hash_history with messages."""
-        from cogs.ai_core.cache.ai_cache import ContextHasher
-
-        history = [
-            {"role": "user", "parts": ["Hello there!"]},
-            {"role": "assistant", "parts": ["Hi! How can I help?"]},
-        ]
-
-        result = ContextHasher.hash_history(history)
-
-        assert isinstance(result, str)
-        assert len(result) == 16  # MD5 hash truncated to 16 chars
-
-    def test_hash_history_last_n(self):
-        """Test hash_history respects last_n parameter."""
-        from cogs.ai_core.cache.ai_cache import ContextHasher
-
-        history = [
-            {"role": "user", "parts": ["Message 1"]},
-            {"role": "user", "parts": ["Message 2"]},
-            {"role": "user", "parts": ["Message 3"]},
-        ]
-
-        result = ContextHasher.hash_history(history, last_n=2)
-
-        assert isinstance(result, str)
-
-
-class TestContextHasherSingleton:
-    """Tests for context_hasher singleton."""
-
-    def test_context_hasher_exists(self):
-        """Test context_hasher singleton exists."""
-        from cogs.ai_core.cache.ai_cache import context_hasher
-
-        assert context_hasher is not None
 
 
 class TestGetCacheStats:
@@ -614,13 +558,6 @@ class TestAICacheConstants:
         assert AICache.SIMILARITY_THRESHOLD is not None
         assert 0 < AICache.SIMILARITY_THRESHOLD < 1
 
-    def test_semantic_threshold(self):
-        """Test SEMANTIC_THRESHOLD constant."""
-        from cogs.ai_core.cache.ai_cache import AICache
-
-        assert AICache.SEMANTIC_THRESHOLD is not None
-        assert 0 < AICache.SEMANTIC_THRESHOLD < 1
-
 
 class TestAICacheMethods:
     """Tests for AICache methods."""
@@ -710,16 +647,6 @@ class TestAICacheStats:
         stats = cache.get_stats()
 
         assert hasattr(stats, "hit_rate")
-
-
-class TestNumpyAvailable:
-    """Tests for NUMPY_AVAILABLE constant."""
-
-    def test_numpy_available_is_bool(self):
-        """Test NUMPY_AVAILABLE is boolean."""
-        from cogs.ai_core.cache.ai_cache import NUMPY_AVAILABLE
-
-        assert isinstance(NUMPY_AVAILABLE, bool)
 
 
 class TestNormalizePatterns:

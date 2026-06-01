@@ -96,7 +96,7 @@ except ImportError:
     ) -> tuple[bool, str, float, list[str]]:
         return True, user_input, 0.0, []
 
-    def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
+    def is_silent_block(response: str) -> bool:
         return bool(not response or not response.strip())  # Only flag truly empty responses
 
 
@@ -118,7 +118,7 @@ except ImportError:
     ANALYTICS_AVAILABLE = False
 
 try:
-    from .cache.ai_cache import ai_cache, context_hasher
+    from .cache.ai_cache import ai_cache
 
     CACHE_AVAILABLE = True
 except ImportError:

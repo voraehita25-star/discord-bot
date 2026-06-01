@@ -1,6 +1,6 @@
 """AI Core Cache - Caching and analytics."""
 
-from .ai_cache import AICache, CacheEntry, CacheStats, ai_cache, context_hasher
+from .ai_cache import AICache, CacheEntry, CacheStats, ai_cache
 from .analytics import (
     AIAnalytics,
     AnalyticsSummary,
@@ -21,7 +21,6 @@ __all__ = [
     "ResponseQuality",
     "ai_analytics",
     "ai_cache",
-    "context_hasher",
     "get_ai_stats",
     "log_ai_interaction",
 ]

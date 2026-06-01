@@ -105,7 +105,7 @@ _DANGEROUS_PERMISSIONS: frozenset[str] = frozenset(
 
 # Import Audit Logger for tracking admin actions
 try:
-    from utils.monitoring.audit_log import log_admin_action, log_channel_change, log_role_change
+    from utils.monitoring.audit_log import log_channel_change, log_role_change
 
     AUDIT_AVAILABLE = True
 except ImportError:

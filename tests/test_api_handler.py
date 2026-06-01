@@ -283,7 +283,7 @@ class TestGuardrailsIntegration:
         """Test is_silent_block fallback function."""
         from cogs.ai_core.api.api_handler import is_silent_block
 
-        result = is_silent_block("Test response", expected_min_length=50)
+        result = is_silent_block("Test response")
 
         assert isinstance(result, bool)
 
@@ -559,7 +559,7 @@ class TestIsSilentBlockFallback:
             pytest.skip("api_handler not available")
             return
 
-        result = is_silent_block("any response", expected_min_length=50)
+        result = is_silent_block("any response")
         assert isinstance(result, bool)
 
 
@@ -1063,7 +1063,7 @@ class TestFallbackFunctions:
         from cogs.ai_core.api.api_handler import is_silent_block
 
         # Test it works
-        is_silent_block("any response", 50)
+        is_silent_block("any response")
         # Should return False when guardrails unavailable
 
 

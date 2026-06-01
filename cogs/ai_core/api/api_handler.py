@@ -64,13 +64,11 @@ try:
     from ..processing.guardrails import is_silent_block
 except ImportError:
 
-    def is_silent_block(response: str, expected_min_length: int = 50) -> bool:
+    def is_silent_block(response: str) -> bool:
         """No-op fallback used when ``processing.guardrails`` is unavailable.
 
         Explicit no-op (returns ``False``) rather than silently letting tests
-        pass — if the real ``is_silent_block`` ever changes its signature,
-        callers of this fallback should still type-check against the same
-        shape. Keep the signature in sync with the real implementation.
+        pass. Keep the signature in sync with the real implementation.
         """
         return False
 

@@ -144,17 +144,6 @@ def _ephemeral_cache_control() -> dict[str, str]:
     return {"type": "ephemeral"}
 
 
-def build_cached_system_prompt(system_text: str) -> list[dict[str, Any]]:
-    """Wrap a system prompt string into Anthropic's list form with prompt caching enabled.
-
-    The system prompt is mostly static per preset/session (persona + role +
-    memories), so marking it with ``cache_control: ephemeral`` lets Anthropic
-    reuse the prefix for 5 minutes, dropping input-token cost by ~90% on
-    cache hits.
-    """
-    return [{"type": "text", "text": system_text, "cache_control": _ephemeral_cache_control()}]
-
-
 def build_split_cached_system_prompt(
     stable_text: str,
     volatile_text: str = "",
@@ -169,9 +158,9 @@ def build_split_cached_system_prompt(
     Anthropic caches the *prefix* up to the marker, so the stable block
     must come first for the cache to apply.
 
-    When ``volatile_text`` is empty this returns the equivalent of
-    :func:`build_cached_system_prompt` (a single cached block), so callers
-    can pass an optional volatile suffix without branching on its presence.
+    When ``volatile_text`` is empty this returns a single cached block, so
+    callers can pass an optional volatile suffix without branching on its
+    presence.
     """
     blocks: list[dict[str, Any]] = [
         {"type": "text", "text": stable_text, "cache_control": _ephemeral_cache_control()},
