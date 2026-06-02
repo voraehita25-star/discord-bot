@@ -267,9 +267,16 @@ class URLFetcherClient:
                 if resp.status != 200:
                     result["error"] = f"HTTP {resp.status}"
                 else:
-                    # Limit response size to 5MB to prevent memory exhaustion
+                    # Limit response size to 5MB to prevent memory exhaustion.
+                    # Read one extra byte so an over-cap body is detected and
+                    # rejected rather than silently parsed as a truncated page
+                    # (matches url_fetcher.py's overflow contract).
                     MAX_RESPONSE_SIZE = 5 * 1024 * 1024
-                    raw_bytes = await resp.content.read(MAX_RESPONSE_SIZE)
+                    raw_bytes = await resp.content.read(MAX_RESPONSE_SIZE + 1)
+                    if len(raw_bytes) > MAX_RESPONSE_SIZE:
+                        result["error"] = f"[Content too large: >{MAX_RESPONSE_SIZE} bytes]"
+                        result["fetch_time_ms"] = int((time.time() - start) * 1000)
+                        return result
                     text = raw_bytes.decode("utf-8", errors="replace")
 
                     if "text/html" in result["content_type"]:

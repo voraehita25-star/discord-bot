@@ -290,22 +290,21 @@ def extract_retry_after(error: Exception) -> float | None:
         except (TypeError, ValueError):
             return None
 
-    # Check for response headers
-    if hasattr(error, "headers"):
-        retry_after = error.headers.get("Retry-After")
+    # Check for response headers. ``headers`` can EXIST but be None (e.g.
+    # aiohttp.ClientResponseError built with the default headers=None), so a
+    # bare hasattr guard isn't enough — None.get(...) would raise AttributeError
+    # and escape the whole retry loop. Guard for None / non-mapping first, on
+    # both the direct and the wrapped-response paths.
+    headers = getattr(error, "headers", None)
+    if headers is None:
+        resp = getattr(error, "response", None)
+        headers = getattr(resp, "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        retry_after = headers.get("Retry-After")
         if retry_after:
             try:
                 return float(retry_after)
-            except ValueError:
-                pass
-
-    # Check for wrapped response
-    if hasattr(error, "response") and hasattr(error.response, "headers"):
-        retry_after = error.response.headers.get("Retry-After")
-        if retry_after:
-            try:
-                return float(retry_after)
-            except ValueError:
+            except (TypeError, ValueError):
                 pass
 
     return None

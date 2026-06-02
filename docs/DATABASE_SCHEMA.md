@@ -6,14 +6,14 @@
 
 | Database          | Tables | Purpose                                         |
 | ----------------- | ------ | ----------------------------------------------- |
-| `bot_database.db` | 21     | Main database (AI, music, dashboard, analytics) — 19 created at init + `conversation_summaries` (lazy) + `schema_version` (migrations) |
+| `bot_database.db` | 20     | Main database (AI, music, dashboard, analytics) — 18 created at init + `conversation_summaries` (lazy) + `schema_version` (migrations) |
 | `ai_cache_l2.db`  | 1      | Persistent L2 cache (survives restarts)         |
 
 Connection Pool: 32 concurrent connections, 16-slot reuse queue, 30s acquire timeout
 
 ---
 
-## bot_database.db (21 Tables)
+## bot_database.db (20 Tables)
 
 ### AI Chat
 
@@ -163,7 +163,7 @@ Indexes: `idx_knowledge_domain(domain)`, `idx_knowledge_category(category)`, `id
 | role_preset        | TEXT     | NOT NULL, DEFAULT 'general' |
 | system_instruction | TEXT     |                             |
 | thinking_enabled   | BOOLEAN  | DEFAULT 0                   |
-| ai_provider        | TEXT     | DEFAULT 'gemini'            |
+| ai_provider        | TEXT     | NOT NULL, DEFAULT 'claude'  |
 | created_at         | DATETIME | DEFAULT CURRENT_TIMESTAMP   |
 | updated_at         | DATETIME | DEFAULT CURRENT_TIMESTAMP   |
 | is_starred         | BOOLEAN  | DEFAULT 0                   |
@@ -199,10 +199,11 @@ Indexes:
 
 Free-form tag labels per conversation (migration 014).
 
-| Column          | Type | Constraints                                                  |
-| --------------- | ---- | ------------------------------------------------------------ |
-| conversation_id | TEXT | NOT NULL, FK → dashboard_conversations(id) ON DELETE CASCADE |
-| tag             | TEXT | NOT NULL                                                     |
+| Column          | Type     | Constraints                                                  |
+| --------------- | -------- | ------------------------------------------------------------ |
+| conversation_id | TEXT     | NOT NULL, FK → dashboard_conversations(id) ON DELETE CASCADE |
+| tag             | TEXT     | NOT NULL                                                     |
+| created_at      | DATETIME | DEFAULT CURRENT_TIMESTAMP                                    |
 
 Composite primary key `(conversation_id, tag)`.
 
@@ -219,18 +220,6 @@ Indexes: `idx_dashboard_tags_conv(conversation_id)`, `idx_dashboard_tags_tag(tag
 | is_creator   | INTEGER  | DEFAULT 0                   |
 | created_at   | DATETIME | DEFAULT CURRENT_TIMESTAMP   |
 | updated_at   | DATETIME | DEFAULT CURRENT_TIMESTAMP   |
-
-#### dashboard_memories
-
-| Column     | Type     | Constraints               |
-| ---------- | -------- | ------------------------- |
-| id         | INTEGER  | PRIMARY KEY AUTOINCREMENT |
-| content    | TEXT     | NOT NULL                  |
-| category   | TEXT     | DEFAULT 'general'         |
-| importance | INTEGER  | DEFAULT 1                 |
-| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
-
-Index: `idx_dashboard_memories_category(category, importance DESC)`
 
 #### dashboard_document_memories
 
@@ -312,6 +301,7 @@ PRIMARY KEY: `(user_id, guild_id)`
 | url      | TEXT     | NOT NULL                  |
 | title    | TEXT     |                           |
 | added_by | INTEGER  |                           |
+| track_type | TEXT   | 'url' \| 'search' (Spotify search items)         |
 | added_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
 Index: `idx_music_queue_guild(guild_id, position)`
@@ -381,6 +371,10 @@ Indexes: `idx_error_logs_type(error_type, created_at DESC)`, `idx_error_logs_cre
 | target_id   | INTEGER  |                           |
 | details     | TEXT     |                           |
 | created_at  | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+| prev_hash   | TEXT     | tamper-evidence chain     |
+| entry_hash  | TEXT     | tamper-evidence chain     |
+
+Append-only: `BEFORE UPDATE`/`BEFORE DELETE` triggers (`audit_log_no_update`, `audit_log_no_delete`) raise `ABORT`.
 
 Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id)`, `idx_audit_log_guild_created(guild_id, created_at DESC)`
 
@@ -424,7 +418,7 @@ Max entries: 20,000 (LRU eviction)
 
 | Metric                 | Count                                            |
 | ---------------------- | ------------------------------------------------ |
-| Total tables           | 21 (19 created at init + lazy `conversation_summaries` + migrations `schema_version`) |
+| Total tables           | 20 (18 created at init + lazy `conversation_summaries` + migrations `schema_version`) |
 | Total indexes          | 38+ (incl. partial `idx_dashboard_messages_pinned`, tag indexes, entity multi-column) |
 | Foreign keys           | 2 (dashboard_messages → dashboard_conversations; dashboard_conversation_tags → dashboard_conversations) |
 | Composite primary keys | 2 (user_stats, dashboard_conversation_tags) |

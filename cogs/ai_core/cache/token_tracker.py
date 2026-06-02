@@ -281,8 +281,7 @@ class TokenTracker:
                 # sites in this file already route through ``_ensure_aware``;
                 # this one was the outlier.
                 self._usage_cache[cache_key] = [
-                    u for u in self._usage_cache[cache_key]
-                    if _ensure_aware(u.timestamp) < cutoff
+                    u for u in self._usage_cache[cache_key] if _ensure_aware(u.timestamp) < cutoff
                 ]
 
             for row in rows:
@@ -611,14 +610,10 @@ class TokenTracker:
             hourly_records = self._get_usage_in_period(user_key, hour_delta)
             daily_records = self._get_usage_in_period(user_key, day_delta)
             channel_records = (
-                self._get_usage_in_period(f"channel:{channel_id}", day_delta)
-                if channel_id
-                else []
+                self._get_usage_in_period(f"channel:{channel_id}", day_delta) if channel_id else []
             )
             guild_records = (
-                self._get_usage_in_period(f"guild:{guild_id}", day_delta)
-                if guild_id
-                else []
+                self._get_usage_in_period(f"guild:{guild_id}", day_delta) if guild_id else []
             )
 
         hourly_stats = self._aggregate_usage(hourly_records)

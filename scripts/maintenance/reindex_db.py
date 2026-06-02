@@ -44,6 +44,7 @@ def _ignore_sigint():
             except (ValueError, OSError):
                 pass
 
+
 # Anchor paths to the project root so the script works regardless of cwd
 # (otherwise the destructive DROP+RENAME could target a stray empty DB
 # created next to the current dir).

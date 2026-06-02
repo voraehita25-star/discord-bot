@@ -2,14 +2,14 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("bot_manager.rs requires Windows (uses CommandExt, taskkill, etc.)");
 
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::os::windows::process::CommandExt;
 use sysinfo::System;
-use chrono::{DateTime, Local};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -83,18 +83,26 @@ impl BotManager {
                 let canonical = match p.canonicalize() {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("WARNING: PYTHON_CMD '{}' cannot be resolved: {}, ignoring", cmd, e);
+                        eprintln!(
+                            "WARNING: PYTHON_CMD '{}' cannot be resolved: {}, ignoring",
+                            cmd, e
+                        );
                         return None;
                     }
                 };
                 let fname = canonical.file_name().unwrap_or_default().to_string_lossy();
                 let fname_lower = fname.to_lowercase();
-                if fname_lower == "python.exe" || fname_lower == "python3.exe"
-                    || fname_lower == "python" || fname_lower == "python3"
+                if fname_lower == "python.exe"
+                    || fname_lower == "python3.exe"
+                    || fname_lower == "python"
+                    || fname_lower == "python3"
                 {
                     Some(canonical.to_string_lossy().to_string())
                 } else {
-                    eprintln!("WARNING: PYTHON_CMD '{}' does not look like a Python executable, ignoring", cmd);
+                    eprintln!(
+                        "WARNING: PYTHON_CMD '{}' does not look like a Python executable, ignoring",
+                        cmd
+                    );
                     None
                 }
             })
@@ -106,7 +114,13 @@ impl BotManager {
                     "python".to_string()
                 }
             });
-        Self { base_path, sys, python_cmd, child: None, dev_watcher_child: None }
+        Self {
+            base_path,
+            sys,
+            python_cmd,
+            child: None,
+            dev_watcher_child: None,
+        }
     }
 
     /// Reap a stored Child if its underlying process has exited. Always non-blocking.
@@ -184,16 +198,6 @@ impl BotManager {
             .ok()
     }
 
-    #[allow(dead_code)]
-    fn is_dev_watcher_running(&mut self) -> bool {
-        if let Some(pid) = self.get_dev_watcher_pid() {
-            Self::refresh_processes_with_cmd(&mut self.sys);
-            self.sys.process(sysinfo::Pid::from_u32(pid)).is_some()
-        } else {
-            false
-        }
-    }
-
     fn stop_dev_watcher(&mut self) {
         if let Some(pid) = self.get_dev_watcher_pid() {
             // Verify the PID actually points at a python process before
@@ -244,20 +248,29 @@ impl BotManager {
                 continue;
             }
 
-            let cmd: Vec<String> = process.cmd().iter().map(|s| s.to_string_lossy().to_lowercase().to_string()).collect();
+            let cmd: Vec<String> = process
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                .collect();
             let cmdline = cmd.join(" ");
 
             // Collect basenames of every arg so we can match script files precisely.
-            let basenames: Vec<String> = cmd.iter().map(|arg| {
-                std::path::Path::new(arg.as_str())
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_lowercase().to_string())
-                    .unwrap_or_default()
-            }).collect();
+            let basenames: Vec<String> = cmd
+                .iter()
+                .map(|arg| {
+                    std::path::Path::new(arg.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_lowercase().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
 
             let has_bot_py = basenames.iter().any(|b| b == "bot.py");
             let is_test = basenames.iter().any(|b| b.starts_with("test_"));
-            let is_ignored_script = basenames.iter().any(|b| ignore_basenames.contains(&b.as_str()));
+            let is_ignored_script = basenames
+                .iter()
+                .any(|b| ignore_basenames.contains(&b.as_str()));
             // Only kill processes whose cmdline references our own base_path —
             // never reach across to other Discord-bot installs on the same host.
             let belongs_to_us = !base_path_str.is_empty() && cmdline.contains(&base_path_str);
@@ -298,7 +311,7 @@ impl BotManager {
 
     pub fn read_logs(&self, count: usize) -> Vec<String> {
         let log_path = self.log_file();
-        
+
         if !log_path.exists() {
             return vec![];
         }
@@ -313,22 +326,22 @@ impl BotManager {
             Ok(m) => m,
             Err(_) => return vec![],
         };
-        
+
         let file_size = metadata.len();
         if file_size == 0 {
             return vec![];
         }
-        
+
         // Read at most 1MB from end of file (enough for ~count lines)
         let max_read: u64 = std::cmp::min(file_size, (count as u64).saturating_mul(1024)); // ~1KB per line estimate
         let max_read = std::cmp::min(max_read, 1024 * 1024); // Cap at 1MB
         let start_pos = file_size.saturating_sub(max_read);
-        
+
         let mut file = file;
         if file.seek(SeekFrom::Start(start_pos)).is_err() {
             return vec![];
         }
-        
+
         // Read as raw bytes and convert with lossy UTF-8 to avoid
         // corruption when seek lands on a multi-byte character boundary
         let mut raw_bytes = Vec::new();
@@ -336,14 +349,13 @@ impl BotManager {
             return vec![];
         }
         let buffer = String::from_utf8_lossy(&raw_bytes);
-        
-        let lines: Vec<String> = buffer.lines()
-            .map(|l| l.to_string())
-            .collect();
-        
+
+        let lines: Vec<String> = buffer.lines().map(|l| l.to_string()).collect();
+
         // If we started mid-file, skip potentially partial first line
         let skip = if start_pos > 0 { 1 } else { 0 };
-        lines.into_iter()
+        lines
+            .into_iter()
             .skip(skip)
             .rev()
             .take(count)
@@ -353,59 +365,16 @@ impl BotManager {
             .collect()
     }
 
-    /// Rotate logs if file exceeds max_size_mb
-    pub fn rotate_logs_if_needed(&self, max_size_mb: f64) -> Result<(), String> {
-        let log_path = self.log_file();
-        
-        if !log_path.exists() {
-            return Ok(());
-        }
-
-        let metadata = fs::metadata(&log_path)
-            .map_err(|e| format!("Failed to get log metadata: {}", e))?;
-        
-        let size_mb = metadata.len() as f64 / 1024.0 / 1024.0;
-        
-        if size_mb > max_size_mb {
-            // Rotate: rename current to .old and create new
-            let old_log = log_path.with_extension("log.old");
-            let _ = fs::remove_file(&old_log); // Remove old backup if exists
-            fs::rename(&log_path, &old_log)
-                .map_err(|e| format!("Failed to rotate logs: {}", e))?;
-        }
-        
-        Ok(())
-    }
-
-    /// Health check - verify bot process is actually responsive
-    pub fn health_check(&mut self) -> bool {
-        if !self.is_running() {
-            return false;
-        }
-        
-        // Check if process exists and is not zombie
-        if let Some(pid) = self.get_pid() {
-            Self::refresh_processes_with_cmd(&mut self.sys);
-            if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
-                // Check memory > 0 indicates process is alive
-                return process.memory() > 0;
-            }
-        }
-        
-        false
-    }
-
     pub fn clear_logs(&self) -> Result<String, String> {
         let log_path = self.log_file();
-        
+
         if !log_path.exists() {
             return Ok("No logs to clear".to_string());
         }
 
         // Truncate the file instead of deleting (keeps file but empties content)
-        fs::write(&log_path, "")
-            .map_err(|e| format!("Failed to clear logs: {}", e))?;
-        
+        fs::write(&log_path, "").map_err(|e| format!("Failed to clear logs: {}", e))?;
+
         Ok("Logs cleared".to_string())
     }
 
@@ -437,7 +406,8 @@ impl BotManager {
                         .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
                         .unwrap_or(false)
                 });
-                return has_bot_py && (base_path_str.is_empty() || cmdline.contains(&base_path_str));
+                return has_bot_py
+                    && (base_path_str.is_empty() || cmdline.contains(&base_path_str));
             }
             false
         } else {
@@ -476,38 +446,6 @@ impl BotManager {
         "-".to_string()
     }
 
-    pub fn get_uptime(&mut self) -> String {
-        if !self.is_running() {
-            return "-".to_string();
-        }
-        self.format_uptime_from_pid_file()
-    }
-
-    pub fn get_memory_mb(&mut self) -> f64 {
-        if let Some(pid) = self.get_pid() {
-            Self::refresh_processes_with_cmd(&mut self.sys);
-            if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
-                return process.memory() as f64 / 1024.0 / 1024.0;
-            }
-        }
-        0.0
-    }
-
-    pub fn get_mode(&mut self) -> String {
-        // Check if dev_watcher.pid exists and the watcher is running
-        if let Some(pid) = self.get_dev_watcher_pid() {
-            Self::refresh_processes_with_cmd(&mut self.sys);
-            if self.sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
-                return "Dev".to_string();
-            }
-        }
-        if self.is_running() {
-            "Normal".to_string()
-        } else {
-            "-".to_string()
-        }
-    }
-
     pub fn get_status(&mut self) -> BotStatus {
         // Single process refresh for all status fields (instead of 3-5 separate refreshes)
         Self::refresh_processes_with_cmd(&mut self.sys);
@@ -516,7 +454,8 @@ impl BotManager {
         // Mirror is_running()'s cmdline verification — pure PID existence is
         // unreliable on Windows due to aggressive PID reuse.
         let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
-        let is_running = pid.and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
+        let is_running = pid
+            .and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
             .map(|process| {
                 let cmd: Vec<String> = process
                     .cmd()
@@ -533,23 +472,34 @@ impl BotManager {
                 has_bot_py && (base_path_str.is_empty() || cmdline.contains(&base_path_str))
             })
             .unwrap_or(false);
-        
-        let uptime = if is_running { self.get_uptime_no_refresh() } else { "-".to_string() };
+
+        let uptime = if is_running {
+            self.get_uptime_no_refresh()
+        } else {
+            "-".to_string()
+        };
         let memory_mb = if is_running {
             pid.and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
                 .map(|proc| proc.memory() as f64 / 1024.0 / 1024.0)
                 .unwrap_or(0.0)
-        } else { 0.0 };
-        
+        } else {
+            0.0
+        };
+
         let mode = {
-            let dev_running = self.get_dev_watcher_pid()
+            let dev_running = self
+                .get_dev_watcher_pid()
                 .map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some())
                 .unwrap_or(false);
-            if dev_running { "Dev".to_string() }
-            else if is_running { "Normal".to_string() }
-            else { "-".to_string() }
+            if dev_running {
+                "Dev".to_string()
+            } else if is_running {
+                "Normal".to_string()
+            } else {
+                "-".to_string()
+            }
         };
-        
+
         BotStatus {
             is_running,
             pid,
@@ -558,7 +508,7 @@ impl BotManager {
             mode,
         }
     }
-    
+
     /// Get uptime without refreshing processes (used by get_status which already refreshed)
     fn get_uptime_no_refresh(&self) -> String {
         self.format_uptime_from_pid_file()
@@ -610,7 +560,7 @@ impl BotManager {
         self.stop_dev_watcher();
 
         let dev_watcher = self.base_path.join("scripts").join("dev_watcher.py");
-        
+
         // Dev mode: run dev_watcher.py hidden with CREATE_NO_WINDOW
         let child = Command::new(&self.python_cmd)
             .arg(&dev_watcher)
@@ -673,7 +623,9 @@ impl BotManager {
                     let _ = c.wait();
                     self.stop_dev_watcher();
                     self.kill_orphan_bot_processes();
-                    return Ok("Bot stopped (no PID file; killed tracked startup process)".to_string());
+                    return Ok(
+                        "Bot stopped (no PID file; killed tracked startup process)".to_string()
+                    );
                 }
                 return Err("Bot is not running".to_string());
             }

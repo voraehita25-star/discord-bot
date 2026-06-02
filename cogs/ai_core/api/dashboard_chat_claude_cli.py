@@ -118,7 +118,7 @@ class _OverloadedError(RuntimeError):
 _MAX_TRACKED_SESSIONS = 500
 
 # Stream timeout used when ``thinking_enabled`` is set on the request. Opus
-# 4.8 with ``--effort max`` legitimately spends
+# 4.8 with ``--effort xhigh`` legitimately spends
 # minutes reasoning on the Anthropic side before emitting any stdout, so the
 # non-thinking 300s default fires while the API call is still in flight and
 # surfaces as a spurious "Claude CLI timed out" toast. 1800s (30 min) covers
@@ -274,6 +274,32 @@ def _save_persisted_sessions() -> None:
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
+async def _unlink_session_file_by_id(session_id: str | None) -> bool:
+    """Validate + unlink a Claude CLI session ``.jsonl`` by its session id.
+
+    Shared by delete_session_file (which looks the id up from the conversation
+    map first) and the LRU-eviction path (which already popped the map entry and
+    holds the id, so it must NOT rely on a second lookup — that re-pop returning
+    None was the bug that orphaned evicted session files).
+    """
+    if not session_id:
+        return False
+    # Defense-in-depth: refuse anything that doesn't look like the UUID/hex
+    # session id we stored. Prevents path traversal if persisted JSON is ever
+    # tampered with (e.g. session_id == "../../../something").
+    if not _SESSION_ID_PATTERN.match(session_id):
+        logger.warning("Refusing to delete session file with suspicious id %r", session_id)
+        return False
+    try:
+        target = _claude_projects_folder() / f"{session_id}.jsonl"
+        if target.exists():
+            await asyncio.to_thread(target.unlink, missing_ok=True)
+            return True
+    except Exception:
+        logger.exception("Failed to delete session file with id %s", session_id)
+    return False
+
+
 async def delete_session_file(conversation_id: str) -> bool:
     """Remove the Claude Code .jsonl for a dashboard conversation.
 
@@ -292,23 +318,10 @@ async def delete_session_file(conversation_id: str) -> bool:
     # caller relying on disk state) sees the deletion reflected.
     if _PERSIST_TASKS:
         await asyncio.gather(*_PERSIST_TASKS, return_exceptions=True)
-    if not session_id:
-        return False
-    # Defense-in-depth: refuse anything that doesn't look like the UUID/hex
-    # session id we stored. Prevents path traversal if persisted JSON is ever
-    # tampered with (e.g. session_id == "../../../something").
-    if not _SESSION_ID_PATTERN.match(session_id):
-        logger.warning("Refusing to delete session file with suspicious id %r", session_id)
-        return False
-    try:
-        target = _claude_projects_folder() / f"{session_id}.jsonl"
-        if target.exists():
-            await asyncio.to_thread(target.unlink, missing_ok=True)
-            logger.info("Deleted Claude CLI session file for conv %s", conversation_id)
-            return True
-    except Exception:
-        logger.exception("Failed to delete session file for conv %s", conversation_id)
-    return False
+    deleted = await _unlink_session_file_by_id(session_id)
+    if deleted:
+        logger.info("Deleted Claude CLI session file for conv %s", conversation_id)
+    return deleted
 
 
 # Load persisted state once at import so sync-delete works across restarts.
@@ -497,26 +510,23 @@ def _track_session(conversation_id: str, session_id: str) -> None:
     if len(_CONVERSATION_SESSIONS) >= _MAX_TRACKED_SESSIONS:
         oldest_conv = next(iter(_CONVERSATION_SESSIONS))
         oldest_session = _CONVERSATION_SESSIONS.pop(oldest_conv, None)
-        # Also unlink the on-disk ``.jsonl`` for the evicted session.
-        # Without this, the in-memory entry is dropped but the Claude
-        # CLI's session file persists indefinitely, leaking disk over
-        # the bot's lifetime. ``delete_session_file`` is async — schedule
-        # the cleanup as a background task and pin it to a module-level
-        # set so it isn't garbage-collected before completing.
-        if oldest_session and oldest_conv:
+        # Also unlink the on-disk ``.jsonl`` for the evicted session, BY ITS
+        # already-captured session id. We must not route through
+        # delete_session_file here: it re-pops the conversation map, but we
+        # already popped this entry above, so the re-pop returns None and the
+        # file would never be deleted (the disk leak). Schedule the unlink as a
+        # background task pinned to a module-level set so it isn't GC'd before
+        # completing.
+        if oldest_session:
             with contextlib.suppress(RuntimeError):
                 # ``get_event_loop_policy().get_event_loop()`` is deprecated in
                 # 3.12+ and slated for removal in 3.14. ``get_running_loop`` is
                 # the right call here because the LRU-eviction path is reached
                 # only from inside the running async session-tracker.
                 loop = asyncio.get_running_loop()
-                cleanup_task = loop.create_task(
-                    delete_session_file(oldest_conv)
-                )
+                cleanup_task = loop.create_task(_unlink_session_file_by_id(oldest_session))
                 _PENDING_SESSION_CLEANUPS.add(cleanup_task)
-                cleanup_task.add_done_callback(
-                    _PENDING_SESSION_CLEANUPS.discard
-                )
+                cleanup_task.add_done_callback(_PENDING_SESSION_CLEANUPS.discard)
     _CONVERSATION_SESSIONS[conversation_id] = session_id
     _save_persisted_sessions()
 
@@ -760,7 +770,6 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
 def _build_full_prompt(
     persona: str,
     user_context: str,
-    memories_context: str,
     history: list[dict[str, Any]],
     history_limit: int,
     current_message: str,
@@ -770,11 +779,9 @@ def _build_full_prompt(
 ) -> str:
     """Compose the prompt body sent to ``claude -p`` via stdin.
 
-    Persona + user context + memories are sent on EVERY turn — matching the
-    SDK backend's behavior so updates to role preset, profile, or long-term
-    memories take effect immediately instead of being frozen at the session's
-    first turn. Without this, a memory the user adds mid-conversation would
-    not surface until they started a new chat.
+    Persona + user context are sent on EVERY turn — matching the SDK backend's
+    behavior so updates to role preset or profile take effect immediately
+    instead of being frozen at the session's first turn.
 
     The conversation history block is the one piece we still skip on resumed
     turns: Claude already has the prior messages server-side via ``--resume``,
@@ -795,7 +802,7 @@ def _build_full_prompt(
         "in your own responses."
     )
     if user_context:
-        parts.append(f"# Context\n{user_context}{memories_context}")
+        parts.append(f"# Context\n{user_context}")
     if not is_resumed_session:
         history_block = _build_history_block(history, history_limit)
         if history_block:
@@ -965,7 +972,7 @@ def _build_claude_argv(
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
-    When ``enable_thinking`` is True we pass ``--effort max``. This makes
+    When ``enable_thinking`` is True we pass ``--effort xhigh``. This makes
     Opus 4.8 actually reason internally; the *content* of that reasoning is
     still redacted by Anthropic in subscription mode (only the start/stop
     markers reach us), but the model spends real reasoning effort which
@@ -979,8 +986,8 @@ def _build_claude_argv(
     betas." to stderr and ignores the flag. That warning is pure noise: because
     it is the only thing on stderr, it used to *mask* the real failure (which
     claude reports on stdout as the stream-json ``result`` event) whenever the
-    process exited non-zero. ``--effort max`` alone already drives Opus 4.8's
-    max thinking in subscription mode, so dropping the beta costs nothing.
+    process exited non-zero. ``--effort xhigh`` alone already drives Opus 4.8's
+    deep thinking in subscription mode, so dropping the beta costs nothing.
     """
     argv: list[str] = [
         claude_exe,
@@ -1012,10 +1019,10 @@ def _build_claude_argv(
         "default",
     ]
     if enable_thinking:
-        # Only --effort max — NOT --betas interleaved-thinking. See the
+        # Only --effort xhigh — NOT --betas interleaved-thinking. See the
         # docstring: custom betas are ignored (and noisily warned about) in
         # subscription mode, and that warning used to mask real stdout errors.
-        argv.extend(["--effort", "max"])
+        argv.extend(["--effort", "xhigh"])
     if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
     elif session_id:
@@ -1296,9 +1303,7 @@ async def _run_claude_subprocess(
             # buffered diagnostic output (auth prompt, network stall, etc.)
             # — the existing ``rc != 0`` log path is bypassed on TimeoutError.
             if stdout_timed_out:
-                stderr_text = b"".join(stderr_chunks).decode(
-                    "utf-8", errors="replace"
-                )[:1000]
+                stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")[:1000]
                 logger.warning(
                     "⏱️ claude -p stdout silent for %ds; stderr_tail=%s",
                     timeout,
@@ -1320,9 +1325,7 @@ async def _run_claude_subprocess(
                 # surface a synthetic exit code so callers can react.
                 # Without the bound, ``proc.wait()`` could hang the request
                 # forever holding the conversation lock.
-                logger.error(
-                    "claude -p still alive 10s after kill; abandoning process"
-                )
+                logger.error("claude -p still alive 10s after kill; abandoning process")
                 rc = -1
         if rc != 0:
             stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")[:500]
@@ -1334,9 +1337,7 @@ async def _run_claude_subprocess(
             # Overloaded, model_not_found, …) went unlogged. Prefer the stdout
             # error; fall back to stderr (where a stale --resume reports "No
             # conversation found with session ID: …") then to a placeholder.
-            status_note = (
-                f" [api_error_status={final_error_status}]" if final_error_status else ""
-            )
+            status_note = f" [api_error_status={final_error_status}]" if final_error_status else ""
             detail = final_error_text or stderr_text or "<no diagnostic output>"
             logger.error(
                 "claude -p failed (exit %d)%s: %s | stderr=%s",
@@ -1623,14 +1624,14 @@ async def handle_chat_message_claude_cli(
     # next turn, the same way they do in the SDK backend. The 60s TTL cache in
     # build_user_context() keeps the SQLite round trips cheap on chat bursts.
     try:
-        user_context, memories_context, _unused = await build_user_context(
+        user_context, _unused = await build_user_context(
             user_name,
             unrestricted_requested,
             conversation_id=conversation_id,
         )
     except Exception:
         logger.exception("build_user_context failed (CLI backend)")
-        user_context, memories_context = f"Name: {user_name}", ""
+        user_context = f"Name: {user_name}"
 
     # Persona + context go in every turn now (matches API behavior); only the
     # raw conversation history stays gated on the first turn because Claude
@@ -1638,7 +1639,6 @@ async def handle_chat_message_claude_cli(
     full_prompt = _build_full_prompt(
         persona=persona,
         user_context=user_context,
-        memories_context=memories_context,
         history=history,
         history_limit=max_history_messages,
         current_message=content,
@@ -1794,7 +1794,6 @@ async def handle_chat_message_claude_cli(
                     full_prompt = _build_full_prompt(
                         persona=persona,
                         user_context=user_context,
-                        memories_context=memories_context,
                         history=history,
                         history_limit=max_history_messages,
                         current_message=content,
@@ -1828,25 +1827,20 @@ async def handle_chat_message_claude_cli(
                         reset_session(conversation_id)
                     # Refetch context for the retry. The original build happened
                     # before the stale-session error fired; if the user mutated
-                    # a memory or profile in the meantime, the prompt we resend
+                    # their profile in the meantime, the prompt we resend
                     # would otherwise carry the pre-mutation snapshot.
                     try:
-                        (
-                            fresh_user_context,
-                            fresh_memories_context,
-                            _unused,
-                        ) = await build_user_context(
+                        fresh_user_context, _unused = await build_user_context(
                             user_name,
                             unrestricted_requested,
                             conversation_id=conversation_id,
                         )
                     except Exception:
                         logger.exception("build_user_context failed during stale-session retry")
-                        fresh_user_context, fresh_memories_context = user_context, memories_context
+                        fresh_user_context = user_context
                     fresh_prompt = _build_full_prompt(
                         persona=persona,
                         user_context=fresh_user_context,
-                        memories_context=fresh_memories_context,
                         history=history,
                         history_limit=max_history_messages,
                         current_message=content,
@@ -1905,9 +1899,7 @@ async def handle_chat_message_claude_cli(
             # ``str(err)`` can echo raw subprocess stderr, including argv,
             # absolute paths and env-derived diagnostics — log full detail
             # for operators but only surface a stable message to the client.
-            logger.error(
-                "Claude CLI subprocess error: %s", err, exc_info=True
-            )
+            logger.error("Claude CLI subprocess error: %s", err, exc_info=True)
             await ws.send_json(
                 {
                     "type": "error",
@@ -2202,14 +2194,14 @@ async def handle_ai_edit_message_claude_cli(
     persona = str(preset.get("system_instruction", ""))
 
     try:
-        user_context, memories_context, _ = await build_user_context(
+        user_context, _ = await build_user_context(
             user_name,
             False,
             conversation_id=conversation_id,
         )
     except Exception:
         logger.exception("build_user_context failed (CLI edit)")
-        user_context, memories_context = f"Name: {user_name}", ""
+        user_context = f"Name: {user_name}"
 
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
@@ -2219,8 +2211,7 @@ async def handle_ai_edit_message_claude_cli(
     edit_prompt = (
         f"# Persona\n{persona}\n\n"
         f"# Context\n{user_context}\n"
-        f"Current Time: {current_time_str} (ICT)\n"
-        f"{memories_context}\n\n"
+        f"Current Time: {current_time_str} (ICT)\n\n"
         "# Task\n"
         "Edit the following message according to the user's instruction.\n\n"
         f"[User's Edit Instruction]\n{instruction}\n\n"
@@ -2364,9 +2355,7 @@ async def handle_ai_edit_message_claude_cli(
         except RuntimeError as err:
             # See chat handler: avoid leaking raw subprocess stderr to the
             # client; log full detail for operators.
-            logger.error(
-                "Claude CLI edit subprocess error: %s", err, exc_info=True
-            )
+            logger.error("Claude CLI edit subprocess error: %s", err, exc_info=True)
             await ws.send_json(
                 {
                     "type": "error",

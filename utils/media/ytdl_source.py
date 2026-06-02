@@ -376,7 +376,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
             scheme = _urlparse(query).scheme.lower() if query else ""
         except (ValueError, TypeError):
             scheme = ""
-        if scheme and scheme not in ("http", "https"):
+        # Only treat the input as a URL when it actually looks like one. urlparse()
+        # reports a "scheme" for any ``word:rest`` text (e.g. "C418: Sweden" -> "c418",
+        # "OST: theme" -> "ost"), which previously rejected ordinary search queries
+        # outright. Gate on "://" — mirroring the !play SSRF guard in music/cog.py —
+        # so only real URL schemes are checked; plain text flows to ytsearch below.
+        if "://" in query and scheme and scheme not in ("http", "https"):
             logger.warning("Rejecting non-http(s) URL scheme in search: %s", scheme)
             return None
         # Handle search query if not a URL

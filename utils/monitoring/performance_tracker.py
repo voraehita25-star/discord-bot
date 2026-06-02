@@ -86,15 +86,42 @@ class PerformanceStats:
 
     def to_dict(self) -> dict[str, Any]:
         """Export stats as dictionary."""
+        # Take ONE locked snapshot so the exported row is internally consistent:
+        # count, min/max and the percentiles all reflect the same instant instead
+        # of reading across concurrent record() mutations (the per-property locks
+        # made each field individually safe but the aggregate non-atomic).
+        with self._lock:
+            count = self.count
+            total_time = self.total_time
+            min_time = self.min_time
+            max_time = self.max_time
+            sorted_times = sorted(self.recent_times)
+
+        avg = total_time / max(1, count)
+        if sorted_times:
+            n = len(sorted_times)
+            p50 = sorted_times[n // 2]
+            p95 = sorted_times[min(int(n * 0.95), n - 1)]
+            p99 = sorted_times[min(int(n * 0.99), n - 1)]
+        else:
+            p50 = p95 = p99 = 0.0
+        if len(sorted_times) >= 2:
+            try:
+                std = statistics.stdev(sorted_times)
+            except statistics.StatisticsError:
+                std = 0.0
+        else:
+            std = 0.0
+
         return {
-            "count": self.count,
-            "avg_ms": round(self.avg_time * 1000, 2),
-            "min_ms": round(self.min_time * 1000, 2) if self.min_time != float("inf") else 0,
-            "max_ms": round(self.max_time * 1000, 2),
-            "p50_ms": round(self.p50 * 1000, 2),
-            "p95_ms": round(self.p95 * 1000, 2),
-            "p99_ms": round(self.p99 * 1000, 2),
-            "stddev_ms": round(self.stddev * 1000, 2),
+            "count": count,
+            "avg_ms": round(avg * 1000, 2),
+            "min_ms": round(min_time * 1000, 2) if min_time != float("inf") else 0,
+            "max_ms": round(max_time * 1000, 2),
+            "p50_ms": round(p50 * 1000, 2),
+            "p95_ms": round(p95 * 1000, 2),
+            "p99_ms": round(p99 * 1000, 2),
+            "stddev_ms": round(std * 1000, 2),
         }
 
 

@@ -211,12 +211,6 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 
-# Post-processing patterns used inside the response normalisation loop.
-# Module-level so they're built once at import rather than recompiled per
-# turn during streaming.
-PATTERN_DOUBLE_NEWLINE = re.compile(r"\n{3,}")
-PATTERN_LEADING_SPACE = re.compile(r"\n[ \t]+")
-
 # Mention-escape patterns. The ``(?!\u200b)`` lookahead is an
 # idempotency guard so re-applying these to already-escaped text doesn't
 # accumulate ZWS chars on retry paths. Use the explicit ``\u200b``
@@ -745,9 +739,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                 return
 
             # Merge pending messages using MessageQueue
-            latest_msg, combined_message = self._message_queue.merge_pending_messages(
-                channel_id
-            )
+            latest_msg, combined_message = self._message_queue.merge_pending_messages(channel_id)
 
             if not latest_msg:
                 return
@@ -830,12 +822,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                         ig_flags,
                     )
                 message = ig_sanitized
-                if not ig_valid and os.getenv(
-                    "INPUT_GUARDRAILS_ENFORCE", ""
-                ).strip().lower() in ("1", "true", "yes"):
-                    logger.warning(
-                        "🛡️ input guardrails refused a message in channel %s", channel_id
-                    )
+                if not ig_valid and os.getenv("INPUT_GUARDRAILS_ENFORCE", "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    logger.warning("🛡️ input guardrails refused a message in channel %s", channel_id)
                     return
             except Exception:
                 logger.debug("input guardrails check failed (non-fatal)", exc_info=True)
@@ -1182,9 +1174,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         except Exception as conv_exc:
                             # Skip a single bad attachment image instead of
                             # failing the whole turn and dropping the others.
-                            logger.warning(
-                                "Skipping unconvertible attachment image: %s", conv_exc
-                            )
+                            logger.warning("Skipping unconvertible attachment image: %s", conv_exc)
                         finally:
                             img.close()
 
@@ -1331,10 +1321,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                         self._message_queue.reset_cancel(channel_id)
 
                     # 8. Build API config and call Gemini API
-                    # Check for game-related keywords that should ALWAYS use search
-                    # Keywords defined in data/constants.py for easy maintenance
-                    msg_lower = display_message.lower()
-                    force_search = any(kw in msg_lower for kw in GAME_SEARCH_KEYWORDS)
+                    # Check for game-related keywords that should ALWAYS use search.
+                    # Use the boundary-aware helper (not a raw substring scan) so short
+                    # ASCII keywords don't fire inside unrelated words. Keywords defined
+                    # in data/constants.py for easy maintenance.
+                    force_search = _is_game_search_query(display_message)
 
                     if force_search:
                         use_search = True

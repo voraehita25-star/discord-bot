@@ -10,7 +10,6 @@
 | 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
 | 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
 | ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |
-| 🧠 **Long-term Memory** | Add / browse / delete memories the bot uses for context (separate from document memory). |
 | 🎨 **3D UI Polish** | Layered shadows, cursor-tracking card tilt, ripple on click, button press feedback, glassmorphism noise overlay, 3D sphere status dot, custom scrollbars, skeleton loaders, number count-up animations, chart entrance fade. |
 | 🌸 **Sakura Animation** | Cherry-blossom petals with mouse-parallax drift. Toggleable. |
 | 🔊 **Sound + Haptic** | Optional synth click + vibration on button press (off by default). |
@@ -18,9 +17,9 @@
 | 🔔 **Toast Notifications** | Animated slide-in for confirmations / errors. |
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 189 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
-| 🤖 **Headless E2E** | 73 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection. Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
+| ⌨️ **Keyboard Shortcuts** | Ctrl+1-5 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
+| 🧪 **Unit Tests** | 190 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
+| 🤖 **Headless E2E** | 70 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection. Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -39,10 +38,9 @@
 |----------|--------|
 | `Ctrl+1` | Go to Status |
 | `Ctrl+2` | Go to AI Chat |
-| `Ctrl+3` | Go to Memories |
-| `Ctrl+4` | Go to Logs |
-| `Ctrl+5` | Go to Database |
-| `Ctrl+6` | Go to Settings |
+| `Ctrl+3` | Go to Logs |
+| `Ctrl+4` | Go to Database |
+| `Ctrl+5` | Go to Settings |
 | `Ctrl+R` | Refresh All Data |
 | `Ctrl+T` | Toggle Dark/Light Theme |
 | `Ctrl+Enter` | Send Message (in Chat) |
@@ -118,7 +116,7 @@ native_dashboard/
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
-│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (22 tests)
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (23 tests)
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
 │       ├── types.ts              # Shared chat TypeScript interfaces
@@ -133,7 +131,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 10 vitest files (189 tests total)
+│       └── *.test.ts             # 10 vitest files (190 tests total)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
@@ -150,7 +148,7 @@ native_dashboard/
 │   ├── build-tauri.ps1     # Build + copies + Tauri NSIS installer
 │   └── create_desktop_shortcut.py  # Create Korean-named desktop shortcut
 ├── ui/
-│   ├── index.html          # Main UI (chat, memories, charts, sakura, settings)
+│   ├── index.html          # Main UI (chat, charts, sakura, settings)
 │   ├── styles.css          # Dark/Light theme styling
 │   ├── app.js              # Compiled from src-ts/app.ts (do not edit)
 │   ├── chat-manager.js     # Compiled from src-ts/chat-manager.ts
@@ -221,12 +219,12 @@ python scripts/create_desktop_shortcut.py
 
 ```bash
 # Unit tests (vitest, ~5s)
-npm test                       # Run all 189 vitest tests
+npm test                       # Run all 190 vitest tests
 npm run test:watch             # Watch mode
 npm run test:coverage          # With coverage report
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 73 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
+npm run test:e2e               # Run all 70 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection

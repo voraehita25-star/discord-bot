@@ -19,7 +19,7 @@ SIMD-optimized vector similarity search for the RAG (Retrieval-Augmented Generat
 
 - SIMD-accelerated cosine similarity (using simsimd)
 - Parallel search with Rayon
-- Memory-mapped vector storage
+- In-memory vector store with atomic JSON persistence (temp-file + rename)
 - Thread-safe with parking_lot RwLock
 
 ### 2. Media Processor (`media_processor/`)
@@ -138,10 +138,8 @@ rust_extensions/
 ├── rag_engine/
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs          # PyO3 bindings
+│       ├── lib.rs          # PyO3 bindings + in-memory store
 │       ├── cosine.rs       # SIMD similarity
-│       ├── storage.rs      # Memory-mapped storage
-│       ├── index.rs        # Keyword index
 │       └── errors.rs       # Error types
 └── media_processor/
     ├── Cargo.toml

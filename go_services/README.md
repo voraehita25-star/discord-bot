@@ -194,7 +194,7 @@ Response:
 {
   "status": "healthy",
   "timestamp": "2026-01-20T12:00:00Z",
-  "version": "3.2.4",
+  "version": "3.4.1",
   "uptime": "2h30m15s",
   "services": {
     "bot": true,

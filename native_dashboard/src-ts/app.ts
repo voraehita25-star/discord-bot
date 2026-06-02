@@ -24,9 +24,7 @@ import {
 } from './shared.js';
 import {
     chatManager,
-    memoryManager,
     initChatManager,
-    initMemoryManager,
 } from './chat-manager.js';
 
 // ============================================================================
@@ -86,7 +84,6 @@ let lastLogCount = 0;
 // Chart data history
 const memoryHistory: ChartDataPoint[] = [];
 const messagesHistory: ChartDataPoint[] = [];
-const MAX_CHART_POINTS = 60;
 
 // Settings with defaults
 
@@ -98,6 +95,9 @@ const debounceTimers: Map<string, number> = new Map();
 
 document.addEventListener("DOMContentLoaded", () => {
     loadSettings();
+    // Restore the persisted logs auto-scroll preference.
+    logsAutoScrollEnabled = settings.autoScroll;
+    applyAutoScrollButtonState();
     initNavigation();
     initTheme();
     initToastContainer();
@@ -109,7 +109,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (sakuraEnabled) initSakuraAnimation();
     initKeyboardShortcuts();
     initChatManager();
-    initMemoryManager();
     // Update AI avatars after all init
     updateAiAvatars();
     initApiFailoverUI();
@@ -150,9 +149,9 @@ window.addEventListener('beforeunload', () => {
 
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-        // Ctrl+1-6 for page navigation
-        if (e.ctrlKey && e.key >= '1' && e.key <= '6') {
-            const pages = ['status', 'chat', 'memories', 'logs', 'database', 'settings'];
+        // Ctrl+1-5 for page navigation
+        if (e.ctrlKey && e.key >= '1' && e.key <= '5') {
+            const pages = ['status', 'chat', 'logs', 'database', 'settings'];
             const index = parseInt(e.key) - 1;
             if (pages[index]) {
                 e.preventDefault();
@@ -328,7 +327,7 @@ function addChartDataPoint(history: ChartDataPoint[], value: number): void {
         value
     });
     
-    while (history.length > MAX_CHART_POINTS) {
+    while (history.length > settings.chartHistory) {
         history.shift();
     }
 }
@@ -747,9 +746,6 @@ function switchPage(page: string): void {
 
     if (page === 'database') loadDbStats();
     if (page === 'settings') loadSettingsUI();
-    if (page === 'memories' && chatManager && chatManager.connected) {
-        memoryManager.loadMemories();
-    }
     if (page === 'chat' && chatManager) {
         // Reconnect if disconnected
         if (!chatManager.connected) {
@@ -820,8 +816,16 @@ async function updateStatus(): Promise<void> {
         // crash the entire dashboard at bootstrap, leaving a blank UI.
         if (!status || !dbStats) return;
 
-        // Cache the results
-        if (!cachedStatus) dataCache.set('status', status, 1500);
+        // Cache the results. The 'status' TTL MUST stay below the refresh
+        // interval — a fixed 1500ms cache meant that at a 1s refresh the
+        // in-between tick kept hitting a still-valid cache, so fresh status
+        // (uptime, memory) only arrived every ~2s and uptime jumped 0→2→4→6
+        // instead of ticking by 1. Tie it to the interval (half, min 250ms) so
+        // every tick gets fresh data while still deduping a manual Ctrl+R that
+        // coincides with a tick. dbStats may lag (counts aren't time-critical)
+        // and stays cached longer to spare the DB.
+        const statusTtl = Math.max(250, Math.floor(settings.refreshInterval / 2));
+        if (!cachedStatus) dataCache.set('status', status, statusTtl);
         if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
 
         // Only chart fresh samples — adding a point on every call would
@@ -1144,13 +1148,20 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-function toggleAutoScroll(): void {
-    logsAutoScrollEnabled = !logsAutoScrollEnabled;
+function applyAutoScrollButtonState(): void {
     const btn = document.getElementById('btn-auto-scroll');
     if (btn) {
         btn.textContent = logsAutoScrollEnabled ? '⏸ Pause' : '▶️ Resume';
         btn.classList.toggle('paused', !logsAutoScrollEnabled);
     }
+}
+
+function toggleAutoScroll(): void {
+    logsAutoScrollEnabled = !logsAutoScrollEnabled;
+    // Persist the pause/resume preference so it survives a reload.
+    settings.autoScroll = logsAutoScrollEnabled;
+    saveSettings();
+    applyAutoScrollButtonState();
     showToast(`Auto-scroll ${logsAutoScrollEnabled ? 'enabled' : 'disabled'}`, { type: 'info', duration: 1500 });
 }
 

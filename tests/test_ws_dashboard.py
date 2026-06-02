@@ -361,55 +361,6 @@ class TestConversationManagement:
 
 
 # ===================================================================
-# Memory Management
-# ===================================================================
-class TestMemoryManagement:
-    """Test dashboard memory CRUD handlers."""
-
-    @pytest.mark.asyncio
-    async def test_save_memory(self, server, ws):
-        """save_memory should persist and return success."""
-        mock_db = MagicMock()
-        mock_db.save_dashboard_memory = AsyncMock(return_value=42)
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-        ):
-            await server.handle_save_memory(ws, {"content": "Remember this", "category": "general"})
-        result = ws.find("memory_saved")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_get_memories(self, server, ws):
-        """get_memories should return list from DB."""
-        mock_db = MagicMock()
-        mock_db.get_dashboard_memories = AsyncMock(
-            return_value=[{"id": 1, "content": "fact1", "category": "general", "importance": 1}]
-        )
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-        ):
-            await server.handle_get_memories(ws, {})
-        result = ws.find("memories")
-        assert len(result) == 1
-        assert len(result[0]["memories"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_delete_memory(self, server, ws):
-        """delete_memory should call DB and return success."""
-        mock_db = MagicMock()
-        mock_db.delete_dashboard_memory = AsyncMock(return_value=True)
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-        ):
-            await server.handle_delete_memory(ws, {"id": 1})
-        result = ws.find("memory_deleted")
-        assert len(result) == 1
-
-
-# ===================================================================
 # Profile Management
 # ===================================================================
 class TestProfileManagement:

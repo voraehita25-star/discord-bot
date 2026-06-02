@@ -1149,14 +1149,6 @@ class TestBatchMethods:
 class TestConnectionMethods:
     """Tests for connection methods."""
 
-    def test_get_connection_with_retry_structure(self):
-        """Test get_connection_with_retry method exists."""
-        from utils.database.database import Database
-
-        db = Database()
-
-        assert hasattr(db, "get_connection_with_retry")
-
     def test_stop_watchers_structure(self):
         """Test stop_watchers method exists."""
         from utils.database.database import Database

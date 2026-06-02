@@ -42,7 +42,7 @@ tail -f logs/bot_errors.log
    ffmpeg -version
    ```
 
-   Bot sets `FFMPEG_MISSING=1` and skips music cog if not found.
+   Bot sets an internal `_FFMPEG_MISSING` flag and skips the music cog if not found.
 
 4. **Database locked** — Another process may have the DB open:
 
@@ -165,7 +165,8 @@ conn = sqlite3.connect('data/bot_database.db')
 print(conn.execute('PRAGMA user_version').fetchone())
 "
 
-# Run migrations manually
+# Migrations apply automatically on the next bot start (init_schema → run_migrations).
+# To inspect the current schema/tables without starting the bot:
 python scripts/maintenance/check_db.py
 ```
 
@@ -204,7 +205,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `CLAUDE_BACKEND` | `cli` | Claude path for BOTH Discord chat and dashboard chat: `cli` (`claude -p` subprocess, Max subscription quota — default, no `ANTHROPIC_API_KEY` required) or `api` (Anthropic SDK, per-token billing — needs `ANTHROPIC_API_KEY`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `""` | Only needed when `CLAUDE_BACKEND=cli` and bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
 | `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-8` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
-| `CLAUDE_EFFORT` | `max` | Effort level: `low` / `medium` / `high` / `xhigh` / `max`. Defaults to `max` for deepest reasoning; lower it to reduce cost/latency. |
+| `CLAUDE_EFFORT` | `xhigh` | Effort level: `low` / `medium` / `high` / `xhigh` / `max`. Defaults to `xhigh` (deep Opus-tier reasoning, one tier below `max`); set `max` for the deepest reasoning, or a lower tier to reduce cost/latency. |
 | `GEMINI_API_KEY` | `""` | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |

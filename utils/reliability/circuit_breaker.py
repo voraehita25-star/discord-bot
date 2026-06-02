@@ -200,9 +200,7 @@ class CircuitBreaker:
                 # would never close.
                 if self._half_open_call_starts:
                     cutoff = time.time() - self.half_open_call_timeout
-                    forgiven = [
-                        ts for ts in self._half_open_call_starts if ts > cutoff
-                    ]
+                    forgiven = [ts for ts in self._half_open_call_starts if ts > cutoff]
                     if len(forgiven) != len(self._half_open_call_starts):
                         self._half_open_call_starts = forgiven
                         self._half_open_calls = len(forgiven)
@@ -342,9 +340,7 @@ class CircuitBreaker:
                     # the circuit before all admitted probes confirmed.
                     if self._half_open_call_starts:
                         cutoff = time.time() - self.half_open_call_timeout
-                        forgiven = [
-                            ts for ts in self._half_open_call_starts if ts > cutoff
-                        ]
+                        forgiven = [ts for ts in self._half_open_call_starts if ts > cutoff]
                         if len(forgiven) != len(self._half_open_call_starts):
                             self._half_open_call_starts = forgiven
                             self._half_open_calls = len(forgiven)

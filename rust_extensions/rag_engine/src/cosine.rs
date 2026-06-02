@@ -44,7 +44,11 @@ fn simd_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     // simsimd returns cosine *distance* (1.0 - similarity), so convert to similarity
     f32::cosine(a, b).and_then(|v| {
         let similarity = 1.0 - v as f32;
-        if similarity.is_finite() { Some(similarity) } else { None }
+        if similarity.is_finite() {
+            Some(similarity)
+        } else {
+            None
+        }
     })
 }
 
@@ -93,17 +97,6 @@ fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// Batch compute similarities (parallel)
-#[allow(dead_code)]
-pub(crate) fn batch_cosine_similarity(query: &[f32], vectors: &[Vec<f32>]) -> Vec<f32> {
-    use rayon::prelude::*;
-
-    vectors
-        .par_iter()
-        .map(|v| cosine_similarity(query, v))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,19 +134,5 @@ mod tests {
         let b = vec![-1.0, -2.0, -3.0];
         let sim = cosine_similarity(&a, &b);
         assert!((sim + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_batch_similarity() {
-        let query = vec![1.0, 0.0, 0.0];
-        let vectors = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-            vec![-1.0, 0.0, 0.0],
-        ];
-        let results = batch_cosine_similarity(&query, &vectors);
-        assert!((results[0] - 1.0).abs() < 1e-6);
-        assert!(results[1].abs() < 1e-6);
-        assert!((results[2] + 1.0).abs() < 1e-6);
     }
 }

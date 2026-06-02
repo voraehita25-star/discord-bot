@@ -280,6 +280,41 @@ describe('handleMessage — streaming lifecycle', () => {
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         expect(thinkingContent?.textContent || '').toContain('reasoning');
     });
+
+    it('preserves an in-progress stream across a conversation switch and restores the partial on return', () => {
+        const cm = mountDomAndChat();
+        const convA = { id: 'A', title: 'A', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: '2026-04-01' };
+        const convB = { id: 'B', title: 'B', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: '2026-04-02' };
+
+        // Open A and start streaming a response into it.
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convA, messages: [{ id: 1, role: 'user', content: 'hi', created_at: '2026-04-01' }] });
+        cm.handleMessage({ type: 'stream_start', mode: '' });
+        cm.handleMessage({ type: 'chunk', content: 'Partial answer' });
+        expect(cm.isStreaming).toBe(true);
+
+        // Switch to B mid-stream — the response stream is PRESERVED (not abandoned),
+        // and its bubble isn't shown in B's view.
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convB, messages: [] });
+        expect(cm.isStreaming).toBe(true);
+        expect(cm.streamingConversationId).toBe('A');
+        expect(document.getElementById('streaming-message')).toBeNull();
+
+        // A chunk arriving while viewing B must still buffer.
+        cm.handleMessage({ type: 'chunk', content: ' continued' });
+
+        // Switch back to A — the in-progress bubble is restored with the FULL partial.
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convA, messages: [{ id: 1, role: 'user', content: 'hi', created_at: '2026-04-01' }] });
+        const bubble = document.getElementById('streaming-message');
+        expect(bubble).not.toBeNull();
+        expect(bubble!.querySelector('.streaming-text')?.textContent).toBe('Partial answer continued');
+        expect(cm.isStreaming).toBe(true);
+
+        // Stream completes normally — finalized into messages, bubble cleared.
+        cm.handleMessage({ type: 'stream_end', full_response: 'Partial answer continued. Done.' });
+        expect(cm.isStreaming).toBe(false);
+        expect(document.getElementById('streaming-message')).toBeNull();
+        expect(cm.messages[cm.messages.length - 1]).toMatchObject({ role: 'assistant', content: 'Partial answer continued. Done.' });
+    });
 });
 
 describe('handleMessage — tag mutations', () => {

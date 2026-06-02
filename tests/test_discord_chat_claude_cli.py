@@ -107,9 +107,7 @@ class TestFlattenContentsToPrompt:
     def test_oversized_prompt_is_truncated_keeping_tail(self) -> None:
         # Build a history that vastly exceeds the cap. The CURRENT
         # message must survive intact (it's the question being asked).
-        huge_history = [
-            {"role": "user", "parts": ["X" * 1000]} for _ in range(500)
-        ]
+        huge_history = [{"role": "user", "parts": ["X" * 1000]} for _ in range(500)]
         contents = [
             *huge_history,
             {"role": "user", "parts": ["FINAL_QUESTION_SENTINEL"]},
@@ -156,7 +154,9 @@ class TestStreamingBackendNotReady:
     async def test_streaming_sends_friendly_error_when_cli_missing(self) -> None:
         send_channel = MagicMock()
         send_channel.send = AsyncMock()
-        with patch.object(cli_mod, "is_cli_backend_ready", return_value=(False, "claude not on PATH")):
+        with patch.object(
+            cli_mod, "is_cli_backend_ready", return_value=(False, "claude not on PATH")
+        ):
             text, indicator, calls = await call_claude_cli_streaming(
                 contents=[{"role": "user", "parts": ["hi"]}],
                 config_params={},
@@ -233,9 +233,9 @@ class TestStreamingSuccessPath:
         assert _CHANNEL_SESSIONS[100] == "new-session-xyz"
 
     @pytest.mark.asyncio
-    async def test_streaming_runs_with_max_effort_thinking(self) -> None:
-        """Regression: Discord CLI replies must build argv with `--effort max`
-        (enable_thinking=True), so the bot reasons at max effort like a
+    async def test_streaming_runs_with_xhigh_effort_thinking(self) -> None:
+        """Regression: Discord CLI replies must build argv with `--effort xhigh`
+        (enable_thinking=True), so the bot reasons at xhigh effort like a
         dashboard conversation with thinking on. We must NOT pass custom betas:
         the subscription-mode CLI rejects them with a stderr warning that masks
         real stdout errors."""
@@ -275,7 +275,7 @@ class TestStreamingSuccessPath:
                 channel_id=101,
             )
         assert "--effort" in captured_argv
-        assert "max" in captured_argv
+        assert "xhigh" in captured_argv
         assert "--betas" not in captured_argv
         assert "interleaved-thinking" not in captured_argv
 
@@ -454,8 +454,7 @@ class TestStreamingSuccessPath:
             timeout: float,
         ) -> tuple[str, dict[str, Any] | None]:
             await on_text_delta(
-                "Sure! <system-reminder>do not say X</system-reminder>"
-                "Here is the answer."
+                "Sure! <system-reminder>do not say X</system-reminder>Here is the answer."
             )
             return "sess-z", None
 

@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rag_engine::cosine_similarity;
 
 fn bench_cosine_similarity(c: &mut Criterion) {

@@ -448,7 +448,6 @@ class SummaryArchiver:
         # Simple extractive approach:
         # Take first sentence from user, key points
         user_messages = [m["content"] for m in messages if m["role"] == "user" and m["content"]]
-        _ai_messages = [m["content"] for m in messages if m["role"] == "model" and m["content"]]
 
         # Extract key sentences (simple heuristic)
         key_sentences = []
@@ -469,6 +468,12 @@ class SummaryArchiver:
         summary_text = " | ".join(key_sentences)
         if len(summary_text) > self.MAX_SUMMARY_LENGTH:
             summary_text = summary_text[: self.MAX_SUMMARY_LENGTH] + "..."
+
+        # No user-role content → key_sentences is empty and summary_text is "".
+        # Return None so consolidate_channel's `if not summary` guard bails
+        # instead of marking/deleting the originals behind a content-free summary.
+        if not summary_text.strip():
+            return None
 
         return {
             "text": summary_text,

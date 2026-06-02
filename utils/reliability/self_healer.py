@@ -401,6 +401,12 @@ class SelfHealer:
         except psutil.AccessDenied:
             self.log("error", f"Access denied when trying to stop PID {pid}")
             return False
+        except psutil.TimeoutExpired:
+            # kill() + wait(timeout=2) can still time out on a stuck/uninterruptible
+            # process. TimeoutExpired is a psutil.Error, not OSError, so it would
+            # otherwise escape kill_process and crash the admin CLI callers.
+            self.log("error", f"PID {pid} did not exit after kill signal")
+            return False
         except OSError as e:
             self.log("error", f"Failed to stop PID {pid}: {e}")
             return False
@@ -717,7 +723,9 @@ class SelfHealer:
                 bots_now = self.find_all_bot_processes()
                 other_now = [b for b in bots_now if b["pid"] != self.my_pid]
                 if not other_now:
-                    self.log("info", "Duplicates already cleared by a concurrent start - proceeding")
+                    self.log(
+                        "info", "Duplicates already cleared by a concurrent start - proceeding"
+                    )
                     return True, "No other instances found - Starting..."
 
                 self.log("warning", f"Found {len(other_now)} existing instance(s) - killing them")

@@ -243,7 +243,6 @@ class TestChatStreaming:
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock()
         mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
 
         with (
@@ -281,7 +280,7 @@ class TestChatStreaming:
             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
             patch(
                 "cogs.ai_core.api.dashboard_chat.build_user_context",
-                new=AsyncMock(return_value=("ctx", "", False)),
+                new=AsyncMock(return_value=("ctx", False)),
             ),
             patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
         ):
@@ -313,7 +312,7 @@ class TestChatStreaming:
             patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
             patch(
                 "cogs.ai_core.api.dashboard_chat.build_user_context",
-                new=AsyncMock(return_value=("ctx", "", False)),
+                new=AsyncMock(return_value=("ctx", False)),
             ),
             patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
         ):
@@ -340,7 +339,6 @@ class TestChatStreaming:
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock()
         mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "New Conversation"})
         mock_db.update_dashboard_conversation = AsyncMock()
 
@@ -509,11 +507,6 @@ class TestContextBuilding:
                 "is_creator": True,
             }
         )
-        mock_db.get_dashboard_memories = AsyncMock(
-            return_value=[
-                {"content": "User likes coffee"},
-            ]
-        )
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Chat"})
 
         with (
@@ -622,7 +615,6 @@ class TestErrorBranches:
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock(side_effect=RuntimeError("DB write fail"))
         mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Chat"})
 
         with (
@@ -651,35 +643,6 @@ class TestErrorBranches:
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock()
         mock_db.get_dashboard_user_profile = AsyncMock(side_effect=RuntimeError("profile err"))
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[])
-        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
-
-        with (
-            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
-            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
-        ):
-            await handle_chat_message(
-                ws,
-                {"content": "hello", "conversation_id": "c1"},
-                client,
-            )
-
-        assert len(ws.find("stream_end")) == 1
-
-    @pytest.mark.asyncio
-    async def test_db_load_memories_error(self, ws):
-        """Test DB error when loading memories (lines 131-132)."""
-        from cogs.ai_core.api.dashboard_chat import handle_chat_message
-
-        client = MagicMock()
-        client.aio.models.generate_content_stream = AsyncMock(
-            return_value=FakeStream([FakeChunk(text="ok")])
-        )
-
-        mock_db = MagicMock()
-        mock_db.save_dashboard_message = AsyncMock()
-        mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
-        mock_db.get_dashboard_memories = AsyncMock(side_effect=RuntimeError("mem err"))
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
 
         with (
@@ -748,7 +711,6 @@ class TestErrorBranches:
                 return_value={"is_creator": 1, "display_name": "TestUser"}
             )
             db_instance.save_dashboard_message = AsyncMock(return_value=1)
-            db_instance.get_dashboard_memories = AsyncMock(return_value=[])
             db_instance.update_dashboard_conversation = AsyncMock(return_value=True)
             await handle_chat_message(
                 ws,
@@ -878,7 +840,6 @@ class TestErrorBranches:
 
         mock_db.save_dashboard_message = selective_save_error
         mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
-        mock_db.get_dashboard_memories = AsyncMock(return_value=[])
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "X"})
 
         with (

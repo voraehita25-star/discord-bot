@@ -33,9 +33,17 @@ _BIDI_MARKS = frozenset(
     chr(c)
     for c in (
         # Bidi overrides (the original set)
-        0x200E, 0x200F,
-        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
-        0x2066, 0x2067, 0x2068, 0x2069,
+        0x200E,
+        0x200F,
+        0x202A,
+        0x202B,
+        0x202C,
+        0x202D,
+        0x202E,
+        0x2066,
+        0x2067,
+        0x2068,
+        0x2069,
         # Invisible / zero-width chars that ``str.isprintable()`` returns
         # True for but visually hide content (homoglyph-with-padding
         # attacks against display rendering).
@@ -291,7 +299,10 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
 async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Rename a conversation."""
     conversation_id = data.get("id")
-    new_title = data.get("title", "").strip()
+    # Coerce to string before strip; a non-string payload (number, null, list)
+    # would otherwise crash on .strip() and tear down the WS connection.
+    raw_title = data.get("title", "")
+    new_title = str(raw_title).strip() if raw_title is not None else ""
 
     if not conversation_id or not new_title or not DB_AVAILABLE:
         await ws.send_json(
@@ -447,9 +458,7 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
             {
                 "type": "error",
                 "code": "CONTENT_TOO_LONG",
-                "message": (
-                    f"Content too long (max {MAX_EDIT_CONTENT_LENGTH:,} characters)"
-                ),
+                "message": (f"Content too long (max {MAX_EDIT_CONTENT_LENGTH:,} characters)"),
             }
         )
         return
@@ -830,167 +839,6 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
 
 
 # ============================================================================
-# Memory handlers
-# ============================================================================
-
-_ALLOWED_MEMORY_CATEGORIES: set[str] = {
-    "general",
-    "personal",
-    "preferences",
-    "facts",
-    "rules",
-    "reminders",
-    "notes",
-    "context",
-    "task",
-}
-
-
-async def handle_save_memory(ws: WebSocketResponse, data: dict[str, Any]) -> None:
-    """Save a memory for the user."""
-    content = data.get("content", "").strip()
-    category = data.get("category", "general")
-
-    if not content or not DB_AVAILABLE:
-        await ws.send_json(
-            {
-                "type": "error",
-                "code": "CANNOT_SAVE_MEMORY",
-                "message": "Cannot save: empty content or DB unavailable",
-            }
-        )
-        return
-
-    # Enforce size limits. Type-check category BEFORE calling len() — a client
-    # sending a non-string (number, list) used to crash with TypeError on the
-    # len() call here before the allowlist branch could normalise it.
-    # Cap matches the dashboard memory editor's pre-submit guard (10K) so
-    # the user never sees a confusing "max 2,000" toast after the UI
-    # already accepted their input.
-    if len(content) > 10_000:
-        await ws.send_json(
-            {
-                "type": "error",
-                "code": "CONTENT_TOO_LONG",
-                "message": "Memory content too long (max 10,000 characters)",
-            }
-        )
-        return
-    if not isinstance(category, str):
-        category = "general"
-    elif len(category) > 50:
-        await ws.send_json(
-            {
-                "type": "error",
-                "code": "CATEGORY_TOO_LONG",
-                "message": "Category too long (max 50 characters)",
-            }
-        )
-        return
-    elif category not in _ALLOWED_MEMORY_CATEGORIES:
-        # Validate against allowlist — previously a misclick from the UI could
-        # write any freeform string as the category, fragmenting filters.
-        category = "general"
-
-    try:
-        db = _get_db()
-        memory_id = await db.save_dashboard_memory(content, category)
-        # Memories are global (no conversation_id column) so blow away every
-        # entry. The CLI backend now re-injects context on every turn, so a
-        # stale 60s-TTL cache would mean the user sees their freshly-saved
-        # memory only after the cache lapses — defeating the point of saving.
-        invalidate_user_context_cache(None)
-        await ws.send_json(
-            {
-                "type": "memory_saved",
-                "id": memory_id,
-                "content": content,
-                "category": category,
-            }
-        )
-    except Exception:
-        logger.exception("WebSocket handler error")
-        await ws.send_json(
-            {"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to save memory"}
-        )
-
-
-async def handle_get_memories(ws: WebSocketResponse, data: dict[str, Any]) -> None:
-    """Get all memories."""
-    category = data.get("category")  # Optional filter
-
-    if not DB_AVAILABLE:
-        await ws.send_json({"type": "memories", "memories": []})
-        return
-
-    try:
-        db = _get_db()
-        memories = await db.get_dashboard_memories(category)
-        # Cap the WS payload — without an upper bound, a user with
-        # thousands of memories would push a multi-MB frame on every
-        # sidebar refresh. Frontend only renders a paginated list anyway.
-        MAX_MEMORIES_PER_FRAME = 500
-        memories_is_list = isinstance(memories, list)
-        memories_count = len(memories) if memories_is_list else 0
-        truncated = memories_is_list and memories_count > MAX_MEMORIES_PER_FRAME
-        payload = memories[:MAX_MEMORIES_PER_FRAME] if truncated else memories
-        await ws.send_json(
-            {
-                "type": "memories",
-                "memories": payload,
-                "truncated": truncated,
-                "total_count": memories_count,
-            }
-        )
-    except Exception:
-        logger.exception("WebSocket handler error")
-        await ws.send_json(
-            {"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to get memories"}
-        )
-
-
-async def handle_delete_memory(ws: WebSocketResponse, data: dict[str, Any]) -> None:
-    """Delete a memory."""
-    memory_id = data.get("id")
-
-    if not memory_id or not DB_AVAILABLE:
-        await ws.send_json(
-            {
-                "type": "error",
-                "code": "CANNOT_DELETE_MEMORY",
-                "message": "Cannot delete: missing ID or DB unavailable",
-            }
-        )
-        return
-
-    # Validate memory_id is numeric
-    try:
-        int(memory_id)
-    except (ValueError, TypeError):
-        await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid memory ID"})
-        return
-
-    try:
-        db = _get_db()
-        await db.delete_dashboard_memory(int(memory_id))
-        # Same rationale as save_memory: drop every cached context so the deleted
-        # memory disappears from prompts on the next turn instead of lingering
-        # for up to 60s on resumed CLI sessions.
-        invalidate_user_context_cache(None)
-        await ws.send_json(
-            {
-                "type": "memory_deleted",
-                "id": memory_id,
-            }
-        )
-    except Exception:
-        logger.exception("WebSocket handler error")
-        await ws.send_json(
-            {"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to delete memory"}
-        )
-
-
-# ============================================================================
 # Profile handlers
 # ============================================================================
 
@@ -1304,11 +1152,15 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
         # filesystem write path, but stripping ``/``, ``\`` and ``..``
         # sequences keeps that property safe against future code that does
         # use the value as a path component.
-        sanitised_filename = re.sub(
-            r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f/\\]",
-            "",
-            new_filename,
-        ).replace("..", "").strip()[:200]
+        sanitised_filename = (
+            re.sub(
+                r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f/\\]",
+                "",
+                new_filename,
+            )
+            .replace("..", "")
+            .strip()[:200]
+        )
         if not sanitised_filename:
             await ws.send_json(
                 {

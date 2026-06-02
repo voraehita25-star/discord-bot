@@ -65,10 +65,14 @@ async def handle_chat_message(
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
     max_documents: int = 5,
-    max_document_size_bytes: int = 32 * 1024 * 1024,
     stream_timeout: int = 300,
 ) -> None:
-    """Handle incoming chat message and stream response."""
+    """Handle incoming chat message and stream response.
+
+    Note: unlike the Claude handlers, this Gemini path does not take a
+    ``max_document_size_bytes`` cap — document size is bounded downstream by
+    ``extract_and_persist`` (its own raw-bytes / extracted-char limits).
+    """
     conversation_id = data.get("conversation_id")
     raw = data.get("content")
     content = (raw if isinstance(raw, str) else "").strip()
@@ -93,6 +97,10 @@ async def handle_chat_message(
         images = []
     if not isinstance(documents, list):
         documents = []
+    # role_preset feeds a dict lookup below; an unhashable value (list/dict)
+    # would raise TypeError inside .get(). Coerce non-str to the default.
+    if not isinstance(role_preset, str):
+        role_preset = "general"
 
     # Validate conversation_id format (defense in depth)
     if conversation_id and (
@@ -137,7 +145,7 @@ async def handle_chat_message(
 
     # Persistent document memory — extract + save uploaded PDFs / text / code so
     # the content reaches THIS turn (build_user_context below folds the extracted
-    # text into memories_context) AND every later turn in this conversation, on
+    # text into user_context) AND every later turn in this conversation, on
     # any backend. The Claude backends already do this; the Gemini backend
     # previously dropped `documents` entirely (silent data loss / cross-backend
     # asymmetry). Skip only on a regenerate-after-edit resend — the original turn
@@ -167,9 +175,9 @@ async def handle_chat_message(
         except Exception:
             logger.exception("Document extraction/persistence failed (Gemini backend)")
 
-    # Build context with user identity and memories, scoped to this conversation
+    # Build context with user identity, scoped to this conversation
     # so uploaded documents don't leak between RP threads.
-    user_context, memories_context, unrestricted_mode = await build_user_context(
+    user_context, unrestricted_mode = await build_user_context(
         user_name,
         unrestricted_mode_requested,
         conversation_id=conversation_id,
@@ -311,7 +319,6 @@ async def handle_chat_message(
 [System Context]
 {user_context}
 Current Time: {current_time_str} (ICT)
-{memories_context}
 
 IMPORTANT: If user asks you to remember something, respond with the information you'll remember. The system will automatically save important facts.
 NOTE: User messages (both historical and the current one) may be prefixed with timestamps like [2026-03-25T14:30:22]. These are system-injected metadata indicating when each message was sent. Do NOT include such timestamp prefixes in your own responses. Use them only to understand the timing context of the conversation.
@@ -818,8 +825,14 @@ async def handle_ai_edit_message(
     """Handle AI self-edit: AI rewrites one of its own messages based on user instruction."""
     conversation_id = data.get("conversation_id")
     target_message_id = data.get("target_message_id")
-    instruction = data.get("instruction", "").strip()
+    # Coerce before strip / dict-lookup so a non-string payload (number, null,
+    # list) degrades to the "Missing data" / default-preset path instead of
+    # raising AttributeError/TypeError out of this background task.
+    raw_instruction = data.get("instruction", "")
+    instruction = str(raw_instruction).strip() if raw_instruction is not None else ""
     role_preset = data.get("role_preset", "general")
+    if not isinstance(role_preset, str):
+        role_preset = "general"
     thinking_enabled = data.get("thinking_enabled", False)
     user_name = data.get("user_name", "User")
 
@@ -883,7 +896,7 @@ async def handle_ai_edit_message(
 
     # Build context — scoped to this conversation so /edit sees the same
     # document library the original reply had access to.
-    user_context, memories_context, _ = await build_user_context(
+    user_context, _ = await build_user_context(
         user_name,
         False,
         conversation_id=conversation_id,
@@ -925,7 +938,6 @@ async def handle_ai_edit_message(
         f"{preset['system_instruction']}\n"
         f"[System Context]\n{user_context}\n"
         f"Current Time: {current_time_str} (ICT)\n"
-        f"{memories_context}"
     )
 
     config = types.GenerateContentConfig(

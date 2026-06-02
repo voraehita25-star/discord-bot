@@ -624,7 +624,11 @@ if WATCHDOG_AVAILABLE:
             stem_lower = p.stem.lower()
 
             for pattern in self.config.ignore_patterns:
-                pat = pattern.lower().strip()
+                # rstrip path separators so directory patterns written with a
+                # trailing slash ("assets/", "data\\") collapse to the bare
+                # component name that Path.parts actually exposes — otherwise
+                # they never matched.
+                pat = pattern.lower().strip().rstrip("/\\")
                 if not pat:
                     continue
                 # Extension pattern (e.g., ".json", ".log")
@@ -635,6 +639,20 @@ if WATCHDOG_AVAILABLE:
                     import fnmatch as _fn
 
                     if _fn.fnmatch(p.name.lower(), pat):
+                        return True
+                    continue
+                # Multi-component pattern (e.g. "models/rvc"): match when its
+                # segments appear as a consecutive run in the path components
+                # (Path.parts tokens never contain a separator, so a plain
+                # component compare can't catch these).
+                if "/" in pat or "\\" in pat:
+                    pat_parts = tuple(seg for seg in pat.replace("\\", "/").split("/") if seg)
+                    path_parts = tuple(part.lower() for part in p.parts)
+                    span = len(pat_parts)
+                    if span and any(
+                        path_parts[i : i + span] == pat_parts
+                        for i in range(len(path_parts) - span + 1)
+                    ):
                         return True
                     continue
                 # Otherwise treat as a directory/file-name component match.

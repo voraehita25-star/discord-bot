@@ -228,7 +228,6 @@ class TestBuildFullPrompt:
         out = cli._build_full_prompt(
             persona="Test Persona",
             user_context="",
-            memories_context="",
             history=[],
             history_limit=10,
             current_message="hi",
@@ -244,7 +243,6 @@ class TestBuildFullPrompt:
         out = cli._build_full_prompt(
             persona="P",
             user_context="",
-            memories_context="",
             history=history,
             history_limit=10,
             current_message="now",
@@ -260,7 +258,6 @@ class TestBuildFullPrompt:
         out = cli._build_full_prompt(
             persona="P",
             user_context="",
-            memories_context="",
             history=[],
             history_limit=10,
             current_message="m",
@@ -280,7 +277,6 @@ class TestBuildFullPrompt:
         out = cli._build_full_prompt(
             persona="P",
             user_context="",
-            memories_context="",
             history=[],
             history_limit=10,
             current_message="m",
@@ -296,7 +292,6 @@ class TestBuildFullPrompt:
         out = cli._build_full_prompt(
             persona="P",
             user_context="ctx",
-            memories_context="",
             history=[],
             history_limit=10,
             current_message="THE_FINAL_MESSAGE",
@@ -369,7 +364,7 @@ class TestBuildClaudeArgv:
             enable_thinking=True,
         )
         assert "--effort" in argv
-        assert "max" in argv
+        assert "xhigh" in argv
         # Regression guard: we must NOT pass --betas interleaved-thinking. This
         # subprocess always authenticates with the Max subscription (no
         # ANTHROPIC_API_KEY in the env allowlist), so the CLI rejects custom
@@ -563,8 +558,7 @@ async def _run_with_fake(
 
 # The ignored-betas warning that used to be reported as the "error".
 _BETAS_WARNING = (
-    b"Warning: Custom betas are only available for API key users. "
-    b"Ignoring provided betas.\n"
+    b"Warning: Custom betas are only available for API key users. Ignoring provided betas.\n"
 )
 
 

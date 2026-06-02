@@ -428,7 +428,7 @@ function setupButtonRipple() {
         const target = e.target;
         if (!target)
             return;
-        const btn = target.closest('.btn, .nav-item, .modal-close, .btn-icon, .role-card, .memory-category-btn');
+        const btn = target.closest('.btn, .nav-item, .modal-close, .btn-icon, .role-card');
         if (!btn)
             return;
         // Respect disabled state (both HTML attr and aria-disabled)

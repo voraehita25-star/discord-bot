@@ -16,9 +16,7 @@ from .data import SERVER_CHARACTER_NAMES
 # limit. With an ``OrderedDict`` we get O(1) move-to-end + popitem(False)
 # eviction.
 _MAX_GUILD_PATTERN_CACHE = 256
-_GUILD_TAG_PATTERN_CACHE: OrderedDict[int, tuple[tuple[str, ...], re.Pattern[str]]] = (
-    OrderedDict()
-)
+_GUILD_TAG_PATTERN_CACHE: OrderedDict[int, tuple[tuple[str, ...], re.Pattern[str]]] = OrderedDict()
 
 
 def _compile_guild_pattern(names: tuple[str, ...]) -> re.Pattern[str]:

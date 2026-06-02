@@ -436,11 +436,7 @@ class TestExtractDocxMocked:
             pytest.skip("python-docx unavailable in this env")
         from docx.oxml.parser import parse_xml
 
-        xml = (
-            b'<?xml version="1.0"?>'
-            b'<!DOCTYPE r [<!ENTITY foo "ENTITY_WAS_EXPANDED">]>'
-            b"<r>&foo;</r>"
-        )
+        xml = b'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY foo "ENTITY_WAS_EXPANDED">]><r>&foo;</r>'
         try:
             el = parse_xml(xml)
         except Exception:

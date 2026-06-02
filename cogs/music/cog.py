@@ -59,20 +59,6 @@ class MusicGuildState:
     auto_disconnect_task: asyncio.Task | None = None
     mode_247: bool = False
     last_text_channel: int | None = None
-    play_retries: int = 0
-
-    def reset(self) -> None:
-        """Reset transient state (preserves mode_247 and play_lock)."""
-        if self.auto_disconnect_task is not None:
-            self.auto_disconnect_task.cancel()
-            self.auto_disconnect_task = None
-        self.queue.clear()
-        self.loop = False
-        self.current_track = None
-        self.fixing = False
-        self.pause_start = None
-        self.volume = 0.5
-        self.play_retries = 0
 
 
 class Music(commands.Cog):
@@ -435,13 +421,18 @@ class Music(commands.Cog):
 
     async def load_queue(self, guild_id: int) -> bool:
         """Load queue from database. Returns True if queue was loaded."""
+        from .queue import MAX_QUEUE_SIZE
+
         # Try database first
         try:
             from utils.database import db
 
             queue = await db.load_music_queue(guild_id)
             if queue:
-                self._gs(guild_id).queue = collections.deque(queue)
+                # Cap on load — the DB may hold a queue persisted before a cap
+                # change (or by another process); mirror the JSON path's limit so
+                # an oversized queue can't slip in through the database branch.
+                self._gs(guild_id).queue = collections.deque(queue[:MAX_QUEUE_SIZE])
                 logger.info(
                     "📂 Loaded queue for guild %s (%d tracks) from database", guild_id, len(queue)
                 )
@@ -469,7 +460,7 @@ class Music(commands.Cog):
                 return False
             queue = data["queue"]
             if queue:
-                self._gs(guild_id).queue = collections.deque(queue[:500])  # Enforce max size
+                self._gs(guild_id).queue = collections.deque(queue[:MAX_QUEUE_SIZE])
                 self._gs(guild_id).volume = float(data.get("volume", 0.5))
                 self._gs(guild_id).loop = bool(data.get("loop", False))
                 self._gs(guild_id).mode_247 = bool(data.get("mode_247", False))
@@ -572,7 +563,12 @@ class Music(commands.Cog):
 
             # Bot was disconnected
             bot_user = self.bot.user
-            if bot_user is not None and member.id == bot_user.id and before.channel and not after.channel:
+            if (
+                bot_user is not None
+                and member.id == bot_user.id
+                and before.channel
+                and not after.channel
+            ):
                 logger.info("🔌 Bot disconnected from voice in guild %s - cleaning up", guild_id)
                 await self.cleanup_guild_data(guild_id)
                 continue
@@ -610,9 +606,7 @@ class Music(commands.Cog):
                     # asyncio's cooperative scheduler).
                     gs = self._gs(guild_id)
                     if gs.auto_disconnect_task is None:
-                        new_task = asyncio.create_task(
-                            self._auto_disconnect(guild_id, vc)
-                        )
+                        new_task = asyncio.create_task(self._auto_disconnect(guild_id, vc))
                         # Without a done-callback, an exception raised
                         # before the body's main ``await asyncio.sleep``
                         # would be silently swallowed when GC reaped the
@@ -775,10 +769,10 @@ class Music(commands.Cog):
         guild_id = ctx.guild.id
         max_retries = 10
         # Local retry counter. This previously lived on the shared per-guild
-        # state (self._gs(guild_id).play_retries) and was read/written here
-        # OUTSIDE play_lock, so two concurrent play_next calls for the same
-        # guild interleaved the counter and could defeat the 10-retry cap.
-        # A local int is private to this invocation and race-free.
+        # state and was read/written here OUTSIDE play_lock, so two concurrent
+        # play_next calls for the same guild interleaved the counter and could
+        # defeat the 10-retry cap. A local int is private to this invocation
+        # and race-free.
         retries = 0
         while True:
             retry_next = await self._play_next_once(ctx)
@@ -1098,8 +1092,6 @@ class Music(commands.Cog):
                         try:
                             voice_client.play(player, after=after_playing)
                             player_handed_off = True
-                            # Reset retry counter on successful playback start
-                            self._gs(guild_id).play_retries = 0
                         except discord.DiscordException:
                             logger.exception("Failed to start playback (Discord)")
                             # Cleanup FFmpeg process
@@ -1392,10 +1384,7 @@ class Music(commands.Cog):
             self._gs(guild_id).fixing = False
             logger.warning("fix: disconnect failed: %s", disconnect_err)
             embed = discord.Embed(
-                description=(
-                    f"{Emojis.CROSS} ไม่สามารถตัดการเชื่อมต่อเดิมได้ "
-                    "ลอง !leave แล้ว !play ใหม่"
-                ),
+                description=(f"{Emojis.CROSS} ไม่สามารถตัดการเชื่อมต่อเดิมได้ ลอง !leave แล้ว !play ใหม่"),
                 color=Colors.ERROR,
             )
             with contextlib.suppress(discord.HTTPException):
@@ -1520,15 +1509,22 @@ class Music(commands.Cog):
         finally:
             # Always reset fixing flag at the end
             self._gs(guild_id).fixing = False
-            # If a guild-leave / voice-state cleanup arrived while we
-            # were mid-fix, ``cleanup_guild_data`` set ``cleanup_pending``
-            # and bailed early. Run it now so the deferred cleanup
-            # doesn't get lost (which would leak the guild's state
-            # forever).
+            # A cleanup may have been deferred (cleanup_pending) while we were
+            # mid-fix. BUT our own stop()/disconnect() above ALSO fires
+            # on_voice_state_update, which arms cleanup_pending — so on a
+            # SUCCESSFUL fix (bot reconnected and playing) honoring it would run
+            # the destructive cleanup_guild_data against the LIVE session,
+            # wiping its queue/current_track and resetting loop/volume
+            # mid-playback. Only run the deferred cleanup when the bot is
+            # genuinely no longer connected (e.g. a real guild-leave during the
+            # fix); otherwise just clear the flag, discarding our own transient
+            # disconnect echo.
             if guild_id in self._guild_states and self._guild_states[guild_id].cleanup_pending:
                 self._guild_states[guild_id].cleanup_pending = False
-                with contextlib.suppress(Exception):
-                    await self.cleanup_guild_data(guild_id)
+                vc = ctx.voice_client
+                if vc is None or not vc.is_connected():
+                    with contextlib.suppress(Exception):
+                        await self.cleanup_guild_data(guild_id)
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"])  # type: ignore[arg-type]
     @commands.bot_has_guild_permissions(connect=True, speak=True)
@@ -1825,9 +1821,7 @@ class Music(commands.Cog):
         # Accept either is_playing OR is_paused — previously a paused track
         # couldn't be skipped because the gate required is_playing only,
         # forcing the user to !resume first just to !skip.
-        if ctx.voice_client and (
-            ctx.voice_client.is_playing() or ctx.voice_client.is_paused()
-        ):
+        if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             # Disable loop when skipping
             self._gs(ctx.guild.id).loop = False
             ctx.voice_client.stop()
@@ -2204,8 +2198,11 @@ class Music(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        # Get track duration
-        duration = track_info.get("data", {}).get("duration", 0)
+        # Get track duration. Use ``or 0`` (not a get-default) because livestreams /
+        # malformed metadata store the key with value None, which a ``, 0`` default
+        # would NOT normalize — leaving the ``seek_time > duration`` compare below to
+        # raise TypeError (int > None) before the try/except is entered.
+        duration = track_info.get("data", {}).get("duration") or 0
         if duration == 0:
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Cannot seek in this track (unknown duration)",

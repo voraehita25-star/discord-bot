@@ -148,29 +148,29 @@ python bot.py
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `discord.py[voice]` | 2.7.1 | Discord API + Voice Support |
-| `python-dotenv` | 1.2.1 | อ่านค่าจาก .env |
-| `aiohttp` | 3.13.4 | Async HTTP requests |
+| `python-dotenv` | 1.2.2 | อ่านค่าจาก .env |
+| `aiohttp` | 3.13.5 | Async HTTP requests |
 | `psutil` | 7.2.2 | System monitoring |
 
 ### AI (จำเป็น)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `google-genai` | 1.67.0 | Gemini AI API |
-| `Pillow` | 12.1.1 | Image processing |
+| `google-genai` | 1.75.0 | Gemini AI API |
+| `Pillow` | 12.2.0 | Image processing |
 | `beautifulsoup4` | 4.14.3 | HTML parsing (URL fetching) |
-| `lxml` | 6.0.2 | Fast HTML parser |
-| `numpy` | 2.4.2 | Numerical ops (RAG) |
+| `lxml` | 6.1.0 | Fast HTML parser |
+| `numpy` | 2.4.4 | Numerical ops (RAG) |
 | `faiss-cpu` | 1.13.2 | Vector search (RAG memory) |
-| `imageio[ffmpeg]` | 2.37.2 | GIF to video conversion |
+| `imageio[ffmpeg]` | 2.37.3 | GIF to video conversion |
 
 ### Music (จำเป็นสำหรับ Music feature)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `yt-dlp` | 2026.3.13 | YouTube download |
-| `spotipy` | 2.25.2 | Spotify API |
-| `PyNaCl` | 1.5.0 | Voice encryption |
+| `yt-dlp` | 2026.3.17 | YouTube download |
+| `spotipy` | 2.26.0 | Spotify API |
+| `PyNaCl` | >=1.6.2,<2 | Voice encryption |
 
 ### Database
 
@@ -182,7 +182,7 @@ python bot.py
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `pytest` | 9.0.2 | Testing framework |
+| `pytest` | 9.0.3 | Testing framework |
 | `pytest-asyncio` | 1.3.0 | Async test support |
 | `pytest-timeout` | 2.4.0 | Test timeout safety net |
 | `watchdog` | 6.0.0 | Hot reload (dev mode) |
@@ -192,8 +192,8 @@ python bot.py
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `orjson` | 3.11.7 | 10x faster JSON |
-| `sentry-sdk` | 2.53.0 | Error tracking |
+| `orjson` | 3.11.8 | 10x faster JSON |
+| `sentry-sdk` | 2.59.0 | Error tracking |
 
 ---
 
@@ -361,4 +361,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: May 2026 | Version: 3.4.0*
+*Last Updated: May 2026 | Version: 3.4.1*

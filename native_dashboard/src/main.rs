@@ -5,11 +5,7 @@ mod database;
 
 use bot_manager::{BotManager, BotStatus};
 use database::{
-    ChannelInfo,
-    DashboardConversation,
-    DashboardConversationDetail,
-    DatabaseService,
-    DbStats,
+    ChannelInfo, DashboardConversation, DashboardConversationDetail, DatabaseService, DbStats,
     UserInfo,
 };
 use std::process::Stdio;
@@ -46,14 +42,18 @@ struct AppState {
 // Helper macro to safely lock mutex and handle poisoned state
 macro_rules! lock_bot_manager {
     ($state:expr) => {
-        $state.bot_manager.lock()
+        $state
+            .bot_manager
+            .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))
     };
 }
 
 macro_rules! lock_db_service {
     ($state:expr) => {
-        $state.db_service.lock()
+        $state
+            .db_service
+            .lock()
             .map_err(|e| format!("Failed to acquire database lock: {}", e))
     };
 }
@@ -75,9 +75,10 @@ fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
 #[tauri::command]
 async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
-    
+
     tauri::async_runtime::spawn_blocking(move || {
-        let mut mgr = manager.lock()
+        let mut mgr = manager
+            .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
         mgr.start()
     })
@@ -88,9 +89,10 @@ async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
-    
+
     tauri::async_runtime::spawn_blocking(move || {
-        let mut mgr = manager.lock()
+        let mut mgr = manager
+            .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
         mgr.stop()
     })
@@ -101,9 +103,10 @@ async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
-    
+
     tauri::async_runtime::spawn_blocking(move || {
-        let mut mgr = manager.lock()
+        let mut mgr = manager
+            .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
         mgr.restart()
     })
@@ -114,9 +117,10 @@ async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn start_dev_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
-    
+
     tauri::async_runtime::spawn_blocking(move || {
-        let mut mgr = manager.lock()
+        let mut mgr = manager
+            .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
         mgr.start_dev()
     })
@@ -129,7 +133,9 @@ fn get_logs(state: State<AppState>, count: usize) -> Result<Vec<String>, String>
     let count = count.min(10_000); // Cap at 10k lines to prevent abuse
     match state.bot_manager.try_lock() {
         Ok(manager) => Ok(manager.read_logs(count)),
-        Err(_) => Ok(vec!["[Dashboard] Bot manager busy — retrying...".to_string()]),
+        Err(_) => Ok(vec![
+            "[Dashboard] Bot manager busy — retrying...".to_string()
+        ]),
     }
 }
 
@@ -178,7 +184,10 @@ fn get_top_users(state: State<AppState>, limit: i32) -> Result<Vec<UserInfo>, St
 }
 
 #[tauri::command]
-fn get_dashboard_conversations_native(state: State<AppState>, limit: i32) -> Result<Vec<DashboardConversation>, String> {
+fn get_dashboard_conversations_native(
+    state: State<AppState>,
+    limit: i32,
+) -> Result<Vec<DashboardConversation>, String> {
     let limit = limit.clamp(1, 200);
     let db = lock_db_service!(state)?;
     db.get_dashboard_conversations(limit)
@@ -218,7 +227,10 @@ async fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> Result<b
         .message(&message)
         .title("Confirm")
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Yes".into(), "No".into()))
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Yes".into(),
+            "No".into(),
+        ))
         .show(move |confirmed| {
             // Receiver may have been dropped if the caller cancelled the
             // invoke — ignore the send error in that case. blocking_send
@@ -231,7 +243,10 @@ async fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> Result<b
 }
 
 #[tauri::command]
-fn delete_channels_history(state: State<AppState>, channel_ids: Vec<String>) -> Result<i32, String> {
+fn delete_channels_history(
+    state: State<AppState>,
+    channel_ids: Vec<String>,
+) -> Result<i32, String> {
     if channel_ids.is_empty() {
         return Ok(0);
     }
@@ -246,7 +261,8 @@ fn delete_channels_history(state: State<AppState>, channel_ids: Vec<String>) -> 
     let parsed_ids: Vec<i64> = channel_ids
         .iter()
         .map(|id| {
-            let parsed = id.parse::<i64>()
+            let parsed = id
+                .parse::<i64>()
                 .map_err(|e| format!("Invalid channel ID '{}': {}", id, e))?;
             if parsed <= 0 {
                 return Err(format!("Channel ID must be positive, got: {}", id));
@@ -273,7 +289,8 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     }
 
     // Canonicalize to resolve symlinks and .. traversal
-    let canonical = path_obj.canonicalize()
+    let canonical = path_obj
+        .canonicalize()
         .map_err(|e| format!("Failed to resolve path: {}", e))?;
 
     // Symlink-safe directory check: reject paths whose final component is
@@ -282,8 +299,8 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     // points elsewhere — the canonicalized target may pass starts_with
     // because we evaluate it relative to the SAME canonicalized base
     // below, but the original path's symlink-ness is the actual signal).
-    let symlink_meta = std::fs::symlink_metadata(&path)
-        .map_err(|e| format!("Failed to stat path: {}", e))?;
+    let symlink_meta =
+        std::fs::symlink_metadata(&path).map_err(|e| format!("Failed to stat path: {}", e))?;
     if symlink_meta.file_type().is_symlink() {
         return Err("Access denied: symlinked paths are not allowed".to_string());
     }
@@ -295,7 +312,9 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
 
     // Security: restrict to known subdirectories of the bot base path
     let manager = lock_bot_manager!(state)?;
-    let base_path = manager.base_path().canonicalize()
+    let base_path = manager
+        .base_path()
+        .canonicalize()
         .map_err(|e| format!("Failed to resolve base path: {}", e))?;
     if !canonical.starts_with(&base_path) {
         return Err("Access denied: path is outside the bot directory".to_string());
@@ -348,7 +367,12 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn log_frontend_error(state: State<AppState>, error_type: String, message: String, stack: Option<String>) -> Result<String, String> {
+fn log_frontend_error(
+    state: State<AppState>,
+    error_type: String,
+    message: String,
+    stack: Option<String>,
+) -> Result<String, String> {
     use std::io::Write;
 
     // Rate limit: cap at 20 errors/sec. Stops a frontend render-loop bug from
@@ -358,7 +382,9 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     // and silently disable the limit.
     {
         let now = Instant::now();
-        let mut rate = state.frontend_error_rate.lock()
+        let mut rate = state
+            .frontend_error_rate
+            .lock()
             .map_err(|e| format!("rate-limit lock poisoned: {}", e))?;
         if now.duration_since(rate.0).as_secs() < 1 {
             if rate.1 >= 20 {
@@ -371,22 +397,32 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     }
 
     // Sanitize inputs to prevent log injection (strip newlines and Unicode line separators, limit length)
-    let error_type = error_type.replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ").chars().take(256).collect::<String>();
-    let message = message.replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ").chars().take(4096).collect::<String>(); // Limit message size and strip newlines
-    
+    let error_type = error_type
+        .replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ")
+        .chars()
+        .take(256)
+        .collect::<String>();
+    let message = message
+        .replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ")
+        .chars()
+        .take(4096)
+        .collect::<String>(); // Limit message size and strip newlines
+
     let manager = lock_bot_manager!(state)?;
     let log_dir = manager.logs_dir();
     let error_log_path = log_dir.join("dashboard_errors.log");
-    
+
     // Ensure logs directory exists
     if !log_dir.exists() {
         let _ = std::fs::create_dir_all(&log_dir);
     }
-    
+
     // Use UTC so log timestamps are unambiguous when correlating
     // dashboard logs with bot logs (which already use UTC). Local time
     // here meant a log read in another timezone could be off by hours.
-    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let timestamp = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S UTC")
+        .to_string();
     // Stack traces are multi-line by nature so we tab-indent every line
     // instead of stripping (preserves readability) but we still strip the
     // Unicode line separators that could otherwise fake a new log entry.
@@ -395,13 +431,19 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
         .replace(['\u{2028}', '\u{2029}'], " ")
         .replace('\r', "")
         .replace('\n', "\n  ")
-        .chars().take(16384).collect::<String>(); // Limit stack trace size
+        .chars()
+        .take(16384)
+        .collect::<String>(); // Limit stack trace size
 
     let log_entry = format!(
         "\n[{}] {}\nMessage: {}\nStack: {}\n{}",
-        timestamp, error_type, message, stack_trace, ERROR_LOG_SEPARATOR.as_str()
+        timestamp,
+        error_type,
+        message,
+        stack_trace,
+        ERROR_LOG_SEPARATOR.as_str()
     );
-    
+
     // Rotate error log if it exceeds 5 MB.
     // Held under ``error_log_rotation`` so two concurrent log writers
     // can't both see ``len > 5MB`` and both attempt the rename — on
@@ -410,7 +452,9 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
     if error_log_path.exists() {
         if let Ok(meta) = std::fs::metadata(&error_log_path) {
             if meta.len() > 5 * 1024 * 1024 {
-                let _rot_guard = state.error_log_rotation.lock()
+                let _rot_guard = state
+                    .error_log_rotation
+                    .lock()
                     .map_err(|e| format!("rotation lock poisoned: {}", e))?;
                 // Re-check size under the lock — another writer may have
                 // already rotated while we were waiting on the mutex.
@@ -433,12 +477,15 @@ fn log_frontend_error(state: State<AppState>, error_type: String, message: Strin
         .append(true)
         .open(&error_log_path)
         .map_err(|e| format!("Failed to open error log: {}", e))?;
-    
+
     file.write_all(log_entry.as_bytes())
         .map_err(|e| format!("Failed to write error log: {}", e))?;
 
     // Forward to Sentry if a DSN was configured at startup
-    if sentry::Hub::current().client().is_some_and(|c| c.is_enabled()) {
+    if sentry::Hub::current()
+        .client()
+        .is_some_and(|c| c.is_enabled())
+    {
         sentry::capture_message(
             &format!("[{}] {}", error_type, message),
             sentry::Level::Error,
@@ -453,7 +500,7 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
     let count = count.min(500); // Cap to prevent abuse
     let manager = lock_bot_manager!(state)?;
     let error_log_path = manager.logs_dir().join("dashboard_errors.log");
-    
+
     if !error_log_path.exists() {
         return Ok(vec!["No errors logged yet.".to_string()]);
     }
@@ -464,19 +511,27 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
     if metadata.len() > 10 * 1024 * 1024 {
         return Err("Error log too large (>10 MB). Please clear it first.".to_string());
     }
-    
+
     match std::fs::read_to_string(&error_log_path) {
         Ok(content) => {
-            // Split by separator and take last N entries
-            let entries: Vec<&str> = content.split(ERROR_LOG_SEPARATOR.as_str()).collect();
-            Ok(entries.iter()
+            // Split on the NEWLINE-PREFIXED separator. Every record is written as
+            // "...\n{SEPARATOR}", and sanitized message/stack can never contain
+            // "\n" immediately followed by '=' (message strips all newlines; the
+            // stack rewrites "\n" -> "\n  "), so this delimiter cannot be faked by
+            // user content — unlike the bare 80-'=' run, which a crafted
+            // message/stack could embed to fragment one entry into two. Backward
+            // compatible: existing logs were already written with the leading \n.
+            let separator = format!("\n{}", ERROR_LOG_SEPARATOR.as_str());
+            let entries: Vec<&str> = content.split(separator.as_str()).collect();
+            Ok(entries
+                .iter()
                 .rev()
                 .filter(|s| !s.trim().is_empty())
                 .take(count)
                 .map(|s| s.trim().to_string())
                 .collect())
         }
-        Err(_) => Ok(vec!["Failed to read error log.".to_string()])
+        Err(_) => Ok(vec!["Failed to read error log.".to_string()]),
     }
 }
 
@@ -484,12 +539,12 @@ fn get_dashboard_errors(state: State<AppState>, count: usize) -> Result<Vec<Stri
 fn clear_dashboard_errors(state: State<AppState>) -> Result<String, String> {
     let manager = lock_bot_manager!(state)?;
     let error_log_path = manager.logs_dir().join("dashboard_errors.log");
-    
+
     if error_log_path.exists() {
         std::fs::write(&error_log_path, "")
             .map_err(|e| format!("Failed to clear error log: {}", e))?;
     }
-    
+
     Ok("Dashboard errors cleared".to_string())
 }
 
@@ -501,7 +556,10 @@ fn clear_dashboard_errors(state: State<AppState>) -> Result<String, String> {
 /// Stored under `data/` next to the bot's database so both the Python bot
 /// (sentry_integration.py) and the Rust dashboard read the same file.
 fn telemetry_flag_path(manager: &BotManager) -> std::path::PathBuf {
-    manager.base_path().join("data").join("telemetry_optout.flag")
+    manager
+        .base_path()
+        .join("data")
+        .join("telemetry_optout.flag")
 }
 
 #[tauri::command]
@@ -525,8 +583,7 @@ fn set_telemetry_enabled(state: State<AppState>, enabled: bool) -> Result<(), St
         if let Some(parent) = flag.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&flag, b"")
-            .map_err(|e| format!("Failed to disable telemetry: {}", e))?;
+        std::fs::write(&flag, b"").map_err(|e| format!("Failed to disable telemetry: {}", e))?;
     }
     Ok(())
 }
@@ -547,9 +604,7 @@ fn get_ws_token(state: State<AppState>) -> Result<String, String> {
     // hint that .env wasn't configured.
     match token {
         Some(t) if !t.is_empty() => Ok(t),
-        _ => Err(
-            "DASHBOARD_WS_TOKEN is not set in .env or environment".to_string(),
-        ),
+        _ => Err("DASHBOARD_WS_TOKEN is not set in .env or environment".to_string()),
     }
 }
 
@@ -562,7 +617,12 @@ fn normalize_ws_connect_host(host: &str) -> String {
 
 fn env_flag_is_truthy(value: Option<String>) -> bool {
     value
-        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -674,7 +734,10 @@ fn allowed_base_roots(exe_path: &Option<std::path::PathBuf>) -> Vec<std::path::P
         .collect()
 }
 
-fn is_under_allowed_root(candidate: &std::path::Path, exe_path: &Option<std::path::PathBuf>) -> bool {
+fn is_under_allowed_root(
+    candidate: &std::path::Path,
+    exe_path: &Option<std::path::PathBuf>,
+) -> bool {
     let canon = match std::fs::canonicalize(candidate) {
         Ok(p) => p,
         Err(_) => return false,
@@ -753,11 +816,17 @@ fn main() {
         .unwrap_or_else(|_| {
             // Check if we're in dev mode (executable is in target/debug or target/release)
             let exe_path = std::env::current_exe().ok();
-            let is_dev = exe_path.as_ref()
+            let is_dev = exe_path
+                .as_ref()
                 .and_then(|p| p.to_str())
-                .map(|s| s.contains("target\\debug") || s.contains("target\\release") || s.contains("target/debug") || s.contains("target/release"))
+                .map(|s| {
+                    s.contains("target\\debug")
+                        || s.contains("target\\release")
+                        || s.contains("target/debug")
+                        || s.contains("target/release")
+                })
                 .unwrap_or(false);
-            
+
             if is_dev {
                 // Dev mode: go up from native_dashboard/target/debug to BOT folder
                 exe_path
@@ -766,7 +835,9 @@ fn main() {
                     .and_then(|p| p.parent().map(|p| p.to_path_buf())) // native_dashboard/
                     .and_then(|p| p.parent().map(|p| p.to_path_buf())) // BOT/
                     .unwrap_or_else(|| {
-                        eprintln!("WARNING: Could not determine bot base path, using current directory");
+                        eprintln!(
+                            "WARNING: Could not determine bot base path, using current directory"
+                        );
                         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
                     })
             } else {
@@ -789,7 +860,9 @@ fn main() {
         .filter(|dsn| {
             // Validate DSN is a legitimate Sentry URL (HTTPS + host ends with .sentry.io)
             dsn.starts_with("https://")
-                && dsn.split('/').nth(2)  // Extract host from https://HOST/...
+                && dsn
+                    .split('/')
+                    .nth(2) // Extract host from https://HOST/...
                     .is_some_and(|host| {
                         // Strip optional port suffix and userinfo prefix.
                         let host_part = host.split('@').next_back().unwrap_or(host);
@@ -805,10 +878,13 @@ fn main() {
                     })
         })
         .map(|dsn| {
-            sentry::init((dsn, sentry::ClientOptions {
-                release: sentry::release_name!(),
-                ..Default::default()
-            }))
+            sentry::init((
+                dsn,
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    ..Default::default()
+                },
+            ))
         });
 
     let bot_manager = BotManager::new(base_path.clone());
@@ -834,25 +910,25 @@ fn main() {
             // This is a design choice by the owner - DO NOT CHANGE IT!
             // ห้ามแก้ไข tooltip นี้เด็ดขาด! ตั้งใจให้เป็นภาษาเกาหลี
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon()
-                    .ok_or("Default window icon not configured in tauri.conf.json")?
-                    .clone())
+                .icon(
+                    app.default_window_icon()
+                        .ok_or("Default window icon not configured in tauri.conf.json")?
+                        .clone(),
+                )
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("디스코드 봇 대시보드")
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -876,13 +952,13 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Prevent default close
                 api.prevent_close();
-                
+
                 let window_clone = window.clone();
                 let app_handle = window.app_handle().clone();
-                
+
                 // Use non-blocking callback-based dialog to avoid starving the async runtime
-                use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
-                
+                use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
                 app_handle
                     .dialog()
                     .message("กด Yes เพื่อปิดโปรแกรม หรือ No เพื่อซ่อนไปที่ System Tray")
@@ -1023,8 +1099,14 @@ mod tests {
     #[test]
     fn dotenv_strips_surrounding_quotes() {
         let (_tmp, path) = write_env("TOKEN=\"wrapped-in-double\"\nTOKEN2='single-quoted'\n");
-        assert_eq!(read_dotenv_value(&path, "TOKEN"), Some("wrapped-in-double".to_string()));
-        assert_eq!(read_dotenv_value(&path, "TOKEN2"), Some("single-quoted".to_string()));
+        assert_eq!(
+            read_dotenv_value(&path, "TOKEN"),
+            Some("wrapped-in-double".to_string())
+        );
+        assert_eq!(
+            read_dotenv_value(&path, "TOKEN2"),
+            Some("single-quoted".to_string())
+        );
     }
 
     #[test]

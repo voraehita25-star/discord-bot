@@ -653,7 +653,12 @@ class L2SqliteCache:
         """
         if self._conn:
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # Hold the same lock store()/load_recent() use: a store() still
+                # running in the executor thread pool at shutdown shares this
+                # sqlite3.Connection (check_same_thread=False), and concurrent
+                # use from two threads is unsupported.
+                with self._lock:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:
                 logger.debug("L2 cache checkpoint error", exc_info=True)
 

@@ -83,13 +83,13 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 CLAUDE_MAX_TOKENS = _int_env("CLAUDE_MAX_TOKENS", 128000)
 CLAUDE_CONTEXT_WINDOW = _int_env("CLAUDE_CONTEXT_WINDOW", 1000000)
 
-# Claude effort level (low | medium | high | xhigh | max). Defaults to ``max``
-# for the deepest reasoning (Opus-tier only). The `xhigh` tier sits between
-# `high` and `max`. Only forwarded to the API when set to a valid value;
-# unknown values fall back to None so typos cannot break requests. Set
-# ``CLAUDE_EFFORT`` to a lower tier to trade reasoning depth for cost/latency.
+# Claude effort level (low | medium | high | xhigh | max). Defaults to ``xhigh``
+# (the tier between `high` and `max`) for deep Opus-tier reasoning. Only
+# forwarded to the API when set to a valid value; unknown values fall back to
+# None so typos cannot break requests. Set ``CLAUDE_EFFORT`` to another tier
+# (e.g. ``max``) to trade cost/latency against reasoning depth.
 _CLAUDE_EFFORT_ALLOWED: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
-_raw_effort = os.getenv("CLAUDE_EFFORT", "max").strip().lower()
+_raw_effort = os.getenv("CLAUDE_EFFORT", "xhigh").strip().lower()
 CLAUDE_EFFORT: str | None = _raw_effort if _raw_effort in _CLAUDE_EFFORT_ALLOWED else None
 
 # Backend mode — defaults to "cli" so the bot uses the Claude Code

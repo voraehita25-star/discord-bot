@@ -106,14 +106,10 @@ _CLAUDE_INTERNAL_TAGS = (
 )
 _TAG_ALT = "|".join(_re.escape(t) for t in _CLAUDE_INTERNAL_TAGS)
 # Balanced pair: ``<tag>...</tag>`` (non-greedy on body, multiline).
-_BALANCED_TAG_RE = _re.compile(
-    rf"<({_TAG_ALT})\b[^>]*>.*?</\1>", _re.IGNORECASE | _re.DOTALL
-)
+_BALANCED_TAG_RE = _re.compile(rf"<({_TAG_ALT})\b[^>]*>.*?</\1>", _re.IGNORECASE | _re.DOTALL)
 # Orphan opening or closing tag — fires after the balanced pass so it
 # only catches unmatched stragglers.
-_ORPHAN_TAG_RE = _re.compile(
-    rf"</?(?:{_TAG_ALT})\b[^>]*/?>", _re.IGNORECASE
-)
+_ORPHAN_TAG_RE = _re.compile(rf"</?(?:{_TAG_ALT})\b[^>]*/?>", _re.IGNORECASE)
 
 
 def strip_claude_internal_tags(text: str) -> str:
@@ -234,7 +230,6 @@ class _UserContextCacheEntry(TypedDict):
 
     expires_at: float
     user_context: str
-    memories_context: str
     profile_is_creator: bool
 
 
@@ -278,7 +273,7 @@ async def build_user_context(
     user_name: str,
     unrestricted_mode_requested: bool,
     conversation_id: str | None = None,
-) -> tuple[str, str, bool]:
+) -> tuple[str, bool]:
     """Build user profile context and load memories from DB.
 
     ``conversation_id`` scopes the document-memory lookup: each conversation
@@ -293,7 +288,7 @@ async def build_user_context(
     between turns doesn't require a rebuild — we re-AND it on every lookup.
 
     Returns:
-        (user_context, memories_context, unrestricted_mode)
+        (user_context, unrestricted_mode)
     """
     from .dashboard_config import DB_AVAILABLE
 
@@ -302,7 +297,7 @@ async def build_user_context(
     cached = _USER_CONTEXT_CACHE.get(cache_key)
     if cached is not None and cached["expires_at"] > now:
         unrestricted = unrestricted_mode_requested and cached["profile_is_creator"]
-        return cached["user_context"], cached["memories_context"], unrestricted
+        return cached["user_context"], unrestricted
 
     user_profile: dict[str, Any] = {}
     if DB_AVAILABLE:
@@ -388,20 +383,6 @@ async def build_user_context(
         except Exception as e:
             logger.warning("Failed to load document memories: %s", e)
 
-    # Load long-term memories
-    memories_context = ""
-    if DB_AVAILABLE:
-        try:
-            db = get_db()
-            memories = await db.get_dashboard_memories(limit=20)
-            if memories:
-                memories_text = "\n".join(
-                    [f"- {sanitize_profile_field(m['content'], 500)}" for m in memories]
-                )
-                memories_context = f"\n\n[Long-term Memories about User]\n{memories_text}"
-        except Exception as e:
-            logger.warning("Failed to load memories: %s", e)
-
     # Populate the cache before returning. We don't need the lock for the dict
     # write itself (CPython dict assignment is atomic), but we DO need it for
     # the over-capacity trim so two concurrent rebuilds can't both decide to
@@ -421,8 +402,7 @@ async def build_user_context(
         _USER_CONTEXT_CACHE[cache_key] = {
             "expires_at": now + _USER_CONTEXT_CACHE_TTL,
             "user_context": user_context,
-            "memories_context": memories_context,
             "profile_is_creator": profile_is_creator,
         }
 
-    return user_context, memories_context, unrestricted_mode
+    return user_context, unrestricted_mode

@@ -79,10 +79,7 @@ def module_to_file(module_name, project_files):
     # repo do ~1M comparisons every run.
     rel_lookup = getattr(module_to_file, "_rel_lookup", None)
     if rel_lookup is None:
-        rel_lookup = {
-            str(pf).replace("\\", "/").lstrip("/"): pf
-            for pf in project_files
-        }
+        rel_lookup = {str(pf).replace("\\", "/").lstrip("/"): pf for pf in project_files}
         # Also index by relative-to-PROJECT_ROOT path so trailing-segment
         # matches don't accidentally pick up unrelated files (the
         # previous ``endswith`` accepted ``xbar.py`` as a match for

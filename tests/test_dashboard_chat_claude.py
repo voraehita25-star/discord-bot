@@ -112,7 +112,7 @@ class TestClaudeDashboardRetry:
             patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
             patch(
                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                new=AsyncMock(return_value=("User context", "Memory context", False)),
+                new=AsyncMock(return_value=("User context", False)),
             ),
             patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)),
             patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock),
@@ -162,7 +162,7 @@ class TestClaudeDashboardRetry:
             patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db),
             patch(
                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                new=AsyncMock(return_value=("User context", "Memory context", False)),
+                new=AsyncMock(return_value=("User context", False)),
             ),
             patch("cogs.ai_core.api.dashboard_chat_claude._RETRYABLE_ERRORS", (RuntimeError,)),
             patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=sleep_mock),
@@ -202,7 +202,7 @@ class TestClaudeDashboardRetry:
             patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
             patch(
                 "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
-                new=AsyncMock(return_value=("User context", "Memory context", False)),
+                new=AsyncMock(return_value=("User context", False)),
             ),
         ):
             await handle_chat_message_claude(
@@ -220,9 +220,7 @@ class TestClaudeDashboardRetry:
         # Server now names the rejected MIME type explicitly so the user
         # knows to convert; check for either the legacy generic message
         # or the new HEIC-specific phrasing.
-        assert any(
-            "image/heic" in message["message"].lower() for message in errors
-        )
+        assert any("image/heic" in message["message"].lower() for message in errors)
         assert any(
             "no supported text or images" in message["message"].lower() for message in errors
         )

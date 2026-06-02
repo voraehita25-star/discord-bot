@@ -380,184 +380,184 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(requireBearerToken(authToken))
 
-	// Update service status (called from Python)
-	r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
-		// Limit request body size
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
+		// Update service status (called from Python)
+		r.Post("/health/service", func(w http.ResponseWriter, r *http.Request) {
+			// Limit request body size
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
 
-		var payload struct {
-			Name    string `json:"name"`
-			Healthy bool   `json:"healthy"`
-		}
+			var payload struct {
+				Name    string `json:"name"`
+				Healthy bool   `json:"healthy"`
+			}
 
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Validate service name (prevent unbounded map growth)
-		if len(payload.Name) == 0 || len(payload.Name) > 100 {
-			http.Error(w, "invalid service name", http.StatusBadRequest)
-			return
-		}
-
-		if !healthService.SetServiceStatus(payload.Name, payload.Healthy) {
-			http.Error(w, "service map full", http.StatusConflict)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-
-	// Push metrics (called from Python)
-	r.Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
-		// Limit request body size
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
-
-		var payload MetricsPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Validate metric name against allowlist
-		if !allowedMetricNames[payload.Name] {
-			http.Error(w, "unknown metric name", http.StatusBadRequest)
-			return
-		}
-
-		switch payload.Type {
-		case "counter":
-			// Prometheus Counter.Add() panics on negative values, and NaN/Inf
-			// will silently corrupt the metric (any subsequent Add becomes
-			// NaN-poisoned). Reject all three up-front. Note: `value < 0`
-			// is `false` for NaN, so we have to check NaN/Inf explicitly.
-			if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) || payload.Value < 0 {
-				http.Error(w, "counter value must be non-negative finite", http.StatusBadRequest)
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
-			switch payload.Name {
-			case "requests":
-				status := safeLabel("status", payload.Labels["status"])
-				endpoint := safeLabel("endpoint", payload.Labels["endpoint"])
-				requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
-			case "rate_limit":
-				rateLimitHits.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
-			case "cache":
-				cacheHits.WithLabelValues(safeLabel("result", payload.Labels["result"])).Add(payload.Value)
-			case "tokens":
-				tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
-			}
-		case "histogram":
-			// Reject NaN/Infinity values that would corrupt metrics
-			if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
-				http.Error(w, "metric value must be finite", http.StatusBadRequest)
+
+			// Validate service name (prevent unbounded map growth)
+			if len(payload.Name) == 0 || len(payload.Name) > 100 {
+				http.Error(w, "invalid service name", http.StatusBadRequest)
 				return
 			}
-			switch payload.Name {
-			case "request_duration":
-				requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
-			case "ai_response_time":
-				aiResponseTime.Observe(payload.Value)
-			}
-		case "gauge":
-			if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
-				http.Error(w, "gauge value must be finite", http.StatusBadRequest)
+
+			if !healthService.SetServiceStatus(payload.Name, payload.Healthy) {
+				http.Error(w, "service map full", http.StatusConflict)
 				return
 			}
-			switch payload.Name {
-			case "active_connections":
-				activeConnections.Set(payload.Value)
-			case "circuit_breaker":
-				circuitBreakerState.WithLabelValues(safeLabel("service", payload.Labels["service"])).Set(payload.Value)
+			w.WriteHeader(http.StatusOK)
+		})
+
+		// Push metrics (called from Python)
+		r.Post("/metrics/push", func(w http.ResponseWriter, r *http.Request) {
+			// Limit request body size
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB
+
+			var payload MetricsPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
 			}
-		default:
-			http.Error(w, "unknown metric type", http.StatusBadRequest)
-			return
-		}
 
-		w.WriteHeader(http.StatusOK)
-	})
-
-	// Batch push metrics
-	r.Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
-		// Limit request body size to 1MB to prevent abuse
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-
-		var payloads []MetricsPayload
-		if err := json.NewDecoder(r.Body).Decode(&payloads); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Limit batch size to prevent abuse
-		if len(payloads) > 1000 {
-			http.Error(w, "batch too large (max 1000)", http.StatusBadRequest)
-			return
-		}
-
-		processed := 0
-		for _, p := range payloads {
-			// Skip unknown metric names
-			if !allowedMetricNames[p.Name] {
-				continue
+			// Validate metric name against allowlist
+			if !allowedMetricNames[payload.Name] {
+				http.Error(w, "unknown metric name", http.StatusBadRequest)
+				return
 			}
-			switch p.Type {
+
+			switch payload.Type {
 			case "counter":
-				// Skip negative / NaN / Inf — Counter.Add panics on negative
-				// and is silently poisoned by NaN/Inf (`p.Value < 0` is
-				// false for NaN so the explicit checks are required).
-				if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
-					continue
+				// Prometheus Counter.Add() panics on negative values, and NaN/Inf
+				// will silently corrupt the metric (any subsequent Add becomes
+				// NaN-poisoned). Reject all three up-front. Note: `value < 0`
+				// is `false` for NaN, so we have to check NaN/Inf explicitly.
+				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) || payload.Value < 0 {
+					http.Error(w, "counter value must be non-negative finite", http.StatusBadRequest)
+					return
 				}
-				switch p.Name {
+				switch payload.Name {
 				case "requests":
-					status := safeLabel("status", p.Labels["status"])
-					requestsTotal.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"]), status).Add(p.Value)
-					processed++
+					status := safeLabel("status", payload.Labels["status"])
+					endpoint := safeLabel("endpoint", payload.Labels["endpoint"])
+					requestsTotal.WithLabelValues(endpoint, status).Add(payload.Value)
 				case "rate_limit":
-					rateLimitHits.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
-					processed++
+					rateLimitHits.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 				case "cache":
-					cacheHits.WithLabelValues(safeLabel("result", p.Labels["result"])).Add(p.Value)
-					processed++
+					cacheHits.WithLabelValues(safeLabel("result", payload.Labels["result"])).Add(payload.Value)
 				case "tokens":
-					tokensUsed.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
-					processed++
+					tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
 				}
 			case "histogram":
-				// Skip NaN/Infinity values to prevent Prometheus histogram corruption
-				if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
-					continue
+				// Reject NaN/Infinity values that would corrupt metrics
+				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
+					http.Error(w, "metric value must be finite", http.StatusBadRequest)
+					return
 				}
-				switch p.Name {
+				switch payload.Name {
 				case "request_duration":
-					requestDuration.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"])).Observe(p.Value)
-					processed++
+					requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
 				case "ai_response_time":
-					aiResponseTime.Observe(p.Value)
-					processed++
+					aiResponseTime.Observe(payload.Value)
 				}
 			case "gauge":
-				if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
+					http.Error(w, "gauge value must be finite", http.StatusBadRequest)
+					return
+				}
+				switch payload.Name {
+				case "active_connections":
+					activeConnections.Set(payload.Value)
+				case "circuit_breaker":
+					circuitBreakerState.WithLabelValues(safeLabel("service", payload.Labels["service"])).Set(payload.Value)
+				}
+			default:
+				http.Error(w, "unknown metric type", http.StatusBadRequest)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+		})
+
+		// Batch push metrics
+		r.Post("/metrics/batch", func(w http.ResponseWriter, r *http.Request) {
+			// Limit request body size to 1MB to prevent abuse
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+			var payloads []MetricsPayload
+			if err := json.NewDecoder(r.Body).Decode(&payloads); err != nil {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+
+			// Limit batch size to prevent abuse
+			if len(payloads) > 1000 {
+				http.Error(w, "batch too large (max 1000)", http.StatusBadRequest)
+				return
+			}
+
+			processed := 0
+			for _, p := range payloads {
+				// Skip unknown metric names
+				if !allowedMetricNames[p.Name] {
 					continue
 				}
-				switch p.Name {
-				case "active_connections":
-					activeConnections.Set(p.Value)
-					processed++
-				case "circuit_breaker":
-					circuitBreakerState.WithLabelValues(safeLabel("service", p.Labels["service"])).Set(p.Value)
-					processed++
+				switch p.Type {
+				case "counter":
+					// Skip negative / NaN / Inf — Counter.Add panics on negative
+					// and is silently poisoned by NaN/Inf (`p.Value < 0` is
+					// false for NaN so the explicit checks are required).
+					if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
+						continue
+					}
+					switch p.Name {
+					case "requests":
+						status := safeLabel("status", p.Labels["status"])
+						requestsTotal.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"]), status).Add(p.Value)
+						processed++
+					case "rate_limit":
+						rateLimitHits.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
+						processed++
+					case "cache":
+						cacheHits.WithLabelValues(safeLabel("result", p.Labels["result"])).Add(p.Value)
+						processed++
+					case "tokens":
+						tokensUsed.WithLabelValues(safeLabel("type", p.Labels["type"])).Add(p.Value)
+						processed++
+					}
+				case "histogram":
+					// Skip NaN/Infinity values to prevent Prometheus histogram corruption
+					if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+						continue
+					}
+					switch p.Name {
+					case "request_duration":
+						requestDuration.WithLabelValues(safeLabel("endpoint", p.Labels["endpoint"])).Observe(p.Value)
+						processed++
+					case "ai_response_time":
+						aiResponseTime.Observe(p.Value)
+						processed++
+					}
+				case "gauge":
+					if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+						continue
+					}
+					switch p.Name {
+					case "active_connections":
+						activeConnections.Set(p.Value)
+						processed++
+					case "circuit_breaker":
+						circuitBreakerState.WithLabelValues(safeLabel("service", p.Labels["service"])).Set(p.Value)
+						processed++
+					}
+					// Unknown metric types in batch are silently skipped (consistent with batch semantics)
 				}
-				// Unknown metric types in batch are silently skipped (consistent with batch semantics)
 			}
-		}
 
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]int{"processed": processed}); err != nil {
-			log.Printf("Failed to encode batch response: %v", err)
-		}
-	})
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(map[string]int{"processed": processed}); err != nil {
+				log.Printf("Failed to encode batch response: %v", err)
+			}
+		})
 	}) // end auth-protected Group
 
 	// Stats summary

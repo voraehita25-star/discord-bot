@@ -264,9 +264,7 @@ class ShutdownManager:
 
             if handler.is_async:
                 coro = (
-                    handler.callback(stop_event)
-                    if handler.wants_stop_event
-                    else handler.callback()
+                    handler.callback(stop_event) if handler.wants_stop_event else handler.callback()
                 )
                 await asyncio.wait_for(coro, timeout=effective_timeout)
             else:

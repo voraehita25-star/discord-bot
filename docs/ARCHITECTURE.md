@@ -68,12 +68,12 @@
 
 | Module | Purpose |
 | -------- | --------- |
-| `api/` | Claude SDK wrapper, direct/proxy failover, dashboard WebSocket + chat backends (SDK + CLI), conversation/memory CRUD handlers, document text extractor |
+| `api/` | Claude SDK wrapper, direct/proxy failover, dashboard WebSocket + chat backends (SDK + CLI), conversation + document-memory CRUD handlers, document text extractor |
 | `cache/` | AI response cache, analytics, tz-aware token tracker |
 | `commands/` | Slash commands (debug, memory, server) |
 | `core/` | Message queue, performance tracking |
 | `data/` | Constants, env vars, persona + roleplay data |
-| `memory/` | Entity memory, RAG (FAISS / Rust SIMD), summarizer, state tracker, conversation branching, long-term facts, history manager |
+| `memory/` | Entity memory, RAG (FAISS / Rust SIMD), summarizer, state tracker, long-term facts, history manager |
 | `processing/` | Content safety guardrails, intent detection |
 | `response/` | Webhook cache, response mixin |
 | `tools/` | AI function-calling tool definitions and executor |

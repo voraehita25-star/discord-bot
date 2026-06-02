@@ -40,10 +40,15 @@ _CALL_RE = re.compile(
 
 
 def find_logging_import_line(lines: list[bytes]) -> int | None:
-    """Return the index of `import logging` at module level, or None."""
+    """Return the index of an unaliased module-level `import logging`, or None.
+
+    Aliased forms (`import logging as X`) are intentionally NOT matched: inserting
+    the bare-`logging` LOGGER_DECL after them would reference an unbound `logging`
+    name and raise NameError at import (which py_compile can't catch). Skipping
+    them makes convert_file report "no import logging" and leave the file alone.
+    """
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == b"import logging" or stripped.startswith(b"import logging as "):
+        if line.strip() == b"import logging":
             return i
     return None
 

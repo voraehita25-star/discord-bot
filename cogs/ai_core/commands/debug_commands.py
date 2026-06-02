@@ -168,9 +168,8 @@ class AIDebug(commands.Cog):
             # Sized ABC excludes None; explicit None check + Sized cast keeps
             # mypy happy without losing the defensive hasattr guard.
             from collections.abc import Sized
-            entity_count = (
-                len(cast(Sized, _cache_obj)) if isinstance(_cache_obj, Sized) else 0
-            )
+
+            entity_count = len(cast(Sized, _cache_obj)) if isinstance(_cache_obj, Sized) else 0
             embed.add_field(
                 name="👤 Entity Memory",
                 value=f"```\nCached: {entity_count} entities```",

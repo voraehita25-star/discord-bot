@@ -84,9 +84,7 @@ _FALLBACK_LOCK = asyncio.Lock()
 # to tell injected role markers from real ones. We rewrite hits to a
 # clearly-marked sentinel so the model sees them as quoted text, not new
 # turns. Covers common alternate aliases (Human/AI/Tool) as well.
-_ROLE_LEAK_RE = re.compile(
-    r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)"
-)
+_ROLE_LEAK_RE = re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
 
 
 def _sanitize_dialog_segment(text: str) -> str:
@@ -101,16 +99,17 @@ def _sanitize_dialog_segment(text: str) -> str:
         return text
     return _ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
 
+
 # Bound the per-update edit rate on the placeholder message so we don't
 # burn Discord rate-limit budget on a long answer. The SDK path uses 1s;
 # match it.
 _DISCORD_EDIT_INTERVAL = 1.0
 
 # Hard ceiling on a single turn end-to-end. Discord CLI replies run with
-# extended thinking (`--effort max`, see the
+# extended thinking (`--effort xhigh`, see the
 # _build_claude_argv calls below), which can reason for minutes on hard
 # questions — so match the dashboard's 1800s thinking cap. The old 600s
-# assumed thinking was off and would kill a max-effort turn mid-reason.
+# assumed thinking was off and would kill a deep-reasoning turn mid-reason.
 # Still bounded so a runaway subprocess can't hold the channel lock forever.
 _DISCORD_STREAM_TIMEOUT = 1800.0
 
@@ -287,10 +286,7 @@ async def call_claude_cli_streaming(
         # Caller has a fallback in non-CLI mode, but in CLI mode we have
         # nowhere to fall back to. Send the operator-actionable message
         # so the user sees something rather than a silent failure.
-        msg = (
-            "⚠️ Claude CLI ไม่พร้อมใช้งาน "
-            f"({reason}). กรุณาให้แอดมินตรวจสอบ `claude` CLI"
-        )
+        msg = f"⚠️ Claude CLI ไม่พร้อมใช้งาน ({reason}). กรุณาให้แอดมินตรวจสอบ `claude` CLI"
         with contextlib.suppress(Exception):
             await send_channel.send(msg, delete_after=30)
         return "", "", []
@@ -378,7 +374,7 @@ async def call_claude_cli_streaming(
                 session_id=session_id,
                 allow_read_for_images=False,
                 allow_edit_tools=False,
-                # Discord replies think at max effort, same as a dashboard
+                # Discord replies think at xhigh effort, same as a dashboard
                 # conversation with thinking enabled. Subscription mode redacts
                 # the reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the model still spends real reasoning effort.
@@ -426,13 +422,9 @@ async def call_claude_cli_streaming(
                 # Surface a clear message rather than silently returning
                 # whatever partial text was accumulated.
                 if accumulated_text:
-                    accumulated_text += (
-                        "\n\n*[การตอบถูกตัดเนื่องจากใช้เวลานานเกินไป]*"
-                    )
+                    accumulated_text += "\n\n*[การตอบถูกตัดเนื่องจากใช้เวลานานเกินไป]*"
                 else:
-                    accumulated_text = (
-                        "⚠️ Claude CLI ใช้เวลาตอบนานเกินกำหนด กรุณาลองใหม่"
-                    )
+                    accumulated_text = "⚠️ Claude CLI ใช้เวลาตอบนานเกินกำหนด กรุณาลองใหม่"
                 break
             except _OverloadedError:
                 # Transient Anthropic overload (429/529). claude already retried
@@ -441,9 +433,7 @@ async def call_claude_cli_streaming(
                     "Claude CLI: Anthropic API overloaded for channel %s",
                     channel_id,
                 )
-                accumulated_text = (
-                    "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
-                )
+                accumulated_text = "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
                 break
             except Exception:
                 logger.exception("Claude CLI subprocess failed for channel %s", channel_id)
@@ -519,7 +509,7 @@ async def call_claude_cli(
                 session_id=session_id,
                 allow_read_for_images=False,
                 allow_edit_tools=False,
-                # Discord replies think at max effort, same as a dashboard
+                # Discord replies think at xhigh effort, same as a dashboard
                 # conversation with thinking enabled. Subscription mode redacts
                 # the reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the model still spends real reasoning effort.
@@ -557,9 +547,7 @@ async def call_claude_cli(
                 break
             except _OverloadedError:
                 logger.warning("Claude CLI: Anthropic API overloaded (non-stream)")
-                accumulated_text = (
-                    "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
-                )
+                accumulated_text = "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
                 break
             except Exception:
                 logger.exception("Claude CLI subprocess failed (non-stream)")

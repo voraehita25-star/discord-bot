@@ -145,9 +145,7 @@ def _resolve_and_check_sync(host: str) -> tuple[bool, str]:
     safer than letting an attacker's host get one good answer through.
     """
     try:
-        results = socket.getaddrinfo(
-            host, None, proto=socket.IPPROTO_TCP, type=socket.SOCK_STREAM
-        )
+        results = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP, type=socket.SOCK_STREAM)
     except (socket.gaierror, OSError, UnicodeError) as exc:
         return False, f"resolve ไม่สำเร็จ: {exc.__class__.__name__}"
     seen_private = False
@@ -164,9 +162,7 @@ def _resolve_and_check_sync(host: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def is_url_query_safe_async(
-    query: str, *, resolve_timeout: float = 2.0
-) -> tuple[bool, str]:
+async def is_url_query_safe_async(query: str, *, resolve_timeout: float = 2.0) -> tuple[bool, str]:
     """Async wrapper: literal-IP/scheme check + DNS-resolution check.
 
     Adds a thread-pool DNS resolution pass so attacker-controlled DNS

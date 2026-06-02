@@ -1,7 +1,7 @@
 # AI Core Module
 
-> Last Updated: May 29, 2026
-> Version: 3.4.0
+> Last Updated: June 2, 2026
+> Version: 3.4.2
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.8 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
@@ -204,7 +204,7 @@ python -m pytest tests/test_webhooks.py -v
 
 - **Default model → `claude-opus-4-8`** across `api/dashboard_config.py`,
   `api/api_failover.py` health check, and `data/constants_env.py`.
-- **`CLAUDE_EFFORT` defaults to `max`** with adaptive thinking; effort is now
+- **`CLAUDE_EFFORT` defaults to `xhigh`** with adaptive thinking; effort is now
   forwarded on the Discord API path too, not just the dashboard.
 - **Adaptive-thinking detection hardened** — extracted `_uses_adaptive_thinking()`;
   Opus 4.7+/4.8 (adaptive-only) no longer fall through to the removed
@@ -222,9 +222,6 @@ Three rounds of audits surfaced 17 bugs; key behavioural fixes:
   sessions where `claude -p --resume` already replays it. Without this,
   edits to long-term memory were not reflected on the next CLI turn until
   the bot restarted.
-- **Memory cache invalidation hooks.** `dashboard_handlers.save_dashboard_memory`
-  and `delete_dashboard_memory` now call `invalidate_user_context_cache(None)`
-  so the next chat turn rebuilds context with the current memory list.
 - **`_CONVERSATION_LOCKS` capped at 500.** The CLI session-lock dict was
   unbounded; now LRU-evicts oldest entries past the cap.
 - **`token_tracker` is fully tz-aware.** `_aware_now()` / `_ensure_aware()`

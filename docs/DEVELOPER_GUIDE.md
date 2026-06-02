@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** May 25, 2026
-> **Version:** 3.4.0
+> **Last Updated:** June 2, 2026
+> **Version:** 3.4.2
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 101 Python test files (3,371 tests) + 10 vitest files (189 frontend tests) + 8 Playwright spec files (73 e2e + a11y + visual regression tests)
+> **Total Files:** 98 Python test files (3,143 tests) + 10 vitest files (190 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -24,7 +24,7 @@ Discord Bot ที่รวม AI Chat (Claude เป็นหลัก + Gemini
 
 ---
 
-## 📁 Directory Structure (222 Python Files)
+## 📁 Directory Structure (233 Python Files)
 
 ```text
 BOT/
@@ -67,7 +67,7 @@ BOT/
 │       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (Max subscription). Toggle with CLAUDE_BACKEND=cli
 │       │   ├── dashboard_common.py     # Shared helpers (timestamps, persona+context builder, memory cache)
 │       │   ├── dashboard_config.py     # Dashboard env config
-│       │   ├── dashboard_handlers.py   # Conversation/memory CRUD with invalidate_user_context_cache hooks
+│       │   ├── dashboard_handlers.py   # Conversation CRUD with invalidate_user_context_cache hooks
 │       │   └── document_extractor.py   # PDF/DOCX/text extraction → dashboard_document_memories
 │       │
 │       ├── core/             # 🏗️ Core Components
@@ -182,7 +182,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (3,371 tests in 101 files)
+├── tests/                    # 🧪 Python test suite (3,143 tests in 98 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -238,7 +238,7 @@ BOT/
 │   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
 │   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
 │   │       ├── search.ts, prism.ts, image-attach.ts, document-attach.ts, export-picker.ts
-│   │       └── *.test.ts     # 10 vitest files (189 tests)
+│   │       └── *.test.ts     # 10 vitest files (190 tests)
 │   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI
 │   │   ├── _fixtures/mock-tauri.ts      # Tauri IPC shim + WS mock + page-error tracker
 │   │   ├── dashboard-smoke.spec.ts      # 18 smoke tests covering UI fixes
@@ -263,9 +263,8 @@ BOT/
 ├── rust_extensions/          # 🦀 Rust Native Extensions
 │   ├── Cargo.toml            # Workspace config
 │   ├── rag_engine/           # SIMD vector similarity
-│   │   ├── src/lib.rs        # PyO3 bindings
-│   │   ├── src/cosine.rs     # SIMD cosine similarity
-│   │   └── src/storage.rs    # Memory-mapped storage
+│   │   ├── src/lib.rs        # PyO3 bindings + in-memory store
+│   │   └── src/cosine.rs     # SIMD cosine similarity
 │   └── media_processor/      # Image processing
 │       ├── src/lib.rs        # PyO3 bindings
 │       ├── src/resize.rs     # Lanczos resizing
@@ -836,7 +835,7 @@ async def mycommand(self, ctx):
 
 ## ⚠️ Known Gotchas
 
-1. **Lock Timeout:** Uses `asyncio.wait_for()` with 30s timeout (see `LOCK_TIMEOUT` in `cogs/ai_core/data/constants.py`)
+1. **Lock Timeout:** Uses `asyncio.wait_for()` with 180s timeout (see `LOCK_TIMEOUT` in `cogs/ai_core/data/constants.py`)
 2. **Short Response Detection:** `detect_refusal()` only checks patterns, not length
 3. **Streaming Timeout:** 30s for the initial chunk (`STREAMING_TIMEOUT_INITIAL`), falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
@@ -852,7 +851,7 @@ async def mycommand(self, ctx):
 14. **Dashboard Auth:** WebSocket dashboard requires `DASHBOARD_WS_TOKEN` env var for authentication; unrestricted mode gated behind `DASHBOARD_ALLOW_UNRESTRICTED`
 15. **Lock Safety:** `asyncio.shield()` used for lock acquisition to avoid known CPython deadlock (#42130); `ShutdownManager` defers Event/Lock creation to correct event loop
 16. **Mention Sanitization:** Both `sanitization.py` and webhook `send_as_webhook()` sanitize role mentions (`<@&ID>`) and user mentions (`<@ID>`) with zero-width space
-17. **Atomic Persistence:** RAG engine uses temp-file+rename for atomic saves; VectorStorage flushes mmap after every push
+17. **Atomic Persistence:** RAG engine persists its in-memory store via temp-file+rename (write to a temp file, then atomic rename) so a crash mid-save can't corrupt the index
 18. **AllowedMentions Default:** Bot-level `AllowedMentions(everyone=False, roles=False)` prevents AI-generated @everyone/@here from mass-pinging
 19. **Sensitive Data Filter:** Logger filters Discord tokens, API keys, and secrets from all log output via regex patterns
 20. **Path Traversal Guard:** `safe_delete()` validates resolved paths are within `temp/` directory before deletion
@@ -1077,7 +1076,6 @@ async def mycommand(self, ctx):
 | GC deadlock in WeakRefCache | Changed `threading.Lock()` to `threading.RLock()` | `memory_manager.py` |
 | Sync `_get_backoff_state()` called in async `retry_async()` | Changed to `await _get_backoff_state_async()` | `error_recovery.py` |
 | `asyncio.Event()`/`Lock()` bound to wrong event loop at import | Lazy creation via `_get_shutdown_event()` / `_get_lock()` getters | `shutdown_manager.py` |
-| Mmap data loss on crash | Added `mmap.flush()` after every `push()` | `storage.rs` |
 | Non-atomic JSON save in RAG engine | Atomic write via temp file + rename with cleanup | `lib.rs` |
 | Music queue lost on cog reload | Save all queues before clearing in `cog_unload` | `cog.py` |
 | Cross-guild retry state leak | Per-guild retry tracking (`_play_next_retries_{guild_id}`) | `cog.py` |
@@ -1089,7 +1087,6 @@ async def mycommand(self, ctx):
 | `CancelledError` conflated with message interrupts | New `_NewMessageInterrupt` exception class | `logic.py` |
 | Naive `datetime.now()` in history | Changed to `datetime.now(datetime.timezone.utc)` | `logic.py` |
 | O(n²) shuffle on deque | Convert to list, shuffle, extend back — O(n) | `queue.py` |
-| Keywords not updated on re-add | Remove old keyword associations, re-index new text | `index.rs` |
 | Skip-if-smaller applied to Fill/Stretch modes | Restrict check to `Fit` mode only via `matches!()` | `resize.rs` |
 | GIF frame detection via GCE only (optional per spec) | Count Image Descriptor (0x2C) blocks instead | `gif.rs` |
 | Stale entries accumulate on load | `entries.clear()` before loading from file | `lib.rs` |

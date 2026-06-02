@@ -275,6 +275,11 @@ class BotHealthData:
             user_count = self.user_count
             cogs_loaded = self.cogs_loaded.copy()
             last_heartbeat = self.last_heartbeat
+            # Copy these under the lock too: a worker thread's json.dumps would
+            # otherwise iterate them while check_service mutates service_health
+            # on the event-loop thread ("dictionary changed size during iteration").
+            service_health = dict(self.service_health)
+            feature_flags = dict(self.feature_flags)
 
         with self._counter_lock:
             message_count = self.message_count
@@ -310,8 +315,8 @@ class BotHealthData:
                 "last": last_heartbeat.isoformat(),
                 "age_seconds": int((datetime.now(timezone.utc) - last_heartbeat).total_seconds()),
             },
-            "services": self.service_health,
-            "features": self.feature_flags,
+            "services": service_health,
+            "features": feature_flags,
         }
 
     def is_healthy(self) -> bool:

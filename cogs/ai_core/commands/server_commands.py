@@ -112,7 +112,6 @@ except ImportError:
     AUDIT_AVAILABLE = False
     log_channel_change = None  # type: ignore[assignment]
     log_role_change = None  # type: ignore[assignment]
-    log_admin_action = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)

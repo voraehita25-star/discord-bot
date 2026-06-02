@@ -137,9 +137,7 @@ async def _get_shared_session() -> aiohttp.ClientSession:
             # connect handshake hits the proxy IP first, which the
             # resolver never sees). Hardening: refuse to honour
             # process-environment proxy hints.
-            _shared_session = aiohttp.ClientSession(
-                connector=connector, trust_env=False
-            )
+            _shared_session = aiohttp.ClientSession(connector=connector, trust_env=False)
         return _shared_session
 
 

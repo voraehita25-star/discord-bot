@@ -945,9 +945,7 @@ class MemorySystem:
                 # Mark as "built" with empty state so we don't re-enter this
                 # branch on every search and re-time-out. The next periodic
                 # rebuild (or an explicit ``_invalidate_index``) gets us back.
-                logger.warning(
-                    "RAG full-rebuild DB query timed out; marking index as built-empty"
-                )
+                logger.warning("RAG full-rebuild DB query timed out; marking index as built-empty")
                 self._index_built = True
                 return
             if not all_memories:
@@ -993,6 +991,16 @@ class MemorySystem:
                 self._faiss_index.save_to_disk()
                 self._evict_cache_if_needed()
                 logger.info("🚀 FAISS index built with %d memories", len(vectors))
+            else:
+                # Non-empty table but every embedding was invalid (wrong dim,
+                # unparseable, or missing id). Mark built anyway so search does
+                # not re-run this uncached full-table scan on every query.
+                # Mirrors the empty-table exit above.
+                self._index_built = True
+                logger.warning(
+                    "RAG: no valid embeddings among %d rows — index marked built (empty)",
+                    len(all_memories),
+                )
 
     def _schedule_index_save(self, delay: float = 30.0) -> None:
         """Schedule a debounced save of FAISS index (non-blocking)."""
@@ -1373,9 +1381,7 @@ class MemorySystem:
         # stored still surfaces its top-k cosine matches as prompt noise. The
         # linear fallback already applies its own (stricter) floor, so this
         # mainly guards the FAISS path. Keyword hits below stay untouched.
-        semantic_results = self._apply_semantic_floor(
-            semantic_results, RAG_SEMANTIC_MIN_SIMILARITY
-        )
+        semantic_results = self._apply_semantic_floor(semantic_results, RAG_SEMANTIC_MIN_SIMILARITY)
 
         # Keyword search
         keyword_results = self._keyword_search(query, all_memories, limit * 2)

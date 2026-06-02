@@ -21,6 +21,7 @@ Run from the repo root::
 
 Exit code 0 = real Rust IPC round-trip works (bridge + import-map); 1 otherwise.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -128,7 +129,9 @@ def main() -> int:
             print(f"--- tauri-driver stderr ---\n{tail}")
 
     ok = a_ok and b_ok
-    print(f"RESULT: {'PASS — Rust IPC round-trip works (bridge + import-map)' if ok else f'FAIL (bridge={a_ok}, importmap={b_ok})'}")
+    print(
+        f"RESULT: {'PASS — Rust IPC round-trip works (bridge + import-map)' if ok else f'FAIL (bridge={a_ok}, importmap={b_ok})'}"
+    )
     return 0 if ok else 1
 
 

@@ -51,18 +51,6 @@ CLIENT_SCHEMAS: dict[str, dict] = {
         "required": {"type", "conversation_id"},
         "optional": {"format"},
     },
-    "save_memory": {
-        "required": {"type", "content"},
-        "optional": {"category"},
-    },
-    "get_memories": {
-        "required": {"type"},
-        "optional": {"category"},
-    },
-    "delete_memory": {
-        "required": {"type", "memory_id"},
-        "optional": set(),
-    },
     "get_profile": {
         "required": {"type"},
         "optional": set(),
@@ -98,14 +86,6 @@ SERVER_SCHEMAS: dict[str, dict] = {
     "conversation_deleted": {
         "required": {"type", "conversation_id"},
         "optional": set(),
-    },
-    "memories": {
-        "required": {"type", "memories"},
-        "optional": set(),
-    },
-    "memory_saved": {
-        "required": {"type"},
-        "optional": {"memory_id"},
     },
     "profile": {
         "required": {"type"},
@@ -197,19 +177,6 @@ class TestClientToServerContracts:
         msg = {"type": "delete_conversation", "conversation_id": "abc-123"}
         assert validate_message(msg, CLIENT_SCHEMAS) == []
 
-    def test_save_memory_valid(self):
-        msg = {"type": "save_memory", "content": "Remember this fact"}
-        assert validate_message(msg, CLIENT_SCHEMAS) == []
-
-    def test_save_memory_missing_content(self):
-        msg = {"type": "save_memory"}
-        errors = validate_message(msg, CLIENT_SCHEMAS)
-        assert any("content" in e for e in errors)
-
-    def test_delete_memory_valid(self):
-        msg = {"type": "delete_memory", "memory_id": "mem-456"}
-        assert validate_message(msg, CLIENT_SCHEMAS) == []
-
     def test_unknown_type(self):
         msg = {"type": "nonexistent_action"}
         errors = validate_message(msg, CLIENT_SCHEMAS)
@@ -256,10 +223,6 @@ class TestServerToClientContracts:
             "conversation_id": "abc-123",
             "messages": [],
         }
-        assert validate_message(msg, SERVER_SCHEMAS) == []
-
-    def test_memories_response(self):
-        msg = {"type": "memories", "memories": [{"id": "1", "content": "fact"}]}
         assert validate_message(msg, SERVER_SCHEMAS) == []
 
     def test_profile_response(self):

@@ -6,20 +6,20 @@
 //! - Base64 encoding/decoding
 //! - Parallel batch processing
 
-mod resize;
-mod gif;
 mod encode;
 mod errors;
+mod gif;
+mod resize;
 
-use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
-use pyo3::types::PyBytes;
 use image::GenericImageView;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
-pub use resize::{resize_image, ResizeMode};
-pub use gif::{is_animated_gif, get_gif_frame_count};
-pub use encode::{to_base64, from_base64};
+pub use encode::{from_base64, to_base64};
 pub use errors::MediaError;
+pub use gif::{get_gif_frame_count, is_animated_gif};
+pub use resize::{resize_image, ResizeMode};
 
 /// Image data container
 #[pyclass(from_py_object)]
@@ -40,7 +40,13 @@ pub struct ImageData {
 impl ImageData {
     #[new]
     fn new(data: Vec<u8>, width: u32, height: u32, channels: u8, format: String) -> Self {
-        Self { data, width, height, channels, format }
+        Self {
+            data,
+            width,
+            height,
+            channels,
+            format,
+        }
     }
 
     fn get_data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
@@ -68,7 +74,10 @@ impl MediaProcessor {
     #[new]
     #[pyo3(signature = (max_dimension=1024, jpeg_quality=85))]
     fn new(max_dimension: u32, jpeg_quality: u8) -> Self {
-        Self { max_dimension, jpeg_quality }
+        Self {
+            max_dimension,
+            jpeg_quality,
+        }
     }
 
     /// Load image from bytes
@@ -96,7 +105,13 @@ impl MediaProcessor {
     }
 
     /// Resize image to fit within max dimensions
-    fn resize<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, max_width: Option<u32>, max_height: Option<u32>) -> PyResult<ImageData> {
+    fn resize<'py>(
+        &self,
+        _py: Python<'py>,
+        data: &Bound<'py, PyBytes>,
+        max_width: Option<u32>,
+        max_height: Option<u32>,
+    ) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         check_bomb_dimensions(bytes)?;
         let max_w = max_width.unwrap_or(self.max_dimension);
@@ -109,7 +124,13 @@ impl MediaProcessor {
     }
 
     /// Resize image to exact dimensions (with cropping)
-    fn resize_exact<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, width: u32, height: u32) -> PyResult<ImageData> {
+    fn resize_exact<'py>(
+        &self,
+        _py: Python<'py>,
+        data: &Bound<'py, PyBytes>,
+        width: u32,
+        height: u32,
+    ) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         check_bomb_dimensions(bytes)?;
 
@@ -120,7 +141,12 @@ impl MediaProcessor {
     }
 
     /// Create thumbnail
-    fn thumbnail<'py>(&self, _py: Python<'py>, data: &Bound<'py, PyBytes>, size: u32) -> PyResult<ImageData> {
+    fn thumbnail<'py>(
+        &self,
+        _py: Python<'py>,
+        data: &Bound<'py, PyBytes>,
+        size: u32,
+    ) -> PyResult<ImageData> {
         let bytes = data.as_bytes();
         check_bomb_dimensions(bytes)?;
 
@@ -145,7 +171,8 @@ impl MediaProcessor {
             .with_guessed_format()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let dims = reader.into_dimensions()
+        let dims = reader
+            .into_dimensions()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         Ok(dims)
@@ -160,8 +187,7 @@ impl MediaProcessor {
     /// Decode base64 to bytes
     #[staticmethod]
     fn decode_base64<'py>(py: Python<'py>, encoded: &str) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = from_base64(encoded)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = from_base64(encoded).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -186,8 +212,7 @@ impl MediaProcessor {
         let mut output = Vec::with_capacity(images.len());
 
         for chunk in images.chunks(BATCH_CHUNK_SIZE) {
-            let bytes_list: Vec<Vec<u8>> =
-                chunk.iter().map(|b| b.as_bytes().to_vec()).collect();
+            let bytes_list: Vec<Vec<u8>> = chunk.iter().map(|b| b.as_bytes().to_vec()).collect();
             // Enforce the 100MP decompression-bomb cap on every input
             // before we hand the chunk to rayon. The single-image
             // entry points (load / resize / resize_exact / thumbnail)
@@ -200,7 +225,9 @@ impl MediaProcessor {
             let chunk_results = py.detach(|| {
                 bytes_list
                     .par_iter()
-                    .map(|bytes| resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality))
+                    .map(|bytes| {
+                        resize_image(bytes, max_width, max_height, ResizeMode::Fit, quality)
+                    })
                     .collect::<Result<Vec<ImageData>, _>>()
             });
             let chunk_results = chunk_results.map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -244,10 +271,7 @@ fn check_bomb_dimensions(bytes: &[u8]) -> PyResult<()> {
     match reader.into_dimensions() {
         Ok((w, h)) => {
             let product = (w as u64).checked_mul(h as u64).ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "Image dimensions overflow: {}x{}",
-                    w, h
-                ))
+                PyValueError::new_err(format!("Image dimensions overflow: {}x{}", w, h))
             })?;
             if product > 100_000_000 {
                 return Err(PyValueError::new_err(format!(

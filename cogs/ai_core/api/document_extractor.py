@@ -315,10 +315,9 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
                 # writes any entry to disk would inherit a traversal sink
                 # if we didn't filter at the source.
                 entry_name = info.filename or ""
-                if (
-                    entry_name.startswith(("/", "\\"))
-                    or ".." in entry_name.replace("\\", "/").split("/")
-                ):
+                if entry_name.startswith(("/", "\\")) or ".." in entry_name.replace(
+                    "\\", "/"
+                ).split("/"):
                     logger.warning(
                         "DOCX %s rejected: suspicious entry name %r",
                         filename,

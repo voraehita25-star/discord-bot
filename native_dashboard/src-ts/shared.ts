@@ -502,7 +502,7 @@ function setupButtonRipple(): void {
         const target = e.target as HTMLElement | null;
         if (!target) return;
         const btn = target.closest<HTMLElement>(
-            '.btn, .nav-item, .modal-close, .btn-icon, .role-card, .memory-category-btn'
+            '.btn, .nav-item, .modal-close, .btn-icon, .role-card'
         );
         if (!btn) return;
         // Respect disabled state (both HTML attr and aria-disabled)

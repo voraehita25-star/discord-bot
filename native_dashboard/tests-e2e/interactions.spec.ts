@@ -16,14 +16,14 @@ test.beforeEach(async ({ page }) => {
 
 test.describe('Navigation interactions', () => {
     test('clicking sidebar nav switches page', async ({ page }) => {
-        await page.click('[data-page="memories"]');
-        await expect(page.locator('#page-memories')).toHaveClass(/active/);
+        await page.click('[data-page="config"]');
+        await expect(page.locator('#page-config')).toHaveClass(/active/);
         await page.click('[data-page="logs"]');
         await expect(page.locator('#page-logs')).toHaveClass(/active/);
     });
 
     test('Ctrl+1 keyboard shortcut switches to status', async ({ page }) => {
-        await page.click('[data-page="memories"]');
+        await page.click('[data-page="logs"]');
         await page.keyboard.press('Control+1');
         await expect(page.locator('#page-status')).toHaveClass(/active/);
     });
@@ -254,7 +254,7 @@ test.describe('Console error vigilance during interaction', () => {
         page.on('console', (msg) => {
             if (msg.type() === 'error') errors.push(msg.text());
         });
-        for (const dataPage of ['chat', 'memories', 'logs', 'connections', 'config', 'about', 'status']) {
+        for (const dataPage of ['chat', 'logs', 'connections', 'config', 'about', 'status']) {
             const item = page.locator(`[data-page="${dataPage}"]`);
             if ((await item.count()) > 0) {
                 await item.click();

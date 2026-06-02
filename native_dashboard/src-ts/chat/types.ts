@@ -44,13 +44,6 @@ export interface RolePreset {
     color: string;
 }
 
-export interface Memory {
-    id: string;
-    content: string;
-    category: string;
-    created_at: string;
-}
-
 export interface NativeConversationDetail {
     conversation: ChatConversation;
     messages: ChatMessage[];

@@ -123,7 +123,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Python suite (3,371 pytest); native_dashboard/tests-e2e/ for Playwright (73 e2e + a11y + visual)
+├── tests/              # Python suite (3,143 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -221,14 +221,13 @@ A Tauri-based desktop application for managing the bot with Korean UI support.
 - 📎 **Document Attachments** — Drag-drop PDF, DOCX, or any text/code file (20+ types). 32 MB per file, 5 per message. Claude reads PDFs natively (text + embedded images).
 - 📂 **Persistent Document Memory** — Extracted text saved to SQLite per-conversation; auto-injected into every AI turn so you don't re-upload RP material.
 - ✏️ **File Editor** — 📎 button in chat header shows per-conversation file list. Inline editor for filename + text content, with Ctrl+S save + delete.
-- 🧠 **Long-term Memory** — Add / browse / delete free-form memories the bot recalls.
 - 🎨 **3D UI Polish** — Layered shadows, cursor-tracking tilt, ripple clicks, glassmorphism noise, custom scrollbars, skeleton loaders, number count-up, chart entrance.
 - 🌸 **Sakura Animation** — Cherry-blossom petals with mouse parallax (toggleable).
 - 🔊 **Sound + Haptic** — Optional synth click + vibration on button press (off by default).
 - 🌙 **Dark / Light Theme** — Pink/purple anime palette with localStorage persistence.
 - 📈 **Real-time Performance Charts** — Memory & message count graphs.
 - 🔔 **Toast Notifications** — Animated slide-in confirmations / errors.
-- ⌨️ **Keyboard Shortcuts** — Ctrl+1-6 nav, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter send, Ctrl+S save-in-editor, Ctrl+F search-in-chat.
+- ⌨️ **Keyboard Shortcuts** — Ctrl+1-5 nav, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter send, Ctrl+S save-in-editor, Ctrl+F search-in-chat.
 
 ### Quick Start
 
@@ -308,4 +307,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.0 | **Python:** 3.14+ | **Tests:** 3,371 pytest ✅ + 189 vitest ✅ + 73 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** May 29, 2026
+**Version:** 3.4.2 | **Python:** 3.14+ | **Tests:** 3,143 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 2, 2026

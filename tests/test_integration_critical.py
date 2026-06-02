@@ -80,6 +80,7 @@ class TestWebSocketAuth:
         server._auth_deadline = 5.0
         # Per-IP failed-auth tracker (added for H5 brute-force backoff)
         server._auth_failures = {}
+        server._auth_lockouts = {}
         server._AUTH_FAIL_WINDOW = 60.0
         server._AUTH_FAIL_THRESHOLD = 5
         server._AUTH_FAIL_LOCKOUT = 300.0
@@ -100,6 +101,7 @@ class TestWebSocketAuth:
         server.MAX_CLIENTS = 20
         server._authenticated_clients = set()
         server._auth_failures = {}
+        server._auth_lockouts = {}
         server._AUTH_FAIL_WINDOW = 60.0
         server._AUTH_FAIL_THRESHOLD = 5
         server._AUTH_FAIL_LOCKOUT = 300.0

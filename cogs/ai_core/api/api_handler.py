@@ -81,19 +81,6 @@ _CLAUDE_MAX_CONTENT_RETRIES = 5
 _CLAUDE_MAX_API_RETRIES = 8  # Max retries for transient API errors (rate limit, server error)
 _CLAUDE_MAX_STREAM_RETRIES = 6  # Max retries for streaming failures
 
-# Per-attempt cap on the user-facing wait. With base=1.0s and max=30s,
-# 5 content retries at exponential backoff adds up to ~62s of silent
-# wait before the fallback path runs. Worst-case latency feels like
-# the bot hung; surface a progress signal once delays accumulate past
-# this threshold.
-_CLAUDE_LONG_WAIT_THRESHOLD = 10.0
-
-
-def _claude_long_wait(attempt: int) -> bool:
-    """Return True when the next retry's delay crosses the user-perceptible
-    "feels like the bot is hung" threshold."""
-    return _claude_retry_delay_seconds(attempt) >= _CLAUDE_LONG_WAIT_THRESHOLD
-
 
 class _ClaudeMessage(TypedDict):
     role: ClaudeMessageRole
@@ -1005,7 +992,10 @@ async def call_claude_api(
     function_calls: list[Any] = []
     content_retry_attempt = 0
     api_attempt = 1
-    _api_start_time = time.time()
+    # perf_tracker.record() computes (perf_counter() - start), so the start must
+    # come from the SAME monotonic clock. Using time.time() (wall-clock epoch)
+    # here produced a ~ -1.7e9s duration that poisoned the claude_api stats.
+    _api_start_time = time.perf_counter()
 
     # Deep copy contents and config to avoid mutating caller's data during retry/fallback
     contents = copy.deepcopy(contents)
@@ -1041,7 +1031,7 @@ async def call_claude_api(
             if thinking_config:
                 api_kwargs["thinking"] = thinking_config
 
-            # Forward effort (Opus-tier reasoning depth, defaults to "max"). On
+            # Forward effort (Opus-tier reasoning depth, defaults to "xhigh"). On
             # adaptive-thinking models (Opus 4.7+/4.8) effort governs how deeply
             # the model reasons; only sent when configured to a valid tier.
             if CLAUDE_EFFORT:

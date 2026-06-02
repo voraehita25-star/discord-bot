@@ -86,12 +86,10 @@ from .dashboard_handlers import (
     handle_add_conversation_tag,
     handle_delete_conversation,
     handle_delete_document_memory,
-    handle_delete_memory,
     handle_delete_message,
     handle_edit_message,
     handle_export_conversation,
     handle_get_document_memory_content,
-    handle_get_memories,
     handle_get_profile,
     handle_like_message,
     handle_list_all_tags,
@@ -101,7 +99,6 @@ from .dashboard_handlers import (
     handle_pin_message,
     handle_remove_conversation_tag,
     handle_rename_conversation,
-    handle_save_memory,
     handle_save_profile,
     handle_star_conversation,
     handle_update_document_memory,
@@ -128,7 +125,6 @@ class DashboardWebSocketServer:
             "auth",
             "list_conversations",
             "load_conversation",
-            "get_memories",
             "get_profile",
             # Dispatch routes incoming type "list_tags" (not "list_all_tags")
             # to handle_list_all_tags. The exempt key has to match the
@@ -186,6 +182,10 @@ class DashboardWebSocketServer:
         self._AUTH_FAIL_THRESHOLD = 5  # fails in window before lockout
         self._AUTH_FAIL_LOCKOUT = 300.0  # seconds locked out after threshold
         self._auth_failures: dict[str, deque[float]] = {}
+        # Absolute monotonic unlock time per IP. Decoupled from _auth_failures so
+        # a triggered lockout lasts the full _AUTH_FAIL_LOCKOUT instead of being
+        # released early when the windowed failure timestamps age out (~60s).
+        self._auth_lockouts: dict[str, float] = {}
         # Re-auth bruteforce throttle. The connect-deadline path covers
         # the first auth attempt, but once a WS is established a client
         # can keep sending {type:"auth"} messages indefinitely. Track
@@ -515,28 +515,16 @@ class DashboardWebSocketServer:
         # the token (10–20 chars of entropy is not enough against unbounded
         # online guessing). 5 fails in 60s → 5-minute lockout per IP.
         now = time.monotonic()
-        prior = self._auth_failures.get(client_ip)
-        if prior is None:
-            prior = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
-            self._auth_failures[client_ip] = prior
-        # Drop attempts that have aged out of the window.
-        # ``deque.popleft`` is O(1) per drop; the previous list-comp was
-        # O(n) per connection attempt and dominated CPU under a flood.
-        cutoff_age = self._AUTH_FAIL_WINDOW
-        while prior and now - prior[0] >= cutoff_age:
-            prior.popleft()
-        # Periodic dict-cleanup pass: if there are many empty buckets,
-        # drop them all. This caps dict growth across days/weeks of
-        # attacker reconnect attempts without paying the cost on the
-        # hot path of every connection.
-        if len(self._auth_failures) > 1024:
-            empty_keys = [k for k, v in self._auth_failures.items() if not v]
-            for k in empty_keys:
-                self._auth_failures.pop(k, None)
-        if len(prior) >= self._AUTH_FAIL_THRESHOLD:
-            oldest = prior[0]
-            unlock_in = self._AUTH_FAIL_LOCKOUT - (now - oldest)
-            if unlock_in > 0:
+
+        # Hard lockout gate, decoupled from the rolling fail-count window so the
+        # full _AUTH_FAIL_LOCKOUT is actually enforced. Previously the lockout was
+        # tied to the same deque the 60s window prunes, so all timestamps aged out
+        # at ~60s and released the gate — the advertised 5-minute lockout never
+        # held and the unlock_in<=0 reset branch was unreachable.
+        lockout_until = self._auth_lockouts.get(client_ip)
+        if lockout_until is not None:
+            if now < lockout_until:
+                unlock_in = lockout_until - now
                 logger.warning(
                     "⚠️ Rejected WS connection: auth-fail lockout for %s (retry in %.0fs)",
                     client_ip,
@@ -547,8 +535,27 @@ class DashboardWebSocketServer:
                     text=f"Too many failed authentications; retry in {int(unlock_in)}s",
                     headers={"Retry-After": str(max(1, int(unlock_in)))},
                 )
-            # Lockout expired — reset and continue.
-            prior.clear()
+            # Lockout expired — clear it and the stale failure bucket.
+            self._auth_lockouts.pop(client_ip, None)
+            self._auth_failures.pop(client_ip, None)
+
+        # Maintain the windowed failure counter (drives WHEN a lockout starts).
+        # ``deque.popleft`` is O(1) per drop; a list-comp here dominated CPU
+        # under a brute-force flood.
+        prior = self._auth_failures.get(client_ip)
+        if prior is not None:
+            cutoff_age = self._AUTH_FAIL_WINDOW
+            while prior and now - prior[0] >= cutoff_age:
+                prior.popleft()
+        # Periodic dict-cleanup: drop empty fail buckets and expired lockouts so
+        # neither grows unbounded across days/weeks of attacker reconnects.
+        if len(self._auth_failures) > 1024:
+            empty_keys = [k for k, v in self._auth_failures.items() if not v]
+            for k in empty_keys:
+                self._auth_failures.pop(k, None)
+        if len(self._auth_lockouts) > 1024:
+            for k in [k for k, until in self._auth_lockouts.items() if now >= until]:
+                self._auth_lockouts.pop(k, None)
 
         # Track whether client authenticated at upgrade time.
         # The outer ``if expected_token:`` wrapper here is dead defense —
@@ -585,15 +592,19 @@ class DashboardWebSocketServer:
                     fail_bucket = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
                     self._auth_failures[client_ip] = fail_bucket
                 fail_bucket.append(time.monotonic())
+                # Threshold reached → start the full-duration lockout.
+                if len(fail_bucket) >= self._AUTH_FAIL_THRESHOLD:
+                    self._auth_lockouts[client_ip] = time.monotonic() + self._AUTH_FAIL_LOCKOUT
                 logger.warning(
                     "⚠️ Rejected WebSocket connection: invalid auth token (from %s)", peername
                 )
                 return web.Response(status=401, text="Unauthorized: Invalid token")
             else:
                 _upgrade_authenticated = True
-                # Successful auth — clear the bucket so a legitimate user
-                # who fat-fingered the token a few times isn't locked out.
+                # Successful auth — clear the bucket AND any lockout so a
+                # legitimate user who fat-fingered the token isn't locked out.
                 self._auth_failures.pop(client_ip, None)
+                self._auth_lockouts.pop(client_ip, None)
 
         # Allow connections from localhost only (127.0.0.1 or localhost)
         # Use exact prefix matching to prevent subdomain bypass (e.g., evil-localhost.com)
@@ -759,10 +770,11 @@ class DashboardWebSocketServer:
                         if hmac.compare_digest(str(token), expected_token):
                             self._authenticated_clients.add(client_id)
                             auth_received = True
-                            # Successful auth — clear the per-IP fail bucket
-                            # so a legitimate user who fat-fingered their
-                            # token a couple times isn't locked out.
+                            # Successful auth — clear the per-IP fail bucket and
+                            # any lockout so a legitimate user who fat-fingered
+                            # their token a couple times isn't locked out.
                             self._auth_failures.pop(client_ip, None)
+                            self._auth_lockouts.pop(client_ip, None)
                             logger.debug("✅ Client %s authenticated via message", client_id)
                         else:
                             # Record this attempt against the IP bucket so
@@ -773,6 +785,11 @@ class DashboardWebSocketServer:
                                 fail_bucket = deque(maxlen=self._AUTH_FAIL_THRESHOLD)
                                 self._auth_failures[client_ip] = fail_bucket
                             fail_bucket.append(time.monotonic())
+                            # Threshold reached → start the full-duration lockout.
+                            if len(fail_bucket) >= self._AUTH_FAIL_THRESHOLD:
+                                self._auth_lockouts[client_ip] = (
+                                    time.monotonic() + self._AUTH_FAIL_LOCKOUT
+                                )
                             logger.warning("⚠️ Invalid auth token from client %s", client_id)
                             break
                     else:
@@ -922,6 +939,11 @@ class DashboardWebSocketServer:
                         asyncio.gather(*cancelled, return_exceptions=True),
                         timeout=5.0,
                     )
+            # The cancelled tasks' finally blocks decrement (re-creating) the
+            # _client_inflight entry popped above, leaving a {client_id: 0} entry.
+            # Pop again now they've unwound so it can't leak permanently (the key
+            # is a fresh per-connection uuid and this dict has no periodic prune).
+            self._client_inflight.pop(client_id, None)
             logger.info("👋 Dashboard client disconnected: %s", client_id)
 
         return ws
@@ -997,12 +1019,6 @@ class DashboardWebSocketServer:
             await handle_remove_conversation_tag(ws, data)
         elif msg_type == "list_tags":
             await handle_list_all_tags(ws, data)
-        elif msg_type == "save_memory":
-            await self.handle_save_memory(ws, data)
-        elif msg_type == "get_memories":
-            await self.handle_get_memories(ws, data)
-        elif msg_type == "delete_memory":
-            await self.handle_delete_memory(ws, data)
         elif msg_type == "list_conversation_documents":
             await handle_list_conversation_documents(ws, data)
         elif msg_type == "delete_document_memory":
@@ -1214,7 +1230,6 @@ class DashboardWebSocketServer:
             max_images=self.MAX_IMAGES,
             max_image_size_bytes=self.MAX_IMAGE_SIZE_BYTES,
             max_documents=self.MAX_DOCUMENTS,
-            max_document_size_bytes=self.MAX_DOCUMENT_SIZE_BYTES,
             stream_timeout=self.STREAM_TIMEOUT,
         )
 
@@ -1324,15 +1339,6 @@ class DashboardWebSocketServer:
 
     async def handle_export_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         await handle_export_conversation(ws, data)
-
-    async def handle_save_memory(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
-        await handle_save_memory(ws, data)
-
-    async def handle_get_memories(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
-        await handle_get_memories(ws, data)
-
-    async def handle_delete_memory(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
-        await handle_delete_memory(ws, data)
 
     async def handle_get_profile(self, ws: WebSocketResponse) -> None:
         await handle_get_profile(ws)

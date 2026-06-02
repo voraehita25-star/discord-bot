@@ -76,9 +76,7 @@ headers = {"Authorization": f"Bearer {key}"}
 first_of_month = datetime.now(timezone.utc).strftime("%Y-%m-01")
 
 try:
-    sub_resp = httpx.get(
-        f"{base}/v1/dashboard/billing/subscription", headers=headers, timeout=10
-    )
+    sub_resp = httpx.get(f"{base}/v1/dashboard/billing/subscription", headers=headers, timeout=10)
     # ``raise_for_status`` first so a 4xx HTML error body doesn't blow
     # up downstream as an opaque ``JSONDecodeError`` — the original
     # status code carries the actionable info (401 = bad key, 403 =

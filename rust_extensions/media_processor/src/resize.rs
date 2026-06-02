@@ -32,7 +32,9 @@ pub fn resize_image(
 ) -> Result<ImageData, MediaError> {
     // Validate dimensions to prevent panic in image crate
     if max_width == 0 || max_height == 0 {
-        return Err(MediaError::Encode("Dimensions must be greater than 0".to_string()));
+        return Err(MediaError::Encode(
+            "Dimensions must be greater than 0".to_string(),
+        ));
     }
 
     // Clamp dimensions to safe maximum to prevent extreme memory allocation
@@ -51,7 +53,8 @@ pub fn resize_image(
             if (w as u64) * (h as u64) > MAX_PIXEL_COUNT {
                 return Err(MediaError::Encode(format!(
                     "Image too large: {}x{} ({} MP, max {} MP)",
-                    w, h,
+                    w,
+                    h,
                     (w as u64 * h as u64) / 1_000_000,
                     MAX_PIXEL_COUNT / 1_000_000
                 )));
@@ -59,7 +62,8 @@ pub fn resize_image(
         }
         Err(e) => {
             return Err(MediaError::Encode(format!(
-                "Cannot determine image dimensions (possible decompression bomb): {}", e
+                "Cannot determine image dimensions (possible decompression bomb): {}",
+                e
             )));
         }
     }
@@ -86,7 +90,12 @@ pub fn resize_image(
             width: orig_w,
             height: orig_h,
             channels: img.color().channel_count(),
-            format: detect_format_from_image(&img),
+            // Report the TRUE format of the original bytes being returned (sniffed
+            // from magic bytes), not the png/jpeg guess from color type — otherwise a
+            // small WebP/GIF/BMP that skips resizing would be mislabeled.
+            format: image::guess_format(data)
+                .map(format_to_string)
+                .unwrap_or_else(|_| detect_format_from_image(&img)),
         });
     }
 
@@ -94,14 +103,12 @@ pub fn resize_image(
     let resized = match mode {
         ResizeMode::Fill => {
             // Crop to fill
-            let scale = f64::max(
-                new_w as f64 / orig_w as f64,
-                new_h as f64 / orig_h as f64,
-            );
+            let scale = f64::max(new_w as f64 / orig_w as f64, new_h as f64 / orig_h as f64);
             let scaled_w = (orig_w as f64 * scale).ceil().min(u32::MAX as f64) as u32;
             let scaled_h = (orig_h as f64 * scale).ceil().min(u32::MAX as f64) as u32;
 
-            let scaled = img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
+            let scaled =
+                img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
 
             // Get actual dimensions after resize for bounds check
             let (actual_w, actual_h) = scaled.dimensions();
@@ -118,9 +125,7 @@ pub fn resize_image(
         ResizeMode::Stretch => {
             img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
         }
-        ResizeMode::Fit => {
-            img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
-        }
+        ResizeMode::Fit => img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3),
     };
 
     // Encode result
@@ -130,7 +135,8 @@ pub fn resize_image(
 
     match format {
         ImageFormat::Jpeg => {
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
             resized.write_with_encoder(encoder)?;
         }
         ImageFormat::Png => {
@@ -141,7 +147,8 @@ pub fn resize_image(
         }
         _ => {
             // Default to JPEG
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
             resized.write_with_encoder(encoder)?;
         }
     }
@@ -164,7 +171,10 @@ fn calculate_fit_dimensions(orig_w: u32, orig_h: u32, max_w: u32, max_h: u32) ->
     if ratio >= 1.0 {
         (orig_w, orig_h)
     } else {
-        (((orig_w as f64 * ratio).round() as u32).max(1), ((orig_h as f64 * ratio).round() as u32).max(1))
+        (
+            ((orig_w as f64 * ratio).round() as u32).max(1),
+            ((orig_h as f64 * ratio).round() as u32).max(1),
+        )
     }
 }
 
@@ -191,5 +201,6 @@ fn format_to_string(format: ImageFormat) -> String {
         ImageFormat::Gif => "gif",
         ImageFormat::WebP => "webp",
         _ => "unknown",
-    }.to_string()
+    }
+    .to_string()
 }

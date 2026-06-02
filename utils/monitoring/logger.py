@@ -222,7 +222,7 @@ _SECRET_PATTERNS_CI = re.compile(
     r"(?<![A-Za-z0-9_]api_key)(?<=api_key)|"
     r"(?<![A-Za-z0-9_]authorization)(?<=authorization)|"
     r"(?<![A-Za-z0-9_]bearer)(?<=bearer)"
-    r")['\"]?[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}['\"]?"
+    r")['\"]?[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}(?:\.[A-Za-z0-9_\-]{4,4096}){0,2}['\"]?"
     r"|"
     # Anthropic API keys (sk-ant-api03-..., sk-ant-...) — kept BEFORE the
     # generic sk- pattern so the longer match wins.
@@ -238,9 +238,11 @@ _SECRET_PATTERNS_CI = re.compile(
     r"AIza[A-Za-z0-9_\-]{35}"
     r"|"
     # JWTs (eyJ<base64url>.<base64url>.<base64url>), e.g. ``Bearer eyJ...``.
-    # The keyword pattern above stops at the first '.', and the Discord-token
-    # pattern needs a 6-char middle segment, so neither fully redacts a JWT
-    # (its payload segment is long). Bounds keep matching linear-time.
+    # The keyword pattern above now also consumes up to two trailing JWT
+    # dot-segments, so a keyword-prefixed token (``Authorization: Bearer <jwt>``,
+    # ``token=<jwt>``) redacts in FULL — header, payload AND signature — instead
+    # of leaking the payload/signature after the first '.'. This branch still
+    # catches a BARE JWT with no keyword prefix. Bounds keep matching linear-time.
     r"eyJ[A-Za-z0-9_\-]{10,2048}\.[A-Za-z0-9_\-]{4,4096}\.[A-Za-z0-9_\-]{4,2048}"
     r")",
     re.IGNORECASE,

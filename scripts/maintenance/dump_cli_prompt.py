@@ -5,9 +5,9 @@ final prompt assembly so we can verify no foreign chat data is leaking in.
 
 By default this script prints only metadata (sizes, section counts) — passing
 ``--full`` additionally prints the full prompt text. Be careful with --full:
-the prompt embeds persona, user-supplied memories, and full message history,
-which is generally sensitive data that you do not want to paste into an
-issue tracker or share unredacted.
+the prompt embeds persona and full message history, which is generally
+sensitive data that you do not want to paste into an issue tracker or share
+unredacted.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
         print(f"DB messages  : {len(msgs)}")
 
     # build_user_context relies on the bot's get_db() singleton.
-    user_context, memories_context, _ = await build_user_context(
+    user_context, _ = await build_user_context(
         "User",
         False,
         conversation_id=conv_id,
@@ -69,7 +69,6 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
     prompt = _build_full_prompt(
         persona=persona,
         user_context=user_context,
-        memories_context=memories_context,
         history=history,
         history_limit=100,
         current_message="<<<NEXT TURN HERE>>>",

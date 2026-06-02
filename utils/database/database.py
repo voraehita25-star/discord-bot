@@ -282,12 +282,8 @@ class Database:
             # previous direct ``output_file.write_text`` blocked the loop
             # for the full duration of a potentially-multi-MB dump; under
             # load that visibly stalled WebSocket pings.
-            serialized = json.dumps(
-                export_data, ensure_ascii=False, indent=2, default=str
-            )
-            await asyncio.to_thread(
-                output_file.write_text, serialized, encoding="utf-8"
-            )
+            serialized = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
+            await asyncio.to_thread(output_file.write_text, serialized, encoding="utf-8")
             logger.debug("📤 Exported dashboard conversation: %s", conversation_id)
         except Exception:
             logger.exception("Failed to export dashboard conversation %s", conversation_id)
@@ -732,9 +728,7 @@ class Database:
                 # vector. ``str.isidentifier()`` matches the SQLite identifier shape
                 # (alnum + underscore, not starting with a digit).
                 if not table.isidentifier() or not column.isidentifier():
-                    raise ValueError(
-                        f"Invalid SQL identifier: table={table!r} column={column!r}"
-                    )
+                    raise ValueError(f"Invalid SQL identifier: table={table!r} column={column!r}")
                 cursor = await conn.execute(f"PRAGMA table_info({table})")
                 existing = {row[1] for row in await cursor.fetchall()}
                 if column in existing:
@@ -742,16 +736,12 @@ class Database:
                 try:
                     await conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
                 except aiosqlite.OperationalError as e:
-                    logger.warning(
-                        "Unexpected error adding '%s' column: %s", label or column, e
-                    )
+                    logger.warning("Unexpected error adding '%s' column: %s", label or column, e)
 
             # Migration 015: ``summarized_at`` on ai_history. Idempotent
             # add via the helper above; partial index so the consolidator's
             # ``WHERE summarized_at IS NULL`` sweep stays O(unsummarised rows).
-            await _add_column_if_missing(
-                "ai_history", "summarized_at", "summarized_at DATETIME"
-            )
+            await _add_column_if_missing("ai_history", "summarized_at", "summarized_at DATETIME")
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ai_history_pending_summary
                 ON ai_history(channel_id, timestamp)
@@ -763,21 +753,15 @@ class Database:
             # the type and the bare search string ("Artist - Track audio") is fed
             # to YTDLSource.from_url (which rejects non-http), silently skipping
             # every Spotify track in a persisted queue after a restart.
-            await _add_column_if_missing(
-                "music_queue", "track_type", "track_type TEXT"
-            )
+            await _add_column_if_missing("music_queue", "track_type", "track_type TEXT")
 
             # audit_log tamper-evidence chain columns (see audit_log.py).
             await _add_column_if_missing("audit_log", "prev_hash", "prev_hash TEXT")
             await _add_column_if_missing("audit_log", "entry_hash", "entry_hash TEXT")
 
-            await _add_column_if_missing(
-                "dashboard_messages", "thinking", "thinking TEXT"
-            )
+            await _add_column_if_missing("dashboard_messages", "thinking", "thinking TEXT")
             await _add_column_if_missing("dashboard_messages", "mode", "mode TEXT")
-            await _add_column_if_missing(
-                "dashboard_messages", "images", "images TEXT"
-            )
+            await _add_column_if_missing("dashboard_messages", "images", "images TEXT")
             await _add_column_if_missing(
                 "dashboard_messages",
                 "is_pinned",
@@ -864,21 +848,6 @@ class Database:
                 "is_creator",
                 "is_creator INTEGER DEFAULT 0",
             )
-
-            # Dashboard Long-term Memory Table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS dashboard_memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL,
-                    category TEXT DEFAULT 'general',
-                    importance INTEGER DEFAULT 1,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_dashboard_memories_category
-                ON dashboard_memories(category, importance DESC)
-            """)
 
             # Dashboard Document Memory Table — persistent text extracted
             # from uploaded PDFs / DOCX / text files. Binary files are not
@@ -1152,44 +1121,51 @@ class Database:
             except asyncio.QueueEmpty:
                 pass
 
-            # Create a new connection if needed
-            if conn is None:
-                # Connect FIRST, then bump the counter — otherwise a failed
-                # aiosqlite.connect() leaks the count by 1 each time and
-                # eventually pushes set_db_pool() into negative-available
-                # nonsense.
-                conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
-                self._connection_count += 1
-                conn.row_factory = aiosqlite.Row
+            # Create a new connection if needed, then run per-connection setup.
+            # All of this is wrapped so that if any step fails AFTER we own a
+            # counted connection (fresh or live-from-pool), we close it and
+            # decrement the count — otherwise the handle/thread leaks and
+            # _connection_count drifts upward, misreporting pool exhaustion via
+            # set_db_pool(). (If aiosqlite.connect itself fails, conn is still
+            # None and was never counted, so nothing to undo.)
+            try:
+                if conn is None:
+                    # Connect FIRST, then bump the counter — otherwise a failed
+                    # aiosqlite.connect() leaks the count by 1 each time and
+                    # eventually pushes set_db_pool() into negative-available
+                    # nonsense.
+                    conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
+                    self._connection_count += 1
+                    conn.row_factory = aiosqlite.Row
 
-                # Performance optimizations — per-connection PRAGMAs only
-                await conn.execute("PRAGMA synchronous=NORMAL")
-                await conn.execute("PRAGMA cache_size=250000")
-                await conn.execute("PRAGMA temp_store=MEMORY")
+                    # Performance optimizations — per-connection PRAGMAs only
+                    await conn.execute("PRAGMA synchronous=NORMAL")
+                    await conn.execute("PRAGMA cache_size=250000")
+                    await conn.execute("PRAGMA temp_store=MEMORY")
 
-            # ``conn`` is guaranteed non-None below: either the pool returned
-            # a live one, or aiosqlite.connect succeeded above. If connect
-            # had raised, the exception would have propagated past this
-            # point through the outer ``finally`` (releasing the semaphore)
-            # rather than reaching here with conn=None.
-
-            # Re-assert foreign_keys=ON on every acquisition (both fresh and
-            # pooled). Migration 010 toggles it OFF mid-run for a rebuild, and
-            # SQLite ignores this pragma inside a transaction — so setting it
-            # once at connection-create time proved unreliable. It's a cheap
-            # pragma; always doing it is the durable fix. Must run BEFORE any
-            # DML to take effect.
-            #
-            # ROLLBACK rather than COMMIT here: if the previous user of this
-            # pooled connection raised inside their `async with` block, the
-            # rollback in the except path may have failed silently (it's
-            # wrapped in contextlib.suppress). A blind commit would then
-            # FLUSH whatever uncommitted writes were lingering — defeating
-            # the point of the rollback. Rollback is a no-op when no tx is
-            # open, so it's strictly safer than commit in this slot.
-            with contextlib.suppress(Exception):
-                await conn.rollback()
-            await conn.execute("PRAGMA foreign_keys=ON")
+                # Re-assert foreign_keys=ON on every acquisition (both fresh and
+                # pooled). Migration 010 toggles it OFF mid-run for a rebuild, and
+                # SQLite ignores this pragma inside a transaction — so setting it
+                # once at connection-create time proved unreliable. It's a cheap
+                # pragma; always doing it is the durable fix. Must run BEFORE any
+                # DML to take effect.
+                #
+                # ROLLBACK rather than COMMIT here: if the previous user of this
+                # pooled connection raised inside their `async with` block, the
+                # rollback in the except path may have failed silently (it's
+                # wrapped in contextlib.suppress). A blind commit would then
+                # FLUSH whatever uncommitted writes were lingering — defeating
+                # the point of the rollback. Rollback is a no-op when no tx is
+                # open, so it's strictly safer than commit in this slot.
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                await conn.execute("PRAGMA foreign_keys=ON")
+            except BaseException:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    self._connection_count -= 1
+                raise
 
             rollback_failed = False
             try:
@@ -1327,7 +1303,10 @@ class Database:
         Reinitialize the connection pool.
 
         This is called when health check fails to attempt recovery.
-        Resets the semaphore and schema flag to allow fresh connections.
+        Drains in-flight connections, then replenishes the bounded pool
+        semaphore in place (preserving any waiters) so fresh connections
+        can be acquired again. Does not touch schema init — that is
+        startup-only (``init_schema`` self-gates on ``_schema_initialized``).
         """
         logger.warning("🔄 Reinitializing database connection pool...")
 
@@ -1411,114 +1390,11 @@ class Database:
             self._pool_semaphore = asyncio.BoundedSemaphore(32)
             logger.info("Created pool semaphore with 32 slots")
 
-        # Re-ensure schema on next connection
-        self._schema_initialized = False
-
         # Verify database file exists
         if not await asyncio.to_thread(lambda: Path(self.db_path).exists()):
             logger.warning("⚠️ Database file missing, will be recreated on next access")
 
         logger.info("🔄 Connection pool reinitialized")
-
-    @asynccontextmanager
-    async def get_connection_with_retry(self, max_retries: int = 3):
-        """
-        Get a connection with automatic retry on failure.
-
-        Args:
-            max_retries: Maximum number of retry attempts
-
-        Yields:
-            Database connection
-
-        Note:
-            Uses @asynccontextmanager to ensure proper cleanup even if
-            the consumer code raises an exception.
-            Retry logic only applies to connection establishment, NOT
-            to errors from the caller's code after yield.
-        """
-        last_error = None
-        conn = None
-
-        # Retry logic only for establishing the connection (before yield)
-        for attempt in range(max_retries):
-            conn = None
-            try:
-                # Pool semaphore acquire is bounded by DB_CONNECTION_TIMEOUT —
-                # without this, a poisoned/exhausted pool would hang every
-                # retry attempt indefinitely. ``get_connection`` (sibling)
-                # already has this wrap; keep both paths consistent.
-                await asyncio.wait_for(
-                    self._get_pool_semaphore().acquire(),
-                    timeout=DB_CONNECTION_TIMEOUT,
-                )
-                self._connection_count += 1
-                try:
-                    conn = await aiosqlite.connect(self.db_path, timeout=DB_CONNECTION_TIMEOUT)
-                    conn.row_factory = aiosqlite.Row
-
-                    # Performance optimizations — per-connection PRAGMAs only
-                    # DB-wide PRAGMAs (WAL, mmap_size, page_size, wal_autocheckpoint)
-                    # are set once during init_schema() — no need to repeat here.
-                    await conn.execute("PRAGMA synchronous=NORMAL")
-                    await conn.execute("PRAGMA cache_size=100000")
-                    await conn.execute("PRAGMA temp_store=MEMORY")
-                    await conn.execute("PRAGMA foreign_keys=ON")
-                except Exception:
-                    if conn is not None:
-                        await conn.close()
-                        conn = None
-                    self._connection_count -= 1
-                    self._get_pool_semaphore().release()
-                    raise
-
-                # Connection established successfully - break out of retry loop
-                break
-
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait_time = 2**attempt  # Exponential backoff
-                    logger.warning(
-                        "⚠️ Database connection attempt %d/%d failed: %s. Retrying in %ds...",
-                        attempt + 1,
-                        max_retries,
-                        e,
-                        wait_time,
-                    )
-                    await asyncio.sleep(wait_time)
-                    # Try reinitializing on subsequent failures
-                    if attempt >= 1:
-                        await self._reinitialize_pool()
-        else:
-            # All retries exhausted
-            logger.error("💀 All database connection attempts failed")
-            if last_error is not None:
-                raise last_error
-            raise RuntimeError("Unknown database error occurred during connection")
-
-        # Yield exactly once - let caller exceptions propagate naturally.
-        # Catch ``BaseException`` (not just ``aiosqlite.Error``) so the
-        # rollback also fires when caller code raises ValueError, KeyError,
-        # asyncio.CancelledError, etc. — otherwise the connection's pending
-        # transaction is closed without an explicit rollback, mismatching
-        # the sibling ``get_connection()`` path's contract.
-        try:
-            yield conn
-            await conn.commit()
-        except BaseException:
-            try:
-                await conn.rollback()
-            except Exception:
-                # Rollback is best-effort during cleanup; log and continue
-                # so the original caller exception isn't masked.
-                logger.exception("Rollback failed in get_connection_with_retry")
-            raise
-        finally:
-            if conn is not None:
-                await conn.close()
-            self._connection_count -= 1
-            self._get_pool_semaphore().release()
 
     # ==================== RAG Operations ====================
 
@@ -2727,60 +2603,6 @@ class Database:
             logger.info("📤 Exported %d dashboard conversations", len(conversations))
         except Exception:
             logger.exception("Failed to export dashboard conversations")
-
-    # ==================== Dashboard Memory Operations ====================
-
-    async def save_dashboard_memory(
-        self, content: str, category: str = "general", importance: int = 1
-    ) -> int:
-        """Save a memory to dashboard long-term storage."""
-        async with self.get_write_connection() as conn:
-            cursor = await conn.execute(
-                "INSERT INTO dashboard_memories (content, category, importance) VALUES (?, ?, ?)",
-                (content, category, importance),
-            )
-            rowid = cursor.lastrowid
-            return int(rowid) if rowid is not None else 0
-
-    async def get_dashboard_memories(
-        self, category: str | None = None, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        """Get dashboard memories, optionally filtered by category."""
-        async with self.get_connection() as conn:
-            if category:
-                cursor = await conn.execute(
-                    """SELECT id, content, category, importance, created_at
-                       FROM dashboard_memories
-                       WHERE category = ?
-                       ORDER BY importance DESC, created_at DESC
-                       LIMIT ?""",
-                    (category, limit),
-                )
-            else:
-                cursor = await conn.execute(
-                    """SELECT id, content, category, importance, created_at
-                       FROM dashboard_memories
-                       ORDER BY importance DESC, created_at DESC
-                       LIMIT ?""",
-                    (limit,),
-                )
-            rows = await cursor.fetchall()
-            return [
-                {
-                    "id": r[0],
-                    "content": r[1],
-                    "category": r[2],
-                    "importance": r[3],
-                    "created_at": r[4],
-                }
-                for r in rows
-            ]
-
-    async def delete_dashboard_memory(self, memory_id: int) -> bool:
-        """Delete a specific memory. Returns True if a row was actually deleted."""
-        async with self.get_write_connection() as conn:
-            cursor = await conn.execute("DELETE FROM dashboard_memories WHERE id = ?", (memory_id,))
-            return bool(cursor.rowcount > 0)
 
     # ==================== Dashboard Document Memories ====================
     # Persistent extracted text from uploaded PDFs / DOCX / text files.

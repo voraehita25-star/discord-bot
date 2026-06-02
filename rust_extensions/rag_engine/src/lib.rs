@@ -2,23 +2,18 @@
 //!
 //! A Rust-based RAG (Retrieval-Augmented Generation) engine with:
 //! - SIMD-optimized cosine similarity
-//! - Memory-mapped vector storage
 //! - Parallel search with Rayon
 
 mod cosine;
-mod storage;
-mod index;
 mod errors;
 
-use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
 use parking_lot::RwLock;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use cosine::cosine_similarity;
-pub use storage::VectorStorage;
-pub use index::VectorIndex;
 pub use errors::RagError;
 
 /// A single memory entry with embedding and metadata
@@ -40,7 +35,13 @@ pub struct MemoryEntry {
 impl MemoryEntry {
     #[new]
     fn new(id: String, text: String, embedding: Vec<f32>, timestamp: f64, importance: f32) -> Self {
-        Self { id, text, embedding, timestamp, importance }
+        Self {
+            id,
+            text,
+            embedding,
+            timestamp,
+            importance,
+        }
     }
 
     fn get_embedding(&self) -> Vec<f32> {
@@ -167,7 +168,13 @@ impl RagEngine {
 
     /// Search for similar entries (parallel SIMD-optimized)
     #[pyo3(signature = (query_embedding, top_k=5, time_decay_factor=0.0))]
-    fn search(&self, py: Python<'_>, query_embedding: Vec<f32>, top_k: usize, time_decay_factor: f64) -> PyResult<Vec<SearchResult>> {
+    fn search(
+        &self,
+        py: Python<'_>,
+        query_embedding: Vec<f32>,
+        top_k: usize,
+        time_decay_factor: f64,
+    ) -> PyResult<Vec<SearchResult>> {
         if query_embedding.len() != self.dimension {
             return Err(PyValueError::new_err(format!(
                 "Query dimension mismatch: expected {}, got {}",
@@ -223,7 +230,11 @@ impl RagEngine {
                     SearchResult {
                         id: entry.id.clone(),
                         text: entry.text.clone(),
-                        score: if final_score.is_finite() { final_score } else { 0.0 },
+                        score: if final_score.is_finite() {
+                            final_score
+                        } else {
+                            0.0
+                        },
                         timestamp: entry.timestamp,
                     }
                 })
@@ -231,7 +242,11 @@ impl RagEngine {
                 .collect();
 
             // Sort by score descending
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             results.truncate(top_k);
 
             Ok(results)
@@ -282,15 +297,18 @@ impl RagEngine {
         validate_relative_path(save_path)?;
 
         let entries = self.entries.read();
-        let data: Vec<_> = entries.values().map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "text": e.text,
-                "embedding": e.embedding,
-                "timestamp": e.timestamp,
-                "importance": e.importance,
+        let data: Vec<_> = entries
+            .values()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "text": e.text,
+                    "embedding": e.embedding,
+                    "timestamp": e.timestamp,
+                    "importance": e.importance,
+                })
             })
-        }).collect();
+            .collect();
 
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -337,13 +355,15 @@ impl RagEngine {
                             Ok(f) => {
                                 if let Err(e) = f.sync_all() {
                                     return Err(PyValueError::new_err(format!(
-                                        "fsync after copy failed: {}", e
+                                        "fsync after copy failed: {}",
+                                        e
                                     )));
                                 }
                             }
                             Err(e) => {
                                 return Err(PyValueError::new_err(format!(
-                                    "open dest for fsync failed: {}", e
+                                    "open dest for fsync failed: {}",
+                                    e
                                 )));
                             }
                         }
@@ -353,7 +373,8 @@ impl RagEngine {
                 Err(copy_err) => {
                     let _ = std::fs::remove_file(&temp_path);
                     return Err(PyValueError::new_err(format!(
-                        "rename failed: {}, copy fallback failed: {}", rename_err, copy_err
+                        "rename failed: {}, copy fallback failed: {}",
+                        rename_err, copy_err
                     )));
                 }
             }
@@ -385,7 +406,8 @@ impl RagEngine {
         if symlink_meta.len() > MAX_LOAD_BYTES {
             return Err(PyValueError::new_err(format!(
                 "File too large to load: {} bytes (max {})",
-                symlink_meta.len(), MAX_LOAD_BYTES
+                symlink_meta.len(),
+                MAX_LOAD_BYTES
             )));
         }
 
@@ -396,7 +418,8 @@ impl RagEngine {
         use std::io::Read;
         let mut file = std::fs::File::open(path)
             .map_err(|e| PyValueError::new_err(format!("open failed: {}", e)))?;
-        let mut buf = Vec::with_capacity((symlink_meta.len() as usize).min(MAX_LOAD_BYTES as usize));
+        let mut buf =
+            Vec::with_capacity((symlink_meta.len() as usize).min(MAX_LOAD_BYTES as usize));
         let read_cap = MAX_LOAD_BYTES.saturating_add(1);
         file.by_ref()
             .take(read_cap)
@@ -411,8 +434,8 @@ impl RagEngine {
         let data = String::from_utf8(buf)
             .map_err(|e| PyValueError::new_err(format!("file is not UTF-8: {}", e)))?;
 
-        let entries_data: Vec<serde_json::Value> = serde_json::from_str(&data)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let entries_data: Vec<serde_json::Value> =
+            serde_json::from_str(&data).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         // Build new entries in a temporary map first to avoid data loss on bad files
         let mut new_entries = HashMap::new();
@@ -426,25 +449,35 @@ impl RagEngine {
                 item["timestamp"].as_f64(),
                 item["importance"].as_f64(),
             ) {
-                let emb: Vec<f32> = embedding.iter()
-                    .filter_map(|v| v.as_f64().and_then(|f| {
-                        let val = f as f32;
-                        if val.is_finite() { Some(val) } else { None }
-                    }))
+                let emb: Vec<f32> = embedding
+                    .iter()
+                    .filter_map(|v| {
+                        v.as_f64().and_then(|f| {
+                            let val = f as f32;
+                            if val.is_finite() {
+                                Some(val)
+                            } else {
+                                None
+                            }
+                        })
+                    })
                     .collect();
 
                 if emb.len() == self.dimension {
                     let imp = importance as f32;
                     if !imp.is_finite() {
-                        continue;  // Skip entries with NaN/Infinity importance
+                        continue; // Skip entries with NaN/Infinity importance
                     }
-                    new_entries.insert(id.to_string(), MemoryEntry {
-                        id: id.to_string(),
-                        text: text.to_string(),
-                        embedding: emb,
-                        timestamp,
-                        importance: imp,
-                    });
+                    new_entries.insert(
+                        id.to_string(),
+                        MemoryEntry {
+                            id: id.to_string(),
+                            text: text.to_string(),
+                            embedding: emb,
+                            timestamp,
+                            importance: imp,
+                        },
+                    );
                     loaded += 1;
                 }
             }
@@ -454,7 +487,7 @@ impl RagEngine {
         // or if the source file was intentionally empty
         if new_entries.is_empty() && !entries_data.is_empty() {
             return Err(PyValueError::new_err(
-                "No entries matched the expected dimension; refusing to replace existing data"
+                "No entries matched the expected dimension; refusing to replace existing data",
             ));
         }
 

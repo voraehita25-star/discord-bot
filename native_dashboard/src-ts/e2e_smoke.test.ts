@@ -78,7 +78,7 @@ describe('index.html shell smoke', () => {
     });
 
     it('exposes all core navigation tabs', () => {
-        const pages = ['status', 'chat', 'memories', 'logs', 'database', 'settings'];
+        const pages = ['status', 'chat', 'logs', 'database', 'settings'];
         for (const p of pages) {
             expect(doc.querySelector(`[data-page="${p}"]`), `nav item data-page=${p}`).not.toBeNull();
             expect(doc.getElementById(`page-${p}`), `<section id=page-${p}>`).not.toBeNull();
@@ -115,7 +115,6 @@ describe('index.html shell smoke', () => {
             'rename-modal',
             'avatar-crop-modal',
             'shortcuts-modal',
-            'add-memory-modal',
         ]) {
             expect(doc.getElementById(id), `modal ${id}`).not.toBeNull();
         }

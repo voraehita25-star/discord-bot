@@ -18,9 +18,7 @@ from ..data.constants import STATE_CLEANUP_MAX_AGE_HOURS, STATE_CLEANUP_MAX_CHAN
 # extract_states_from_response; compiling on every call shows up in
 # RP-heavy traces.
 _CHARACTER_BLOCK_RE = re.compile(r"\{\{([^}]+)\}\}(.*?)(?=\{\{|$)", re.DOTALL)
-_SYS_MARKER_RE = re.compile(
-    r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*"
-)
+_SYS_MARKER_RE = re.compile(r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*")
 _LOCATION_RE = re.compile(
     r"(?:^|[\s])(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่)\s*"
     r"[\"']?([^\"',.!?\n]{3,30})[\"']?"

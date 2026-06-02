@@ -509,7 +509,7 @@ class MemoryConsolidator:
             if end is None:
                 continue
             try:
-                result = json.loads(response_text[match.start():end])
+                result = json.loads(response_text[match.start() : end])
                 if isinstance(result, dict):
                     if "entities" in result:
                         return result
@@ -531,7 +531,7 @@ class MemoryConsolidator:
             if end is None:
                 continue
             try:
-                result = json.loads(response_text[match.start():end])
+                result = json.loads(response_text[match.start() : end])
                 if isinstance(result, list):
                     return {"entities": result}
             except (json.JSONDecodeError, ValueError):
@@ -664,14 +664,17 @@ class MemoryConsolidator:
             # Check for relationship contradictions
             if facts.get("relationships"):
                 for related_name, relation in facts["relationships"].items():
+                    # relationship values arrive untyped from AI-extracted JSON;
+                    # coerce a scalar to str so the ``not in relation`` membership
+                    # test below can't raise TypeError (mirrors the age coercion).
+                    if not isinstance(relation, str):
+                        relation = str(relation)
                     # Check if text mentions a different relationship.
                     # Pattern is cached by (name, related_name) to avoid
                     # recompiling on every iteration; cache the compiled
                     # pattern rather than the source string because
                     # ``re.search`` re-parses uncached strings each call.
-                    rel_match = _compile_relationship_pattern(
-                        name, related_name
-                    ).search(new_text)
+                    rel_match = _compile_relationship_pattern(name, related_name).search(new_text)
                     if rel_match:
                         mentioned_rel = rel_match.group(1)
                         if mentioned_rel not in relation:

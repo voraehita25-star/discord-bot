@@ -236,7 +236,13 @@ class MediaProcessorWrapper:
         if self._use_rust:
             return self._processor.decode_base64(encoded)  # type: ignore[no-any-return]
         normalized = encoded.replace("-", "+").replace("_", "/")
-        return base64.b64decode(normalized)
+        # validate=True brings the Python fallback closer to the Rust STANDARD
+        # engine by rejecting whitespace / non-alphabet bytes (the lenient
+        # default silently dropped them). The two are not byte-identical: Rust
+        # STANDARD also rejects non-canonical trailing bits, and the URL-safe
+        # chars are normalized above before decoding — so this tightens, not
+        # perfectly mirrors, the Rust contract.
+        return base64.b64decode(normalized, validate=True)
 
     def to_data_uri(self, data: bytes, mime_type: str = "image/jpeg") -> str:
         """Convert bytes to data URI."""

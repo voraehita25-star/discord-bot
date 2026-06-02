@@ -235,9 +235,22 @@ class ResponseMixin:
         Returns:
             Processed response text.
         """
+        # NOTE: on the live path this method is SHADOWED by
+        # ChatManager._process_response_text (cogs/ai_core/logic.py), which is the
+        # canonical copy — production runs that one, only the unit tests run this.
+        # Keep the two in sync: any behavior-affecting edit must also go to logic.py.
+
         # Post-processing: Fix > before dialogue
         response_text = PATTERN_QUOTE.sub(r"\1", response_text)
         response_text = PATTERN_SPACED.sub(r"\1", response_text)
+
+        # Fix AI comments about character tags → actual tags, mirroring the
+        # ChatManager copy (this step used to be missing here, so the mixin and
+        # ChatManager diverged). Guarded with getattr so lightweight test hosts
+        # that mix in ResponseMixin without this method still work.
+        fixer = getattr(self, "_fix_ai_character_tag_comments", None)
+        if callable(fixer):
+            response_text = fixer(response_text)
 
         # Convert standalone character names to {{Name}} tags
         response_text = replace_character_names(response_text, guild_id)

@@ -266,9 +266,7 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ remove_role requires both user_name and role_name"
-            await cmd_remove_role(
-                guild, origin_channel, None, [user_name, role_name], user=user
-            )
+            await cmd_remove_role(guild, origin_channel, None, [user_name, role_name], user=user)
             return f"Requested removing role '{role_name}' from '{user_name}'"
 
         elif fname == "set_channel_permission":
@@ -372,9 +370,7 @@ async def execute_tool_call(
                 if isinstance(resolved, discord.TextChannel):
                     target_channel = resolved
             if target_channel is None:
-                target_channel = discord.utils.get(
-                    guild.text_channels, name=stripped_name
-                )
+                target_channel = discord.utils.get(guild.text_channels, name=stripped_name)
             # Fail-closed when channel can't be located — without this the
             # call would skip the read-permission check and let cmd_read_channel
             # decide on its own (info-leak hole noted in audit).
@@ -432,40 +428,119 @@ async def execute_tool_call(
                 # Cyrillic lowercase → Latin lowercase. Note: ``"х"`` appears
                 # once — the previous map had a duplicate entry that did
                 # nothing (later key/value pair was identical to the first).
-                "а": "a", "в": "b", "с": "c", "д": "d",
-                "е": "e", "х": "x", "и": "i", "ј": "j",
-                "к": "k", "ӏ": "l", "о": "o", "р": "p",
-                "ѕ": "s", "т": "t", "у": "y",
+                "а": "a",
+                "в": "b",
+                "с": "c",
+                "д": "d",
+                "е": "e",
+                "х": "x",
+                "и": "i",
+                "ј": "j",
+                "к": "k",
+                "ӏ": "l",
+                "о": "o",
+                "р": "p",
+                "ѕ": "s",
+                "т": "t",
+                "у": "y",
                 "һ": "h",
                 # Cyrillic uppercase → Latin uppercase
-                "А": "A", "В": "B", "С": "C", "Е": "E",
-                "Н": "H", "К": "K", "М": "M", "О": "O",
-                "Р": "P", "Т": "T", "Х": "X", "Ј": "J",
+                "А": "A",
+                "В": "B",
+                "С": "C",
+                "Е": "E",
+                "Н": "H",
+                "К": "K",
+                "М": "M",
+                "О": "O",
+                "Р": "P",
+                "Т": "T",
+                "Х": "X",
+                "Ј": "J",
                 # Greek lowercase → Latin lowercase
-                "α": "a", "ο": "o", "ρ": "p", "υ": "y",
+                "α": "a",
+                "ο": "o",
+                "ρ": "p",
+                "υ": "y",
                 # Greek uppercase → Latin uppercase
-                "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z",
-                "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
-                "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
-                "Υ": "Y", "Χ": "X",
+                "Α": "A",
+                "Β": "B",
+                "Ε": "E",
+                "Ζ": "Z",
+                "Η": "H",
+                "Ι": "I",
+                "Κ": "K",
+                "Μ": "M",
+                "Ν": "N",
+                "Ο": "O",
+                "Ρ": "P",
+                "Τ": "T",
+                "Υ": "Y",
+                "Χ": "X",
                 # Mathematical Alphanumeric Symbols (U+1D400+ block).
                 # Attackers can write "𝗶gnore previous" using these
                 # fonts and bypass the prior map. Cover bold/italic
                 # ASCII Latin letters that look identical to their
                 # plain counterparts.
-                "𝐚": "a", "𝐛": "b", "𝐜": "c", "𝐝": "d", "𝐞": "e",
-                "𝐟": "f", "𝐠": "g", "𝐡": "h", "𝐢": "i", "𝐣": "j",
-                "𝐤": "k", "𝐥": "l", "𝐦": "m", "𝐧": "n", "𝐨": "o",
-                "𝐩": "p", "𝐪": "q", "𝐫": "r", "𝐬": "s", "𝐭": "t",
-                "𝐮": "u", "𝐯": "v", "𝐰": "w", "𝐱": "x", "𝐲": "y", "𝐳": "z",
+                "𝐚": "a",
+                "𝐛": "b",
+                "𝐜": "c",
+                "𝐝": "d",
+                "𝐞": "e",
+                "𝐟": "f",
+                "𝐠": "g",
+                "𝐡": "h",
+                "𝐢": "i",
+                "𝐣": "j",
+                "𝐤": "k",
+                "𝐥": "l",
+                "𝐦": "m",
+                "𝐧": "n",
+                "𝐨": "o",
+                "𝐩": "p",
+                "𝐪": "q",
+                "𝐫": "r",
+                "𝐬": "s",
+                "𝐭": "t",
+                "𝐮": "u",
+                "𝐯": "v",
+                "𝐰": "w",
+                "𝐱": "x",
+                "𝐲": "y",
+                "𝐳": "z",
                 # Full-width ASCII (U+FF21-U+FF5A) used in CJK input
                 # methods — visually identical to ASCII when rendered.
-                "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e",
-                "ｆ": "f", "ｇ": "g", "ｈ": "h", "ｉ": "i", "ｊ": "j",
-                "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n", "ｏ": "o",
-                "ｐ": "p", "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t",
-                "ｕ": "u", "ｖ": "v", "ｗ": "w", "ｘ": "x", "ｙ": "y", "ｚ": "z",
-                "Ａ": "A", "Ｅ": "E", "Ｉ": "I", "Ｏ": "O", "Ｕ": "U",
+                "ａ": "a",
+                "ｂ": "b",
+                "ｃ": "c",
+                "ｄ": "d",
+                "ｅ": "e",
+                "ｆ": "f",
+                "ｇ": "g",
+                "ｈ": "h",
+                "ｉ": "i",
+                "ｊ": "j",
+                "ｋ": "k",
+                "ｌ": "l",
+                "ｍ": "m",
+                "ｎ": "n",
+                "ｏ": "o",
+                "ｐ": "p",
+                "ｑ": "q",
+                "ｒ": "r",
+                "ｓ": "s",
+                "ｔ": "t",
+                "ｕ": "u",
+                "ｖ": "v",
+                "ｗ": "w",
+                "ｘ": "x",
+                "ｙ": "y",
+                "ｚ": "z",
+                "Ａ": "A",
+                "Ｅ": "E",
+                "Ｉ": "I",
+                "Ｏ": "O",
+                "Ｕ": "U",
             }
             _de_confused = "".join(_CONFUSABLE_MAP.get(c, c) for c in content)
             _normalized = (

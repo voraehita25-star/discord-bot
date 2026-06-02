@@ -701,9 +701,7 @@ async def process_attachments(
                     # whole helper in a worker thread to keep the loop
                     # responsive across all channels while encode runs.
                     loop = asyncio.get_running_loop()
-                    video_bytes = await loop.run_in_executor(
-                        None, convert_gif_to_video, image_data
-                    )
+                    video_bytes = await loop.run_in_executor(None, convert_gif_to_video, image_data)
                     if video_bytes:
                         video_parts.append({"data": video_bytes, "mime_type": "video/mp4"})
                         logger.info("Converted animated GIF to video from %s", user_name)

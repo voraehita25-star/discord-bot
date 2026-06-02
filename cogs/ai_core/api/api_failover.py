@@ -406,9 +406,7 @@ class APIFailoverManager:
             reason,
         )
 
-    async def _maybe_failover_from_probe(
-        self, failed: EndpointType, reason: str
-    ) -> None:
+    async def _maybe_failover_from_probe(self, failed: EndpointType, reason: str) -> None:
         """Drive auto-failover when a health probe trips the threshold.
 
         Mirrors the real-traffic failover path so probes participate in
@@ -556,9 +554,7 @@ class APIFailoverManager:
                             self._maybe_failover_from_probe(target, redacted)
                         )
                         self._pending_close_tasks.add(failover_task)
-                        failover_task.add_done_callback(
-                            self._pending_close_tasks.discard
-                        )
+                        failover_task.add_done_callback(self._pending_close_tasks.discard)
 
             return {
                 "endpoint": target.value,

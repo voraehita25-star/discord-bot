@@ -1,5 +1,5 @@
 /**
- * AI Chat Manager - WebSocket Client & Memory Manager
+ * AI Chat Manager - WebSocket Client
  * Extracted from app.ts for modularity.
  */
 
@@ -24,7 +24,6 @@ export type {
     ChatConversation,
     ChatMessage,
     RolePreset,
-    Memory,
     NativeConversationDetail,
 } from './chat/types.js';
 
@@ -33,7 +32,6 @@ import type {
     ChatConversation,
     ChatMessage,
     RolePreset,
-    Memory,
     NativeConversationDetail,
 } from './chat/types.js';
 
@@ -178,154 +176,6 @@ function formatChatFileDate(iso: string): string {
 }
 
 // ============================================================================
-// Memory Manager
-// ============================================================================
-
-export class MemoryManager {
-    memories: Memory[] = [];
-    currentCategory: string = 'all';
-
-    loadMemories(): void {
-        chatManager?.send({ type: 'get_memories', category: this.currentCategory === 'all' ? null : this.currentCategory });
-    }
-
-    saveMemory(content: string, category: string): void {
-        chatManager?.send({ type: 'save_memory', content, category });
-    }
-
-    deleteMemory(id: string): void {
-        chatManager?.send({ type: 'delete_memory', id });
-    }
-
-    renderMemories(memories: Memory[]): void {
-        this.memories = memories;
-        const container = document.getElementById('memories-list');
-        if (!container) return;
-
-        // Filter by category if needed
-        const filteredMemories = this.currentCategory === 'all' 
-            ? memories 
-            : memories.filter(m => m.category === this.currentCategory);
-
-        if (filteredMemories.length === 0) {
-            container.innerHTML = `
-                <div class="empty-memories">
-                    <span class="empty-icon">\uD83E\uDDE0</span>
-                    <p>No memories yet</p>
-                    <p class="hint">Add memories to help AI remember important information about you</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = filteredMemories.map(memory => `
-            <div class="memory-card" data-id="${escapeHtml(String(memory.id))}">
-                <div class="memory-card-header">
-                    <span class="memory-category-badge">${escapeHtml(memory.category || 'general')}</span>
-                </div>
-                <div class="memory-card-content">${escapeHtml(memory.content)}</div>
-                <div class="memory-card-footer">
-                    <span class="memory-timestamp">${this.formatTime(memory.created_at)}</span>
-                    <button class="memory-delete-btn" data-id="${escapeHtml(String(memory.id))}">Delete</button>
-                </div>
-            </div>
-        `).join('');
-
-        // Add delete handlers
-        container.querySelectorAll('.memory-delete-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const id = (e.target as HTMLElement).dataset.id;
-                if (id) {
-                    const confirmed = await showConfirmDialog('Delete this memory?');
-                    if (confirmed) {
-                        this.deleteMemory(id);
-                    }
-                }
-            });
-        });
-    }
-
-    formatTime(isoString: string): string {
-        try {
-            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(isoString);
-            const normalized = hasTzInfo
-                ? isoString
-                : isoString.replace(' ', 'T') + 'Z';
-            return new Date(normalized).toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        } catch {
-            // Caller (renderMemories) interpolates this directly into
-            // innerHTML, so a server-supplied created_at containing HTML must
-            // not flow through unescaped on the parse-failure path.
-            return escapeHtml(isoString);
-        }
-    }
-
-    showModal(): void {
-        const modal = document.getElementById('add-memory-modal');
-        if (modal) {
-            modal.classList.add('active');
-            // Optional chaining avoids a runtime crash if the textarea was
-            // ever removed from the DOM ahead of the modal being shown.
-            const ta = document.getElementById('memory-content') as HTMLTextAreaElement | null;
-            if (ta) ta.value = '';
-        }
-    }
-
-    closeModal(): void {
-        const modal = document.getElementById('add-memory-modal');
-        if (modal) modal.classList.remove('active');
-    }
-
-    setupEventListeners(): void {
-        // Category filter buttons
-        document.querySelectorAll('.memory-category-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const category = (e.target as HTMLElement).dataset.category || 'all';
-                this.currentCategory = category;
-                
-                // Update active state
-                document.querySelectorAll('.memory-category-btn').forEach(b => b.classList.remove('active'));
-                (e.target as HTMLElement).classList.add('active');
-                
-                // Re-render with filter
-                this.renderMemories(this.memories);
-            });
-        });
-
-        // Add memory button
-        document.getElementById('btn-add-memory')?.addEventListener('click', () => this.showModal());
-
-        // Modal close buttons
-        document.getElementById('memory-modal-close')?.addEventListener('click', () => this.closeModal());
-        document.getElementById('memory-modal-cancel')?.addEventListener('click', () => this.closeModal());
-        document.getElementById('add-memory-modal')?.querySelector('.modal-overlay')
-            ?.addEventListener('click', () => this.closeModal());
-
-        // Save button
-        document.getElementById('memory-modal-save')?.addEventListener('click', () => {
-            const content = (document.getElementById('memory-content') as HTMLTextAreaElement)?.value?.trim();
-            const category = (document.getElementById('memory-category') as HTMLSelectElement)?.value || 'general';
-            
-            if (!content) {
-                showToast('Please enter memory content', { type: 'warning' });
-            } else if (content.length > 10000) {
-                showToast('Memory content too long (max 10,000 characters)', { type: 'warning' });
-            } else {
-                this.saveMemory(content, category);
-            }
-        });
-    }
-}
-
-export const memoryManager = new MemoryManager();
-
-// ============================================================================
 // Chat Manager
 // ============================================================================
 
@@ -360,6 +210,16 @@ export class ChatManager {
     // If the user switches conversations mid-stream, late chunk/stream_end
     // frames for the OLD conversation must not mutate the NEW one.
     streamingConversationId: string | null = null;
+    // Buffered partial of the in-progress RESPONSE stream, kept independently of
+    // the #streaming-message DOM so it survives a conversation switch. The
+    // partial isn't persisted to the DB until stream_end, so without this,
+    // navigating away from a streaming chat and back showed an empty view.
+    // ``restoreStreamingBubble`` replays these into a fresh bubble on return.
+    // Stored as arrays + join()'d on demand to keep append O(1) (same rationale
+    // as the appendChunk text-node approach).
+    private streamPartialChunks: string[] = [];
+    private streamPartialThinkingChunks: string[] = [];
+    private streamThinkingActive: boolean = false;
     // rAF id for pending edit-stream textContent flush. We accumulate chunks
     // into ``editStreamContent`` and only push to the DOM once per frame to
     // avoid O(n²) string concatenation costs as the response grows.
@@ -442,6 +302,10 @@ export class ChatManager {
                 this.isEditStreaming = false;
                 this.editTargetMessageId = null;
                 this.editStreamContent = '';
+                // Stream is dead on disconnect — drop the guard + partial buffers
+                // so a reconnect + switch can't replay a stale half-response.
+                this.streamingConversationId = null;
+                this.clearStreamBuffers();
                 this.setInputEnabled(true);
                 if (wasEditStreaming) {
                     // /edit stream uses an in-place .edit-streaming-text on an
@@ -541,21 +405,29 @@ export class ChatManager {
                 // would otherwise replace the now-current B's view. Compare
                 // the incoming frame's id to the conversation we last asked
                 // for; if it doesn't match, drop the frame.
+                if (!data.conversation || typeof data.conversation !== 'object') {
+                    console.error('Invalid conversation_loaded data (missing conversation):', data);
+                    break;
+                }
                 const incoming = this.enrichConversation(data.conversation as ChatConversation);
                 const requestedId = this.pendingConversationLoadId;
                 if (requestedId !== null && requestedId !== incoming.id) {
                     break;
                 }
-                // If a response was still streaming into the PREVIOUS
-                // conversation when the user switched, abandon it cleanly so the
-                // half-rendered stream doesn't leave the input locked. Late
-                // chunk frames no-op (their DOM target is gone) and a late
-                // stream_end is dropped by the streamingConversationId guard.
-                if (this.isStreaming || this.isEditStreaming) {
+                // An EDIT stream edits an existing message in-place and can't be
+                // cleanly re-rendered after a switch, so abandon it (it sets
+                // isStreaming too, so clear both). A normal RESPONSE stream is
+                // instead PRESERVED: isStreaming / streamingConversationId and the
+                // buffered partial are kept so that returning to the still-streaming
+                // conversation can replay the live answer (see restoreStreamingBubble
+                // below). Chunks keep buffering regardless of which view is open.
+                if (this.isEditStreaming) {
                     this.isStreaming = false;
                     this.isEditStreaming = false;
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
+                    this.streamingConversationId = null;
+                    this.clearStreamBuffers();
                     this.setInputEnabled(true);
                 }
                 this.currentConversation = incoming;
@@ -566,6 +438,19 @@ export class ChatManager {
                 this.showChatContainer();
                 this.updateChatHeader();
                 this.renderMessages();
+                // If we navigated BACK to a conversation whose response is still
+                // streaming, re-create the in-progress bubble from the buffered
+                // partial so the live answer is visible again. Otherwise keep the
+                // input locked while a stream is still running elsewhere (single
+                // stream at a time, matching the send() gate).
+                if (this.isStreaming && !this.isEditStreaming
+                    && this.streamingConversationId !== null
+                    && this.streamingConversationId === incoming.id) {
+                    this.restoreStreamingBubble();
+                    this.setInputEnabled(false);
+                } else if (!this.isEditStreaming) {
+                    this.setInputEnabled(!this.isStreaming);
+                }
                 if (data.token_usage) {
                     this.updateContextWindowIndicator(data.token_usage as {input_tokens: number; output_tokens: number; total_tokens: number; context_window: number});
                 } else {
@@ -584,6 +469,9 @@ export class ChatManager {
             case 'stream_start':
                 this.isStreaming = true;
                 this.streamingConversationId = this.currentConversation?.id ?? null;
+                // Fresh stream — reset the cross-switch partial buffers.
+                this.clearStreamBuffers();
+                this.currentThinking = '';
                 this.userScrolledUp = false;  // Reset scroll lock on new stream
                 // Narrow with ``typeof`` instead of an unchecked ``as`` cast so a
                 // malformed frame from the bot can't poison ``currentMode`` with
@@ -652,6 +540,7 @@ export class ChatManager {
                     this.isEditStreaming = false;
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
+                    this.clearStreamBuffers();
                     this.setInputEnabled(true);
                     break;
                 }
@@ -661,6 +550,7 @@ export class ChatManager {
 
                 // Failover cleanup: remove the failed streaming bubble silently
                 if (data._failover_cleanup) {
+                    this.clearStreamBuffers();
                     const stuckMsg = document.getElementById('streaming-message');
                     if (stuckMsg) stuckMsg.remove();
                     // Also remove the empty assistant message from messages array if it was added
@@ -695,6 +585,7 @@ export class ChatManager {
                     break;
                 }
                 this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
+                this.clearStreamBuffers();
                 // Backfill DB IDs so newly-sent messages become editable/deletable
                 if (data.assistant_message_id) {
                     const lastMsg = this.messages[this.messages.length - 1];
@@ -880,6 +771,7 @@ export class ChatManager {
                 // Clear the stream-conversation guard so a later stream_end for
                 // a NEW turn isn't evaluated against this stale id.
                 this.streamingConversationId = null;
+                this.clearStreamBuffers();
                 this.setInputEnabled(true);
                 // Clean up stuck streaming message on error
                 const stuckErrorMsg = document.getElementById('streaming-message');
@@ -915,32 +807,8 @@ export class ChatManager {
                 break;
             }
 
-            // Memory handlers
-            case 'memories': {
-                const memories = data.memories as Memory[];
-                memoryManager.renderMemories(memories);
-                // Server emits truncated:true + total_count when capping
-                // the list (default 500). Surface it so the user knows
-                // there's more behind the visible set.
-                if (data.truncated && typeof data.total_count === 'number') {
-                    showToast(
-                        `Showing ${memories.length} of ${data.total_count} memories`,
-                        { type: 'info', duration: 4000 },
-                    );
-                }
-                break;
-            }
                 
-            case 'memory_saved':
-                showToast('Memory saved!', { type: 'success' });
-                memoryManager.loadMemories();
-                memoryManager.closeModal();
-                break;
                 
-            case 'memory_deleted':
-                showToast('Memory deleted', { type: 'success' });
-                memoryManager.loadMemories();
-                break;
                 
             case 'profile':
                 // Profile loaded - populate settings form
@@ -1407,10 +1275,49 @@ export class ChatManager {
     }
 
     showThinkingIndicator(): void {
+        this.streamThinkingActive = true;
         const thinkingContainer = document.querySelector('#streaming-message .thinking-container') as HTMLElement;
         if (thinkingContainer) {
             thinkingContainer.style.display = 'block';
         }
+    }
+
+    // Reset the cross-switch partial buffers. Does NOT touch currentThinking,
+    // which finalizeStreamingMessage consumes on stream_end (stream_start clears
+    // it separately).
+    private clearStreamBuffers(): void {
+        this.streamPartialChunks = [];
+        this.streamPartialThinkingChunks = [];
+        this.streamThinkingActive = false;
+    }
+
+    // Re-create the in-progress #streaming-message from the buffered partial.
+    // Called from conversation_loaded when the user navigates back to a chat
+    // whose RESPONSE stream is still running, so the live answer reappears
+    // instead of an empty/stale view (the partial isn't in the DB yet).
+    private restoreStreamingBubble(): void {
+        if (document.getElementById('streaming-message')) return;  // already present
+        this.appendStreamingMessage(this.currentMode || '');
+        // Restore the response text (DOM-only — don't re-push into the buffer).
+        const partial = this.streamPartialChunks.join('');
+        if (partial) {
+            const streamingText = document.querySelector('#streaming-message .streaming-text');
+            if (streamingText) streamingText.appendChild(document.createTextNode(partial));
+        }
+        // Restore thinking: finalized (collapsed) if thinking_end already arrived,
+        // otherwise the live partial.
+        if (this.currentThinking) {
+            this.showThinkingIndicator();
+            this.finalizeThinking(this.currentThinking);
+        } else if (this.streamThinkingActive) {
+            this.showThinkingIndicator();
+            const liveThinking = this.streamPartialThinkingChunks.join('');
+            if (liveThinking) {
+                const thinkingContent = document.querySelector('#streaming-message .thinking-content');
+                if (thinkingContent) thinkingContent.appendChild(document.createTextNode(liveThinking));
+            }
+        }
+        this.scrollToBottom();
     }
 
     // Append-via-text-node avoids the O(n²) string growth of
@@ -1418,6 +1325,9 @@ export class ChatManager {
     // ``createTextNode`` + ``appendChild`` is O(1) per chunk while still
     // letting consumers read aggregated ``textContent`` synchronously.
     appendThinkingChunk(text: string): void {
+        // Buffer so the live thinking survives a conversation switch (replayed by
+        // restoreStreamingBubble when the user returns mid-stream).
+        this.streamPartialThinkingChunks.push(text);
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         if (thinkingContent) {
             thinkingContent.appendChild(document.createTextNode(text));
@@ -1460,6 +1370,10 @@ export class ChatManager {
     }
 
     appendChunk(text: string): void {
+        // Buffer first so the partial survives a conversation switch even when
+        // the #streaming-message DOM isn't currently mounted (user viewing
+        // another chat). restoreStreamingBubble replays this on return.
+        this.streamPartialChunks.push(text);
         const streamingText = document.querySelector('#streaming-message .streaming-text');
         if (streamingText) {
             // Same O(n²) avoidance as ``appendThinkingChunk`` above —
@@ -3008,8 +2922,4 @@ export function initChatManager(): void {
     chatManager = new ChatManager();
     chatManager.init();
     window.chatManager = chatManager;
-}
-
-export function initMemoryManager(): void {
-    memoryManager.setupEventListeners();
 }

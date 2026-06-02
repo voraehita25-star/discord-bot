@@ -959,8 +959,7 @@ def run_bot_with_confirmation() -> None:
             # inside discord.py with a confusing stack trace.
             if not validate_token(token):
                 logger.critical(
-                    "❌ Token format invalid — refusing to start. "
-                    "Check DISCORD_TOKEN in .env"
+                    "❌ Token format invalid — refusing to start. Check DISCORD_TOKEN in .env"
                 )
                 sys.exit(1)
             bot.run(token)

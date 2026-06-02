@@ -119,6 +119,13 @@ class HealthAPIClient:
                 await asyncio.sleep(30)
                 if self._session is not None:
                     try:
+                        # Re-check service health so _service_available can recover
+                        # False->True after a transient outage; without this the
+                        # connect-time check is frozen for the client's lifetime and
+                        # metrics stay disabled forever once the sidecar is missed once.
+                        # _check_service() self-gates (5-min healthy interval / backoff),
+                        # so calling it every 30s only hits the network on its own schedule.
+                        await self._check_service()
                         await self._flush_buffer()
                     except Exception as e:
                         logger.debug("Periodic flush failed (will retry): %s", e)
@@ -341,7 +348,7 @@ async def push_request_metric(
     """Push request metrics."""
     client = await get_health_client()
     await client.push_counter("requests", 1, endpoint=endpoint, status=status)
-    if duration:
+    if duration is not None:
         await client.push_histogram("request_duration", duration, endpoint=endpoint)
 
 

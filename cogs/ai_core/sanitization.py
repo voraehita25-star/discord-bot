@@ -84,12 +84,8 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     # accumulate ``\u200b`` chars: ``@everyone`` \u2192
     # ``@\u200beveryone`` \u2192 ``@\u200b\u200beveryone`` \u2192 \u2026 Use a
     # negative lookahead so the substitution only fires the first time.
-    content = re.sub(
-        r"@(?!\u200b)everyone", "@\u200beveryone", content, flags=re.IGNORECASE
-    )
-    content = re.sub(
-        r"@(?!\u200b)here", "@\u200bhere", content, flags=re.IGNORECASE
-    )
+    content = re.sub(r"@(?!\u200b)everyone", "@\u200beveryone", content, flags=re.IGNORECASE)
+    content = re.sub(r"@(?!\u200b)here", "@\u200bhere", content, flags=re.IGNORECASE)
 
     # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>)
     # from AI output. Same idempotency guard via negative lookahead.

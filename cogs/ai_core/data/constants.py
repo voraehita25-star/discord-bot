@@ -120,13 +120,6 @@ STATE_CLEANUP_MAX_CHANNELS = 500  # Max channels to track states for
 CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS = 86400  # 24 hours
 CONSOLIDATOR_CLEANUP_MAX_CHANNELS = 500  # Max channels to track
 
-# ==================== Conversation Branch Settings ====================
-# Checkpoint and branch cleanup
-BRANCH_MAX_CHECKPOINTS_PER_CHANNEL = 20  # Max checkpoints per channel
-BRANCH_AUTO_CHECKPOINT_INTERVAL = 10  # Auto checkpoint every N messages
-BRANCH_CLEANUP_MAX_AGE_HOURS = 48  # Remove branches older than N hours
-BRANCH_CLEANUP_INTERVAL_HOURS = 6  # Run cleanup every N hours
-
 # Game-specific keywords that should force Google Search for accurate data
 GAME_SEARCH_KEYWORDS = [
     # Limbus Company

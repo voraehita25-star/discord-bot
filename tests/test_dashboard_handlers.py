@@ -1,6 +1,6 @@
 """Tests for Dashboard CRUD handlers (dashboard_handlers.py).
 
-Covers all handler functions: conversations, messages, memories, profiles.
+Covers all handler functions: conversations, messages, profiles.
 Each handler is tested for success, validation errors, and DB unavailability.
 """
 
@@ -56,9 +56,6 @@ def mock_db():
     db.add_conversation_tag = AsyncMock(return_value=True)
     db.remove_conversation_tag = AsyncMock(return_value=True)
     db.list_all_conversation_tags = AsyncMock(return_value=[])
-    db.save_dashboard_memory = AsyncMock(return_value=1)
-    db.get_dashboard_memories = AsyncMock(return_value=[])
-    db.delete_dashboard_memory = AsyncMock()
     db.get_dashboard_user_profile = AsyncMock(return_value={})
     db.save_dashboard_user_profile = AsyncMock()
     return db
@@ -383,8 +380,12 @@ class TestEditMessage:
             patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
             patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
             patch.object(cli_mod, "_track_session"),
-            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", "", None))),
-            patch.object(cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))),
+            patch.object(
+                cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))
+            ),
+            patch.object(
+                cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))
+            ),
         ):
             await cli_mod.handle_chat_message_claude_cli(
                 ws,
@@ -403,7 +404,9 @@ class TestEditMessage:
             for call in mock_db.save_dashboard_message.call_args_list
             if len(call.args) >= 2 and call.args[1] == "user"
         ]
-        assert user_saves == [], "is_regeneration=True must skip re-saving the user message (CLI backend)"
+        assert user_saves == [], (
+            "is_regeneration=True must skip re-saving the user message (CLI backend)"
+        )
 
     @pytest.mark.asyncio
     async def test_cli_normal_message_saves_user_once(self, ws, mock_db):
@@ -424,8 +427,12 @@ class TestEditMessage:
             patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
             patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
             patch.object(cli_mod, "_track_session"),
-            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", "", None))),
-            patch.object(cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))),
+            patch.object(
+                cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))
+            ),
+            patch.object(
+                cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))
+            ),
         ):
             await cli_mod.handle_chat_message_claude_cli(
                 ws,
@@ -630,101 +637,6 @@ class TestPinMessage:
         ):
             await handle_pin_message(ws, {"message_id": "42", "pinned": True})
         assert ws.last()["code"] == "INTERNAL_ERROR"
-
-
-# ===================================================================
-# Memory handlers
-# ===================================================================
-
-
-class TestSaveMemory:
-    @pytest.mark.asyncio
-    async def test_empty_content(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_save_memory
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_save_memory(ws, {"content": ""})
-        assert ws.last()["code"] == "CANNOT_SAVE_MEMORY"
-
-    @pytest.mark.asyncio
-    async def test_content_too_long(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_save_memory
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_save_memory(ws, {"content": "A" * 10_001})
-        assert ws.last()["code"] == "CONTENT_TOO_LONG"
-
-    @pytest.mark.asyncio
-    async def test_category_too_long(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_save_memory
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_save_memory(ws, {"content": "test", "category": "A" * 51})
-        assert ws.last()["code"] == "CATEGORY_TOO_LONG"
-
-    @pytest.mark.asyncio
-    async def test_save_success(self, ws, mock_db):
-        from cogs.ai_core.api.dashboard_handlers import handle_save_memory
-
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-        ):
-            await handle_save_memory(ws, {"content": "Remember this", "category": "notes"})
-        assert ws.last()["type"] == "memory_saved"
-        assert ws.last()["content"] == "Remember this"
-
-
-class TestGetMemories:
-    @pytest.mark.asyncio
-    async def test_db_unavailable(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_get_memories
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
-            await handle_get_memories(ws, {})
-        assert ws.last()["type"] == "memories"
-        assert ws.last()["memories"] == []
-
-    @pytest.mark.asyncio
-    async def test_get_success(self, ws, mock_db):
-        from cogs.ai_core.api.dashboard_handlers import handle_get_memories
-
-        mock_db.get_dashboard_memories.return_value = [{"id": 1, "content": "test"}]
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-        ):
-            await handle_get_memories(ws, {})
-        assert len(ws.last()["memories"]) == 1
-
-
-class TestDeleteMemory:
-    @pytest.mark.asyncio
-    async def test_missing_id(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_delete_memory(ws, {})
-        assert ws.last()["code"] == "CANNOT_DELETE_MEMORY"
-
-    @pytest.mark.asyncio
-    async def test_invalid_id(self, ws):
-        from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
-
-        with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_delete_memory(ws, {"id": "abc"})
-        assert ws.last()["code"] == "INVALID_ID"
-
-    @pytest.mark.asyncio
-    async def test_delete_success(self, ws, mock_db):
-        from cogs.ai_core.api.dashboard_handlers import handle_delete_memory
-
-        with (
-            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
-            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
-        ):
-            await handle_delete_memory(ws, {"id": 1})
-        assert ws.last()["type"] == "memory_deleted"
 
 
 # ===================================================================

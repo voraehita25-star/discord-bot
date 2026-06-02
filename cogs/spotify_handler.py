@@ -237,9 +237,7 @@ class SpotifyHandler:
                                 logger.error("Failed to recreate Spotify client")
                                 if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
                                     spotify_circuit.record_failure()
-                                raise ConnectionError(
-                                    "Spotify client recreation failed"
-                                ) from None
+                                raise ConnectionError("Spotify client recreation failed") from None
                             # Re-bind func to the current ``self.sp`` if it
                             # was a bound method. Inside the lock the target
                             # cannot be swapped out from under us mid-rebind.
@@ -380,7 +378,9 @@ class SpotifyHandler:
         # ``None // 1000`` raises TypeError. ``or 0`` coerces null too.
         duration_ms = track.get("duration_ms") or 0
         embed.add_field(name=f"{Emojis.MICROPHONE} ศิลปิน", value=artist_name, inline=True)
-        album_name = album.get("name", "Unknown Album")[:25]
+        # ``or`` (not a get-default) so an explicit ``name: null`` also coerces,
+        # mirroring the duration_ms handling above — else None[:25] raises.
+        album_name = (album.get("name") or "Unknown Album")[:25]
         embed.add_field(name=f"{Emojis.DISC} อัลบั้ม", value=album_name, inline=True)
         embed.add_field(
             name=f"{Emojis.CLOCK} ความยาว", value=format_duration(duration_ms // 1000), inline=True

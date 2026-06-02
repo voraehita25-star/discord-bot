@@ -222,9 +222,7 @@ class QueueManager:
         for backward compat.
         """
         if queue_snapshot is None:
-            queue: collections.deque[dict[str, Any]] | list[Any] = self.queues.get(
-                guild_id, []
-            )
+            queue: collections.deque[dict[str, Any]] | list[Any] = self.queues.get(guild_id, [])
         else:
             queue = queue_snapshot
         filepath = Path(f"data/queue_{guild_id}.json")
@@ -239,9 +237,7 @@ class QueueManager:
             "queue": list(queue),
             "volume": volume if volume is not None else self.volumes.get(guild_id, 0.5),
             "loop": loop if loop is not None else self.loops.get(guild_id, False),
-            "mode_247": (
-                mode_247 if mode_247 is not None else self.mode_247.get(guild_id, False)
-            ),
+            "mode_247": (mode_247 if mode_247 is not None else self.mode_247.get(guild_id, False)),
         }
 
         # Ensure data/ exists. On a fresh install the directory may not

@@ -72,8 +72,7 @@ def _compute_entry_hash(
 ) -> str:
     """HMAC-SHA256 (keyed) or SHA-256 (unkeyed) over prev_hash + the row fields."""
     canonical = "\x1f".join(
-        str(x)
-        for x in (prev_hash, action_type, guild_id, user_id, target_id, details, created_at)
+        str(x) for x in (prev_hash, action_type, guild_id, user_id, target_id, details, created_at)
     )
     data = canonical.encode("utf-8", errors="replace")
     if _AUDIT_HMAC_KEY:
@@ -216,8 +215,14 @@ class AuditLogger:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
-                        guild_id, user_id, action, target_id, full_details,
-                        created_at, prev_hash, entry_hash,
+                        guild_id,
+                        user_id,
+                        action,
+                        target_id,
+                        full_details,
+                        created_at,
+                        prev_hash,
+                        entry_hash,
                     ),
                 )
                 await conn.commit()

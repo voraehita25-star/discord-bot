@@ -666,13 +666,32 @@ def _launch_script(path, name, hidden=False):
         path_str = str(path_obj.resolve())
         cwd = str(PROJECT_ROOT.resolve())
         if hidden:
-            # Resolve wscript to its absolute System32 path rather than relying
-            # on a bare-name PATH lookup — a malicious ``wscript.exe`` earlier on
-            # PATH would otherwise be executed instead of the OS binary.
-            wscript_path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wscript.exe"
-            # Fall back to PATH only if the System32 layout differs from expected.
-            wscript = str(wscript_path) if wscript_path.exists() else "wscript"
-            subprocess.Popen([wscript, path_str], shell=False, cwd=cwd)
+            # Launch the PowerShell start script in a hidden window (there is no
+            # .vbs launcher). Resolve powershell.exe to its absolute System32 path
+            # rather than a bare-name PATH lookup — a malicious powershell.exe
+            # earlier on PATH would otherwise be executed instead of the OS binary.
+            ps_path = (
+                Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                / "System32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "powershell.exe"
+            )
+            powershell = str(ps_path) if ps_path.exists() else "powershell"
+            subprocess.Popen(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    path_str,
+                ],
+                shell=False,
+                cwd=cwd,
+            )
         elif sys.platform == "win32":
             os.startfile(path_str)
         else:
@@ -706,17 +725,19 @@ def start_bot(mode="production"):
     print(f"{Colors.GREEN}Starting bot in {mode.capitalize()} Mode...{Colors.RESET}")
 
     if mode == "dev":
-        if _launch_script(scripts / "start_dev_mode.bat", "Dev mode"):
+        if _launch_script(scripts / "dev.bat", "Dev mode"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
     elif mode == "hidden":
-        if _launch_script(scripts / "start_bot_hidden.vbs", "Hidden mode", hidden=True):
+        # No standalone hidden launcher exists; run the production start.ps1 in a
+        # hidden PowerShell window (see _launch_script's hidden branch).
+        if _launch_script(scripts / "start.ps1", "Hidden mode", hidden=True):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True
     else:
-        if _launch_script(scripts / "start_bot.bat", "Production"):
+        if _launch_script(scripts / "start.bat", "Production"):
             time.sleep(2)
             print(f"{Colors.GREEN}Bot start command sent!{Colors.RESET}")
             return True

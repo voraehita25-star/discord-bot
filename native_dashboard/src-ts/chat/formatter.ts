@@ -184,9 +184,9 @@ export function formatMessage(content: string): string {
         (_match, table: string) => {
             const rows = table.trim().split('\n');
             if (rows.length < 2) return _match;
-            const headerCells = rows[0].split('|').filter(c => c.trim() !== '');
+            const headerCells = rows[0].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
             // rows[1] is the separator — parse alignment markers.
-            const alignCells = rows[1].split('|').filter(c => c.trim() !== '');
+            const alignCells = rows[1].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
             const aligns = alignCells.map(c => {
                 const t = c.trim();
                 if (t.startsWith(':') && t.endsWith(':')) return 'center';
@@ -200,7 +200,7 @@ export function formatMessage(content: string): string {
             });
             tbl += '</tr></thead><tbody>';
             for (let r = 2; r < rows.length; r++) {
-                const cells = rows[r].split('|').filter(c => c.trim() !== '');
+                const cells = rows[r].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
                 tbl += '<tr>';
                 cells.forEach((cell, i) => {
                     const align = aligns[i] || 'left';

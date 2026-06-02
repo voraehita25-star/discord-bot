@@ -166,9 +166,7 @@ class TestCaptureMessage:
             mock_new_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
             mock_new_scope.return_value.__exit__ = MagicMock(return_value=False)
 
-            sentry_integration.capture_message(
-                "boom", context={"api_key": "sk-ant-supersecret"}
-            )
+            sentry_integration.capture_message("boom", context={"api_key": "sk-ant-supersecret"})
 
         # The string value must have been redacted before reaching set_extra.
         mock_scope.set_extra.assert_called_once_with("api_key", "[REDACTED]")

@@ -4,16 +4,16 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.1). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.2). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~3,370+ pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~3,140+ pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
 | Go services | `go_services/` | Go 1.25 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
-| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 189 vitest + 73 Playwright |
+| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 190 vitest + 70 Playwright |
 
-The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/ prompts/`.
+The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/`.
 
 ## ⚠️ Read before doing anything
 

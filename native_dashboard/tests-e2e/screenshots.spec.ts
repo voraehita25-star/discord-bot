@@ -15,7 +15,7 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const PAGES = ['status', 'chat', 'memories', 'servers', 'logs', 'connections', 'config', 'about'];
+const PAGES = ['status', 'chat', 'servers', 'logs', 'connections', 'config', 'about'];
 
 for (const pageName of PAGES) {
     test(`screenshot: ${pageName} page`, async ({ page }) => {
@@ -74,7 +74,7 @@ test('screenshot: light theme — every page', async ({ page }) => {
     await page.evaluate(() => {
         document.documentElement.setAttribute('data-theme', 'light');
     });
-    for (const p of ['status', 'chat', 'memories']) {
+    for (const p of ['status', 'chat']) {
         await page.evaluate((n) => {
             const fn = (window as unknown as { showPage?: (s: string) => void }).showPage;
             fn?.(n);

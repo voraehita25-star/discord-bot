@@ -90,9 +90,7 @@ class Fact:
                     # written via ``isoformat() + "Z"`` parse cleanly on
                     # Python < 3.11 fromisoformat. Without this, those
                     # rows silently lose their datetime on rehydration.
-                    data[key] = datetime.fromisoformat(
-                        data[key].replace("Z", "+00:00")
-                    )
+                    data[key] = datetime.fromisoformat(data[key].replace("Z", "+00:00"))
                 except ValueError:
                     data[key] = None
         # Filter to only known fields to avoid TypeError on unknown keys
@@ -554,7 +552,15 @@ class LongTermMemory:
                     )
                 if user_id in self._cache:
                     self._cache.move_to_end(user_id)
-                return list(self._cache.get(user_id, []))
+                facts = list(self._cache.get(user_id, []))
+            # Apply the same filters the DB branch honors below; without this the
+            # cache-only path silently ignored category/include_inactive and
+            # returned every fact regardless of the requested filter.
+            if category:
+                facts = [f for f in facts if f.category == category]
+            if not include_inactive:
+                facts = [f for f in facts if f.is_active]
+            return facts
 
         async with db.get_connection() as conn:
             if category:
@@ -669,9 +675,7 @@ class LongTermMemory:
         facts = await self.get_user_facts(user_id)
         return self._find_similar_fact_in(facts, content)
 
-    def _find_similar_fact_in(
-        self, facts: list[Fact], content: str
-    ) -> Fact | None:
+    def _find_similar_fact_in(self, facts: list[Fact], content: str) -> Fact | None:
         """Find a similar fact within an already-fetched fact list.
 
         Pre-computes the query word set + length once outside the loop —
@@ -805,23 +809,36 @@ class LongTermMemory:
 
         removed = 0
         seen_contents: dict[str, int | None] = {}
+        removed_ids: list[int] = []
 
         for fact in facts:
             content_key = fact.content.lower().strip()
 
             if content_key in seen_contents:
-                # Mark duplicate as inactive — explicit commit so the
-                # `is_active = 0` write is durable even if the db manager's
-                # context exit doesn't auto-commit.
-                if fact.id and DB_AVAILABLE and db is not None:
-                    async with db.get_write_connection() as conn:
-                        await conn.execute(
-                            "UPDATE user_facts SET is_active = 0 WHERE id = ?", (fact.id,)
-                        )
-                        await conn.commit()
-                removed += 1
+                if fact.id:
+                    # Mark duplicate as inactive — explicit commit so the
+                    # `is_active = 0` write is durable even if the db manager's
+                    # context exit doesn't auto-commit.
+                    if DB_AVAILABLE and db is not None:
+                        async with db.get_write_connection() as conn:
+                            await conn.execute(
+                                "UPDATE user_facts SET is_active = 0 WHERE id = ?", (fact.id,)
+                            )
+                            await conn.commit()
+                    removed_ids.append(fact.id)
+                    removed += 1
             else:
                 seen_contents[content_key] = fact.id
+
+        # Prune the in-memory cache too, so get_user_facts stops returning the
+        # duplicates. This is required in cache-only mode (DB unavailable), where
+        # the is_active=0 write above never runs, and is harmless otherwise.
+        # Mirrors forget_fact's lock-guarded cache mutation.
+        if removed_ids:
+            drop = set(removed_ids)
+            async with self._lock:
+                if user_id in self._cache:
+                    self._cache[user_id] = [f for f in self._cache[user_id] if f.id not in drop]
 
         if removed:
             self.logger.info("Removed %d duplicate facts for user %d", removed, user_id)

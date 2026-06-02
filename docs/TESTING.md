@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: May 29, 2026 | Python 3.14+ | Python Tests: 3,363 ✅ (101 files) + 8 skipped | Frontend Tests: 189 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: May 29, 2026 | Python 3.14+ | Python Tests: 3,143 ✅ (98 files) + 1 skipped | Frontend Tests: 190 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run `make test` / `npm test` / `npm run test:e2e` for the live numbers.
 
@@ -32,14 +32,14 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (101 Python files, 3,371 tests)
+## Test Structure (98 Python files, 3,143 tests)
 
 ```text
 tests/
 ├── __init__.py              # Package init
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
-├── test_*.py                # 89 consolidated test files
+├── test_*.py                # 95 consolidated test files
 │   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
 │   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
 │   ├── Dashboard            # 1 test file (dashboard_handlers — 53 tests)
@@ -50,9 +50,9 @@ tests/
 ```
 
 > Earlier consolidation (~early 2026) merged `_extended`, `_more`, `_module` variants
-> into their base files and parametrized boilerplate tests. Current count: **101 files**.
+> into their base files and parametrized boilerplate tests. Current count: **98 files**.
 
-## Frontend Test Structure (10 vitest files, 189 tests)
+## Frontend Test Structure (10 vitest files, 190 tests)
 
 TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment
 (DOMPurify + KaTeX globals attached via test setup).
@@ -60,7 +60,7 @@ TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environm
 ```text
 native_dashboard/src-ts/
 ├── app.test.ts                     # app.ts — status/logs/DB/settings (legacy suite)
-├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (22 tests)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (23 tests)
 ├── e2e_smoke.test.ts               # Smoke-level end-to-end flows
 └── chat/
     ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (25 tests)
@@ -80,7 +80,7 @@ npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage report
 ```
 
-## Headless E2E Tests (8 Playwright files, 73 tests)
+## Headless E2E Tests (8 Playwright files, 70 tests)
 
 Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
 served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
@@ -106,7 +106,7 @@ native_dashboard/tests-e2e/
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 73 tests, headless Chromium
+npm run test:e2e                 # All 70 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures

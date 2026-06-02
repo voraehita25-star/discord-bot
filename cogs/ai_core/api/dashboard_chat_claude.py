@@ -296,6 +296,12 @@ async def handle_chat_message_claude(
     # produce garbage MessageParam entries that Anthropic rejects with 400.
     if not isinstance(history, list):
         history = []
+    # ``images`` must likewise be a list — a payload like ``{"images": 5}`` would
+    # otherwise raise TypeError at ``len(images)`` below (the only one of the three
+    # list inputs previously left unguarded), and a string would iterate char-by-char
+    # into garbage image blocks. Mirror the Gemini twin's coercion.
+    if not isinstance(images, list):
+        images = []
 
     # Enforce input size limits
     if len(content) > max_content_length:
@@ -400,9 +406,9 @@ async def handle_chat_message_claude(
         except Exception:
             logger.exception("Document extraction/persistence failed (API backend)")
 
-    # Build context with user identity and memories, scoped to this
+    # Build context with user identity, scoped to this
     # conversation so uploaded documents stay within their RP thread.
-    user_context, memories_context, unrestricted_mode = await build_user_context(
+    user_context, unrestricted_mode = await build_user_context(
         user_name,
         unrestricted_mode_requested,
         conversation_id=conversation_id,
@@ -677,7 +683,6 @@ async def handle_chat_message_claude(
 {thinking_prompt_enhancement}
 [System Context]
 {user_context}
-{memories_context}
 
 IMPORTANT: If user asks you to remember something, respond with the information you'll remember. The system will automatically save important facts.
 NOTE: User messages (both historical and the current one) may be prefixed with timestamps like [2026-03-25T14:30:22]. These are system-injected metadata indicating when each message was sent. Do NOT include such timestamp prefixes in your own responses. Use them only to understand the timing context of the conversation."""
@@ -919,6 +924,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             # hit ws.send_json with UnboundLocalError.
             delay = 1.0
             retry_notice = ""
+            # Track the last failure so genuine exhaustion can re-raise it and the
+            # outer handler routes it correctly (timeout->timeout branch, 429->quota,
+            # else record_failure+failover) instead of falling through to a
+            # success-shaped stream_end + record_success().
+            last_error: Exception | None = None
             while attempt <= _MAX_STREAM_RETRIES:
                 try:
                     if stream_timeout > 0:
@@ -927,6 +937,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         await _stream_once()
                     return
                 except _RETRYABLE_ERRORS as retry_err:
+                    last_error = retry_err
                     delay = _retry_delay_seconds(attempt)
                     logger.warning(
                         "⚠️ Claude overloaded (attempt %d), retrying in %ds: %s",
@@ -935,7 +946,8 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         retry_err,
                     )
                     retry_notice = f"\n\n⏳ *Server busy, retrying (attempt {attempt})...*\n\n"
-                except TimeoutError:
+                except TimeoutError as timeout_err:
+                    last_error = timeout_err
                     delay = _retry_delay_seconds(attempt)
                     logger.warning(
                         "⏱️ Claude stream timed out on attempt %d, retrying in %ds",
@@ -963,7 +975,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         "⚠️ Claude stream response exceeded %d chars, stopping retries",
                         _MAX_RESPONSE_SIZE,
                     )
-                    break
+                    # We already have a large (if truncated) response — deliver it
+                    # via the normal stream_end path rather than erroring.
+                    return
                 # Reset only counters, keep full_response accumulating
                 thinking_content = ""
                 chunks_count = 0
@@ -975,14 +989,20 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 # to this attempt's clean continuation when its buffer flushes.
                 ts_stripper.reset()
 
-                if partial:
+                # Anthropic rejects a final assistant prefill whose content ends
+                # in trailing whitespace (400 BadRequestError, which is NOT
+                # retryable) — and the streamed partial can legitimately end in a
+                # newline/space. Right-strip it; if nothing survives, skip the
+                # prefill entirely and just retry from original_messages.
+                partial_prefill = partial.rstrip() if partial else ""
+                if partial_prefill:
                     if thinking_enabled:
                         # Thinking mode doesn't support assistant prefill —
                         # ask Claude to continue via a user message with the partial text.
                         # Always rebuild from original_messages to prevent accumulation.
                         api_kwargs["messages"] = [
                             *original_messages,
-                            {"role": "assistant", "content": partial},
+                            {"role": "assistant", "content": partial_prefill},
                             {
                                 "role": "user",
                                 "content": (
@@ -1000,16 +1020,22 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         # Always rebuild from original_messages to prevent accumulation.
                         api_kwargs["messages"] = [
                             *original_messages,
-                            {"role": "assistant", "content": partial},
+                            {"role": "assistant", "content": partial_prefill},
                         ]
 
                 attempt += 1
                 await asyncio.sleep(delay)
 
-            # All retries exhausted
+            # All retries exhausted — every attempt failed. Surface the failure so
+            # the outer except records it against failover health and sends the
+            # client an error frame, instead of returning normally (which would
+            # send a success-shaped stream_end and record_success()).
             logger.error(
                 "💀 Claude dashboard stream retries exhausted after %d attempts", attempt - 1
             )
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Claude dashboard stream retries exhausted")
 
         await _consume_claude_stream()
 
@@ -1339,7 +1365,7 @@ async def handle_ai_edit_message_claude(
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
     # Build context — scoped to this conversation's document library.
-    user_context, memories_context, _ = await build_user_context(
+    user_context, _ = await build_user_context(
         user_name,
         False,
         conversation_id=conversation_id,
@@ -1388,10 +1414,10 @@ async def handle_ai_edit_message_claude(
     current_time_str = now.strftime("%A, %d %B %Y %H:%M:%S")
 
     # Same stable/volatile split as the main chat path — keeps the long
-    # persona+context+memories prefix in cache while only the per-turn time
+    # persona+context prefix in cache while only the per-turn time
     # line is uncached.
     stable_system_prompt = (
-        f"{preset['system_instruction']}\n[System Context]\n{user_context}\n{memories_context}"
+        f"{preset['system_instruction']}\n[System Context]\n{user_context}"
     )
     volatile_system_prompt = f"Current Time: {current_time_str} (ICT)"
 
@@ -1537,6 +1563,9 @@ async def handle_ai_edit_message_claude(
             # Pre-bind so the asyncio.sleep(delay) at loop bottom can never
             # touch an unbound local. Mirror the chat-stream guard above.
             delay = 1.0
+            # See chat-stream handler: capture the last failure so exhaustion can
+            # re-raise it for correct outer routing instead of a false success.
+            last_error: Exception | None = None
 
             while attempt <= _MAX_EDIT_RETRIES:
                 try:
@@ -1546,6 +1575,7 @@ async def handle_ai_edit_message_claude(
                         await _stream_once()
                     return
                 except _RETRYABLE_ERRORS as retry_err:
+                    last_error = retry_err
                     delay = _retry_delay_seconds(attempt)
                     logger.warning(
                         "⚠️ Claude AI edit overloaded (attempt %d), retrying in %ds: %s",
@@ -1560,7 +1590,8 @@ async def handle_ai_edit_message_claude(
                             "conversation_id": conversation_id,
                         }
                     )
-                except TimeoutError:
+                except TimeoutError as timeout_err:
+                    last_error = timeout_err
                     delay = _retry_delay_seconds(attempt)
                     logger.warning(
                         "⏱️ Claude AI edit stream timed out on attempt %d, retrying in %ds",
@@ -1579,10 +1610,15 @@ async def handle_ai_edit_message_claude(
                 attempt += 1
                 await asyncio.sleep(delay)
 
-            # All retries exhausted
+            # All retries exhausted — surface the failure to the outer handler
+            # (record_failure + client error frame) instead of falling through to
+            # a success-shaped stream_end + record_success().
             logger.error(
                 "💀 Claude AI edit stream retries exhausted after %d attempts", attempt - 1
             )
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Claude AI edit stream retries exhausted")
 
         await _consume_claude_edit_stream()
 

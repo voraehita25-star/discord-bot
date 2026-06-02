@@ -145,18 +145,6 @@ class BotSettings:
             warnings.append("ANTHROPIC_API_KEY is not set (AI features will be disabled)")
         return warnings
 
-    def get_secrets_summary(self) -> dict[str, bool]:
-        """Get a summary of which optional secrets are configured."""
-        return {
-            "discord_token": bool(self.discord_token and self.discord_token != "your_token_here"),
-            "anthropic_api_key": bool(self.anthropic_api_key),
-            "anthropic_base_url": bool(self.anthropic_base_url),
-            "gemini_api_key": bool(self.gemini_api_key),
-            "spotify_credentials": bool(self.spotipy_client_id and self.spotipy_client_secret),
-            "guild_id_main": self.guild_id_main != 0,
-            "creator_id": self.creator_id != 0,
-        }
-
     def __repr__(self) -> str:
         """Custom repr that redacts sensitive fields."""
         return (
@@ -178,10 +166,6 @@ class FeatureFlags:
     def register(self, name: str, available: bool) -> None:
         """Register a feature and its availability status."""
         self._flags[name] = available
-
-    def is_available(self, name: str) -> bool:
-        """Check if a feature is available."""
-        return self._flags.get(name, False)
 
     def get_all(self) -> dict[str, bool]:
         """Get all feature flags."""

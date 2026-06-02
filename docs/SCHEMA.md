@@ -68,6 +68,7 @@ Indexes: `idx_ai_history_channel(channel_id)`, `idx_ai_history_timestamp(channel
 | url | TEXT | NOT NULL |
 | title | TEXT | |
 | added_by | INTEGER | |
+| track_type | TEXT | `'url'` / `'search'` — persists Spotify search items across restart |
 | added_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
 Index: `idx_music_queue_guild(guild_id, position)`
@@ -167,8 +168,12 @@ Indexes: `idx_knowledge_domain(domain)`, `idx_knowledge_category(category)`, `id
 | target_id | INTEGER | |
 | details | TEXT | |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
+| prev_hash | TEXT | tamper-evidence hash chain (see `audit_log.py`) |
+| entry_hash | TEXT | tamper-evidence hash chain (see `audit_log.py`) |
 
 Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id)`, `idx_audit_log_guild_created(guild_id, created_at DESC)`
+
+Append-only: triggers `audit_log_no_update` / `audit_log_no_delete` block UPDATE/DELETE (RAISE ABORT) — combined with the `prev_hash`/`entry_hash` chain, edits are blocked and detectable via `verify_chain()`.
 
 ### ai_analytics
 
@@ -188,7 +193,7 @@ Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id
 | error | TEXT | |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
-Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_guild(guild_id, created_at DESC)`
+Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_guild(guild_id, created_at DESC)`, `idx_ai_analytics_channel(channel_id, created_at DESC)` (added by migration 011/016)
 
 ### token_usage
 
@@ -218,7 +223,7 @@ Indexes: `idx_token_usage_user(user_id, created_at DESC)`, `idx_token_usage_chan
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 | updated_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 | is_starred | BOOLEAN | DEFAULT 0 |
-| ai_provider | TEXT | DEFAULT 'gemini' |
+| ai_provider | TEXT | NOT NULL, DEFAULT 'claude' |
 
 Indexes: `idx_dashboard_conv_updated(updated_at DESC)`, `idx_dashboard_conv_starred(is_starred, updated_at DESC)`, `idx_dashboard_conv_role(role_preset, updated_at DESC)`, `idx_dashboard_conv_provider(ai_provider, updated_at DESC)`
 
@@ -248,6 +253,7 @@ Indexes:
 | -------- | ------ | ------------- |
 | conversation_id | TEXT | NOT NULL, FK → dashboard_conversations(id) ON DELETE CASCADE |
 | tag | TEXT | NOT NULL |
+| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
 Composite primary key `(conversation_id, tag)`.
 
@@ -264,18 +270,6 @@ Indexes: `idx_dashboard_tags_conv(conversation_id)`, `idx_dashboard_tags_tag(tag
 | is_creator | INTEGER | DEFAULT 0 |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 | updated_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
-
-### dashboard_memories
-
-| Column | Type | Constraints |
-| -------- | ------ | ------------- |
-| id | INTEGER | PRIMARY KEY AUTOINCREMENT |
-| content | TEXT | NOT NULL |
-| category | TEXT | DEFAULT 'general' |
-| importance | INTEGER | DEFAULT 1 |
-| created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
-
-Index: `idx_dashboard_memories_category(category, importance DESC)`
 
 ### dashboard_document_memories — Persistent doc text per conversation
 
