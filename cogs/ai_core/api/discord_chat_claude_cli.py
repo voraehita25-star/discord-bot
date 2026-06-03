@@ -393,8 +393,16 @@ async def call_claude_cli_streaming(
                     ),
                     timeout=_DISCORD_STREAM_TIMEOUT,
                 )
-                if channel_id is not None and new_session_id:
+                if channel_id is not None and new_session_id and not aborted:
                     _record_session(channel_id, new_session_id)
+                elif aborted and channel_id is not None:
+                    # Cancelled mid-stream: the subprocess still ran to completion
+                    # server-side, but we return empty (the SDK-path contract) and
+                    # never store this reply in local history. Don't --resume into
+                    # a session whose server-side context holds an undelivered
+                    # reply — drop it so the next turn starts fresh and local vs.
+                    # server-side history stay aligned.
+                    _CHANNEL_SESSIONS.pop(channel_id, None)
                 break
             except _StaleSessionError:
                 if attempt == 1 and session_id:

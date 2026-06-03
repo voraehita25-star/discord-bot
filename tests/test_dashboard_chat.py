@@ -933,3 +933,55 @@ class TestErrorBranches:
                 {"content": "hi", "conversation_id": "c1"},
                 client,
             )
+
+
+# ---------------------------------------------------------------------------
+# Claude conversation_id validation regex tests
+# ---------------------------------------------------------------------------
+class TestClaudeConversationIdRegex:
+    """Validate _CONVERSATION_ID_RE from the Claude dashboard chat handler.
+
+    The pattern (r'^[a-zA-Z0-9_-]{1,128}\\Z') guards conversation IDs that
+    flow into DB lookups. These cover the trailing-newline regression
+    (anchored with \\Z, not $, so a value like 'validid\\n' must NOT match)
+    plus the normal accept/reject contract.
+    """
+
+    def test_rejects_trailing_newline(self):
+        """Regression: '$' matched just before a trailing newline; '\\Z' must not.
+
+        A value like 'validid\\n' previously slipped past the validator and
+        could be used to smuggle a newline into a conversation_id. With \\Z
+        the match is None.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
+
+        assert _CONVERSATION_ID_RE.match("validid\n") is None
+
+    def test_accepts_normal_valid_id(self):
+        """A typical id with letters, digits, underscore and hyphen is accepted."""
+        from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
+
+        assert _CONVERSATION_ID_RE.match("abc_123-XYZ") is not None
+
+    def test_rejects_overlong_id(self):
+        """An id longer than 128 chars is rejected; exactly 128 is accepted."""
+        from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
+
+        assert _CONVERSATION_ID_RE.match("a" * 129) is None
+        # Boundary: 128 chars is the max allowed length and must still match.
+        assert _CONVERSATION_ID_RE.match("a" * 128) is not None
+
+    def test_rejects_illegal_chars(self):
+        """Characters outside [a-zA-Z0-9_-] are rejected."""
+        from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
+
+        assert _CONVERSATION_ID_RE.match("bad id!") is None
+        assert _CONVERSATION_ID_RE.match("path/traversal") is None
+        assert _CONVERSATION_ID_RE.match("emoji😀") is None
+
+    def test_rejects_empty_string(self):
+        """The {1,128} quantifier requires at least one character."""
+        from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
+
+        assert _CONVERSATION_ID_RE.match("") is None

@@ -69,11 +69,6 @@ export class ContextWindowIndicator {
 
     /** Paint the bar from a fresh usage reading + cache it for the given conversation. */
     update(conversationId: string | null, usage: TokenUsage): void {
-        const indicator = document.getElementById('context-window-indicator');
-        const fill = document.getElementById('context-bar-fill');
-        const label = document.getElementById('context-bar-label');
-        if (!indicator || !fill || !label) return;
-
         const { input_tokens, output_tokens, context_window } = usage;
         // Validate on WRITE, mirroring load(): a single WS frame with a
         // NaN/negative token count would otherwise be cached + persisted and
@@ -98,6 +93,30 @@ export class ContextWindowIndicator {
             this.cache.delete(conversationId);
             this.cache.set(conversationId, usage);
             this.save();
+        }
+
+        this.paint(usage);
+    }
+
+    /**
+     * Render the bar from a usage reading. Pure DOM paint — NO cache or
+     * localStorage writes — so restore() can repaint on a conversation switch
+     * without forcing a wasted save() each time.
+     */
+    private paint(usage: TokenUsage): void {
+        const indicator = document.getElementById('context-window-indicator');
+        const fill = document.getElementById('context-bar-fill');
+        const label = document.getElementById('context-bar-label');
+        if (!indicator || !fill || !label) return;
+
+        const { input_tokens, output_tokens, context_window } = usage;
+        if (
+            !Number.isFinite(input_tokens) ||
+            !Number.isFinite(output_tokens) ||
+            !Number.isFinite(context_window) ||
+            context_window <= 0
+        ) {
+            return;
         }
 
         const total = input_tokens + output_tokens;
@@ -132,12 +151,15 @@ export class ContextWindowIndicator {
     restore(conversationId: string): void {
         const cached = this.cache.get(conversationId);
         if (cached) {
-            // Touch the entry so a frequently-read conversation isn't
-            // evicted before never-read ones (Map ordering is otherwise
-            // by insertion only — see comment in ``update``).
+            // In-memory LRU touch so a frequently-read conversation isn't
+            // evicted before never-read ones (Map ordering is otherwise by
+            // insertion only — see comment in ``update``). No save() here:
+            // restore is a read/repaint, not a data change, and persisting on
+            // every conversation switch was a wasted localStorage write. The
+            // promotion is persisted on the next real update().
             this.cache.delete(conversationId);
             this.cache.set(conversationId, cached);
-            this.update(conversationId, cached);
+            this.paint(cached);
         } else {
             this.reset();
         }

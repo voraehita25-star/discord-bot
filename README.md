@@ -83,6 +83,8 @@ python bot.py
 | `SENTRY_DSN` | ❌ | Sentry error tracking |
 | `DASHBOARD_WS_TOKEN` | ❌ | Auth token for WebSocket dashboard |
 | `DASHBOARD_ALLOW_UNRESTRICTED` | ❌ | Enable unrestricted mode in dashboard (`1`/`true`) |
+| `DASHBOARD_CLI_ALLOW_WRITE` | ❌ | Let the dashboard's embedded `claude -p` (`cli` backend) create/edit files **without** an interactive Allow prompt (`1`/`true`). Off by default. Files-only — `Bash`, web, and `Task` tools stay denied. |
+| `DASHBOARD_CLI_WRITE_DIRS` | ❌ | `os.pathsep`-separated allowlist of dirs CLI write-mode may write into (default: Desktop / Documents / Downloads, incl. OneDrive-redirected). A fail-closed `PreToolUse` guard (`cli_write_guard.py`) denies any write whose canonical path is outside these roots, so the repo, `~/.ssh`, `~/.claude`, and the home root are never writable. |
 | `HEALTH_API_HOST` | ❌ | Bind address for Health API (default: `127.0.0.1`) |
 | `HEALTH_API_TOKEN` | ❌ | Bearer token for protected Health API endpoints |
 
@@ -123,7 +125,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Python suite (3,143 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
+├── tests/              # Python suite (4,721 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -307,4 +309,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.2 | **Python:** 3.14+ | **Tests:** 3,143 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 2, 2026
+**Version:** 3.4.3 | **Python:** 3.14+ | **Tests:** 4,721 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 3, 2026

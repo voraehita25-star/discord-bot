@@ -390,10 +390,19 @@ class ShutdownManager:
                 for t in tasks:
                     if not t.done():
                         t.cancel()
+                # Account for the abandoned handlers in the summary counters.
+                # _run_handler's CancelledError path re-raises without touching
+                # handlers_failed/handlers_skipped, so without this the final
+                # "run: N, failed: N, skipped: N" line would sum to less than the
+                # total handler count and operators couldn't tell that handlers
+                # were abandoned. (wait_for already cancelled the in-flight tasks
+                # on timeout, so they read as cancelled() here.)
+                cancelled = sum(1 for t in tasks if t.cancelled())
+                self._state.handlers_skipped += cancelled
                 self.logger.warning(
                     "⏱️ Phase %s budget exhausted; cancelled %d in-flight handler(s)",
                     phase.name,
-                    sum(1 for t in tasks if t.cancelled()),
+                    cancelled,
                 )
 
             elapsed = time.time() - start_time

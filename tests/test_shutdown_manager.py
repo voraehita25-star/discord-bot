@@ -338,3 +338,115 @@ class TestGlobalShutdownManager:
         assert hasattr(shutdown_manager, "register")
         assert hasattr(shutdown_manager, "shutdown")
         assert hasattr(shutdown_manager, "setup_signal_handlers")
+
+
+class TestShutdownCounterAccounting:
+    """Regression tests for shutdown summary counter accounting.
+
+    The final summary line reports run/failed/skipped. These must sum to the
+    total number of registered handlers — including handlers that were
+    cancelled when a phase budget was exhausted. Previously the
+    CancelledError path re-raised without touching any counter, so abandoned
+    handlers went uncounted and the summary under-reported.
+    """
+
+    @pytest.mark.asyncio
+    async def test_phase_budget_exhausted_counts_cancelled_handlers(self):
+        """Cancelled in-flight handlers are accounted for in the summary.
+
+        Register an async handler whose sleep far outlasts the (very small)
+        shutdown budget. The phase-level wait_for fires, the in-flight task is
+        cancelled, and the cancelled handler must be reflected in
+        handlers_skipped so that run + failed + skipped == total registered.
+        """
+        from utils.reliability.shutdown_manager import Priority, ShutdownManager
+
+        # Tiny global budget so the phase wait_for fires almost immediately.
+        manager = ShutdownManager(timeout=0.05, force_exit=False)
+
+        async def slow_cleanup():
+            # Far longer than the budget; per-handler timeout is larger than
+            # the phase budget, so the phase-level wait_for is what cancels it.
+            await asyncio.sleep(30)
+
+        # timeout=10 > phase budget (0.05) so min(timeout, budget) == budget,
+        # and the outer phase wait_for drives the cancellation path.
+        manager.register("slow", slow_cleanup, priority=Priority.CRITICAL, timeout=10.0)
+
+        state = await manager.shutdown(signal_name="TEST")
+
+        total = len(manager._handlers)
+        assert total == 1
+        assert state.phase.name == "COMPLETE"
+        # Every registered handler must be accounted for in exactly one bucket.
+        assert state.handlers_run + state.handlers_failed + state.handlers_skipped == total
+        # The slow handler was cancelled by the exhausted phase budget, so it
+        # lands in the skipped bucket (not run, not failed).
+        assert state.handlers_run == 0
+        assert state.handlers_skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_mixed_fast_and_cancelled_handlers_sum_to_total(self):
+        """A fast handler runs while a stuck handler in a later phase is cancelled.
+
+        The fast CRITICAL handler completes within the first phase's budget and
+        is counted in handlers_run; the stuck NORMAL handler in a later phase is
+        cancelled once the budget is exhausted. The summary still adds up to the
+        total number of registered handlers.
+        """
+        from utils.reliability.shutdown_manager import Priority, ShutdownManager
+
+        manager = ShutdownManager(timeout=0.05, force_exit=False)
+        ran = []
+
+        def fast_cleanup():
+            ran.append("fast")
+
+        async def stuck_cleanup():
+            await asyncio.sleep(30)
+
+        manager.register("fast", fast_cleanup, priority=Priority.CRITICAL, timeout=10.0)
+        manager.register("stuck", stuck_cleanup, priority=Priority.NORMAL, timeout=10.0)
+
+        state = await manager.shutdown(signal_name="TEST")
+
+        total = len(manager._handlers)
+        assert total == 2
+        assert state.phase.name == "COMPLETE"
+        # The conservation invariant: every handler is in exactly one bucket.
+        assert state.handlers_run + state.handlers_failed + state.handlers_skipped == total
+        # Fast handler actually executed.
+        assert "fast" in ran
+
+    @pytest.mark.asyncio
+    async def test_fast_handler_counted_in_run_and_summary_adds_up(self):
+        """A normal fast handler is counted in handlers_run and the summary adds up.
+
+        With a generous budget, all handlers complete normally: run equals the
+        total, nothing failed or skipped, and the conservation invariant holds.
+        """
+        from utils.reliability.shutdown_manager import Priority, ShutdownManager
+
+        manager = ShutdownManager(timeout=10.0, force_exit=False)
+        ran = []
+
+        def fast_cleanup():
+            ran.append("fast")
+
+        async def fast_async_cleanup():
+            ran.append("fast_async")
+
+        manager.register("fast", fast_cleanup, priority=Priority.CRITICAL, timeout=5.0)
+        manager.register("fast_async", fast_async_cleanup, priority=Priority.NORMAL, timeout=5.0)
+
+        state = await manager.shutdown(signal_name="TEST")
+
+        total = len(manager._handlers)
+        assert total == 2
+        assert state.phase.name == "COMPLETE"
+        assert state.handlers_run == total
+        assert state.handlers_failed == 0
+        assert state.handlers_skipped == 0
+        assert state.handlers_run + state.handlers_failed + state.handlers_skipped == total
+        assert "fast" in ran
+        assert "fast_async" in ran

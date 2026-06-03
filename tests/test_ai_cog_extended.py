@@ -472,3 +472,905 @@ class TestFallbackFunctions:
         # Should return key as is
         result = msg("test_key")
         assert "test_key" in result or result is not None
+
+
+# ======================================================================
+# Region 1-500 coverage: on_message pipeline entry, lifecycle, commands.
+# Callbacks invoked directly via ``cog.<cmd>.callback(cog, ctx, ...)`` to
+# bypass discord.py's owner/cooldown decorators. All discord/external deps
+# mocked — no network, no real sleeps.
+# ======================================================================
+
+import asyncio
+
+import discord
+
+
+def _make_cog_r1():
+    """Create an AI cog with ChatManager + rate_limiter patched out.
+
+    The ChatManager mock is wired with the dict attributes and async methods
+    the region-1-500 code paths touch (process_chat, save_all_sessions, the
+    per-channel state dicts, _message_queue.clear_channel, cli_mode).
+    """
+    from cogs.ai_core.ai_cog import AI
+
+    bot = MagicMock()
+    with (
+        patch("cogs.ai_core.ai_cog.ChatManager") as mock_cm,
+        patch("cogs.ai_core.ai_cog.rate_limiter"),
+    ):
+        cm = MagicMock()
+        cm.process_chat = AsyncMock()
+        cm.save_all_sessions = AsyncMock()
+        cm.cleanup_inactive_sessions = AsyncMock()
+        cm.cleanup_pending_requests = MagicMock(return_value=0)
+        cm.chats = {}
+        cm.seen_users = {}
+        cm.last_accessed = {}
+        cm.processing_locks = {}
+        cm.streaming_enabled = {}
+        cm.current_typing_msg = {}
+        cm._message_queue = MagicMock()
+        cm._message_queue.clear_channel = MagicMock()
+        cm.cli_mode = False
+        mock_cm.return_value = cm
+        cog = AI(bot)
+    return cog
+
+
+def _ctx_r1(channel_id=987654321, guild_id=111222333):
+    ctx = MagicMock()
+    ctx.channel.id = channel_id
+    ctx.guild = MagicMock()
+    ctx.guild.id = guild_id
+    ctx.send = AsyncMock()
+    ctx.message = MagicMock()
+    ctx.message.attachments = []
+    ctx.message.reference = None
+    ctx.message.id = 555
+    return ctx
+
+
+def _discord_exc(cls):
+    resp = MagicMock()
+    resp.status = 404
+    resp.reason = "test"
+    return cls(resp, "boom")
+
+
+class _FakeTask:
+    """A minimal awaitable task stand-in.
+
+    ``await``-ing it raises ``CancelledError`` (mirroring a real cancelled
+    task being awaited) so the cog's ``contextlib.suppress`` branches run.
+    ``__await__`` must live on the type — MagicMock can't supply it.
+    """
+
+    def __init__(self, done: bool = False) -> None:
+        self._done = done
+        self.cancel = MagicMock()
+
+    def done(self) -> bool:
+        return self._done
+
+    def __await__(self):
+        async def _raise():
+            raise asyncio.CancelledError
+
+        return _raise().__await__()
+
+
+# ----------------------------------------------------------------------
+# _on_bg_task_done (131-136)
+# ----------------------------------------------------------------------
+
+
+class TestOnBgTaskDone:
+    def test_cancelled_task_is_ignored(self):
+        from cogs.ai_core.ai_cog import AI
+
+        task = MagicMock()
+        task.cancelled.return_value = True
+        # exception() must not be consulted when cancelled
+        task.exception.side_effect = AssertionError("should not be called")
+        AI._on_bg_task_done(task)  # no raise == pass
+
+    def test_task_with_exception_logs(self):
+        from cogs.ai_core.ai_cog import AI
+
+        task = MagicMock()
+        task.cancelled.return_value = False
+        task.exception.return_value = RuntimeError("kaboom")
+        task.get_name.return_value = "bg-1"
+        with patch("cogs.ai_core.ai_cog.logger") as log:
+            AI._on_bg_task_done(task)
+            assert log.error.called
+
+    def test_task_without_exception_no_log(self):
+        from cogs.ai_core.ai_cog import AI
+
+        task = MagicMock()
+        task.cancelled.return_value = False
+        task.exception.return_value = None
+        with patch("cogs.ai_core.ai_cog.logger") as log:
+            AI._on_bg_task_done(task)
+            assert not log.error.called
+
+
+# ----------------------------------------------------------------------
+# _as_* channel coercion helpers (142-156)
+# ----------------------------------------------------------------------
+
+
+class TestChannelCoercionHelpers:
+    def test_as_chat_channel_text(self):
+        from cogs.ai_core.ai_cog import AI
+
+        ch = MagicMock(spec=discord.TextChannel)
+        assert AI._as_chat_channel(ch) is ch
+
+    def test_as_chat_channel_dm(self):
+        from cogs.ai_core.ai_cog import AI
+
+        ch = MagicMock(spec=discord.DMChannel)
+        assert AI._as_chat_channel(ch) is ch
+
+    def test_as_chat_channel_none_for_other(self):
+        from cogs.ai_core.ai_cog import AI
+
+        assert AI._as_chat_channel(object()) is None
+
+    def test_as_fetchable_channel_thread(self):
+        from cogs.ai_core.ai_cog import AI
+
+        ch = MagicMock(spec=discord.Thread)
+        assert AI._as_fetchable_channel(ch) is ch
+
+    def test_as_fetchable_channel_none_for_dm(self):
+        from cogs.ai_core.ai_cog import AI
+
+        ch = MagicMock(spec=discord.DMChannel)
+        assert AI._as_fetchable_channel(ch) is None
+
+    def test_as_text_channel_match(self):
+        from cogs.ai_core.ai_cog import AI
+
+        ch = MagicMock(spec=discord.TextChannel)
+        assert AI._as_text_channel(ch) is ch
+
+    def test_as_text_channel_none(self):
+        from cogs.ai_core.ai_cog import AI
+
+        assert AI._as_text_channel(MagicMock(spec=discord.Thread)) is None
+
+
+# ----------------------------------------------------------------------
+# cog_load (164-166, 184-191, 205-206, 229-230)
+# ----------------------------------------------------------------------
+
+
+class TestCogLoadRegion:
+    @pytest.mark.asyncio
+    async def test_cog_load_cancels_leftover_task(self):
+        cog = _make_cog_r1()
+        # Simulate a leftover, not-done task from a prior load.
+        leftover = _FakeTask(done=False)
+        cog.cleanup_task = leftover
+
+        with (
+            patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
+            patch("cogs.ai_core.ai_cog.rag_system"),
+            patch("cogs.ai_core.ai_cog.asyncio.create_task") as ct,
+            patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": ""}, clear=False),
+        ):
+            ct.return_value = MagicMock()
+            await cog.cog_load()
+        leftover.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cog_load_consolidator_autostart_success(self):
+        cog = _make_cog_r1()
+        cog.cleanup_task = None
+        cog._pending_request_cleanup_task = None
+        cog._cache_cleanup_task = None
+
+        archiver = MagicMock()
+        archiver.init_schema = AsyncMock()
+        archiver.start_background_task = MagicMock()
+        fake_mod = MagicMock(summary_archiver=archiver)
+
+        with (
+            patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
+            patch("cogs.ai_core.ai_cog.rag_system"),
+            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": "1"}, clear=False),
+            patch.dict(
+                "sys.modules",
+                {"cogs.ai_core.memory.memory_consolidator": fake_mod},
+            ),
+        ):
+            await cog.cog_load()
+        archiver.init_schema.assert_awaited_once()
+        archiver.start_background_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cog_load_consolidator_autostart_exception(self):
+        cog = _make_cog_r1()
+        cog.cleanup_task = None
+        cog._pending_request_cleanup_task = None
+        cog._cache_cleanup_task = None
+
+        archiver = MagicMock()
+        archiver.init_schema = AsyncMock(side_effect=RuntimeError("schema fail"))
+        fake_mod = MagicMock(summary_archiver=archiver)
+
+        with (
+            patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
+            patch("cogs.ai_core.ai_cog.rag_system"),
+            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": "true"}, clear=False),
+            patch.dict(
+                "sys.modules",
+                {"cogs.ai_core.memory.memory_consolidator": fake_mod},
+            ),
+            patch("cogs.ai_core.ai_cog.logger") as log,
+        ):
+            await cog.cog_load()
+        # Exception path logs via logger.exception
+        assert log.exception.called
+
+    @pytest.mark.asyncio
+    async def test_cog_load_cache_and_tokentracker_importerror(self):
+        cog = _make_cog_r1()
+        cog.cleanup_task = None
+        cog._pending_request_cleanup_task = None
+        cog._cache_cleanup_task = None
+
+        real_import = __import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name in (
+                "cogs.ai_core.cache.ai_cache",
+                "cogs.ai_core.cache.token_tracker",
+            ):
+                raise ImportError(f"blocked {name}")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
+            patch("cogs.ai_core.ai_cog.rag_system"),
+            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": ""}, clear=False),
+            patch("builtins.__import__", side_effect=_blocking_import),
+        ):
+            # ImportError on both optional caches must be swallowed (pass).
+            await cog.cog_load()
+        # cog_load completed without raising despite ImportErrors
+        assert cog._cache_cleanup_task is None
+
+
+# ----------------------------------------------------------------------
+# cog_unload (239-263, 286-287, 299-300, 312-314, 322-323)
+# ----------------------------------------------------------------------
+
+
+class TestCogUnloadRegion:
+    @pytest.mark.asyncio
+    async def test_cog_unload_cancels_all_tasks_and_bg(self):
+        cog = _make_cog_r1()
+
+        cog.cleanup_task = _FakeTask(done=False)
+        cog._pending_request_cleanup_task = _FakeTask(done=False)
+        cog._cache_cleanup_task = _FakeTask(done=False)
+        bg = _FakeTask(done=False)
+        cog._bg_tasks = {bg}
+
+        rag = MagicMock()
+        rag.stop_periodic_save = AsyncMock()
+        rag.force_save_index = AsyncMock()
+
+        with (
+            patch("cogs.ai_core.ai_cog.rag_system", rag),
+            patch("cogs.ai_core.ai_cog.stop_webhook_cache_cleanup", new=AsyncMock()),
+            patch("cogs.ai_core.ai_cog.rate_limiter") as rl,
+        ):
+            rl.stop_cleanup_task = AsyncMock()
+            await cog.cog_unload()
+
+        cog.cleanup_task.cancel.assert_called_once()
+        cog._pending_request_cleanup_task.cancel.assert_called_once()
+        cog._cache_cleanup_task.cancel.assert_called_once()
+        bg.cancel.assert_called_once()
+        cog.chat_manager.save_all_sessions.assert_awaited_once()
+        rag.stop_periodic_save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cog_unload_suppresses_subsystem_errors(self):
+        cog = _make_cog_r1()
+        cog.cleanup_task = None
+        cog._pending_request_cleanup_task = None
+        cog._cache_cleanup_task = None
+        cog._bg_tasks = set()
+
+        rag = MagicMock()
+        rag.stop_periodic_save = AsyncMock()
+        rag.force_save_index = AsyncMock()
+
+        # token_tracker.stop raises (286-287); consolidator stop raises
+        # (299-300); flush_l2_pending raises (312-314); db flush raises
+        # (322-323). All four must be swallowed/logged, not propagated.
+        tt = MagicMock()
+        tt.stop_cleanup_task = AsyncMock(side_effect=RuntimeError("tt boom"))
+        tt_mod = MagicMock(token_tracker=tt)
+
+        archiver = MagicMock()
+        archiver.stop_background_task = AsyncMock(side_effect=RuntimeError("arch boom"))
+        consol_mod = MagicMock(summary_archiver=archiver)
+
+        cache_mod = MagicMock()
+        cache_mod.flush_l2_pending = AsyncMock(side_effect=RuntimeError("flush boom"))
+
+        fake_db = MagicMock()
+        fake_db.flush_pending_exports = AsyncMock(side_effect=RuntimeError("db boom"))
+        db_mod = MagicMock(db=fake_db)
+
+        with (
+            patch("cogs.ai_core.ai_cog.rag_system", rag),
+            patch("cogs.ai_core.ai_cog.stop_webhook_cache_cleanup", new=AsyncMock()),
+            patch("cogs.ai_core.ai_cog.rate_limiter") as rl,
+            patch.dict(
+                "sys.modules",
+                {
+                    "cogs.ai_core.cache.token_tracker": tt_mod,
+                    "cogs.ai_core.memory.memory_consolidator": consol_mod,
+                    "cogs.ai_core.cache.ai_cache": cache_mod,
+                    "utils.database": db_mod,
+                },
+            ),
+        ):
+            rl.stop_cleanup_task = AsyncMock()
+            # Must complete despite every subsystem raising.
+            await cog.cog_unload()
+
+        cog.chat_manager.save_all_sessions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cog_unload_flush_l2_reports_count(self):
+        cog = _make_cog_r1()
+        cog.cleanup_task = None
+        cog._pending_request_cleanup_task = None
+        cog._cache_cleanup_task = None
+        cog._bg_tasks = set()
+
+        rag = MagicMock()
+        rag.stop_periodic_save = AsyncMock()
+        rag.force_save_index = AsyncMock()
+
+        cache_mod = MagicMock()
+        cache_mod.flush_l2_pending = AsyncMock(return_value=3)  # >0 → log info
+
+        fake_db = MagicMock()
+        fake_db.flush_pending_exports = AsyncMock()
+        db_mod = MagicMock(db=fake_db)
+
+        with (
+            patch("cogs.ai_core.ai_cog.rag_system", rag),
+            patch("cogs.ai_core.ai_cog.stop_webhook_cache_cleanup", new=AsyncMock()),
+            patch("cogs.ai_core.ai_cog.rate_limiter") as rl,
+            patch.dict(
+                "sys.modules",
+                {
+                    "cogs.ai_core.cache.ai_cache": cache_mod,
+                    "utils.database": db_mod,
+                },
+            ),
+        ):
+            rl.stop_cleanup_task = AsyncMock()
+            await cog.cog_unload()
+
+        cache_mod.flush_l2_pending.assert_awaited_once()
+        fake_db.flush_pending_exports.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------
+# _cleanup_pending_requests_loop (334-388)
+# ----------------------------------------------------------------------
+
+
+class TestCleanupPendingRequestsLoop:
+    @pytest.mark.asyncio
+    async def test_loop_runs_all_branches_then_cancelled(self):
+        """Drive >=30 iterations so the 5-iter storage + 30-iter memory
+        cleanup branches all execute, then cancel to break out (384-386)."""
+        cog = _make_cog_r1()
+
+        state = {"n": 0}
+
+        async def _fake_sleep(_seconds):
+            state["n"] += 1
+            if state["n"] > 31:
+                raise asyncio.CancelledError
+            return None
+
+        # storage cleanup returns >0 to enter the debug-log branch (341-346)
+        st = MagicMock()
+        st.cleanup_old_states.return_value = 2
+        consol = MagicMock()
+        consol.cleanup_old_channels.return_value = 1
+        mq = MagicMock()
+        mq.cleanup_unused_locks.return_value = 4
+
+        with (
+            patch("cogs.ai_core.ai_cog.asyncio.sleep", side_effect=_fake_sleep),
+            patch("cogs.ai_core.ai_cog.cleanup_storage_cache", return_value=7),
+            patch.dict(
+                "sys.modules",
+                {
+                    "cogs.ai_core.memory.state_tracker": MagicMock(state_tracker=st),
+                    "cogs.ai_core.memory.consolidator": MagicMock(memory_consolidator=consol),
+                    "cogs.ai_core.core.message_queue": MagicMock(message_queue=mq),
+                },
+            ),
+        ):
+            await cog._cleanup_pending_requests_loop()
+
+        assert cog.chat_manager.cleanup_pending_requests.call_count >= 30
+        st.cleanup_old_states.assert_called()
+        consol.cleanup_old_channels.assert_called()
+        mq.cleanup_unused_locks.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_loop_memory_cleanup_exception_swallowed(self):
+        """Memory-cleanup inner except (381-382) is hit when an import in the
+        30-iter block raises; loop keeps going then is cancelled."""
+        cog = _make_cog_r1()
+
+        state = {"n": 0}
+
+        async def _fake_sleep(_seconds):
+            state["n"] += 1
+            if state["n"] > 31:
+                raise asyncio.CancelledError
+            return None
+
+        with (
+            patch("cogs.ai_core.ai_cog.asyncio.sleep", side_effect=_fake_sleep),
+            patch("cogs.ai_core.ai_cog.cleanup_storage_cache", return_value=0),
+            patch.dict(
+                "sys.modules",
+                {"cogs.ai_core.memory.state_tracker": None},  # import → ImportError
+            ),
+            patch("cogs.ai_core.ai_cog.logger") as log,
+        ):
+            await cog._cleanup_pending_requests_loop()
+
+        # The non-critical memory-cleanup error is logged at debug level.
+        assert log.debug.called
+
+    @pytest.mark.asyncio
+    async def test_loop_generic_exception_then_cancel(self):
+        """A non-cancel exception from cleanup_pending_requests hits 387-388
+        (logger.exception) and the loop continues; next iter cancels."""
+        cog = _make_cog_r1()
+
+        state = {"n": 0}
+
+        async def _fake_sleep(_seconds):
+            state["n"] += 1
+            if state["n"] > 2:
+                raise asyncio.CancelledError
+            return None
+
+        cog.chat_manager.cleanup_pending_requests.side_effect = RuntimeError("boom")
+
+        with (
+            patch("cogs.ai_core.ai_cog.asyncio.sleep", side_effect=_fake_sleep),
+            patch("cogs.ai_core.ai_cog.logger") as log,
+        ):
+            await cog._cleanup_pending_requests_loop()
+
+        assert log.exception.called
+
+
+# ----------------------------------------------------------------------
+# chat_command (395-455) + error handler (460-463)
+# ----------------------------------------------------------------------
+
+
+class TestChatCommandRegion:
+    @pytest.mark.asyncio
+    async def test_rp_command_channel_routes_to_output(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=100, guild_id=900)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 100
+        out_channel = MagicMock(spec=discord.TextChannel)
+        cog.bot.get_channel = MagicMock(return_value=out_channel)
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        cog.chat_manager.process_chat.assert_awaited_once()
+        _, kwargs = cog.chat_manager.process_chat.call_args
+        assert kwargs.get("output_channel") is out_channel
+
+    @pytest.mark.asyncio
+    async def test_rp_command_channel_unsupported_chat_channel(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=100, guild_id=900)
+        # ctx.channel is a plain mock (not a chat channel) → _as_chat_channel None
+        ctx.channel = MagicMock()
+        ctx.channel.id = 100
+        cog.bot.get_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        ctx.send.assert_awaited_once()
+        assert "ไม่รองรับ" in ctx.send.call_args[0][0]
+        cog.chat_manager.process_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rp_command_channel_no_output_room(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=100, guild_id=900)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 100
+        # get_channel returns non-text → _as_text_channel None → no output room
+        cog.bot.get_channel = MagicMock(return_value=None)
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        ctx.send.assert_awaited_once()
+        assert "Output" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_rp_output_channel_passes_through(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=200, guild_id=900)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 200
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hello")
+
+        cog.chat_manager.process_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_rp_wrong_channel_rejected(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=999, guild_id=900)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 999
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hello")
+
+        ctx.send.assert_awaited_once()
+        assert "กรุณาใช้คำสั่ง" in ctx.send.call_args[0][0]
+        cog.chat_manager.process_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_message_reply_resolves_content(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ref = MagicMock()
+        ref.message_id = 42
+        ctx.message.reference = ref
+        ref_msg = MagicMock()
+        ref_msg.content = "referenced text"
+        ctx.channel.fetch_message = AsyncMock(return_value=ref_msg)
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        ctx.channel.fetch_message.assert_awaited_once_with(42)
+        args, _ = cog.chat_manager.process_chat.call_args
+        assert "referenced text" in args
+
+    @pytest.mark.asyncio
+    async def test_no_message_reply_not_found(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ref = MagicMock()
+        ref.message_id = 42
+        ctx.message.reference = ref
+        ctx.channel.fetch_message = AsyncMock(side_effect=_discord_exc(discord.NotFound))
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        ctx.send.assert_awaited_once()
+        assert "ไม่พบข้อความ" in ctx.send.call_args[0][0]
+        cog.chat_manager.process_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_message_reply_forbidden(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ref = MagicMock()
+        ref.message_id = 42
+        ctx.message.reference = ref
+        ctx.channel.fetch_message = AsyncMock(side_effect=_discord_exc(discord.Forbidden))
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        ctx.send.assert_awaited_once()
+        assert "สิทธิ์" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_no_message_reply_http_exception(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ref = MagicMock()
+        ref.message_id = 42
+        ctx.message.reference = ref
+        ctx.channel.fetch_message = AsyncMock(side_effect=_discord_exc(discord.HTTPException))
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        ctx.send.assert_awaited_once()
+        assert "ข้อผิดพลาด" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_no_message_with_attachments(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ctx.message.reference = None
+        ctx.message.attachments = [MagicMock()]
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        cog.chat_manager.process_chat.assert_awaited_once()
+        args, kwargs = cog.chat_manager.process_chat.call_args
+        assert kwargs.get("user_message_id") == 555
+
+    @pytest.mark.asyncio
+    async def test_empty_message_no_attachments_continues(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+        ctx.message.reference = None
+        ctx.message.attachments = []
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message=None)
+
+        cog.chat_manager.process_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_command_unsupported_channel(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(guild_id=12345)
+        # Plain mock channel → not a chat channel
+        ctx.channel = MagicMock()
+        ctx.channel.id = 987654321
+        ctx.message.reference = None
+        ctx.message.attachments = []
+
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 999999):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        ctx.send.assert_awaited_once()
+        assert "ไม่รองรับ" in ctx.send.call_args[0][0]
+        cog.chat_manager.process_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_guild_skips_rp_block(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1()
+        ctx.guild = None
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 987654321
+
+        await cog.chat_command.callback(cog, ctx, message="dm-ish")
+
+        cog.chat_manager.process_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_command_error_cooldown(self):
+        from discord.ext import commands
+
+        cog = _make_cog_r1()
+        ctx = _ctx_r1()
+        error = commands.CommandOnCooldown(commands.Cooldown(1, 3), 4.2, commands.BucketType.user)
+        await cog.chat_command_error(ctx, error)
+        ctx.send.assert_awaited_once()
+        assert "4.2" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_chat_command_error_reraises_other(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1()
+        boom = ValueError("not a cooldown")
+        with pytest.raises(ValueError, match="not a cooldown"):
+            await cog.chat_command_error(ctx, boom)
+
+
+# ----------------------------------------------------------------------
+# reset_ai (469-505) + error handler (510-513)
+# ----------------------------------------------------------------------
+
+
+class TestResetAiRegion:
+    @pytest.mark.asyncio
+    async def test_reset_ai_clears_state_non_cli(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=4242)
+        cid = 4242
+        cog.chat_manager.chats = {cid: "x"}
+        cog.chat_manager.seen_users = {cid: "y"}
+        cog.chat_manager.last_accessed = {cid: 1.0}
+        cog.chat_manager.processing_locks = {cid: object()}
+        cog.chat_manager.streaming_enabled = {cid: True}
+        cog.chat_manager.current_typing_msg = {cid: object()}
+        cog.chat_manager.cli_mode = False
+
+        with patch("cogs.ai_core.ai_cog.delete_history", new=AsyncMock()) as del_hist:
+            await cog.reset_ai.callback(cog, ctx)
+
+        del_hist.assert_awaited_once_with(cid)
+        assert cid not in cog.chat_manager.chats
+        assert cid not in cog.chat_manager.seen_users
+        cog.chat_manager._message_queue.clear_channel.assert_called_once_with(cid)
+        ctx.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_ai_cli_mode_resets_session(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=7777)
+        cog.chat_manager.cli_mode = True
+
+        reset_fn = MagicMock()
+        cli_mod = MagicMock(reset_channel_session=reset_fn)
+
+        with (
+            patch("cogs.ai_core.ai_cog.delete_history", new=AsyncMock()),
+            patch.dict(
+                "sys.modules",
+                {"cogs.ai_core.api.discord_chat_claude_cli": cli_mod},
+            ),
+        ):
+            await cog.reset_ai.callback(cog, ctx)
+
+        reset_fn.assert_called_once_with(7777)
+        ctx.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_ai_error_not_owner(self):
+        from discord.ext import commands
+
+        cog = _make_cog_r1()
+        ctx = _ctx_r1()
+        await cog.reset_ai_error(ctx, commands.NotOwner())
+        ctx.send.assert_awaited_once()
+        assert "เจ้าของบอท" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_reset_ai_error_reraises_other(self):
+        cog = _make_cog_r1()
+        ctx = _ctx_r1()
+        with pytest.raises(RuntimeError, match="other"):
+            await cog.reset_ai_error(ctx, RuntimeError("other"))
+
+
+# ----------------------------------------------------------------------
+# on_message dispatch (576-590) + on_guild_channel_delete (523-537)
+# ----------------------------------------------------------------------
+
+
+class TestOnMessageDispatch:
+    @pytest.mark.asyncio
+    async def test_webhook_message_routed(self):
+        cog = _make_cog_r1()
+        cog._handle_webhook_message = AsyncMock()
+        msg = MagicMock()
+        msg.webhook_id = 12345
+        await cog.on_message(msg)
+        cog._handle_webhook_message.assert_awaited_once_with(msg)
+
+    @pytest.mark.asyncio
+    async def test_own_message_ignored(self):
+        cog = _make_cog_r1()
+        cog._handle_dm_message = AsyncMock()
+        cog._handle_guild_message = AsyncMock()
+        msg = MagicMock()
+        msg.webhook_id = None
+        msg.author = cog.bot.user  # author == bot.user
+        await cog.on_message(msg)
+        cog._handle_dm_message.assert_not_called()
+        cog._handle_guild_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_author_ignored(self):
+        cog = _make_cog_r1()
+        cog._handle_guild_message = AsyncMock()
+        msg = MagicMock()
+        msg.webhook_id = None
+        msg.author = MagicMock()  # not bot.user
+        msg.author.bot = True
+        await cog.on_message(msg)
+        cog._handle_guild_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_routed(self):
+        cog = _make_cog_r1()
+        cog._handle_dm_message = AsyncMock()
+        msg = MagicMock()
+        msg.webhook_id = None
+        msg.author = MagicMock()
+        msg.author.bot = False
+        msg.guild = None
+        await cog.on_message(msg)
+        cog._handle_dm_message.assert_awaited_once_with(msg)
+
+    @pytest.mark.asyncio
+    async def test_guild_message_routed(self):
+        cog = _make_cog_r1()
+        cog._handle_guild_message = AsyncMock()
+        msg = MagicMock()
+        msg.webhook_id = None
+        msg.author = MagicMock()
+        msg.author.bot = False
+        msg.guild = MagicMock()
+        await cog.on_message(msg)
+        cog._handle_guild_message.assert_awaited_once_with(msg)
+
+
+class TestOnGuildChannelDelete:
+    @pytest.mark.asyncio
+    async def test_channel_delete_cleans_state(self):
+        cog = _make_cog_r1()
+        cid = 31337
+        cog.chat_manager.chats = {cid: "x"}
+        cog.chat_manager.seen_users = {cid: "y"}
+        cog.chat_manager.last_accessed = {cid: 1.0}
+        cog.chat_manager.processing_locks = {cid: object()}
+        cog.chat_manager.streaming_enabled = {cid: True}
+        cog.chat_manager.current_typing_msg = {cid: object()}
+        channel = MagicMock()
+        channel.id = cid
+
+        with patch("cogs.ai_core.ai_cog.invalidate_webhook_cache_on_channel_delete") as inval:
+            await cog.on_guild_channel_delete(channel)
+
+        inval.assert_called_once_with(cid)
+        assert cid not in cog.chat_manager.chats
+        assert cid not in cog.chat_manager.current_typing_msg
+        cog.chat_manager._message_queue.clear_channel.assert_called_once_with(cid)

@@ -896,3 +896,686 @@ class TestParseExtractionEdgeCases:
 
         assert result is not None
         assert result["entities"][0]["name"] == "Dave"
+
+
+# ======================================================================
+# Deepened coverage: initialize gating, consolidate flow, entity update,
+# contradiction detection, channel-lock cleanup.
+# ======================================================================
+
+
+def _make_text_block(text):
+    """Build a fake Anthropic content block with .type='text' and .text."""
+    from unittest.mock import MagicMock
+
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    return block
+
+
+def _make_client_returning(text):
+    """Build a mock AsyncAnthropic-like client whose messages.create returns
+    a response carrying a single text block with ``text``."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    response = MagicMock()
+    response.content = [_make_text_block(text)]
+    client.messages.create = AsyncMock(return_value=response)
+    return client
+
+
+class TestInitializeGating:
+    """Cover initialize() branches: CLI gating, empty key, success, failure."""
+
+    def test_initialize_cli_backend_returns_false(self, monkeypatch):
+        """Under CLAUDE_BACKEND=cli initialize stays inert (no client)."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        monkeypatch.setenv("CLAUDE_BACKEND", "cli")
+        mc = MemoryConsolidator()
+
+        assert mc.initialize("real-looking-key") is False
+        assert mc._client is None
+        assert mc.enabled is False
+
+    def test_initialize_empty_key_returns_false(self, monkeypatch):
+        """API mode with a blank key logs an error and returns False."""
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
+        monkeypatch.setattr(mod, "ANTHROPIC_AVAILABLE", True)
+        mc = MemoryConsolidator()
+
+        assert mc.initialize("   ") is False
+        assert mc._client is None
+
+    def test_initialize_success_sets_client(self, monkeypatch):
+        """API mode + valid key constructs the SDK client and enables."""
+        from unittest.mock import MagicMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
+        monkeypatch.setattr(mod, "ANTHROPIC_AVAILABLE", True)
+
+        fake_client = object()
+        fake_anthropic = MagicMock()
+        fake_anthropic.AsyncAnthropic.return_value = fake_client
+        monkeypatch.setattr(mod, "anthropic", fake_anthropic)
+
+        mc = MemoryConsolidator()
+        assert mc.initialize("valid-key") is True
+        assert mc._client is fake_client
+        assert mc.enabled is True
+        fake_anthropic.AsyncAnthropic.assert_called_once_with(api_key="valid-key")
+
+    def test_initialize_client_construction_failure(self, monkeypatch):
+        """If AsyncAnthropic raises, initialize swallows it and returns False."""
+        from unittest.mock import MagicMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        monkeypatch.setenv("CLAUDE_BACKEND", "api")
+        monkeypatch.setattr(mod, "ANTHROPIC_AVAILABLE", True)
+
+        fake_anthropic = MagicMock()
+        fake_anthropic.AsyncAnthropic.side_effect = RuntimeError("boom")
+        monkeypatch.setattr(mod, "anthropic", fake_anthropic)
+
+        mc = MemoryConsolidator()
+        assert mc.initialize("valid-key") is False
+        assert mc._client is None
+
+
+class TestConsolidateLockBehavior:
+    """Cover the public consolidate() channel-lock create / skip-if-locked."""
+
+    @pytest.mark.asyncio
+    async def test_consolidate_creates_channel_lock(self, monkeypatch):
+        """First consolidate for a channel lazily creates a per-channel lock."""
+        from unittest.mock import AsyncMock
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = object()
+        # Bypass the heavy locked body — only assert the lock got created.
+        mc._consolidate_locked = AsyncMock(return_value=7)
+
+        result = await mc.consolidate(555, [{"role": "user", "parts": ["hi"]}])
+
+        assert result == 7
+        assert 555 in mc._channel_locks
+
+    @pytest.mark.asyncio
+    async def test_consolidate_skips_when_lock_held(self):
+        """If a consolidation is already mid-flight, the call short-circuits to 0."""
+        import asyncio
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = object()
+        held = asyncio.Lock()
+        await held.acquire()
+        mc._channel_locks[42] = held
+        try:
+            result = await mc.consolidate(42, [{"role": "user", "parts": ["hi"]}])
+            assert result == 0
+        finally:
+            held.release()
+
+
+class TestConsolidateLockedFlow:
+    """Cover _consolidate_locked: snapshot/reconcile + every early return."""
+
+    def _long_history(self):
+        # Comfortably exceeds min_conversation_length (200 chars) once joined.
+        return [{"role": "user", "parts": ["x" * 300]}]
+
+    @pytest.mark.asyncio
+    async def test_locked_client_cleared_returns_zero(self):
+        """If _client was cleared (shutdown race) the locked body returns 0."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = None  # already cleared
+        result = await mc._consolidate_locked(1, self._long_history(), None)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_locked_too_short_returns_zero_and_reconciles(self):
+        """Too-short conversation returns 0 but still decrements the counter."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning('{"entities": []}')
+        mc._message_counts[9] = 4
+        short = [{"role": "user", "parts": ["hi"]}]  # < 200 chars
+
+        result = await mc._consolidate_locked(9, short, None)
+
+        assert result == 0
+        # finally-block reconciliation still ran (subtract consumed snapshot).
+        assert mc._message_counts[9] == 0
+        assert 9 in mc._last_consolidation
+        mc._client.messages.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_locked_timeout_returns_zero_and_reconciles(self, monkeypatch):
+        """A timed-out API call returns 0 and reconciles the counter."""
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        async def _raise_timeout(coro, *_a, **_k):
+            coro.close()  # avoid "coroutine was never awaited" warning
+            raise TimeoutError
+
+        monkeypatch.setattr(mod.asyncio, "wait_for", _raise_timeout)
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning("ignored")
+        mc._message_counts[11] = 10
+
+        result = await mc._consolidate_locked(11, self._long_history(), None)
+
+        assert result == 0
+        assert mc._message_counts[11] == 0
+        assert 11 in mc._last_consolidation
+
+    @pytest.mark.asyncio
+    async def test_locked_empty_response_text_returns_zero(self):
+        """Empty concatenated text -> 0, counter reconciled."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning("")  # block.text == ""
+        mc._message_counts[12] = 6
+
+        result = await mc._consolidate_locked(12, self._long_history(), None)
+
+        assert result == 0
+        assert mc._message_counts[12] == 0
+
+    @pytest.mark.asyncio
+    async def test_locked_unparseable_returns_zero(self):
+        """Non-JSON model output -> _parse_extraction None -> 0."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning("totally not json at all")
+        mc._message_counts[13] = 8
+
+        result = await mc._consolidate_locked(13, self._long_history(), None)
+
+        assert result == 0
+        assert mc._message_counts[13] == 0
+
+    @pytest.mark.asyncio
+    async def test_locked_no_entities_returns_zero(self):
+        """Valid JSON with empty entities list -> 0 updated, reconciled."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning('{"entities": []}')
+        mc._message_counts[14] = 3
+
+        result = await mc._consolidate_locked(14, self._long_history(), None)
+
+        assert result == 0
+        assert mc._message_counts[14] == 0
+
+    @pytest.mark.asyncio
+    async def test_locked_success_counts_updated_entities(self, monkeypatch):
+        """Happy path: each successfully-updated entity increments the return."""
+        from unittest.mock import AsyncMock
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        payload = (
+            '{"entities": ['
+            '{"name": "Alice", "facts": {"age": 19}},'
+            '{"name": "Bob", "facts": {"age": 21}}'
+            "]}"
+        )
+        mc._client = _make_client_returning(payload)
+        mc._message_counts[15] = 30
+        # Both entities "succeed".
+        mc._update_entity_from_extraction = AsyncMock(side_effect=[True, True])
+
+        result = await mc._consolidate_locked(15, self._long_history(), guild_id=77)
+
+        assert result == 2
+        assert mc._update_entity_from_extraction.await_count == 2
+        # Snapshot was 30 -> reconciled to 0.
+        assert mc._message_counts[15] == 0
+
+    @pytest.mark.asyncio
+    async def test_locked_partial_success(self):
+        """Only entities returning True from the updater are counted."""
+        from unittest.mock import AsyncMock
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        payload = (
+            '{"entities": [{"name": "A", "facts": {"age": 1}},{"name": "B", "facts": {"age": 2}}]}'
+        )
+        mc._client = _make_client_returning(payload)
+        mc._update_entity_from_extraction = AsyncMock(side_effect=[True, False])
+
+        result = await mc._consolidate_locked(16, self._long_history(), None)
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_locked_reconcile_subtracts_not_zeroes(self):
+        """Messages arriving during the await survive: subtract the snapshot,
+        don't zero the live counter."""
+        from unittest.mock import AsyncMock
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning('{"entities": []}')
+        mc._message_counts[17] = 5  # snapshot = 5
+
+        async def _bump_during_await(*_a, **_k):
+            # Simulate 3 messages arriving while the API call is in flight.
+            mc._message_counts[17] = 5 + 3
+            return False
+
+        mc._update_entity_from_extraction = AsyncMock(side_effect=_bump_during_await)
+        # Make the payload yield one entity so the updater runs and bumps.
+        mc._client = _make_client_returning('{"entities": [{"name": "X", "facts": {"age": 1}}]}')
+
+        await mc._consolidate_locked(17, self._long_history(), None)
+
+        # 8 live - 5 consumed snapshot = 3 survivors.
+        assert mc._message_counts[17] == 3
+
+    @pytest.mark.asyncio
+    async def test_locked_unexpected_exception_handled(self, monkeypatch):
+        """An unexpected error inside the body is caught -> 0, still reconciled."""
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        async def _boom(coro, *_a, **_k):
+            coro.close()  # avoid "coroutine was never awaited" warning
+            raise RuntimeError("network exploded")
+
+        monkeypatch.setattr(mod.asyncio, "wait_for", _boom)
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning("ignored")
+        mc._message_counts[18] = 9
+
+        result = await mc._consolidate_locked(18, self._long_history(), None)
+
+        assert result == 0
+        assert mc._message_counts[18] == 0
+        assert 18 in mc._last_consolidation
+
+
+class TestUpdateEntityFromExtraction:
+    """Cover _update_entity_from_extraction: validation, add, merge, errors."""
+
+    @pytest.mark.asyncio
+    async def test_update_missing_name_returns_false(self):
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction(
+            {"type": "character", "facts": {"age": 1}}, 1, None
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_empty_facts_returns_false(self):
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction({"name": "Alice", "facts": {}}, 1, None)
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_creates_new_entity(self, monkeypatch):
+        """No existing entity -> add_entity called; returns True on a real id."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(return_value=None))
+        add_mock = AsyncMock(return_value=123)
+        monkeypatch.setattr(em, "add_entity", add_mock)
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction(
+            {"name": "Alice", "type": "character", "facts": {"age": 19}},
+            channel_id=5,
+            guild_id=None,
+        )
+
+        assert ok is True
+        assert add_mock.await_count == 1
+        _, kwargs = add_mock.call_args
+        assert kwargs["name"] == "Alice"
+        assert kwargs["source"] == "ai_extracted"
+        # confidence in the documented 0.7-0.9 range.
+        assert 0.7 <= kwargs["confidence"] <= 0.9
+
+    @pytest.mark.asyncio
+    async def test_update_add_entity_none_returns_false(self, monkeypatch):
+        """add_entity returning None (insert failed) -> False."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(return_value=None))
+        monkeypatch.setattr(em, "add_entity", AsyncMock(return_value=None))
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction(
+            {"name": "Ghost", "facts": {"age": 1}}, 5, None
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_merges_existing_entity(self, monkeypatch):
+        """Existing entity -> update_entity_facts(merge=True) is used."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(return_value=object()))
+        update_mock = AsyncMock(return_value=True)
+        monkeypatch.setattr(em, "update_entity_facts", update_mock)
+        add_mock = AsyncMock(return_value=999)
+        monkeypatch.setattr(em, "add_entity", add_mock)
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction(
+            {"name": "Alice", "facts": {"personality": "shy", "relationships": {"Bob": "friend"}}},
+            channel_id=5,
+            guild_id=2,
+        )
+
+        assert ok is True
+        add_mock.assert_not_called()
+        _, kwargs = update_mock.call_args
+        assert kwargs["merge"] is True
+        assert kwargs["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_update_exception_returns_false(self, monkeypatch):
+        """An exception during the get/add pair is swallowed -> False."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(side_effect=RuntimeError("db down")))
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction(
+            {"name": "Alice", "facts": {"age": 19}}, 5, None
+        )
+        assert ok is False
+
+
+class TestDetectContradictionsDeep:
+    """Cover the age / relationship contradiction branches."""
+
+    def _entity_with(self, facts_dict):
+        from unittest.mock import MagicMock
+
+        entity = MagicMock()
+        entity.facts.to_dict.return_value = facts_dict
+        return entity
+
+    @pytest.mark.asyncio
+    async def test_age_contradiction_detected(self, monkeypatch):
+        """Stored age differs from age mentioned in text -> contradiction."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(
+            em, "get_entity", AsyncMock(return_value=self._entity_with({"age": 19}))
+        )
+
+        mc = MemoryConsolidator()
+        result = await mc.detect_contradictions("{{Alice}} is 25 years old now", 1)
+
+        assert len(result) == 1
+        assert result[0]["entity"] == "Alice"
+        assert result[0]["field"] == "age"
+        assert result[0]["stored"] == "19"
+        assert result[0]["mentioned"] == "25"
+
+    @pytest.mark.asyncio
+    async def test_age_match_consistent_no_contradiction(self, monkeypatch):
+        """Mentioned age equal to stored age -> no contradiction."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(
+            em, "get_entity", AsyncMock(return_value=self._entity_with({"age": "19"}))
+        )
+
+        mc = MemoryConsolidator()
+        result = await mc.detect_contradictions("{{Alice}} is 19 years old", 1)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_age_stored_unparseable_skipped(self, monkeypatch):
+        """A non-numeric stored age coerces to None and is skipped, no crash."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(
+            em, "get_entity", AsyncMock(return_value=self._entity_with({"age": "unknown"}))
+        )
+
+        mc = MemoryConsolidator()
+        result = await mc.detect_contradictions("{{Alice}} is 30 years old", 1)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_relationship_contradiction_detected(self, monkeypatch):
+        """Stored relationship differs from one mentioned in text."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        # Thai relationship vocabulary the regex looks for.
+        monkeypatch.setattr(
+            em,
+            "get_entity",
+            AsyncMock(return_value=self._entity_with({"relationships": {"Bob": "เพื่อน"}})),
+        )
+
+        mc = MemoryConsolidator()
+        # Text claims Alice and Bob are siblings (พี่), not friends.
+        result = await mc.detect_contradictions("{{Alice}} กับ Bob เป็นพี่กัน", 1)
+
+        assert len(result) == 1
+        assert result[0]["field"] == "relationship with Bob"
+        assert result[0]["stored"] == "เพื่อน"
+        assert result[0]["mentioned"] == "พี่"
+
+    @pytest.mark.asyncio
+    async def test_relationship_consistent_no_contradiction(self, monkeypatch):
+        """Mentioned relationship already contained in stored value -> no flag."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(
+            em,
+            "get_entity",
+            AsyncMock(return_value=self._entity_with({"relationships": {"Bob": "เพื่อน"}})),
+        )
+
+        mc = MemoryConsolidator()
+        result = await mc.detect_contradictions("{{Alice}} กับ Bob เป็นเพื่อนกัน", 1)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_detect_truncates_oversized_input(self, monkeypatch):
+        """Inputs over 8192 chars are truncated before regex work (no hang)."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        get_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(em, "get_entity", get_mock)
+
+        mc = MemoryConsolidator()
+        # Marker at the very end is beyond the 8192 cap, so it must NOT be seen.
+        text = ("." * 9000) + "{{Ghost}}"
+        result = await mc.detect_contradictions(text, 1)
+
+        assert result == []
+        get_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_detect_missing_entity_skipped(self, monkeypatch):
+        """Named entity not found in memory -> skipped, returns empty."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(return_value=None))
+
+        mc = MemoryConsolidator()
+        result = await mc.detect_contradictions("{{Nobody}} is here", 1)
+        assert result == []
+
+
+class TestParseExtractionFallbacks:
+    """Cover the depth-aware fallback branches in _parse_extraction."""
+
+    def test_parse_extraction_string_json_returns_none(self):
+        """A bare JSON string (not object/list) yields no extraction."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        assert mc._parse_extraction('"just a string"') is None
+
+    def test_parse_extraction_dict_without_entities_passthrough(self):
+        """A dict lacking 'entities' is still returned (caller uses .get)."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        result = mc._parse_extraction('{"foo": "bar"}')
+        assert result == {"foo": "bar"}
+
+    def test_parse_extraction_nested_braces_in_strings(self):
+        """Brace-matching respects string literals containing braces."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        response = 'prefix {"entities": [{"name": "x", "facts": {"note": "a } brace"}}]} suffix'
+        result = mc._parse_extraction(response)
+        assert result is not None
+        assert result["entities"][0]["name"] == "x"
+
+    def test_parse_extraction_unbalanced_braces_returns_none(self):
+        """An opening brace with no matching close falls through to None."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        assert mc._parse_extraction('text { unbalanced "name": ') is None
+
+
+class TestCleanupChannelLockEviction:
+    """Cover the channel-lock eviction tail of cleanup_old_channels."""
+
+    def test_cleanup_evicts_unheld_channel_lock(self):
+        """A lock for a fully-removed channel is dropped when not held."""
+        import asyncio
+        import time as _time
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        old = _time.time() - 100_000
+        mc._last_consolidation = {1: old}
+        mc._message_counts = {1: 5}
+        mc._channel_locks = {1: asyncio.Lock()}  # not held
+
+        removed = mc.cleanup_old_channels(max_age_seconds=3600)
+
+        assert removed == 1
+        assert 1 not in mc._channel_locks
+
+    def test_cleanup_keeps_held_channel_lock(self):
+        """A held lock for a removed channel is preserved (avoid deadlock)."""
+        import asyncio
+        import time as _time
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        async def _run():
+            mc = MemoryConsolidator()
+            old = _time.time() - 100_000
+            mc._last_consolidation = {2: old}
+            mc._message_counts = {2: 5}
+            held = asyncio.Lock()
+            await held.acquire()
+            mc._channel_locks = {2: held}
+            try:
+                removed = mc.cleanup_old_channels(max_age_seconds=3600)
+                # Tracking data removed, but the in-flight lock survives.
+                assert removed == 1
+                assert 2 in mc._channel_locks
+            finally:
+                held.release()
+
+        asyncio.run(_run())
+
+    def test_cleanup_keeps_lock_for_active_channel(self):
+        """A lock whose channel still has tracking data is not evicted."""
+        import asyncio
+        import time as _time
+
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._last_consolidation = {3: _time.time()}  # recent
+        mc._message_counts = {3: 5}
+        mc._channel_locks = {3: asyncio.Lock()}
+
+        removed = mc.cleanup_old_channels(max_age_seconds=3600)
+
+        assert removed == 0
+        assert 3 in mc._channel_locks

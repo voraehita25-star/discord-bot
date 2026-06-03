@@ -187,3 +187,30 @@ class TestCreateProgressBar:
 
         result = create_progress_bar(50, 100, length=20)
         assert len(result.replace("▰", "").replace("▱", "")) == 0 or len(result) >= 12
+
+    def test_progress_bar_total_zero_default_length(self):
+        """total == 0 must yield an all-empty bar of the default length (line 89)."""
+        from cogs.music.utils import create_progress_bar
+
+        result = create_progress_bar(0, 0)
+        # Default length is 12 and the bar must be entirely empty markers.
+        assert result == "▱" * 12
+        assert "▰" not in result
+        assert len(result) == 12
+
+    def test_progress_bar_total_zero_custom_length(self):
+        """total == 0 with a custom length yields that many empty markers (line 89)."""
+        from cogs.music.utils import create_progress_bar
+
+        result = create_progress_bar(0, 0, length=5)
+        assert result == "▱" * 5
+        assert "▰" not in result
+
+    def test_progress_bar_total_zero_ignores_current(self):
+        """total == 0 short-circuits before any division, regardless of current."""
+        from cogs.music.utils import create_progress_bar
+
+        # A non-zero current with a zero total must not raise (no division) and
+        # must still return the empty bar.
+        result = create_progress_bar(42, 0, length=8)
+        assert result == "▱" * 8

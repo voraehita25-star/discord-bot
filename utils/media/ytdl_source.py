@@ -384,8 +384,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if "://" in query and scheme and scheme not in ("http", "https"):
             logger.warning("Rejecting non-http(s) URL scheme in search: %s", scheme)
             return None
-        # Handle search query if not a URL
-        if not query.startswith(("http://", "https://")):
+        # Handle search query if not a URL. Compare case-insensitively: the
+        # scheme guard above lowercases via urlparse, so an uppercase-scheme URL
+        # ("HTTP://...") passes that check but would otherwise fail this
+        # case-sensitive startswith and get mis-wrapped as a literal
+        # ``ytsearch:HTTP://...`` search instead of routing through the
+        # SSRF-guarded direct-URL branch below.
+        if not query.lower().startswith(("http://", "https://")):
             query = f"ytsearch:{query}"
         else:
             # The input is a direct URL — apply the same SSRF guard as

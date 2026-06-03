@@ -524,11 +524,17 @@ if WATCHDOG_AVAILABLE:
                 if self.config.sound_on_restart:
                     play_sound()
 
-                # Health check
+                # Health check. Only clear the consecutive-crash counter when the
+                # bot is actually confirmed alive. Otherwise a bot that crashes
+                # immediately on every launch would reset the counter to 0 on each
+                # auto-retry and never reach max_crash_retries — an infinite
+                # restart loop instead of the intended give-up-and-wait behavior.
+                healthy = True
                 if self.config.health_check_enabled:
-                    self._perform_health_check()
+                    healthy = self._perform_health_check()
 
-                self.consecutive_crashes = 0
+                if healthy:
+                    self.consecutive_crashes = 0
                 return True
 
             except Exception as e:
@@ -590,6 +596,14 @@ if WATCHDOG_AVAILABLE:
                                     Colors.YELLOW,
                                     "  └─",
                                 )
+                                # Clear the dead process handle so subsequent
+                                # check_for_crash() ticks hit the
+                                # `if not self.process: return False` guard and
+                                # stop re-detecting the same crash every 0.5s
+                                # (which otherwise floods the log and grows
+                                # crash_count without bound). A file-save restart
+                                # reassigns self.process and resets the counter.
+                                self.process = None
 
                         return True
 

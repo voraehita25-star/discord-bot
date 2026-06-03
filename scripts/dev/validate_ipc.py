@@ -25,6 +25,7 @@ Exit code 0 = real Rust IPC round-trip works (bridge + import-map); 1 otherwise.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -66,10 +67,17 @@ def main() -> int:
             print("Prerequisite missing — see the module docstring for setup.")
             return 1
 
+    # Send tauri-driver's streams to DEVNULL + a temp file instead of PIPEs.
+    # Unbounded PIPEs that aren't drained until communicate() at the very end can
+    # fill the OS pipe buffer (~64KB on Windows) during the ~30s+ run, blocking
+    # the child on write while the parent is blocked inside a selenium call — a
+    # deadlock. A regular file never blocks the writer; we read captured stderr
+    # at the end for the diagnostic tail.
+    td_err = tempfile.TemporaryFile()
     td = subprocess.Popen(
         [str(_TD), "--port", str(_PORT), "--native-driver", str(_MSED)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=td_err,
     )
     time.sleep(3.0)
 
@@ -120,10 +128,16 @@ def main() -> int:
                 pass
         td.terminate()
         try:
-            _o, err = td.communicate(timeout=5)
+            td.wait(timeout=5)
         except Exception:
             td.kill()
+        try:
+            td_err.seek(0)
+            err = td_err.read()
+        except Exception:
             err = b""
+        finally:
+            td_err.close()
         tail = (err or b"").decode("utf-8", "replace")[-400:].strip()
         if tail:
             print(f"--- tauri-driver stderr ---\n{tail}")

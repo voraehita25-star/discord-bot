@@ -994,7 +994,10 @@ async def get_all_channel_ids() -> list[int]:
 
     try:
         return await db.get_all_ai_channel_ids()
-    except OSError:
+    except (OSError, aiosqlite.Error):
+        # aiosqlite.Error (== sqlite3.Error) is NOT an OSError subclass, so a
+        # transient DB error ("database is locked") would otherwise escape this
+        # helper instead of degrading to [] — match the sibling DB helpers.
         logger.exception("Failed to get channel IDs")
         return []
 
@@ -1081,7 +1084,9 @@ async def get_all_channels_summary() -> list[dict]:
 
     try:
         return await db.get_all_ai_channels_summary()
-    except OSError:
+    except (OSError, aiosqlite.Error):
+        # aiosqlite.Error isn't an OSError subclass — catch both so a DB error
+        # honors the documented "returns [] on failure" contract.
         logger.exception("Failed to get channels summary")
         return []
 
@@ -1131,7 +1136,9 @@ async def get_channel_history_preview(channel_id: int, limit: int = 10) -> list[
             preview.append({"role": role, "content": content})
 
         return preview
-    except OSError:
+    except (OSError, aiosqlite.Error):
+        # aiosqlite.Error isn't an OSError subclass — catch both so a SQLite
+        # error degrades to [] per the docstring instead of escaping.
         logger.exception("Failed to get history preview for %s", channel_id)
         return []
 

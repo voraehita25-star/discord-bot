@@ -327,7 +327,14 @@ class TestCleanPidFile:
             temp_path = f.name
 
         try:
-            with patch("utils.reliability.self_healer.PID_FILE", temp_path):
+            # Treat the stored PID as STALE/dead (the scenario this test covers).
+            # Without mocking pid_exists the test was environment-dependent: it
+            # silently relied on PID 12345 not being alive, but clean_pid_file
+            # refuses to remove a file whose PID is still a running process.
+            with (
+                patch("utils.reliability.self_healer.PID_FILE", temp_path),
+                patch("utils.reliability.self_healer.psutil.pid_exists", return_value=False),
+            ):
                 result = healer.clean_pid_file()
                 assert result is True
                 assert not Path(temp_path).exists()

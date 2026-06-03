@@ -538,3 +538,319 @@ class TestModuleImports:
         from cogs.music.views import MusicControlView
 
         assert MusicControlView is not None
+
+
+def _make_http_exception(message="boom"):
+    """Build a real discord.HTTPException with a mock HTTP response."""
+    resp = MagicMock()
+    resp.status = 500
+    resp.reason = "err"
+    return discord.HTTPException(resp, message)
+
+
+class TestInteractionCheckBranches:
+    """Cover the remaining guard branches of interaction_check."""
+
+    @pytest.mark.asyncio
+    async def test_not_a_member_rejected(self):
+        """A DM User (not a Member) is rejected before any voice checks."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            interaction = MagicMock()
+            # user is NOT a discord.Member instance.
+            interaction.user = MagicMock(spec=discord.User)
+            interaction.response.send_message = AsyncMock()
+
+            result = await view.interaction_check(interaction)
+
+            assert result is False
+            args, kwargs = interaction.response.send_message.call_args
+            assert "เฉพาะในเซิร์ฟเวอร์" in args[0]
+            assert kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_bot_not_connected_to_voice(self):
+        """Member present but bot has no voice_client → rejected (lines 39-40)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            interaction = MagicMock()
+            interaction.user = MagicMock(spec=discord.Member)
+            interaction.guild.voice_client = None
+            interaction.response.send_message = AsyncMock()
+
+            result = await view.interaction_check(interaction)
+
+            assert result is False
+            args, kwargs = interaction.response.send_message.call_args
+            assert "not connected to voice" in args[0]
+            assert kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_no_guild_rejected(self):
+        """No guild at all → bot-not-connected branch (lines 39-40)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            interaction = MagicMock()
+            interaction.user = MagicMock(spec=discord.Member)
+            interaction.guild = None
+            interaction.response.send_message = AsyncMock()
+
+            result = await view.interaction_check(interaction)
+
+            assert result is False
+            args, kwargs = interaction.response.send_message.call_args
+            assert "not connected to voice" in args[0]
+
+    @pytest.mark.asyncio
+    async def test_member_not_in_voice(self):
+        """Member is a Member, bot connected, but member.voice is None (lines 43-44)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            interaction = MagicMock()
+            interaction.user = MagicMock(spec=discord.Member)
+            interaction.user.voice = None
+            interaction.guild.voice_client = MagicMock()
+            interaction.response.send_message = AsyncMock()
+
+            result = await view.interaction_check(interaction)
+
+            assert result is False
+            args, kwargs = interaction.response.send_message.call_args
+            assert "ห้องเสียงก่อน" in args[0]
+            assert kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_member_in_different_channel(self):
+        """Member in voice but a DIFFERENT channel than the bot (lines 50-53)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            bot_channel = MagicMock()
+            user_channel = MagicMock()  # distinct object → != bot_channel
+
+            interaction = MagicMock()
+            interaction.user = MagicMock(spec=discord.Member)
+            interaction.user.voice = MagicMock()
+            interaction.user.voice.channel = user_channel
+            interaction.guild.voice_client = MagicMock(channel=bot_channel)
+            interaction.response.send_message = AsyncMock()
+
+            result = await view.interaction_check(interaction)
+
+            assert result is False
+            args, kwargs = interaction.response.send_message.call_args
+            assert "ห้องเสียงเดียวกับบอท" in args[0]
+            assert kwargs.get("ephemeral") is True
+
+
+class TestPauseResumeErrorBranches:
+    """Cover the ClientException handlers in pause_resume_button."""
+
+    @pytest.mark.asyncio
+    async def test_resume_raises_client_exception(self):
+        """resume() raising ClientException restores emoji + notifies user (73-77)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            voice_client = MagicMock()
+            voice_client.is_paused.return_value = True
+            voice_client.resume.side_effect = discord.ClientException("Not connected")
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = voice_client
+            interaction.response.send_message = AsyncMock()
+            interaction.response.edit_message = AsyncMock()
+
+            button = MagicMock()
+            button.emoji = "original"
+
+            await view.pause_resume_button(interaction, button)
+
+            # Emoji restored to the previous value after failure.
+            assert button.emoji == "original"
+            interaction.response.send_message.assert_called_once()
+            args, kwargs = interaction.response.send_message.call_args
+            assert "ไม่สามารถเล่นต่อได้" in args[0]
+            assert kwargs.get("ephemeral") is True
+            # Must have returned before edit_message.
+            interaction.response.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pause_raises_client_exception(self):
+        """pause() raising ClientException restores emoji + notifies user (84-89)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            voice_client = MagicMock()
+            voice_client.is_paused.return_value = False
+            voice_client.is_playing.return_value = True
+            voice_client.pause.side_effect = discord.ClientException("Already paused")
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = voice_client
+            interaction.response.send_message = AsyncMock()
+            interaction.response.edit_message = AsyncMock()
+
+            button = MagicMock()
+            button.emoji = "original"
+
+            await view.pause_resume_button(interaction, button)
+
+            assert button.emoji == "original"
+            interaction.response.send_message.assert_called_once()
+            args, kwargs = interaction.response.send_message.call_args
+            assert "ไม่สามารถหยุดชั่วคราวได้" in args[0]
+            assert kwargs.get("ephemeral") is True
+            interaction.response.edit_message.assert_not_called()
+
+
+class TestStopButtonMessageBranches:
+    """Cover the message-edit branches of stop_button (133-139)."""
+
+    @pytest.mark.asyncio
+    async def test_disables_children_and_edits_message(self):
+        """Children with `disabled` are disabled and message.edit is called (133-138)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            mock_cog = MagicMock()
+            mock_cog._gs.return_value = MagicMock(queue=MagicMock(), loop=True, current_track="t")
+
+            view = MusicControlView(cog=mock_cog, guild_id=12345)
+            view.stop = MagicMock()
+
+            child_with_disabled = MagicMock()
+            child_with_disabled.disabled = False
+            # A child WITHOUT a `disabled` attribute → hasattr is False branch.
+            child_without = MagicMock(spec=[])
+            view._children = [child_with_disabled, child_without]
+
+            message = MagicMock()
+            message.edit = AsyncMock()
+            view.message = message
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = MagicMock()
+            interaction.response.send_message = AsyncMock()
+
+            await view.stop_button(interaction, MagicMock())
+
+            assert child_with_disabled.disabled is True
+            message.edit.assert_awaited_once()
+            view.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_message_edit_http_exception_suppressed(self):
+        """message.edit raising HTTPException is swallowed (139)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            mock_cog = MagicMock()
+            mock_cog._gs.return_value = MagicMock(queue=MagicMock(), loop=False, current_track=None)
+
+            view = MusicControlView(cog=mock_cog, guild_id=12345)
+            view.stop = MagicMock()
+            view._children = []
+
+            message = MagicMock()
+            message.edit = AsyncMock(side_effect=_make_http_exception())
+            view.message = message
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = None
+            interaction.response.send_message = AsyncMock()
+
+            # Should not raise.
+            await view.stop_button(interaction, MagicMock())
+
+            message.edit.assert_awaited_once()
+            view.stop.assert_called_once()
+
+
+class TestLoopButtonErrorBranch:
+    """Cover the edit_message failure path in loop_button (160-162)."""
+
+    @pytest.mark.asyncio
+    async def test_edit_message_http_exception_reverts_loop(self):
+        """edit_message raising HTTPException reverts loop and bails (160-162)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            mock_cog = MagicMock()
+            gs = MagicMock()
+            gs.loop = False
+            mock_cog._gs.return_value = gs
+
+            view = MusicControlView(cog=mock_cog, guild_id=12345)
+
+            interaction = MagicMock()
+            interaction.response.edit_message = AsyncMock(side_effect=_make_http_exception())
+            interaction.followup.send = AsyncMock()
+
+            await view.loop_button(interaction, MagicMock())
+
+            # loop was toggled to True, then reverted to the original False.
+            assert gs.loop is False
+            # followup.send must NOT be reached after the early return.
+            interaction.followup.send.assert_not_called()
+
+
+class TestOnTimeoutMessageBranches:
+    """Cover the message-edit branches of on_timeout (174-177)."""
+
+    @pytest.mark.asyncio
+    async def test_on_timeout_edits_message(self):
+        """on_timeout edits the stored message to show disabled buttons (174-175)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            button = MagicMock(spec=discord.ui.Button)
+            button.disabled = False
+            view._children = [button]
+
+            message = MagicMock()
+            message.edit = AsyncMock()
+            view.message = message
+
+            await view.on_timeout()
+
+            assert button.disabled is True
+            message.edit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_on_timeout_edit_not_found_suppressed(self):
+        """on_timeout swallows NotFound/HTTPException/AttributeError (176-177)."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+            view._children = []
+
+            message = MagicMock()
+            message.edit = AsyncMock(side_effect=_make_http_exception())
+            view.message = message
+
+            # Should not raise.
+            await view.on_timeout()
+
+            message.edit.assert_awaited_once()

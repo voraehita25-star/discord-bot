@@ -667,3 +667,138 @@ class TestNormalizePatterns:
 
 class TestModuleDocstring:
     """Tests for module documentation."""
+
+
+# ======================================================================
+# Eviction-on-set regression tests
+#
+# These cover the set()/_evict_lru() interaction that was just fixed:
+#   - inserting a NEW key at capacity evicts exactly the oldest entry
+#   - re-set()ing an EXISTING key at capacity evicts nothing
+#   - re-set()ing an existing key carries forward hits / ttl_multiplier
+#     (regression for reading `prev` BEFORE evicting)
+# ======================================================================
+
+
+class TestAICacheEvictionOnSet:
+    """Regression tests for set() + LRU eviction interaction."""
+
+    def test_new_key_at_capacity_evicts_exactly_one_oldest(self):
+        """Filling cache then set()ing a brand-new key evicts only the oldest.
+
+        With max_size=3, after k1,k2,k3 the cache is full. Adding k4 must
+        evict exactly the oldest (k1) and keep size == max_size.
+        """
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache(max_size=3)
+
+        cache.set("alpha message one", "response alpha content")
+        cache.set("bravo message two", "response bravo content")
+        cache.set("charlie message three", "response charlie content")
+
+        assert cache.get_stats().total_entries == 3
+
+        # New key: should evict exactly the oldest (alpha) — size stays 3.
+        cache.set("delta message four", "response delta content")
+
+        assert len(cache.cache) == 3
+        assert cache.get_stats().total_entries == 3
+
+        # Oldest (alpha) is gone; bravo/charlie/delta remain retrievable.
+        # Use use_fuzzy=False so we only assert on exact-key presence and the
+        # eviction can't be masked by a lexical fuzzy match.
+        assert cache.get("alpha message one", use_fuzzy=False) is None
+        assert cache.get("bravo message two", use_fuzzy=False) == "response bravo content"
+        assert cache.get("charlie message three", use_fuzzy=False) == "response charlie content"
+        assert cache.get("delta message four", use_fuzzy=False) == "response delta content"
+
+    def test_reset_existing_key_at_capacity_evicts_nothing(self):
+        """Re-set()ing an already-present key at capacity evicts no other entry.
+
+        A refresh is net-zero growth, so it must NOT pop an unrelated oldest
+        entry. All three original keys stay retrievable and size is unchanged.
+        """
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache(max_size=3)
+
+        cache.set("alpha message one", "response alpha content")
+        cache.set("bravo message two", "response bravo content")
+        cache.set("charlie message three", "response charlie content")
+
+        assert len(cache.cache) == 3
+
+        # Re-set the OLDEST existing key (alpha). This is a refresh, not a new
+        # insert — nothing should be evicted, size stays 3.
+        cache.set("alpha message one", "alpha refreshed response content")
+
+        assert len(cache.cache) == 3
+
+        # Every original key is still present (none evicted by the refresh).
+        assert cache.get("alpha message one", use_fuzzy=False) == "alpha refreshed response content"
+        assert cache.get("bravo message two", use_fuzzy=False) == "response bravo content"
+        assert cache.get("charlie message three", use_fuzzy=False) == "response charlie content"
+
+    def test_reset_existing_key_carries_forward_hits_and_ttl(self):
+        """Re-set()ing an existing key preserves carried-forward hits/ttl_multiplier.
+
+        Regression for evicting-before-reading-prev: set() must read the
+        existing entry BEFORE any eviction so a refresh keeps the hit count
+        and adaptive-TTL multiplier of the hot entry it's replacing.
+        """
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache(max_size=3)
+
+        cache.set("hotkey message here", "hot response content original")
+
+        # Bump hits to 5 so adaptive TTL engages:
+        # _update_adaptive_ttl => 1.0 + (hits // 5) * 0.2 == 1.2 at 5 hits.
+        for _ in range(5):
+            cache.get("hotkey message here", use_fuzzy=False)
+
+        key = cache._generate_key("hotkey message here")
+        before = cache.cache[key]
+        assert before.hits == 5
+        assert before.ttl_multiplier == 1.2
+
+        # Re-set the SAME key. The new entry must inherit hits + ttl_multiplier
+        # from the previous entry (not reset to 0 / 1.0).
+        cache.set("hotkey message here", "hot response content refreshed")
+
+        after = cache.cache[key]
+        assert after.response == "hot response content refreshed"
+        assert after.hits == 5
+        assert after.ttl_multiplier == 1.2
+
+    def test_reset_existing_key_carries_hits_even_at_capacity(self):
+        """Carry-forward survives even when the cache is at capacity.
+
+        Combines the carry-forward and capacity cases: a refresh of a hot key
+        while full must keep its hits/ttl and must not be the entry evicted.
+        """
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache(max_size=3)
+
+        cache.set("alpha message one", "response alpha content")
+        cache.set("bravo message two", "response bravo content")
+        cache.set("charlie message three", "response charlie content")
+
+        # Make charlie hot (5 hits => ttl_multiplier 1.2).
+        for _ in range(5):
+            cache.get("charlie message three", use_fuzzy=False)
+
+        key = cache._generate_key("charlie message three")
+        assert cache.cache[key].hits == 5
+        assert cache.cache[key].ttl_multiplier == 1.2
+
+        # Refresh charlie while at capacity: no eviction, carry-forward intact.
+        cache.set("charlie message three", "charlie refreshed content")
+
+        assert len(cache.cache) == 3
+        refreshed = cache.cache[key]
+        assert refreshed.response == "charlie refreshed content"
+        assert refreshed.hits == 5
+        assert refreshed.ttl_multiplier == 1.2

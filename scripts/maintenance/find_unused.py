@@ -58,10 +58,20 @@ def extract_imports(filepath):
             else:
                 base = list(pkg_parts[: max(0, len(pkg_parts) - node.level + 1)])
                 if node.module:
-                    base.append(node.module)
-                resolved = ".".join(base)
-                if resolved:
-                    imports.add(resolved)
+                    resolved = ".".join([*base, node.module])
+                    if resolved:
+                        imports.add(resolved)
+                else:
+                    # ``from . import x`` has no module — the imported NAMES are
+                    # the submodules. Record each as ``<package>.<name>`` (e.g.
+                    # cogs.ai_core.memory.x); otherwise only the bare package path
+                    # was recorded and the actually-imported submodule x.py was
+                    # falsely reported unused. This idiom is common in the repo's
+                    # __init__.py files.
+                    for alias in node.names:
+                        resolved = ".".join([*base, alias.name])
+                        if resolved:
+                            imports.add(resolved)
     return imports
 
 

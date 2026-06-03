@@ -433,3 +433,81 @@ class TestGlobalInstance:
         from cogs.ai_core.memory.history_manager import smart_trim_history
 
         assert callable(smart_trim_history)
+
+
+class TestSmartTrimMaxMessagesCap:
+    """Regression tests: smart_trim must respect max_messages even when it is
+    smaller than keep_recent.
+
+    The recent tail is clamped to max_messages (history[-min(keep_recent,
+    max_messages):]) so the returned list can never exceed the requested cap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_max_messages_smaller_than_keep_recent_default(self):
+        """With the default keep_recent (200), a small max_messages must still
+        cap the result. Previously the raw keep_recent slice would return more
+        than max_messages items."""
+        from cogs.ai_core.memory.history_manager import HistoryManager
+
+        # Default keep_recent == 200
+        manager = HistoryManager()
+        assert manager.keep_recent == 200
+
+        # history longer than keep_recent, max_messages well below keep_recent
+        history = [{"role": "user", "parts": [f"msg{idx}"]} for idx in range(250)]
+        k = 5
+
+        result = await manager.smart_trim(history, max_messages=k)
+
+        assert len(result) <= k
+
+    @pytest.mark.asyncio
+    async def test_max_messages_smaller_than_keep_recent_custom(self):
+        """Same cap guarantee with an explicit keep_recent larger than the
+        requested max_messages and len(history) > keep_recent."""
+        from cogs.ai_core.memory.history_manager import HistoryManager
+
+        manager = HistoryManager(keep_recent=50)
+        history = [{"role": "user", "parts": [f"msg{idx}"]} for idx in range(120)]
+        k = 10
+
+        result = await manager.smart_trim(history, max_messages=k)
+
+        assert len(result) <= k
+
+    @pytest.mark.asyncio
+    async def test_cap_equals_one(self):
+        """Extreme cap: max_messages=1 must yield at most one message."""
+        from cogs.ai_core.memory.history_manager import HistoryManager
+
+        manager = HistoryManager(keep_recent=30)
+        history = [{"role": "user", "parts": [f"msg{idx}"]} for idx in range(60)]
+
+        result = await manager.smart_trim(history, max_messages=1)
+
+        assert len(result) <= 1
+
+    @pytest.mark.asyncio
+    async def test_normal_case_preserves_recent_tail(self):
+        """When max_messages >= keep_recent (the normal regime), the most
+        recent messages (the tail) are preserved in the result."""
+        from cogs.ai_core.memory.history_manager import HistoryManager
+
+        # keep_recent small so the tail fits comfortably under max_messages
+        manager = HistoryManager(keep_recent=5)
+        history = [{"role": "user", "parts": [f"msg{idx}"]} for idx in range(100)]
+
+        max_messages = 30
+        result = await manager.smart_trim(history, max_messages=max_messages)
+
+        # Result respects the cap...
+        assert len(result) <= max_messages
+
+        # ...and the recent tail (last keep_recent messages) is fully present
+        # and in order at the end of the result.
+        tail_contents = [f"msg{idx}" for idx in range(100 - manager.keep_recent, 100)]
+        result_contents = [manager._get_message_content(m) for m in result]
+        assert result_contents[-manager.keep_recent :] == tail_contents
+        # The very last message is the newest message in the input.
+        assert manager._get_message_content(result[-1]) == "msg99"

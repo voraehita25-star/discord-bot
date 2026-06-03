@@ -523,3 +523,86 @@ class TestWithRetryEnhanced:
         result = await fails_once()
         assert result == "success"
         assert retry_attempts == [1]  # Only 1 retry needed
+
+
+class TestExtractRetryAfterHttpDate:
+    """Regression tests for extract_retry_after Retry-After header parsing.
+
+    Covers RFC 7231 delta-seconds and HTTP-date forms, plus the None/garbage
+    guards that previously could let an AttributeError escape the retry loop.
+    """
+
+    def test_delta_seconds_value(self):
+        """A delta-seconds Retry-After like '120' returns 120.0 (float)."""
+        from utils.reliability.error_recovery import extract_retry_after
+
+        class MockError(Exception):
+            headers = {"Retry-After": "120"}
+
+        result = extract_retry_after(MockError())
+        assert result == 120.0
+        assert isinstance(result, float)
+
+    def test_http_date_in_future(self):
+        """An HTTP-date in the future returns ~N seconds (>= 0, roughly N)."""
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+
+        from utils.reliability.error_recovery import extract_retry_after
+
+        # Build a tz-aware HTTP-date N seconds in the future.
+        n_seconds = 90
+        future = datetime.now(timezone.utc) + timedelta(seconds=n_seconds)
+        http_date = format_datetime(future, usegmt=True)
+
+        class MockError(Exception):
+            headers = {"Retry-After": http_date}
+
+        result = extract_retry_after(MockError())
+        assert result is not None
+        assert result >= 0
+        # HTTP-date has 1-second resolution; allow a small wall-clock margin.
+        assert n_seconds - 5 <= result <= n_seconds + 5
+
+    def test_http_date_in_past_clamped_to_zero(self):
+        """An HTTP-date in the past clamps to 0.0 (never negative)."""
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+
+        from utils.reliability.error_recovery import extract_retry_after
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=300)
+        http_date = format_datetime(past, usegmt=True)
+
+        class MockError(Exception):
+            headers = {"Retry-After": http_date}
+
+        result = extract_retry_after(MockError())
+        assert result == 0.0
+
+    def test_garbage_value_returns_none(self):
+        """A non-numeric, non-date garbage Retry-After returns None."""
+        from utils.reliability.error_recovery import extract_retry_after
+
+        class MockError(Exception):
+            headers = {"Retry-After": "not-a-real-value"}
+
+        result = extract_retry_after(MockError())
+        assert result is None
+
+    def test_headers_none_returns_none(self):
+        """headers attribute present but None returns None (no AttributeError)."""
+        from utils.reliability.error_recovery import extract_retry_after
+
+        class MockError(Exception):
+            headers = None
+
+        result = extract_retry_after(MockError())
+        assert result is None
+
+    def test_no_headers_attribute_returns_none(self):
+        """An error with no headers/response at all returns None."""
+        from utils.reliability.error_recovery import extract_retry_after
+
+        result = extract_retry_after(RuntimeError("boom"))
+        assert result is None

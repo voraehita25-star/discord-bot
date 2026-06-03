@@ -312,7 +312,16 @@ async def async_main():
     migrated_metadata_paths: list[Path] = []
 
     for channel_id, filepath in files["metadata"]:
-        if await migrate_metadata(channel_id, filepath, args.dry_run):
+        try:
+            ok = await migrate_metadata(channel_id, filepath, args.dry_run)
+        except Exception:
+            # Mirror the history loop's resilience: a single bad metadata file
+            # (e.g. a DB error or malformed metadata that escapes
+            # migrate_metadata's own narrow except) must not abort the whole run
+            # — that would skip the summary and the cleanup accounting below.
+            print(f"        ✗ Channel {channel_id}: skipped (metadata write failed)")
+            continue
+        if ok:
             metadata_count += 1
             migrated_metadata_paths.append(filepath)
             print(f"        ✓ Channel {channel_id}: metadata migrated")

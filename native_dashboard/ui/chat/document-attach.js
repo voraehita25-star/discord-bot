@@ -132,8 +132,13 @@ export class DocumentAttachManager {
         reader.onload = (e) => {
             this.pendingCount--;
             const result = e.target?.result;
-            if (typeof result !== 'string' || result === '')
+            if (typeof result !== 'string' || result === '') {
+                // Empty/non-string result (e.g. a zero-byte .txt/.md) — tell the
+                // user instead of silently dropping the attachment with no chip
+                // and no explanation.
+                showToast(`Skipped empty file: ${file.name}`, { type: 'warning' });
                 return;
+            }
             this.docs.push({
                 name: file.name,
                 mime: file.type || (kind === 'binary' ? 'application/octet-stream' : 'text/plain'),

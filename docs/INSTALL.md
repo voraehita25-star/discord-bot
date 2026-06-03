@@ -122,6 +122,8 @@ nano .env     # Linux
 | `SENTRY_DSN` | ❌ | (Optional) Sentry Error Tracking |
 | `DASHBOARD_WS_TOKEN` | ❌ | (Optional) Auth token สำหรับ WebSocket dashboard |
 | `DASHBOARD_ALLOW_UNRESTRICTED` | ❌ | (Optional) เปิด unrestricted mode ใน dashboard (`1`/`true`) |
+| `DASHBOARD_CLI_ALLOW_WRITE` | ❌ | (Optional) เปิดให้ dashboard CLI backend (`CLAUDE_BACKEND=cli`) สร้าง/แก้ไขไฟล์ได้แบบไม่ต้องกด Allow (default: ปิด; `1`/`true`/`yes`/`on`) — จำกัดเฉพาะไฟล์ (Bash/web/Task ถูก deny) และทุก write ถูกตรวจโดย PreToolUse hook (`cli_write_guard.py`) ให้อยู่ในขอบเขต `DASHBOARD_CLI_WRITE_DIRS` เท่านั้น |
+| `DASHBOARD_CLI_WRITE_DIRS` | ❌ | (Optional) รายการ directory (คั่นด้วย `os.pathsep` — `;` บน Windows, `:` บน Linux) ที่ write mode เขียนได้โดยไม่ต้องถาม (default: Desktop / Documents / Downloads ของ user รวม OneDrive-redirected บน Windows) — repo, `.env`, และ dotfiles ถูกกันออกเสมอ |
 | `HEALTH_API_HOST` | ❌ | (Optional) Bind address สำหรับ Health API (default: `127.0.0.1`) |
 | `HEALTH_API_TOKEN` | ❌ | (Optional) Bearer token สำหรับ protected Health API endpoints |
 

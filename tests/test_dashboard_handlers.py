@@ -380,9 +380,7 @@ class TestEditMessage:
             patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
             patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
             patch.object(cli_mod, "_track_session"),
-            patch.object(
-                cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))
-            ),
+            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))),
             patch.object(
                 cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))
             ),
@@ -427,9 +425,7 @@ class TestEditMessage:
             patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
             patch.object(cli_mod, "_build_claude_argv", return_value=["claude", "-p"]),
             patch.object(cli_mod, "_track_session"),
-            patch.object(
-                cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))
-            ),
+            patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", None))),
             patch.object(
                 cli_mod, "_run_claude_subprocess", new=AsyncMock(return_value=("sess-1", {}))
             ),

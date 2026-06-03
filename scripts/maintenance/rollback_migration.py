@@ -157,6 +157,16 @@ def cmd_diff(args: argparse.Namespace) -> int:
     for t in all_tables:
         c = cur_counts.get(t, 0)
         b = bak_counts.get(t, 0)
+        # -1 is the read-failure sentinel from _table_row_counts. Naive
+        # arithmetic (delta = c - b) would leave delta <= 0 and wrongly print
+        # "Rollback is safe" for a table whose row count could not be read.
+        # Force the warning path so an unreadable table never looks safe.
+        if c == -1 or b == -1:
+            data_loss = True
+            c_s = "ERR" if c == -1 else str(c)
+            b_s = "ERR" if b == -1 else str(b)
+            print(f"  {t:<40}  {c_s:>10}  {b_s:>10}  {'?':>8}  (count unreadable)")
+            continue
         delta = c - b
         if delta > 0:
             data_loss = True

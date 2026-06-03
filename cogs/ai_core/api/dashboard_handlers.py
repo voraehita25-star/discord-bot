@@ -630,7 +630,7 @@ _VALID_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 # every WS message that carries a conv id (chat send, edit, delete, tag
 # add/remove, document attach, etc.), so even re's internal cache lookup
 # is avoidable overhead at that scale.
-_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}\Z")
 
 
 def _validate_conversation_id(conversation_id: Any) -> bool:

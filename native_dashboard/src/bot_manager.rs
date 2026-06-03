@@ -487,9 +487,15 @@ impl BotManager {
         };
 
         let mode = {
+            // Verify the dev-watcher PID still maps to a python process, not
+            // just that *some* process holds that PID. Windows recycles PIDs
+            // aggressively (the module invariant every other status/kill path
+            // honors), so a bare is_some() check would falsely report mode="Dev"
+            // if the watcher died and its PID was reused. Mirror stop_dev_watcher.
             let dev_running = self
                 .get_dev_watcher_pid()
-                .map(|p| self.sys.process(sysinfo::Pid::from_u32(p)).is_some())
+                .and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
+                .map(|proc| proc.name().to_string_lossy().to_lowercase().contains("python"))
                 .unwrap_or(false);
             if dev_running {
                 "Dev".to_string()

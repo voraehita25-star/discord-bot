@@ -88,7 +88,7 @@ class EntityFacts:
         lines = []
         if self.description:
             lines.append(f"คำอธิบาย: {_cap(self.description)}")
-        if self.age:
+        if self.age is not None:
             lines.append(f"อายุ: {_cap(self.age, 32)} ปี")
         if self.occupation:
             lines.append(f"อาชีพ: {_cap(self.occupation, 120)}")
@@ -520,47 +520,6 @@ class EntityMemoryManager:
 
         except (aiosqlite.Error, ValueError):
             logger.exception("Failed to update entity %s", name)
-            return False
-
-    async def delete_entity(
-        self, name: str, channel_id: int | None = None, guild_id: int | None = None
-    ) -> bool:
-        """Delete an entity from memory."""
-        if not await self.initialize():
-            return False
-        if db_manager is None:
-            return False
-
-        try:
-            async with db_manager.get_write_connection() as conn:
-                # Use explicit NULL checks consistent with add_entity
-                if channel_id is None and guild_id is None:
-                    await conn.execute(
-                        "DELETE FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id IS NULL",
-                        (name,),
-                    )
-                elif channel_id is None:
-                    await conn.execute(
-                        "DELETE FROM entity_memories WHERE name = ? AND channel_id IS NULL AND guild_id = ?",
-                        (name, guild_id),
-                    )
-                elif guild_id is None:
-                    await conn.execute(
-                        "DELETE FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id IS NULL",
-                        (name, channel_id),
-                    )
-                else:
-                    await conn.execute(
-                        "DELETE FROM entity_memories WHERE name = ? AND channel_id = ? AND guild_id = ?",
-                        (name, channel_id, guild_id),
-                    )
-                await conn.commit()
-
-            logger.info("🗑️ Deleted entity: %s", name)
-            return True
-
-        except aiosqlite.Error:
-            logger.exception("Failed to delete entity %s", name)
             return False
 
     async def get_all_entities(

@@ -74,7 +74,7 @@ _ALLOWED_IMAGE_MIMES = frozenset(CLAUDE_IMAGE_MEDIA_TYPES)
 # Conversation ID validator — same shape as the dashboard_handlers one,
 # duplicated here intentionally to avoid pulling that whole module in
 # (circular import risk via shared handlers).
-_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+_CONVERSATION_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,128}\Z")
 
 
 def _compress_image_for_claude(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
@@ -421,7 +421,19 @@ async def handle_chat_message_claude(
         try:
             db = _get_db()
             db_msgs = await db.get_dashboard_messages(conversation_id)
-            hist_msgs = db_msgs[:-1] if db_msgs and db_msgs[-1]["role"] == "user" else db_msgs
+            # Drop the current turn's user message precisely (see dashboard_chat.py
+            # for the rationale): exact saved row when the save succeeded, the
+            # pre-existing last user row on regeneration/failover-retry, and
+            # nothing when an attempted save failed (user_msg_id == 0) so a prior
+            # turn isn't silently stripped from context.
+            if user_msg_id:
+                hist_msgs = (
+                    db_msgs[:-1] if db_msgs and db_msgs[-1].get("id") == user_msg_id else db_msgs
+                )
+            elif is_regeneration and db_msgs and db_msgs[-1]["role"] == "user":
+                hist_msgs = db_msgs[:-1]
+            else:
+                hist_msgs = db_msgs
             if len(hist_msgs) > max_history_messages:
                 hist_msgs = hist_msgs[-max_history_messages:]
             for msg in hist_msgs:
@@ -553,6 +565,17 @@ async def handle_chat_message_claude(
             logger.info("📷 Added image to Claude message (%s bytes)", len(image_bytes))
         except Exception as e:
             logger.warning("Failed to process image: %s", e)
+            # Notify the client. An unexpected failure here (e.g. binascii.Error
+            # from b64decode(validate=True) on corrupt data, which no inner
+            # handler catches) would otherwise drop the image silently — every
+            # other rejection branch in this loop emits an error frame, so match
+            # that contract instead of leaving the user wondering where it went.
+            try:
+                await ws.send_json(
+                    {"type": "error", "message": "Failed to process an attached image"}
+                )
+            except Exception:
+                pass
 
     # Add documents — PDFs become native `document` blocks (Claude parses
     # text + embedded images itself); text files become `document` blocks
@@ -1313,7 +1336,7 @@ async def handle_ai_edit_message_claude(
     # accepted malformed IDs and oversized instructions that the Gemini
     # twin already rejected at the door.
     if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+        r"^[a-zA-Z0-9_\-]{1,128}\Z", conversation_id
     ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
@@ -1416,9 +1439,7 @@ async def handle_ai_edit_message_claude(
     # Same stable/volatile split as the main chat path — keeps the long
     # persona+context prefix in cache while only the per-turn time
     # line is uncached.
-    stable_system_prompt = (
-        f"{preset['system_instruction']}\n[System Context]\n{user_context}"
-    )
+    stable_system_prompt = f"{preset['system_instruction']}\n[System Context]\n{user_context}"
     volatile_system_prompt = f"Current Time: {current_time_str} (ICT)"
 
     # Build mode info

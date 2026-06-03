@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** June 2, 2026
-> **Version:** 3.4.2
+> **Last Updated:** June 3, 2026
+> **Version:** 3.4.3
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 98 Python test files (3,143 tests) + 10 vitest files (190 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
+> **Total Files:** 110 Python test files (4,721 tests) + 10 vitest files (190 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -182,7 +182,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (3,143 tests in 98 files)
+├── tests/                    # 🧪 Python test suite (4,721 tests in 110 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -857,6 +857,7 @@ async def mycommand(self, ctx):
 20. **Path Traversal Guard:** `safe_delete()` validates resolved paths are within `temp/` directory before deletion
 21. **SQL Injection Guard:** `increment_user_stat()` uses a whitelist dict for column names instead of f-string interpolation
 22. **asyncio.TimeoutError Compat:** Dashboard chat catches both `TimeoutError` and `asyncio.TimeoutError` for Python 3.10 compatibility
+23. **Dashboard CLI File-Write Mode:** When `CLAUDE_BACKEND=cli`, the embedded `claude -p` can create/edit files non-interactively only if `DASHBOARD_CLI_ALLOW_WRITE` is on (default off). Writes are confined to `DASHBOARD_CLI_WRITE_DIRS` (default: Desktop/Documents/Downloads, plus OneDrive-redirected Desktop/Documents on Windows). The authoritative path boundary is the PreToolUse hook `cogs/ai_core/api/cli_write_guard.py`, which denies any `Write/Edit/MultiEdit/NotebookEdit` whose canonical path is outside those roots (fails closed) — the repo, `.env`, `~/.ssh`, `~/.claude`, and the home root are excluded. It is files-only: `Bash`, `WebFetch`, `WebSearch`, `NotebookEdit`, and `Task` are denied.
 
 ---
 

@@ -346,9 +346,6 @@ class AICache:
         key = self._generate_key(message, context_hash, intent)
 
         with self._cache_lock:
-            # Evict if necessary
-            self._evict_lru()
-
             # Store normalized message for fuzzy matching
             normalized = self._normalize_message(message)
 
@@ -364,10 +361,19 @@ class AICache:
             # entry back to cold — otherwise the adaptive-TTL feature (which
             # keys off ``hits``) never engages for exactly the frequently
             # re-set keys it's meant to keep alive longer.
+            #
+            # Read ``prev`` BEFORE evicting and only evict when this is a NEW
+            # key: _evict_lru() pops from the front, and re-assigning an existing
+            # OrderedDict key does NOT move it to the back, so evicting first
+            # could pop the very key being refreshed (losing its carried-forward
+            # hits/ttl). And a refresh is no net growth, so evicting an unrelated
+            # oldest entry for it would needlessly shrink the cache by one.
             prev = self.cache.get(key)
             if prev is not None:
                 entry.hits = prev.hits
                 entry.ttl_multiplier = prev.ttl_multiplier
+            else:
+                self._evict_lru()
             self.cache[key] = entry
 
         # Optional persistence hook (e.g. write-through to L2). Set on the

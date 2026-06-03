@@ -1289,3 +1289,75 @@ class TestTimestampParsing:
 
 
 # ==================== TestDatabaseAvailable ====================
+
+
+# ======================================================================
+# Regression tests: DB-listing helpers must degrade to [] on aiosqlite.Error
+# (previously some callers only caught OSError; aiosqlite.Error is NOT an
+# OSError subclass, so a transient "database is locked" would escape and
+# crash the handler instead of returning an empty list).
+# ======================================================================
+
+
+class TestDbErrorDegradesToEmptyList:
+    """get_all_channel_ids / get_all_channels_summary / get_channel_history_preview
+    must return [] (not raise) when the underlying db call raises aiosqlite.Error.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_all_channel_ids_returns_empty_on_aiosqlite_error(self):
+        """aiosqlite.Error from get_all_ai_channel_ids -> [] (no raise)."""
+        import aiosqlite
+
+        from cogs.ai_core import storage
+
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_all_ai_channel_ids = AsyncMock(
+                side_effect=aiosqlite.Error("database is locked")
+            )
+
+            result = await storage.get_all_channel_ids()
+
+            assert result == []
+            mock_db.get_all_ai_channel_ids.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_all_channels_summary_returns_empty_on_aiosqlite_error(self):
+        """aiosqlite.Error from get_all_ai_channels_summary -> [] (no raise)."""
+        import aiosqlite
+
+        from cogs.ai_core import storage
+
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_all_ai_channels_summary = AsyncMock(
+                side_effect=aiosqlite.Error("database is locked")
+            )
+
+            result = await storage.get_all_channels_summary()
+
+            assert result == []
+            mock_db.get_all_ai_channels_summary.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_channel_history_preview_returns_empty_on_aiosqlite_error(self):
+        """aiosqlite.Error from get_ai_history -> [] (no raise)."""
+        import aiosqlite
+
+        from cogs.ai_core import storage
+
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_ai_history = AsyncMock(side_effect=aiosqlite.Error("database is locked"))
+
+            result = await storage.get_channel_history_preview(12345, limit=3)
+
+            assert result == []
+            mock_db.get_ai_history.assert_awaited_once()

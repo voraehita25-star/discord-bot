@@ -153,6 +153,15 @@ _SESSIONS_FILE = Path(__file__).resolve().parents[3] / "data" / "claude_cli_sess
 # rest of the CLI sidecar state.
 _EMPTY_MCP_CONFIG_FILE = Path(__file__).resolve().parents[3] / "data" / "claude_cli_empty_mcp.json"
 
+# Write-mode guard. The PreToolUse hook script (committed next to this module)
+# is registered via a generated settings file passed with --settings. Both live
+# OUTSIDE every write root and outside the spawn cwd subtree, so the model can't
+# overwrite the guard itself. See cli_write_guard.py for the enforcement logic.
+_WRITE_GUARD_HOOK_SCRIPT = Path(__file__).resolve().parent / "cli_write_guard.py"
+_WRITE_GUARD_SETTINGS_FILE = (
+    Path(__file__).resolve().parents[3] / "data" / "claude_cli_write_guard_settings.json"
+)
+
 
 def _ensure_empty_mcp_config() -> Path:
     """Write the empty MCP config if it doesn't exist yet, return its path."""
@@ -160,6 +169,36 @@ def _ensure_empty_mcp_config() -> Path:
         _EMPTY_MCP_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         _EMPTY_MCP_CONFIG_FILE.write_text('{"mcpServers": {}}', encoding="utf-8")
     return _EMPTY_MCP_CONFIG_FILE
+
+
+def _ensure_write_guard_settings() -> Path:
+    """Materialise the --settings file registering the PreToolUse write guard.
+
+    The hook command invokes the current interpreter on the committed
+    ``cli_write_guard.py``. Rewritten only when the desired content changes (the
+    interpreter path can move between installs), mirroring the lazy pattern of
+    :func:`_ensure_empty_mcp_config`.
+    """
+    command = f'"{sys.executable}" "{_WRITE_GUARD_HOOK_SCRIPT}"'
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        }
+    }
+    content = json.dumps(settings, ensure_ascii=False, indent=2)
+    try:
+        current = _WRITE_GUARD_SETTINGS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    if current != content:
+        _WRITE_GUARD_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _WRITE_GUARD_SETTINGS_FILE.write_text(content, encoding="utf-8")
+    return _WRITE_GUARD_SETTINGS_FILE
 
 
 def _encode_claude_project_dirname(path: Path) -> str:
@@ -959,7 +998,80 @@ def _make_subprocess_env() -> dict[str, str]:
         with contextlib.suppress(OSError):
             _clean_cfg.mkdir(parents=True, exist_ok=True)
             env["CLAUDE_CONFIG_DIR"] = str(_clean_cfg)
+
+    # Hand the resolved write roots to the PreToolUse write-guard hook, which
+    # runs as a child of this subprocess and inherits this env. The hook denies
+    # any Write/Edit whose canonical path is outside these roots (it fails closed
+    # if the var is absent). Set only when write mode is enabled and roots
+    # resolve; harmless when no --settings guard is attached to the argv.
+    if _dashboard_cli_write_enabled():
+        _write_roots = _dashboard_cli_write_dirs()
+        if _write_roots:
+            env["DASHBOARD_CLI_WRITE_DIRS_RESOLVED"] = os.pathsep.join(
+                str(r.resolve()) for r in _write_roots
+            )
     return env
+
+
+def _dashboard_cli_write_enabled() -> bool:
+    """True when the operator opted the CLI backend into autonomous file writes.
+
+    Gated by ``DASHBOARD_CLI_ALLOW_WRITE`` (default off). When off, the embedded
+    ``claude -p`` stays a pure-chat process pinned to ``--permission-mode
+    default`` with no write tools — the hardened default. When on, the main chat
+    turn may create/edit files non-interactively (see :func:`_build_claude_argv`)
+    so the dashboard chat UI — which has no way to answer an interactive
+    "Allow?" prompt — can fulfil "write this file for me" requests.
+    """
+    return os.getenv("DASHBOARD_CLI_ALLOW_WRITE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _dashboard_cli_write_dirs() -> list[Path]:
+    """Resolve the directories CLI write-mode may write into without prompting.
+
+    ``DASHBOARD_CLI_WRITE_DIRS`` (``os.pathsep``-separated) overrides the
+    default, which is the user's Desktop / Documents / Downloads — plus the
+    OneDrive-redirected Desktop/Documents on Windows, where those known folders
+    are frequently relocated under OneDrive. Only directories that actually
+    exist are returned (``--add-dir`` on a missing path is pointless).
+
+    Sensitive locations — the repo, ``~/.ssh``, ``~/.claude``, and the home root
+    itself — are deliberately NOT included, so even under ``acceptEdits`` an
+    injected upload cannot auto-overwrite credentials or config: a write there
+    falls outside every ``--add-dir`` root, hits a permission prompt with no TTY
+    to answer it, and is therefore denied.
+    """
+    raw = os.getenv("DASHBOARD_CLI_WRITE_DIRS", "").strip()
+    if raw:
+        candidates = [Path(p.strip()).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        home = Path.home()
+        candidates = [home / "Desktop", home / "Documents", home / "Downloads"]
+        # Windows env lookups are case-insensitive, so the uppercase form still
+        # resolves the real mixed-case "OneDrive" / "OneDriveConsumer" vars.
+        onedrive = os.getenv("ONEDRIVE") or os.getenv("ONEDRIVECONSUMER")
+        if onedrive:
+            od = Path(onedrive)
+            candidates += [od / "Desktop", od / "Documents"]
+    # De-dupe by resolved path while preserving order; keep only real dirs.
+    seen: set[str] = set()
+    roots: list[Path] = []
+    for cand in candidates:
+        try:
+            key = str(cand.resolve())
+        except OSError:
+            key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        if cand.is_dir():
+            roots.append(cand)
+    return roots
 
 
 def _build_claude_argv(
@@ -969,6 +1081,7 @@ def _build_claude_argv(
     allow_read_for_images: bool,
     allow_edit_tools: bool = False,
     enable_thinking: bool = False,
+    enable_write: bool = False,
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
@@ -1009,15 +1122,38 @@ def _build_claude_argv(
         "--mcp-config",
         str(_ensure_empty_mcp_config()),
         "--strict-mcp-config",
-        # Pin the permission mode to "default" so the Read-tool confinement
-        # (--allowedTools Read + --add-dir <temp roots>) actually holds even if
-        # the operator's settings.json sets defaultMode=bypassPermissions.
-        # --add-dir pre-approves the temp dirs (attachments still read without a
-        # prompt); arbitrary paths (e.g. ~/.claude/.credentials.json) are denied
-        # rather than silently allowed by an inherited bypass mode.
-        "--permission-mode",
-        "default",
     ]
+
+    # Permission mode. OFF by default: pin "--permission-mode default" so the
+    # Read-tool confinement (--allowedTools Read + --add-dir <temp roots>) holds
+    # even if the operator's settings.json sets defaultMode=bypassPermissions.
+    # --add-dir pre-approves the temp dirs (attachments still read without a
+    # prompt); arbitrary paths (e.g. ~/.claude/.credentials.json) are denied
+    # rather than silently allowed by an inherited bypass mode.
+    #
+    # When write-mode is requested AND at least one output root resolves, switch
+    # to "acceptEdits" — the only subscription-compatible mode that runs file
+    # writes NON-interactively under `-p`. (default/plan/dontAsk stall because
+    # there is no TTY to answer the "Allow?" prompt the chat UI can't surface;
+    # "auto" needs the paid API, not the Max subscription this subprocess uses.)
+    # acceptEdits gives the no-prompt experience for in-scope writes, but it is
+    # NOT the security boundary: a PreToolUse write-guard hook (attached via
+    # --settings with the tools below) is the AUTHORITATIVE path gate — it denies
+    # any Write/Edit/MultiEdit/NotebookEdit whose canonical path is outside the
+    # resolved write roots, so writes to the repo, .env, dotfiles, or the cwd/
+    # config-dir subtree are rejected even though acceptEdits would auto-approve
+    # the cwd subtree. Shell + network + other mutation tools are also denied —
+    # the "files-only" scope.
+    write_roots = _dashboard_cli_write_dirs() if enable_write else []
+    write_mode = bool(write_roots)
+    if enable_write and not write_roots:
+        logger.warning(
+            "DASHBOARD_CLI_ALLOW_WRITE is on but no writable output dir resolved "
+            "(set DASHBOARD_CLI_WRITE_DIRS to an existing path); the dashboard "
+            "chat stays read-only this turn."
+        )
+    argv.extend(["--permission-mode", "acceptEdits" if write_mode else "default"])
+
     if enable_thinking:
         # Only --effort xhigh — NOT --betas interleaved-thinking. See the
         # docstring: custom betas are ignored (and noisily warned about) in
@@ -1031,6 +1167,33 @@ def _build_claude_argv(
         # parsed as a flag here (argv injection). Drop --resume rather than risk
         # it — the turn just starts a fresh server-side session.
         logger.warning("Ignoring suspicious --resume session id %r", session_id)
+    if write_mode:
+        # Files-only autonomy. CRITICAL: do NOT allow-list Write/Edit. A bare
+        # tool name in --allowedTools is treated as unconditionally always-allowed
+        # and short-circuits the acceptEdits/--add-dir path boundary, letting the
+        # model write anywhere. Instead the path boundary is enforced by the
+        # PreToolUse write-guard hook below, which denies any edit whose canonical
+        # target is outside the resolved write roots (cli_write_guard.py).
+        argv.extend(["--settings", str(_ensure_write_guard_settings())])
+        # Deny shell, network, and the other file-mutation / subagent tools, so
+        # the model's only write path is Write/Edit/MultiEdit — every call of
+        # which the guard hook vets. (NotebookEdit is also guarded by the hook;
+        # denying it here just removes it from the model's toolset entirely.)
+        argv.extend(["--disallowedTools", "Bash WebFetch WebSearch NotebookEdit Task"])
+        # --add-dir gives the no-prompt experience under acceptEdits for in-scope
+        # writes (the hook still vets each one). These are the ONLY roots — the
+        # repo, .env, dotfiles, and the cwd/config-dir subtree are excluded, so
+        # the guard rejects writes there.
+        for _root in write_roots:
+            argv.extend(["--add-dir", str(_root)])
+        # Attachments still live under the temp roots — keep them readable.
+        if allow_read_for_images:
+            for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
+                with contextlib.suppress(OSError):
+                    _root.mkdir(parents=True, exist_ok=True)
+                argv.extend(["--add-dir", str(_root)])
+        return argv
+
     # Tools allow-list: zero by default (pure chat — fastest, no surprises).
     # Images require Read so Claude can view the temp files. /edit also uses
     # zero tools — Claude just emits SEARCH/REPLACE text in its reply.
@@ -1045,14 +1208,20 @@ def _build_claude_argv(
     tools = "Read" if allow_read_for_images else ""
     argv.extend(["--allowedTools", tools])
     if allow_read_for_images:
-        # Scope the Read tool's filesystem reach to ONLY the upload temp roots.
-        # Read can otherwise reach any absolute path the bot user can (e.g.
-        # ~/.claude/.credentials.json, .env, the SQLite DB) — that's how images
-        # under data/tmp/ are read today, but it also lets a prompt-injected
-        # document ask Claude to Read and exfiltrate secrets over the WS stream.
-        # --add-dir declares the allowed read roots; uploads live in
-        # per-conversation subdirs beneath them. mkdir so the flag resolves even
-        # before the first upload writes into the dir.
+        # --add-dir declares the upload temp roots as working dirs so attachments
+        # read without a prompt; uploads live in per-conversation subdirs beneath
+        # them. mkdir so the flag resolves before the first upload.
+        #
+        # NOTE: --add-dir does NOT strictly *confine* Read here. Because "Read" is
+        # bare-allow-listed above, Claude treats it as always-allowed and can in
+        # principle read any absolute path the bot user can (e.g. .env, the SQLite
+        # DB), so a prompt-injected document could ask Claude to Read and echo a
+        # secret back over the WS stream. The blast radius is limited: that stream
+        # is single-user (the operator's own dashboard), so it's disclosure to
+        # self, not third-party exfil — and there is no Bash/web tool on this path
+        # to forward it. If true read confinement is ever wanted, enforce it the
+        # same way write mode does: a PreToolUse hook matching Read (see
+        # cli_write_guard.py), not --add-dir.
         for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
             _root.mkdir(parents=True, exist_ok=True)
             argv.extend(["--add-dir", str(_root)])
@@ -1397,7 +1566,7 @@ async def handle_chat_message_claude_cli(
     # use) from the DB rows (which do not), or land in a SQL parameter
     # downstream as an unexpected shape.
     if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+        r"^[a-zA-Z0-9_\-]{1,128}\Z", conversation_id
     ):
         await ws.send_json(
             {
@@ -1419,6 +1588,12 @@ async def handle_chat_message_claude_cli(
     _unrestricted_env = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower()
     _unrestricted_allowed = _unrestricted_env in ("1", "true", "yes", "on")
     unrestricted_requested = bool(data.get("unrestricted_mode")) and _unrestricted_allowed
+    # File-write autonomy (DASHBOARD_CLI_ALLOW_WRITE). When on, the embedded
+    # `claude -p` may create/edit files in the configured output dirs without
+    # the interactive "Allow?" prompt the chat UI can't surface. Read once here
+    # and thread it through every _build_claude_argv call on the main chat path
+    # (the /edit path intentionally stays text-only and never sets it).
+    write_enabled = _dashboard_cli_write_enabled()
     thinking_enabled = bool(data.get("thinking_enabled"))
     images_raw = data.get("images") or []
     documents_raw = data.get("documents") or []
@@ -1654,6 +1829,8 @@ async def handle_chat_message_claude_cli(
         mode_info.append("🧠 Thinking")
     if unrestricted_requested:
         mode_info.append("🔓 Unrestricted")
+    if write_enabled:
+        mode_info.append("✍️ Write")
     if image_paths:
         mode_info.append(f"🖼️ {len(image_paths)} image(s)")
     if doc_paths:
@@ -1754,6 +1931,7 @@ async def handle_chat_message_claude_cli(
         session_id=session_id,
         allow_read_for_images=need_read,
         enable_thinking=thinking_enabled,
+        enable_write=write_enabled,
     )
 
     new_session_id = ""
@@ -1790,6 +1968,7 @@ async def handle_chat_message_claude_cli(
                         session_id=session_id,
                         allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
+                        enable_write=write_enabled,
                     )
                     full_prompt = _build_full_prompt(
                         persona=persona,
@@ -1853,6 +2032,7 @@ async def handle_chat_message_claude_cli(
                         session_id=None,
                         allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
+                        enable_write=write_enabled,
                     )
                     new_session_id, usage = await _run_claude_subprocess(
                         fresh_argv,
@@ -1918,6 +2098,16 @@ async def handle_chat_message_claude_cli(
                 }
             )
             return
+
+        # Persist the session id while we STILL HOLD the per-conversation lock.
+        # The finally below releases the lock and then awaits (attachment cleanup
+        # + _emit_thinking_end); recording the session only after that release
+        # opened a race where a queued concurrent first turn could acquire the
+        # lock, re-read a still-None session, and spawn a SECOND fresh session —
+        # the exact case the in-lock re-read near the top defends against.
+        # _track_session is synchronous, so doing it here under the lock is atomic.
+        if conversation_id and new_session_id:
+            _track_session(conversation_id, new_session_id)
     finally:
         if lock is not None and lock_acquired:
             lock.release()
@@ -1940,9 +2130,8 @@ async def handle_chat_message_claude_cli(
         # _emit_thinking_end no-ops if it already ran on this turn.
         await _emit_thinking_end()
 
-    # Save session id for next turn so Claude keeps context server-side.
-    if conversation_id and new_session_id:
-        _track_session(conversation_id, new_session_id)
+    # (session id is persisted above under the per-conversation lock, just
+    # before the finally releases it — see the _track_session call there.)
 
     # (thinking_end is emitted in the finally above so it also fires on the
     # error/timeout return paths — see the panel-close block there.)
@@ -2121,7 +2310,7 @@ async def handle_ai_edit_message_claude_cli(
     # session map and conversation lock dict before the chat path's regex
     # had a chance to reject it — desync between the two state stores.
     if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+        r"^[a-zA-Z0-9_\-]{1,128}\Z", conversation_id
     ):
         await ws.send_json(
             {
@@ -2329,12 +2518,17 @@ async def handle_ai_edit_message_claude_cli(
     # True for any holder, so using it to gate ``release()`` could release
     # a different task's lock if our acquire() raised (e.g. CancelledError).
     edit_lock_acquired = False
+    # The /edit run is a one-shot fresh session (session_id=None above) that is
+    # never recorded in _CONVERSATION_SESSIONS, so neither delete_session_file
+    # nor LRU eviction would ever remove its .jsonl. Capture the returned id and
+    # unlink the log in the finally so each edit doesn't orphan one session file.
+    edit_session_id: str | None = None
     try:
         if edit_lock is not None:
             await edit_lock.acquire()
             edit_lock_acquired = True
         try:
-            _new_sid, usage = await _run_claude_subprocess(
+            edit_session_id, usage = await _run_claude_subprocess(
                 argv,
                 stdin_payload=edit_prompt,
                 on_text_delta=on_text,
@@ -2381,6 +2575,12 @@ async def handle_ai_edit_message_claude_cli(
         # on_thinking_block_stop. Idempotent — _emit_thinking_end no-ops if it
         # already ran on this turn.
         await _emit_thinking_end()
+        # Clean up the ephemeral edit session's log file. The subprocess has
+        # fully exited by now so the .jsonl is complete; _unlink_session_file_by_id
+        # validates the id and no-ops on None, so error paths (where it stays
+        # None) are harmless. Best-effort — never let cleanup break the response.
+        with contextlib.suppress(Exception):
+            await _unlink_session_file_by_id(edit_session_id)
 
     # Strip Claude Code internal markup before the SEARCH/REPLACE
     # parser sees it. Otherwise a leaked ``</system-reminder>`` inside

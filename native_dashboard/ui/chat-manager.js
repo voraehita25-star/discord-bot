@@ -371,6 +371,11 @@ export class ChatManager {
                     this.updateProviderSelects();
                 }
                 this.listConversations();
+                // Re-request the API-failover endpoint list on every connect,
+                // including reconnects. app.ts only fires get_api_endpoints once
+                // per page load, so after a WS drop/reconnect the failover panel
+                // would otherwise stay stale until a full page reload.
+                this.send({ type: 'get_api_endpoints' });
                 break;
             case 'conversations_list':
                 this.conversations = (data.conversations || [])
@@ -554,18 +559,6 @@ export class ChatManager {
                 this.streamingConversationId = null;
                 this.isStreaming = false;
                 this.userScrolledUp = false; // Reset scroll lock when stream ends
-                // Failover cleanup: remove the failed streaming bubble silently
-                if (data._failover_cleanup) {
-                    this.clearStreamBuffers();
-                    const stuckMsg = document.getElementById('streaming-message');
-                    if (stuckMsg)
-                        stuckMsg.remove();
-                    // Also remove the empty assistant message from messages array if it was added
-                    if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'assistant' && !this.messages[this.messages.length - 1].content) {
-                        this.messages.pop();
-                    }
-                    break;
-                }
                 if (this.isEditStreaming && data.is_edit) {
                     // AI edit complete: finalize the edited message
                     this.finalizeEditStreaming(typeof data.full_response === 'string' ? data.full_response : '', data.target_message_id);

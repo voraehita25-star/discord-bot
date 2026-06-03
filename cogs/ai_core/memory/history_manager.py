@@ -257,8 +257,14 @@ class HistoryManager:
 
         self.logger.info("📦 Smart trimming history: %d -> %d messages", len(history), max_messages)
 
-        # 1. Split history into sections
-        recent = history[-self.keep_recent :]
+        # 1. Split history into sections. Clamp the "recent" tail to max_messages
+        # so the result can never exceed the requested cap: with the raw
+        # keep_recent slice, a caller passing max_messages < keep_recent would
+        # get back more than max_messages items (recent alone already exceeds the
+        # cap). When max_messages >= keep_recent (the normal case) this is a
+        # no-op. In the clamped regime available_slots becomes 0, so `older` is
+        # not drawn from anyway.
+        recent = history[-min(self.keep_recent, max_messages) :]
         older = history[: -self.keep_recent]
 
         # 2. Score all older messages

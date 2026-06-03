@@ -229,6 +229,8 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `WS_DASHBOARD_PORT` | `8765` | Dashboard WS port |
 | `DASHBOARD_WS_TOKEN` | `""` | Bearer auth token (shared secret, compared byte-for-byte by the WS handshake). An empty value rejects all WS connections — set this OR enable `DASHBOARD_ALLOW_UNRESTRICTED=true` (NOT recommended outside localhost). |
 | `WS_REQUIRE_TLS` | `false` | Require TLS |
+| `DASHBOARD_CLI_ALLOW_WRITE` | `false` (off) | `CLAUDE_BACKEND=cli` only. When on, the dashboard's embedded `claude -p` may CREATE/EDIT files non-interactively (the chat UI can't answer an interactive "Allow?" prompt). Files-only: Bash, the web tools, NotebookEdit and subagents are denied. A PreToolUse write-guard hook (`cogs/ai_core/api/cli_write_guard.py`) is the authoritative boundary — it fails closed and denies any write whose canonical path is outside the allowed roots, so the repo, `.env`, `~/.claude`, `~/.ssh` and the home root are all rejected. Enable only on a trusted machine — uploaded documents are a prompt-injection surface. |
+| `DASHBOARD_CLI_WRITE_DIRS` | Desktop / Documents / Downloads (+ OneDrive-redirected on Windows) | `os.pathsep`-separated list overriding the auto-approved write roots used by `DASHBOARD_CLI_ALLOW_WRITE`. Only directories that actually exist are honoured. |
 
 ### Monitoring
 

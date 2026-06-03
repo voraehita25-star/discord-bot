@@ -815,7 +815,17 @@ class MemorySystem:
                     if not values:
                         expanded[src_idx] = None
                         continue
-                    expanded[src_idx] = np.array(values, dtype=np.float32)
+                    vec = np.array(values, dtype=np.float32)
+                    if vec.size != EMBEDDING_DIM:
+                        logger.warning(
+                            "Batch embedding dim mismatch: expected %d, got %d (model %s)",
+                            EMBEDDING_DIM,
+                            vec.size,
+                            EMBEDDING_MODEL,
+                        )
+                        expanded[src_idx] = None
+                        continue
+                    expanded[src_idx] = vec
                 results.extend(expanded)
 
             except Exception:

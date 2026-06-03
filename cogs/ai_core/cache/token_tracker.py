@@ -523,9 +523,13 @@ class TokenTracker:
         if not records:
             return UsageStats()
 
+        # Route timestamps through _ensure_aware before comparing — every other
+        # comparison site in this file does, because min()/max() raise TypeError
+        # the moment a naive timestamp is compared against a tz-aware one. This
+        # is the lone unguarded reduction; keep it consistent (defense in depth).
         stats = UsageStats(
-            period_start=min(r.timestamp for r in records),
-            period_end=max(r.timestamp for r in records),
+            period_start=min(_ensure_aware(r.timestamp) for r in records),
+            period_end=max(_ensure_aware(r.timestamp) for r in records),
         )
 
         for record in records:

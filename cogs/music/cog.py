@@ -185,8 +185,19 @@ class Music(commands.Cog):
                     if gs is None:
                         continue
                     # save_queue handles the empty-queue case (clears DB).
-                    await self.save_queue(guild_id)
-                    saved += 1
+                    # Isolate each guild: without a per-iteration guard, a single
+                    # guild's transient DB error would propagate to the outer
+                    # handler and abandon the rest of the batch — and because the
+                    # pending markers were already cleared above, those guilds'
+                    # queue changes would be silently lost until a later mutator
+                    # re-marked them. Re-queue a failed guild so it retries next
+                    # tick instead of being dropped.
+                    try:
+                        await self.save_queue(guild_id)
+                        saved += 1
+                    except Exception as e:
+                        self._queue_save_pending.add(guild_id)
+                        logger.warning("Queue auto-save failed for guild %s: %s", guild_id, e)
                 if saved:
                     logger.info("💾 Auto-saved queues for %d guilds", saved)
             except asyncio.CancelledError:

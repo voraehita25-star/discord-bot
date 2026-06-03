@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -32,9 +33,11 @@ def _data_url(mime: str, payload: bytes) -> str:
 
 @pytest.fixture(autouse=True)
 def isolate_image_root(monkeypatch, tmp_path):
-    """Redirect the per-conversation temp roots to a per-test scratch dir."""
+    """Redirect the per-conversation temp roots + guard-settings file to scratch."""
     monkeypatch.setattr(cli, "_TEMP_IMAGE_ROOT", tmp_path / "img")
     monkeypatch.setattr(cli, "_TEMP_DOCS_ROOT", tmp_path / "doc")
+    # Keep _ensure_write_guard_settings() from writing into the real data/ dir.
+    monkeypatch.setattr(cli, "_WRITE_GUARD_SETTINGS_FILE", tmp_path / "guard_settings.json")
 
 
 class TestSaveInlineImages:
@@ -379,6 +382,201 @@ class TestBuildClaudeArgv:
             allow_read_for_images=False,
         )
         assert "--effort" not in argv
+
+    def test_write_mode_off_pins_default_and_no_write_tools(self):
+        # Without enable_write the process stays the hardened pure-chat default:
+        # pinned --permission-mode default, no Write tool, no deny-list.
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+        )
+        assert argv[argv.index("--permission-mode") + 1] == "default"
+        assert "Write" not in " ".join(argv)
+        assert "--disallowedTools" not in argv
+
+    def test_write_mode_enabled_uses_accept_edits_and_guard(self, monkeypatch, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(out))
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            enable_write=True,
+        )
+        # acceptEdits gives the no-prompt experience for in-scope writes.
+        assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+        # The PreToolUse write-guard is the real path boundary — it MUST be wired.
+        assert "--settings" in argv
+        assert argv[argv.index("--settings") + 1] == str(cli._WRITE_GUARD_SETTINGS_FILE)
+        # CRITICAL regression guard: Write/Edit must NOT be bare-allow-listed — a
+        # bare tool name short-circuits the path boundary (the original CVE-class
+        # bug). So either there is no --allowedTools, or it names no write tool.
+        if "--allowedTools" in argv:
+            allowed = argv[argv.index("--allowedTools") + 1]
+            for tool in ("Write", "Edit", "MultiEdit"):
+                assert tool not in allowed
+        # Files-only: shell, network, notebook-edit and subagents are all denied.
+        disallowed = argv[argv.index("--disallowedTools") + 1]
+        for tool in ("Bash", "WebFetch", "WebSearch", "NotebookEdit", "Task"):
+            assert tool in disallowed
+        # The ONLY add-dir is the configured output root — no sensitive location
+        # (home root, repo, dotfiles) may leak into the auto-approve scope.
+        add_dirs = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--add-dir"]
+        assert add_dirs == [str(out)]
+        assert str(Path.home()) not in add_dirs
+
+    def test_write_mode_with_images_adds_only_temp_and_output_roots(self, monkeypatch, tmp_path):
+        # The highest-risk combination: write tools live WHILE an uploaded doc is
+        # readable. Assert the add-dir set is exactly {output root, temp roots}.
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(out))
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=True,
+            enable_write=True,
+        )
+        add_dirs = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--add-dir"]
+        assert set(add_dirs) == {
+            str(out),
+            str(cli._TEMP_IMAGE_ROOT),
+            str(cli._TEMP_DOCS_ROOT),
+        }
+        assert str(Path.home()) not in add_dirs
+
+    def test_write_mode_falls_back_to_readonly_when_no_dir_resolves(self, monkeypatch, tmp_path):
+        # enable_write requested but the configured dir doesn't exist → no root
+        # resolves → stay read-only rather than silently granting unscoped writes.
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(tmp_path / "nope"))
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            enable_write=True,
+        )
+        assert argv[argv.index("--permission-mode") + 1] == "default"
+        assert "Write" not in " ".join(argv)
+        assert "--disallowedTools" not in argv
+        # No guard hook is attached when we fell back to read-only.
+        assert "--settings" not in argv
+
+    def test_write_mode_warns_when_no_dir_resolves(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(tmp_path / "nope"))
+        with caplog.at_level(logging.WARNING, logger=cli.logger.name):
+            cli._build_claude_argv(
+                "/usr/bin/claude",
+                session_id=None,
+                allow_read_for_images=False,
+                enable_write=True,
+            )
+        assert any(
+            "DASHBOARD_CLI_ALLOW_WRITE" in r.message and "read-only" in r.message
+            for r in caplog.records
+        )
+
+
+# ---------------------------------------------------------------------------
+# _dashboard_cli_write_enabled / _dashboard_cli_write_dirs
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardCliWriteHelpers:
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", " On "])
+    def test_write_enabled_truthy(self, monkeypatch, val):
+        monkeypatch.setenv("DASHBOARD_CLI_ALLOW_WRITE", val)
+        assert cli._dashboard_cli_write_enabled() is True
+
+    @pytest.mark.parametrize("val", ["", "0", "off", "no", "false", "maybe"])
+    def test_write_enabled_falsey(self, monkeypatch, val):
+        monkeypatch.setenv("DASHBOARD_CLI_ALLOW_WRITE", val)
+        assert cli._dashboard_cli_write_enabled() is False
+
+    def test_write_enabled_unset(self, monkeypatch):
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        assert cli._dashboard_cli_write_enabled() is False
+
+    def test_write_dirs_override_filters_missing_and_dedupes(self, monkeypatch, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        missing = tmp_path / "missing"
+        monkeypatch.setenv(
+            "DASHBOARD_CLI_WRITE_DIRS",
+            os.pathsep.join([str(real), str(missing), str(real)]),
+        )
+        dirs = cli._dashboard_cli_write_dirs()
+        # Non-existent path dropped, duplicate collapsed.
+        assert [d.resolve() for d in dirs] == [real.resolve()]
+
+    def test_write_dirs_default_uses_home_output_folders_only(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DASHBOARD_CLI_WRITE_DIRS", raising=False)
+        for _name in ("ONEDRIVE", "OneDrive", "ONEDRIVECONSUMER", "OneDriveConsumer"):
+            monkeypatch.delenv(_name, raising=False)
+        (tmp_path / "Desktop").mkdir()
+        (tmp_path / "Documents").mkdir()
+        # Downloads intentionally absent → filtered out.
+        monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+        dirs = cli._dashboard_cli_write_dirs()
+        assert {d.name for d in dirs} == {"Desktop", "Documents"}
+        # The home root itself must never be writable.
+        assert all(d.resolve() != tmp_path.resolve() for d in dirs)
+
+    def test_write_dirs_override_emits_multiple_roots_in_order(self, monkeypatch, tmp_path):
+        a = tmp_path / "a"
+        a.mkdir()
+        b = tmp_path / "b"
+        b.mkdir()
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", os.pathsep.join([str(a), str(b)]))
+        dirs = cli._dashboard_cli_write_dirs()
+        assert [d.resolve() for d in dirs] == [a.resolve(), b.resolve()]
+        # …and the argv emits a --add-dir for each (exercises the >1 loop).
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False, enable_write=True
+        )
+        add_dirs = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--add-dir"]
+        assert add_dirs == [str(a), str(b)]
+
+    def test_write_dirs_default_includes_onedrive_redirected_folders(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DASHBOARD_CLI_WRITE_DIRS", raising=False)
+        home = tmp_path / "home"
+        (home / "Desktop").mkdir(parents=True)
+        od = tmp_path / "od"
+        (od / "Desktop").mkdir(parents=True)
+        (od / "Documents").mkdir()
+        monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("ONEDRIVE", str(od))
+        dirs = {d.resolve() for d in cli._dashboard_cli_write_dirs()}
+        assert (od / "Desktop").resolve() in dirs
+        assert (od / "Documents").resolve() in dirs
+        assert (home / "Desktop").resolve() in dirs
+
+    def test_env_exports_resolved_write_dirs_when_enabled(self, monkeypatch, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setenv("DASHBOARD_CLI_ALLOW_WRITE", "1")
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(out))
+        env = cli._make_subprocess_env()
+        assert env.get("DASHBOARD_CLI_WRITE_DIRS_RESOLVED") == str(out.resolve())
+
+    def test_env_omits_resolved_write_dirs_when_disabled(self, monkeypatch, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(out))
+        env = cli._make_subprocess_env()
+        assert "DASHBOARD_CLI_WRITE_DIRS_RESOLVED" not in env
+
+    def test_ensure_write_guard_settings_registers_pretooluse_hook(self):
+        # _WRITE_GUARD_SETTINGS_FILE is redirected to tmp by the autouse fixture.
+        path = cli._ensure_write_guard_settings()
+        assert path == cli._WRITE_GUARD_SETTINGS_FILE
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        pre = data["hooks"]["PreToolUse"]
+        assert pre[0]["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+        command = pre[0]["hooks"][0]["command"]
+        assert "cli_write_guard.py" in command
 
 
 # ---------------------------------------------------------------------------

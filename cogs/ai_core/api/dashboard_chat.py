@@ -105,7 +105,7 @@ async def handle_chat_message(
     # Validate conversation_id format (defense in depth)
     if conversation_id and (
         not isinstance(conversation_id, str)
-        or not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id)
+        or not re.match(r"^[a-zA-Z0-9_\-]{1,128}\Z", conversation_id)
     ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return
@@ -191,8 +191,22 @@ async def handle_chat_message(
         try:
             db = _get_db()
             db_msgs = await db.get_dashboard_messages(conversation_id)
-            # Exclude the last message (the current user message just saved above)
-            hist_msgs = db_msgs[:-1] if db_msgs and db_msgs[-1]["role"] == "user" else db_msgs
+            # Exclude the current turn's user message from the history fed back to
+            # the model — but pick the row precisely instead of blindly dropping
+            # whatever the last user row happens to be:
+            #  - save succeeded this turn -> drop exactly the row we just saved
+            #  - regeneration (no save)   -> drop the pre-existing last user row
+            #  - save FAILED (user_msg_id == 0, not regen) -> keep everything; the
+            #    last stored row is a PREVIOUS turn and dropping it would silently
+            #    discard real conversation context.
+            if user_msg_id:
+                hist_msgs = (
+                    db_msgs[:-1] if db_msgs and db_msgs[-1].get("id") == user_msg_id else db_msgs
+                )
+            elif is_regeneration and db_msgs and db_msgs[-1]["role"] == "user":
+                hist_msgs = db_msgs[:-1]
+            else:
+                hist_msgs = db_msgs
             if len(hist_msgs) > max_history_messages:
                 hist_msgs = hist_msgs[-max_history_messages:]
             for msg in hist_msgs:
@@ -842,7 +856,7 @@ async def handle_ai_edit_message(
 
     # Validate conversation_id format (defense in depth)
     if not isinstance(conversation_id, str) or not re.match(
-        r"^[a-zA-Z0-9_\-]{1,128}$", conversation_id
+        r"^[a-zA-Z0-9_\-]{1,128}\Z", conversation_id
     ):
         await ws.send_json({"type": "error", "message": "Invalid conversation ID format"})
         return

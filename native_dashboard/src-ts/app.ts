@@ -1706,7 +1706,21 @@ function updateCropPreview(): void {
 function saveCroppedAvatar(): void {
     const cropImage = document.getElementById('crop-image') as HTMLImageElement;
     if (!cropImage) return;
-    
+
+    // Guard the not-yet-loaded state: cropState.imgWidth/imgHeight stay 0 until
+    // cropImage.onload runs. Saving before then divides by 0, making
+    // srcX/srcY/srcSize NaN, so drawImage is a no-op and a blank canvas would be
+    // persisted as the avatar with no error.
+    if (
+        !cropState.imgWidth ||
+        !cropState.imgHeight ||
+        cropImage.naturalWidth <= 0 ||
+        cropImage.naturalHeight <= 0
+    ) {
+        showToast('รูปภาพยังโหลดไม่เสร็จ กรุณาลองอีกครั้ง', { type: 'error' });
+        return;
+    }
+
     // Create canvas to crop the circular area
     const canvas = document.createElement('canvas');
     const size = 200; // Output size

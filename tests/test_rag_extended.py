@@ -1058,3 +1058,1220 @@ class TestMemorySourceTypes:
 
         result = MemoryResult(content="test", score=0.85, memory_id=3, source="hybrid")
         assert result.source == "hybrid"
+
+
+# ======================================================================
+# Deepened coverage — uncovered FAISSIndex / MemorySystem behaviour.
+# Appended; do not modify tests above this line.
+# ======================================================================
+
+
+def _new_system():
+    """Build a MemorySystem without running __init__ (no Gemini client).
+
+    Matches the existing convention of patching __init__ to a no-op and
+    wiring up only the attributes a given test exercises.
+    """
+    from cogs.ai_core.memory.rag import MemorySystem
+
+    with patch.object(MemorySystem, "__init__", lambda x: None):
+        system = MemorySystem()
+    return system
+
+
+def _unit_vec(seed: int, dim: int = 768) -> "np.ndarray":
+    """Deterministic non-zero float32 vector of the right embedding dim."""
+    rng = np.random.default_rng(seed)
+    return rng.random(dim).astype(np.float32)
+
+
+class TestFAISSIndexBuildSearch:
+    """FAISSIndex.build / search / add_single / add_batch real-index behaviour."""
+
+    def test_build_then_search_maps_ids(self):
+        """build() indexes vectors; search() maps positions back to memory IDs."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        v1 = _unit_vec(1)
+        v2 = _unit_vec(2)
+        idx.build(np.array([v1, v2]), [101, 202])
+
+        assert idx.is_initialized
+        # Querying with v1 should return id 101 as the top (similarity ~1.0) hit.
+        results = idx.search(v1, k=2)
+        assert results, "expected at least one hit"
+        top_id, top_score = results[0]
+        assert top_id == 101
+        assert top_score > 0.99
+
+    def test_build_normalizes_zero_norm_without_crash(self):
+        """build() replaces zero-norm rows' divisor with 1 (no NaN, no crash)."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        zero = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+        good = _unit_vec(3)
+        idx.build(np.array([zero, good]), [1, 2])
+        # Index built with both rows; ntotal stays aligned with id_map.
+        assert idx.index.ntotal == len(idx.id_map) == 2
+
+    def test_search_caps_k_at_ntotal(self):
+        """search() with k larger than ntotal still returns at most ntotal hits."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(4)]), [7])
+        results = idx.search(_unit_vec(4), k=50)
+        assert len(results) == 1
+        assert results[0][0] == 7
+
+    def test_add_single_initializes_then_appends(self):
+        """add_single bootstraps the index then appends keeping invariants."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.add_single(_unit_vec(10), 1)
+        assert idx.is_initialized
+        assert idx.id_map == [1]
+        idx.add_single(_unit_vec(11), 2)
+        assert idx.id_map == [1, 2]
+        assert idx.index.ntotal == 2
+
+    def test_add_single_rejects_wrong_dim(self):
+        """add_single raises ValueError on a wrong-dimension vector."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISSIndex
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        with pytest.raises(ValueError, match="vector dim"):
+            idx.add_single(np.ones(10, dtype=np.float32), 1)
+
+    def test_add_single_rejects_zero_norm(self):
+        """add_single raises ValueError on a zero-norm vector."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISSIndex
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        with pytest.raises(ValueError, match="zero-norm"):
+            idx.add_single(np.zeros(EMBEDDING_DIM, dtype=np.float32), 5)
+
+    def test_add_single_rollback_on_first_add_failure(self):
+        """If FAISS.add fails on the FIRST vector, id_map+index reset to empty."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+
+        class _Boom:
+            def add(self, *_a, **_k):
+                raise RuntimeError("faiss add failed")
+
+        with patch("cogs.ai_core.memory.rag.faiss.IndexFlatIP", return_value=_Boom()):
+            with pytest.raises(RuntimeError):
+                idx.add_single(_unit_vec(20), 99)
+        # Invariant: a failed bootstrap leaves the index uninitialized.
+        assert idx.id_map == []
+        assert idx.index is None
+        assert not idx.is_initialized
+
+    def test_add_single_rollback_on_append_failure(self):
+        """If FAISS.add fails on a SUBSEQUENT vector, the id_map entry is popped."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.add_single(_unit_vec(30), 1)  # bootstrap succeeds
+
+        with patch.object(idx.index, "add", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                idx.add_single(_unit_vec(31), 2)
+        # id_map rolled back to its pre-append state.
+        assert idx.id_map == [1]
+
+
+class TestFAISSIndexAddBatch:
+    """FAISSIndex.add_batch validation + batching behaviour."""
+
+    def test_add_batch_empty_returns_zero(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISSIndex
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        assert idx.add_batch([], []) == 0
+
+    def test_add_batch_length_mismatch_raises(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISSIndex
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        with pytest.raises(ValueError, match="length mismatch"):
+            idx.add_batch([_unit_vec(1)], [1, 2])
+
+    def test_add_batch_skips_bad_vectors(self):
+        """Wrong-dim and zero-norm vectors are silently skipped; count = good ones."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        vecs = [
+            _unit_vec(1),
+            np.zeros(EMBEDDING_DIM, dtype=np.float32),  # zero-norm -> skip
+            np.ones(5, dtype=np.float32),  # wrong dim -> skip
+            _unit_vec(2),
+        ]
+        added = idx.add_batch(vecs, [10, 20, 30, 40])
+        assert added == 2
+        assert idx.id_map == [10, 40]
+        assert idx.index.ntotal == 2
+
+    def test_add_batch_all_bad_returns_zero(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISSIndex
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        added = idx.add_batch([np.zeros(EMBEDDING_DIM, dtype=np.float32)], [1])
+        assert added == 0
+        assert not idx.is_initialized
+
+    def test_add_batch_appends_to_existing(self):
+        """A second add_batch extends an already-initialized index."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.add_batch([_unit_vec(1)], [1])
+        idx.add_batch([_unit_vec(2), _unit_vec(3)], [2, 3])
+        assert idx.id_map == [1, 2, 3]
+        assert idx.index.ntotal == 3
+
+    def test_add_batch_rolls_back_idmap_on_add_failure(self):
+        """If FAISS.add raises on the append path, id_map is truncated back."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.add_batch([_unit_vec(1)], [1])
+        with patch.object(idx.index, "add", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                idx.add_batch([_unit_vec(2)], [2])
+        assert idx.id_map == [1]
+
+
+class TestFAISSIndexPersistence:
+    """save_to_disk / load_from_disk round-trip + corruption guards (hermetic)."""
+
+    def _redirect_paths(self, monkeypatch, tmp_path):
+        import cogs.ai_core.memory.rag as rag
+
+        d = tmp_path / "faiss"
+        monkeypatch.setattr(rag, "FAISS_INDEX_DIR", d)
+        monkeypatch.setattr(rag, "FAISS_INDEX_FILE", d / "index.bin")
+        monkeypatch.setattr(rag, "FAISS_ID_MAP_FILE", d / "id_map.json")
+        monkeypatch.setattr(rag, "_LEGACY_FAISS_ID_MAP_FILE", d / "id_map.npy")
+        return rag, d
+
+    def test_save_then_load_roundtrip(self, tmp_path, monkeypatch):
+        """A saved index reloads with the same id_map and is searchable."""
+        rag, _d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1), _unit_vec(2)]), [11, 22])
+        assert idx.save_to_disk() is True
+
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert loaded.load_from_disk() is True
+        assert loaded.id_map == [11, 22]
+        assert loaded.index.ntotal == 2
+
+    def test_save_uninitialized_returns_false(self, tmp_path, monkeypatch):
+        rag, _d = self._redirect_paths(monkeypatch, tmp_path)
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert idx.save_to_disk() is False
+
+    def test_load_missing_files_returns_false(self, tmp_path, monkeypatch):
+        rag, _d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert idx.load_from_disk() is False
+
+    def test_load_detects_length_mismatch(self, tmp_path, monkeypatch):
+        """An id_map longer than ntotal is rejected and triggers a rebuild."""
+        import json
+
+        rag, d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1)]), [11])
+        assert idx.save_to_disk() is True
+
+        # Corrupt the id_map sidecar so its length disagrees with the index.
+        payload = json.loads(rag.FAISS_ID_MAP_FILE.read_text(encoding="utf-8"))
+        payload["id_map"] = [11, 22, 33]
+        rag.FAISS_ID_MAP_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert loaded.load_from_disk() is False
+        assert loaded.id_map == []
+        assert loaded.index is None
+
+    def test_load_detects_save_uuid_mismatch(self, tmp_path, monkeypatch):
+        """A torn save (sidecar UUID != id_map UUID) is detected and rebuilt."""
+        rag, d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1)]), [11])
+        assert idx.save_to_disk() is True
+
+        # Rewrite the standalone save.uuid sidecar to a different value while
+        # leaving the id_map's embedded UUID intact -> mismatch.
+        (d / "save.uuid").write_text("deadbeef", encoding="utf-8")
+
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert loaded.load_from_disk() is False
+        assert loaded.id_map == []
+
+    def test_load_bad_json_returns_false(self, tmp_path, monkeypatch):
+        """Unparseable id_map JSON is caught and forces a rebuild."""
+        rag, d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1)]), [11])
+        assert idx.save_to_disk() is True
+        rag.FAISS_ID_MAP_FILE.write_text("{not valid json", encoding="utf-8")
+
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert loaded.load_from_disk() is False
+
+    def test_load_legacy_pickle_blocked_without_optin(self, tmp_path, monkeypatch):
+        """Legacy .npy id_map is refused unless RAG_ALLOW_LEGACY_PICKLE is set."""
+        rag, d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        # Write a valid index but only a legacy .npy id_map (no JSON sidecar).
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1)]), [11])
+        d.mkdir(parents=True, exist_ok=True)
+        import cogs.ai_core.memory.rag as _rag
+
+        _rag.faiss.write_index(idx.index, str(rag.FAISS_INDEX_FILE))
+        np.save(str(rag._LEGACY_FAISS_ID_MAP_FILE), np.array([11]))
+
+        monkeypatch.delenv("RAG_ALLOW_LEGACY_PICKLE", raising=False)
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        assert loaded.load_from_disk() is False
+
+
+class TestEvictCache:
+    """_evict_cache_if_needed cache-bounding behaviour."""
+
+    def test_no_eviction_under_cap(self):
+        system = _new_system()
+        system._memories_cache = {1: {"created_at": "2020"}}
+        system._evict_cache_if_needed()
+        assert 1 in system._memories_cache
+
+    def test_evicts_oldest_when_over_cap(self):
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        system = _new_system()
+        # Fill above the cap; created_at ascending so id 0 is oldest.
+        system._memories_cache = {
+            i: {"created_at": f"{i:06d}"} for i in range(MemorySystem.MAX_CACHE_SIZE + 5)
+        }
+        before = len(system._memories_cache)
+        system._evict_cache_if_needed()
+        after = len(system._memories_cache)
+        assert after < before
+        # The very oldest entry must be gone.
+        assert 0 not in system._memories_cache
+
+    def test_eviction_handles_mixed_created_at_types(self):
+        """A mix of str and int created_at must not raise on comparison."""
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        system = _new_system()
+        cache = {}
+        for i in range(MemorySystem.MAX_CACHE_SIZE + 3):
+            cache[i] = {"created_at": i if i % 2 else f"iso-{i}"}
+        system._memories_cache = cache
+        system._evict_cache_if_needed()  # must not raise TypeError
+        assert len(system._memories_cache) < MemorySystem.MAX_CACHE_SIZE + 3
+
+
+class TestAllMemoriesCache:
+    """_get_all_memories_cached TTL cache + invalidation + bounding."""
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_returns_copy(self, monkeypatch):
+        """A live cache entry returns a fresh list (not the cached object)."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._all_memories_cache = {}
+        rows = [{"id": 1, "content": "a"}]
+
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        first = await system._get_all_memories_cached(42)
+        assert first == rows
+        assert mock_db.get_all_rag_memories.await_count == 1
+
+        # Second call hits the cache (no new DB call) and returns a copy.
+        second = await system._get_all_memories_cached(42)
+        assert mock_db.get_all_rag_memories.await_count == 1
+        assert second == rows
+        assert second is not system._all_memories_cache[42][1]
+
+    @pytest.mark.asyncio
+    async def test_none_channel_skips_cache(self, monkeypatch):
+        """channel_id=None never caches and re-queries every time."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._all_memories_cache = {}
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=[{"id": 1}])
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        await system._get_all_memories_cached(None)
+        await system._get_all_memories_cached(None)
+        assert mock_db.get_all_rag_memories.await_count == 2
+        assert system._all_memories_cache == {}
+
+    @pytest.mark.asyncio
+    async def test_db_timeout_returns_empty(self, monkeypatch):
+        """A DB timeout yields [] rather than raising."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._all_memories_cache = {}
+        mock_db = MagicMock()
+
+        async def _slow(_cid):
+            raise TimeoutError
+
+        mock_db.get_all_rag_memories = _slow
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        # Force wait_for to surface a TimeoutError immediately.
+        async def _instant_timeout(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        monkeypatch.setattr(rag.asyncio, "wait_for", _instant_timeout)
+        result = await system._get_all_memories_cached(7)
+        assert result == []
+
+    def test_invalidate_specific_channel(self):
+        system = _new_system()
+        system._all_memories_cache = {1: (999, []), 2: (999, [])}
+        system.invalidate_all_memories_cache(1)
+        assert 1 not in system._all_memories_cache
+        assert 2 in system._all_memories_cache
+
+    def test_invalidate_all_channels(self):
+        system = _new_system()
+        system._all_memories_cache = {1: (999, []), 2: (999, [])}
+        system.invalidate_all_memories_cache(None)
+        assert system._all_memories_cache == {}
+
+    def test_evict_all_memories_cache_drops_expired_then_oldest(self):
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        system = _new_system()
+        cap = MemorySystem._ALL_MEMORIES_MAX_CHANNELS
+        now = 1000.0
+        cache = {}
+        # One expired entry plus (cap+1) live entries with ascending expiry.
+        cache[-1] = (now - 5, [])  # expired
+        for i in range(cap + 1):
+            cache[i] = (now + 100 + i, [])
+        system._all_memories_cache = cache
+        system._evict_all_memories_cache_if_needed(now)
+        assert -1 not in system._all_memories_cache  # expired dropped first
+        assert len(system._all_memories_cache) <= cap
+
+
+class TestGenerateEmbedding:
+    """generate_embedding happy path + shape/error guards."""
+
+    @pytest.mark.asyncio
+    async def test_empty_text_returns_none(self):
+        system = _new_system()
+        system.client = MagicMock()
+        assert await system.generate_embedding("   ") is None
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_vector(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM
+
+        system = _new_system()
+        values = list(_unit_vec(1))
+        emb_obj = MagicMock()
+        emb_obj.values = values
+        result_obj = MagicMock()
+        result_obj.embeddings = [emb_obj]
+
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(return_value=result_obj)
+        system.client = client
+
+        vec = await system.generate_embedding("hello")
+        assert vec is not None
+        assert vec.size == EMBEDDING_DIM
+        assert vec.dtype == np.float32
+
+    @pytest.mark.asyncio
+    async def test_no_embeddings_returns_none(self):
+        system = _new_system()
+        result_obj = MagicMock()
+        result_obj.embeddings = []
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(return_value=result_obj)
+        system.client = client
+        assert await system.generate_embedding("hi") is None
+
+    @pytest.mark.asyncio
+    async def test_wrong_dim_returns_none(self):
+        system = _new_system()
+        emb_obj = MagicMock()
+        emb_obj.values = [0.1, 0.2, 0.3]  # not EMBEDDING_DIM
+        result_obj = MagicMock()
+        result_obj.embeddings = [emb_obj]
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(return_value=result_obj)
+        system.client = client
+        assert await system.generate_embedding("hi") is None
+
+    @pytest.mark.asyncio
+    async def test_api_exception_returns_none(self):
+        system = _new_system()
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(side_effect=RuntimeError("api down"))
+        system.client = client
+        assert await system.generate_embedding("hi") is None
+
+
+class TestGenerateEmbeddingsBatch:
+    """generate_embeddings_batch concurrency + per-item guards."""
+
+    @pytest.mark.asyncio
+    async def test_filters_empty_entries(self):
+        """Whitespace-only entries become None without an API call."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM
+
+        system = _new_system()
+        emb_obj = MagicMock()
+        emb_obj.values = list(_unit_vec(1))
+        result_obj = MagicMock()
+        result_obj.embeddings = [emb_obj]
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(return_value=result_obj)
+        system.client = client
+
+        out = await system.generate_embeddings_batch(["good", "   ", ""], batch_size=10)
+        assert len(out) == 3
+        assert out[0] is not None and out[0].size == EMBEDDING_DIM
+        assert out[1] is None
+        assert out[2] is None
+        # Only the one non-empty text triggered an API call.
+        assert client.aio.models.embed_content.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_all_empty_batch_returns_none_list(self):
+        system = _new_system()
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock()
+        system.client = client
+        out = await system.generate_embeddings_batch(["", "  "], batch_size=5)
+        assert out == [None, None]
+        client.aio.models.embed_content.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_per_item_exception_becomes_none(self):
+        """One failing embed call yields None for that slot, vector for the other."""
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM
+
+        system = _new_system()
+        emb_obj = MagicMock()
+        emb_obj.values = list(_unit_vec(2))
+        ok_result = MagicMock()
+        ok_result.embeddings = [emb_obj]
+
+        calls = {"n": 0}
+
+        async def _embed(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return ok_result
+
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(side_effect=_embed)
+        system.client = client
+
+        out = await system.generate_embeddings_batch(["x", "y"], batch_size=10)
+        assert out[0] is None
+        assert out[1] is not None and out[1].size == EMBEDDING_DIM
+
+    @pytest.mark.asyncio
+    async def test_wrong_dim_item_becomes_none(self):
+        system = _new_system()
+        emb_obj = MagicMock()
+        emb_obj.values = [0.5, 0.5]  # wrong dim
+        result_obj = MagicMock()
+        result_obj.embeddings = [emb_obj]
+        client = MagicMock()
+        client.aio.models.embed_content = AsyncMock(return_value=result_obj)
+        system.client = client
+        out = await system.generate_embeddings_batch(["a"], batch_size=4)
+        assert out == [None]
+
+
+class TestKeywordSearchEdges:
+    """_keyword_search edge branches not covered by the basic suite."""
+
+    def test_empty_query_returns_empty(self):
+        system = _new_system()
+        assert system._keyword_search("", [{"id": 1, "content": "x"}]) == []
+
+    def test_skips_empty_content_rows(self):
+        system = _new_system()
+        memories = [{"id": 1, "content": ""}, {"id": 2, "content": "hello world"}]
+        results = system._keyword_search("hello", memories)
+        ids = [mid for mid, _ in results]
+        assert 1 not in ids
+        assert 2 in ids
+
+    def test_skips_rows_with_missing_or_sentinel_id(self):
+        """Rows whose id is None or -1 are not emitted even if they match."""
+        system = _new_system()
+        memories = [
+            {"id": None, "content": "match token"},
+            {"id": -1, "content": "match token"},
+            {"id": 9, "content": "match token"},
+        ]
+        results = system._keyword_search("match token", memories)
+        assert [mid for mid, _ in results] == [9]
+
+    def test_exact_phrase_outranks_partial(self):
+        system = _new_system()
+        memories = [
+            {"id": 1, "content": "alpha beta gamma delta"},
+            {"id": 2, "content": "alpha beta"},
+        ]
+        results = system._keyword_search("alpha beta", memories)
+        # id 2 (exact phrase, fewer tokens -> higher Jaccard + phrase boost) wins.
+        assert results[0][0] == 2
+
+    def test_respects_limit(self):
+        system = _new_system()
+        memories = [{"id": i, "content": "common word"} for i in range(20)]
+        results = system._keyword_search("common word", memories, limit=3)
+        assert len(results) == 3
+
+
+class TestReciprocalRankFusionWeights:
+    """_reciprocal_rank_fusion weighting semantics."""
+
+    def test_semantic_weight_dominates(self):
+        system = _new_system()
+        # Disjoint ids so weighting alone decides order.
+        merged = system._reciprocal_rank_fusion(
+            [(1, 0.9)], [(2, 0.9)], semantic_weight=5.0, keyword_weight=0.1
+        )
+        assert merged[0][0] == 1
+
+    def test_keyword_weight_dominates(self):
+        system = _new_system()
+        merged = system._reciprocal_rank_fusion(
+            [(1, 0.9)], [(2, 0.9)], semantic_weight=0.1, keyword_weight=5.0
+        )
+        assert merged[0][0] == 2
+
+    def test_shared_id_accumulates(self):
+        system = _new_system()
+        merged = system._reciprocal_rank_fusion([(1, 0.9), (2, 0.8)], [(2, 0.7)])
+        # id 2 appears in both lists so it accumulates and ranks first.
+        assert merged[0][0] == 2
+
+
+class TestLinearSearchRaw:
+    """_linear_search_raw_sync finite / threshold / shape guards."""
+
+    def test_skips_shape_mismatch(self):
+        system = _new_system()
+        q = _unit_vec(1)
+        memories = [{"id": 1, "embedding": np.ones(10, dtype=np.float32).tobytes()}]
+        assert system._linear_search_raw_sync(q, 5, memories) == []
+
+    def test_below_threshold_dropped(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM
+
+        system = _new_system()
+        q = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+        q[0] = 1.0
+        orth = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+        orth[1] = 1.0  # cosine 0 -> below 0.5 floor
+        memories = [{"id": 1, "embedding": orth.tobytes()}]
+        assert system._linear_search_raw_sync(q, 5, memories) == []
+
+    def test_above_threshold_kept(self):
+        system = _new_system()
+        q = _unit_vec(5)
+        memories = [{"id": 7, "embedding": q.tobytes()}]
+        out = system._linear_search_raw_sync(q, 5, memories)
+        assert out and out[0][0] == 7
+        assert out[0][1] > 0.99
+
+    def test_nonfinite_similarity_skipped(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM
+
+        system = _new_system()
+        q = _unit_vec(6)
+        nan_vec = np.full(EMBEDDING_DIM, np.nan, dtype=np.float32)
+        memories = [{"id": 1, "embedding": nan_vec.tobytes()}]
+        assert system._linear_search_raw_sync(q, 5, memories) == []
+
+    def test_corrupt_embedding_skipped(self):
+        system = _new_system()
+        q = _unit_vec(7)
+        memories = [{"id": 1, "embedding": "not-bytes"}]
+        # frombuffer raises -> caught -> row skipped, no crash.
+        assert system._linear_search_raw_sync(q, 5, memories) == []
+
+
+class TestLinearSearchLegacy:
+    """_linear_search legacy wrapper: DB unavailability, timeout, threshold filter."""
+
+    @pytest.mark.asyncio
+    async def test_no_db_returns_empty(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", False)
+        monkeypatch.setattr(rag, "db", None)
+        assert await system._linear_search(_unit_vec(1), 5, None) == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_empty(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock()
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        async def _to(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        monkeypatch.setattr(rag.asyncio, "wait_for", _to)
+        assert await system._linear_search(_unit_vec(1), 5, None) == []
+
+    @pytest.mark.asyncio
+    async def test_filters_by_relevance_threshold(self, monkeypatch):
+        """Only memories above LINEAR_SEARCH_RELEVANCE_THRESHOLD are returned."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+
+        q = _unit_vec(11)
+        # high-sim row (identical vec) + low-sim row (orthogonal-ish)
+        low = np.zeros(rag.EMBEDDING_DIM, dtype=np.float32)
+        low[0] = 1.0
+        rows = [
+            {"id": 1, "content": "relevant", "embedding": q.tobytes()},
+            {"id": 2, "content": "noise", "embedding": low.tobytes()},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        out = await system._linear_search(q, 5, None)
+        assert "relevant" in out
+        assert "noise" not in out
+
+
+class TestHybridSearch:
+    """hybrid_search end-to-end branches: db guard, keyword-only, hybrid, decay."""
+
+    @pytest.mark.asyncio
+    async def test_no_db_returns_empty(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", False)
+        monkeypatch.setattr(rag, "db", None)
+        assert await system.hybrid_search("q") == []
+
+    @pytest.mark.asyncio
+    async def test_no_memories_returns_empty(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=[])
+        monkeypatch.setattr(rag, "db", mock_db)
+        assert await system.hybrid_search("q", channel_id=5) == []
+
+    @pytest.mark.asyncio
+    async def test_keyword_only_when_no_embedding(self, monkeypatch):
+        """With no Gemini client, query_vec is None -> keyword-only source."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system.client = None  # generate_embedding -> None
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+
+        rows = [
+            {"id": 1, "content": "the quick brown fox", "created_at": ""},
+            {"id": 2, "content": "totally unrelated", "created_at": ""},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        results = await system.hybrid_search("quick brown fox", channel_id=5, use_time_decay=False)
+        assert results
+        assert all(r.source == "keyword" for r in results)
+        assert results[0].memory_id == 1
+
+    @pytest.mark.asyncio
+    async def test_time_decay_lowers_old_memory_score(self, monkeypatch):
+        """An old created_at reduces the final score via time decay."""
+        from datetime import datetime, timedelta, timezone
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system.client = None
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        rows = [{"id": 1, "content": "alpha beta", "created_at": old_ts}]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        decayed = await system.hybrid_search("alpha beta", channel_id=5, use_time_decay=True)
+        plain = await system.hybrid_search("alpha beta", channel_id=5, use_time_decay=False)
+        assert decayed and plain
+        assert decayed[0].score < plain[0].score
+        assert decayed[0].age_days >= 100
+
+    @pytest.mark.asyncio
+    async def test_semantic_path_scopes_to_channel(self, monkeypatch):
+        """A FAISS hit whose id is not in this channel's rows is filtered out."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        system._index_built = True
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+
+        q = _unit_vec(50)
+        # channel rows contain only id 1; FAISS returns id 999 (other channel)
+        rows = [{"id": 1, "content": "alpha beta", "created_at": ""}]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        # Embedding present so the semantic branch runs.
+        system.generate_embedding = AsyncMock(return_value=q)
+
+        fake_index = MagicMock()
+        fake_index.is_initialized = True
+        fake_index.search_async = AsyncMock(return_value=[(999, 0.95), (1, 0.9)])
+        system._faiss_index = fake_index
+
+        async def _noop_ensure(_cid=None):
+            return None
+
+        system._ensure_index = _noop_ensure
+
+        results = await system.hybrid_search("alpha beta", channel_id=5, use_time_decay=False)
+        # id 999 (cross-channel) must not appear; id 1 (in keyword + scoped semantic) does.
+        ids = {r.memory_id for r in results}
+        assert 999 not in ids
+        assert 1 in ids
+
+    @pytest.mark.asyncio
+    async def test_search_memory_returns_contents(self, monkeypatch):
+        """search_memory unwraps hybrid_search MemoryResults to content strings."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system.client = None
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        rows = [{"id": 1, "content": "remember this", "created_at": ""}]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        out = await system.search_memory("remember this", limit=3, channel_id=5)
+        assert "remember this" in out
+
+
+class TestAddMemory:
+    """add_memory validation + DB/FAISS interaction branches."""
+
+    @pytest.mark.asyncio
+    async def test_no_db_returns_false(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", False)
+        monkeypatch.setattr(rag, "db", None)
+        assert await system.add_memory("hi") is False
+
+    @pytest.mark.asyncio
+    async def test_zero_norm_embedding_refused(self, monkeypatch):
+        """A zero-norm embedding is rejected before any DB write."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.save_rag_memory = AsyncMock(return_value=1)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        system.generate_embedding = AsyncMock(
+            return_value=np.zeros(rag.EMBEDDING_DIM, dtype=np.float32)
+        )
+        assert await system.add_memory("hi") is False
+        mock_db.save_rag_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wrong_dim_embedding_refused(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.save_rag_memory = AsyncMock(return_value=1)
+        monkeypatch.setattr(rag, "db", mock_db)
+        system.generate_embedding = AsyncMock(return_value=np.ones(10, dtype=np.float32))
+        assert await system.add_memory("hi") is False
+        mock_db.save_rag_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_happy_path_saves_and_invalidates_cache(self, monkeypatch):
+        """A valid embedding is saved to DB and the channel cache is invalidated."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = None
+        system._index_built = False
+        system._index_lock = __import__("asyncio").Lock()
+        system._all_memories_cache = {5: (10**12, [{"id": 1}])}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", False)
+
+        mock_db = MagicMock()
+        mock_db.save_rag_memory = AsyncMock(return_value=123)
+        monkeypatch.setattr(rag, "db", mock_db)
+        system.generate_embedding = AsyncMock(return_value=_unit_vec(99))
+
+        ok = await system.add_memory("a new fact", channel_id=5)
+        assert ok is True
+        mock_db.save_rag_memory.assert_awaited_once()
+        # Cache for channel 5 dropped so next search sees the new row.
+        assert 5 not in system._all_memories_cache
+
+    @pytest.mark.asyncio
+    async def test_faiss_add_failure_marks_rebuild(self, monkeypatch):
+        """If add_single rejects the vector, index is marked un-built for rebuild."""
+        import asyncio as _asyncio
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._index_lock = _asyncio.Lock()
+        system._index_built = True
+        system._all_memories_cache = {}
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+
+        mock_db = MagicMock()
+        mock_db.save_rag_memory = AsyncMock(return_value=55)
+        monkeypatch.setattr(rag, "db", mock_db)
+        system.generate_embedding = AsyncMock(return_value=_unit_vec(7))
+
+        fake_index = MagicMock()
+        fake_index.add_single = MagicMock(side_effect=ValueError("bad vec"))
+        system._faiss_index = fake_index
+
+        ok = await system.add_memory("fact", channel_id=None)
+        assert ok is True  # DB row committed
+        assert system._index_built is False  # scheduled for rebuild
+
+
+class TestEnsureIndex:
+    """_ensure_index build-from-DB branches (FAISS available)."""
+
+    @pytest.mark.asyncio
+    async def test_no_db_marks_built(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        # Force load_from_disk to report nothing on disk so we reach the
+        # build-from-DB branch.
+        system._faiss_index.load_from_disk = lambda: False
+        system._index_built = False
+        system._index_lock = __import__("asyncio").Lock()
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", False)
+        monkeypatch.setattr(rag, "db", None)
+
+        await system._ensure_index(None)
+        assert system._index_built is True
+
+    @pytest.mark.asyncio
+    async def test_empty_db_marks_built(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        system._faiss_index.load_from_disk = lambda: False
+        system._index_built = False
+        system._index_lock = __import__("asyncio").Lock()
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=[])
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        await system._ensure_index(None)
+        assert system._index_built is True
+
+    @pytest.mark.asyncio
+    async def test_builds_from_valid_rows(self, monkeypatch):
+        """Valid embeddings from DB produce an initialized, searchable index."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        system._faiss_index.load_from_disk = lambda: False
+        system._index_built = False
+        system._memories_cache = {}
+        system._index_lock = __import__("asyncio").Lock()
+        system._save_task = None
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+
+        v1 = _unit_vec(60)
+        v2 = _unit_vec(61)
+        rows = [
+            {"id": 1, "content": "a", "embedding": v1.tobytes()},
+            {"id": 2, "content": "b", "embedding": v2.tobytes()},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+        # Avoid touching disk during the build's save_to_disk call.
+        monkeypatch.setattr(rag.FAISSIndex, "save_to_disk", lambda self: True)
+
+        await system._ensure_index(None)
+        assert system._index_built is True
+        assert system._faiss_index.is_initialized
+        assert sorted(system._faiss_index.id_map) == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_all_invalid_rows_marks_built_empty(self, monkeypatch):
+        """A non-empty table with only invalid embeddings still marks built."""
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        system._faiss_index.load_from_disk = lambda: False
+        system._index_built = False
+        system._memories_cache = {}
+        system._index_lock = __import__("asyncio").Lock()
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+
+        rows = [
+            {"id": 1, "content": "a", "embedding": np.ones(10, dtype=np.float32).tobytes()},
+            {"id": 2, "content": "b", "embedding": "corrupt"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        await system._ensure_index(None)
+        assert system._index_built is True
+        # No valid vectors -> index never got initialized.
+        assert not system._faiss_index.is_initialized
+
+    @pytest.mark.asyncio
+    async def test_already_built_is_noop(self, monkeypatch):
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._index_built = True
+        system._index_lock = __import__("asyncio").Lock()
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=[{"id": 1}])
+        monkeypatch.setattr(rag, "db", mock_db)
+        await system._ensure_index(None)
+        # No DB read because the early return fired.
+        mock_db.get_all_rag_memories.assert_not_called()
+
+
+class TestSaveTasks:
+    """Debounced + periodic save scheduling and teardown (no real sleeps)."""
+
+    @pytest.mark.asyncio
+    async def test_schedule_index_save_runs_after_delay(self, monkeypatch):
+        import asyncio as _asyncio
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._save_task = None
+        system._index_built = True
+        fake_index = MagicMock()
+        fake_index.save_to_disk = MagicMock(return_value=True)
+        system._faiss_index = fake_index
+
+        # Collapse the debounce sleep so the test doesn't actually wait.
+        async def _no_sleep(_secs):
+            return None
+
+        monkeypatch.setattr(rag.asyncio, "sleep", _no_sleep)
+
+        system._schedule_index_save(delay=999)
+        await system._save_task  # let the task run to completion
+        fake_index.save_to_disk.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_schedule_index_save_cancels_previous(self, monkeypatch):
+        import asyncio as _asyncio
+        import contextlib as _contextlib
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._index_built = True
+        system._faiss_index = MagicMock()
+
+        # First task sleeps "forever"; scheduling a second must cancel it.
+        async def _long_sleep(_secs):
+            await _asyncio.Event().wait()
+
+        monkeypatch.setattr(rag.asyncio, "sleep", _long_sleep)
+        system._save_task = None
+        system._schedule_index_save(delay=1)
+        first = system._save_task
+        system._schedule_index_save(delay=1)
+        second = system._save_task
+
+        # Drain BOTH tasks so neither lingers into session teardown (a
+        # pending task keeps the event loop alive and hangs pytest on
+        # Windows). The first was cancelled by the scheduler; cancel the
+        # second ourselves. Await each so their cancellation fully settles.
+        second.cancel()
+        for task in (first, second):
+            with _contextlib.suppress(_asyncio.CancelledError):
+                await task
+        assert first.cancelled()
+        assert second.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_stop_periodic_save_cancels_tasks(self, monkeypatch):
+        import asyncio as _asyncio
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._index_built = True
+        system._faiss_index = MagicMock()
+
+        async def _forever():
+            await _asyncio.Event().wait()
+
+        system._save_task = _asyncio.create_task(_forever())
+        system._periodic_save_task = _asyncio.create_task(_forever())
+        await system.stop_periodic_save()
+        assert system._save_task is None
+        assert system._periodic_save_task is None
+
+    @pytest.mark.asyncio
+    async def test_force_save_index_runs_save(self, monkeypatch):
+        system = _new_system()
+        system._index_built = True
+        fake_index = MagicMock()
+        fake_index.save_to_disk = MagicMock(return_value=True)
+        system._faiss_index = fake_index
+        assert await system.force_save_index() is True
+        fake_index.save_to_disk.assert_called_once()
+
+
+class TestGetStatsDeep:
+    """get_stats reflects live index state."""
+
+    def test_stats_reflect_index(self):
+        from cogs.ai_core.memory.rag import EMBEDDING_DIM, FAISS_AVAILABLE, FAISSIndex
+
+        if not FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        system = _new_system()
+        system.client = object()
+        system._index_built = True
+        system._memories_cache = {1: {}, 2: {}}
+        idx = FAISSIndex(EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1)]), [1])
+        system._faiss_index = idx
+
+        stats = system.get_stats()
+        assert stats["index_built"] is True
+        assert stats["memories_cached"] == 2
+        assert stats["index_size"] == 1
+        assert stats["client_ready"] is True

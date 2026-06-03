@@ -814,3 +814,348 @@ class TestEdgeCases:
         await cog.ai_trace.callback(cog, mock_ctx)
 
         mock_ctx.send.assert_called_once()
+
+
+# ======================================================================
+# Coverage-completion tests (append-only): drives the import-error and
+# error branches, the active-session debug panels, and the ai_stats /
+# ai_tokens command bodies that the earlier tests don't reach.
+# ======================================================================
+
+
+import sys
+
+import discord
+
+
+def _make_cog():
+    from cogs.ai_core.commands.debug_commands import AIDebug
+
+    mock_bot = MagicMock(spec=commands.Bot)
+    return AIDebug(mock_bot)
+
+
+def _make_ctx(channel_id=123456, reference=None):
+    """Build a ctx whose message.reference is controllable.
+
+    Default reference=None mirrors the "no reply" case so detect_intent
+    falls back to the default Thai test string.
+    """
+    ctx = MagicMock()
+    ctx.channel.id = channel_id
+    ctx.send = AsyncMock()
+    ctx.message = MagicMock()
+    ctx.message.reference = reference
+    return ctx
+
+
+class TestAIDebugBranches:
+    """Exercise the per-panel import-error / error branches of ai_debug."""
+
+    async def test_history_manager_import_error_falls_back(self):
+        """66-67: history_manager import fails -> rough token estimate."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        cm = MagicMock()
+        cm.chats = {123456: {"history": [{"role": "user", "content": "hi"}] * 3}}
+        cm.get_performance_stats.return_value = {}
+        cog._get_chat_manager = MagicMock(return_value=cm)
+
+        # Force the local ``from ...history_manager import history_manager`` to fail
+        with patch.dict(sys.modules, {"cogs.ai_core.memory.history_manager": None}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        # Rough estimate path uses len(history)*50 = 150 -> rendered as ~150
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        session_field = next(f for f in sent_embed.fields if f.name == "📝 Session")
+        assert "150" in session_field.value
+
+    async def test_cache_stats_import_error(self):
+        """90-91: ai_cache import fails -> 'Cache not available'."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": None}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        cache_field = next(f for f in sent_embed.fields if f.name == "💾 Cache")
+        assert "Cache not available" in cache_field.value
+
+    async def test_cache_stats_attribute_error_degrades(self):
+        """92-96: CacheStats schema drift -> 'Cache stats unavailable'."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        # get_stats returns an object missing fields -> AttributeError when
+        # the f-string reads stats.total_entries.
+        bad_stats = object()
+        fake_cache_mod = MagicMock()
+        fake_cache_mod.ai_cache.get_stats.return_value = bad_stats
+
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": fake_cache_mod}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        cache_field = next(f for f in sent_embed.fields if f.name == "💾 Cache")
+        assert "Cache stats unavailable" in cache_field.value
+
+    async def test_rag_import_error(self):
+        """115-116: rag_system import fails -> 'RAG not available'."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        with patch.dict(sys.modules, {"cogs.ai_core.memory.rag": None}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        rag_field = next(f for f in sent_embed.fields if f.name == "🧠 RAG Memory")
+        assert "RAG not available" in rag_field.value
+
+    async def test_performance_panel_rendered(self):
+        """124-129: perf stats with count>0 -> Performance field added."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        cm = MagicMock()
+        cm.chats = {123456: {"history": [], "thinking_enabled": True}}
+        cm.get_performance_stats.return_value = {
+            "api": {"count": 4, "avg_ms": 123.4},
+            "idle": {"count": 0, "avg_ms": 0.0},  # filtered out
+        }
+        cog._get_chat_manager = MagicMock(return_value=cm)
+
+        await cog.ai_debug.callback(cog, ctx)
+
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        perf_field = next(f for f in sent_embed.fields if f.name == "⚡ Performance")
+        assert "api: 123ms avg" in perf_field.value
+        assert "idle" not in perf_field.value
+
+    async def test_intent_uses_replied_message_content(self):
+        """146: a real replied discord.Message supplies the intent test text."""
+        cog = _make_cog()
+
+        replied = MagicMock(spec=discord.Message)
+        replied.content = "what time is it"
+        ref = MagicMock()
+        ref.resolved = replied
+        ctx = _make_ctx(reference=ref)
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        captured = {}
+
+        def fake_detect(msg):
+            captured["msg"] = msg
+            result = MagicMock()
+            result.intent.value = "question"
+            result.confidence = 0.9
+            result.sub_category = None
+            return result
+
+        fake_mod = MagicMock()
+        fake_mod.detect_intent = fake_detect
+        with patch.dict(sys.modules, {"cogs.ai_core.processing.intent_detector": fake_mod}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        assert captured["msg"] == "what time is it"
+
+    async def test_intent_import_error_logged(self):
+        """157-158: intent_detector import fails -> branch logged, no crash."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        with patch.dict(sys.modules, {"cogs.ai_core.processing.intent_detector": None}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        # Command still completes and sends the embed.
+        ctx.send.assert_called_once()
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        # No Intent Detection field when import fails.
+        assert all(f.name != "🎯 Intent Detection" for f in sent_embed.fields)
+
+    async def test_entity_memory_import_error_logged(self):
+        """178-179: entity_memory import fails -> branch logged, no crash."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog._get_chat_manager = MagicMock(return_value=None)
+
+        with patch.dict(sys.modules, {"cogs.ai_core.memory.entity_memory": None}):
+            await cog.ai_debug.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        assert all(f.name != "👤 Entity Memory" for f in sent_embed.fields)
+
+
+class TestAICacheClearBranches:
+    """ai_cache_clear success + ImportError branches (212-218)."""
+
+    async def test_cache_clear_success(self):
+        """215-216: invalidate count reported."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        fake_mod = MagicMock()
+        fake_mod.ai_cache.invalidate.return_value = 7
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": fake_mod}):
+            await cog.ai_cache_clear.callback(cog, ctx)
+
+        ctx.send.assert_called_once_with("✅ Cleared 7 cache entries")
+
+    async def test_cache_clear_import_error(self):
+        """217-218: import fails -> 'Cache not available'."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": None}):
+            await cog.ai_cache_clear.callback(cog, ctx)
+
+        ctx.send.assert_called_once_with("❌ Cache not available")
+
+
+class TestAIStatsCommandFull:
+    """ai_stats_cmd body (308-371)."""
+
+    async def test_stats_import_error(self):
+        """312-314: analytics import fails -> message + early return."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": None}):
+            await cog.ai_stats_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once_with("❌ Analytics not available")
+
+    async def test_stats_full_payload(self):
+        """308-371: all optional panels (latency, quality, intent) rendered."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        stats = {
+            "summary": {
+                "total_interactions": 1234,
+                "avg_response_time_ms": 250.0,
+                "cache_hit_rate": 0.42,
+                "error_rate": 0.01,
+                "interactions_per_hour": 12.5,
+            },
+            "latency_percentiles": {
+                "count": 100,
+                "p50": 200.0,
+                "p95": 400.0,
+                "p99": 600.0,
+                "min": 50.0,
+                "max": 800.0,
+            },
+            "tokens": {"input": 1000, "output": 500, "total": 1500},
+            "quality": {
+                "total_ratings": 10,
+                "average_score": 4.5,
+                "positive_reactions": 8,
+                "negative_reactions": 2,
+            },
+            "intent_accuracy": {"total_feedback": 5, "accuracy": 0.8},
+        }
+        fake_mod = MagicMock()
+        fake_mod.get_detailed_ai_stats.return_value = stats
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": fake_mod}):
+            await cog.ai_stats_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        names = {f.name for f in sent_embed.fields}
+        assert "📈 Summary" in names
+        assert "⏱️ Latency Percentiles" in names
+        assert "🔢 Token Usage (Est.)" in names
+        assert "⭐ Quality" in names
+        assert "🎯 Intent Accuracy" in names
+
+    async def test_stats_optional_panels_skipped(self):
+        """Counts of 0 skip latency/quality/intent panels (327/350 still hit)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        stats = {
+            "summary": {},
+            "latency_percentiles": {"count": 0},
+            "tokens": {},
+            "quality": {"total_ratings": 0},
+            "intent_accuracy": {"total_feedback": 0},
+        }
+        fake_mod = MagicMock()
+        fake_mod.get_detailed_ai_stats.return_value = stats
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": fake_mod}):
+            await cog.ai_stats_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        names = {f.name for f in sent_embed.fields}
+        # Required panels present, optional zero-count panels absent.
+        assert "📈 Summary" in names
+        assert "🔢 Token Usage (Est.)" in names
+        assert "⏱️ Latency Percentiles" not in names
+        assert "⭐ Quality" not in names
+        assert "🎯 Intent Accuracy" not in names
+
+
+class TestAITokensCommandFull:
+    """ai_tokens_cmd body (377-402)."""
+
+    async def test_tokens_success(self):
+        """380-400: global stats fetched + embed sent."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        fake_tracker = MagicMock()
+        fake_tracker.get_global_stats = AsyncMock(
+            return_value={
+                "total_records": 100,
+                "total_tokens": 50000,
+                "unique_users": 5,
+                "unique_channels": 3,
+            }
+        )
+        fake_mod = MagicMock()
+        fake_mod.token_tracker = fake_tracker
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.token_tracker": fake_mod}):
+            await cog.ai_tokens_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        sent_embed = ctx.send.call_args.kwargs["embed"]
+        field = next(f for f in sent_embed.fields if f.name == "📊 Global Stats")
+        assert "100" in field.value
+        assert "50,000" in field.value
+
+    async def test_tokens_fetch_raises(self):
+        """382-385: get_global_stats raises -> graceful error + return."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        fake_tracker = MagicMock()
+        fake_tracker.get_global_stats = AsyncMock(side_effect=RuntimeError("db down"))
+        fake_mod = MagicMock()
+        fake_mod.token_tracker = fake_tracker
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.token_tracker": fake_mod}):
+            await cog.ai_tokens_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        msg = ctx.send.call_args[0][0]
+        assert "RuntimeError" in msg
+        assert "token" in msg
+
+    async def test_tokens_import_error(self):
+        """401-402: token_tracker import fails -> 'Token tracker not available'."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with patch.dict(sys.modules, {"cogs.ai_core.cache.token_tracker": None}):
+            await cog.ai_tokens_cmd.callback(cog, ctx)
+
+        ctx.send.assert_called_once_with("❌ Token tracker not available")

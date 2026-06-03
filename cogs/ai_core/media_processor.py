@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import io
 import logging
 import warnings
@@ -345,43 +344,40 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         import concurrent.futures
 
         video_buffer = io.BytesIO()
+
+        def _encode():
+            iio.imwrite(
+                video_buffer,
+                frames,
+                extension=".mp4",
+                fps=fps,
+                codec="libx264",
+                pixelformat="yuv420p",
+            )
+
+        future = _GIF_ENCODE_EXECUTOR.submit(_encode)
         try:
+            future.result(timeout=60.0)
+        except concurrent.futures.TimeoutError:
+            logger.warning("GIF -> MP4 encode timed out after 60s; thread continues in background")
+            # Do NOT close ``video_buffer`` here — the worker thread is STILL
+            # writing into it. Closing it now would make imageio's deferred
+            # write-back raise ValueError("I/O operation on closed file") inside
+            # the abandoned thread AND skip its os.remove, leaking the ffmpeg
+            # temp file on every timeout. Leaving the buffer open lets the worker
+            # finish into a live buffer and clean up its own temp file; the
+            # buffer is then reclaimed by GC. The caller gets None and falls back
+            # to a static image. (A non-timeout encode failure re-raises from
+            # result() to the outer handler below — the worker has already
+            # finished in that case, so the buffer needs no explicit close.)
+            return None
 
-            def _encode():
-                iio.imwrite(
-                    video_buffer,
-                    frames,
-                    extension=".mp4",
-                    fps=fps,
-                    codec="libx264",
-                    pixelformat="yuv420p",
-                )
-
-            future = _GIF_ENCODE_EXECUTOR.submit(_encode)
-            try:
-                future.result(timeout=60.0)
-            except concurrent.futures.TimeoutError:
-                logger.warning(
-                    "GIF -> MP4 encode timed out after 60s; thread continues in background"
-                )
-                # The worker thread keeps running until ffmpeg finishes,
-                # but the caller gets None now and can fall back to a
-                # static image. With the shared pool the thread returns
-                # to the pool when it completes — no leak.
-                return None
-
-            video_buffer.seek(0)
-            logger.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
-            result_bytes = video_buffer.read()
-            # Shared module-level executor — no per-call shutdown.
-            video_buffer.close()
-            return result_bytes
-        finally:
-            with contextlib.suppress(ValueError):
-                # ``video_buffer`` is also closed on the success path;
-                # double-close raises ValueError("I/O operation on closed
-                # file") in some implementations. Suppress it.
-                video_buffer.close()
+        video_buffer.seek(0)
+        logger.info("Converted GIF (%d frames) to MP4 at %d fps", len(frames), int(fps))
+        result_bytes = video_buffer.read()
+        # Worker finished, so the buffer is safe to close on this success path.
+        video_buffer.close()
+        return result_bytes
 
     except (OSError, ValueError, Image.DecompressionBombError, RuntimeError) as e:
         logger.warning("Failed to convert GIF to video: %s", e)

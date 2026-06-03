@@ -333,24 +333,6 @@ class OutputGuardrails:
 
         return text
 
-    def quick_check(self, response: str) -> bool:
-        """
-        Quick check if response is likely safe (for performance).
-        Use validate() for full validation.
-
-        Returns:
-            True if response appears safe
-        """
-        if not response:
-            return True
-
-        # Quick length check
-        if len(response) > self.MAX_RESPONSE_LENGTH * 2:
-            return False
-
-        # Quick sensitive pattern check (all patterns)
-        return all(not pattern.search(response) for pattern, _ in self._compiled_sensitive)
-
     def redact_secrets(self, text: str) -> str:
         """Redact any sensitive patterns from arbitrary text.
 
@@ -546,23 +528,6 @@ class InputGuardrails:
             flags=flags,
             blocked_reason=blocked_reason,
         )
-
-    def quick_check(self, user_input: str) -> bool:
-        """
-        Quick safety check for performance.
-
-        Returns:
-            True if input appears safe
-        """
-        if not user_input or len(user_input) < 10:
-            return True
-
-        # Check first few injection patterns only
-        for pattern, _, score in self._injection_patterns[:3]:
-            if score >= 0.8 and pattern.search(user_input):
-                return False
-
-        return True
 
 
 # Global input guardrails instance

@@ -557,6 +557,183 @@ class TestGlobalInstance:
         assert isinstance(token_tracker, TokenTracker)
 
 
+class TestAggregateUsageTimestampMixing:
+    """Regression tests for _aggregate_usage timestamp handling.
+
+    _aggregate_usage computes period_start/period_end via min()/max() over the
+    records' timestamps. Comparing a naive datetime against a tz-aware one raises
+    TypeError, so the reduction now routes every timestamp through _ensure_aware.
+    These tests lock in that behavior: mixed naive/aware records must aggregate
+    without raising, and all-aware records must still produce correct bounds and
+    token totals.
+    """
+
+    def test_aggregate_usage_mixed_naive_and_aware_timestamps(self):
+        """Mixed naive + tz-aware timestamps must not raise TypeError.
+
+        Regression: min()/max() over a mix of naive and aware datetimes used to
+        crash; _aggregate_usage now promotes everything via _ensure_aware first.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage
+
+        tracker = TokenTracker()
+
+        # One naive datetime (no tzinfo) and one tz-aware UTC datetime, plus a
+        # third aware record at a known-later time so the min/max bounds are
+        # deterministic and we can assert the correct ordering.
+        aware_early = datetime(2026, 6, 3, 10, 0, 0, tzinfo=timezone.utc)
+        naive_mid = datetime(2026, 6, 3, 11, 0, 0)  # naive — interpreted as UTC
+        aware_late = datetime(2026, 6, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+        records = [
+            TokenUsage(
+                input_tokens=100,
+                output_tokens=200,
+                timestamp=aware_early,
+                user_id=123,
+                channel_id=456,
+                cached=False,
+            ),
+            TokenUsage(
+                input_tokens=50,
+                output_tokens=100,
+                timestamp=naive_mid,
+                user_id=123,
+                channel_id=456,
+                cached=True,
+            ),
+            TokenUsage(
+                input_tokens=10,
+                output_tokens=20,
+                timestamp=aware_late,
+                user_id=123,
+                channel_id=456,
+                cached=False,
+            ),
+        ]
+
+        # Must not raise TypeError on the min()/max() reduction.
+        stats = tracker._aggregate_usage(records)
+
+        # Token sums are correct.
+        assert stats.input_tokens == 160
+        assert stats.output_tokens == 320
+        assert stats.total_tokens == 480
+        assert stats.request_count == 3
+        assert stats.cached_count == 1
+
+        # Period bounds are tz-aware and correctly ordered.
+        assert stats.period_start is not None
+        assert stats.period_end is not None
+        assert stats.period_start.tzinfo is not None
+        assert stats.period_end.tzinfo is not None
+        assert stats.period_start <= stats.period_end
+
+        # The naive timestamp was promoted to UTC, so the earliest is the
+        # 10:00 record and the latest is the 12:00 record.
+        assert stats.period_start == aware_early
+        assert stats.period_end == aware_late
+
+        # The promoted naive record (11:00) sits strictly between the bounds.
+        assert stats.period_start < naive_mid.replace(tzinfo=timezone.utc) < stats.period_end
+
+    def test_aggregate_usage_mixed_single_naive_single_aware(self):
+        """Minimal mixed case: exactly one naive and one tz-aware record.
+
+        Directly mirrors the regression scenario described in the source's
+        _aggregate_usage comment (one naive vs one aware) at the smallest size.
+        """
+        from datetime import datetime, timezone
+
+        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage
+
+        tracker = TokenTracker()
+
+        naive_ts = datetime(2026, 1, 1, 0, 0, 0)  # naive
+        aware_ts = datetime(2026, 1, 2, 0, 0, 0, tzinfo=timezone.utc)  # aware, later
+
+        records = [
+            TokenUsage(
+                input_tokens=7,
+                output_tokens=3,
+                timestamp=naive_ts,
+                user_id=1,
+                channel_id=2,
+            ),
+            TokenUsage(
+                input_tokens=11,
+                output_tokens=4,
+                timestamp=aware_ts,
+                user_id=1,
+                channel_id=2,
+            ),
+        ]
+
+        stats = tracker._aggregate_usage(records)
+
+        assert stats.total_tokens == 25
+        assert stats.input_tokens == 18
+        assert stats.output_tokens == 7
+        assert stats.request_count == 2
+        # Naive promoted to UTC midnight Jan 1 is the start; aware Jan 2 is the end.
+        assert stats.period_start == naive_ts.replace(tzinfo=timezone.utc)
+        assert stats.period_end == aware_ts
+        assert stats.period_start <= stats.period_end
+
+    def test_aggregate_usage_all_aware_timestamps(self):
+        """All tz-aware records: correct period_start/period_end and totals."""
+        from datetime import datetime, timezone
+
+        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage
+
+        tracker = TokenTracker()
+
+        t1 = datetime(2026, 5, 1, 8, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 5, 1, 9, 30, 0, tzinfo=timezone.utc)
+        t3 = datetime(2026, 5, 1, 7, 15, 0, tzinfo=timezone.utc)  # earliest
+
+        records = [
+            TokenUsage(
+                input_tokens=100,
+                output_tokens=200,
+                timestamp=t1,
+                user_id=42,
+                channel_id=99,
+                cached=True,
+            ),
+            TokenUsage(
+                input_tokens=300,
+                output_tokens=400,
+                timestamp=t2,
+                user_id=42,
+                channel_id=99,
+                cached=False,
+            ),
+            TokenUsage(
+                input_tokens=1,
+                output_tokens=2,
+                timestamp=t3,
+                user_id=42,
+                channel_id=99,
+                cached=True,
+            ),
+        ]
+
+        stats = tracker._aggregate_usage(records)
+
+        assert stats.input_tokens == 401
+        assert stats.output_tokens == 602
+        assert stats.total_tokens == 1003
+        assert stats.request_count == 3
+        assert stats.cached_count == 2
+        # min/max select the earliest (t3) and latest (t2) regardless of list order.
+        assert stats.period_start == t3
+        assert stats.period_end == t2
+        assert stats.period_start <= stats.period_end
+
+
 class TestModuleImports:
     """Tests for module imports."""
 

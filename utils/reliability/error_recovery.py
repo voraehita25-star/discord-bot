@@ -305,7 +305,22 @@ def extract_retry_after(error: Exception) -> float | None:
             try:
                 return float(retry_after)
             except (TypeError, ValueError):
-                pass
+                # Not the delta-seconds form. RFC 7231 also allows an HTTP-date
+                # (e.g. "Wed, 21 Oct 2015 07:28:00 GMT"); honor it so the
+                # server's backoff directive isn't silently dropped — otherwise
+                # the client falls back to its own jitter and may retry sooner
+                # than the server asked, hammering a rate-limited endpoint.
+                try:
+                    from datetime import datetime, timezone
+                    from email.utils import parsedate_to_datetime
+
+                    dt = parsedate_to_datetime(retry_after)
+                    if dt is not None:
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError):
+                    pass
 
     return None
 

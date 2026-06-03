@@ -1,7 +1,7 @@
 # AI Core Module
 
-> Last Updated: June 2, 2026
-> Version: 3.4.2
+> Last Updated: June 3, 2026
+> Version: 3.4.3
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.8 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
@@ -33,7 +33,9 @@ cogs/ai_core/
 │   ├── dashboard_common.py       # Shared helpers (timestamps, persona+context builder)
 │   ├── dashboard_config.py       # Dashboard env config
 │   ├── dashboard_handlers.py     # Conversation/memory CRUD handlers (with cache invalidation hooks)
-│   └── document_extractor.py     # PDF/DOCX/text extraction for dashboard attachments
+│   ├── document_extractor.py     # PDF/DOCX/text extraction for dashboard attachments
+│   ├── discord_chat_claude_cli.py    # Discord-side `claude -p` client (CLAUDE_BACKEND=cli)
+│   └── cli_write_guard.py        # 🛡️ PreToolUse hook: confines CLI file-write mode to allowed roots
 │
 ├── core/              # 🏗️ Core components
 │   ├── __init__.py
@@ -199,6 +201,20 @@ python -m pytest tests/test_webhooks.py -v
 ```
 
 ## Recent Updates
+
+### Unreleased — Dashboard CLI file-write mode
+
+- **`DASHBOARD_CLI_ALLOW_WRITE`** (default off) opts the `CLAUDE_BACKEND=cli`
+  dashboard backend into a *files-only* autonomous write mode: the embedded
+  `claude -p` may create/edit files in **`DASHBOARD_CLI_WRITE_DIRS`** (default
+  Desktop / Documents / Downloads, plus OneDrive-redirected Desktop/Documents on
+  Windows) without an interactive Allow prompt the chat UI can't answer.
+- **`api/cli_write_guard.py`** — a `PreToolUse` hook is the authoritative path
+  gate: it denies (exit 2, fail-closed) any `Write`/`Edit`/`MultiEdit`/
+  `NotebookEdit` whose canonical target is outside the resolved write roots, so
+  the repo, `.env`, `~/.ssh`, `~/.claude`, and the home root stay protected.
+  Bash, web, NotebookEdit, and Task tools are denied entirely. When write mode
+  is off, the CLI backend stays a pure-chat process.
 
 ### v3.4.0 — Claude Opus 4.8 (1M context, Max thinking) (May 29, 2026)
 

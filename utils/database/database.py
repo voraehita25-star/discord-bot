@@ -117,7 +117,6 @@ class Database:
             self._checkpoint_task: asyncio.Task | None = None
             self._export_pending_keys: set[str] = set()
             self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
-            self._export_lock = asyncio.Lock()  # Lock for export scheduling
             # Write serialization lock — SQLite WAL allows concurrent reads but only
             # one writer at a time. This lock prevents SQLITE_BUSY on concurrent writes.
             self._write_lock: asyncio.Lock | None = None
@@ -179,38 +178,48 @@ class Database:
 
         async def do_export():
             await asyncio.sleep(self._export_delay)
-            self._export_pending_keys.discard(pending_key)
             # Also clear legacy flag for backward compat
             self._export_pending = False
 
-            for attempt in range(max_retries):
-                try:
-                    if channel_id:
-                        await self.export_channel_to_json(channel_id)
-                    else:
-                        await self.export_to_json()
-                    return  # Success, exit retry loop
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        logger.warning(
-                            "Auto-export attempt %d/%d failed: %s. Retrying...",
-                            attempt + 1,
-                            max_retries,
-                            e,
-                        )
-                        # Exponential backoff with jitter — multiple
-                        # concurrent retry tasks for separate channels
-                        # would otherwise sleep the same duration and
-                        # thunder back to the DB simultaneously. The
-                        # ±25% jitter is enough to desync without
-                        # meaningfully changing the wait budget.
-                        import random as _retry_random
+            try:
+                for attempt in range(max_retries):
+                    try:
+                        if channel_id:
+                            await self.export_channel_to_json(channel_id)
+                        else:
+                            await self.export_to_json()
+                        break  # Success, exit retry loop
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(
+                                "Auto-export attempt %d/%d failed: %s. Retrying...",
+                                attempt + 1,
+                                max_retries,
+                                e,
+                            )
+                            # Exponential backoff with jitter — multiple
+                            # concurrent retry tasks for separate channels
+                            # would otherwise sleep the same duration and
+                            # thunder back to the DB simultaneously. The
+                            # ±25% jitter is enough to desync without
+                            # meaningfully changing the wait budget.
+                            import random as _retry_random
 
-                        base_delay = 2**attempt
-                        jitter = _retry_random.uniform(-0.25, 0.25) * base_delay
-                        await asyncio.sleep(base_delay + jitter)
-                    else:
-                        logger.error("Auto-export failed after %d attempts: %s", max_retries, e)
+                            base_delay = 2**attempt
+                            jitter = _retry_random.uniform(-0.25, 0.25) * base_delay
+                            await asyncio.sleep(base_delay + jitter)
+                        else:
+                            logger.error("Auto-export failed after %d attempts: %s", max_retries, e)
+            finally:
+                # Discard the pending key only AFTER the export has run (not right
+                # after the debounce sleep). Discarding before the write let a
+                # save landing mid-export schedule a SECOND overlapping export
+                # task for the same channel, and two coroutines racing to write
+                # the same JSON via to_thread(write_text) can hit a Windows
+                # file-lock PermissionError. Clearing it here coalesces in-window
+                # saves into this task; the next save after completion schedules
+                # cleanly, and shutdown flush covers the rare still-in-flight save.
+                self._export_pending_keys.discard(pending_key)
 
         # Create and track the task
         try:
@@ -1274,17 +1283,34 @@ class Database:
         """
         try:
             async with self.get_connection() as conn:
-                cursor = await conn.execute("SELECT 1")
-                result = await cursor.fetchone()
-                return bool(result and result[0] == 1)
+                # Probe a core table, not a bare ``SELECT 1`` — a connection to a
+                # structurally-empty DB (e.g. a file recreated after going
+                # missing) answers ``SELECT 1`` fine despite having NO tables, so
+                # a pure liveness probe would report healthy while every real
+                # ai_history/dashboard query fails with "no such table" until a
+                # restart. Querying ai_history verifies liveness AND schema
+                # presence. (No rows is fine — the query executing proves the
+                # table exists.)
+                cursor = await conn.execute("SELECT 1 FROM ai_history LIMIT 1")
+                await cursor.fetchone()
+                return True
         except Exception:
             logger.exception("💔 Database health check failed")
             # Attempt recovery
             try:
                 await self._reinitialize_pool()
-                # Retry once after reinitialization
+                # _reinitialize_pool only rebuilds the pool. If the failure was a
+                # missing/corrupt DB file, get_connection() now opens a FRESH
+                # EMPTY database with no tables, so rebuild the schema before
+                # declaring recovery — otherwise we'd report healthy on a
+                # tableless DB. init_schema self-gates on _schema_initialized, so
+                # reset it first; it is idempotent (CREATE TABLE IF NOT EXISTS +
+                # tracked migrations), so this is a no-op on a merely-transient blip.
+                self._schema_initialized = False
+                await self.init_schema()
+                # Retry once after reinitialization, schema-aware as above.
                 async with self.get_connection() as conn:
-                    await conn.execute("SELECT 1")
+                    await conn.execute("SELECT 1 FROM ai_history LIMIT 1")
                     logger.info("💚 Database recovered after reinitialization")
                     return True
             except Exception as reinit_error:

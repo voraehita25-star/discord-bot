@@ -266,8 +266,14 @@ class RequestDeduplicator:
         # Also skip character status block if present
         # Format: [สถานะปัจจุบันของตัวละคร]...\n\n<actual content>
         if "[สถานะปัจจุบันของตัวละคร]" in content:
-            # Find content after the status block
-            status_end = content.rfind("\n\n")
+            # Find content after the status block. Search forward from the header
+            # for the FIRST blank line — rfind() would jump to the LAST "\n\n" in
+            # the whole message, so a user prompt that itself contains a blank
+            # line would get sliced down to only its trailing fragment, and two
+            # different prompts sharing that fragment would collide on one dedup
+            # key (dropping the second as a false "duplicate").
+            hdr = content.find("[สถานะปัจจุบันของตัวละคร]")
+            status_end = content.find("\n\n", hdr)
             if status_end != -1:
                 content = content[status_end + 2 :]
 

@@ -669,3 +669,508 @@ class TestMemoryFactModel:
         # Memory facts should have: content, category, confidence, timestamp
         # This tests the expected interface
         pass
+
+
+# ======================================================================
+# Coverage-driving tests: exercise every branch of every command with
+# the memory backends mocked. These patch the module-level singletons
+# (long_term_memory / summary_archiver) that the command callbacks import
+# lazily inside each function body.
+# ======================================================================
+
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+def _make_cog():
+    from cogs.ai_core.commands.memory_commands import MemoryCommands
+
+    return MemoryCommands(MagicMock(spec=commands.Bot))
+
+
+def _make_ctx():
+    ctx = MagicMock()
+    ctx.send = AsyncMock()
+    ctx.author = MagicMock()
+    ctx.author.id = 123
+    ctx.author.display_name = "TestUser"
+    ctx.channel = MagicMock()
+    ctx.channel.id = 456
+    return ctx
+
+
+@contextmanager
+def _patch_ltm(**method_mocks):
+    """Patch attributes on the long_term_memory singleton."""
+    import cogs.ai_core.memory.long_term_memory as ltm_mod
+
+    with patch.multiple(ltm_mod.long_term_memory, **method_mocks):
+        yield ltm_mod.long_term_memory
+
+
+@contextmanager
+def _patch_archiver(**method_mocks):
+    """Patch attributes on the summary_archiver singleton."""
+    import cogs.ai_core.memory.memory_consolidator as mc_mod
+
+    with patch.multiple(mc_mod.summary_archiver, **method_mocks):
+        yield mc_mod.summary_archiver
+
+
+@contextmanager
+def _force_import_error(module_path):
+    """Make `import module_path` raise ImportError inside a command body."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == module_path:
+            raise ImportError(f"forced for {module_path}")
+        return real_import(name, *args, **kwargs)
+
+    with patch.object(builtins, "__import__", side_effect=fake_import):
+        yield
+
+
+def _fact(content="x", category="custom", confidence=1.0, mention_count=1):
+    return SimpleNamespace(
+        content=content,
+        category=category,
+        confidence=confidence,
+        mention_count=mention_count,
+    )
+
+
+class TestRememberBranches:
+    """Drive every branch of remember_fact."""
+
+    @pytest.mark.asyncio
+    async def test_short_after_sanitize(self):
+        """Fact that becomes <3 chars after stripping control chars (lines 59-60)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        # 3 control chars + 2 visible -> after strip len == 2 (< 3)
+        await cog.remember_fact.callback(cog, ctx, fact="\x00\x01\x02ab")
+
+        ctx.send.assert_called_once()
+        assert "สั้นเกินไปหลังทำความสะอาด" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_success_result_truthy(self):
+        """add_explicit_fact returns truthy -> success embed (lines 69-74)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.remember_fact.callback(cog, ctx, fact="I like pizza very much")
+
+            ltm.add_explicit_fact.assert_awaited_once()
+            kwargs = ltm.add_explicit_fact.call_args.kwargs
+            assert kwargs["user_id"] == 123
+            assert kwargs["channel_id"] == 456
+            assert kwargs["content"] == "I like pizza very much"
+        # An embed was sent (success path), not a plain string
+        assert ctx.send.call_args.kwargs.get("embed") is not None
+
+    @pytest.mark.asyncio
+    async def test_success_result_falsy(self):
+        """add_explicit_fact returns falsy -> failure message (line 76)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=False)):
+            await cog.remember_fact.callback(cog, ctx, fact="some valid fact text")
+
+        ctx.send.assert_called_once()
+        assert "ไม่สามารถบันทึกได้" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_import_error(self):
+        """ImportError branch (lines 78-79)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _force_import_error("cogs.ai_core.memory.long_term_memory"):
+            await cog.remember_fact.callback(cog, ctx, fact="valid fact text here")
+
+        ctx.send.assert_called_once()
+        assert "ระบบความจำยังไม่พร้อมใช้งาน" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self):
+        """Generic Exception branch (lines 80-82)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(add_explicit_fact=AsyncMock(side_effect=RuntimeError("boom"))):
+            await cog.remember_fact.callback(cog, ctx, fact="valid fact text here")
+
+        ctx.send.assert_called_once()
+        assert "เกิดข้อผิดพลาด" in ctx.send.call_args[0][0]
+
+
+class TestForgetBranches:
+    """Drive every branch of forget_fact."""
+
+    @pytest.mark.asyncio
+    async def test_too_long(self):
+        """Query over 500 chars (lines 95-97)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        await cog.forget_fact.callback(cog, ctx, query="z" * 501)
+
+        ctx.send.assert_called_once()
+        assert "ยาวเกินไป" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_empty_after_sanitize(self):
+        """Query becomes empty after stripping control chars (lines 101-104)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        await cog.forget_fact.callback(cog, ctx, query="\x00\x01\x02")
+
+        ctx.send.assert_called_once()
+        assert "สั้นเกินไปหลังทำความสะอาด" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        """forget_fact returns True -> success embed (lines 115-121)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(forget_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.forget_fact.callback(cog, ctx, query="allergic to peanuts")
+
+            ltm.forget_fact.assert_awaited_once()
+            assert ltm.forget_fact.call_args.kwargs["user_id"] == 123
+        assert ctx.send.call_args.kwargs.get("embed") is not None
+
+    @pytest.mark.asyncio
+    async def test_not_found(self):
+        """forget_fact returns False -> not-found message (lines 122-123)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(forget_fact=AsyncMock(return_value=False)):
+            await cog.forget_fact.callback(cog, ctx, query="nonexistent fact")
+
+        ctx.send.assert_called_once()
+        assert "ไม่พบข้อมูลที่ตรงกับ" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_backtick_neutralized(self):
+        """Backticks in the query are neutralized in the not-found message (line 108)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(forget_fact=AsyncMock(return_value=False)):
+            await cog.forget_fact.callback(cog, ctx, query="bad`code`here")
+
+        sent = ctx.send.call_args[0][0]
+        assert "`code`" not in sent  # raw backticks gone
+        assert "ʻ" in sent  # replaced with the modifier letter
+
+    @pytest.mark.asyncio
+    async def test_import_error(self):
+        """ImportError branch (lines 125-126)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _force_import_error("cogs.ai_core.memory.long_term_memory"):
+            await cog.forget_fact.callback(cog, ctx, query="something to forget")
+
+        ctx.send.assert_called_once()
+        assert "ระบบความจำยังไม่พร้อมใช้งาน" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self):
+        """Generic Exception branch (lines 127-129)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(forget_fact=AsyncMock(side_effect=RuntimeError("boom"))):
+            await cog.forget_fact.callback(cog, ctx, query="something to forget")
+
+        ctx.send.assert_called_once()
+        assert "เกิดข้อผิดพลาด" in ctx.send.call_args[0][0]
+
+
+class TestViewMemoriesBranches:
+    """Drive every branch of view_memories."""
+
+    @pytest.mark.asyncio
+    async def test_no_facts(self):
+        """Empty facts list -> empty embed (lines 146-153)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(get_user_facts=AsyncMock(return_value=[])):
+            await cog.view_memories.callback(cog, ctx, category=None)
+
+        ctx.send.assert_called_once()
+        embed = ctx.send.call_args.kwargs.get("embed")
+        assert embed is not None
+        assert "ไม่มีความจำ" in embed.title
+
+    @pytest.mark.asyncio
+    async def test_with_facts_grouped(self):
+        """Non-empty facts grouped by category with overflow + low confidence
+        + multi-mention (lines 155-196)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        # 6 facts in one category (triggers the >5 overflow line) plus mix of
+        # confidence and mention_count to hit both ternary branches.
+        facts = [
+            _fact(content="high conf", category="identity", confidence=0.9, mention_count=3),
+            _fact(content="low conf", category="identity", confidence=0.5, mention_count=1),
+            _fact(content="c", category="identity"),
+            _fact(content="d", category="identity"),
+            _fact(content="e", category="identity"),
+            _fact(content="f", category="identity"),
+            _fact(content="pref one", category="weirdcat", confidence=0.8, mention_count=2),
+        ]
+
+        with _patch_ltm(get_user_facts=AsyncMock(return_value=facts)) as ltm:
+            await cog.view_memories.callback(cog, ctx, category=None)
+
+            ltm.get_user_facts.assert_awaited_once()
+            assert ltm.get_user_facts.call_args.kwargs["category"] is None
+        embed = ctx.send.call_args.kwargs.get("embed")
+        assert embed is not None
+        # Footer mentions total count
+        assert "รวม 7" in embed.footer.text
+        # Two field groups (identity + weirdcat -> unknown emoji fallback)
+        field_names = [f.name for f in embed.fields]
+        assert any("IDENTITY" in n for n in field_names)
+        assert any("WEIRDCAT" in n for n in field_names)
+        # The overflow "... and N more" line is present for identity (6 facts)
+        identity_field = next(f for f in embed.fields if "IDENTITY" in f.name)
+        assert "และอีก 1" in identity_field.value
+
+    @pytest.mark.asyncio
+    async def test_with_category_filter(self):
+        """category arg is forwarded to get_user_facts."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(
+            get_user_facts=AsyncMock(return_value=[_fact(category="preference")])
+        ) as ltm:
+            await cog.view_memories.callback(cog, ctx, category="preference")
+
+            assert ltm.get_user_facts.call_args.kwargs["category"] == "preference"
+
+    @pytest.mark.asyncio
+    async def test_import_error(self):
+        """ImportError branch (lines 198-199)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _force_import_error("cogs.ai_core.memory.long_term_memory"):
+            await cog.view_memories.callback(cog, ctx, category=None)
+
+        ctx.send.assert_called_once()
+        assert "ระบบความจำยังไม่พร้อมใช้งาน" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self):
+        """Generic Exception branch (lines 200-202)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _patch_ltm(get_user_facts=AsyncMock(side_effect=RuntimeError("boom"))):
+            await cog.view_memories.callback(cog, ctx, category=None)
+
+        ctx.send.assert_called_once()
+        assert "เกิดข้อผิดพลาด" in ctx.send.call_args[0][0]
+
+
+class TestConsolidateBranches:
+    """Drive every branch of force_consolidate."""
+
+    def _ctx_with_status(self):
+        ctx = _make_ctx()
+        status = MagicMock()
+        status.edit = AsyncMock()
+        ctx.send = AsyncMock(return_value=status)
+        return ctx, status
+
+    @pytest.mark.asyncio
+    async def test_success_full_result(self):
+        """Result with summary + key_topics -> edit with embed (lines 220-235)."""
+        cog = _make_cog()
+        ctx, status = self._ctx_with_status()
+
+        result = SimpleNamespace(
+            message_count=42,
+            summary="a summary of the conversation",
+            key_topics=["t1", "t2", "t3", "t4", "t5", "t6"],
+        )
+        with _patch_archiver(consolidate_channel=AsyncMock(return_value=result)) as arch:
+            await cog.force_consolidate.callback(cog, ctx)
+
+            arch.consolidate_channel.assert_awaited_once()
+            assert arch.consolidate_channel.call_args.kwargs["channel_id"] == 456
+            assert arch.consolidate_channel.call_args.kwargs["force"] is True
+        status.edit.assert_awaited_once()
+        embed = status.edit.call_args.kwargs.get("embed")
+        assert embed is not None
+        assert "42" in embed.description
+
+    @pytest.mark.asyncio
+    async def test_success_no_topics_no_summary(self):
+        """Result truthy but empty summary and no topics (lines 226-235, false branch
+        of key_topics)."""
+        cog = _make_cog()
+        ctx, status = self._ctx_with_status()
+
+        result = SimpleNamespace(message_count=5, summary="", key_topics=[])
+        with _patch_archiver(consolidate_channel=AsyncMock(return_value=result)):
+            await cog.force_consolidate.callback(cog, ctx)
+
+        status.edit.assert_awaited_once()
+        embed = status.edit.call_args.kwargs.get("embed")
+        assert embed is not None
+        # summary fallback "ไม่มี" used when summary is empty
+        summary_field = next(f for f in embed.fields if "สรุป" in f.name)
+        assert summary_field.value == "ไม่มี"
+
+    @pytest.mark.asyncio
+    async def test_no_result(self):
+        """consolidate_channel returns falsy -> edit with error text (lines 236-237)."""
+        cog = _make_cog()
+        ctx, status = self._ctx_with_status()
+
+        with _patch_archiver(consolidate_channel=AsyncMock(return_value=None)):
+            await cog.force_consolidate.callback(cog, ctx)
+
+        status.edit.assert_awaited_once()
+        assert "ไม่มีข้อความเพียงพอ" in status.edit.call_args.kwargs.get("content")
+
+    @pytest.mark.asyncio
+    async def test_import_error(self):
+        """ImportError branch (lines 239-240)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _force_import_error("cogs.ai_core.memory.memory_consolidator"):
+            await cog.force_consolidate.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        assert "ระบบ consolidation ยังไม่พร้อมใช้งาน" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self):
+        """Generic Exception branch (lines 241-246)."""
+        cog = _make_cog()
+        ctx, _status = self._ctx_with_status()
+
+        with _patch_archiver(consolidate_channel=AsyncMock(side_effect=RuntimeError("boom"))):
+            await cog.force_consolidate.callback(cog, ctx)
+
+        # First send = status msg, second send = error message
+        assert ctx.send.await_count >= 1
+        assert "เกิดข้อผิดพลาดในการรวบรวม" in ctx.send.call_args[0][0]
+
+
+class TestMemoryStatsBranches:
+    """Drive every branch of memory_stats."""
+
+    @pytest.mark.asyncio
+    async def test_success_with_cache(self):
+        """Singleton has _cache -> facts-count field added (lines 259-279)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        import cogs.ai_core.memory.long_term_memory as ltm_mod
+
+        with (
+            patch.object(
+                ltm_mod.long_term_memory,
+                "get_user_facts",
+                AsyncMock(return_value=[_fact(), _fact()]),
+            ),
+            patch.object(
+                ltm_mod.long_term_memory, "_cache", {"u1": [1, 2], "u2": [3]}, create=True
+            ),
+            _patch_archiver(get_channel_summaries=AsyncMock(return_value=["s1", "s2", "s3"])),
+        ):
+            await cog.memory_stats.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        embed = ctx.send.call_args.kwargs.get("embed")
+        assert embed is not None
+        field_values = " ".join(f.value for f in embed.fields)
+        # cache total = 3, user facts = 2, summaries = 3
+        assert "3 facts" in field_values  # cache count
+        assert "2 facts" in field_values  # user facts
+        assert "3 summaries" in field_values
+
+    @pytest.mark.asyncio
+    async def test_success_without_cache(self):
+        """Singleton missing _cache -> cache field skipped (line 259 false branch)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        import cogs.ai_core.memory.long_term_memory as ltm_mod
+
+        # Ensure _cache is absent for the duration of this test.
+        had_cache = hasattr(ltm_mod.long_term_memory, "_cache")
+        saved = getattr(ltm_mod.long_term_memory, "_cache", None)
+        if had_cache:
+            delattr(ltm_mod.long_term_memory, "_cache")
+        try:
+            with (
+                patch.object(
+                    ltm_mod.long_term_memory, "get_user_facts", AsyncMock(return_value=[])
+                ),
+                _patch_archiver(get_channel_summaries=AsyncMock(return_value=[])),
+            ):
+                await cog.memory_stats.callback(cog, ctx)
+        finally:
+            if had_cache:
+                ltm_mod.long_term_memory._cache = saved
+
+        ctx.send.assert_called_once()
+        embed = ctx.send.call_args.kwargs.get("embed")
+        assert embed is not None
+        field_names = [f.name for f in embed.fields]
+        # No cache field, but user-facts and summaries fields exist
+        assert not any("Cache" in n for n in field_names)
+        assert any("Your Facts" in n for n in field_names)
+
+    @pytest.mark.asyncio
+    async def test_import_error(self):
+        """ImportError branch (lines 281-282)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        with _force_import_error("cogs.ai_core.memory.long_term_memory"):
+            await cog.memory_stats.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        assert "ระบบยังไม่พร้อม" in ctx.send.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self):
+        """Generic Exception branch (lines 283-287)."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+
+        import cogs.ai_core.memory.long_term_memory as ltm_mod
+
+        with patch.object(
+            ltm_mod.long_term_memory,
+            "get_user_facts",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            await cog.memory_stats.callback(cog, ctx)
+
+        ctx.send.assert_called_once()
+        assert "เกิดข้อผิดพลาดในการดึงสถิติ" in ctx.send.call_args[0][0]

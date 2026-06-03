@@ -273,6 +273,13 @@ class QueueManager:
                     # Reject malformed entries — a row with no url / falsy url
                     # would be stored unchanged and then crash play_next().
                     valid = [item for item in queue if isinstance(item, dict) and item.get("url")]
+                    # Cap to MAX_QUEUE_SIZE like the JSON path and add_to_queue:
+                    # an oversized DB row set (written before the cap existed, or
+                    # by another writer) would otherwise put more than 500 tracks
+                    # in memory, silently violating the documented invariant until
+                    # the next add_to_queue.
+                    if len(valid) > MAX_QUEUE_SIZE:
+                        valid = valid[:MAX_QUEUE_SIZE]
                     self.queues[guild_id] = collections.deque(valid)
                     # The DB schema only stores the queue itself, not
                     # per-guild volume/loop/24-7 settings. If a leftover
@@ -322,7 +329,9 @@ class QueueManager:
                     # Previously empty/None URLs were accepted because the
                     # check only required the key to exist.
                     valid_items = [
-                        item for item in queue[:500] if isinstance(item, dict) and item.get("url")
+                        item
+                        for item in queue[:MAX_QUEUE_SIZE]
+                        if isinstance(item, dict) and item.get("url")
                     ]
                     if not valid_items:
                         # Nothing to migrate — leave the JSON file alone so a
