@@ -48,6 +48,38 @@ pub struct BotStatus {
     pub mode: String,
 }
 
+/// Progress of a dashboard-initiated bot start.
+///
+/// `is_running` alone is a flat boolean and can't tell a slow-but-healthy
+/// cold start apart from a process that crashed during startup — both look
+/// like "not running yet". That ambiguity is what made the old frontend poll
+/// fire a spurious "Bot start timed out" warning on every cold start. By
+/// pairing the PID-file signal with the liveness of the `Child` we spawned in
+/// `start()`, we can report the three states the UI actually needs to react
+/// to differently.
+///
+/// Serialized internally-tagged on `state` so the TypeScript side can switch
+/// on a discriminated union (`{ state: "running" }`, `{ state: "exited",
+/// code: 1 }`, …).
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum StartProgress {
+    /// `bot.pid` is written and its cmdline verifies — the bot is up.
+    Running,
+    /// The spawned process is still alive but hasn't written its PID yet
+    /// (still importing / running startup checks). Normal on a cold start;
+    /// the UI should keep waiting, NOT warn.
+    Starting,
+    /// The process we spawned has already exited without ever reaching the
+    /// running state — startup genuinely failed (bad token `sys.exit`, an
+    /// import-time crash, …). `code` is the OS exit code when known.
+    Exited { code: Option<i32> },
+    /// No tracked startup child: the bot was started outside the dashboard,
+    /// or the start outcome was already consumed. The caller should fall back
+    /// to plain status polling.
+    Unknown,
+}
+
 pub struct BotManager {
     base_path: PathBuf,
     /// Process snapshot used by every is_running / get_status / orphan-kill
@@ -157,8 +189,9 @@ impl BotManager {
     /// reuse, where a recycled PID could otherwise be reported as our
     /// bot. If `cmd()` returns the empty slice (which it does without
     /// `with_cmd()`), the check fails *closed*: `is_running` returns
-    /// false, the dashboard shows "Bot starting... (taking longer than
-    /// usual)" forever, and the bot looks dead in the UI even when it's
+    /// false, so `get_status` never reports the bot as running and
+    /// `start_progress` can never reach `Running` — the status badge
+    /// stays stopped and the bot looks dead in the UI even when it's
     /// running fine.
     ///
     /// This was a real regression introduced in PR #75 (audit-fixes,
@@ -520,6 +553,35 @@ impl BotManager {
         self.format_uptime_from_pid_file()
     }
 
+    /// Report the progress of a dashboard-initiated start (see [`StartProgress`]).
+    ///
+    /// Resolution order:
+    ///   1. If `is_running()` (PID file written + cmdline verified) → `Running`.
+    ///      This is authoritative and wins regardless of child bookkeeping.
+    ///   2. Otherwise inspect the `Child` handle stored by `start()`:
+    ///        * alive (`try_wait() == Ok(None)`) → `Starting` (still booting).
+    ///        * exited (`Ok(Some(status))`)      → `Exited { code }` (failed).
+    ///        * un-queryable (`Err`)             → `Exited { code: None }`,
+    ///          so the UI fails closed rather than spinning forever.
+    ///   3. No tracked child → `Unknown`.
+    ///
+    /// `try_wait()` is non-blocking and reaps the zombie on exit; we leave the
+    /// (now-reaped) handle in place so repeated polls stay idempotent and the
+    /// existing `start()`/`stop()` reap paths can still clear it.
+    pub fn start_progress(&mut self) -> StartProgress {
+        if self.is_running() {
+            return StartProgress::Running;
+        }
+        match self.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(None) => StartProgress::Starting,
+                Ok(Some(status)) => StartProgress::Exited { code: status.code() },
+                Err(_) => StartProgress::Exited { code: None },
+            },
+            None => StartProgress::Unknown,
+        }
+    }
+
     pub fn start(&mut self) -> Result<String, String> {
         if self.is_running() {
             return Err("Bot is already running".to_string());
@@ -710,3 +772,72 @@ impl BotManager {
 }
 
 // Legacy function removed - use BotManager::read_logs() instead
+
+// ============================================================================
+// Unit tests for the start-progress state machine. This module is Windows-only
+// (enforced by the `compile_error!` at the top of the file), so the tests use
+// `cmd.exe` / `ping.exe`, which always exist on a supported Windows host. Run
+// with `cargo test`.
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    /// A `BotManager` rooted at an empty temp dir — no `bot.pid` exists, so
+    /// `is_running()` is always false and `start_progress()` resolves purely on
+    /// the tracked `Child`. The `TempDir` is returned so it outlives the manager.
+    fn manager_in_temp() -> (tempfile::TempDir, BotManager) {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let bm = BotManager::new(dir.path().to_path_buf());
+        (dir, bm)
+    }
+
+    #[test]
+    fn start_progress_is_unknown_with_no_child_and_no_pid() {
+        let (_dir, mut bm) = manager_in_temp();
+        // Nothing spawned, no PID file → we can't say anything about a start.
+        assert_eq!(bm.start_progress(), StartProgress::Unknown);
+    }
+
+    #[test]
+    fn start_progress_reports_exit_code_when_spawned_child_died() {
+        let (_dir, mut bm) = manager_in_temp();
+        // Stand in for a bot.py that crashed during startup: a process that
+        // exits deterministically with a known code. `wait()` first so there's
+        // no race — the child is guaranteed gone before we poll.
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit", "7"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn cmd /C exit 7");
+        let _ = child.wait();
+        bm.child = Some(child);
+
+        match bm.start_progress() {
+            StartProgress::Exited { code } => assert_eq!(code, Some(7)),
+            other => panic!("expected Exited {{ code: Some(7) }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_progress_is_starting_while_spawned_child_is_alive() {
+        let (_dir, mut bm) = manager_in_temp();
+        // Stand in for a bot.py still grinding through cold-start imports: a
+        // long-lived process that hasn't written a PID file.
+        let child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn ping");
+        bm.child = Some(child);
+
+        assert_eq!(bm.start_progress(), StartProgress::Starting);
+
+        // Don't leave the stand-in process running past the test.
+        if let Some(mut c) = bm.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}

@@ -309,4 +309,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.3 | **Python:** 3.14+ | **Tests:** 4,721 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 3, 2026
+**Version:** 3.4.4 | **Python:** 3.14+ | **Tests:** 4,721 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 4, 2026

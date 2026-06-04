@@ -3,7 +3,7 @@
 mod bot_manager;
 mod database;
 
-use bot_manager::{BotManager, BotStatus};
+use bot_manager::{BotManager, BotStatus, StartProgress};
 use database::{
     ChannelInfo, DashboardConversation, DashboardConversationDetail, DatabaseService, DbStats,
     UserInfo,
@@ -81,6 +81,29 @@ async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
             .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
         mgr.start()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Report progress of a dashboard-initiated start so the frontend can tell a
+/// slow-but-healthy cold start apart from a real startup failure (see
+/// [`StartProgress`]). Polled by `waitForStart()` after `start_bot` returns.
+///
+/// `start()` only holds the manager lock for the ~50ms spawn, so by the time
+/// the frontend polls this the lock is free; we use the same `spawn_blocking`
+/// + blocking-lock pattern as the other bot-control commands rather than
+/// `get_status`'s `try_lock` (whose "busy" error exists for the high-frequency
+/// background status poll, not this short start window).
+#[tauri::command]
+async fn get_start_progress(state: State<'_, AppState>) -> Result<StartProgress, String> {
+    let manager = state.bot_manager.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut mgr = manager
+            .lock()
+            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+        Ok(mgr.start_progress())
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
@@ -978,6 +1001,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
+            get_start_progress,
             start_bot,
             start_dev_bot,
             stop_bot,

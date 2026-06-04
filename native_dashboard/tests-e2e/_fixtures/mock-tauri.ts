@@ -56,6 +56,10 @@ export async function installDashboardMocks(page: Page): Promise<void> {
                 get_servers: [],
                 get_logs: [],
                 start_bot: null,
+                // waitForStart() polls this after a Start click. Resolve as
+                // already-running so the poll loop exits immediately instead of
+                // waiting out the cold-start hand-off ceiling.
+                get_start_progress: { state: 'running' },
                 stop_bot: null,
                 restart_bot: null,
             };

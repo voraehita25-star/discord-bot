@@ -7,7 +7,7 @@
  * Shared utilities in shared.ts.
  */
 
-import type { BotStatus, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings } from './types.js';
+import type { BotStatus, StartProgress, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings } from './types.js';
 import {
     invoke,
     escapeHtml,
@@ -960,7 +960,7 @@ async function startBot(): Promise<void> {
         // Running transition ourselves with a tight 200ms poll below — total
         // perceived latency on the happy path drops from ~1s to ~250ms.
         await invoke<string>('start_bot');
-        await waitForRunning(/* timeoutMs */ 15000, /* intervalMs */ 200, 'started');
+        await waitForStart();
     } catch (error) {
         showToast(String(error), { type: 'error' });
     } finally {
@@ -971,38 +971,82 @@ async function startBot(): Promise<void> {
 }
 
 /**
- * Tight-poll get_status until is_running flips to ``expect`` (true → bot
- * appeared, false → bot disappeared). Used by start/stop/restart so the
- * UI surfaces the running/stopped transition the moment it actually
- * happens instead of waiting for the next regular refresh tick. Caller
- * is responsible for setBotControlBusy(true/false); we only emit the
- * outcome toast and refresh the status badge once.
+ * Poll the backend's start-progress signal after a Start request until the
+ * bot is confirmed up, the spawned process dies, or we hand back to the
+ * regular status refresh.
+ *
+ * Why this isn't a flat timeout: ``bot.py`` only writes its PID file (the
+ * "running" signal) *after* a heavy import + startup-check phase, which on a
+ * cold start (post-reboot, antivirus scanning the ``.pyd``/``.dll`` files,
+ * busy disk) can take far longer than any fixed deadline. The old poll gave
+ * up at 15s and fired a "timed out" warning even though the process was alive
+ * and finished booting moments later — a false alarm on every slow start.
+ *
+ * ``get_start_progress`` lets us tell three states apart:
+ *   - ``running``  → success, the instant the PID lands.
+ *   - ``exited``   → the process we spawned died before becoming ready; a
+ *                    *real* failure, surfaced immediately (with exit code)
+ *                    instead of after a deadline.
+ *   - ``starting`` → still importing/booting; keep waiting, NEVER warn.
+ *
+ * Only if the process stays alive-but-not-ready past ``handoffMs`` (a hung
+ * import, rare) do we stop the tight poll — and even then it's an
+ * informational hand-off to the periodic status refresh, not a failure toast.
+ *
+ * Caller owns setBotControlBusy(true/false); we only emit the outcome toast.
  */
-async function waitForRunning(
-    timeoutMs: number,
-    intervalMs: number,
-    mode: 'started' | 'stopped',
+async function waitForStart(
+    intervalMs = 250,
+    softNoticeMs = 12000,
+    handoffMs = 60000,
 ): Promise<void> {
     const startTime = performance.now();
-    const want = mode === 'started';
-    while (performance.now() - startTime < timeoutMs) {
+    let softNoticeShown = false;
+    while (performance.now() - startTime < handoffMs) {
         await new Promise((r) => setTimeout(r, intervalMs));
-        dataCache.invalidate('status');
+        let progress: StartProgress;
         try {
-            const status = await invoke<BotStatus>('get_status');
-            if (Boolean(status?.is_running) === want) {
-                showToast(want ? 'Bot started' : 'Bot stopped', { type: 'success' });
+            progress = await invoke<StartProgress>('get_start_progress');
+        } catch {
+            // Transient IPC error / lock contention — just try the next tick.
+            continue;
+        }
+        switch (progress.state) {
+            case 'running':
+                showToast('Bot started', { type: 'success' });
+                return;
+            case 'exited': {
+                // The spawned process terminated before it ever became ready —
+                // an unambiguous startup failure (bad token sys.exit, an
+                // import-time crash, etc.). Report it now, with the exit code
+                // when we have one, rather than waiting out a deadline.
+                const codeSuffix =
+                    progress.code === null ? '' : ` (exit code ${progress.code})`;
+                showToast(`Bot failed to start${codeSuffix} — check logs`, { type: 'error' });
                 return;
             }
-        } catch {
-            // get_status returns Err("busy") while a command holds the lock.
-            // Just wait for the next tick — the lock releases quickly.
+            // 'unknown' (no tracked child — e.g. started outside the dashboard)
+            // is treated like 'starting': keep polling so a late 'running' tick
+            // still resolves, and let the handoff below release us otherwise.
+            case 'unknown':
+            case 'starting':
+                if (!softNoticeShown && performance.now() - startTime >= softNoticeMs) {
+                    softNoticeShown = true;
+                    showToast('Bot is taking a while to start (cold start) — still working…', {
+                        type: 'info',
+                        duration: 6000,
+                    });
+                }
+                break;
         }
     }
-    showToast(
-        want ? 'Bot start timed out — check logs' : 'Bot still running after stop — check logs',
-        { type: 'warning' },
-    );
+    // Still alive but not ready after the ceiling — a hung import, not a crash
+    // (a crash would have surfaced as 'exited' above). Hand back to the regular
+    // status refresh, which flips the badge to Running once bot.py finishes.
+    showToast('Bot is still starting — status will update automatically', {
+        type: 'info',
+        duration: 6000,
+    });
 }
 
 async function stopBot(): Promise<void> {

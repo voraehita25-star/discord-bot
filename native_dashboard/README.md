@@ -271,6 +271,7 @@ target/release/bundle/nsis/디스코드 봇 대시보드_2.0.0_x64-setup.exe  # 
 | Tauri Command | Description |
 |---------------|-------------|
 | `get_status` | Get bot running status (PID, uptime, memory, mode) |
+| `get_start_progress` | Polled after `start_bot` — reports `running` / `starting` / `exited{code}` / `unknown` so the UI distinguishes a slow cold start from a real startup failure (no more false "start timed out") |
 | `start_bot` / `start_dev_bot` | Start bot — production / hot-reload dev mode |
 | `stop_bot` / `restart_bot` | Stop or restart bot process tree |
 | `get_logs` / `clear_logs` | Read tail of `logs/bot.log` / truncate it |

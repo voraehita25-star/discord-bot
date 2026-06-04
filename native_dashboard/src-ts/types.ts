@@ -10,6 +10,27 @@ export interface BotStatus {
     memory_mb: number;
 }
 
+/**
+ * Progress of a dashboard-initiated bot start, reported by the backend
+ * ``get_start_progress`` command. Mirrors the Rust ``StartProgress`` enum
+ * (serde internally-tagged on ``state``). Lets the UI distinguish a slow-but-
+ * healthy cold start (``starting``) from a genuine startup failure
+ * (``exited``) instead of collapsing both into a fixed-deadline timeout.
+ *
+ * - ``running``  — bot.pid written + cmdline verified; the bot is up.
+ * - ``starting`` — the spawned process is still alive but hasn't reached the
+ *                  running signal yet (normal during heavy cold-start imports).
+ * - ``exited``   — the spawned process terminated before reaching running;
+ *                  startup truly failed. ``code`` is its exit code if known.
+ * - ``unknown``  — no tracked startup child (e.g. bot started outside the
+ *                  dashboard, or the outcome was already consumed).
+ */
+export type StartProgress =
+    | { state: 'running' }
+    | { state: 'starting' }
+    | { state: 'exited'; code: number | null }
+    | { state: 'unknown' };
+
 export interface DbStats {
     total_messages: number;
     active_channels: number;

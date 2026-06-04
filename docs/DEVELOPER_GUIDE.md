@@ -1,7 +1,7 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** June 3, 2026
-> **Version:** 3.4.3
+> **Last Updated:** June 4, 2026
+> **Version:** 3.4.4
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
 > **Total Files:** 110 Python test files (4,721 tests) + 10 vitest files (190 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
