@@ -1832,7 +1832,9 @@ class TestHandleWebhookMessage:
         assert cog.chat_manager.process_chat.call_args.kwargs["output_channel"] is out
 
     @pytest.mark.asyncio
-    async def test_rp_output_channel_allowed(self):
+    async def test_rp_output_channel_rejected(self):
+        # The OUTPUT channel is write-only — even a valid !chat from a proxy
+        # webhook must not be processed there.
         cog = _make_cog()
         cog.chat_manager.process_chat = AsyncMock()
         msg = _make_message(webhook_id=795, guild_id=5000, channel_id=7000, content="!chat yo")
@@ -1848,7 +1850,7 @@ class TestHandleWebhookMessage:
             patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
         ):
             await cog._handle_webhook_message(msg)
-        cog.chat_manager.process_chat.assert_awaited_once()
+        cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_chat_channel_none_returns(self):
@@ -2043,7 +2045,10 @@ class TestHandleGuildMessage:
         cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_rp_command_channel_routes(self):
+    async def test_rp_command_channel_no_autorespond(self):
+        # RP guild now requires an explicit !chat/!ask command (handled by the
+        # command framework). Plain text in the COMMAND channel must NOT trigger
+        # the AI via the passive on_message path.
         cog = _make_cog()
         cog.chat_manager.process_chat = AsyncMock()
         msg = _make_message(guild_id=5000, channel_id=6000, content="story")
@@ -2056,55 +2061,12 @@ class TestHandleGuildMessage:
             patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
         ):
             await cog._handle_guild_message(msg)
-        cog.chat_manager.process_chat.assert_awaited_once()
-        assert cog.chat_manager.process_chat.call_args.kwargs["output_channel"] is out
-
-    @pytest.mark.asyncio
-    async def test_rp_command_channel_rate_limited(self):
-        cog = _make_cog()
-        cog.chat_manager.process_chat = AsyncMock()
-        msg = _make_message(guild_id=5000, channel_id=6000, content="story")
-        with (
-            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 5000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
-            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=False)),
-        ):
-            await cog._handle_guild_message(msg)
         cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_rp_command_channel_no_output(self):
-        cog = _make_cog()
-        cog.chat_manager.process_chat = AsyncMock()
-        msg = _make_message(guild_id=5000, channel_id=6000, content="story")
-        cog.bot.get_channel = MagicMock(return_value=None)  # output_channel None
-        with (
-            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 5000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
-            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
-        ):
-            await cog._handle_guild_message(msg)
-        cog.chat_manager.process_chat.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_rp_command_channel_chat_none(self):
-        cog = _make_cog()
-        cog.chat_manager.process_chat = AsyncMock()
-        msg = _make_message(guild_id=5000, channel_id=6000, content="story")
-        with (
-            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 5000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
-            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
-            patch.object(cog, "_as_chat_channel", return_value=None),
-        ):
-            await cog._handle_guild_message(msg)
-        cog.chat_manager.process_chat.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_rp_output_channel_routes(self):
+    async def test_rp_output_channel_no_autorespond(self):
+        # The OUTPUT channel is write-only: plain text there must never trigger
+        # the AI either.
         cog = _make_cog()
         cog.chat_manager.process_chat = AsyncMock()
         msg = _make_message(guild_id=5000, channel_id=7000, content="reply")
@@ -2113,36 +2075,6 @@ class TestHandleGuildMessage:
             patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
             patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
             patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
-        ):
-            await cog._handle_guild_message(msg)
-        cog.chat_manager.process_chat.assert_awaited_once()
-        assert cog.chat_manager.process_chat.call_args.kwargs["generate_response"] is True
-
-    @pytest.mark.asyncio
-    async def test_rp_output_channel_rate_limited(self):
-        cog = _make_cog()
-        cog.chat_manager.process_chat = AsyncMock()
-        msg = _make_message(guild_id=5000, channel_id=7000, content="reply")
-        with (
-            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 5000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
-            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=False)),
-        ):
-            await cog._handle_guild_message(msg)
-        cog.chat_manager.process_chat.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_rp_output_channel_chat_none(self):
-        cog = _make_cog()
-        cog.chat_manager.process_chat = AsyncMock()
-        msg = _make_message(guild_id=5000, channel_id=7000, content="reply")
-        with (
-            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 5000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 6000),
-            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 7000),
-            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
-            patch.object(cog, "_as_chat_channel", return_value=None),
         ):
             await cog._handle_guild_message(msg)
         cog.chat_manager.process_chat.assert_not_called()

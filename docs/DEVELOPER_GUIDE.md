@@ -474,12 +474,23 @@ cp cogs/ai_core/data/roleplay_data_example.py cogs/ai_core/data/roleplay_data.py
 | `SERVER_AVATARS` | Guild-specific webhook avatar mappings |
 | `SERVER_LORE` | Guild-to-lore mapping |
 
+> **RP server message handling.** In the guild set as `GUILD_ID_RP` the AI does **not**
+> auto-reply to plain messages — players must run `!chat`/`!ask` in `CHANNEL_ID_RP_COMMAND`
+> (the only input room) and the reply is redirected to `CHANNEL_ID_RP_OUTPUT`, which is
+> write-only. `SERVER_LORE` is appended to `ROLEPLAY_PROMPT` and capped at **20 000 chars**
+> (`session_mixin.py`) — keep `WORLD_LORE` under that or the tail gets truncated.
+
 **Character Images:**
 
 ```text
-assets/RP/              # Large images for AI to see
-└── AVATARS/            # Small images for webhook avatars
+assets/RP/              # Large images for AI to see ([IMAGE:] references)
+└── AVATARS/            # Small images for webhook avatars — keep each < 200 KB
 ```
+
+> Webhook avatars must be **under ~200 KB**: Discord rejects larger avatars with a 400, so
+> `send_as_webhook()` skips the avatar (logs a warning) when a file exceeds the cap.
+> Downscale replacements (256×256 PNG is plenty). Webhooks created while a file was
+> oversized self-heal — the bot backfills the avatar on the next message once the file fits.
 
 ---
 

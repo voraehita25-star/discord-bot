@@ -410,13 +410,10 @@ class AI(commands.Cog):
                 else:
                     await ctx.send("❌ ไม่พบห้อง Output สำหรับ Roleplay")
                 return
-            elif ctx.channel.id == CHANNEL_ID_RP_OUTPUT:
-                # Allow direct chat in Output Channel
-                pass
             else:
-                await ctx.send(
-                    f"❌ กรุณาใช้คำสั่งในห้อง <#{CHANNEL_ID_RP_COMMAND}> หรือ <#{CHANNEL_ID_RP_OUTPUT}>"
-                )
+                # The OUTPUT channel is write-only and every other channel is
+                # off-limits — direct users to the single command channel.
+                await ctx.send(f"❌ กรุณาใช้คำสั่งในห้อง <#{CHANNEL_ID_RP_COMMAND}> เท่านั้น")
                 return
 
         if not message:
@@ -707,10 +704,7 @@ class AI(commands.Cog):
         if (
             (message.guild.id == GUILD_ID_RESTRICTED and message.channel.id == CHANNEL_ID_ALLOWED)
             or message.guild.id == GUILD_ID_MAIN
-            or (
-                message.guild.id == GUILD_ID_RP
-                and message.channel.id in (CHANNEL_ID_RP_COMMAND, CHANNEL_ID_RP_OUTPUT)
-            )
+            or (message.guild.id == GUILD_ID_RP and message.channel.id == CHANNEL_ID_RP_COMMAND)
         ):
             allowed = True
 
@@ -852,50 +846,15 @@ class AI(commands.Cog):
         if message.guild and message.guild.id == GUILD_ID_COMMAND_ONLY:
             return
 
-        # Restriction for Roleplay Server
+        # Restriction for Roleplay Server (guild configured as GUILD_ID_RP).
+        # The AI no longer auto-responds to plain messages here — users must
+        # invoke an explicit ``!chat``/``!ask`` command, which the command
+        # framework handles (see ``chat_command``): that path accepts input only
+        # in the COMMAND channel and redirects the reply to the OUTPUT channel,
+        # which is now write-only. So the passive on_message path does nothing
+        # for this guild (no prefix-less auto-reply in any channel).
         if message.guild and message.guild.id == GUILD_ID_RP:
-            if message.channel.id == CHANNEL_ID_RP_COMMAND:
-                if not await check_rate_limit("gemini_api", message):
-                    return
-                if not await check_rate_limit("gemini_global", message):
-                    return
-
-                output_channel = self._as_text_channel(self.bot.get_channel(CHANNEL_ID_RP_OUTPUT))
-                chat_channel = self._as_chat_channel(message.channel)
-                if chat_channel is None:
-                    return
-                if output_channel:
-                    message_content = message.content or ""
-                    await self.chat_manager.process_chat(
-                        chat_channel,
-                        message.author,
-                        message_content,
-                        message.attachments,
-                        output_channel=output_channel,
-                        user_message_id=message.id,
-                    )
-                return
-            elif message.channel.id == CHANNEL_ID_RP_OUTPUT:
-                if not await check_rate_limit("gemini_api", message):
-                    return
-                if not await check_rate_limit("gemini_global", message):
-                    return
-
-                chat_channel = self._as_chat_channel(message.channel)
-                if chat_channel is None:
-                    return
-                message_content = message.content or ""
-                await self.chat_manager.process_chat(
-                    chat_channel,
-                    message.author,
-                    message_content,
-                    message.attachments,
-                    generate_response=True,
-                    user_message_id=message.id,
-                )
-                return
-            else:
-                return
+            return
 
         # Check if mentioned or in allowed channel. Guard against
         # bot.user being None during very-early ready / disconnect — the

@@ -815,6 +815,19 @@ async def send_as_webhook(bot, channel, name, message):
                 webhook = wh
                 break
 
+        # 1b. Backfill avatar for webhooks created before the avatar file fit
+        # Discord's size cap. Those were created with avatar=None and would
+        # otherwise be reused avatar-less forever (the reuse path never re-sets
+        # the avatar). Update once; afterwards ``webhook.avatar`` is non-None so
+        # the next reuse skips this extra API call. Only the character-specific
+        # webhook found above — never the shared "AI Tupper Proxy" fallback.
+        if webhook is not None and avatar_bytes and webhook.avatar is None:
+            try:
+                await webhook.edit(avatar=avatar_bytes)
+                logger.info("🩹 Backfilled missing avatar for webhook %s", webhook_name)
+            except discord.HTTPException as err:
+                logger.warning("Failed to backfill avatar for webhook %s: %s", webhook_name, err)
+
         # 2. If not found, create new one (if limit allows)
         DISCORD_WEBHOOK_LIMIT = 15  # Discord's max webhooks per channel
         if not webhook:

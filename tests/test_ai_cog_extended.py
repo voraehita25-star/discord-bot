@@ -1039,7 +1039,9 @@ class TestChatCommandRegion:
         assert "Output" in ctx.send.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_rp_output_channel_passes_through(self):
+    async def test_rp_output_channel_rejected(self):
+        # The OUTPUT channel is write-only: !chat there is rejected and the user
+        # is pointed back to the single COMMAND channel.
         cog = _make_cog_r1()
         ctx = _ctx_r1(channel_id=200, guild_id=900)
         ctx.channel = MagicMock(spec=discord.TextChannel)
@@ -1052,7 +1054,9 @@ class TestChatCommandRegion:
         ):
             await cog.chat_command.callback(cog, ctx, message="hello")
 
-        cog.chat_manager.process_chat.assert_awaited_once()
+        ctx.send.assert_awaited_once()
+        assert "กรุณาใช้คำสั่ง" in ctx.send.call_args[0][0]
+        cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rp_wrong_channel_rejected(self):

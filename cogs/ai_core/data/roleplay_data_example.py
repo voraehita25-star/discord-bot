@@ -49,10 +49,27 @@ Bob responds "Hey there."  <-- WRONG! Missing {{Bob}} tag!
 ```
 
 ## Basic Format:
-- Use *asterisks* for actions and descriptions
-- Use "quotes" for dialogue
-- Use > at start for narrative descriptions
+- Use `>` at the start of a line for actions/descriptions (what characters DO)
+- Use "quotes" for dialogue (what characters SAY)
 - Each character switch REQUIRES a new {{CharacterName}} tag on its own line
+
+## Paragraph Spacing (for Discord readability):
+- Put a blank line (an empty line with NO `>`) between separate `>` description
+  paragraphs. Discord merges consecutive `>` lines into a single packed quote block, so
+  the blank line splits them into separate, easier-to-read blocks. Short actions that
+  truly flow together may stay on adjacent `>` lines.
+
+Example:
+```
+> The classroom falls quiet as the last light fades behind the old building.
+
+> A small figure in the back corner keeps their head down, writing in silence.
+
+> The professor drones on; she steals a glance at the clock.
+```
+
+(There is intentionally no hard response-length cap and no forced open-ended ending —
+write at the length and pacing the scene needs.)
 """
 
 # World lore - background information for your RP setting

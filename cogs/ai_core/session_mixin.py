@@ -101,7 +101,7 @@ class SessionMixin:
             if guild_id and guild_id in SERVER_LORE:
                 lore = SERVER_LORE[guild_id]
                 # Cap lore length to prevent exceeding API token limits
-                MAX_LORE_LENGTH = 8000
+                MAX_LORE_LENGTH = 20000
                 if len(lore) > MAX_LORE_LENGTH:
                     lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
                     logger.warning(
@@ -138,7 +138,7 @@ class SessionMixin:
                 # just because we hit the cache-correction branch.
                 if guild_id in SERVER_LORE:
                     lore = SERVER_LORE[guild_id]
-                    MAX_LORE_LENGTH = 8000
+                    MAX_LORE_LENGTH = 20000
                     if len(lore) > MAX_LORE_LENGTH:
                         lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
                         logger.warning(
