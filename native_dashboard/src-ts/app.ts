@@ -79,7 +79,7 @@ let currentPage = 'status';
 let refreshInterval: number | null = null;
 let logsRefreshInterval: number | null = null;
 let logsAutoScrollEnabled = true;
-let lastLogCount = 0;
+let lastLogSignature: string | null = null;
 
 // Chart data history
 const memoryHistory: ChartDataPoint[] = [];
@@ -1112,9 +1112,14 @@ async function loadLogs(): Promise<void> {
 
         if (!container) return;
 
-        const hasNewLogs = logs.length !== lastLogCount;
+        // Detect new logs by a content signature, NOT line count: once the bot
+        // has logged more than the 200-line backend tail window, logs.length is
+        // permanently 200, so a count check never sees the rotating tail and the
+        // viewer freezes. length + last line is a cheap, sufficient signature.
+        const logSignature = `${logs.length}|${logs[logs.length - 1] ?? ''}`;
+        const hasNewLogs = logSignature !== lastLogSignature;
         const filterChanged = filter !== lastLogFilter;
-        lastLogCount = logs.length;
+        lastLogSignature = logSignature;
         lastLogFilter = filter;
 
         // Skip the full DOM rebuild if neither the log buffer nor the filter
@@ -1212,8 +1217,8 @@ function toggleAutoScroll(): void {
 function clearLogs(): void {
     const container = document.getElementById('log-content');
     if (container) container.innerHTML = '';
-    lastLogCount = 0;
-    
+    lastLogSignature = null;
+
     // Also clear the actual log file
     invoke('clear_logs').then(result => {
         showToast(String(result), { type: 'success', duration: 1500 });

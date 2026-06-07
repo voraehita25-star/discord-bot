@@ -248,12 +248,17 @@ class Database:
 
         async def do_export():
             await asyncio.sleep(self._export_delay)
-            self._dashboard_export_pending.discard(conversation_id)
-
             try:
                 await self.export_dashboard_conversation_to_json(conversation_id)
             except Exception as e:
                 logger.warning("Dashboard export failed for %s: %s", conversation_id, e)
+            finally:
+                # Discard only AFTER the export runs (not right after the
+                # debounce sleep). Discarding early let a save landing mid-export
+                # schedule a SECOND overlapping export for the same conversation,
+                # and two to_thread(write_text) writers for one file can hit a
+                # Windows file-lock PermissionError. Mirrors the AI-history path.
+                self._dashboard_export_pending.discard(conversation_id)
 
         try:
             task = asyncio.create_task(do_export())
@@ -2209,7 +2214,7 @@ class Database:
                     """SELECT id, role, content, thinking, mode, images, is_pinned, liked, created_at
                        FROM dashboard_messages
                        WHERE conversation_id = ?
-                       ORDER BY created_at ASC
+                       ORDER BY created_at ASC, id ASC
                        LIMIT ?""",
                     (conversation_id, limit),
                 )
@@ -2218,7 +2223,7 @@ class Database:
                     """SELECT id, role, content, thinking, mode, images, is_pinned, liked, created_at
                        FROM dashboard_messages
                        WHERE conversation_id = ?
-                       ORDER BY created_at ASC""",
+                       ORDER BY created_at ASC, id ASC""",
                     (conversation_id,),
                 )
             rows = await cursor.fetchall()

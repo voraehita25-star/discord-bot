@@ -33,10 +33,21 @@ try {
         Remove-Item (Join-Path $BinDir "*") -Force -ErrorAction SilentlyContinue
     }
 
-    # Download dependencies
+    # Download dependencies. $ErrorActionPreference="Stop" does NOT trip on a
+    # native exe's non-zero exit, so check $LASTEXITCODE explicitly — otherwise
+    # a failed resolution (offline, GOPROXY/checksum error) silently falls
+    # through to the build with the real root cause masked.
     Write-Host "[INFO] Downloading dependencies..." -ForegroundColor Yellow
-    go mod download
-    go mod tidy
+    & go mod download
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] go mod download failed" -ForegroundColor Red
+        exit 1
+    }
+    & go mod tidy
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] go mod tidy failed" -ForegroundColor Red
+        exit 1
+    }
 
     $BuildFlags = @()
     if ($Release) {

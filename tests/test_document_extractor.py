@@ -69,6 +69,26 @@ class TestNormalise:
     def test_strips_outer_whitespace(self):
         assert de._normalise("  \n\nhello\n\n  ") == "hello"
 
+    def test_converts_crlf_to_lf(self):
+        # The control-char strip keeps \r, so CRLF uploads (the norm on Windows)
+        # would otherwise leave a stray \r on every line. _normalise must convert
+        # CRLF -> LF up front so no carriage returns survive.
+        out = de._normalise("line1\r\nline2\r\nline3")
+        assert out == "line1\nline2\nline3"
+        assert "\r" not in out
+
+    def test_converts_lone_cr_to_lf(self):
+        out = de._normalise("a\rb\rc")
+        assert out == "a\nb\nc"
+        assert "\r" not in out
+
+    def test_crlf_blank_lines_collapse(self):
+        # After CRLF->LF conversion, the \n{3,} blank-line collapse works on
+        # CRLF text too (it could not before, since \r\n\r\n\r\n has no run of
+        # 3+ consecutive \n).
+        out = de._normalise("a\r\n\r\n\r\n\r\nb")
+        assert out == "a\n\nb"
+
 
 class TestEndsSentence:
     @pytest.mark.parametrize("text", ["Hello.", "What?", "Stop!", "Like this:", "End—"])

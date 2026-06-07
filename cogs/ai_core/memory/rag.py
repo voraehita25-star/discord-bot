@@ -1351,6 +1351,12 @@ class MemorySystem:
         # always inserting more than was reclaimed.
         self._evict_cache_if_needed()
 
+        # Build a channel-local id→row map from all_memories (every row for
+        # this channel — the query has no LIMIT). Used to (1) scope semantic
+        # hits to this channel and (2) resolve result rows that fell outside
+        # the 500-row _memories_cache batch below.
+        _chan_by_id = {m.get("id"): m for m in all_memories if m.get("id") is not None}
+
         # Semantic search
         semantic_results = []
         query_vec = await self.generate_embedding(query)
@@ -1363,26 +1369,23 @@ class MemorySystem:
                     # (FAISS index may contain IDs evicted from _memories_cache)
                     semantic_results = await self._faiss_index.search_async(query_vec, k=limit * 3)
 
-            # Fallback to linear if FAISS unavailable or not built
+            # Scope FAISS hits to THIS channel BEFORE the linear-fallback check.
+            # The FAISS index is global (built from get_all_rag_memories(None)),
+            # so its top-k can be entirely OTHER channels' IDs. Filtering only
+            # after the `if not semantic_results` check (as before) would empty
+            # semantic_results with no linear recovery — losing per-channel
+            # recall for a small/new channel competing against a huge global
+            # index. channel_id is None means an intentional cross-channel search.
+            if semantic_results and channel_id is not None:
+                semantic_results = [
+                    (mid, score) for (mid, score) in semantic_results if mid in _chan_by_id
+                ]
+
+            # Fallback to linear if FAISS was unavailable, not built, or its
+            # hits were all out-of-channel. all_memories is already
+            # channel-scoped, so the linear scan stays channel-correct.
             if not semantic_results:
                 semantic_results = await self._linear_search_raw(query_vec, limit * 2, all_memories)
-
-        # Build a channel-local id→row map from all_memories (every row for
-        # this channel — the query has no LIMIT). Used to (1) scope semantic
-        # hits to this channel and (2) resolve result rows that fell outside
-        # the 500-row _memories_cache batch below.
-        _chan_by_id = {m.get("id"): m for m in all_memories if m.get("id") is not None}
-
-        # Scope semantic hits to THIS channel. The FAISS index is global
-        # (built from get_all_rag_memories(None)), so search_async can return
-        # IDs belonging to OTHER channels — a cross-channel memory leak. The
-        # keyword and linear paths already operate on the channel-filtered
-        # all_memories; mirror that here. channel_id is None means an
-        # intentional cross-channel search — skip the filter.
-        if semantic_results and channel_id is not None:
-            semantic_results = [
-                (mid, score) for (mid, score) in semantic_results if mid in _chan_by_id
-            ]
 
         # Relevance floor on the SEMANTIC hits BEFORE fusion. The cosine scores
         # here are absolute (FAISS on normalized vectors); the RRF scores

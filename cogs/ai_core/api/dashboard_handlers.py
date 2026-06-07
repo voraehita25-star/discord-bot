@@ -1031,24 +1031,15 @@ async def handle_delete_document_memory(ws: WebSocketResponse, data: dict[str, A
             )
             return
         owner = row[0]
-        # Three-way scope rule:
-        #   - owner set + matches conversation_id: allowed
-        #   - owner set + different conversation_id: forbidden
-        #   - owner None (global doc): only allowed when caller is also
-        #     acting globally (conversation_id None). Previously the
-        #     ``owner and owner != conversation_id`` short-circuit treated
-        #     ``owner=None`` as a wildcard — ANY conversation could delete
-        #     global docs, which is an obvious privilege escalation.
-        if owner is None and conversation_id:
-            await ws.send_json(
-                {
-                    "type": "error",
-                    "code": "FORBIDDEN",
-                    "message": "Global document cannot be deleted from a conversation scope",
-                }
-            )
-            return
-        if owner and conversation_id and owner != conversation_id:
+        # Strict scope rule: the caller's scope must EXACTLY equal the
+        # document's owner. Normalise a falsy conversation_id ("" / None) to
+        # None first — the previous two-condition guard skipped BOTH checks
+        # when conversation_id was falsy, so a client that simply omitted
+        # conversation_id could delete a conversation-scoped (or any) document.
+        # A global doc (owner None) is now only deletable globally (caller None);
+        # a conversation doc only by a caller in that exact conversation.
+        caller_scope = conversation_id or None
+        if owner != caller_scope:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1225,19 +1216,11 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
             )
             return
         owner = row[0]
-        # Same three-way scope rule as the delete handler: a global doc
-        # (owner=None) can only be modified by a global caller. See the
-        # comment in handle_delete_document_memory for the rationale.
-        if owner is None and conversation_id:
-            await ws.send_json(
-                {
-                    "type": "error",
-                    "code": "FORBIDDEN",
-                    "message": "Global document cannot be modified from a conversation scope",
-                }
-            )
-            return
-        if owner and conversation_id and owner != conversation_id:
+        # Strict scope rule (see handle_delete_document_memory): normalise a
+        # falsy conversation_id to None and require an exact match, so an
+        # omitted conversation_id can't skip the check and modify any document.
+        caller_scope = conversation_id or None
+        if owner != caller_scope:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1346,18 +1329,11 @@ async def handle_get_document_memory_content(ws: WebSocketResponse, data: dict[s
             )
             return
         owner = row[6]
-        # Same three-way scope rule as delete/update — globals can't be
-        # read through a conversation context, only by global callers.
-        if owner is None and conversation_id:
-            await ws.send_json(
-                {
-                    "type": "error",
-                    "code": "FORBIDDEN",
-                    "message": "Global document cannot be read from a conversation scope",
-                }
-            )
-            return
-        if owner and conversation_id and owner != conversation_id:
+        # Strict scope rule (see handle_delete_document_memory): normalise a
+        # falsy conversation_id to None and require an exact match, so an
+        # omitted conversation_id can't skip the check and read any document.
+        caller_scope = conversation_id or None
+        if owner != caller_scope:
             await ws.send_json(
                 {
                     "type": "error",

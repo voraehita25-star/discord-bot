@@ -218,15 +218,27 @@ class BotMetrics:
 
     def shutdown_server(self):
         """Gracefully shutdown the Prometheus metrics HTTP server."""
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
-            if self._server_thread:
-                self._server_thread.join(timeout=5)
-            self._server = None
-            self._server_thread = None
+        if not self._server_started:
+            return
+        if self._server is None:
+            # Started, but start_http_server() returned no handle (older
+            # prometheus_client). The daemon HTTP thread is still running and
+            # the port stays bound — make that visible instead of a silent
+            # no-op so the leak isn't mistaken for a clean shutdown.
+            logger.warning(
+                "Metrics server is running but no server handle was captured; "
+                "cannot stop it cleanly (upgrade prometheus_client >= 0.20)."
+            )
             self._server_started = False
-            logger.info("📊 Prometheus metrics server stopped")
+            return
+        self._server.shutdown()
+        self._server.server_close()
+        if self._server_thread:
+            self._server_thread.join(timeout=5)
+        self._server = None
+        self._server_thread = None
+        self._server_started = False
+        logger.info("📊 Prometheus metrics server stopped")
 
     # Convenience methods
     def increment_messages(self, message_type: str = "other"):

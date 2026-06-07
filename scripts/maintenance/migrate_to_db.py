@@ -261,11 +261,18 @@ async def async_main():
 
     print(f"        Found {total_history} history files")
     print(f"        Found {total_metadata} metadata files")
-    print(f"        Found {total_queue} queue files")
+    if total_queue:
+        # This tool does not migrate queue files — the music cog loads
+        # queue_*.json into the music_queue table on the next bot start.
+        # Say so explicitly so the count below isn't mistaken for pending work.
+        print(f"        Found {total_queue} queue files (handled by the bot at startup, not here)")
     print()
 
     if total_history == 0 and total_metadata == 0:
-        print("  [OK] No files to migrate!")
+        if total_queue:
+            print("  [OK] Nothing for this tool to migrate (queue files load on next bot start).")
+        else:
+            print("  [OK] No files to migrate!")
         print()
         return
 

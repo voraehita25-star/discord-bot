@@ -28,9 +28,15 @@ Feature parity vs the SDK backend (`dashboard_chat_claude.py`):
     them via the Read tool)
   ✓ Session continuity via `--resume`
   ✓ `/edit` AI rewrite (uses the same SEARCH/REPLACE patch protocol)
+  ✓ Persona delivered as a cacheable system prefix (--append-system-prompt-file)
+    instead of re-sent in every user turn; the next turn's process is
+    pre-warmed to hide the `claude -p` cold start (DASHBOARD_CLI_PREWARM=0 to
+    disable)
+  ✓ Prompt-cache stats: the CLI result usage carries
+    cache_read_input_tokens / cache_creation_input_tokens (CLI ≥ 2.1.x), logged
+    per turn so cache effectiveness on resumed turns is observable
   ✗ `--temperature` / `--max-tokens` — Claude Code CLI does not expose these
   ✗ API failover (`direct ↔ proxy`) — N/A for subscription auth
-  ✗ Prompt-cache stats display (CLI does not surface cache_read counts)
 
 Toggle: set ``CLAUDE_BACKEND=cli`` in .env to use this module; anything else
 (or unset) keeps the original SDK-based path.
@@ -42,6 +48,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -162,6 +169,115 @@ _WRITE_GUARD_SETTINGS_FILE = (
     Path(__file__).resolve().parents[3] / "data" / "claude_cli_write_guard_settings.json"
 )
 
+# The stable "how to read [timestamp] prefixes" instruction. Extracted to a
+# constant so it can live in EITHER the prompt body (legacy) or the cacheable
+# system prompt (see _build_system_prompt) without the two drifting apart.
+_TIMESTAMP_CONVENTION = (
+    "User messages (both historical and the current one) are prefixed "
+    "with timestamps like `[2026-04-27T05:27:13+07:00]`. These are "
+    "system-injected metadata indicating when each message was sent. "
+    "Use them to understand elapsed time between turns — a multi-hour "
+    "or multi-day gap should shape how you respond (e.g. acknowledge "
+    "the user has been away). Do NOT include such timestamp prefixes "
+    "in your own responses."
+)
+
+# Content-addressed system-prompt files for --append-system-prompt-file. The
+# persona is stable per (preset, unrestricted), so hashing the content means a
+# given persona reuses one file and the CLI sees an identical
+# --append-system-prompt-file every turn — keeping Claude Code's prompt cache
+# warm on the system prefix instead of re-sending the persona in the user body.
+_SYSTEM_PROMPT_DIR = Path(__file__).resolve().parents[3] / "data" / "claude_cli_system_prompts"
+
+# --- Pre-warm (speculative next-turn process) -----------------------------
+# The dominant per-turn latency is the `claude -p` cold start (Node boot + CLI
+# init + session load) paid BEFORE the first token. We hide it by spawning the
+# *next* turn's process right after a turn finishes, booted and blocked on stdin;
+# when the next turn arrives with a matching argv we just write the prompt to the
+# already-booted process. Pure latency optimisation — model, prompt, and output
+# are byte-identical to a cold spawn. Disable with DASHBOARD_CLI_PREWARM=0.
+_PREWARM_ENABLED = os.getenv("DASHBOARD_CLI_PREWARM", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+# How long a warm process stays reusable. Kept under typical server-side session
+# idle windows; a stale warm proc is killed and the turn spawns fresh.
+_PREWARM_TTL = float(os.getenv("DASHBOARD_CLI_PREWARM_TTL", "120"))
+# Cap concurrent warm processes (each ~150 MB RAM) regardless of conversation
+# count — a single-user dashboard normally has 1 active conversation.
+_PREWARM_MAX = max(1, int(os.getenv("DASHBOARD_CLI_PREWARM_MAX", "3")))
+# conversation_id -> {"proc": Process, "argv": list[str], "created": float}
+_warm_procs: dict[str, dict[str, Any]] = {}
+# Strong refs to in-flight warm-spawn tasks so they aren't GC'd mid-spawn.
+_PREWARM_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _build_system_prompt(
+    persona: str, *, web_enabled: bool = False, ai_tools_enabled: bool = False
+) -> str:
+    """The cacheable system block sent via --append-system-prompt-file.
+
+    Persona (+ the timestamp convention) is appended to Claude Code's default
+    system prompt. Putting it here instead of the per-turn user body means it
+    forms a stable, prompt-cacheable prefix and gets system-level adherence
+    (matching the SDK backend, which passes persona as ``system=``).
+
+    When tools are enabled we ALSO declare them authoritatively here. Personas
+    written for the old Gemini backend say things like "Google Search is
+    automatically enabled" — on this Claude CLI backend that's WebSearch, and
+    the model would otherwise wrongly tell users "the host hasn't enabled web
+    search". This note comes AFTER the persona so it supersedes stale claims.
+    """
+    parts: list[str] = []
+    if persona:
+        parts.append(f"# Persona\n{persona}")
+    parts.append(f"# Timestamp convention\n{_TIMESTAMP_CONVENTION}")
+
+    tool_lines: list[str] = []
+    if web_enabled:
+        tool_lines.append(
+            "- WebSearch: search the web for current, real-time, or post-training "
+            "information. Use it whenever the answer depends on recent events or "
+            "facts you're unsure of — do NOT claim you lack web access."
+        )
+        tool_lines.append("- WebFetch: fetch and read the contents of a specific URL.")
+    if ai_tools_enabled:
+        tool_lines.append(
+            "- remember / recall_memory: save and look up long-term facts about the user."
+        )
+        tool_lines.append(
+            "- Discord server tools (create/list channels & roles, permissions, read "
+            "channels, user info): use them to act on the server when asked."
+        )
+    if tool_lines:
+        parts.append(
+            "# Available tools (this session)\n"
+            "You have these tools available right now — call them directly; never say a "
+            'tool is "not enabled" or that the host hasn\'t enabled it. Any persona text '
+            'mentioning "Google Search" refers to WebSearch below.\n' + "\n".join(tool_lines)
+        )
+    return "\n\n".join(parts)
+
+
+def _ensure_system_prompt_file(content: str) -> Path:
+    """Write ``content`` to a content-hashed file (idempotent), return its path."""
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    path = _SYSTEM_PROMPT_DIR / f"sp_{digest}.txt"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write atomically so a concurrent reader (a spawning claude) never sees
+        # a half-written file.
+        tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        with contextlib.suppress(OSError):
+            tmp.replace(path)
+        with contextlib.suppress(OSError):
+            if tmp.exists():
+                tmp.unlink()
+    return path
+
 
 def _ensure_empty_mcp_config() -> Path:
     """Write the empty MCP config if it doesn't exist yet, return its path."""
@@ -169,6 +285,70 @@ def _ensure_empty_mcp_config() -> Path:
         _EMPTY_MCP_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         _EMPTY_MCP_CONFIG_FILE.write_text('{"mcpServers": {}}', encoding="utf-8")
     return _EMPTY_MCP_CONFIG_FILE
+
+
+# Our AI-tools MCP server (stdio). Spawned by claude as `bottools`; it proxies
+# tool calls to the bot IPC. Stdlib-only so its stdout stays clean JSON-RPC.
+_AI_TOOLS_MCP_SERVER = Path(__file__).resolve().parent / "mcp_tools_server.py"
+_AI_TOOLS_MCP_CONFIG_FILE = (
+    Path(__file__).resolve().parents[3] / "data" / "claude_cli_ai_tools_mcp.json"
+)
+
+
+def _ensure_ai_tools_mcp_config() -> Path:
+    """Write (idempotently) the MCP config that registers our bottools server."""
+    content = json.dumps(
+        {
+            "mcpServers": {
+                "bottools": {
+                    "command": sys.executable,
+                    "args": [str(_AI_TOOLS_MCP_SERVER)],
+                }
+            }
+        },
+        ensure_ascii=False,
+    )
+    try:
+        current = _AI_TOOLS_MCP_CONFIG_FILE.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    if current != content:
+        _AI_TOOLS_MCP_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _AI_TOOLS_MCP_CONFIG_FILE.write_text(content, encoding="utf-8")
+    return _AI_TOOLS_MCP_CONFIG_FILE
+
+
+def _ai_tool_names() -> list[str]:
+    """MCP-prefixed names of the AI tools currently enabled, or [] when the
+    bot IPC endpoint isn't running (so callers fall back to no custom tools)."""
+    try:
+        from .ai_tools_ipc import ai_tools_ipc, list_tool_schemas
+    except Exception:
+        return []
+    if not ai_tools_ipc.ready:
+        return []
+    return [f"mcp__bottools__{t['name']}" for t in list_tool_schemas()]
+
+
+def _ai_tools_env(
+    *, guild_id: int | None = None, channel_id: int | None = None, user_id: int | None = None
+) -> dict[str, str]:
+    """IPC URL/token + per-turn Discord context for the spawned claude's MCP
+    child. Empty when the IPC endpoint isn't ready."""
+    try:
+        from .ai_tools_ipc import ai_tools_ipc
+    except Exception:
+        return {}
+    env = dict(ai_tools_ipc.env())
+    if not env:
+        return {}
+    if guild_id is not None:
+        env["BOT_AI_TOOLS_GUILD_ID"] = str(guild_id)
+    if channel_id is not None:
+        env["BOT_AI_TOOLS_CHANNEL_ID"] = str(channel_id)
+    if user_id is not None:
+        env["BOT_AI_TOOLS_USER_ID"] = str(user_id)
+    return env
 
 
 def _ensure_write_guard_settings() -> Path:
@@ -815,12 +995,18 @@ def _build_full_prompt(
     image_paths: list[Path],
     doc_paths: list[Path] | None,
     is_resumed_session: bool,
+    persona_in_system: bool = False,
 ) -> str:
     """Compose the prompt body sent to ``claude -p`` via stdin.
 
     Persona + user context are sent on EVERY turn — matching the SDK backend's
     behavior so updates to role preset or profile take effect immediately
     instead of being frozen at the session's first turn.
+
+    When ``persona_in_system`` is True the persona + timestamp-convention blocks
+    are omitted here because the caller passes them via
+    ``--append-system-prompt-file`` (a cacheable system prefix); only the
+    dynamic user_context stays in the body.
 
     The conversation history block is the one piece we still skip on resumed
     turns: Claude already has the prior messages server-side via ``--resume``,
@@ -829,17 +1015,9 @@ def _build_full_prompt(
     """
     parts: list[str] = []
 
-    parts.append(f"# Persona\n{persona}")
-    parts.append(
-        "# Timestamp convention\n"
-        "User messages (both historical and the current one) are prefixed "
-        "with timestamps like `[2026-04-27T05:27:13+07:00]`. These are "
-        "system-injected metadata indicating when each message was sent. "
-        "Use them to understand elapsed time between turns — a multi-hour "
-        "or multi-day gap should shape how you respond (e.g. acknowledge "
-        "the user has been away). Do NOT include such timestamp prefixes "
-        "in your own responses."
-    )
+    if not persona_in_system:
+        parts.append(f"# Persona\n{persona}")
+        parts.append(f"# Timestamp convention\n{_TIMESTAMP_CONVENTION}")
     if user_context:
         parts.append(f"# Context\n{user_context}")
     if not is_resumed_session:
@@ -1074,6 +1252,19 @@ def _dashboard_cli_write_dirs() -> list[Path]:
     return roots
 
 
+# Built-in web tools for the read-only chat path. claude -p ships WebSearch +
+# WebFetch; enabling them lets the model look up current information and read
+# URLs (both run server-side at Anthropic, so there's no SSRF reachability to
+# the bot host). They are NEVER added in write mode (the write-guard deny-list
+# already blocks them). Disable entirely with DASHBOARD_CLI_WEB_TOOLS=0.
+_CLI_WEB_TOOLS_ENABLED = os.getenv("DASHBOARD_CLI_WEB_TOOLS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
 def _build_claude_argv(
     claude_exe: str,
     *,
@@ -1082,6 +1273,9 @@ def _build_claude_argv(
     allow_edit_tools: bool = False,
     enable_thinking: bool = False,
     enable_write: bool = False,
+    system_prompt_file: Path | None = None,
+    enable_web: bool = False,
+    ai_tool_names: list[str] | None = None,
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
@@ -1102,6 +1296,11 @@ def _build_claude_argv(
     process exited non-zero. ``--effort xhigh`` alone already drives Opus 4.8's
     deep thinking in subscription mode, so dropping the beta costs nothing.
     """
+    # MCP config: our own AI-tools server when custom tools are requested,
+    # otherwise the EMPTY config. Either way ``--strict-mcp-config`` means "use
+    # ONLY this file, ignore the user's global/plugin MCP sources" (serena,
+    # playwright, …) so nothing else spawns alongside the chat subprocess.
+    mcp_config = _ensure_ai_tools_mcp_config() if ai_tool_names else _ensure_empty_mcp_config()
     argv: list[str] = [
         claude_exe,
         "-p",
@@ -1113,16 +1312,17 @@ def _build_claude_argv(
         "--include-partial-messages",
         "--model",
         CLAUDE_MODEL,
-        # Suppress every globally-enabled MCP / plugin-bundled MCP — the
-        # user's enabledPlugins (serena, playwright, chrome-devtools-mcp,
-        # …) would otherwise spawn alongside this subprocess on every
-        # dashboard chat turn. Serena's web dashboard popping up was the
-        # original symptom that surfaced this. Empty config + strict mode
-        # = "use ONLY what I pass, ignore user/project/plugin sources."
         "--mcp-config",
-        str(_ensure_empty_mcp_config()),
+        str(mcp_config),
         "--strict-mcp-config",
     ]
+
+    # Persona as a cacheable system prefix (instead of re-sending it in the user
+    # body every turn). Appended to Claude Code's default system prompt, so tool
+    # scaffolding (Read for images) is preserved. Placed in the base argv so it
+    # applies to every branch below, including write mode.
+    if system_prompt_file is not None:
+        argv.extend(["--append-system-prompt-file", str(system_prompt_file)])
 
     # Permission mode. OFF by default: pin "--permission-mode default" so the
     # Read-tool confinement (--allowedTools Read + --add-dir <temp roots>) holds
@@ -1205,8 +1405,26 @@ def _build_claude_argv(
             "allow_edit_tools=True is reserved for future expansion; "
             "current build uses the same minimal tool list either way."
         )
-    tools = "Read" if allow_read_for_images else ""
-    argv.extend(["--allowedTools", tools])
+    chat_tools: list[str] = []
+    if allow_read_for_images:
+        chat_tools.append("Read")
+    if enable_web:
+        # WebSearch is safe to pair with anything: it returns results from a
+        # search provider and can't reach local files.
+        chat_tools.append("WebSearch")
+        # WebFetch can GET an attacker-controlled URL (secrets exfiltrate via the
+        # query string). Read is bare-allow-listed (unconfined), so pairing the
+        # two would let a prompt-injected document Read a secret and exfil it via
+        # a crafted fetch. Only add WebFetch on the NO-Read chat path, where
+        # there's no local-file access to leak.
+        if not allow_read_for_images:
+            chat_tools.append("WebFetch")
+    if ai_tool_names:
+        # Custom MCP tools (mcp__bottools__*) served by mcp_tools_server.py via
+        # the bot IPC. Bare-allow-listed so they run without an interactive
+        # permission prompt (there's no TTY under -p).
+        chat_tools.extend(ai_tool_names)
+    argv.extend(["--allowedTools", " ".join(chat_tools)])
     if allow_read_for_images:
         # --add-dir declares the upload temp roots as working dirs so attachments
         # read without a prompt; uploads live in per-conversation subdirs beneath
@@ -1228,33 +1446,19 @@ def _build_claude_argv(
     return argv
 
 
-async def _run_claude_subprocess(
-    argv: list[str],
-    stdin_payload: str,
-    *,
-    on_text_delta: Any,
-    on_thinking_delta: Any,
-    on_thinking_block_start: Any = None,
-    on_thinking_block_stop: Any = None,
-    timeout: float,
-) -> tuple[str, dict[str, Any] | None]:
-    """Spawn `claude -p`, stream events, return (final_session_id, usage).
+async def _spawn_claude(
+    argv: list[str], extra_env: dict[str, str] | None = None
+) -> asyncio.subprocess.Process:
+    """Spawn a `claude -p` child (stdin/stdout/stderr piped), WITHOUT writing
+    stdin. Shared by the normal run path and the pre-warm path.
 
-    Callback semantics:
-      - on_text_delta(text)           — every visible text chunk
-      - on_thinking_delta(text)       — every thinking text chunk (subscription
-                                        mode redacts these to empty strings,
-                                        so this is mostly dormant)
-      - on_thinking_block_start()     — fires when Claude begins reasoning;
-                                        useful to show a "💭 thinking…" UI
-                                        even when the content is hidden
-      - on_thinking_block_stop()      — fires when reasoning ends
-
-    Sends `stdin_payload` as a single stream-json message:
-        {"type":"user","message":{"role":"user","content":[{"type":"text","text":...}]}}
-    then closes stdin so Claude knows there's no more input.
+    ``extra_env`` is merged on top of the allowlisted env — these are bot-set
+    values (the AI-tools IPC URL/token + per-turn Discord context), not inherited
+    from the parent's environment, so they intentionally bypass the allowlist.
     """
     env = _make_subprocess_env()
+    if extra_env:
+        env.update(extra_env)
     # Spawn from a dedicated workdir so Claude Code's session .jsonl files
     # land in their own `~/.claude/projects/<encoded-cwd>/` folder instead
     # of mixing with the user's own Claude Code sessions for the bot repo.
@@ -1269,7 +1473,7 @@ async def _run_claude_subprocess(
         spawn_kwargs["creationflags"] = 0x00000200
     else:
         spawn_kwargs["start_new_session"] = True
-    proc = await asyncio.create_subprocess_exec(
+    return await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -1278,6 +1482,121 @@ async def _run_claude_subprocess(
         cwd=str(_CLAUDE_CLI_WORKDIR),
         **spawn_kwargs,
     )
+
+
+def _kill_warm(wp: dict[str, Any]) -> None:
+    """Best-effort terminate a warm process record."""
+    proc = wp.get("proc")
+    if proc is None:
+        return
+    with contextlib.suppress(ProcessLookupError, Exception):
+        if proc.returncode is None:
+            proc.kill()
+
+
+def _take_warm(conversation_id: str | None, argv: list[str]) -> asyncio.subprocess.Process | None:
+    """Return a pre-warmed process whose argv EXACTLY matches ``argv`` (so the
+    prompt we're about to send is valid for it), is still alive, and is fresh.
+    Otherwise discard any stale warm proc and return None so the caller spawns
+    fresh. The exact-argv match is the safety boundary: flags (resume id,
+    thinking, write, read-tool, persona file) must be identical or the warm
+    process would answer with the wrong configuration."""
+    if not _PREWARM_ENABLED or not conversation_id:
+        return None
+    wp = _warm_procs.pop(conversation_id, None)
+    if wp is None:
+        return None
+    proc = wp.get("proc")
+    fresh = (time.monotonic() - wp.get("created", 0.0)) <= _PREWARM_TTL
+    if proc is not None and proc.returncode is None and wp.get("argv") == argv and fresh:
+        return proc
+    _kill_warm(wp)
+    return None
+
+
+async def _spawn_warm_async(conversation_id: str, argv: list[str]) -> None:
+    """Best-effort spawn of a warm process for the next turn of a conversation."""
+    try:
+        proc = await _spawn_claude(argv)
+    except Exception:
+        logger.debug("pre-warm spawn failed for %s", conversation_id, exc_info=True)
+        return
+    # If a turn already claimed/created a warm proc while we were spawning, or
+    # we're at the cap, don't clobber — kill this surplus one.
+    if conversation_id in _warm_procs or len(_warm_procs) >= _PREWARM_MAX:
+        with contextlib.suppress(ProcessLookupError, Exception):
+            if proc.returncode is None:
+                proc.kill()
+        return
+    _warm_procs[conversation_id] = {
+        "proc": proc,
+        "argv": list(argv),
+        "created": time.monotonic(),
+    }
+
+
+def _schedule_prewarm(conversation_id: str | None, argv: list[str]) -> None:
+    """Fire-and-forget pre-warm of the next turn's process (latency hiding)."""
+    if not _PREWARM_ENABLED or not conversation_id:
+        return
+    # Drop any existing warm proc for this conversation — the session advanced,
+    # so its --resume argv is now stale.
+    old = _warm_procs.pop(conversation_id, None)
+    if old is not None:
+        _kill_warm(old)
+    if len(_warm_procs) >= _PREWARM_MAX:
+        return
+    try:
+        task = asyncio.create_task(_spawn_warm_async(conversation_id, argv))
+    except RuntimeError:
+        return  # no running event loop (not expected on the WS path)
+    _PREWARM_TASKS.add(task)
+    task.add_done_callback(_PREWARM_TASKS.discard)
+
+
+def shutdown_prewarm() -> None:
+    """Kill every warm process. Call on dashboard/server shutdown."""
+    for wp in list(_warm_procs.values()):
+        _kill_warm(wp)
+    _warm_procs.clear()
+
+
+async def _run_claude_subprocess(
+    argv: list[str],
+    stdin_payload: str,
+    *,
+    on_text_delta: Any,
+    on_thinking_delta: Any,
+    on_thinking_block_start: Any = None,
+    on_thinking_block_stop: Any = None,
+    timeout: float,
+    proc: asyncio.subprocess.Process | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Spawn `claude -p`, stream events, return (final_session_id, usage).
+
+    Callback semantics:
+      - on_text_delta(text)           — every visible text chunk
+      - on_thinking_delta(text)       — every thinking text chunk (subscription
+                                        mode redacts these to empty strings,
+                                        so this is mostly dormant)
+      - on_thinking_block_start()     — fires when Claude begins reasoning;
+                                        useful to show a "💭 thinking…" UI
+                                        even when the content is hidden
+      - on_thinking_block_stop()      — fires when reasoning ends
+
+    If ``proc`` is provided it is a pre-warmed (already-booted, stdin-open)
+    child from the pre-warm pool — we skip the spawn and just write stdin,
+    hiding the cold-start latency. If it's None (or unusable) we spawn fresh.
+
+    Sends `stdin_payload` as a single stream-json message:
+        {"type":"user","message":{"role":"user","content":[{"type":"text","text":...}]}}
+    then closes stdin so Claude knows there's no more input.
+    """
+    prewarmed = proc is not None and proc.returncode is None and proc.stdin is not None
+    if not prewarmed:
+        proc = await _spawn_claude(argv, extra_env=extra_env)
+    t_write = time.monotonic()
 
     # stream-json input format expects one JSON message per line on stdin.
     user_msg = {
@@ -1300,6 +1619,8 @@ async def _run_claude_subprocess(
 
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
+    # Perf timing (#4): time-to-first-token measured from the stdin write.
+    first_text_ts: float | None = None
     # The REAL failure cause, captured from the stream-json `result` event on
     # stdout (claude reports API/runtime errors there, not on stderr). Used by
     # the rc!=0 path below to log/raise the actual error instead of whatever
@@ -1322,6 +1643,7 @@ async def _run_claude_subprocess(
 
     async def consume_stdout() -> None:
         nonlocal final_session_id, final_usage, final_error_text, final_error_status
+        nonlocal first_text_ts
         if proc.stdout is None:
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
         # Drop the per-line buffer cap so model JSON deltas with embedded
@@ -1415,6 +1737,8 @@ async def _run_claude_subprocess(
             if dtype == "text_delta":
                 text = delta.get("text", "")
                 if text and on_text_delta is not None:
+                    if first_text_ts is None:
+                        first_text_ts = time.monotonic()
                     await on_text_delta(text)
             elif dtype == "thinking_delta":
                 thinking = delta.get("thinking", "")
@@ -1539,6 +1863,24 @@ async def _run_claude_subprocess(
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+    # Perf + cache breadcrumb (#3, #4). ttft = time from sending the prompt to
+    # the first visible token; `prewarmed` tells whether the cold-start was
+    # hidden by the pre-warm pool. The cache_* fields (when the CLI surfaces
+    # them) confirm Claude Code's prompt cache is serving the resumed context —
+    # cache_read_input_tokens > 0 on a resumed turn means caching is working.
+    ttft_ms = (first_text_ts - t_write) * 1000 if first_text_ts is not None else -1
+    cache_read = cache_creation = -1
+    if isinstance(final_usage, dict):
+        cache_read = final_usage.get("cache_read_input_tokens", -1)
+        cache_creation = final_usage.get("cache_creation_input_tokens", -1)
+    logger.info(
+        "⚡ claude-cli perf: prewarmed=%s ttft=%dms cache_read=%s cache_creation=%s",
+        prewarmed,
+        int(ttft_ms),
+        cache_read,
+        cache_creation,
+    )
 
     return final_session_id, final_usage
 
@@ -1770,6 +2112,22 @@ async def handle_chat_message_claude_cli(
         if framing:
             persona = f"{framing}\n\n{persona}"
 
+    # Deliver persona (+ timestamp convention) as a cacheable system prefix via
+    # --append-system-prompt-file rather than re-sending it in every user turn.
+    # Content-hashed so a stable persona reuses one file and keeps the prompt
+    # cache warm. Best-effort: if the file can't be written we fall back to
+    # persona-in-body (system_prompt_file=None, persona_in_system=False).
+    system_prompt_file: Path | None = None
+    try:
+        system_prompt_file = _ensure_system_prompt_file(
+            _build_system_prompt(persona, web_enabled=_CLI_WEB_TOOLS_ENABLED)
+        )
+    except OSError:
+        logger.warning(
+            "Could not materialise system-prompt file; using persona-in-body", exc_info=True
+        )
+    persona_in_system = system_prompt_file is not None
+
     session_id = _CONVERSATION_SESSIONS.get(conversation_id or "") if conversation_id else None
     is_resumed = bool(session_id)
 
@@ -1820,6 +2178,7 @@ async def handle_chat_message_claude_cli(
         image_paths=image_paths,
         doc_paths=doc_paths,
         is_resumed_session=is_resumed,
+        persona_in_system=persona_in_system,
     )
 
     # Match the SDK backend's mode-label format so the badge always tells
@@ -1932,6 +2291,8 @@ async def handle_chat_message_claude_cli(
         allow_read_for_images=need_read,
         enable_thinking=thinking_enabled,
         enable_write=write_enabled,
+        system_prompt_file=system_prompt_file,
+        enable_web=_CLI_WEB_TOOLS_ENABLED,
     )
 
     new_session_id = ""
@@ -1969,6 +2330,8 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
                         enable_write=write_enabled,
+                        system_prompt_file=system_prompt_file,
+                        enable_web=_CLI_WEB_TOOLS_ENABLED,
                     )
                     full_prompt = _build_full_prompt(
                         persona=persona,
@@ -1979,8 +2342,12 @@ async def handle_chat_message_claude_cli(
                         image_paths=image_paths,
                         doc_paths=doc_paths,
                         is_resumed_session=True,
+                        persona_in_system=persona_in_system,
                     )
         try:
+            # Claim a pre-warmed process if one matches this exact argv (#1).
+            # Falls back to a fresh spawn inside _run_claude_subprocess otherwise.
+            warm_proc = _take_warm(conversation_id, argv)
             try:
                 new_session_id, usage = await _run_claude_subprocess(
                     argv,
@@ -1990,6 +2357,7 @@ async def handle_chat_message_claude_cli(
                     on_thinking_block_start=on_thinking_block_start,
                     on_thinking_block_stop=on_thinking_block_stop,
                     timeout=stream_timeout,
+                    proc=warm_proc,
                 )
             except RuntimeError as err:
                 # Recovery path: the only RuntimeError we can fix automatically
@@ -2026,6 +2394,7 @@ async def handle_chat_message_claude_cli(
                         image_paths=image_paths,
                         doc_paths=doc_paths,
                         is_resumed_session=False,
+                        persona_in_system=persona_in_system,
                     )
                     fresh_argv = _build_claude_argv(
                         claude_exe,
@@ -2033,6 +2402,27 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_thinking=thinking_enabled,
                         enable_write=write_enabled,
+                        system_prompt_file=system_prompt_file,
+                        enable_web=_CLI_WEB_TOOLS_ENABLED,
+                    )
+                    # The first attempt may have streamed some text (to the
+                    # client AND into full_response/full_thinking) before the
+                    # stale-session error fired. Reset the accumulators so the
+                    # retry's output isn't appended to the discarded first
+                    # attempt — which would duplicate the saved DB body — and
+                    # re-send stream_start so the dashboard clears the chunks it
+                    # already rendered for this turn (its stream_start handler
+                    # calls clearStreamBuffers()).
+                    full_response = ""
+                    full_thinking = ""
+                    thinking_started = False
+                    thinking_ended = False
+                    await ws.send_json(
+                        {
+                            "type": "stream_start",
+                            "mode": mode_label,
+                            "conversation_id": conversation_id,
+                        }
                     )
                     new_session_id, usage = await _run_claude_subprocess(
                         fresh_argv,
@@ -2108,6 +2498,23 @@ async def handle_chat_message_claude_cli(
         # _track_session is synchronous, so doing it here under the lock is atomic.
         if conversation_id and new_session_id:
             _track_session(conversation_id, new_session_id)
+            # Pre-warm the next turn's process (#1). The common follow-up is a
+            # plain-text turn in the same conversation + persona, so spawn that
+            # exact argv now — booted and blocked on stdin — to hide its cold
+            # start. A next turn with thinking/attachments simply won't match the
+            # warm argv and spawns fresh. Fire-and-forget; never blocks this turn.
+            _schedule_prewarm(
+                conversation_id,
+                _build_claude_argv(
+                    claude_exe,
+                    session_id=new_session_id,
+                    allow_read_for_images=False,
+                    enable_thinking=False,
+                    enable_write=write_enabled,
+                    system_prompt_file=system_prompt_file,
+                    enable_web=_CLI_WEB_TOOLS_ENABLED,
+                ),
+            )
     finally:
         if lock is not None and lock_acquired:
             lock.release()

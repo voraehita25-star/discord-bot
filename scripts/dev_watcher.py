@@ -604,6 +604,13 @@ if WATCHDOG_AVAILABLE:
                                 # crash_count without bound). A file-save restart
                                 # reassigns self.process and resets the counter.
                                 self.process = None
+                        else:
+                            # Auto-retry disabled: clear the dead handle too, or
+                            # every 0.5s tick re-enters this branch on the same
+                            # dead process — flooding the log with [CRASH] and
+                            # growing crash_count/consecutive_crashes without
+                            # bound. A file-save restart reassigns self.process.
+                            self.process = None
 
                         return True
 

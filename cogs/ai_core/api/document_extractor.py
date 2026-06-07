@@ -398,6 +398,11 @@ def _extract_text(filename: str, data_field: str) -> ExtractedDocument | None:
 
 def _normalise(text: str) -> str:
     """Strip control chars (keep \\n \\t), collapse runs of whitespace."""
+    # Normalise line endings first. The control-char strip below keeps \r
+    # (\x0d falls in the preserved \x09..\x0a / \x0d gap), so CRLF uploads —
+    # the norm on this Windows-first repo via reader.readAsText — would
+    # otherwise leave a stray \r on every line and defeat the \n{3,} collapse.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Remove C0 controls except \t (\x09) and \n (\x0a), plus DEL (\x7f).
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     # Collapse >2 blank lines to exactly 2 — preserves paragraph breaks

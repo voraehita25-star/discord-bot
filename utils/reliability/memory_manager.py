@@ -113,6 +113,14 @@ class TTLCache(Generic[K, V]):
 
         self.logger = logging.getLogger(f"TTLCache.{name}")
 
+        # Clamp to a sane minimum. A non-positive max_size (e.g. a computed/
+        # env-driven size that lands at 0) would make set()'s eviction loop
+        # `while len(self._cache) >= self.max_size` call popitem() on an empty
+        # OrderedDict and raise KeyError on the very first insert.
+        if self.max_size <= 0:
+            self.logger.warning("max_size=%s is non-positive; clamping to 1", self.max_size)
+            self.max_size = 1
+
     def _is_expired(self, entry: CacheEntry[V]) -> bool:
         """Check if entry has expired.
 

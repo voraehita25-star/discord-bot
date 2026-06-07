@@ -202,6 +202,38 @@ class TestStartServer:
         finally:
             metrics._server_started = original_started
 
+    def test_shutdown_started_without_handle_is_not_silent_noop(self):
+        """started=True but _server=None (older prometheus_client returned no
+        handle) must reset the started flag, not silently no-op on _server."""
+        from utils.monitoring.metrics import metrics
+
+        orig_started, orig_server, orig_thread = (
+            metrics._server_started,
+            metrics._server,
+            metrics._server_thread,
+        )
+        metrics._server_started = True
+        metrics._server = None
+        metrics._server_thread = None
+        try:
+            metrics.shutdown_server()  # must not raise on None handle
+            assert metrics._server_started is False
+        finally:
+            metrics._server_started = orig_started
+            metrics._server = orig_server
+            metrics._server_thread = orig_thread
+
+    def test_shutdown_when_not_started_is_noop(self):
+        from utils.monitoring.metrics import metrics
+
+        orig_started = metrics._server_started
+        metrics._server_started = False
+        try:
+            metrics.shutdown_server()  # no-op, must not raise
+            assert metrics._server_started is False
+        finally:
+            metrics._server_started = orig_started
+
 
 class TestGlobalMetrics:
     """Tests for global metrics instance."""

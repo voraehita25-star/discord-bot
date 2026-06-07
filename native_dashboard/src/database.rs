@@ -126,12 +126,20 @@ impl DatabaseService {
         }
 
         // Create new connection if cache is empty or invalid
-        Connection::open(&self.db_path)
-            .ok()
-            .map(|conn| ConnectionGuard {
+        Connection::open(&self.db_path).ok().map(|conn| {
+            // The bot opens this same DB in WAL mode and periodically runs
+            // PRAGMA wal_checkpoint(TRUNCATE), which briefly takes the write
+            // lock. rusqlite's default busy timeout is 0 (fail immediately), so
+            // dashboard writes (clear/delete history) would intermittently fail
+            // with SQLITE_BUSY ("database is locked") for no real fault. Wait up
+            // to 5s for the lock instead. busy_timeout is per-connection and
+            // persists across cached reuse (same Connection object).
+            let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+            ConnectionGuard {
                 conn: Some(conn),
                 cache: &self.conn_cache,
-            })
+            }
+        })
     }
 
     pub fn get_stats(&self) -> DbStats {

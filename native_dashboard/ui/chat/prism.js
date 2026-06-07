@@ -63,7 +63,12 @@ export async function loadPrismLanguage(lang) {
         script.onload = () => resolve();
         script.onerror = () => {
             errorLogger.log('PRISM_LANG_LOAD_FAIL', `Failed to load Prism language: ${canon}`);
-            // Don't reject — fall back to plain-text code.
+            // Evict the cached promise so a transient load failure (CSP hiccup,
+            // AV scan, momentary file-lock on Windows) can be retried on a later
+            // render instead of permanently falling back to plain text this
+            // session.
+            loadPromises.delete(canon);
+            // Don't reject — fall back to plain-text code for this attempt.
             resolve();
         };
         document.head.appendChild(script);
@@ -88,16 +93,27 @@ export async function highlightCodeBlocks(root) {
         // omits the language after the opening backticks.
         if (lang === 'code')
             continue;
-        await loadPrismLanguage(lang);
-        if (prism.languages[canonicalPrismLang(lang)]) {
+        const canon = canonicalPrismLang(lang);
+        const supported = PRISM_LANGS.has(canon);
+        if (supported)
+            await loadPrismLanguage(lang);
+        if (prism.languages[canon]) {
             try {
                 prism.highlightElement(code);
             }
             catch (e) {
                 console.debug('Prism highlight failed:', e);
             }
+            // Highlighted (or attempted on a loaded grammar) — don't re-walk.
+            code.dataset.prismDone = '1';
         }
-        code.dataset.prismDone = '1';
+        else if (!supported) {
+            // Unsupported language: nothing to load, mark done so we don't
+            // re-walk this block on every render.
+            code.dataset.prismDone = '1';
+        }
+        // Supported but the grammar failed to load (transient): leave prismDone
+        // unset so a later render retries — loadPrismLanguage evicted its cache.
     }
 }
 //# sourceMappingURL=prism.js.map

@@ -200,11 +200,24 @@ class BotHealthData:
         # the previous instance. None means "construct lazily on first read"
         # so tests that mock psutil.Process at patch-time still see the mock.
         self._process: psutil.Process | None = None
+        # Serializes the lazy construction above AND the delta-based
+        # cpu_percent(interval=None) sampling. Under ThreadingHTTPServer
+        # (one thread per request) two concurrent scrapes would otherwise
+        # double-construct the handle or interleave the cpu baseline read/write
+        # and produce garbage CPU values.
+        self._process_lock = threading.Lock()
 
     def _get_process(self) -> psutil.Process:
-        if self._process is None:
-            self._process = psutil.Process()
-        return self._process
+        with self._process_lock:
+            if self._process is None:
+                self._process = psutil.Process()
+            return self._process
+
+    def _sample_cpu(self) -> float:
+        """Thread-safe, non-blocking CPU% (delta since the last sample)."""
+        proc = self._get_process()
+        with self._process_lock:
+            return proc.cpu_percent(interval=None)
 
     def update_from_bot(self, bot: Bot) -> None:
         """Update health data from bot instance (thread-safe)."""
@@ -263,10 +276,10 @@ class BotHealthData:
         always reports 0.0 — that's fine because health endpoints get
         polled regularly enough that the second call onwards is accurate.
         """
-        process = self._get_process()
-        # Non-blocking read: returns the delta since the last call. Requires
-        # the same psutil.Process() instance across calls — see _get_process.
-        cpu_percent = process.cpu_percent(interval=None)
+        # Non-blocking read: returns the delta since the last call. Serialized
+        # across request threads — see _sample_cpu.
+        cpu_percent = self._sample_cpu()
+        process = self._get_process()  # for memory_info()/num_threads() below
 
         with self._data_lock:
             is_ready = self.is_ready
@@ -846,7 +859,9 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
 
         # cpu_percent(interval=None) is delta-based and requires the
         # singleton process handle. cpu_percent() with no arg blocks 0.1s.
-        cpu_percent = process.cpu_percent(interval=None)
+        # Sampled via _sample_cpu so concurrent /metrics + /health scrapes
+        # don't interleave the delta baseline.
+        cpu_percent = health_data._sample_cpu()
         memory_rss = process.memory_info().rss
         num_threads = process.num_threads()
 

@@ -133,9 +133,11 @@ class AICache:
                 if key in self.cache:
                     continue
                 if len(self.cache) >= self.max_size:
-                    # Drop the oldest when over capacity. Mirrors _evict_lru
-                    # behaviour without re-acquiring the lock.
-                    self.cache.popitem(last=False)
+                    # load_recent() delivers entries best-first (ORDER BY hits
+                    # DESC), so once at capacity the *remaining* entries are the
+                    # least valuable. Stop here instead of popitem(last=False),
+                    # which would evict the highest-hit entries we just inserted.
+                    break
                 self.cache[key] = entry
                 added += 1
         return added

@@ -1019,32 +1019,32 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 # prefill entirely and just retry from original_messages.
                 partial_prefill = partial.rstrip() if partial else ""
                 if partial_prefill:
-                    if thinking_enabled:
-                        # Thinking mode doesn't support assistant prefill —
-                        # ask Claude to continue via a user message with the partial text.
-                        # Always rebuild from original_messages to prevent accumulation.
-                        api_kwargs["messages"] = [
-                            *original_messages,
-                            {"role": "assistant", "content": partial_prefill},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "Your previous response was interrupted mid-stream. "
-                                    "The text above is what you had written so far. "
-                                    "Continue writing from EXACTLY where you left off. "
-                                    "Do NOT repeat any of the text above — only output the continuation."
-                                ),
-                            },
-                        ]
-                        # Disable thinking for continuation to avoid repetition overhead
-                        api_kwargs.pop("thinking", None)
-                    else:
-                        # Non-thinking mode: use standard assistant prefill
-                        # Always rebuild from original_messages to prevent accumulation.
-                        api_kwargs["messages"] = [
-                            *original_messages,
-                            {"role": "assistant", "content": partial_prefill},
-                        ]
+                    # A last-assistant-turn prefill (request ending in an
+                    # assistant message) is REJECTED with a 400 on Claude 4.x
+                    # models (Opus 4.6/4.7/4.8, Sonnet 4.6) — and BadRequestError
+                    # is NOT in _RETRYABLE_ERRORS, so it would propagate out and
+                    # defeat this entire retry loop. Use the user-continuation
+                    # form for ALL models (thinking and non-thinking alike):
+                    # append the partial as an assistant turn followed by a user
+                    # message asking Claude to continue, so the request ends in a
+                    # user turn (always valid). Rebuild from original_messages to
+                    # prevent accumulation across attempts.
+                    api_kwargs["messages"] = [
+                        *original_messages,
+                        {"role": "assistant", "content": partial_prefill},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was interrupted mid-stream. "
+                                "The text above is what you had written so far. "
+                                "Continue writing from EXACTLY where you left off. "
+                                "Do NOT repeat any of the text above — only output the continuation."
+                            ),
+                        },
+                    ]
+                    # Disable thinking for the continuation (no-op if absent) to
+                    # avoid repetition overhead.
+                    api_kwargs.pop("thinking", None)
 
                 attempt += 1
                 await asyncio.sleep(delay)

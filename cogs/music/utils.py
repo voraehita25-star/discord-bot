@@ -74,18 +74,25 @@ def format_duration(seconds: int | float | None) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def create_progress_bar(current: int | float, total: int | float, length: int = 12) -> str:
+def create_progress_bar(
+    current: int | float | None, total: int | float | None, length: int = 12
+) -> str:
     """Create a visual progress bar ▰▰▰▰▱▱▱▱▱.
 
     Args:
         current: Current position value.
-        total: Total/maximum value.
+        total: Total/maximum value (0 or None render as an empty bar — both
+            mean "unknown duration" for a live stream / malformed metadata,
+            matching format_duration's convention).
         length: Length of the progress bar in characters.
 
     Returns:
         A string progress bar using ▰ (filled) and ▱ (empty) characters.
     """
-    if total == 0:
+    # ``not total`` covers both 0 and None — a yt-dlp duration of None
+    # (livestream / missing metadata) would otherwise hit ``current / None``
+    # and raise TypeError, since ``None == 0`` is False.
+    if not total:
         return "▱" * length
     progress = max(0, min(length, int((current / total) * length)))
     filled = "▰" * progress

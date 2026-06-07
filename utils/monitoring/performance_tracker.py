@@ -210,7 +210,10 @@ class PerformanceTracker:
 
     def get_all_stats(self) -> dict[str, dict[str, Any]]:
         """Get statistics for all operations."""
-        return {op: stats.to_dict() for op, stats in self._stats.items()}
+        # Snapshot via list() so a concurrent record() of a new operation name
+        # (which resizes the dict) can't raise "dictionary changed size during
+        # iteration" — mirrors cleanup_old_stats().
+        return {op: stats.to_dict() for op, stats in list(self._stats.items())}
 
     def get_hourly_trend(self, operation: str, hours: int = 24) -> list[dict[str, Any]]:
         """Get hourly performance trend for last N hours."""
@@ -289,13 +292,17 @@ class PerformanceTracker:
 
     def get_summary(self) -> dict[str, Any]:
         """Get a summary of all tracked operations."""
+        # Single snapshot so a concurrent record() of a new operation can't
+        # resize the dict mid-iteration, and so the counts stay mutually
+        # consistent with the per-op stats below.
+        items = list(self._stats.items())
         summary = {
-            "operations": len(self._stats),
-            "total_measurements": sum(s.count for s in self._stats.values()),
+            "operations": len(items),
+            "total_measurements": sum(stats.count for _, stats in items),
             "stats": {},
         }
 
-        for op, stats in self._stats.items():
+        for op, stats in items:
             summary["stats"][op] = {  # type: ignore[index]
                 "count": stats.count,
                 "avg_ms": round(stats.avg_time * 1000, 2),

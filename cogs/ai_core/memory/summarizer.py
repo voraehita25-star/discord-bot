@@ -252,8 +252,10 @@ class ConversationSummarizer:
         old_history = history[:-keep_recent]
         recent_history = history[-keep_recent:]
 
-        # Summarize old history
-        summary = await self.summarize(old_history)
+        # Summarize old history. Pass max_messages explicitly so the WHOLE old
+        # segment is summarised — summarize() otherwise defaults to the last 50
+        # messages, which would silently drop the bulk of a long history.
+        summary = await self.summarize(old_history, max_messages=len(old_history))
 
         if not summary:
             # Defensive copy — every other return path returns a new list,

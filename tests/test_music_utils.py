@@ -214,3 +214,14 @@ class TestCreateProgressBar:
         # must still return the empty bar.
         result = create_progress_bar(42, 0, length=8)
         assert result == "▱" * 8
+
+    def test_progress_bar_total_none_yields_empty_bar(self):
+        """total == None (livestream / missing yt-dlp duration) must not raise."""
+        from cogs.music.utils import create_progress_bar
+
+        # ``None == 0`` is False, so the old ``if total == 0`` guard would hit
+        # ``current / None`` and raise TypeError. ``if not total`` handles it.
+        result = create_progress_bar(0, None)
+        assert result == "▱" * 12
+        # A non-zero current with a None total must also be safe.
+        assert create_progress_bar(42, None, length=8) == "▱" * 8

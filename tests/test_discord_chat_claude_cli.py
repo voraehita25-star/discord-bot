@@ -203,6 +203,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             # Simulate the streaming callbacks the real subprocess would fire.
             await on_text_delta("Hello, ")
@@ -255,6 +257,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             captured_argv.extend(argv)
             await on_text_delta("ok")
@@ -298,6 +302,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             await on_text_delta("partial...")
             # Mid-stream cancellation: the cancel-flag dict is flipped
@@ -351,6 +357,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             # Detect whether --resume <id> is present in argv to record
             # which attempt this call represents.
@@ -408,6 +416,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             # Real-world failure mode: an orphan closing tag at the tail.
             await on_text_delta("Hello! How are you?</system-reminder>")
@@ -452,6 +462,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             await on_text_delta(
                 "Sure! <system-reminder>do not say X</system-reminder>Here is the answer."
@@ -503,6 +515,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             # Simulate the failure: model emits a timestamp prefix
             # followed by the real reply.
@@ -559,6 +573,8 @@ class TestStreamingSuccessPath:
             on_thinking_block_start: Any = None,
             on_thinking_block_stop: Any = None,
             timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
         ) -> tuple[str, dict[str, Any] | None]:
             await on_text_delta("Some words before timeout")
             raise TimeoutError

@@ -19,13 +19,15 @@ Reuse:
     ``logic.py`` produces, per-channel session tracking, placeholder
     message updates, and the SDK-shape return tuple.
 
-Limitations vs the SDK path:
+Capabilities / limitations vs the SDK path:
+    - Web tools: WebSearch + WebFetch are enabled (claude's built-ins) so the
+      Discord AI can look up current info and read URLs. There's no Read tool
+      on this path, so no local-file exfil risk. Toggle via DASHBOARD_CLI_WEB_TOOLS.
     - No ``temperature`` / ``max_tokens`` overrides (CLI doesn't expose them)
     - No API failover (subscription auth has no proxy concept)
     - Images attached to Discord messages are dropped with a "[image]"
       placeholder in the prompt — wiring through the Read-tool image
-      path is a future improvement; today the CLI-mode Discord bot is
-      text-only, matching what env.example documents.
+      path is a future improvement.
 """
 
 from __future__ import annotations
@@ -41,6 +43,9 @@ from typing import Any
 import discord
 
 from .dashboard_chat_claude_cli import (
+    _CLI_WEB_TOOLS_ENABLED,
+    _ai_tool_names,
+    _ai_tools_env,
     _build_claude_argv,
     _OverloadedError,
     _run_claude_subprocess,
@@ -267,6 +272,8 @@ async def call_claude_cli_streaming(
     send_channel: Any,
     channel_id: int | None = None,
     cancel_flags: dict[int, bool] | None = None,
+    user_id: int | None = None,
+    guild_id: int | None = None,
 ) -> tuple[str, str, list[Any]]:
     """Drop-in replacement for ``api_handler.call_claude_api_streaming``.
 
@@ -365,6 +372,20 @@ async def call_claude_cli_streaming(
                 )
             return "", "", []
 
+        # AI tools (memory + optional server actions) via the MCP→IPC bridge.
+        # Needs the per-turn Discord context; guild falls back to the channel's.
+        _guild = (
+            guild_id
+            if guild_id is not None
+            else getattr(getattr(send_channel, "guild", None), "id", None)
+        )
+        ai_tools = _ai_tool_names()
+        tools_env = (
+            _ai_tools_env(guild_id=_guild, channel_id=channel_id, user_id=user_id)
+            if ai_tools
+            else None
+        )
+
         # Run with retry-once on stale session — exactly mirrors the
         # dashboard handler's behaviour. The stale-session case is when
         # Claude on the server side has GC'd the session log under us.
@@ -379,6 +400,11 @@ async def call_claude_cli_streaming(
                 # the reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the model still spends real reasoning effort.
                 enable_thinking=True,
+                # Give the Discord AI web access (WebSearch + WebFetch). There's
+                # no Read tool on this path, so no local-file exfil risk; both
+                # run server-side at Anthropic.
+                enable_web=_CLI_WEB_TOOLS_ENABLED,
+                ai_tool_names=ai_tools,
             )
             try:
                 new_session_id, _usage = await asyncio.wait_for(
@@ -390,6 +416,7 @@ async def call_claude_cli_streaming(
                         on_thinking_block_start=None,
                         on_thinking_block_stop=None,
                         timeout=_DISCORD_STREAM_TIMEOUT,
+                        extra_env=tools_env,
                     ),
                     timeout=_DISCORD_STREAM_TIMEOUT,
                 )
@@ -477,6 +504,8 @@ async def call_claude_cli(
     contents: list[dict[str, Any]],
     config_params: dict[str, Any],
     channel_id: int | None = None,
+    user_id: int | None = None,
+    guild_id: int | None = None,
 ) -> tuple[str, str, list[Any]]:
     """Non-streaming variant — used when streaming is disabled per channel.
 
@@ -511,6 +540,13 @@ async def call_claude_cli(
         if not claude_exe:
             return "", "", []
 
+        ai_tools = _ai_tool_names()
+        tools_env = (
+            _ai_tools_env(guild_id=guild_id, channel_id=channel_id, user_id=user_id)
+            if ai_tools
+            else None
+        )
+
         for attempt in (1, 2):
             argv = _build_claude_argv(
                 claude_exe,
@@ -522,6 +558,11 @@ async def call_claude_cli(
                 # the reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the model still spends real reasoning effort.
                 enable_thinking=True,
+                # Give the Discord AI web access (WebSearch + WebFetch). There's
+                # no Read tool on this path, so no local-file exfil risk; both
+                # run server-side at Anthropic.
+                enable_web=_CLI_WEB_TOOLS_ENABLED,
+                ai_tool_names=ai_tools,
             )
             try:
                 new_session_id, _usage = await asyncio.wait_for(
@@ -533,6 +574,7 @@ async def call_claude_cli(
                         on_thinking_block_start=None,
                         on_thinking_block_stop=None,
                         timeout=_DISCORD_STREAM_TIMEOUT,
+                        extra_env=tools_env,
                     ),
                     timeout=_DISCORD_STREAM_TIMEOUT,
                 )

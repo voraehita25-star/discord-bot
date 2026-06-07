@@ -52,12 +52,17 @@ _WS_LOCALHOST_ADDRS = {"127.0.0.1", "localhost", "::1"}
 if WS_HOST not in _WS_LOCALHOST_ADDRS:
     _ws_tls_cert = os.getenv("WS_TLS_CERT_PATH", "")
     _ws_tls_key = os.getenv("WS_TLS_KEY_PATH", "")
-    if not (_ws_tls_cert and _ws_tls_key):
+    # TLS must be both *demanded* (WS_REQUIRE_TLS) and *configured* (cert + key):
+    # ws_dashboard.py only builds the SSL context when WS_REQUIRE_TLS is true, so
+    # cert-path presence alone does NOT mean the socket will actually be encrypted.
+    # Requiring the flag here keeps this guard in lock-step with the server, so a
+    # public host with certs but WS_REQUIRE_TLS unset can't bind plaintext ws://.
+    if not (WS_REQUIRE_TLS and _ws_tls_cert and _ws_tls_key):
         logger.critical(
             "⛔ Refusing to expose WebSocket dashboard on %s without TLS — "
             "the auth token would travel in plaintext. Either set "
-            "WS_TLS_CERT_PATH + WS_TLS_KEY_PATH, or use "
-            "WS_DASHBOARD_HOST=127.0.0.1 for local-only access. "
+            "WS_REQUIRE_TLS=true together with WS_TLS_CERT_PATH + WS_TLS_KEY_PATH, "
+            "or use WS_DASHBOARD_HOST=127.0.0.1 for local-only access. "
             "Falling back to 127.0.0.1.",
             WS_HOST,
         )

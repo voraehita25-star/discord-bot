@@ -589,12 +589,24 @@ class EntityMemoryManager:
                 "Corrupted JSON in entity row id=%s; falling back to empty facts", row_id
             )
             facts_dict = {}
+        # Build EntityFacts once here. from_dict can raise TypeError on a
+        # malformed `custom` field; doing it inside this guard means both Entity
+        # constructions below reuse the result, so the unguarded positional
+        # fallback branch can't re-raise that TypeError out of get_entity
+        # (which only catches aiosqlite.Error) and crash the lookup.
+        try:
+            facts = EntityFacts.from_dict(facts_dict)
+        except (TypeError, ValueError):
+            logger.exception(
+                "Malformed entity facts for row id=%s; falling back to empty facts", row_id
+            )
+            facts = EntityFacts()
         try:
             return Entity(
                 entity_id=row["id"],
                 name=row["name"],
                 entity_type=row["entity_type"],
-                facts=EntityFacts.from_dict(facts_dict),
+                facts=facts,
                 channel_id=row["channel_id"],
                 guild_id=row["guild_id"],
                 confidence=row["confidence"] or 1.0,
@@ -608,7 +620,7 @@ class EntityMemoryManager:
                 entity_id=row[0],
                 name=row[1],
                 entity_type=row[2],
-                facts=EntityFacts.from_dict(facts_dict),
+                facts=facts,
                 channel_id=row[4],
                 guild_id=row[5],
                 confidence=row[6] or 1.0,

@@ -337,10 +337,18 @@ class QueueManager:
                         # Nothing to migrate — leave the JSON file alone so a
                         # future bug fix can recover whatever was in there.
                         return False
-                    self.queues[guild_id] = collections.deque(valid_items)  # Enforce max size
-                    self.volumes[guild_id] = float(data.get("volume", 0.5))
-                    self.loops[guild_id] = bool(data.get("loop", False))
-                    self.mode_247[guild_id] = bool(data.get("mode_247", False))
+                    # Parse every field into locals BEFORE mutating self.* so a
+                    # malformed value (e.g. a non-numeric "volume" → ValueError)
+                    # can't leave half-applied state — the queue deque populated
+                    # while the method returns False to the caller.
+                    new_deque = collections.deque(valid_items)  # valid_items already capped
+                    new_volume = float(data.get("volume", 0.5))
+                    new_loop = bool(data.get("loop", False))
+                    new_mode_247 = bool(data.get("mode_247", False))
+                    self.queues[guild_id] = new_deque
+                    self.volumes[guild_id] = new_volume
+                    self.loops[guild_id] = new_loop
+                    self.mode_247[guild_id] = new_mode_247
                     logger.info("📂 Loaded queue (%d tracks) from JSON", len(valid_items))
                     # Only delete the JSON migration file AFTER confirming
                     # the new state was persisted to DB — a crash between

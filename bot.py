@@ -278,12 +278,13 @@ def bootstrap() -> None:
     # Ensure required directories exist
     for dir_name in ("temp", "data", "logs"):
         dir_path = Path(dir_name)
-        if not dir_path.exists():
-            try:
-                dir_path.mkdir(parents=True)
-            except PermissionError:
-                logger.exception("Cannot create %s directory", dir_name)
-                raise
+        try:
+            # exist_ok=True keeps this race-safe if the dir appears between
+            # the check and the call (e.g. a concurrent creator); matches config.py.
+            dir_path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            logger.exception("Cannot create %s directory", dir_name)
+            raise
 
     # Check for FFmpeg — honour FFMPEG_PATH and the bundled ./ffmpeg/bin
     # before falling back to system PATH so installs that ship a vendored

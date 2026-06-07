@@ -171,6 +171,36 @@ class TestStructuredFormatter:
 
         assert parsed["duration_ms"] == 150.5
 
+    def test_taskname_not_leaked_into_data(self):
+        """`taskName` (added by the LogRecord factory on 3.12+) must be reserved.
+
+        Otherwise every structured log under asyncio gets an unintended
+        ``data.taskName`` field polluting the record.
+        """
+        from utils.monitoring.structured_logger import StructuredFormatter
+
+        formatter = StructuredFormatter(include_timestamp=False)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="Test",
+            args=(),
+            exc_info=None,
+        )
+        # Emulate the 3.12+ factory attribute and a genuine extra field.
+        record.taskName = "Task-42"
+        record.custom_field = "keep-me"
+
+        result = formatter.format(record)
+        parsed = json.loads(result)
+
+        data = parsed.get("data", {})
+        assert "taskName" not in data
+        assert data.get("custom_field") == "keep-me"
+
 
 class TestHumanReadableFormatter:
     """Tests for HumanReadableFormatter class."""

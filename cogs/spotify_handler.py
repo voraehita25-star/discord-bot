@@ -414,6 +414,12 @@ class SpotifyHandler:
             # _api_call_with_retry re-invokes this closure on retry, so a
             # recreated client is still picked up on the next attempt.
             sp = self.sp
+            # cleanup() can set self.sp = None between the guard at the top of
+            # _handle_playlist and this closure running in the executor. Raise a
+            # ConnectionError (caught by process_spotify_url) instead of letting
+            # `None.playlist_tracks` surface as an unhandled AttributeError.
+            if sp is None:
+                raise ConnectionError("Spotify client unavailable")
             results = sp.playlist_tracks(url)
             tracks = results.get("items", []) if results else []
             # Limit total tracks to prevent memory issues

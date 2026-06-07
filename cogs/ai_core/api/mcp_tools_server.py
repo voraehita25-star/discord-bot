@@ -1,0 +1,161 @@
+"""Standalone MCP (stdio) server that proxies the AI's tool calls to the bot.
+
+``claude -p`` (subscription mode) only accepts CUSTOM tools through an MCP
+server it spawns as a child process. This script IS that server: a thin
+stdio JSON-RPC proxy. It owns no tool logic — on ``tools/list`` and
+``tools/call`` it forwards to the running bot's localhost IPC endpoint
+(``cogs/ai_core/api/ai_tools_ipc.py``), which executes the tool in-process
+with the live bot/guild state, permission checks, and memory manager.
+
+CRITICAL: this process is spawned by ``claude`` and its STDOUT carries the
+JSON-RPC stream — nothing else may be printed there. So it imports ONLY the
+stdlib (no bot modules, which print banners at import and would corrupt the
+protocol stream), and every diagnostic goes to STDERR.
+
+Transport: newline-delimited JSON-RPC 2.0 over stdio (the MCP stdio framing).
+
+Configuration comes entirely from the environment (set by the bot when it
+spawns ``claude`` for a turn):
+  - BOT_AI_TOOLS_IPC_URL    base URL of the bot IPC (e.g. http://127.0.0.1:PORT)
+  - BOT_AI_TOOLS_IPC_TOKEN  shared secret; sent as the X-Token header
+  - BOT_AI_TOOLS_GUILD_ID / _CHANNEL_ID / _USER_ID  per-turn Discord context
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+_PROTOCOL_VERSION = "2024-11-05"
+_SERVER_NAME = "bottools"
+_HTTP_TIMEOUT = 30.0
+
+
+def _log(msg: str) -> None:
+    """Diagnostics go to stderr — stdout is reserved for JSON-RPC."""
+    sys.stderr.write(f"[mcp_tools_server] {msg}\n")
+    sys.stderr.flush()
+
+
+def _send(message: dict) -> None:
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+def _ipc_request(path: str, payload: dict | None) -> dict:
+    """Call the bot IPC. Returns the parsed JSON body, or raises on failure."""
+    base = os.environ.get("BOT_AI_TOOLS_IPC_URL", "").rstrip("/")
+    token = os.environ.get("BOT_AI_TOOLS_IPC_TOKEN", "")
+    if not base or not token:
+        raise RuntimeError("bot IPC not configured")
+    url = f"{base}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST" if data is not None else "GET",
+        headers={"Content-Type": "application/json", "X-Token": token},
+    )
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _turn_context() -> dict:
+    """Per-turn Discord context the bot uses to scope + permission-check tools."""
+    ctx: dict = {}
+    for env_key, ctx_key in (
+        ("BOT_AI_TOOLS_GUILD_ID", "guild_id"),
+        ("BOT_AI_TOOLS_CHANNEL_ID", "channel_id"),
+        ("BOT_AI_TOOLS_USER_ID", "user_id"),
+    ):
+        raw = os.environ.get(env_key)
+        if raw:
+            try:
+                ctx[ctx_key] = int(raw)
+            except ValueError:
+                pass
+    return ctx
+
+
+def _handle_tools_list(mid) -> None:
+    try:
+        body = _ipc_request("/tools", None)
+        tools = body.get("tools", [])
+    except Exception as e:
+        _log(f"tools/list failed: {e}")
+        tools = []
+    _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}})
+
+
+def _handle_tools_call(mid, params: dict) -> None:
+    name = params.get("name", "")
+    arguments = params.get("arguments") or {}
+    try:
+        body = _ipc_request(
+            "/exec",
+            {"tool": name, "args": arguments, "context": _turn_context()},
+        )
+        text = str(body.get("result", ""))
+        is_error = bool(body.get("is_error"))
+    except urllib.error.HTTPError as e:
+        text = f"Tool call rejected by bot (HTTP {e.code})."
+        is_error = True
+    except Exception as e:
+        _log(f"tools/call '{name}' failed: {e}")
+        text = f"Tool call failed: {e}"
+        is_error = True
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "id": mid,
+            "result": {"content": [{"type": "text", "text": text}], "isError": is_error},
+        }
+    )
+
+
+def main() -> None:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        method = req.get("method")
+        mid = req.get("id")
+        if method == "initialize":
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "result": {
+                        "protocolVersion": _PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": _SERVER_NAME, "version": "1.0"},
+                    },
+                }
+            )
+        elif method in ("notifications/initialized", "initialized"):
+            continue  # notification — no response
+        elif method == "ping":
+            _send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif method == "tools/list":
+            _handle_tools_list(mid)
+        elif method == "tools/call":
+            _handle_tools_call(mid, req.get("params") or {})
+        elif mid is not None:
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                }
+            )
+
+
+if __name__ == "__main__":
+    main()

@@ -305,6 +305,27 @@ class TestBuildFullPrompt:
         # Current message is the last block.
         assert out.rfind("THE_FINAL_MESSAGE") > out.rfind("# Persona")
 
+    def test_persona_in_system_omits_persona_and_timestamp_from_body(self):
+        # When persona is delivered via --append-system-prompt-file, the body
+        # must NOT repeat the persona or the timestamp-convention block; only
+        # the dynamic user_context + current message stay in the body.
+        out = cli._build_full_prompt(
+            persona="SECRET_PERSONA",
+            user_context="CTX_HERE",
+            history=[],
+            history_limit=10,
+            current_message="hello",
+            image_paths=[],
+            doc_paths=None,
+            is_resumed_session=False,
+            persona_in_system=True,
+        )
+        assert "SECRET_PERSONA" not in out
+        assert "# Persona" not in out
+        assert "# Timestamp convention" not in out
+        assert "CTX_HERE" in out  # dynamic context still in body
+        assert "hello" in out
+
 
 # ---------------------------------------------------------------------------
 # _make_subprocess_env
@@ -382,6 +403,190 @@ class TestBuildClaudeArgv:
             allow_read_for_images=False,
         )
         assert "--effort" not in argv
+
+    def test_system_prompt_file_flag(self, tmp_path):
+        spf = tmp_path / "sp.txt"
+        spf.write_text("persona", encoding="utf-8")
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            system_prompt_file=spf,
+        )
+        assert "--append-system-prompt-file" in argv
+        assert str(spf) in argv
+
+    def test_no_system_prompt_file_by_default(self):
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+        )
+        assert "--append-system-prompt-file" not in argv
+
+    def _allowed_tools(self, argv):
+        return argv[argv.index("--allowedTools") + 1]
+
+    def test_web_tools_disabled_by_default(self):
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False
+        )
+        tools = self._allowed_tools(argv)
+        assert "WebSearch" not in tools
+        assert "WebFetch" not in tools
+
+    def test_web_tools_enabled_no_read_adds_both(self):
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False, enable_web=True
+        )
+        tools = self._allowed_tools(argv)
+        assert "WebSearch" in tools
+        assert "WebFetch" in tools
+
+    def test_web_tools_with_read_omits_webfetch(self):
+        # Exfil guard: unconfined Read + arbitrary-URL WebFetch would let a
+        # prompt-injected doc read a secret and leak it via a fetch URL. So
+        # WebFetch must NOT be added when Read is enabled; WebSearch still is.
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=True, enable_web=True
+        )
+        tools = self._allowed_tools(argv)
+        assert "Read" in tools
+        assert "WebSearch" in tools
+        assert "WebFetch" not in tools
+
+    def test_write_mode_never_gets_web_tools(self, monkeypatch, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setattr(cli, "_dashboard_cli_write_dirs", lambda: [out])
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            enable_write=True,
+            enable_web=True,
+        )
+        # Write mode returns before the chat-tools branch; web tools never
+        # appear in --allowedTools, and the deny-list still blocks them.
+        joined = " ".join(argv)
+        assert "--allowedTools WebSearch" not in joined
+        assert "WebFetch WebSearch" in joined  # the disallowedTools deny-list
+
+
+class TestSystemPromptFile:
+    def test_build_system_prompt_includes_persona_and_convention(self):
+        out = cli._build_system_prompt("MY_PERSONA")
+        assert "MY_PERSONA" in out
+        assert "# Persona" in out
+        assert "# Timestamp convention" in out
+
+    def test_build_system_prompt_empty_persona_still_has_convention(self):
+        out = cli._build_system_prompt("")
+        assert "# Persona" not in out
+        assert "# Timestamp convention" in out
+
+    def test_no_tool_declaration_when_disabled(self):
+        out = cli._build_system_prompt("P")
+        assert "WebSearch" not in out
+        assert "Available tools" not in out
+
+    def test_web_enabled_declares_websearch_and_overrides_stale_persona(self):
+        # Personas written for Gemini say "Google Search is automatically
+        # enabled"; the note must declare WebSearch and tell the model not to
+        # claim a tool is unavailable.
+        out = cli._build_system_prompt("Use GOOGLE SEARCH for facts.", web_enabled=True)
+        assert "# Available tools (this session)" in out
+        assert "WebSearch" in out
+        assert "WebFetch" in out
+        assert "not enabled" in out  # explicit instruction not to refuse
+        assert "Google Search" in out  # the bridging note referencing personas
+        # The tool note comes AFTER the persona so it supersedes stale claims.
+        assert out.index("Available tools") > out.index("Use GOOGLE SEARCH")
+
+    def test_ai_tools_enabled_declares_memory_and_server_tools(self):
+        out = cli._build_system_prompt("P", ai_tools_enabled=True)
+        assert "recall_memory" in out
+        assert "server tools" in out.lower()
+
+    def test_ensure_file_is_content_addressed_and_idempotent(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli, "_SYSTEM_PROMPT_DIR", tmp_path)
+        p1 = cli._ensure_system_prompt_file("same content")
+        p2 = cli._ensure_system_prompt_file("same content")
+        assert p1 == p2  # same content -> same path (cache-friendly)
+        assert p1.read_text(encoding="utf-8") == "same content"
+        p3 = cli._ensure_system_prompt_file("different content")
+        assert p3 != p1  # different content -> different file
+
+
+class TestPrewarm:
+    class _FakeProc:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    def setup_method(self):
+        cli._warm_procs.clear()
+
+    def teardown_method(self):
+        cli._warm_procs.clear()
+
+    def test_take_warm_matching_returns_proc(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        proc = self._FakeProc()
+        cli._warm_procs["conv1"] = {
+            "proc": proc,
+            "argv": ["a", "b"],
+            "created": cli.time.monotonic(),
+        }
+        got = cli._take_warm("conv1", ["a", "b"])
+        assert got is proc
+        assert "conv1" not in cli._warm_procs  # consumed
+
+    def test_take_warm_argv_mismatch_kills_and_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        proc = self._FakeProc()
+        cli._warm_procs["conv1"] = {"proc": proc, "argv": ["a"], "created": cli.time.monotonic()}
+        assert cli._take_warm("conv1", ["different"]) is None
+        assert proc.killed is True
+        assert "conv1" not in cli._warm_procs
+
+    def test_take_warm_dead_proc_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        proc = self._FakeProc(returncode=1)  # already exited
+        cli._warm_procs["conv1"] = {"proc": proc, "argv": ["a"], "created": cli.time.monotonic()}
+        assert cli._take_warm("conv1", ["a"]) is None
+
+    def test_take_warm_stale_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        proc = self._FakeProc()
+        cli._warm_procs["conv1"] = {
+            "proc": proc,
+            "argv": ["a"],
+            "created": cli.time.monotonic() - (cli._PREWARM_TTL + 100),
+        }
+        assert cli._take_warm("conv1", ["a"]) is None
+        assert proc.killed is True
+
+    def test_take_warm_disabled_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", False)
+        proc = self._FakeProc()
+        cli._warm_procs["conv1"] = {"proc": proc, "argv": ["a"], "created": cli.time.monotonic()}
+        assert cli._take_warm("conv1", ["a"]) is None
+
+    def test_take_warm_no_conversation_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        assert cli._take_warm(None, ["a"]) is None
+
+    def test_shutdown_prewarm_kills_all(self):
+        p1, p2 = self._FakeProc(), self._FakeProc()
+        cli._warm_procs["c1"] = {"proc": p1, "argv": [], "created": cli.time.monotonic()}
+        cli._warm_procs["c2"] = {"proc": p2, "argv": [], "created": cli.time.monotonic()}
+        cli.shutdown_prewarm()
+        assert p1.killed and p2.killed
+        assert not cli._warm_procs
 
     def test_write_mode_off_pins_default_and_no_write_tools(self):
         # Without enable_write the process stays the hardened pure-chat default:

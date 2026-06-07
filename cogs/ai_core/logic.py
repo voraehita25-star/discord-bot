@@ -347,6 +347,11 @@ class ChatManager(SessionMixin, ResponseMixin):
             # The callback deletes from memory only on save success.
             if channel_id in self.chats:
                 chat_copy = self.chats[channel_id]
+                # Snapshot the access time at SCHEDULE time. save_history is
+                # awaited on a background task, so the channel can be re-accessed
+                # before the callback fires; the timestamp lets the callback tell
+                # a stale snapshot from a live one.
+                ts_at_schedule = self.last_accessed.get(channel_id)
                 try:
                     loop = asyncio.get_running_loop()
                     from .storage import save_history
@@ -360,7 +365,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Capture channel_id and self per-iteration for the callback.
                     # Clean up channel data only after save succeeds to prevent data loss.
                     def _handle_lru_save_result(
-                        t: asyncio.Task, _cid: int = channel_id, _mgr=self
+                        t: asyncio.Task,
+                        _cid: int = channel_id,
+                        _mgr=self,
+                        _ts: float | None = ts_at_schedule,
                     ) -> None:
                         if t.cancelled():
                             return
@@ -370,7 +378,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 "LRU save failed for channel %s, keeping in memory: %s", _cid, exc
                             )
                             return  # Don't delete if save failed — prevents data loss
-                        # Save succeeded, now safe to clean up
+                        # The channel may have been re-accessed between scheduling
+                        # and now (get_chat_session updates last_accessed and may
+                        # hold its processing_lock). Don't evict a freshly-reloaded
+                        # session, and NEVER pop a HELD lock — orphaning it breaks
+                        # per-channel mutual exclusion and lets two process_chat
+                        # turns run concurrently. Mirrors cleanup_inactive_sessions.
+                        if _mgr.last_accessed.get(_cid) != _ts:
+                            return
+                        lock = _mgr.processing_locks.get(_cid)
+                        if lock is not None and lock.locked():
+                            return
+                        # Save succeeded and the channel is still idle — clean up.
                         _mgr.chats.pop(_cid, None)
                         _mgr.last_accessed.pop(_cid, None)
                         _mgr.seen_users.pop(_cid, None)
@@ -617,6 +636,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                 send_channel=send_channel,
                 channel_id=channel_id,
                 cancel_flags=self.cancel_flags,
+                user_id=user_id,
+                guild_id=guild_id,
             )
         if self.client is None or self.target_model is None:
             raise ValueError("Claude client not initialized")
@@ -654,6 +675,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                 contents=contents,
                 config_params=config_params,
                 channel_id=channel_id,
+                user_id=user_id,
+                guild_id=guild_id,
             )
         if self.client is None or self.target_model is None:
             raise ValueError("Claude client not initialized")

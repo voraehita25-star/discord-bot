@@ -85,8 +85,12 @@ def _add_jsonl_chain(entry: dict[str, Any]) -> dict[str, Any]:
 
     Uses a per-process running hash (resets on restart — the JSONL fallback is
     a degraded DB-down path; the DB chain is the authoritative one).
+
+    NOTE: this computes the chain links but does NOT advance the running head —
+    that is committed by ``_write_fallback_chained`` only after the entry is
+    actually persisted, so a failed write can't leave the next entry chained
+    off a record that never reached disk (a false tamper signal on replay).
     """
-    global _jsonl_prev_hash
     prev = _jsonl_prev_hash
     h = _compute_entry_hash(
         prev,
@@ -99,8 +103,18 @@ def _add_jsonl_chain(entry: dict[str, Any]) -> dict[str, Any]:
     )
     entry["prev_hash"] = prev
     entry["entry_hash"] = h
-    _jsonl_prev_hash = h
     return entry
+
+
+async def _write_fallback_chained(entry: dict[str, Any]) -> bool:
+    """Chain + write one fallback entry, advancing the running hash only on a
+    confirmed write."""
+    global _jsonl_prev_hash
+    chained = _add_jsonl_chain(entry)
+    ok = await _write_fallback_entry(chained)
+    if ok:
+        _jsonl_prev_hash = chained["entry_hash"]
+    return ok
 
 
 async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
@@ -179,7 +193,7 @@ class AuditLogger:
                 "details": _scrub_str(details),
                 "fallback_reason": "db_unavailable",
             }
-            return await _write_fallback_entry(_add_jsonl_chain(entry))
+            return await _write_fallback_chained(entry)
 
         try:
             # Embed target_type into details JSON if provided
@@ -248,7 +262,7 @@ class AuditLogger:
                     "details": _scrub_str(details),
                     "fallback_reason": "db_write_failed",
                 }
-                return await _write_fallback_entry(_add_jsonl_chain(entry))
+                return await _write_fallback_chained(entry)
             except Exception:
                 logger.exception("Audit JSONL fallback also failed")
                 return False

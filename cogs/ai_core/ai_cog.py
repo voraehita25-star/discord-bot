@@ -172,6 +172,16 @@ class AI(commands.Cog):
         # Start webhook cache cleanup task
         start_webhook_cache_cleanup(self.bot)
 
+        # Start the AI-tools IPC endpoint so the CLI backend's MCP child can
+        # execute memory/server tools in-process (with the live bot + perms).
+        # Best-effort: a failure just means the AI runs without custom tools.
+        try:
+            from cogs.ai_core.api.ai_tools_ipc import start_ai_tools_ipc
+
+            await start_ai_tools_ipc(self.bot)
+        except Exception:
+            logger.exception("Failed to start AI-tools IPC")
+
         # Start RAG FAISS periodic save (every 5 min)
         rag_system.start_periodic_save(interval=300.0)
 
@@ -264,6 +274,14 @@ class AI(commands.Cog):
 
         # Stop webhook cache cleanup task
         await stop_webhook_cache_cleanup()
+
+        # Stop the AI-tools IPC endpoint started in cog_load.
+        try:
+            from cogs.ai_core.api.ai_tools_ipc import stop_ai_tools_ipc
+
+            await stop_ai_tools_ipc()
+        except Exception:
+            logger.exception("Error stopping AI-tools IPC")
 
         # Stop the module-level rate-limiter cleanup task started in
         # cog_load. Without this, every reload spawned a new cleanup

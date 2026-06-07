@@ -10,7 +10,23 @@
       "PowerShell(cd \"c:/Users/ME/BOT Discord/native_dashboard\"; powershell -NoProfile -ExecutionPolicy Bypass -File .\\\\scripts\\\\build-release.ps1)",
       "Bash(xargs wc *)",
       "PowerShell(Get-Process | Where-Object { $_.Name -match 'dashboard|bot-' } | Select-Object Id, Name, Path | Format-Table -AutoSize)",
-      "PowerShell(Join-Path *)"
+      "PowerShell(Join-Path *)",
+      "Bash(git log *)",
+      "Bash(claude --version)",
+      "Bash(where.exe claude *)",
+      "Bash(claude -p \"reply with the single word OK and nothing else\" --model claude-opus-4-8 --betas interleaved-thinking)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(rm -f err_betas.txt)",
+      "Bash(claude -p --help)",
+      "Bash(claude -p \"reply with the single word OK and nothing else\" --model claude-opus-4-8 --effort max --betas interleaved-thinking)",
+      "Bash(rm -f err2.txt)",
+      "Bash(claude -p \"reply OK\" --model claude-opus-4-8 --output-format stream-json --verbose)",
+      "Bash(claude -p \"reply OK\" --model totally-not-a-real-model-xyz --output-format stream-json --verbose)",
+      "Bash(claude -p \"reply with the single word OK\" --model claude-opus-4-8 --effort max --output-format stream-json --verbose)",
+      "Bash(claude -p \"hi\" --resume 00000000-0000-4000-8000-000000000000 --model claude-opus-4-8 --output-format stream-json --verbose)",
+      "Bash(grep -iE '\\\\.\\(py|rs|go|ts|js\\)$')",
+      "Bash(sed -E 's/.*\\\\.\\([a-z]+\\)$/\\\\1/')",
+      "Bash(git ls-files *)"
     ]
   }
 }

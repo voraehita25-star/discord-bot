@@ -1131,7 +1131,10 @@ class Music(commands.Cog):
                             return _retry_next
 
                     # 🎨 PREMIUM NOW PLAYING EMBED
-                    duration = player.data.get("duration", 0)
+                    # ``or 0`` normalises a yt-dlp None duration (livestream /
+                    # missing metadata) so the progress bar / format_duration
+                    # take their "unknown" branch instead of raising.
+                    duration = player.data.get("duration") or 0
                     embed = discord.Embed(
                         title=f"{Emojis.NOTES} กำลังเล่น",
                         description=(f"**[{player.title}]({player.data.get('webpage_url')})**"),
@@ -2362,7 +2365,9 @@ class Music(commands.Cog):
 
         # Calculate current position
         start_time = track_info.get("start_time", time.time())
-        duration = track_info.get("data", {}).get("duration", 0)
+        # ``or 0`` guards a persisted None duration (livestream / missing
+        # yt-dlp metadata) — mirrors the seek command's guard.
+        duration = track_info.get("data", {}).get("duration") or 0
 
         if ctx.voice_client.is_paused() and self._gs(guild_id).pause_start is not None:
             # If paused, use time when paused

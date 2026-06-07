@@ -419,14 +419,28 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         is_thinking = False
         input_tokens = 0
         output_tokens = 0
+        # Running totals across tool rounds. Each round is a separate billed API
+        # call, so per-round usage must be summed rather than overwritten —
+        # otherwise a multi-round (tool-using) turn reports only the final
+        # round's tokens and undercounts the real spend.
+        total_input_tokens = 0
+        total_output_tokens = 0
         # Strip a leading ``[ISO-timestamp]`` that models occasionally echo
         # from the user turn's timestamp prefix.
         ts_stripper = LeadingTimestampStripper()
 
         _MAX_TOOL_ROUNDS = 3
+        # Set if the final permitted round still requested tools — there is no
+        # further stream round to turn those results into a synthesised answer.
+        _hit_tool_round_cap = False
         for _tool_round in range(_MAX_TOOL_ROUNDS + 1):
             _tool_calls: list[Any] = []
             _model_parts: list[types.Part] = []
+            # Reset per-round token counters; Gemini usage_metadata is cumulative
+            # within one response, so after the round these hold that round's
+            # totals, which we fold into total_* below.
+            input_tokens = 0
+            output_tokens = 0
 
             logger.info("🚀 Starting Gemini stream (round %d)...", _tool_round + 1)
             stream = await asyncio.wait_for(
@@ -578,6 +592,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
             await asyncio.wait_for(_consume_stream(), timeout=stream_timeout)
 
+            # Fold this round's usage into the running totals (see above).
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+
             # If the stream ended while still inside a thinking block (model
             # emitted only reasoning and no answer text), close the thinking UI
             # so the client spinner doesn't hang waiting for a thinking_end.
@@ -720,7 +738,26 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             if not _response_parts:
                 break
             contents.append(types.Content(role="user", parts=_response_parts))
+            if _tool_round == _MAX_TOOL_ROUNDS:
+                # Final permitted round still requested tools: no further stream
+                # round will run to consume these results, so the model can't
+                # synthesise a final answer. Flag it so we surface a notice
+                # instead of silently finishing with an empty/partial response.
+                _hit_tool_round_cap = True
             # Continue loop → next stream round with tool results in context
+
+        if _hit_tool_round_cap and not full_response.strip():
+            # Ran out of tool rounds before the model produced an answer. Don't
+            # finish silently with an empty bubble — tell the user.
+            logger.warning(
+                "Gemini tool-round cap (%d) reached with no synthesised answer", _MAX_TOOL_ROUNDS
+            )
+            _cap_notice = "⚠️ ไม่สามารถสร้างคำตอบสุดท้ายได้หลังเรียกใช้เครื่องมือหลายรอบ กรุณาลองใหม่อีกครั้ง"
+            full_response += _cap_notice
+            chunks_count += 1
+            await ws.send_json(
+                {"type": "chunk", "content": _cap_notice, "conversation_id": conversation_id}
+            )
 
         # Flush residual buffered text and defensively strip any prefix that slipped through.
         tail = ts_stripper.flush()
@@ -737,7 +774,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         full_response = strip_leading_timestamp(full_response)
 
         # Fallback: estimate tokens from content if API didn't return usage
-        if not input_tokens:
+        if not total_input_tokens:
             input_text = full_context
             for c in contents:
                 parts = getattr(c, "parts", []) or []
@@ -745,10 +782,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     t = getattr(p, "text", None)
                     if t:
                         input_text += t
-            input_tokens = max(1, len(input_text) // 3)
-        if not output_tokens:
+            total_input_tokens = max(1, len(input_text) // 3)
+        if not total_output_tokens:
             out_text = full_response + thinking_content
-            output_tokens = max(1, len(out_text) // 3)
+            total_output_tokens = max(1, len(out_text) // 3)
 
         # Save assistant message to DB
         assistant_msg_id: int = 0
@@ -790,9 +827,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 "user_message_id": user_msg_id or None,
                 "assistant_message_id": assistant_msg_id or None,
                 "token_usage": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                    "total_tokens": total_input_tokens + total_output_tokens,
                     "context_window": GEMINI_CONTEXT_WINDOW,
                 },
             }

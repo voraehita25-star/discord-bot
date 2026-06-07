@@ -329,15 +329,21 @@ async def fetch_url_content(
         # Check URL cache first (under lock to prevent duplicate fetches)
         import time as _time
 
+        # Freeze the cache key up front: the GitHub branch below mutates ``url``
+        # (appends a trailing slash), so looking up under the original URL but
+        # storing under the mutated one would miss the cache on every repeat
+        # request for a bare repo URL. Keep all cache ops keyed on the input.
+        cache_key = url
+
         async with _get_url_cache_lock():
-            cached = _url_cache.get(url)
+            cached = _url_cache.get(cache_key)
             if cached is not None:
                 title, content, ts = cached
                 if _time.time() - ts < _URL_CACHE_TTL:
                     logger.debug("URL cache hit: %s", url)
                     return title, content
                 else:
-                    del _url_cache[url]
+                    del _url_cache[cache_key]
 
         # SSRF protection: block private/internal IPs
         if await _is_private_url(url):
@@ -427,7 +433,7 @@ Default Branch: {data.get("default_branch", "main")}
                                 if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
                                     oldest_key = next(iter(_url_cache))
                                     del _url_cache[oldest_key]
-                                _url_cache[url] = (title, result_content, _time.time())
+                                _url_cache[cache_key] = (title, result_content, _time.time())
                             return title, result_content
                 except Exception as e:
                     logger.debug("GitHub API failed for %s: %s", url, e)
@@ -605,7 +611,7 @@ Default Branch: {data.get("default_branch", "main")}
                 if len(_url_cache) >= _URL_CACHE_MAX_SIZE:
                     oldest_key = next(iter(_url_cache))
                     del _url_cache[oldest_key]
-                _url_cache[url] = (title, cleaned_content, _time.time())
+                _url_cache[cache_key] = (title, cleaned_content, _time.time())
 
             return title, cleaned_content
         finally:

@@ -149,29 +149,30 @@ class RagEngineWrapper:
         for entry in entries_snapshot:
             try:
                 base_score = self._cosine_similarity(query_embedding, entry["embedding"])
+
+                if time_decay_factor > 0:
+                    age_hours = (current_time - entry["timestamp"]) / 3600.0
+                    decay = math.exp(-time_decay_factor * age_hours)
+                    score = base_score * decay * entry["importance"]
+                else:
+                    score = base_score * entry["importance"]
+
+                if score >= self.similarity_threshold:
+                    results.append(
+                        {
+                            "id": entry["id"],
+                            "text": entry["text"],
+                            "score": score,
+                            "timestamp": entry["timestamp"],
+                        }
+                    )
             except (ValueError, KeyError, TypeError):
-                # Skip a single malformed entry rather than crashing the
-                # whole search. Logged at debug to avoid log spam if a batch
-                # of entries was loaded with stale dimensions.
-                logger.debug("Skipping entry with bad embedding", exc_info=True)
+                # Skip a single malformed entry rather than crashing the whole
+                # search. The whole per-entry body is guarded because load()
+                # only validates "id" — timestamp/importance/text can be absent
+                # in a hand-edited JSON file. Logged at debug to avoid log spam.
+                logger.debug("Skipping malformed RAG entry", exc_info=True)
                 continue
-
-            if time_decay_factor > 0:
-                age_hours = (current_time - entry["timestamp"]) / 3600.0
-                decay = math.exp(-time_decay_factor * age_hours)
-                score = base_score * decay * entry["importance"]
-            else:
-                score = base_score * entry["importance"]
-
-            if score >= self.similarity_threshold:
-                results.append(
-                    {
-                        "id": entry["id"],
-                        "text": entry["text"],
-                        "score": score,
-                        "timestamp": entry["timestamp"],
-                    }
-                )
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]

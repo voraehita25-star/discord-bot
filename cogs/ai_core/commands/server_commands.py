@@ -191,7 +191,10 @@ async def cmd_create_text(
     # The user almost always wanted the category to exist, so failing
     # loudly beats a confusing "where did my channel go" support ticket.
     if category_name and category is None:
-        await origin_channel.send(f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level")
+        await origin_channel.send(
+            f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level",
+            allowed_mentions=_NO_MENTIONS,
+        )
 
     try:
         channel = await guild.create_text_channel(name, category=category)
@@ -248,7 +251,10 @@ async def cmd_create_voice(
     category_name = args[1] if len(args) > 1 else None
     category = discord.utils.get(guild.categories, name=category_name) if category_name else None
     if category_name and category is None:
-        await origin_channel.send(f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level")
+        await origin_channel.send(
+            f"⚠️ ไม่พบ category **{category_name}** — กำลังสร้างช่องไว้ที่ top-level",
+            allowed_mentions=_NO_MENTIONS,
+        )
 
     try:
         channel = await guild.create_voice_channel(name, category=category)
@@ -348,7 +354,8 @@ async def cmd_delete_channel(
         matches = [ch for ch in guild.channels if ch.name.lower() == name.lower()]
         if len(matches) > 1:
             await origin_channel.send(
-                f"⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย"
+                f"⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         channel = matches[0] if matches else None
@@ -466,7 +473,8 @@ async def cmd_delete_role(
     matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
     if len(matches) > 1:
         await origin_channel.send(
-            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย"
+            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+            allowed_mentions=_NO_MENTIONS,
         )
         return
 
@@ -532,7 +540,8 @@ async def cmd_add_role(
             preview = ", ".join(m.display_name for m in matches[:5])
             extra = "..." if len(matches) > 5 else ""
             await origin_channel.send(
-                f"❌ ผู้ใช้ **{user_name}** ไม่ชัดเจน — ตรงกับ {len(matches)} คน: {preview}{extra}"
+                f"❌ ผู้ใช้ **{user_name}** ไม่ชัดเจน — ตรงกับ {len(matches)} คน: {preview}{extra}",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
 
@@ -622,7 +631,8 @@ async def cmd_remove_role(
             # cmd_add_role above. Otherwise the AI tool gets a generic
             # "user not found" and may try to create a duplicate operation.
             await origin_channel.send(
-                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน กรุณาระบุให้ชัดเจน"
+                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน กรุณาระบุให้ชัดเจน",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
 
@@ -734,7 +744,8 @@ async def cmd_set_channel_perm(
                 )
                 await origin_channel.send(
                     f"✅ ตั้งค่า permission **{perm_name}** = **{value}** "
-                    f"ให้กับ **{target_name}** ในช่อง **{channel_name}** เรียบร้อยแล้ว"
+                    f"ให้กับ **{target_name}** ในช่อง **{channel_name}** เรียบร้อยแล้ว",
+                    allowed_mentions=_NO_MENTIONS,
                 )
             except discord.Forbidden:
                 await origin_channel.send("❌ บอทไม่มีสิทธิ์ตั้งค่า permission")
@@ -826,7 +837,8 @@ async def cmd_set_role_perm(
             logger.info("🛡️ AI Set Role Perm: %s | %s=%s", role_name, perm_name, value)
             await origin_channel.send(
                 f"✅ ตั้งค่า permission **{perm_name}** = **{value}** "
-                f"ให้กับยศ **{role_name}** เรียบร้อยแล้ว"
+                f"ให้กับยศ **{role_name}** เรียบร้อยแล้ว",
+                allowed_mentions=_NO_MENTIONS,
             )
         except discord.Forbidden:
             await origin_channel.send("❌ บอทไม่มีสิทธิ์แก้ไขยศนี้")

@@ -48,6 +48,29 @@ class TestTTLCache:
         # Should be expired
         assert cache.get("key1") is None
 
+    def test_nonpositive_max_size_is_clamped(self):
+        """max_size <= 0 must clamp to 1, not crash set() with KeyError."""
+        from utils.reliability.memory_manager import TTLCache
+
+        # Before the clamp, the very first set() on an empty cache evaluated
+        # ``while 0 >= 0`` true and called popitem() on an empty OrderedDict.
+        cache: TTLCache[str, str] = TTLCache(ttl=60, max_size=0, name="test")
+        assert cache.max_size == 1
+        cache.set("key1", "value1")  # must not raise
+        assert cache.get("key1") == "value1"
+        # Capacity of 1 is honoured: a second key evicts the first.
+        cache.set("key2", "value2")
+        assert cache.get("key2") == "value2"
+        assert cache.get("key1") is None
+
+    def test_negative_max_size_is_clamped(self):
+        from utils.reliability.memory_manager import TTLCache
+
+        cache: TTLCache[str, str] = TTLCache(ttl=60, max_size=-5, name="test")
+        assert cache.max_size == 1
+        cache.set("k", "v")  # must not raise
+        assert cache.get("k") == "v"
+
     def test_lru_eviction(self):
         """Test LRU eviction when max size reached."""
         from utils.reliability.memory_manager import TTLCache

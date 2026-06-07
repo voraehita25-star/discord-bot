@@ -577,6 +577,18 @@ export class ChatManager {
                     showToast('AI edit was interrupted', { type: 'error' });
                     break;
                 }
+                if (data.is_edit) {
+                    // A late stream_end for an edit whose state was already torn
+                    // down — e.g. the user switched conversations mid-edit, which
+                    // clears isEditStreaming AND nulls streamingConversationId, so
+                    // neither the mid-switch guard nor the isEditStreaming branches
+                    // above caught it. Discard it; falling through would push the
+                    // edited text as a phantom assistant bubble in the now-open
+                    // conversation.
+                    this.clearStreamBuffers();
+                    this.setInputEnabled(true);
+                    break;
+                }
                 this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
                 this.clearStreamBuffers();
                 // Backfill DB IDs so newly-sent messages become editable/deletable

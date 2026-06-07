@@ -227,9 +227,11 @@ class TestCheckForCrash:
         # And a subsequent tick short-circuits via the guard.
         assert restarter.check_for_crash() is False
 
-    def test_auto_retry_disabled_still_clears_nothing_but_counts_crash(self):
-        # With auto-retry off, the crash is counted/returned True but the
-        # retry/give-up branch is skipped entirely (process handle untouched).
+    def test_auto_retry_disabled_counts_crash_and_clears_handle(self):
+        # With auto-retry off, the crash is counted/returned True AND the dead
+        # process handle is cleared, so subsequent 0.5s ticks don't re-detect
+        # the same crash (which would grow crash_count without bound and spam
+        # [CRASH]). A file-save restart reassigns self.process.
         restarter, _ = _make_restarter(auto_retry_on_crash=False, max_crash_retries=3)
         proc = MagicMock()
         proc.poll.return_value = 1
@@ -242,5 +244,9 @@ class TestCheckForCrash:
         assert result is True
         assert restarter.stats.crash_count == 1
         assert restarter.consecutive_crashes == 1
-        # auto_retry_on_crash is False -> neither retry nor process clearing.
-        assert restarter.process is proc
+        # Dead handle cleared — no auto-retry means it must not linger.
+        assert restarter.process is None
+        # A subsequent tick is a no-op (hits the `if not self.process` guard)
+        # and does NOT re-count the same crash.
+        assert restarter.check_for_crash() is False
+        assert restarter.stats.crash_count == 1

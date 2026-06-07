@@ -86,6 +86,7 @@ class StructuredFormatter(logging.Formatter):
         "exc_text",
         "thread",
         "threadName",
+        "taskName",  # added by the default LogRecord factory on Python 3.12+
         "message",
         "context",
         "extra_data",

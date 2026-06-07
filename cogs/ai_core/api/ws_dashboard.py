@@ -50,6 +50,7 @@ from .dashboard_chat_claude_cli import (
     handle_ai_edit_message_claude_cli as _handle_ai_edit_message_claude_cli,
     handle_chat_message_claude_cli as _handle_chat_message_claude_cli,
     reset_session as _reset_cli_session,
+    shutdown_prewarm as _shutdown_cli_prewarm,
 )
 from .dashboard_config import (
     API_FAILOVER_AVAILABLE,
@@ -166,6 +167,10 @@ class DashboardWebSocketServer:
         self._client_message_times: dict[str, deque[float]] = {}
         self._client_inflight: dict[str, int] = {}  # concurrent request tracking
         self._authenticated_clients: set[str] = set()  # track authenticated client IDs
+        # Parallel set of authenticated WS objects. self.clients holds every WS
+        # (added on connect, before auth), so broadcasts that carry sensitive
+        # data must filter on this set rather than self.clients.
+        self._authenticated_ws: set[Any] = set()
         self._auth_deadline: float = 5.0  # seconds to authenticate after connecting
         # Per-IP failed-auth tracker for brute-force throttling. Keys are
         # client IPs (or "unknown"); values are the recent failure
@@ -387,6 +392,12 @@ class DashboardWebSocketServer:
                     timeout=5.0,
                 )
         self._background_tasks.clear()
+
+        # Kill any speculative pre-warm `claude` processes — they're detached
+        # into their own process group, so they'd otherwise linger (blocked on
+        # stdin) after the bot exits.
+        with contextlib.suppress(Exception):
+            _shutdown_cli_prewarm()
 
         # Detach the failover listener so a server restart doesn't leave a
         # bound-method ref to the previous server instance — without this
@@ -682,6 +693,7 @@ class DashboardWebSocketServer:
         # supported.
         if _upgrade_authenticated:
             self._authenticated_clients.add(client_id)
+            self._authenticated_ws.add(ws)
 
         try:
             # Send welcome message. ``needs_auth`` simplifies similarly:
@@ -769,6 +781,7 @@ class DashboardWebSocketServer:
                         token = auth_data.get("token", "")
                         if hmac.compare_digest(str(token), expected_token):
                             self._authenticated_clients.add(client_id)
+                            self._authenticated_ws.add(ws)
                             auth_received = True
                             # Successful auth — clear the per-IP fail bucket and
                             # any lockout so a legitimate user who fat-fingered
@@ -920,6 +933,7 @@ class DashboardWebSocketServer:
         finally:
             self.clients.discard(ws)
             self._authenticated_clients.discard(client_id)
+            self._authenticated_ws.discard(ws)
             self._client_message_times.pop(client_id, None)
             self._client_inflight.pop(client_id, None)
             self._client_auth_failures.pop(client_id, None)
@@ -1066,6 +1080,7 @@ class DashboardWebSocketServer:
                     await ws.close(code=4401, message=b"Too many failed auth attempts")
             else:
                 self._authenticated_clients.add(client_id)
+                self._authenticated_ws.add(ws)
                 self._client_auth_failures.pop(client_id, None)
                 logger.debug("✅ Client %s re-authenticated via message", client_id)
         elif msg_type == "update_provider":
@@ -1491,12 +1506,17 @@ class DashboardWebSocketServer:
                     new_endpoint.value,
                 )
 
-        notification = {
+        # Non-sensitive frame for clients still inside the auth-handshake
+        # window: just the fact that a switch happened. get_status() additionally
+        # exposes endpoint URLs, request counts and the last error message —
+        # withheld from unauthenticated clients, mirroring the welcome-message
+        # needs_auth gate.
+        safe_notification = {
             "type": "api_endpoint_switched",
             "endpoint": new_endpoint.value,
             "reason": reason,
-            **api_failover.get_status(),
         }
+        full_notification = {**safe_notification, **api_failover.get_status()}
         # Broadcast to all connected clients in parallel. Sequential
         # awaits made the worst case = N × 2s timeout, so 20 stuck
         # clients could block the failover-notify path for 40 seconds
@@ -1509,8 +1529,11 @@ class DashboardWebSocketServer:
         clients_snapshot = list(self.clients)
 
         async def _send_one(ws_client: Any) -> Any:
+            payload = (
+                full_notification if ws_client in self._authenticated_ws else safe_notification
+            )
             try:
-                await asyncio.wait_for(ws_client.send_json(notification), timeout=2.0)
+                await asyncio.wait_for(ws_client.send_json(payload), timeout=2.0)
                 return None
             except (TimeoutError, ConnectionError, RuntimeError) as exc:
                 return exc

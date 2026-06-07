@@ -141,6 +141,25 @@ class TestWebSocketTlsSafety:
         assert any("without TLS" in rec.message for rec in caplog.records)
 
     def test_nonlocal_host_with_tls_is_kept(self):
+        # A public bind is allowed only when TLS is both demanded
+        # (WS_REQUIRE_TLS) AND configured (cert + key) — ws_dashboard only
+        # builds the SSL context when WS_REQUIRE_TLS is true.
+        m = _reload(
+            {
+                "CLAUDE_BACKEND": "cli",
+                "WS_DASHBOARD_HOST": "0.0.0.0",
+                "WS_REQUIRE_TLS": "true",
+                "WS_TLS_CERT_PATH": "/path/cert.pem",
+                "WS_TLS_KEY_PATH": "/path/key.pem",
+            }
+        )
+        assert m.WS_HOST == "0.0.0.0"
+
+    def test_nonlocal_host_with_certs_but_no_require_tls_falls_back(self):
+        # Cert+key present but WS_REQUIRE_TLS unset: ws_dashboard would bind
+        # PLAINTEXT ws:// on the public interface (it only applies TLS when
+        # WS_REQUIRE_TLS is true), leaking the auth token. The guard must fall
+        # back to localhost rather than trust cert-path presence alone.
         m = _reload(
             {
                 "CLAUDE_BACKEND": "cli",
@@ -149,7 +168,7 @@ class TestWebSocketTlsSafety:
                 "WS_TLS_KEY_PATH": "/path/key.pem",
             }
         )
-        assert m.WS_HOST == "0.0.0.0"
+        assert m.WS_HOST == "127.0.0.1"
 
     def test_nonlocal_host_with_only_cert_falls_back(self):
         # Both cert AND key are required; only one is not enough.

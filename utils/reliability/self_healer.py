@@ -259,9 +259,26 @@ class SelfHealer:
         for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
             try:
                 cmdline = proc.info.get("cmdline") or []
+                if not cmdline:
+                    continue
                 cmdline_str = " ".join(cmdline).lower()
+                if "python" not in cmdline_str:
+                    continue
 
-                if "python" in cmdline_str and "dev_watcher" in cmdline_str:
+                # Exact basename match + ignore-list, mirroring
+                # find_all_bot_processes. A loose "dev_watcher" substring test
+                # also matches e.g. `python -m pytest tests/test_dev_watcher.py`,
+                # so a heal action could kill the test runner or other unrelated
+                # processes that merely reference the name.
+                is_watcher = False
+                ignore_list = ["test_", "pytest"]
+                for arg in cmdline:
+                    name = PurePosixPath(arg.replace("\\", "/")).name
+                    if name.lower() == "dev_watcher.py":
+                        is_watcher = True
+                        break
+
+                if is_watcher and not any(x in cmdline_str for x in ignore_list):
                     # Wrap the late `psutil.Process(pid)` lookup in the same
                     # NoSuchProcess guard as `find_all_bot_processes`; if
                     # the watcher exits between `process_iter` yielding it
@@ -269,7 +286,7 @@ class SelfHealer:
                     # bubble up and abort the entire scan.
                     try:
                         proc_obj = psutil.Process(proc.info["pid"])
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    except psutil.NoSuchProcess:
                         continue
                     watchers.append(
                         {
@@ -279,7 +296,11 @@ class SelfHealer:
                             "process": proc_obj,
                         }
                     )
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except psutil.Error:
+                # Any other transient psutil error — skip this process,
+                # don't abort the enumeration.
                 continue
 
         watchers.sort(key=lambda x: x["create_time"])
@@ -737,11 +758,21 @@ class SelfHealer:
                 for watcher in other_watchers:
                     self.kill_process(watcher["pid"])
 
-                for bot in other_now:
-                    self.kill_process(bot["pid"])
+                survivors = [bot["pid"] for bot in other_now if not self.kill_process(bot["pid"])]
 
                 self.clean_pid_file()
                 time.sleep(1)  # Wait for resources to be released
+
+                # Confirm the kills actually took. kill_process returns False on
+                # AccessDenied / post-kill TimeoutExpired; re-check liveness
+                # after the settle delay so a process that was merely slow to
+                # exit isn't counted as a survivor. If a duplicate is still
+                # alive, report failure so the caller aborts instead of running
+                # concurrently with it — the exact condition this guard prevents.
+                survivors = [pid for pid in survivors if psutil.pid_exists(pid)]
+                if survivors:
+                    self.log("error", f"Could not stop existing instance(s): {survivors}")
+                    return False, f"Could not stop existing instance(s): {survivors}"
 
                 return True, f"Stopped {len(other_now)} old instances - Restarting..."
 
