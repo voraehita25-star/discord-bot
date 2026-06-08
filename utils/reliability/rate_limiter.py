@@ -445,8 +445,10 @@ class RateLimiter:
 
     def get_stats(self) -> dict[str, Any]:
         """Get rate limiting statistics."""
-        # Convert to regular dict with Any values to allow mixed types
-        stats: dict[str, Any] = dict(self._stats)
+        # Deep-copy the inner per-config dicts so a caller mutating a returned
+        # inner dict can't corrupt the live counters (dict(self._stats) alone is
+        # a shallow copy that shares the inner dict objects).
+        stats: dict[str, Any] = {k: dict(v) for k, v in self._stats.items()}
         # Add additional info
         stats["active_buckets"] = len(self._buckets)
         stats["total_blocked"] = sum(s.get("blocked", 0) for s in self._stats.values())
@@ -496,6 +498,15 @@ class RateLimiter:
                 self._buckets[key].max_tokens = requests_per_minute
                 self._buckets[key].tokens = float(requests_per_minute)
             else:
+                # Honor the same MAX_BUCKETS ceiling _get_or_create_bucket enforces
+                # so this per-channel path can't push the pool past the cap.
+                if len(self._buckets) >= self.MAX_BUCKETS:
+                    logger.warning(
+                        "🚦 Rate limit bucket pool full (max=%d); cannot set channel %d limit",
+                        self.MAX_BUCKETS,
+                        channel_id,
+                    )
+                    return
                 self._buckets[key] = RateLimitBucket(
                     tokens=float(requests_per_minute),
                     last_update=time.time(),

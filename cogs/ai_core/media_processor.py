@@ -619,9 +619,13 @@ async def process_attachments(
                     )
                     continue
 
-                # Decode with fallback encodings
+                # Decode with fallback encodings. 'latin-1' is intentionally NOT
+                # in this list: it maps all 256 byte values and so never raises,
+                # which would make the errors="replace" last resort below dead
+                # code. Failing the loop through to that explicit replacement is
+                # the intended "decode with replacement as last resort" path.
                 content = None
-                for encoding in ["utf-8", "utf-8-sig", "utf-16", "cp1252", "latin-1"]:
+                for encoding in ["utf-8", "utf-8-sig", "utf-16", "cp1252"]:
                     try:
                         content = text_data.decode(encoding)
                         break

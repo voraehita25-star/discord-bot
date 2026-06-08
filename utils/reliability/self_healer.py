@@ -666,8 +666,11 @@ class SelfHealer:
 
         self.log("warning", f"Found {len(diag_data['issues'])} issues to fix")
 
-        # Step 2: Execute recommendations
-        for rec in diag_data["recommendations"]:
+        # Step 2: Execute recommendations. De-dup first: a single condition (e.g.
+        # a PID file with no running bots) can be flagged by two diagnostic checks
+        # (STALE_PID_FILE + ORPHAN_PID_FILE), both appending CLEAN_PID_FILE — so
+        # without dedup the action runs twice and inflates the action counters.
+        for rec in dict.fromkeys(diag_data["recommendations"]):
             action_result = {"action": rec, "success": False, "details": ""}
 
             try:
@@ -694,9 +697,17 @@ class SelfHealer:
                     action_result["success"] = True
 
                 elif rec == "CLEAN_PID_FILE":
-                    self.clean_pid_file()
-                    action_result["details"] = "Cleaned stale PID file"
-                    action_result["success"] = True
+                    # Honor the return value: clean_pid_file() refuses (returns
+                    # False) when the PID points to a live non-bot process, so a
+                    # blind success=True would falsely report a heal that didn't
+                    # happen.
+                    cleaned = self.clean_pid_file()
+                    action_result["success"] = cleaned
+                    action_result["details"] = (
+                        "Cleaned stale PID file"
+                        if cleaned
+                        else "PID file left in place (points to a live non-bot process)"
+                    )
 
             except (psutil.Error, OSError) as e:
                 action_result["details"] = f"Error: {e}"

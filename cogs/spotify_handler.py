@@ -545,10 +545,15 @@ class SpotifyHandler:
 
     async def _handle_album(self, ctx: Context, query: str, queue: list[dict[str, Any]]) -> bool:
         """Handle a Spotify album."""
-        if not self.sp:
+        # Snapshot the client into a local so a concurrent cleanup() (which sets
+        # self.sp = None on cog unload) can't turn the later self.sp.* accesses
+        # into an AttributeError that escapes process_spotify_url's except tuple
+        # — mirrors the _handle_playlist teardown-race guard.
+        sp = self.sp
+        if sp is None:
             return False
 
-        results = await self._api_call_with_retry(self.sp.album_tracks, query)
+        results = await self._api_call_with_retry(sp.album_tracks, query)
 
         if not results:
             embed = discord.Embed(description=f"{Emojis.CROSS} ไม่พบข้อมูล Album", color=Colors.ERROR)
@@ -561,7 +566,7 @@ class SpotifyHandler:
         # Paginate to get all tracks (album_tracks returns max 50 per page)
         while results and results.get("next") and len(items) < self.MAX_PLAYLIST_TRACKS:
             await asyncio.sleep(self.RATE_LIMIT_DELAY)
-            results = await self._api_call_with_retry(self.sp.next, results)
+            results = await self._api_call_with_retry(sp.next, results)
             if results and results.get("items"):
                 items.extend(results["items"])
 

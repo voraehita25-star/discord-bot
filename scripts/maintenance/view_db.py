@@ -16,8 +16,9 @@ OUTPUT_DIR = Path(__file__).parent.parent.parent / "data" / "db_export"
 
 def main() -> None:
     """Export all database tables to JSON files."""
-    # Create output directory
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    # Create output directory (parents=True so a missing/relocated data/ dir
+    # doesn't raise FileNotFoundError; matches rollback_migration._ensure_backup_dir)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.row_factory = sqlite3.Row

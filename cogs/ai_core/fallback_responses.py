@@ -12,15 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar
 
-# Try to import intent detector for intent-based fallbacks
-try:
-    from cogs.ai_core.processing.intent_detector import Intent
-
-    INTENT_AVAILABLE = True
-except ImportError:
-    INTENT_AVAILABLE = False
-    Intent = None  # type: ignore[assignment, misc]
-
 # Try to import circuit breaker to check API status
 try:
     from utils.reliability.circuit_breaker import CircuitState, gemini_circuit

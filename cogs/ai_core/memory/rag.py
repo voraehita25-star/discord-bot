@@ -838,6 +838,10 @@ class MemorySystem:
         """Build FAISS index from database if not already built.
 
         Uses lock to prevent race conditions from concurrent calls.
+
+        ``channel_id`` is accepted for call-site symmetry but intentionally
+        UNUSED: the FAISS index is global (built from ``get_all_rag_memories(None)``).
+        Per-channel scoping is applied later in ``hybrid_search`` via ``_chan_by_id``.
         """
         if not FAISS_AVAILABLE or self._index_built:
             return
@@ -1179,6 +1183,10 @@ class MemorySystem:
         """
         Expand query with synonyms for better search coverage.
         Supports Thai and English terms.
+
+        NOTE: opt-in helper — NOT applied by the default hybrid_search /
+        _keyword_search path (they use the raw query). Call it explicitly if
+        synonym expansion is wanted for a particular search.
         """
         # Synonym mappings for common terms
         synonyms = {

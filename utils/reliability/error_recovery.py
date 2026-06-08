@@ -387,10 +387,15 @@ async def retry_async(
     # other service's protection.
     if config.respect_circuit_breaker and service_name:
         try:
-            from .circuit_breaker import get_circuit_for_service
+            from .circuit_breaker import CircuitState, get_circuit_for_service
 
             breaker = get_circuit_for_service(service_name)
-            if breaker is not None and not breaker.can_execute():
+            # Read-only state check — do NOT call can_execute() here: in
+            # HALF_OPEN it consumes a probe slot, but retry_async never records
+            # success/failure to confirm it, so the slot would leak to the 60s
+            # forgive timer. Only fast-fail on a definitively OPEN circuit;
+            # HALF_OPEN admission is handled by the request path's own breaker.
+            if breaker is not None and breaker.state == CircuitState.OPEN:
                 logger.warning("⚡ Circuit breaker OPEN - skipping retry for %s", service_name)
                 if fallback is not None:
                     return fallback

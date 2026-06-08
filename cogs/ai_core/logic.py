@@ -500,7 +500,11 @@ class ChatManager(SessionMixin, ResponseMixin):
 
             # Initialize memory consolidator with same API key
             memory_consolidator.initialize(ANTHROPIC_API_KEY)
-        except (ValueError, OSError):
+        except Exception:
+            # Broad like the failover branch above and the consolidator's own
+            # init: any SDK constructor error (e.g. an unexpected-kwarg TypeError)
+            # must degrade to client=None, not propagate through setup_ai ->
+            # __init__ and crash ChatManager construction.
             logger.exception("Claude Init Failed")
             self.client = None
 
@@ -863,10 +867,14 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         # Graceful degradation - check circuit breaker before processing
         if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit and not gemini_circuit.can_execute():
-            await send_channel.send(
-                "⏳ ระบบ AI กำลังพักผ่อนสักครู่ กรุณาลองใหม่อีกครั้งในอีก 1 นาที", delete_after=30
-            )
+            # Remove the dedup key FIRST and suppress send failures: this early-out
+            # is OUTSIDE the function's try/finally, so a raising send() would leave
+            # request_key stranded (blocking the user from re-sending for ~60s).
             self._deduplicator.remove_request(request_key)
+            with contextlib.suppress(discord.HTTPException):
+                await send_channel.send(
+                    "⏳ ระบบ AI กำลังพักผ่อนสักครู่ กรุณาลองใหม่อีกครั้งในอีก 1 นาที", delete_after=30
+                )
             return
 
         # Optional per-user token-quota enforcement. OFF by default — this bot
@@ -878,22 +886,31 @@ class ChatManager(SessionMixin, ResponseMixin):
         # CLAUDE_BACKEND=cli — the CLI path records no usage, so check_limits
         # has nothing to count against and always allows.
         if os.getenv("AI_TOKEN_QUOTA_ENFORCE", "").strip().lower() in ("1", "true", "yes"):
+            _quota_allowed = True
+            _quota_warning = None
             try:
                 from cogs.ai_core.cache.token_tracker import token_tracker as _token_tracker
 
                 _quota_guild_id = getattr(getattr(context_channel, "guild", None), "id", None)
-                _allowed, _quota_warning = await _token_tracker.check_limits(
+                _quota_allowed, _quota_warning = await _token_tracker.check_limits(
                     user.id, channel_id=channel_id, guild_id=_quota_guild_id
                 )
-                if not _allowed:
+            except Exception:
+                # check_limits failure fails OPEN (non-fatal) — the default
+                # _quota_allowed=True lets the request proceed.
+                logger.debug("token quota check failed (non-fatal)", exc_info=True)
+            if not _quota_allowed:
+                # Over quota → drop the request whether or not the warning send
+                # succeeds. Previously the send sat inside the try above, so a
+                # send failure was swallowed and the request fell through into
+                # normal processing, silently bypassing quota enforcement.
+                self._deduplicator.remove_request(request_key)
+                with contextlib.suppress(discord.HTTPException):
                     await send_channel.send(
                         _quota_warning or "⚠️ โควต้าการใช้งาน AI หมดแล้ว กรุณาลองใหม่ภายหลัง",
                         delete_after=30,
                     )
-                    self._deduplicator.remove_request(request_key)
-                    return
-            except Exception:
-                logger.debug("token quota check failed (non-fatal)", exc_info=True)
+                return
 
         # Create lock for this channel if not exists. We deliberately do NOT
         # use ``setdefault(channel_id, asyncio.Lock())`` here because
@@ -1445,7 +1462,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                             model_item = {
                                 "role": "model",
                                 "parts": [model_text],
-                                "timestamp": current_time,
+                                # Distinct timestamp so the reply sorts AFTER the
+                                # user message in rendered history rather than
+                                # sharing the same second.
+                                "timestamp": _utc_now_iso(),
                             }
                             chat_data["history"].append(model_item)
                             new_entries.append(model_item)
@@ -1481,7 +1501,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                         model_item = {
                             "role": "model",
                             "parts": [model_text],
-                            "timestamp": current_time,
+                            # Distinct timestamp so the reply sorts AFTER the user
+                            # message in rendered history rather than sharing the
+                            # same second.
+                            "timestamp": _utc_now_iso(),
                         }
                         chat_data["history"].append(model_item)
                         new_entries.append(model_item)

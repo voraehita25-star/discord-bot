@@ -30,17 +30,22 @@ def _ignore_sigint():
         old_handler = signal.getsignal(signal.SIGINT)
     except (ValueError, OSError):
         old_handler = None
+    installed = False
     try:
         try:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            installed = True
         except (ValueError, OSError):
             # Not main thread on this platform — best-effort only.
             pass
         yield
     finally:
-        if old_handler is not None:
+        # Track install success with a flag rather than inferring it from
+        # old_handler: getsignal() returns None for a C-level handler, which
+        # would otherwise skip restoration and leave SIGINT permanently ignored.
+        if installed:
             try:
-                signal.signal(signal.SIGINT, old_handler)
+                signal.signal(signal.SIGINT, old_handler or signal.default_int_handler)
             except (ValueError, OSError):
                 pass
 

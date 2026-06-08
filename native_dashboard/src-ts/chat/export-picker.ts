@@ -72,9 +72,10 @@ export function promptExportFormat(): Promise<ExportFormat | null> {
         const opts = { signal: ac.signal };
 
         const cleanup = (result: ExportFormat | null): void => {
+            // ac.abort() tears down ALL listeners (incl. escHandler, bound with
+            // the same signal below) — single source of truth for teardown.
             ac.abort();
             modal.classList.remove('active');
-            document.removeEventListener('keydown', escHandler);
             resolve(result);
         };
 
@@ -88,10 +89,11 @@ export function promptExportFormat(): Promise<ExportFormat | null> {
             }, opts);
         });
 
-        // Escape closes (matches the affordance other modals provide).
+        // Escape closes (matches the affordance other modals provide). Bound
+        // with the same AbortController signal so ac.abort() removes it too.
         const escHandler = (e: KeyboardEvent): void => {
             if (e.key === 'Escape') cleanup(null);
         };
-        document.addEventListener('keydown', escHandler);
+        document.addEventListener('keydown', escHandler, opts);
     });
 }

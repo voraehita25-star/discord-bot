@@ -259,11 +259,12 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
 }
 
 /// Reject decompression-bomb inputs by reading the header dimensions before
-/// the full decode allocates pixel memory. ``u64::checked_mul`` guards
-/// against ``u32::MAX * u32::MAX`` overflowing past the 100MP check.
-/// All public entry points that decode untrusted bytes go through this so
-/// the 100MP cap is enforced uniformly (load, resize, resize_exact,
-/// thumbnail).
+/// the full decode allocates pixel memory. ``checked_mul`` is belt-and-
+/// suspenders: both dims are u32, so ``u32::MAX * u32::MAX`` (~1.8e19) still
+/// fits in u64 and the None branch is effectively unreachable — it just makes
+/// the intent explicit at zero cost. All public entry points that decode
+/// untrusted bytes go through this so the 100MP cap is enforced uniformly
+/// (load, resize, resize_exact, thumbnail).
 fn check_bomb_dimensions(bytes: &[u8]) -> PyResult<()> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()

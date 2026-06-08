@@ -1545,7 +1545,8 @@ class Database:
 
                 rows_to_insert = []
                 for msg in channel_messages:
-                    msg["channel_id"] = channel_id
+                    # (no in-place mutation of caller dicts — the row tuple below
+                    # uses the local channel_id; the key was never read afterward)
                     rows_to_insert.append(
                         (
                             channel_id,
@@ -1583,7 +1584,9 @@ class Database:
     ) -> list[dict[str, Any]]:
         """Get AI chat history for a channel."""
         async with self.get_connection() as conn:
-            if limit:
+            # `is not None` (not truthiness): limit=0 means "return zero rows"
+            # (SQLite LIMIT 0 -> []), not "no limit -> dump entire history".
+            if limit is not None:
                 cursor = await conn.execute(
                     """SELECT id, role, content, message_id, timestamp
                        FROM (
@@ -2088,20 +2091,22 @@ class Database:
             set_clause = ", ".join([f"[{k}] = ?" for k in safe_updates])
             values = [*list(safe_updates.values()), conversation_id]
 
-            await conn.execute(
+            cursor = await conn.execute(
                 f"UPDATE dashboard_conversations SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",  # nosec B608  # set_clause from whitelist
                 values,
             )
-            return True
+            # Return whether a row actually matched (mirrors rename/pin/like
+            # siblings) rather than unconditionally True for an unknown id.
+            return bool(cursor.rowcount > 0)
 
     async def update_dashboard_conversation_star(self, conversation_id: str, starred: bool) -> bool:
-        """Update the starred status of a conversation."""
+        """Update the starred status of a conversation. Returns True if a row was updated."""
         async with self.get_write_connection() as conn:
-            await conn.execute(
+            cursor = await conn.execute(
                 "UPDATE dashboard_conversations SET is_starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (1 if starred else 0, conversation_id),
             )
-            return True
+            return bool(cursor.rowcount > 0)
 
     async def rename_dashboard_conversation(self, conversation_id: str, title: str) -> bool:
         """Rename a dashboard conversation. Returns True if a row was actually updated."""

@@ -150,7 +150,7 @@ async def handle_chat_message(
     # previously dropped `documents` entirely (silent data loss / cross-backend
     # asymmetry). Skip only on a regenerate-after-edit resend — the original turn
     # already persisted them. Runs BEFORE build_user_context, mirroring the SDK.
-    documents = documents[:max_documents] if isinstance(documents, list) else []
+    documents = documents[:max_documents]  # already coerced to a list at the top
     if documents and DB_AVAILABLE and not is_regeneration:
         try:
             from .document_extractor import extract_and_persist
@@ -693,6 +693,16 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                                     else:
                                         b64_data = img_data
                                         mime_type = "image/png"
+                                    # Re-check the MIME allowlist (parity with the
+                                    # upload path at line 247) so a future tightening
+                                    # of the allowlist also covers already-stored
+                                    # images, and skip without decoding.
+                                    if mime_type not in _ALLOWED_IMAGE_MIMES:
+                                        logger.warning(
+                                            "Skipped historical image with disallowed MIME type: %s",
+                                            mime_type,
+                                        )
+                                        continue
                                     image_bytes = base64.b64decode(b64_data, validate=True)
                                     if len(image_bytes) > _MAX_IMAGE_BYTES:
                                         dropped_for_size += 1

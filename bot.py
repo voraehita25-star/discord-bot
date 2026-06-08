@@ -378,12 +378,19 @@ class MusicBot(commands.AutoShardedBot):
             # KeyboardInterrupt (Ctrl+C) is already handled via run_bot_with_confirmation.
             # Capture loop in default arg, then guard against firing after the loop is closed
             # (e.g. SIGTERM arrives between bot.run() returning and the next restart).
-            def _win_sigterm(*_args: object, _loop: asyncio.AbstractEventLoop = loop) -> None:
+            def _win_sigterm(
+                *_args: object,
+                _loop: asyncio.AbstractEventLoop = loop,
+                _self: MusicBot = self,
+            ) -> None:
                 if _loop.is_closed():
                     return
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        graceful_shutdown(signal.SIGTERM),
+                        # Pin teardown to the instance whose setup_hook registered
+                        # this handler (matches the Unix _schedule_shutdown path),
+                        # not the module-level global which a resume may rebind.
+                        graceful_shutdown(signal.SIGTERM, bot_instance=_self),
                         _loop,
                     )
                 except RuntimeError:
@@ -453,7 +460,8 @@ class MusicBot(commands.AutoShardedBot):
                 logger.exception("❌ Dashboard WebSocket server error")
 
     def _register_bot_commands(self) -> None:
-        """Register bot-level commands (called from __init__ so they survive restart)."""
+        """Register bot-level commands (called from create_bot() after construction;
+        re-runs on each restart so the commands are re-registered)."""
 
         @self.command(name="sync")
         @commands.cooldown(1, 60.0, commands.BucketType.user)
@@ -713,19 +721,25 @@ class MusicBot(commands.AutoShardedBot):
         if message.author.bot:
             return
 
+        # Resolve the command context once. process_commands() would call
+        # get_context() again internally, so we classify metrics from this ctx
+        # and invoke(ctx) directly — avoiding a second prefix-parse/command-
+        # lookup on every non-bot message (author.bot is already guarded above).
+        ctx = await self.get_context(message)
+
         # Track message in metrics. Only count as a "command" if the
         # prefix-stripped content actually resolves to a registered
         # command — previously every "!" prefix incremented even when
         # the command didn't exist or was rejected, skewing metrics.
         if METRICS_AVAILABLE and metrics:
-            ctx = await self.get_context(message)
             if ctx.valid and ctx.command is not None:
                 metrics.increment_messages("command")
             else:
                 metrics.increment_messages("other")
 
-        # Process commands
-        await self.process_commands(message)
+        # Process the resolved command (equivalent to process_commands minus the
+        # redundant author.bot re-check and second get_context).
+        await self.invoke(ctx)
 
     async def on_command_completion(self, ctx: commands.Context) -> None:
         """Track successful prefix command execution."""

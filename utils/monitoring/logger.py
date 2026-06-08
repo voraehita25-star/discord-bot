@@ -93,6 +93,12 @@ if sys.platform == "win32":
         # by ctypes — we'd miss the sentinel on Win64. ``c_void_p(-1).value``
         # gives the platform-correct unsigned bit pattern.
         _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        # Set restype so the HANDLE comes back as an unsigned pointer-width int.
+        # Without this ctypes defaults to c_int (signed 32-bit), truncating a
+        # Win64 INVALID_HANDLE_VALUE (0xFFFF...FFFF) to Python -1, which never
+        # equals the unsigned _INVALID_HANDLE_VALUE sentinel — so the guard
+        # below silently failed to detect an invalid handle.
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
         handle = kernel32.GetStdHandle(-11)
         if handle and handle != _INVALID_HANDLE_VALUE:
             console_mode = ctypes.c_ulong()

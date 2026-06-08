@@ -27,9 +27,17 @@ async def _init_schema() -> Path:
 
 def main() -> None:
     original_cwd = Path.cwd()
-    expected_version = len(
-        list((REPO_ROOT / "scripts" / "maintenance" / "migrations").glob("*.sql"))
-    )
+    # Derive the expected version with the SAME rule run_migrations() uses to
+    # populate schema_version (filename-prefix version, .sqlite.sql preferred
+    # over .sql for a version, invalid names skipped) rather than a raw file
+    # count — a count only equals MAX(version) when migrations are contiguous
+    # and single-format, so the dual-naming the runner supports would make the
+    # count-based check fail spuriously.
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from utils.database.migrations import discover_migrations
+
+    expected_version = max((v for v, _ in discover_migrations()), default=0)
 
     with tempfile.TemporaryDirectory(
         prefix="schema-smoke-", ignore_cleanup_errors=True

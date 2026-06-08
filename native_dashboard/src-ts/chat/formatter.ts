@@ -5,12 +5,13 @@
  * Order of operations (the order matters — many passes produce placeholders
  * that later passes must NOT re-escape):
  *
+ *   0. Extract ```lang\n...``` fenced blocks into \x01 placeholders FIRST and
+ *      render them as code-block cards (code escaped here). Doing this before
+ *      the LaTeX passes stops `$` math syntax inside code from being eaten.
  *   1. Extract $$...$$ and $...$ into NUL-delimited placeholders, run KaTeX
  *      on each. We do this BEFORE escapeHtml so the math syntax survives.
  *   2. escapeHtml() on the remaining text — this is what guarantees safety.
  *   3. Re-insert KaTeX output (trusted) at the placeholders.
- *   4. Extract ```lang\n...``` fenced blocks into \x01 placeholders and
- *      render them as code-block cards with a copy button.
  *   5. Apply inline markdown: `code`, **bold**, *em*, # headings, ---, > quote.
  *   6. Extract | pipe | tables into \x02 placeholders.
  *   7. Extract - / 1. lists into \x03 placeholders.
@@ -70,6 +71,38 @@ export function formatMessage(content: string): string {
         content = content + '\n```';
     }
 
+    // Extract fenced code blocks FIRST — BEFORE the LaTeX passes — so `$` math
+    // syntax inside code (shell `echo $HOME`, jQuery `$(...)`, PHP `$var`,
+    // even `$$...$$`-looking pairs) is treated as literal code instead of being
+    // consumed by the LaTeX extraction below and rendered as a math span. The
+    // captured `code` is RAW here (the old pipeline extracted code AFTER
+    // escapeHtml and reused that escaping); we escape it explicitly when
+    // building the card, so the emitted HTML is byte-identical to before — only
+    // the extraction order changed. The lang label stays restricted to
+    // [a-zA-Z0-9_-] so it can't break out of the class= / <span> attribute.
+    const codeBlocks: string[] = [];
+    const codePlaceholder = '\x01CODE_BLOCK_';
+    content = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+        const idx = codeBlocks.length;
+        const safeLang = String(lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const langLabel = safeLang || 'code';
+        // Escape now (code is raw at this stage). escapeHtml handles <, >, &,
+        // ", ' and backtick — the same escaping the old post-escape path
+        // produced — so HTML entities still decode correctly inside <pre>/<code>
+        // and the data-code-copy attribute.
+        const escapedCode = escapeHtml(code);
+        codeBlocks.push(
+            `<div class="code-block-wrapper">` +
+            `<div class="code-block-header">` +
+            `<span class="code-lang">${langLabel}</span>` +
+            `<button class="code-copy-btn" data-code-copy="${escapedCode}" title="Copy code">📋</button>` +
+            `</div>` +
+            `<pre><code class="language-${langLabel}">${escapedCode}</code></pre>` +
+            `</div>`
+        );
+        return `${codePlaceholder}${idx}\x01`;
+    });
+
     // Extract block LaTeX ($$...$$). The pattern allows `\$` (escaped dollar)
     // inside the formula so equations like `$$\frac{1}{\$x}$$` survive
     // extraction instead of slipping past as plain text. The alternation is
@@ -126,39 +159,10 @@ export function formatMessage(content: string): string {
         return latexBlocks[parseInt(idx)] || '';
     });
 
-    // Extract code blocks into placeholders BEFORE converting \n to <br>.
-    // Include a copy button that reads the code from data-code-copy. The
-    // captured `code` is ALREADY HTML-escaped (it was sliced out of `html`,
-    // which went through escapeHtml at line 106; only backticks were reverted
-    // at line 114). Do NOT escape it again — HTML entities decode to their
-    // character inside <pre>/<code> and in attribute values, so a second
-    // escapeHtml() would double-encode (`<` → `&lt;` → `&amp;lt;`) and make
-    // code blocks render/copy literal `&lt;` instead of `<`. The lang label
-    // is still restricted to [a-zA-Z0-9_-] so it can't break out of the
-    // surrounding class= attribute.
-    const codeBlocks: string[] = [];
-    const codePlaceholder = '\x01CODE_BLOCK_';
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-        const idx = codeBlocks.length;
-        // Whitelist the language label so `lang` can never break out of the
-        // class= or <span> attribute it gets interpolated into. The fallback
-        // is 'code' (matches the previous behaviour of `lang || 'code'`)
-        // rather than 'text' so existing tests continue to pass.
-        const safeLang = String(lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
-        const langLabel = safeLang || 'code';
-        // Already escaped (see comment above) — use as-is to avoid double-encoding.
-        const escapedCode = code;
-        codeBlocks.push(
-            `<div class="code-block-wrapper">` +
-            `<div class="code-block-header">` +
-            `<span class="code-lang">${langLabel}</span>` +
-            `<button class="code-copy-btn" data-code-copy="${escapedCode}" title="Copy code">📋</button>` +
-            `</div>` +
-            `<pre><code class="language-${langLabel}">${escapedCode}</code></pre>` +
-            `</div>`
-        );
-        return `${codePlaceholder}${idx}\x01`;
-    });
+    // (Fenced code blocks were already extracted into \x01 placeholders at the
+    // very top, before the LaTeX/escape passes, so $ inside code is preserved.
+    // The placeholders survive escapeHtml and the markdown passes and are
+    // restored near the end alongside tables/lists.)
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');

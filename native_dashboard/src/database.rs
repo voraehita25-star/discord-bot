@@ -390,9 +390,18 @@ impl DatabaseService {
         let rows = stmt
             .query_map([conversation_id], |row| {
                 let images_json: Option<String> = row.get(4)?;
-                let images = images_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok());
+                let images = images_json.as_deref().and_then(|raw| {
+                    // Distinguish "no images column" (None, silent) from
+                    // "present-but-unparseable" (logged) so corrupted-image rows
+                    // aren't silently indistinguishable from image-less ones.
+                    match serde_json::from_str::<Vec<String>>(raw) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!("WARNING: malformed images JSON for dashboard message: {}", e);
+                            None
+                        }
+                    }
+                });
 
                 Ok(DashboardMessage {
                     id: row.get(0)?,

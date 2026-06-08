@@ -143,8 +143,14 @@ class Entity:
         facts_text = self.facts.to_prompt_text()
 
         def _scrub(s: str) -> str:
-            # Drop ASCII control chars except whitespace.
-            s = "".join(ch for ch in s if ch >= " " or ch in ("\n", "\t"))
+            # Drop control chars except whitespace. The ``ch >= " "`` test alone
+            # would let DEL (U+007F) and the C1 range (U+0080-U+009F) through, so
+            # exclude those too — this is stored-prompt-injection hardening.
+            s = "".join(
+                ch
+                for ch in s
+                if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
+            )
             # Neutralise leading bracketed system markers per line.
             s = _re.sub(
                 r"(?im)^\s*\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*",

@@ -26,6 +26,7 @@ Security model:
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from types import SimpleNamespace
@@ -40,7 +41,13 @@ logger = logging.getLogger(__name__)
 
 
 def _flag(name: str, default: str) -> bool:
-    return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "off")
+    # A SET-but-blank env var (e.g. ``export FOO=``) returns "" from getenv, NOT
+    # the default — and "" isn't in the falsy set, so a *cleared* security gate
+    # would otherwise read as enabled. Treat blank/whitespace as "use default".
+    val = os.getenv(name, default).strip()
+    if not val:
+        val = default.strip()
+    return val.lower() not in ("0", "false", "no", "off")
 
 
 # Memory tools are safe (a user's own facts) — on by default. Server tools touch
@@ -164,8 +171,11 @@ def _server_tool_schemas() -> list[dict[str, Any]]:
     return out
 
 
-def _server_tool_names() -> set[str]:
-    return {t["name"] for t in _server_tool_schemas()}
+@functools.cache
+def _server_tool_names() -> frozenset[str]:
+    # get_tool_definitions() is process-invariant, so memoize the derived name
+    # set — avoids rebuilding the full MCP schema list on every /exec dispatch.
+    return frozenset(t["name"] for t in _server_tool_schemas())
 
 
 def list_tool_schemas() -> list[dict[str, Any]]:

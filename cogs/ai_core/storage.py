@@ -656,9 +656,14 @@ async def _save_history_json(
                 actual_keep_end = min(keep_end, len(history) - keep_start)
                 if actual_keep_end > 0:
                     history = history[:keep_start] + history[-actual_keep_end:]
-                    chat_data["history"] = history
                 else:
                     history = history[-limit:]
+
+    # Keep the caller's in-memory view in sync with what we persist in EVERY
+    # pruning branch. Previously only the actual_keep_end>0 branch reassigned
+    # chat_data["history"], so the other branches left the live session list
+    # diverging from what was written to disk.
+    chat_data["history"] = history
 
     def _write():
         _ensure_data_dirs()
@@ -692,6 +697,12 @@ async def _save_history_json(
         temp_filepath.replace(filepath)
 
     await loop.run_in_executor(None, _write_meta)
+
+    # Mirror the DB save paths (_save_history_db:627 / _replace_history_db:374):
+    # drop the in-memory cache so the next load_history re-reads the file just
+    # written instead of serving stale cached history for up to CACHE_TTL (this
+    # JSON fallback path previously skipped invalidation entirely).
+    invalidate_cache(channel_id)
 
 
 async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
@@ -863,7 +874,11 @@ async def delete_history(channel_id: int) -> bool:
 
     if DATABASE_AVAILABLE:
         try:
-            success = await db.delete_ai_history(channel_id)  # type: ignore[assignment]
+            # delete_ai_history returns a rowcount; "success" here means the
+            # delete completed without error (deleting zero rows is still a
+            # successful delete), so don't key the bool on rowcount.
+            await db.delete_ai_history(channel_id)
+            success = True
         except aiosqlite.Error:
             logger.exception("Database delete failed for channel %s", channel_id)
 

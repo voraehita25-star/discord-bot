@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-base = os.getenv("ANTHROPIC_BASE_URL")
+# rstrip the trailing slash so f"{base}/v1/..." can't produce a double slash
+# (https://host//v1/...) that some proxies reject. A bare "/" collapses to ""
+# and is correctly rejected by the empty-check below.
+base = (os.getenv("ANTHROPIC_BASE_URL") or "").rstrip("/")
 key = os.getenv("ANTHROPIC_API_KEY")
 
 if not base or not key:
@@ -93,8 +96,10 @@ try:
     usage_resp.raise_for_status()
     usage = usage_resp.json()
 
-    limit = sub.get("hard_limit_usd", 0)
-    used = usage.get("total_usage", 0) / 100
+    # `or 0` (not just .get default) so an explicit JSON null is treated as 0 —
+    # .get's default only applies when the key is absent, and None / 100 raises.
+    limit = sub.get("hard_limit_usd") or 0
+    used = (usage.get("total_usage") or 0) / 100
     balance = limit - used
 
     print("=" * 40)

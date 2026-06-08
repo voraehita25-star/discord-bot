@@ -593,7 +593,13 @@ async def call_claude_cli(
                 break
             except TimeoutError:
                 logger.warning("Claude CLI timed out (non-stream)")
-                accumulated_text = accumulated_text or ""
+                # Surface the timeout like the streaming sibling: mark partial
+                # output as cut off, or show a clear warning when empty — instead
+                # of silently returning a truncated/empty answer.
+                if accumulated_text:
+                    accumulated_text += "\n\n*[การตอบถูกตัดเนื่องจากใช้เวลานานเกินไป]*"
+                else:
+                    accumulated_text = "⚠️ Claude CLI ใช้เวลาตอบนานเกินกำหนด กรุณาลองใหม่"
                 break
             except _OverloadedError:
                 logger.warning("Claude CLI: Anthropic API overloaded (non-stream)")

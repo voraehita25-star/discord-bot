@@ -737,7 +737,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
     if thinking_enabled:
         mode_info.append("🧠 Thinking")
-    if unrestricted_mode:
+    # Gate the badge on the SAME composite condition as the actual injection
+    # (line 683) so the UI doesn't show "🔓 Unrestricted" when the env flag is
+    # unset and no unrestricted framing was injected.
+    if unrestricted_mode and allow_unrestricted:
         mode_info.append("🔓 Unrestricted")
     if images:
         mode_info.append(f"🖼️ {len(images)} image(s)")
@@ -1322,7 +1325,12 @@ async def handle_ai_edit_message_claude(
     """Handle AI self-edit via Claude: AI rewrites one of its own messages based on user instruction."""
     conversation_id = data.get("conversation_id")
     target_message_id = data.get("target_message_id")
-    instruction = data.get("instruction", "").strip()
+    # Coerce before .strip() — a non-string instruction (e.g. {"instruction": 123})
+    # would otherwise raise AttributeError at this unguarded function head (the
+    # try/except starts later), and since this runs as a background task the
+    # error never reaches the client. Mirrors the Gemini twin (dashboard_chat.py).
+    _raw_instruction = data.get("instruction", "")
+    instruction = str(_raw_instruction).strip() if _raw_instruction is not None else ""
     role_preset = data.get("role_preset", "general")
     thinking_enabled = data.get("thinking_enabled", False)
     user_name = data.get("user_name", "User")

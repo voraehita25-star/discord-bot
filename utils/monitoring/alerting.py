@@ -34,10 +34,17 @@ def _safe_int_env(name: str, default: int) -> int:
     if raw is None or raw.strip() == "":
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         logger.warning("Invalid %s=%r — using default %d", name, raw, default)
         return default
+    if value < 0:
+        # A negative cooldown would make (now - last_sent) >= cooldown always
+        # true, silently disabling spam protection. Clamp to 0 (0 = intentional
+        # "no cooldown"); a negative value is almost certainly operator error.
+        logger.warning("%s=%d is negative — clamping to 0", name, value)
+        return 0
+    return value
 
 
 ALERT_COOLDOWN_SECONDS = _safe_int_env("ALERT_COOLDOWN_SECONDS", 300)  # 5 min default

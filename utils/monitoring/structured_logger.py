@@ -345,7 +345,16 @@ class StructuredLogger:
             record_extra["context"] = dict(ctx)
 
         if extra:
-            record_extra["extra_data"] = extra
+            # Promote duration_ms to a top-level record attribute so the
+            # formatter's dedicated `duration_ms` field (for ELK/Loki) is
+            # populated by the timing helpers (`timed`, log_ai_request) — they
+            # funnel it through here, so it would otherwise only ever land nested
+            # under data.extra_data. (duration_ms is in RESERVED_ATTRS, so it
+            # won't be re-emitted under data.)
+            if "duration_ms" in extra:
+                record_extra["duration_ms"] = extra.pop("duration_ms")
+            if extra:
+                record_extra["extra_data"] = extra
 
         # Create log record with extra attributes
         self.logger.log(level, message, extra=record_extra)

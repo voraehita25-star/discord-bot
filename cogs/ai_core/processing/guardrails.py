@@ -250,8 +250,15 @@ class OutputGuardrails:
         is_repetitive, repetition_info = self._check_repetition(sanitized)
         if is_repetitive:
             self.logger.warning("🔄 Detected repetitive content: %s", repetition_info)
+            _before_fix = sanitized
             sanitized = self._fix_repetition(sanitized)
-            warnings.append(f"Fixed repetition: {repetition_info}")
+            # _fix_repetition only collapses CONSECUTIVE runs/words; it does not
+            # touch non-consecutive phrase repeats. Only claim "Fixed" when the
+            # text actually changed, otherwise the warning lies about acting.
+            if sanitized != _before_fix:
+                warnings.append(f"Fixed repetition: {repetition_info}")
+            else:
+                warnings.append(f"Detected repetition (not auto-fixed): {repetition_info}")
 
         # 4. Enforce length
         if len(sanitized) > self.MAX_RESPONSE_LENGTH:

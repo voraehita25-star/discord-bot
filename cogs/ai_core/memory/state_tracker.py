@@ -64,7 +64,15 @@ class CharacterState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CharacterState:
         """Create from dictionary."""
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        # Coerce list-typed fields so a persisted/hand-edited scalar (e.g. a bare
+        # string for nearby_characters) can't reach to_prompt_text's ", ".join
+        # and get joined character-by-character.
+        for list_field in ("nearby_characters", "inventory"):
+            v = fields.get(list_field)
+            if v is not None and not isinstance(v, list):
+                fields[list_field] = [v] if isinstance(v, str) else []
+        return cls(**fields)
 
     def to_prompt_text(self) -> str:
         """Convert to text for prompt injection."""

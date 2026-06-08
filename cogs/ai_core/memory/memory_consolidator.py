@@ -324,13 +324,17 @@ class SummaryArchiver:
                         "(set CONSOLIDATOR_DELETE_ORIGINALS=1 to also hard-delete)",
                         channel_id,
                     )
+            # Only report success when the summary was actually persisted. This
+            # INFO previously ran unconditionally after the if/else, so a failed
+            # save still logged "Consolidated …", masking the failure.
+            self.logger.info(
+                "📦 Consolidated %d messages for channel %d", len(rows), channel_id
+            )
         else:
             self.logger.warning(
                 "⚠️ Summary save failed for channel %d — keeping original messages",
                 channel_id,
             )
-
-        self.logger.info("📦 Consolidated %d messages for channel %d", len(rows), channel_id)
 
         return result
 

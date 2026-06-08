@@ -76,7 +76,7 @@ class FeedbackStats:
         """Calculate satisfaction rate (positive / sentiment total, excluding LENGTH feedback)."""
         sentiment_total = self.positive_count + self.negative_count + self.neutral_count
         if sentiment_total == 0:
-            return 0
+            return 0.0
         return self.positive_count / sentiment_total
 
     @property
@@ -84,7 +84,7 @@ class FeedbackStats:
         """Calculate negative rate."""
         sentiment_total = self.positive_count + self.negative_count + self.neutral_count
         if sentiment_total == 0:
-            return 0
+            return 0.0
         return self.negative_count / sentiment_total
 
 
@@ -127,8 +127,12 @@ class FeedbackCollector:
     ) -> None:
         """Track a message for feedback collection (thread-safe)."""
         with self._lock:
-            # Cleanup old tracked messages if needed - O(1) with OrderedDict
-            if len(self._tracked_messages) >= self._max_tracked:
+            # Re-tracking an existing id: refresh recency in place, don't evict an
+            # innocent oldest entry. Only evict when adding a genuinely NEW key at
+            # capacity. (Cleanup is O(1) with OrderedDict.)
+            if message_id in self._tracked_messages:
+                self._tracked_messages.move_to_end(message_id)
+            elif len(self._tracked_messages) >= self._max_tracked:
                 self._tracked_messages.popitem(last=False)
 
             self._tracked_messages[message_id] = {

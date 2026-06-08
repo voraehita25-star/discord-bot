@@ -83,6 +83,33 @@ from .dashboard_config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an int env var, falling back to ``default`` (with a warning) on a
+    missing/blank/non-numeric value — so a malformed operator override can't
+    raise ValueError at import and abort loading the default Claude backend."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to %d", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Float counterpart of :func:`_env_int` — lenient, never raises at import."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to %g", name, raw, default)
+        return default
+
+
 # Per-conversation Claude session id. Loaded from _SESSIONS_FILE at import
 # time and re-saved on every change — persistence lets us find and delete the
 # right .jsonl when the user deletes a Dashboard conversation after a restart.
@@ -130,7 +157,7 @@ _MAX_TRACKED_SESSIONS = 500
 # non-thinking 300s default fires while the API call is still in flight and
 # surfaces as a spurious "Claude CLI timed out" toast. 1800s (30 min) covers
 # the long tail of hard reasoning prompts; override via env if needed.
-_THINKING_STREAM_TIMEOUT = max(300, int(os.getenv("DASHBOARD_STREAM_TIMEOUT_THINKING", "1800")))
+_THINKING_STREAM_TIMEOUT = max(300, _env_int("DASHBOARD_STREAM_TIMEOUT_THINKING", 1800))
 
 # Strong refs to in-flight sidecar-persistence tasks. Without this set the
 # tasks scheduled by ``_save_persisted_sessions`` are only weakly referenced
@@ -204,10 +231,10 @@ _PREWARM_ENABLED = os.getenv("DASHBOARD_CLI_PREWARM", "1").strip().lower() not i
 )
 # How long a warm process stays reusable. Kept under typical server-side session
 # idle windows; a stale warm proc is killed and the turn spawns fresh.
-_PREWARM_TTL = float(os.getenv("DASHBOARD_CLI_PREWARM_TTL", "120"))
+_PREWARM_TTL = _env_float("DASHBOARD_CLI_PREWARM_TTL", 120.0)
 # Cap concurrent warm processes (each ~150 MB RAM) regardless of conversation
 # count — a single-user dashboard normally has 1 active conversation.
-_PREWARM_MAX = max(1, int(os.getenv("DASHBOARD_CLI_PREWARM_MAX", "3")))
+_PREWARM_MAX = max(1, _env_int("DASHBOARD_CLI_PREWARM_MAX", 3))
 # conversation_id -> {"proc": Process, "argv": list[str], "created": float}
 _warm_procs: dict[str, dict[str, Any]] = {}
 # Strong refs to in-flight warm-spawn tasks so they aren't GC'd mid-spawn.
@@ -271,11 +298,18 @@ def _ensure_system_prompt_file(content: str) -> Path:
         # a half-written file.
         tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
         tmp.write_text(content, encoding="utf-8")
-        with contextlib.suppress(OSError):
+        try:
             tmp.replace(path)
-        with contextlib.suppress(OSError):
-            if tmp.exists():
+        except OSError:
+            # The atomic replace failed (transient lock / AV). Clean up tmp,
+            # then: if a concurrent writer already produced the content-hashed
+            # destination, use it; otherwise surface the failure so the caller's
+            # `except OSError` falls back to persona-in-body instead of getting
+            # a path that does not exist (which would silently drop the persona).
+            with contextlib.suppress(OSError):
                 tmp.unlink()
+            if not path.exists():
+                raise
     return path
 
 
@@ -1144,9 +1178,17 @@ def _make_subprocess_env() -> dict[str, str]:
     # access (high bar), they could pivot through claude. Filter the
     # value to a known-safe subset of flags.
     if "NODE_OPTIONS" in env:
-        _SAFE_NODE_OPTS = ("--max-old-space-size=", "--max_old_space_size=", "--use-openssl-ca")
+        # Value-bearing flags match by prefix (the value follows "="); the
+        # valueless flag must match EXACTLY so a look-alike like
+        # "--use-openssl-cafile=/x" can't slip through a loose prefix check.
+        _SAFE_NODE_PREFIXES = ("--max-old-space-size=", "--max_old_space_size=")
+        _SAFE_NODE_EXACT = {"--use-openssl-ca"}
         tokens = env["NODE_OPTIONS"].split()
-        filtered = [t for t in tokens if any(t.startswith(p) for p in _SAFE_NODE_OPTS)]
+        filtered = [
+            t
+            for t in tokens
+            if t in _SAFE_NODE_EXACT or any(t.startswith(p) for p in _SAFE_NODE_PREFIXES)
+        ]
         if filtered:
             env["NODE_OPTIONS"] = " ".join(filtered)
         else:
@@ -1494,6 +1536,23 @@ def _kill_warm(wp: dict[str, Any]) -> None:
             proc.kill()
 
 
+def _sweep_expired_warm() -> None:
+    """Kill+drop any warm proc past its TTL or already dead, for ANY conversation.
+
+    Warm procs are otherwise reclaimed only lazily (in _take_warm, or on the same
+    conversation's next _schedule_prewarm), so a conversation with a single turn
+    would leave its ~150 MB process alive for the bot's lifetime. Sweeping here
+    reclaims those and frees slots for new conversations.
+    """
+    now = time.monotonic()
+    for cid, wp in list(_warm_procs.items()):
+        proc = wp.get("proc")
+        expired = (now - wp.get("created", 0.0)) > _PREWARM_TTL
+        dead = proc is None or proc.returncode is not None
+        if expired or dead:
+            _kill_warm(_warm_procs.pop(cid))
+
+
 def _take_warm(conversation_id: str | None, argv: list[str]) -> asyncio.subprocess.Process | None:
     """Return a pre-warmed process whose argv EXACTLY matches ``argv`` (so the
     prompt we're about to send is valid for it), is still alive, and is fresh.
@@ -1539,6 +1598,9 @@ def _schedule_prewarm(conversation_id: str | None, argv: list[str]) -> None:
     """Fire-and-forget pre-warm of the next turn's process (latency hiding)."""
     if not _PREWARM_ENABLED or not conversation_id:
         return
+    # Reclaim expired/dead warm procs from abandoned conversations first so any
+    # freed slots become reusable below.
+    _sweep_expired_warm()
     # Drop any existing warm proc for this conversation — the session advanced,
     # so its --resume argv is now stale.
     old = _warm_procs.pop(conversation_id, None)
@@ -2949,6 +3011,26 @@ async def handle_ai_edit_message_claude_cli(
                 {
                     "type": "error",
                     "message": f"Claude CLI edit timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
+            return
+        except _OverloadedError:
+            # Parity with the chat handler: a transient 429/529 overload raises
+            # _OverloadedError (a RuntimeError subclass), so it MUST precede the
+            # generic RuntimeError below and surface the actionable retry message.
+            logger.warning(
+                "Claude CLI edit: Anthropic API overloaded for conversation %s; "
+                "advising client to retry",
+                conversation_id,
+            )
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": (
+                        "Anthropic's servers are temporarily overloaded. "
+                        "Please resend your message in a moment."
+                    ),
                     "conversation_id": conversation_id,
                 }
             )

@@ -127,9 +127,11 @@ def find_member(guild: discord.Guild, name: str) -> discord.Member | None:
     Returns:
         Found member or None
     """
-    # Dedupe via set so ``name == name.lower()`` (already lowercase / ASCII)
-    # doesn't pay for two identical passes.
-    name_opts = {name, name.lower()}
+    # Order-preserving de-dup: try the exact-case spelling first, then the
+    # lowercased form. A set literal here made the two-candidate iteration order
+    # non-deterministic (hash randomization), so which member won when a guild
+    # had distinct cased/lowercased matches could vary between runs.
+    name_opts = [name] if name == name.lower() else [name, name.lower()]
 
     def _norm(s: str) -> str:
         # NFKC + lower so users typed with combining marks, full-width

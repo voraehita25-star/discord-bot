@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** June 4, 2026
-> **Version:** 3.4.4
+> **Last Updated:** June 8, 2026
+> **Version:** 3.4.5
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 110 Python test files (4,721 tests) + 10 vitest files (190 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
+> **Total Files:** 110 Python test files (4,768 tests) + 10 vitest files (191 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 

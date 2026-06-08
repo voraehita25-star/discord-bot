@@ -125,7 +125,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Python suite (4,721 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
+├── tests/              # Python suite (4,768 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -309,4 +309,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.4 | **Python:** 3.14+ | **Tests:** 4,721 pytest ✅ + 190 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 4, 2026
+**Version:** 3.4.5 | **Python:** 3.14+ | **Tests:** 4,768 pytest ✅ + 191 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 8, 2026

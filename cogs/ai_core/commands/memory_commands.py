@@ -208,6 +208,7 @@ class MemoryCommands(commands.Cog):
         Force memory consolidation for this channel.
         Owner only.
         """
+        status_msg = None
         try:
             from cogs.ai_core.memory.memory_consolidator import summary_archiver
 
@@ -243,7 +244,13 @@ class MemoryCommands(commands.Cog):
             # the user — `str(e)` may include DB paths or connection
             # strings that shouldn't surface in chat.
             self.logger.exception("Consolidate command error: %s", e)
-            await ctx.send("❌ เกิดข้อผิดพลาดในการรวบรวม กรุณาลองใหม่")
+            # Replace the "⏳ กำลังรวบรวม..." progress message (if it was posted)
+            # so it doesn't linger forever implying work is still in progress.
+            msg = "❌ เกิดข้อผิดพลาดในการรวบรวม กรุณาลองใหม่"
+            if status_msg is not None:
+                await status_msg.edit(content=msg, embed=None)
+            else:
+                await ctx.send(msg)
 
     @commands.command(name="memory_stats")
     @commands.is_owner()

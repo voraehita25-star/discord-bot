@@ -19,6 +19,24 @@ import type { ChatConversation, ChatMessage } from './types.js';
 export const VIRT_THRESHOLD = 150;
 export const VIRT_WINDOW_SIZE = 100;
 
+// Hoisted to module scope so the Set + closure are allocated once, not per
+// rendered message (renderSingleMessage runs across the whole virtual window).
+const ALLOWED_IMG_HOSTS = new Set([
+    'cdn.discordapp.com',
+    'media.discordapp.net',
+    'i.imgur.com',
+    'images.unsplash.com',
+]);
+
+function isAllowedExternalImage(url: string): boolean {
+    if (!url.startsWith('https://')) return false;
+    try {
+        return ALLOWED_IMG_HOSTS.has(new URL(url).hostname.toLowerCase());
+    } catch {
+        return false;
+    }
+}
+
 export interface MessageTemplateDeps {
     /** Convert an ISO-ish timestamp to the "2h ago" / "Mar 12" string. */
     formatTime: (dateStr: string) => string;
@@ -31,7 +49,12 @@ export interface MessageTemplateDeps {
 export interface RenderContext {
     messages: ChatMessage[];
     currentConversation: ChatConversation | null;
-    /** The tail-window size requested by the caller. Clamped to [VIRT_WINDOW_SIZE, messages.length]. */
+    /**
+     * The tail-window size requested by the caller. When virtualizing, a
+     * non-positive value is floored to VIRT_WINDOW_SIZE and the result is capped
+     * at messages.length; a positive value is used as-is (capped at length).
+     * When not virtualizing (total <= VIRT_THRESHOLD), the full list is rendered.
+     */
     visibleMessageCount: number;
     deps: MessageTemplateDeps;
 }
@@ -175,21 +198,6 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     // script execution).
     let imagesHtml = '';
     if (msg.images && msg.images.length > 0) {
-        const _ALLOWED_IMG_HOSTS = new Set([
-            'cdn.discordapp.com',
-            'media.discordapp.net',
-            'i.imgur.com',
-            'images.unsplash.com',
-        ]);
-        const isAllowedExternalImage = (url: string): boolean => {
-            if (!url.startsWith('https://')) return false;
-            try {
-                const u = new URL(url);
-                return _ALLOWED_IMG_HOSTS.has(u.hostname.toLowerCase());
-            } catch {
-                return false;
-            }
-        };
         imagesHtml = `<div class="message-images">${msg.images
             .filter((img) => typeof img === 'string'
                 && ((img.startsWith('data:image/') && !img.toLowerCase().startsWith('data:image/svg'))

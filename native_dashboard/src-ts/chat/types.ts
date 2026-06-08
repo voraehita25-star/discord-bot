@@ -6,6 +6,8 @@
  * the huge ChatManager class.
  */
 
+import type { DocumentPayload } from './document-attach.js';
+
 export interface ChatConversation {
     id: string;
     title: string | null;
@@ -21,8 +23,6 @@ export interface ChatConversation {
     ai_provider?: string;
     tags?: string[];   // #22 — per-conversation tag list
 }
-
-import type { DocumentPayload } from './document-attach.js';
 
 export interface ChatMessage {
     id?: number;

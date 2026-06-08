@@ -291,8 +291,13 @@ def extract_urls(text: str) -> list[str]:
     seen = set()
     unique_urls = []
     for url in urls:
-        # Clean trailing punctuation
-        url = url.rstrip(".,;:!?)")
+        # Clean trailing sentence punctuation, but strip a trailing ')' only
+        # when it is unbalanced — otherwise URLs with balanced parens (e.g.
+        # .../Python_(programming_language)) would lose their closing paren and
+        # 404. Handles a stray ')' from "(see https://example.com)" too.
+        url = url.rstrip(".,;:!?")
+        while url.endswith(")") and url.count("(") < url.count(")"):
+            url = url[:-1].rstrip(".,;:!?")
         if url not in seen:
             seen.add(url)
             unique_urls.append(url)

@@ -17,6 +17,7 @@ import contextlib
 import itertools
 import json
 import logging
+import math
 import random
 import time
 import traceback
@@ -472,7 +473,14 @@ class Music(commands.Cog):
             queue = data["queue"]
             if queue:
                 self._gs(guild_id).queue = collections.deque(queue[:MAX_QUEUE_SIZE])
-                self._gs(guild_id).volume = float(data.get("volume", 0.5))
+                # Clamp the persisted volume to the same [0.0, 2.0] range the
+                # !volume command enforces and reject NaN/±inf — a corrupt or
+                # hand-edited sidecar must not feed a poisoned value into the
+                # PCMVolumeTransformer (min(2.0, nan) returns nan on CPython).
+                _loaded_vol = float(data.get("volume", 0.5))
+                self._gs(guild_id).volume = (
+                    max(0.0, min(2.0, _loaded_vol)) if math.isfinite(_loaded_vol) else 0.5
+                )
                 self._gs(guild_id).loop = bool(data.get("loop", False))
                 self._gs(guild_id).mode_247 = bool(data.get("mode_247", False))
                 logger.info(
@@ -1727,6 +1735,10 @@ class Music(commands.Cog):
             success = await self.spotify.process_spotify_url(ctx, query, queue)  # type: ignore[arg-type]
             if not success:
                 return
+            # Persist the Spotify-added track(s) like the YouTube path does
+            # (line below in the else-branch) — otherwise tracks queued via a
+            # Spotify link are lost on a restart until some other action saves.
+            self._schedule_queue_save(ctx.guild.id)
         else:
             # YouTube / Search
             async with ctx.typing():
@@ -2544,7 +2556,13 @@ class Music(commands.Cog):
         def _cleanup():
             nonlocal deleted_count, freed_bytes
             for filepath in temp_dir.iterdir():
-                abs_path = str(filepath.resolve())
+                try:
+                    abs_path = str(filepath.resolve())
+                except (OSError, ValueError):
+                    # A path component is unreadable / has OS-rejected chars —
+                    # skip this one entry instead of aborting the whole sweep
+                    # (mirrors _periodic_temp_cleanup._cleanup_sync's guard).
+                    continue
 
                 # Skip directories
                 if filepath.is_dir():

@@ -121,6 +121,10 @@ class HistoryManager:
 
         for msg in history:
             content = self._get_message_content(msg)
+            # Structural overhead (role, separators) for EVERY message — matches
+            # estimate_message_tokens(), which returns 5 even for empty content,
+            # so the two baselines in smart_trim_by_tokens stay consistent.
+            total_tokens += 5
             if not content:
                 continue
 
@@ -132,9 +136,6 @@ class HistoryManager:
                 # Thai/Unicode text typically has ~2-3 chars per token
                 # ASCII text typically has ~4 chars per token
                 total_tokens += self._estimate_tokens_fallback(content)
-
-            # Add overhead for message structure (role, separators)
-            total_tokens += 5
 
         return total_tokens
 
@@ -262,10 +263,13 @@ class HistoryManager:
         # keep_recent slice, a caller passing max_messages < keep_recent would
         # get back more than max_messages items (recent alone already exceeds the
         # cap). When max_messages >= keep_recent (the normal case) this is a
-        # no-op. In the clamped regime available_slots becomes 0, so `older` is
-        # not drawn from anyway.
-        recent = history[-min(self.keep_recent, max_messages) :]
-        older = history[: -self.keep_recent]
+        # no-op. CRITICAL: `older` must use the SAME clamp so older + recent ==
+        # history; slicing older with the raw keep_recent while recent uses the
+        # clamped value would drop the middle band (between -keep_recent and
+        # -clamp) into NEITHER list, silently discarding it without summarizing.
+        clamp = min(self.keep_recent, max_messages)
+        recent = history[-clamp:] if clamp else []
+        older = history[:-clamp] if clamp else list(history)
 
         # 2. Score all older messages
         scored_messages = []

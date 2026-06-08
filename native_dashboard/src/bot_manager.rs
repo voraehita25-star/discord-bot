@@ -607,6 +607,21 @@ impl BotManager {
         // leaks the Win32 process handle until our own dashboard exits.
         // Reap any previously-tracked Child that already exited so the slot is empty.
         self.reap_finished_children();
+        // reap only releases ALREADY-exited children. If a prior start() left a
+        // child still booting (alive but no bot.pid yet), overwriting self.child
+        // below would drop its handle without waiting — on Windows that closes
+        // the handle and leaves the process running detached (an orphan). Kill
+        // any still-live tracked child's tree first, mirroring stop()'s teardown,
+        // rather than relying solely on kill_orphan_bot_processes().
+        if let Some(mut old) = self.child.take() {
+            let old_pid = old.id();
+            let _ = Command::new(taskkill_path())
+                .args(["/PID", &old_pid.to_string(), "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            let _ = old.kill();
+            let _ = old.wait();
+        }
         self.child = Some(child);
 
         // Return as soon as spawn() succeeds. The previous design held the

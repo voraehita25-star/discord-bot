@@ -171,6 +171,10 @@ class MessageQueue:
                     # Safe to drop the lock since it wasn't held (we filtered
                     # locked channels out of the candidate set above).
                     self.processing_locks.pop(oldest_channel, None)
+                    # Keep all four per-channel maps consistent (mirrors
+                    # clear_channel) so no orphan _lock_times entry survives to
+                    # trip cleanup_stale_locks' perpetual warning.
+                    self._lock_times.pop(oldest_channel, None)
                     logger.warning(
                         "🧹 Message queue limit reached, evicted channel %s", oldest_channel
                     )

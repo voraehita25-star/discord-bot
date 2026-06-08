@@ -710,7 +710,14 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             if HEALTH_API_TOKEN:
                 auth_header = self.headers.get("Authorization", "")
                 expected = f"Bearer {HEALTH_API_TOKEN}"
-                if not hmac.compare_digest(auth_header, expected):
+                # Compare as BYTES: hmac.compare_digest raises TypeError on a str
+                # with non-ASCII chars, and http.server decodes headers as
+                # latin-1, so a byte >= 0x80 in the Authorization header would
+                # crash this auth gate into a 500 (fail-open-to-crash with a
+                # stack trace) instead of a clean 401. Bytes compare can't raise.
+                if not hmac.compare_digest(
+                    auth_header.encode("utf-8", "ignore"), expected.encode("utf-8")
+                ):
                     self._send_json_response(
                         {"error": "Unauthorized", "message": "Valid Bearer token required"},
                         401,

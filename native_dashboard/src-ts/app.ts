@@ -159,15 +159,15 @@ function initKeyboardShortcuts(): void {
             }
         }
 
-        // Ctrl+R to refresh
-        if (e.ctrlKey && e.key === 'r') {
+        // Ctrl+R to refresh (toLowerCase so it fires under Caps Lock / Shift too)
+        if (e.ctrlKey && e.key.toLowerCase() === 'r') {
             e.preventDefault();
             loadAllData();
             showToast('Refreshed!', { type: 'info', duration: 1500 });
         }
 
         // Ctrl+T to toggle theme
-        if (e.ctrlKey && e.key === 't') {
+        if (e.ctrlKey && e.key.toLowerCase() === 't') {
             e.preventDefault();
             toggleTheme();
         }
@@ -179,7 +179,7 @@ function initKeyboardShortcuts(): void {
         }
 
         // Ctrl+F to open in-chat search
-        if (e.ctrlKey && e.key === 'f' && currentPage === 'chat') {
+        if (e.ctrlKey && e.key.toLowerCase() === 'f' && currentPage === 'chat') {
             e.preventDefault();
             chatManager?.openChatSearch();
         }
@@ -573,11 +573,15 @@ function initSakuraAnimation(): void {
         setTimeout(() => returnPetal(petal), (duration + delay) * 1000);
     }
 
-    for (let i = 0; i < 15; i++) {
-        setTimeout(createPetal, i * 300);
+    // Gate the initial burst + interval on visibility so re-enabling sakura
+    // while the window is hidden doesn't churn petals in the background — the
+    // visibilityHandler below restarts the interval on the next show event.
+    if (!document.hidden) {
+        for (let i = 0; i < 15; i++) {
+            setTimeout(createPetal, i * 300);
+        }
+        sakuraInterval = window.setInterval(createPetal, 1000);
     }
-
-    sakuraInterval = window.setInterval(createPetal, 1000);
 
     // Pause animation when window is hidden to save CPU.
     const visibilityHandler = (): void => {
@@ -1056,12 +1060,15 @@ async function stopBot(): Promise<void> {
         showToast('Stopping bot...', { type: 'info', duration: 5000 });
         const result = await invoke<string>('stop_bot');
         showToast(result, { type: 'success' });
-        dataCache.invalidate('status');
-        updateStatus();
     } catch (error) {
         showToast(String(error), { type: 'error' });
     } finally {
+        // In finally (not the try) so a failed stop still re-enables the four
+        // control buttons via updateStatus()->updateButtons(); otherwise they
+        // stay disabled until the next periodic refresh tick. Mirrors startBot.
         setBotControlBusy(false);
+        dataCache.invalidate('status');
+        updateStatus();
     }
 }
 
@@ -1072,12 +1079,13 @@ async function restartBot(): Promise<void> {
         showToast('Restarting bot...', { type: 'info', duration: 12000 });
         const result = await invoke<string>('restart_bot');
         showToast(result, { type: 'success' });
-        dataCache.invalidate('status');
-        updateStatus();
     } catch (error) {
         showToast(String(error), { type: 'error' });
     } finally {
+        // In finally so a failed restart re-enables the control buttons too.
         setBotControlBusy(false);
+        dataCache.invalidate('status');
+        updateStatus();
     }
 }
 
@@ -1088,12 +1096,13 @@ async function startDevBot(): Promise<void> {
         showToast('Starting dev mode...', { type: 'info', duration: 8000 });
         const result = await invoke<string>('start_dev_bot');
         showToast(result, { type: 'success' });
-        dataCache.invalidate('status');
-        updateStatus();
     } catch (error) {
         showToast(String(error), { type: 'error' });
     } finally {
+        // In finally so a failed dev-start re-enables the control buttons too.
         setBotControlBusy(false);
+        dataCache.invalidate('status');
+        updateStatus();
     }
 }
 

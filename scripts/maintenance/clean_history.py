@@ -27,8 +27,19 @@ def clean_history_files() -> None:
         try:
             history = json.loads(filepath.read_text(encoding="utf-8"))
 
+            # Structural guard: a corrupt file whose top-level JSON isn't a list
+            # would make `for item in history` / item.get raise an uncaught
+            # TypeError/AttributeError that aborts the whole run. Skip just it.
+            if not isinstance(history, list):
+                print(f"Skipping {filepath}: top-level JSON is not a list.")
+                continue
+
             new_history = []
             for item in history:
+                # Non-dict element (corrupt entry) — preserve verbatim, don't crash.
+                if not isinstance(item, dict):
+                    new_history.append(item)
+                    continue
                 # Check criteria: role is 'model' AND parts is essentially empty
                 if item.get("role") == "model":
                     parts = item.get("parts", [])

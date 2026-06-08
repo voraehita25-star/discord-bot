@@ -197,15 +197,14 @@ class ResponseMixin:
             if not preview:
                 return f"❌ ไม่พบประวัติแชทของ channel {channel_id}"
 
-            channel = self.bot.get_channel(channel_id)
-            if channel:
-                guild_name = (
-                    channel.guild.name if hasattr(channel, "guild") and channel.guild else "DM"
-                )
-                channel_name = channel.name if hasattr(channel, "name") else "Unknown"
-                header = f"📜 {guild_name}/#{channel_name}"
-            else:
-                header = f"📜 Channel {channel_id}"
+            # Reuse the already-validated `channel` from the permission check
+            # above (guaranteed non-None there — the not-found case returned) —
+            # no need to re-fetch via get_channel a second time.
+            guild_name = (
+                channel.guild.name if hasattr(channel, "guild") and channel.guild else "DM"
+            )
+            channel_name = channel.name if hasattr(channel, "name") else "Unknown"
+            header = f"📜 {guild_name}/#{channel_name}"
 
             lines = [header, f"({len(preview)} ข้อความล่าสุด)", "---"]
 

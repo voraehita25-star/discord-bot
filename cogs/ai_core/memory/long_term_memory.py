@@ -417,10 +417,10 @@ class LongTermMemory:
 
             stored_facts = []
             for fact in extracted:
-                # Check for duplicates against the snapshot taken above. New
-                # facts stored within this loop don't deduplicate against
-                # each other in the same call, but the extractor already
-                # de-dupes its own output before returning.
+                # Check for duplicates against the running list. Each newly stored
+                # fact is appended to existing_facts (below), so later facts in the
+                # same message ARE deduped against facts stored earlier in this
+                # loop; the extractor additionally de-dupes its own output first.
                 existing = self._find_similar_fact_in(existing_facts, fact.content)
 
                 if existing:
@@ -543,7 +543,10 @@ class LongTermMemory:
                 # MAX_CACHE_USERS evicts the LRU user's facts. Surface
                 # this so operators know facts are being lost in
                 # cache-only mode before it actually happens.
-                if len(self._cache) >= self.MAX_CACHE_USERS - 10:
+                # Only warn on a MISS for a new user (the only case a later store
+                # could evict) — otherwise this fires on every cache HIT once near
+                # capacity, flooding logs with no actual imminent loss.
+                if user_id not in self._cache and len(self._cache) >= self.MAX_CACHE_USERS - 10:
                     self.logger.warning(
                         "LTM cache near capacity (%d/%d) with DB unavailable — "
                         "next new user will evict oldest user's facts",

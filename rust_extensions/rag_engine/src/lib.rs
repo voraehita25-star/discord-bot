@@ -89,6 +89,14 @@ fn validate_relative_path(p: &std::path::Path) -> PyResult<()> {
                     "Path traversal blocked: drive prefix not allowed",
                 ));
             }
+            Component::RootDir => {
+                // A rooted-but-driveless path ("\\foo" / "/foo") — on Windows
+                // Path::is_absolute() reports these as relative, but they resolve
+                // against the current drive's root and escape the project base.
+                return Err(PyValueError::new_err(
+                    "Path traversal blocked: rooted path not allowed",
+                ));
+            }
             _ => {}
         }
     }
@@ -439,7 +447,6 @@ impl RagEngine {
 
         // Build new entries in a temporary map first to avoid data loss on bad files
         let mut new_entries = HashMap::new();
-        let mut loaded = 0;
 
         for item in &entries_data {
             if let (Some(id), Some(text), Some(embedding), Some(timestamp), Some(importance)) = (
@@ -478,7 +485,6 @@ impl RagEngine {
                             importance: imp,
                         },
                     );
-                    loaded += 1;
                 }
             }
         }
@@ -491,11 +497,14 @@ impl RagEngine {
             ));
         }
 
-        // Swap in the new entries atomically
+        // Swap in the new entries atomically. Report the ACTUAL stored count —
+        // HashMap de-dupes by id, so a file with duplicate ids stores fewer than
+        // the iteration count; len() keeps the reported count == engine size.
+        let count = new_entries.len();
         let mut entries = self.entries.write();
         *entries = new_entries;
 
-        Ok(loaded)
+        Ok(count)
     }
 }
 

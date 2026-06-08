@@ -114,6 +114,12 @@ class AIDebug(commands.Cog):
             )
         except ImportError:
             rag_info = "RAG not available"
+        except (AttributeError, KeyError, TypeError) as e:
+            # Don't let a RAG stats schema drift (missing/renamed key) or a
+            # partially-initialized rag_system abort the whole !ai_debug command
+            # — degrade just this panel (mirrors the Cache panel's hardening).
+            self.logger.debug("RAG stats panel unavailable: %s", e)
+            rag_info = "RAG stats unavailable"
 
         embed.add_field(name="🧠 RAG Memory", value=f"```\n{rag_info}```", inline=True)
 
@@ -307,10 +313,17 @@ class AIDebug(commands.Cog):
         """
         try:
             from cogs.ai_core.cache.analytics import get_detailed_ai_stats
-
-            stats = get_detailed_ai_stats()
         except ImportError:
             await ctx.send("❌ Analytics not available")
+            return
+
+        try:
+            stats = get_detailed_ai_stats()
+        except Exception as e:
+            # Mirror !ai_tokens: a runtime stats failure replies gracefully
+            # instead of propagating an uncaught error to the command framework.
+            self.logger.warning("Failed to fetch detailed AI stats: %s", e)
+            await ctx.send(f"❌ ดึงสถิติ AI ไม่สำเร็จ: {type(e).__name__}")
             return
 
         embed = discord.Embed(title="📊 Comprehensive AI Statistics", color=discord.Color.green())

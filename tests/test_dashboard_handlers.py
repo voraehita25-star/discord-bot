@@ -694,3 +694,41 @@ class TestSaveProfile:
         ):
             await handle_save_profile(ws, {"profile": {"display_name": "Test"}})
         assert ws.last()["code"] == "INTERNAL_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_save_string_preferences_persisted(self, ws, mock_db):
+        """The dashboard UI sends preferences as a free-text string; it must be
+        persisted (not silently dropped) and passed to the DB as a str."""
+        from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_save_profile(
+                ws, {"profile": {"display_name": "U", "preferences": "likes dark mode"}}
+            )
+        assert ws.last()["type"] == "profile_saved"
+        kwargs = mock_db.save_dashboard_user_profile.call_args.kwargs
+        assert isinstance(kwargs["preferences"], str)
+        assert kwargs["preferences"] == "likes dark mode"
+
+    @pytest.mark.asyncio
+    async def test_save_dict_preferences_serialized(self, ws, mock_db):
+        """A structured dict preferences value must be JSON-serialized to a str —
+        sqlite cannot bind a dict, so it must never reach the DB layer raw."""
+        import json
+
+        from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_save_profile(
+                ws, {"profile": {"display_name": "U", "preferences": {"theme": "dark"}}}
+            )
+        assert ws.last()["type"] == "profile_saved"
+        kwargs = mock_db.save_dashboard_user_profile.call_args.kwargs
+        assert isinstance(kwargs["preferences"], str)
+        assert json.loads(kwargs["preferences"]) == {"theme": "dark"}

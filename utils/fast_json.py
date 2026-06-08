@@ -57,6 +57,13 @@ try:
             raise TypeError(
                 f"fast_json.json_dumps: unsupported kwargs {sorted(kwargs)} under orjson"
             )
+        if indent not in (None, 2):
+            # orjson only emits a 2-space indent; the stdlib fallback would honor
+            # any width. Reject other values loudly so output can't silently
+            # differ between backends (only None / 2 are used in this repo).
+            raise ValueError(
+                "fast_json.json_dumps supports only indent=None or indent=2"
+            )
 
         option = orjson.OPT_NON_STR_KEYS
         # `if indent:` is falsy for `indent=0` (a valid "no newlines"
@@ -72,7 +79,10 @@ try:
 
     def json_dumps_bytes(obj: Any, *, default: Any = None) -> bytes:
         """Serialize Python object to JSON bytes (zero-copy, fastest)."""
-        return orjson.dumps(obj, default=default)
+        # OPT_NON_STR_KEYS matches json_dumps (line above) and the stdlib
+        # fallback (which coerces non-str dict keys): without it, orjson raises
+        # on int-keyed dicts while the no-orjson path succeeds — silent drift.
+        return orjson.dumps(obj, default=default, option=orjson.OPT_NON_STR_KEYS)
 
 except ImportError:
     import json as _json
@@ -108,6 +118,12 @@ except ImportError:
         if kwargs:
             raise TypeError(
                 f"fast_json.json_dumps: unsupported kwargs {sorted(kwargs)} under stdlib json"
+            )
+        if indent not in (None, 2):
+            # Match the orjson branch's contract so the two backends can't
+            # diverge on indentation width (only None / 2 are used in this repo).
+            raise ValueError(
+                "fast_json.json_dumps supports only indent=None or indent=2"
             )
         # Force ``allow_nan=False`` so non-finite floats raise instead of
         # emitting ``NaN`` / ``Infinity`` tokens (non-standard JSON that a

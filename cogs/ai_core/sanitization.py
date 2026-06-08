@@ -84,8 +84,12 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     # accumulate ``\u200b`` chars: ``@everyone`` \u2192
     # ``@\u200beveryone`` \u2192 ``@\u200b\u200beveryone`` \u2192 \u2026 Use a
     # negative lookahead so the substitution only fires the first time.
-    content = re.sub(r"@(?!\u200b)everyone", "@\u200beveryone", content, flags=re.IGNORECASE)
-    content = re.sub(r"@(?!\u200b)here", "@\u200bhere", content, flags=re.IGNORECASE)
+    # Capture the keyword and re-emit it via a backreference so the original
+    # casing is preserved (a fixed lowercase replacement under IGNORECASE would
+    # silently fold "@EVERYONE" -> "@\u200beveryone", mangling the text). The
+    # ZWSP still breaks the ping; matches the role/user-mention style below.
+    content = re.sub(r"@(?!\u200b)(everyone)", "@\u200b\\1", content, flags=re.IGNORECASE)
+    content = re.sub(r"@(?!\u200b)(here)", "@\u200b\\1", content, flags=re.IGNORECASE)
 
     # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>)
     # from AI output. Same idempotency guard via negative lookahead.

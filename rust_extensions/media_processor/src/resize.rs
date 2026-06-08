@@ -107,6 +107,25 @@ pub fn resize_image(
             let scaled_w = (orig_w as f64 * scale).ceil().min(u32::MAX as f64) as u32;
             let scaled_h = (orig_h as f64 * scale).ceil().min(u32::MAX as f64) as u32;
 
+            // Bound the Fill intermediate by the same 100MP cap the input is
+            // checked against. An extreme-aspect input (e.g. 16384x1) has a tiny
+            // INPUT pixel count and sails past the bomb guard, but Fill upscales
+            // to scaled_w x scaled_h (16384x16384 -> ~268M px wide) and the
+            // resize_exact buffer explodes to tens of TB. checked_mul also
+            // rejects the saturating-to-u32::MAX overflow instead of clamping
+            // into a huge allocation.
+            if (scaled_w as u64)
+                .checked_mul(scaled_h as u64)
+                .is_none_or(|p| p > MAX_PIXEL_COUNT)
+            {
+                return Err(MediaError::Encode(format!(
+                    "Fill intermediate too large: {}x{} exceeds {} MP",
+                    scaled_w,
+                    scaled_h,
+                    MAX_PIXEL_COUNT / 1_000_000
+                )));
+            }
+
             let scaled =
                 img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3);
 
@@ -131,22 +150,17 @@ pub fn resize_image(
     // Encode result
     let (new_w, new_h) = resized.dimensions();
     let mut output = Vec::new();
-    let format = determine_output_format(&img);
-
+    // determine_output_format only ever returns Png or Jpeg, and this build has
+    // no WebP encoder — so handle Png explicitly and encode everything else as
+    // JPEG, reassigning `format` so the reported format always matches the bytes
+    // (the old WebP/`_` arms were unreachable and the `_` arm mislabeled output).
+    let mut format = determine_output_format(&img);
     match format {
-        ImageFormat::Jpeg => {
-            let encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
-            resized.write_with_encoder(encoder)?;
-        }
         ImageFormat::Png => {
             resized.write_to(&mut Cursor::new(&mut output), ImageFormat::Png)?;
         }
-        ImageFormat::WebP => {
-            resized.write_to(&mut Cursor::new(&mut output), ImageFormat::WebP)?;
-        }
         _ => {
-            // Default to JPEG
+            format = ImageFormat::Jpeg;
             let encoder =
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, jpeg_quality);
             resized.write_with_encoder(encoder)?;

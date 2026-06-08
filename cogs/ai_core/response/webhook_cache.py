@@ -75,7 +75,9 @@ def start_webhook_cache_cleanup(bot) -> None:
     """Start the background webhook cache cleanup task.
 
     Args:
-        bot: The Discord bot instance
+        bot: The Discord bot instance. Accepted for call-site symmetry only; the
+            cleanup task is bound to the currently running event loop
+            (asyncio.get_running_loop()), not to bot.loop.
     """
     global _webhook_cache_cleanup_task  # pylint: disable=global-statement
     # Check if event loop is available and running
@@ -98,6 +100,9 @@ def webhook_cache_healthcheck(bot=None) -> bool:
     case where ``start_webhook_cache_cleanup`` was invoked too early
     (before any loop existed) and the cleanup task therefore never
     started. Returns True if a running task exists at exit.
+
+    The ``bot`` arg is accepted only to forward to
+    ``start_webhook_cache_cleanup`` and is not otherwise used here.
     """
     with _webhook_task_lock:
         task_alive = (

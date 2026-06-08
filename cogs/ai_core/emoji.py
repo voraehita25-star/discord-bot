@@ -24,7 +24,9 @@ def convert_discord_emojis(text: str) -> str:
     <:smile:123456789> -> [:smile:]
     <a:dance:987654321> -> [:dance:]
     """
-    return re.sub(r"<a?:(\w+):\d+>", r"[:\1:]", text)
+    # Reuse the module-level compiled pattern (name is group 2) so there's a
+    # single source of truth for the Discord-emoji syntax.
+    return PATTERN_DISCORD_EMOJI.sub(r"[:\2:]", text)
 
 
 def extract_discord_emojis(text: str) -> list[dict]:

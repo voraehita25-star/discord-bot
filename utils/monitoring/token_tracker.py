@@ -84,7 +84,7 @@ class UserTokenStats:
     @property
     def average_per_request(self) -> float:
         if self.total_requests == 0:
-            return 0
+            return 0.0
         return self.total_tokens / self.total_requests
 
 

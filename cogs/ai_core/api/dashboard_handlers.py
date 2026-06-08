@@ -7,6 +7,7 @@ These are standalone async functions called by the main WebSocket server.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from itertools import islice
@@ -1395,11 +1396,24 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # `else: v` while strings were truncated — inconsistency that
         # invited bugs (e.g. NaN floats slipping through). Now everything
         # gets explicit handling.
+        # ``preferences`` is persisted into a TEXT column (``str | None``), and
+        # the read path renders it back into the model context as a string. The
+        # dashboard UI sends it as a free-text string (a textarea); a structured
+        # client may instead send a dict. Both must end up as ``str | None`` —
+        # sqlite cannot bind a dict, and (the original bug) the dict-only branch
+        # silently dropped the string the real UI actually sends.
         raw_prefs = profile_data.get("preferences")
-        sanitized_prefs: dict[str, str | int | float | bool | list[str]] | None = None
+        sanitized_prefs: str | None = None
         truncated_prefs = False
-        if isinstance(raw_prefs, dict):
-            sanitized_prefs = {}
+        if isinstance(raw_prefs, str):
+            # Main path: funnel through the same sanitizer as display_name/bio
+            # (NFKC + control-char strip + prompt-injection filter) so the value
+            # can't carry injection directives into the model context.
+            sanitized_prefs = _sanitize_profile_field(raw_prefs, max_length=500)
+        elif isinstance(raw_prefs, dict):
+            # Defensive path: sanitize each known value type, then serialise to a
+            # JSON string (the column is TEXT — a raw dict can't be bound).
+            clean: dict[str, str | int | float | bool | list[str]] = {}
             # ``islice`` silently drops keys past MAX_PREFERENCE_KEYS —
             # capture whether truncation happened so we can warn the
             # client. Without this signal, a user setting their 51st
@@ -1421,22 +1435,23 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
                     # into the AI context. Without this, the str branch was
                     # the one prompt-injection landing zone in the profile
                     # write path that bypassed sanitization.
-                    sanitized_prefs[key] = _sanitize_profile_field(v, max_length=200) or ""
+                    clean[key] = _sanitize_profile_field(v, max_length=200) or ""
                 elif isinstance(v, bool):
                     # bool MUST come before int (bool is a subclass of int)
-                    sanitized_prefs[key] = v
+                    clean[key] = v
                 elif isinstance(v, int):
                     # Clamp to a sensible range so a giant integer can't
                     # blow up downstream JSON serialisation.
-                    sanitized_prefs[key] = max(-(2**53), min(2**53, v))
+                    clean[key] = max(-(2**53), min(2**53, v))
                 elif isinstance(v, float):
                     import math as _math
 
-                    sanitized_prefs[key] = v if _math.isfinite(v) else 0.0
+                    clean[key] = v if _math.isfinite(v) else 0.0
                 elif isinstance(v, list):
-                    sanitized_prefs[key] = [
+                    clean[key] = [
                         str(i)[:200] for i in v[:20] if isinstance(i, str | int | float | bool)
                     ]
+            sanitized_prefs = json.dumps(clean, ensure_ascii=False) if clean else None
         await db.save_dashboard_user_profile(
             display_name=display_name,
             bio=bio,
@@ -1449,7 +1464,14 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         await ws.send_json(
             {
                 "type": "profile_saved",
-                "profile": profile_data,
+                # Echo what was actually PERSISTED (sanitized/clamped/defaulted),
+                # not the raw client input — otherwise the UI briefly shows the
+                # unsanitized values until the next get_profile reload corrects them.
+                "profile": {
+                    "display_name": display_name,
+                    "bio": bio,
+                    "preferences": sanitized_prefs,
+                },
                 # Surface truncation so the dashboard can flag it. Default
                 # False so older clients that don't read this field stay
                 # backward compatible.

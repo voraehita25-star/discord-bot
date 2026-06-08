@@ -119,6 +119,10 @@ class AI(commands.Cog):
         # Cache for verified webhook IDs to avoid repeated API calls
         # Maps webhook_id -> (is_known_proxy: bool, expires_at: float)
         self._webhook_verify_cache: dict[int, tuple[bool, float]] = {}
+        # channel ids already warned about a Manage-Webhooks denial — pre-init
+        # here (like the other shared state) instead of lazily inside the handler
+        # so concurrent on_message coroutines can't each create a fresh set.
+        self._webhook_forbidden_logged: set[int] = set()
         # Rate limiter cleanup will be started in cog_load()
 
     @staticmethod
@@ -424,6 +428,10 @@ class AI(commands.Cog):
                         message or "",
                         ctx.message.attachments,
                         output_channel=output_channel,
+                        # Pass the user message id like the other call sites so the
+                        # RP server's history rows keep their message_id linkage
+                        # (resend / reference lookups rely on it).
+                        user_message_id=ctx.message.id,
                     )
                 else:
                     await ctx.send("❌ ไม่พบห้อง Output สำหรับ Roleplay")
@@ -673,10 +681,8 @@ class AI(commands.Cog):
                 # without ``Manage Webhooks`` the verify path can't list
                 # the channel's webhooks, so we can never confirm the
                 # webhook belongs to an allowed proxy bot and the message
-                # is dropped. Tracked in ``_webhook_forbidden_logged`` so
-                # we don't spam the log on every proxy message.
-                if not hasattr(self, "_webhook_forbidden_logged"):
-                    self._webhook_forbidden_logged: set[int] = set()
+                # is dropped. Tracked in ``_webhook_forbidden_logged`` (pre-init
+                # in __init__) so we don't spam the log on every proxy message.
                 if webhook_channel.id not in self._webhook_forbidden_logged:
                     self._webhook_forbidden_logged.add(webhook_channel.id)
                     logger.warning(
@@ -1136,6 +1142,19 @@ class AI(commands.Cog):
                 # Reload the chat session to include new history
                 self.chat_manager.chats.pop(target_id, None)
 
+                # In CLI mode (default), also forget the target's Claude
+                # --resume session so its next turn starts a fresh context
+                # that reflects the freshly-copied history. Without this the
+                # CLI replays stale server-side context and the linked memory
+                # doesn't take effect until the session is evicted (mirrors
+                # reset_ai's CLI handling).
+                if getattr(self.chat_manager, "cli_mode", False):
+                    from cogs.ai_core.api.discord_chat_claude_cli import (
+                        reset_channel_session,
+                    )
+
+                    reset_channel_session(target_id)
+
                 embed = discord.Embed(
                     title="✅ Link Memory Successful",
                     description=(
@@ -1178,7 +1197,7 @@ class AI(commands.Cog):
 
         # Find the message to resend - query directly from database
         target_message = None
-        if local_id:
+        if local_id is not None:
             # Query by local_id from database
             target_message = await get_message_by_local_id(target_channel_id, local_id)
             if not target_message:
@@ -1386,6 +1405,19 @@ class AI(commands.Cog):
 
                 # Clear source from memory too
                 self.chat_manager.chats.pop(source_id, None)
+
+                # In CLI mode (default), forget BOTH channels' Claude --resume
+                # sessions: the target so it picks up the moved history, and the
+                # source so its next turn no longer replays the conversation
+                # whose local history was just deleted (otherwise the "delete
+                # source history" guarantee shown to the owner is violated).
+                if getattr(self.chat_manager, "cli_mode", False):
+                    from cogs.ai_core.api.discord_chat_claude_cli import (
+                        reset_channel_session,
+                    )
+
+                    reset_channel_session(target_id)
+                    reset_channel_session(source_id)
 
                 embed = discord.Embed(
                     title="✅ Move Memory Successful",

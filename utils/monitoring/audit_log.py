@@ -108,23 +108,34 @@ def _add_jsonl_chain(entry: dict[str, Any]) -> dict[str, Any]:
 
 async def _write_fallback_chained(entry: dict[str, Any]) -> bool:
     """Chain + write one fallback entry, advancing the running hash only on a
-    confirmed write."""
+    confirmed write.
+
+    The whole read-chain -> write -> head-commit critical section runs under a
+    single hold of ``_get_fallback_lock()`` so two concurrent fallback writers
+    can't both read the same stale ``_jsonl_prev_hash`` before either advances
+    it (which would fork the tamper-evidence chain with two entries sharing one
+    ``prev_hash``). asyncio.Lock is not re-entrant, so the inner writer below
+    must NOT re-acquire it.
+    """
     global _jsonl_prev_hash
-    chained = _add_jsonl_chain(entry)
-    ok = await _write_fallback_entry(chained)
-    if ok:
-        _jsonl_prev_hash = chained["entry_hash"]
-    return ok
+    async with _get_fallback_lock():
+        chained = _add_jsonl_chain(entry)  # reads _jsonl_prev_hash under lock
+        ok = await _write_fallback_entry_locked(chained)
+        if ok:
+            _jsonl_prev_hash = chained["entry_hash"]  # commit head under same lock
+        return ok
 
 
-async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
+async def _write_fallback_entry_locked(entry: dict[str, Any]) -> bool:
     """Append one audit row to the JSONL fallback file.
 
-    The previous implementation opened the file inside a lambda and
-    discarded the handle once ``write`` returned, leaving close to GC.
-    On Windows the file handle would stay open long enough that a
-    rotating-logs sweeper holding a Path lock could collide with the
-    next write. Using ``with`` makes close deterministic.
+    Caller MUST already hold ``_get_fallback_lock()`` (see
+    ``_write_fallback_chained``); this function does not acquire it, so the
+    read-chain/write/commit stays one atomic critical section.
+
+    The file handle is opened inside a ``with`` so close is deterministic — on
+    Windows a leaked handle could collide with a rotating-logs sweeper's Path
+    lock on the next write.
     """
 
     def _do_write(line: str) -> None:
@@ -132,10 +143,9 @@ async def _write_fallback_entry(entry: dict[str, Any]) -> bool:
             f.write(line)
 
     try:
-        async with _get_fallback_lock():
-            _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(entry, ensure_ascii=False) + "\n"
-            await asyncio.to_thread(_do_write, line)
+        _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        await asyncio.to_thread(_do_write, line)
         return True
     except Exception:
         logger.exception("Audit fallback write failed; entry lost")

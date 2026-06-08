@@ -122,6 +122,15 @@ describe('formatMessage — fenced code blocks', () => {
         // Escaped form should be present.
         expect(html).toMatch(/&lt;script&gt;|alert\(1\)/);
     });
+
+    it('does not treat $ inside a code block as LaTeX (shell vars survive)', () => {
+        // Regression: code blocks are extracted BEFORE the LaTeX passes, so the
+        // inline-LaTeX regex must not consume `$HOME and $` and corrupt the code.
+        const html = formatMessage('```bash\necho $HOME and $USER\n```');
+        expect(html).toContain('language-bash');
+        expect(html).not.toContain('math-inline');
+        expect(html).toContain('echo $HOME and $USER');
+    });
 });
 
 describe('formatMessage — LaTeX fallback (no KaTeX)', () => {

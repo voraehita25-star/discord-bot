@@ -1069,14 +1069,16 @@ class TestConsolidateBranches:
     async def test_generic_exception(self):
         """Generic Exception branch (lines 241-246)."""
         cog = _make_cog()
-        ctx, _status = self._ctx_with_status()
+        ctx, status = self._ctx_with_status()
 
         with _patch_archiver(consolidate_channel=AsyncMock(side_effect=RuntimeError("boom"))):
             await cog.force_consolidate.callback(cog, ctx)
 
-        # First send = status msg, second send = error message
-        assert ctx.send.await_count >= 1
-        assert "เกิดข้อผิดพลาดในการรวบรวม" in ctx.send.call_args[0][0]
+        # The "⏳ กำลังรวบรวม..." progress message is edited in-place with the
+        # error (not left dangling), so the error goes to status.edit — not a
+        # second ctx.send.
+        status.edit.assert_awaited_once()
+        assert "เกิดข้อผิดพลาดในการรวบรวม" in status.edit.call_args.kwargs["content"]
 
 
 class TestMemoryStatsBranches:

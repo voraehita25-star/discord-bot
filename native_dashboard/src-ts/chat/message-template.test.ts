@@ -199,9 +199,10 @@ describe('renderMessagesHtml', () => {
     });
 
     it('marks pinned messages in the pin button dataset', () => {
-        // Use id=42: the template guards pin/like behind `msgId` truthiness,
-        // which means id=0 is mis-treated as "no id" (minor latent bug,
-        // separate concern from this test).
+        // Use id=42 for a clearly persisted message. (id=0 also renders
+        // correctly — msgId becomes the truthy string "0" via the
+        // String(Math.trunc(...)) coercion; only a missing/negative/non-finite
+        // id yields "" and skips the buttons.)
         const result = renderMessagesHtml({
             messages: [mkMsg(42, { is_pinned: true })],
             currentConversation: mkConv(),

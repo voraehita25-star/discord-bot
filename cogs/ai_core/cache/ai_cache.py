@@ -204,7 +204,9 @@ class AICache:
         Returns:
             Tuple of (key, entry, similarity) or None
         """
-        threshold = threshold or self.SIMILARITY_THRESHOLD
+        # Honor an explicit threshold=0.0 (match-anything) — `or` would treat
+        # the legitimate 0.0 as falsy and silently substitute the default.
+        threshold = self.SIMILARITY_THRESHOLD if threshold is None else threshold
         normalized = self._normalize_message(message)
 
         best_match = None
@@ -374,9 +376,15 @@ class AICache:
             if prev is not None:
                 entry.hits = prev.hits
                 entry.ttl_multiplier = prev.ttl_multiplier
+                self.cache[key] = entry
+                # Re-assigning an existing OrderedDict key keeps its old position,
+                # so promote the refreshed entry to most-recently-used — otherwise
+                # a frequently-re-set-but-rarely-read key could be evicted ahead
+                # of colder-but-recently-touched entries.
+                self.cache.move_to_end(key)
             else:
                 self._evict_lru()
-            self.cache[key] = entry
+                self.cache[key] = entry
 
         # Optional persistence hook (e.g. write-through to L2). Set on the
         # instance, not the class — that way subclasses, test instances, and

@@ -392,7 +392,12 @@ class BotMetrics:
             result: 'search' or 'no_search'
         """
         if self.enabled:
-            self.search_intent_total.labels(method=method, result=result).inc()
+            # Clamp to known values to bound Prometheus label cardinality, like
+            # the sibling metric methods (a future dynamic caller can't explode
+            # the series count).
+            safe_method = method if method in ("prefilter", "ai", "game_keyword") else "other"
+            safe_result = result if result in ("search", "no_search") else "other"
+            self.search_intent_total.labels(method=safe_method, result=safe_result).inc()
 
     def set_db_pool(self, total: int, available: int):
         """Set database pool metrics."""

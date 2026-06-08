@@ -179,8 +179,9 @@ export class ErrorLogger {
                         }, 0);
                     });
                 } catch (_e) {
-                    // Silently fail if logging fails — name unused param
-                    // with leading underscore so noUnusedParameters keeps quiet.
+                    // Unreachable in practice — the awaited executor resolves on
+                    // both the .then and .catch of invoke(), so it never rejects.
+                    // Kept as defence in depth; errors are already swallowed above.
                 }
             }
         }
@@ -728,8 +729,10 @@ export function animateNumber(
     const prefix = options.prefix ?? '';
     const suffix = options.suffix ?? '';
     const useLocale = options.locale !== false;
-    // Auto-detect decimals from target value if not specified
-    const decimals = options.decimals ?? (Number.isInteger(to) ? 0 : (to.toString().split('.')[1]?.length ?? 0));
+    // Auto-detect decimals from target value if not specified. Clamp to 2 so a
+    // float artifact (e.g. 85.40000000000001 → ~14 digits) can't blow up the
+    // rendered fraction-digit count; 2 covers the dashboard's display needs.
+    const decimals = options.decimals ?? (Number.isInteger(to) ? 0 : Math.min(to.toString().split('.')[1]?.length ?? 0, 2));
 
     // Extract current number from textContent (strip non-numeric chars except minus and dot)
     const current = parseFloat((el.textContent || '0').replace(/[^\d.\-]/g, '')) || 0;

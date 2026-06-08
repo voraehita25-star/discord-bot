@@ -184,6 +184,8 @@ export class DocumentAttachManager {
 
         const visible = this.docs
             .map((doc, idx) => ({ doc, idx }))
+            // Defence in depth: drop empty-data entries even though attach()
+            // already rejects them before pushing (so this never removes any).
             .filter(({ doc }) => doc.data !== '');
 
         if (visible.length === 0) {

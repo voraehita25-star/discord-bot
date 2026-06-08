@@ -35,6 +35,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Tools whose target path must be inside an allowed root. NotebookEdit is also
 # on the subprocess --disallowedTools list, but we still guard it here so the
@@ -45,7 +46,7 @@ _GUARDED_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _PATH_KEYS = ("file_path", "notebook_path", "path")
 
 
-def _deny(reason: str) -> None:
+def _deny(reason: str) -> NoReturn:
     """Block the tool call: stderr is shown to the model, exit 2 = deny."""
     sys.stderr.write(f"cli_write_guard: {reason}\n")
     raise SystemExit(2)
