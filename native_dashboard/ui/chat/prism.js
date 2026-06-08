@@ -33,6 +33,28 @@ const PRISM_ALIASES = {
     ps1: 'powershell',
     yml: 'yaml',
 };
+/**
+ * Grammars that extend another component and therefore need it loaded FIRST.
+ * Most shipped Prism components call ``Prism.languages.extend(<base>, …)`` at
+ * script-eval time; if ``<base>`` isn't present that throws a TypeError during
+ * the injected script's evaluation (uncatchable here) and the target grammar is
+ * never created — so the first code block of these languages silently falls back
+ * to plain text for the whole session. Resolved transitively (cpp → c → clike,
+ * typescript → javascript → clike).
+ */
+const PRISM_DEPS = {
+    c: ['clike'],
+    cpp: ['c'],
+    javascript: ['clike'],
+    typescript: ['javascript'],
+    go: ['clike'],
+    csharp: ['clike'],
+    java: ['clike'],
+    kotlin: ['clike'],
+    ruby: ['clike'],
+    markdown: ['markup'],
+    css: ['markup'],
+};
 /** Module-level cache — one promise per language so concurrent highlights de-dupe. */
 const loadPromises = new Map();
 function getPrism() {
@@ -55,24 +77,43 @@ export async function loadPrismLanguage(lang) {
     const existing = loadPromises.get(canon);
     if (existing)
         return existing;
-    const p = new Promise((resolve) => {
-        const script = document.createElement('script');
-        script.src = `vendor/prism/prism-${canon}.min.js`;
-        // Preserve load order — e.g. `markup` depends on `clike` being loaded first.
-        script.async = false;
-        script.onload = () => resolve();
-        script.onerror = () => {
-            errorLogger.log('PRISM_LANG_LOAD_FAIL', `Failed to load Prism language: ${canon}`);
-            // Evict the cached promise so a transient load failure (CSP hiccup,
-            // AV scan, momentary file-lock on Windows) can be retried on a later
-            // render instead of permanently falling back to plain text this
-            // session.
-            loadPromises.delete(canon);
-            // Don't reject — fall back to plain-text code for this attempt.
-            resolve();
-        };
-        document.head.appendChild(script);
-    });
+    const p = (async () => {
+        // Load prerequisite grammars first so the component's eval-time
+        // extend(<base>, …) finds its base (see PRISM_DEPS). Recurses to pull
+        // transitive deps (cpp → c → clike, typescript → javascript → clike).
+        for (const dep of PRISM_DEPS[canon] || []) {
+            if (!prism.languages[dep]) {
+                await loadPrismLanguage(dep);
+            }
+        }
+        await new Promise((resolve) => {
+            const script = document.createElement('script');
+            script.src = `vendor/prism/prism-${canon}.min.js`;
+            // Preserve load order — e.g. `markup` depends on `clike` being loaded first.
+            script.async = false;
+            script.onload = () => {
+                // onload fires even when the component threw during eval (a
+                // missing base grammar). Verify the grammar actually registered;
+                // if not, evict the cached promise so a later render can retry
+                // instead of caching a falsely-resolved promise for the session.
+                if (!prism.languages[canon]) {
+                    loadPromises.delete(canon);
+                }
+                resolve();
+            };
+            script.onerror = () => {
+                errorLogger.log('PRISM_LANG_LOAD_FAIL', `Failed to load Prism language: ${canon}`);
+                // Evict the cached promise so a transient load failure (CSP hiccup,
+                // AV scan, momentary file-lock on Windows) can be retried on a later
+                // render instead of permanently falling back to plain text this
+                // session.
+                loadPromises.delete(canon);
+                // Don't reject — fall back to plain-text code for this attempt.
+                resolve();
+            };
+            document.head.appendChild(script);
+        });
+    })();
     loadPromises.set(canon, p);
     return p;
 }

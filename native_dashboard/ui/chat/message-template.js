@@ -15,6 +15,24 @@
 import { escapeHtml, safeAvatarUrl, settings } from '../shared.js';
 export const VIRT_THRESHOLD = 150;
 export const VIRT_WINDOW_SIZE = 100;
+// Hoisted to module scope so the Set + closure are allocated once, not per
+// rendered message (renderSingleMessage runs across the whole virtual window).
+const ALLOWED_IMG_HOSTS = new Set([
+    'cdn.discordapp.com',
+    'media.discordapp.net',
+    'i.imgur.com',
+    'images.unsplash.com',
+]);
+function isAllowedExternalImage(url) {
+    if (!url.startsWith('https://'))
+        return false;
+    try {
+        return ALLOWED_IMG_HOSTS.has(new URL(url).hostname.toLowerCase());
+    }
+    catch {
+        return false;
+    }
+}
 /** Render the "no messages yet" welcome card. */
 export function renderWelcomeCard(conversation) {
     // role_emoji and role_name come from the WS server's `connected` /
@@ -122,23 +140,6 @@ function renderSingleMessage(msg, msgIdx, mctx) {
     // script execution).
     let imagesHtml = '';
     if (msg.images && msg.images.length > 0) {
-        const _ALLOWED_IMG_HOSTS = new Set([
-            'cdn.discordapp.com',
-            'media.discordapp.net',
-            'i.imgur.com',
-            'images.unsplash.com',
-        ]);
-        const isAllowedExternalImage = (url) => {
-            if (!url.startsWith('https://'))
-                return false;
-            try {
-                const u = new URL(url);
-                return _ALLOWED_IMG_HOSTS.has(u.hostname.toLowerCase());
-            }
-            catch {
-                return false;
-            }
-        };
         imagesHtml = `<div class="message-images">${msg.images
             .filter((img) => typeof img === 'string'
             && ((img.startsWith('data:image/') && !img.toLowerCase().startsWith('data:image/svg'))

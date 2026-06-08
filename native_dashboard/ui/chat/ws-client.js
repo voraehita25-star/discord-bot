@@ -75,11 +75,13 @@ export class WebSocketClient {
     }
     /** Cleanly close any active socket, stop ping/reconnect timers. */
     disconnect() {
-        if (this.pingInterval) {
+        // Explicit `!== null` (not truthiness) — a timer id of 0 is valid per
+        // spec and would be skipped by a truthy check, leaking the timer.
+        if (this.pingInterval !== null) {
             clearInterval(this.pingInterval);
             this.pingInterval = null;
         }
-        if (this.reconnectTimeout) {
+        if (this.reconnectTimeout !== null) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }
@@ -205,7 +207,9 @@ export class WebSocketClient {
                 }
                 errorLogger.log('WEBSOCKET_ERROR', `WebSocket connection error (${wsUrl})`, String(error));
                 this.connected = false;
-                this.callbacks.onConnectStateChange?.(false);
+                // Don't emit onConnectStateChange(false) here: per the WS spec an
+                // error is always followed by a close event, and onclose already
+                // fires it — avoids a redundant double state-change per socket.
             };
             socket.onmessage = (event) => {
                 if (this.ws !== socket)
@@ -275,6 +279,10 @@ export class WebSocketClient {
         this.stopPingLoop();
         this.pingInterval = window.setInterval(() => {
             if (!this.connected)
+                return;
+            // Skip the keep-alive ping during the brief connected-but-CLOSING
+            // window so a background ping never reaches send()'s error-toast path.
+            if (this.ws?.readyState !== WebSocket.OPEN)
                 return;
             if (this.pongPending) {
                 this.missedPongs++;

@@ -66,9 +66,10 @@ export function promptExportFormat() {
         const ac = new AbortController();
         const opts = { signal: ac.signal };
         const cleanup = (result) => {
+            // ac.abort() tears down ALL listeners (incl. escHandler, bound with
+            // the same signal below) — single source of truth for teardown.
             ac.abort();
             modal.classList.remove('active');
-            document.removeEventListener('keydown', escHandler);
             resolve(result);
         };
         modal.querySelectorAll('[data-close-export]').forEach(el => {
@@ -80,12 +81,13 @@ export function promptExportFormat() {
                 cleanup(format);
             }, opts);
         });
-        // Escape closes (matches the affordance other modals provide).
+        // Escape closes (matches the affordance other modals provide). Bound
+        // with the same AbortController signal so ac.abort() removes it too.
         const escHandler = (e) => {
             if (e.key === 'Escape')
                 cleanup(null);
         };
-        document.addEventListener('keydown', escHandler);
+        document.addEventListener('keydown', escHandler, opts);
     });
 }
 //# sourceMappingURL=export-picker.js.map

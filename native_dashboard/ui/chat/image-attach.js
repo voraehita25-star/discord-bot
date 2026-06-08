@@ -121,7 +121,10 @@ export class ImageAttachManager {
                 '.c,.cc,.cpp,.h,.hpp,.cs,.rb,.php,.pl,.r,.lua,' +
                 '.sh,.bash,.zsh,.ps1,.bat,.cmd,' +
                 '.html,.htm,.css,.scss,.sass,.less,.vue,.svelte,' +
-                '.sql,.graphql,.gql');
+                '.sql,.graphql,.gql,' +
+                // Keep in sync with TEXT_EXTENSIONS in document-attach.ts so the
+                // picker doesn't grey out files isDocumentFile() actually accepts.
+                '.cxx,.hxx,.scala,.swift,.fish,.rst');
         }
         attachBtn?.addEventListener('click', () => fileInput?.click());
         fileInput?.addEventListener('change', () => {

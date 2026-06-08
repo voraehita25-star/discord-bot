@@ -2375,6 +2375,15 @@ export class ChatManager {
         const msg = this.messages[msgIdx];
         if (!msg)
             return;
+        if (msg.id == null) {
+            // No DB id yet (stream_end id-backfill missing / protocol drift):
+            // the server would silently drop an edit_message with message_id
+            // undefined, leaving the bubble stuck in the textarea. Surface it
+            // and restore the bubble instead.
+            showToast('Message not yet saved — try again in a moment', { type: 'warning' });
+            this.cancelEdit(msgIdx, msg.content);
+            return;
+        }
         this.send({
             type: 'edit_message',
             message_id: msg.id,
@@ -2396,8 +2405,13 @@ export class ChatManager {
             return;
         const contentEl = msgEl.querySelector('.message-content');
         const actionsEl = msgEl.querySelector('.message-actions');
-        if (contentEl)
+        if (contentEl) {
             contentEl.innerHTML = this.formatMessage(this.stripThinkTags(originalContent));
+            // formatMessage doesn't syntax-highlight (separate async pass) — re-
+            // highlight so a cancelled edit of a code block isn't left as plain
+            // text until the next full render (mirrors finalizeStreamingMessage).
+            void this.highlightCodeBlocks(contentEl);
+        }
         if (actionsEl)
             actionsEl.style.display = '';
     }

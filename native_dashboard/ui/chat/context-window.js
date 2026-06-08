@@ -48,6 +48,13 @@ export class ContextWindowIndicator {
                     continue;
                 if (typeof u.context_window !== 'number' || !Number.isFinite(u.context_window))
                     continue;
+                // Mirror update()'s domain guards so a tampered/stale entry with
+                // a non-positive context_window or negative token counts is
+                // rejected on restore the same way it would be refused on write.
+                if (u.context_window <= 0)
+                    continue;
+                if (u.input_tokens < 0 || u.output_tokens < 0)
+                    continue;
                 const total = typeof u.total_tokens === 'number' && Number.isFinite(u.total_tokens)
                     ? u.total_tokens
                     : u.input_tokens + u.output_tokens;
@@ -85,7 +92,23 @@ export class ContextWindowIndicator {
             // which slices off the FRONT of the iteration order. Delete
             // first so a re-update always lands at the end of the order.
             this.cache.delete(conversationId);
-            this.cache.set(conversationId, usage);
+            // Store a NORMALIZED object so the cached/persisted total_tokens is
+            // always finite and == input+output (the raw frame's total_tokens is
+            // never validated above, and paint()/load() assume that invariant).
+            this.cache.set(conversationId, {
+                input_tokens,
+                output_tokens,
+                context_window,
+                total_tokens: input_tokens + output_tokens,
+            });
+            // Bound the in-memory Map to the same cap save() enforces on the
+            // persisted payload (oldest = front of insertion order).
+            while (this.cache.size > MAX_CACHE_SIZE) {
+                const oldest = this.cache.keys().next().value;
+                if (oldest === undefined)
+                    break;
+                this.cache.delete(oldest);
+            }
             this.save();
         }
         this.paint(usage);

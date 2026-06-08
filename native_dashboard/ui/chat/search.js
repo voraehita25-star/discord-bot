@@ -135,8 +135,10 @@ export class ChatSearch {
 function wrapMatches(root, query) {
     if (!query)
         return [];
-    // Cap total highlights so an empty/very-short query against a giant
-    // history can't lock the main thread wrapping tens of thousands of marks.
+    // Cap the number of candidate TEXT NODES we collect (below) so a short query
+    // against a giant history can't lock the main thread. The per-highlight cap
+    // (total <mark>s) is enforced separately by the hits.length >= MAX_HITS check
+    // further down; both happen to use this same bound.
     const MAX_HITS = 1000;
     const hits = [];
     const needle = query.toLowerCase();
