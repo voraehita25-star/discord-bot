@@ -759,19 +759,33 @@ class TestAsyncMethods:
             assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_add_memory_no_embedding(self):
-        """Test add_memory when embedding fails."""
+    async def test_add_memory_no_embedding(self, monkeypatch):
+        """Embeddings off (no client -> generate_embedding None) now PERSISTS
+        the memory vectorless (keyword-searchable) instead of dropping it."""
+        import asyncio
+
+        import cogs.ai_core.memory.rag as rag
         from cogs.ai_core.memory.rag import MemorySystem
 
         with patch.object(MemorySystem, "__init__", lambda x: None):
             system = MemorySystem()
-            system.client = None
+            system.client = None  # no embedding client → generate_embedding returns None
             system._faiss_index = None
             system._index_built = False
+            system._index_lock = asyncio.Lock()
+            system._all_memories_cache = {}
+
+            monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+            monkeypatch.setattr(rag, "FAISS_AVAILABLE", False)
+            mock_db = MagicMock()
+            mock_db.save_rag_memory = AsyncMock(return_value=1)
+            monkeypatch.setattr(rag, "db", mock_db)
 
             result = await system.add_memory("test content")
 
-            assert result is False
+            assert result is True
+            mock_db.save_rag_memory.assert_called_once()
+            assert mock_db.save_rag_memory.call_args.kwargs["embedding_bytes"] == b""
 
     @pytest.mark.asyncio
     async def test_force_save_index_not_built(self):

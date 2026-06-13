@@ -731,17 +731,16 @@ async def call_claude_api_streaming(
         system_prompt = config_params.get("system_instruction", "")
         max_tokens = config_params.get("max_tokens", CLAUDE_MAX_TOKENS)
 
-        # Streaming sends a deliberately minimal request: no extended thinking
-        # and no ``output_config``/effort either. Both are omitted on purpose
-        # for real-time responsiveness — extended reasoning delays the first
-        # visible chunk, which defeats the point of streaming. The
-        # non-streaming path (call_claude_api) applies thinking + effort for
-        # depth; the difference is intentional, not an oversight.
-        # (No config mutation needed — the stream call below only passes
-        # model/max_tokens/system/messages, so thinking/effort are simply
-        # never sent. The old deepcopy-and-pop built a dict nothing read.)
+        # Streaming forwards EFFORT (xhigh by default) for reasoning depth, but
+        # omits extended THINKING: thinking blocks delay the first visible chunk,
+        # which defeats real-time streaming. effort=xhigh closes most of the
+        # quality gap with the non-streaming path without that first-token delay.
+        # The non-streaming path (call_claude_api) additionally applies thinking.
         if "thinking" in config_params:
-            logger.info("🌊 Streaming mode: Disabled thinking + effort for real-time updates")
+            logger.info(
+                "🌊 Streaming mode: forwarding effort=%s; thinking omitted for real-time first-token latency",
+                CLAUDE_EFFORT,
+            )
     except Exception as e:
         logger.warning("⚠️ Streaming setup failed, falling back to normal API: %s", e)
         if placeholder_msg:
@@ -767,12 +766,18 @@ async def call_claude_api_streaming(
         delay = 1.0
 
         try:
-            stream = client.messages.stream(
-                model=target_model,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=messages,
-            )
+            stream_kwargs = {
+                "model": target_model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": messages,
+            }
+            # Forward effort for depth (xhigh by default). Adaptive-thinking
+            # models read this from output_config; omitted thinking keeps the
+            # first token fast.
+            if CLAUDE_EFFORT:
+                stream_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
+            stream = client.messages.stream(**stream_kwargs)
 
             _stream_final_message = None
             async with stream as response_stream:

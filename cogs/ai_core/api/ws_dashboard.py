@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
 # Import from extracted modules
+from ..data.constants import DASHBOARD_HISTORY_MESSAGES
 from .dashboard_chat import (
     handle_ai_edit_message as _handle_ai_edit_message,
     handle_chat_message as _handle_chat_message,
@@ -152,7 +153,10 @@ class DashboardWebSocketServer:
     # scenes) in a single message. Claude Opus 4.8 1M context window has
     # plenty of headroom — 200K chars ≈ 50-80K tokens, ~8% of the window.
     MAX_CONTENT_LENGTH = 200_000  # characters
-    MAX_HISTORY_MESSAGES = 100
+    # Env-driven (DASHBOARD_HISTORY_MESSAGES, default 500): how many prior
+    # messages are rendered into a fresh-session prompt. Raised from 100 — the
+    # 1M-token window holds long dashboard threads without losing earlier turns.
+    MAX_HISTORY_MESSAGES = DASHBOARD_HISTORY_MESSAGES
     MAX_IMAGES = 10
     MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB per image
     # Document attachments (PDF / text / code). 32 MB matches the Anthropic
@@ -161,7 +165,9 @@ class DashboardWebSocketServer:
     MAX_DOCUMENTS = 5
     MAX_DOCUMENT_SIZE_BYTES = 32 * 1024 * 1024
     STREAM_TIMEOUT = 300  # seconds for full stream consumption
-    RATE_LIMIT_MESSAGES_PER_MINUTE = 30  # max messages per client per minute
+    RATE_LIMIT_MESSAGES_PER_MINUTE = (
+        120  # max messages per client per minute (raised for the owner's dashboard)
+    )
 
     def __init__(self):
         self.app: web.Application | None = None

@@ -100,10 +100,12 @@ from .data.constants import (
     ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
     CREATOR_ID,
+    ENTITY_TOP_K,
     GAME_SEARCH_KEYWORDS,
     GUILD_ID_RP,
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
+    RAG_TOP_K,
 )
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
@@ -1197,41 +1199,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                 )
             return
 
-        # Optional per-user token-quota enforcement. OFF by default — this bot
-        # runs on a Max subscription with no per-token billing, so blocking the
-        # owner on a token budget would be counter-productive. With
-        # AI_TOKEN_QUOTA_ENFORCE=1 the per-user/channel/guild limits in
-        # token_tracker are applied before spending tokens; an over-quota
-        # request gets a Thai warning and is dropped. Inert under
-        # CLAUDE_BACKEND=cli — the CLI path records no usage, so check_limits
-        # has nothing to count against and always allows.
-        if os.getenv("AI_TOKEN_QUOTA_ENFORCE", "").strip().lower() in ("1", "true", "yes"):
-            _quota_allowed = True
-            _quota_warning = None
-            try:
-                from cogs.ai_core.cache.token_tracker import token_tracker as _token_tracker
-
-                _quota_guild_id = getattr(getattr(context_channel, "guild", None), "id", None)
-                _quota_allowed, _quota_warning = await _token_tracker.check_limits(
-                    user.id, channel_id=channel_id, guild_id=_quota_guild_id
-                )
-            except Exception:
-                # check_limits failure fails OPEN (non-fatal) — the default
-                # _quota_allowed=True lets the request proceed.
-                logger.debug("token quota check failed (non-fatal)", exc_info=True)
-            if not _quota_allowed:
-                # Over quota → drop the request whether or not the warning send
-                # succeeds. Previously the send sat inside the try above, so a
-                # send failure was swallowed and the request fell through into
-                # normal processing, silently bypassing quota enforcement.
-                self._deduplicator.remove_request(request_key)
-                with contextlib.suppress(discord.HTTPException):
-                    await send_channel.send(
-                        _quota_warning or "⚠️ โควต้าการใช้งาน AI หมดแล้ว กรุณาลองใหม่ภายหลัง",
-                        delete_after=30,
-                    )
-                return
-
         # Create lock for this channel if not exists. We deliberately do NOT
         # use ``setdefault(channel_id, asyncio.Lock())`` here because
         # ``setdefault``'s second argument is always evaluated — every call
@@ -1396,7 +1363,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     try:
                         # Search global memories + channel specific
                         _rag_start = time.time()
-                        memories = await rag_system.search_memory(display_message, limit=3)
+                        memories = await rag_system.search_memory(display_message, limit=RAG_TOP_K)
                         self.record_timing("rag_search", time.time() - _rag_start)
                         if memories:
                             rag_context = "\n\n[Long-term Memory]\n" + "\n".join(
@@ -1425,7 +1392,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 display_message[:100],
                                 channel_id=channel_id,
                                 guild_id=guild_id,
-                                limit=3,
+                                limit=ENTITY_TOP_K,
                             )
                             entity_names = [e.name for e in entities]
 
@@ -1581,7 +1548,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                             compressed = await asyncio.wait_for(
                                 summarizer.compress_history(
                                     history,
-                                    keep_recent=50,  # Keep 50 most recent messages intact
+                                    keep_recent=200,  # Keep 200 most recent messages intact (less lossy)
                                 ),
                                 timeout=60,  # 60s timeout to prevent indefinite blocking
                             )

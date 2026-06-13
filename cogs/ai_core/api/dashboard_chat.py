@@ -127,7 +127,7 @@ async def handle_chat_message(
     gemini_client: genai.Client | None,
     *,
     max_content_length: int = 50_000,
-    max_history_messages: int = 100,
+    max_history_messages: int = 500,
     max_images: int = 10,
     max_image_size_bytes: int = 10 * 1024 * 1024,
     max_documents: int = 5,
@@ -928,7 +928,7 @@ async def handle_ai_edit_message(
     data: dict[str, Any],
     gemini_client: genai.Client | None,
     *,
-    max_history_messages: int = 100,
+    max_history_messages: int = 500,
     stream_timeout: int = 300,
 ) -> None:
     """Handle AI self-edit: AI rewrites one of its own messages based on user instruction."""

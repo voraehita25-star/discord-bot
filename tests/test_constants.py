@@ -163,13 +163,13 @@ class TestProcessingTimeouts:
         """Test STREAMING_TIMEOUT_INITIAL is defined."""
         from cogs.ai_core.data.constants import STREAMING_TIMEOUT_INITIAL
 
-        assert STREAMING_TIMEOUT_INITIAL == 30.0
+        assert STREAMING_TIMEOUT_INITIAL == 120.0
 
     def test_streaming_timeout_chunk(self):
         """Test STREAMING_TIMEOUT_CHUNK is defined."""
         from cogs.ai_core.data.constants import STREAMING_TIMEOUT_CHUNK
 
-        assert STREAMING_TIMEOUT_CHUNK == 10.0
+        assert STREAMING_TIMEOUT_CHUNK == 45.0
 
     def test_max_stall_time(self):
         """Test MAX_STALL_TIME is defined."""
@@ -182,10 +182,10 @@ class TestContentLimits:
     """Tests for content limit constants."""
 
     def test_max_history_items(self):
-        """Test MAX_HISTORY_ITEMS is defined."""
+        """Test MAX_HISTORY_ITEMS is defined (env-driven, default raised to 8000)."""
         from cogs.ai_core.data.constants import MAX_HISTORY_ITEMS
 
-        assert MAX_HISTORY_ITEMS == 2000
+        assert MAX_HISTORY_ITEMS == 8000
 
     def test_max_text_truncate_length(self):
         """Test MAX_TEXT_TRUNCATE_LENGTH is defined."""

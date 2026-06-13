@@ -101,34 +101,6 @@ class TestTokenUsageDataclass:
         assert usage.cached is False
 
 
-class TestUsageLimitsDataclass:
-    """Tests for UsageLimits dataclass."""
-
-    def test_usage_limits_defaults(self):
-        """Test default limit values."""
-        from cogs.ai_core.cache.token_tracker import UsageLimits
-
-        limits = UsageLimits()
-
-        assert limits.daily_user_tokens == 100_000
-        assert limits.daily_channel_tokens == 500_000
-        assert limits.daily_guild_tokens == 2_000_000
-        assert limits.hourly_user_tokens == 20_000
-        assert limits.warning_threshold == 0.8
-
-    def test_usage_limits_custom(self):
-        """Test custom limit values."""
-        from cogs.ai_core.cache.token_tracker import UsageLimits
-
-        limits = UsageLimits(
-            daily_user_tokens=50_000,
-            hourly_user_tokens=10_000,
-        )
-
-        assert limits.daily_user_tokens == 50_000
-        assert limits.hourly_user_tokens == 10_000
-
-
 class TestUsageStatsDataclass:
     """Tests for UsageStats dataclass."""
 
@@ -157,18 +129,8 @@ class TestTokenTracker:
 
         tracker = TokenTracker()
 
-        assert tracker.limits is not None
         assert tracker._usage_cache is not None
         assert tracker._cleanup_task is None
-
-    def test_tracker_with_custom_limits(self):
-        """Test creating TokenTracker with custom limits."""
-        from cogs.ai_core.cache.token_tracker import TokenTracker, UsageLimits
-
-        limits = UsageLimits(daily_user_tokens=50_000)
-        tracker = TokenTracker(limits=limits)
-
-        assert tracker.limits.daily_user_tokens == 50_000
 
     @pytest.mark.asyncio
     async def test_record_usage(self):
@@ -294,93 +256,6 @@ class TestTokenTracker:
         stats = await tracker.get_guild_usage(789)
 
         assert stats.total_tokens == 0
-
-    @pytest.mark.asyncio
-    async def test_check_limits_allowed(self):
-        """Test check_limits when within limits."""
-        from cogs.ai_core.cache.token_tracker import TokenTracker
-
-        tracker = TokenTracker()
-
-        allowed, warning = await tracker.check_limits(123)
-
-        assert allowed is True
-
-    @pytest.mark.asyncio
-    async def test_check_limits_hourly_exceeded(self):
-        """Test check_limits when hourly limit exceeded."""
-        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage, UsageLimits
-
-        limits = UsageLimits(hourly_user_tokens=100)  # Very low limit
-        tracker = TokenTracker(limits=limits)
-
-        # Add usage exceeding limit
-        usage = TokenUsage(
-            input_tokens=100,
-            output_tokens=100,
-            timestamp=datetime.now(),
-            user_id=123,
-            channel_id=456,
-        )
-
-        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
-            await tracker.record_usage(usage)
-
-        allowed, warning = await tracker.check_limits(123)
-
-        assert allowed is False
-        assert "รายชั่วโมง" in warning
-
-    @pytest.mark.asyncio
-    async def test_check_limits_daily_exceeded(self):
-        """Test check_limits when daily limit exceeded."""
-        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage, UsageLimits
-
-        limits = UsageLimits(daily_user_tokens=100, hourly_user_tokens=1000)  # Very low daily
-        tracker = TokenTracker(limits=limits)
-
-        usage = TokenUsage(
-            input_tokens=100,
-            output_tokens=100,
-            timestamp=datetime.now(),
-            user_id=123,
-            channel_id=456,
-        )
-
-        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
-            await tracker.record_usage(usage)
-
-        allowed, warning = await tracker.check_limits(123)
-
-        assert allowed is False
-        assert "รายวัน" in warning
-
-    @pytest.mark.asyncio
-    async def test_check_limits_warning_threshold(self):
-        """Test check_limits warning at threshold."""
-        from cogs.ai_core.cache.token_tracker import TokenTracker, TokenUsage, UsageLimits
-
-        # 80% threshold = 80 tokens triggers warning at 100 token limit
-        limits = UsageLimits(daily_user_tokens=100, hourly_user_tokens=10000, warning_threshold=0.8)
-        tracker = TokenTracker(limits=limits)
-
-        # Add 85 tokens (exceeds 80% threshold)
-        usage = TokenUsage(
-            input_tokens=45,
-            output_tokens=40,
-            timestamp=datetime.now(),
-            user_id=123,
-            channel_id=456,
-        )
-
-        with patch.object(tracker, "_persist_usage", new_callable=AsyncMock):
-            await tracker.record_usage(usage)
-
-        allowed, warning = await tracker.check_limits(123)
-
-        assert allowed is True
-        assert warning is not None
-        assert "เหลือโควต้า" in warning
 
     @pytest.mark.asyncio
     async def test_get_global_stats_empty(self):
@@ -742,12 +617,6 @@ class TestModuleImports:
         from cogs.ai_core.cache.token_tracker import TokenUsage
 
         assert TokenUsage is not None
-
-    def test_import_usage_limits(self):
-        """Test importing UsageLimits."""
-        from cogs.ai_core.cache.token_tracker import UsageLimits
-
-        assert UsageLimits is not None
 
     def test_import_usage_stats(self):
         """Test importing UsageStats."""

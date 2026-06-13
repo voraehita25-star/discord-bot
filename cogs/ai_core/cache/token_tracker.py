@@ -162,17 +162,6 @@ class TokenUsage:
 
 
 @dataclass
-class UsageLimits:
-    """Configurable usage limits."""
-
-    daily_user_tokens: int = 100_000  # Per user per day
-    daily_channel_tokens: int = 500_000  # Per channel per day
-    daily_guild_tokens: int = 2_000_000  # Per guild per day
-    hourly_user_tokens: int = 20_000  # Per user per hour
-    warning_threshold: float = 0.8  # Warn at 80% usage
-
-
-@dataclass
 class UsageStats:
     """Aggregated usage statistics."""
 
@@ -210,8 +199,9 @@ class TokenTracker:
     # negligible, long enough to actually fill batches under steady load.
     PERSIST_FLUSH_INTERVAL = 5.0
 
-    def __init__(self, limits: UsageLimits | None = None):
-        self.limits = limits or UsageLimits()
+    def __init__(self):
+        # Token quota enforcement was removed — this tracker now records usage
+        # for analytics/cost display only and never blocks a request.
         self._usage_cache: dict[str, list[TokenUsage]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
@@ -239,11 +229,10 @@ class TokenTracker:
     async def init_from_db(self, hours: int = 24, max_rows: int = 10_000) -> int:
         """Pre-populate the in-memory cache from the ``token_usage`` table.
 
-        Quotas are enforced against ``_usage_cache``, which is empty after a
-        process restart — so without this call, ``check_limits`` would let a
-        user blow past their hourly limit until enough new requests refilled
-        the cache. We replay the last ``hours`` worth of recorded usage so
-        post-restart quotas line up with what was already spent.
+        ``_usage_cache`` is empty after a process restart; we replay the last
+        ``hours`` worth of recorded usage so post-restart usage stats/cost
+        displays line up with what was already spent. (Quota enforcement was
+        removed — this is purely for analytics now.)
 
         Returns the number of records loaded. Called from bot startup; safe
         to call multiple times (each call re-reads from DB, replacing any
@@ -603,65 +592,6 @@ class TokenTracker:
         async with self._lock:
             records = self._get_usage_in_period(key, period_delta)
         return self._aggregate_usage(records)
-
-    async def check_limits(
-        self, user_id: int, channel_id: int | None = None, guild_id: int | None = None
-    ) -> tuple[bool, str | None]:
-        """
-        Check if user/channel/guild is within limits.
-
-        Returns:
-            Tuple of (is_allowed, warning_message)
-            - is_allowed: True if request should proceed
-            - warning_message: Optional warning if approaching limit
-
-        All four counter reads happen inside a single ``self._lock`` so a
-        concurrent ``record_usage`` can't slip new tokens in between two
-        independent quota checks (TOCTOU race that previously let bursts
-        of requests blow past the limit).
-        """
-        async with self._lock:
-            hour_delta = timedelta(hours=1)
-            day_delta = timedelta(days=1)
-            user_key = f"user:{user_id}"
-            hourly_records = self._get_usage_in_period(user_key, hour_delta)
-            daily_records = self._get_usage_in_period(user_key, day_delta)
-            channel_records = (
-                self._get_usage_in_period(f"channel:{channel_id}", day_delta) if channel_id else []
-            )
-            guild_records = (
-                self._get_usage_in_period(f"guild:{guild_id}", day_delta) if guild_id else []
-            )
-
-        hourly_stats = self._aggregate_usage(hourly_records)
-        daily_stats = self._aggregate_usage(daily_records)
-
-        if hourly_stats.total_tokens >= self.limits.hourly_user_tokens:
-            return False, "⚠️ คุณใช้โควต้ารายชั่วโมงหมดแล้ว กรุณารอสักครู่"
-
-        if daily_stats.total_tokens >= self.limits.daily_user_tokens:
-            return False, "⚠️ คุณใช้โควต้ารายวันหมดแล้ว กรุณารอจนถึงพรุ่งนี้"
-
-        if channel_id:
-            channel_stats = self._aggregate_usage(channel_records)
-            if channel_stats.total_tokens >= self.limits.daily_channel_tokens:
-                return False, "⚠️ ห้องนี้ใช้โควต้าหมดแล้ววันนี้"
-
-        if guild_id:
-            guild_stats = self._aggregate_usage(guild_records)
-            if guild_stats.total_tokens >= self.limits.daily_guild_tokens:
-                return False, "⚠️ เซิร์ฟเวอร์นี้ใช้โควต้าหมดแล้ววันนี้"
-
-        # Check for warning threshold. Treat daily_user_tokens<=0 as
-        # "unlimited" rather than crashing with ZeroDivisionError.
-        warning = None
-        if self.limits.daily_user_tokens > 0:
-            usage_ratio = daily_stats.total_tokens / self.limits.daily_user_tokens
-            if usage_ratio >= self.limits.warning_threshold:
-                remaining = self.limits.daily_user_tokens - daily_stats.total_tokens
-                warning = f"💡 เหลือโควต้าวันนี้ประมาณ {remaining:,} tokens"
-
-        return True, warning
 
     async def get_global_stats(self) -> dict[str, Any]:
         """Get global usage statistics."""

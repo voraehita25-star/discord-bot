@@ -612,27 +612,34 @@ class MemorySystem:
         # Lock for index building to prevent race conditions
         self._index_lock = asyncio.Lock()
 
-        # Skip Gemini client init under CLAUDE_BACKEND=cli. Gemini is
-        # paid-API-only; with the client unset, ``generate_embedding``
-        # returns None and ``hybrid_search`` falls through to its
-        # keyword-only path. New memories can still be stored — they
-        # just won't get a vector and won't show up in semantic search
-        # until the user re-enables CLAUDE_BACKEND=api.
-        if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
+        # Semantic embeddings (Gemini) are enabled whenever a GEMINI_API_KEY is
+        # configured — DECOUPLED from CLAUDE_BACKEND so semantic recall works
+        # even on the default ``cli`` chat backend (max capability). The keyword
+        # path remains a graceful fallback when no key/lib is present, so a
+        # keyless deployment behaves exactly as before. RAG_EMBEDDINGS=off
+        # force-disables (e.g. to avoid the paid Gemini API); default "auto" =
+        # on when a key + google-genai are both available.
+        _rag_emb = os.getenv("RAG_EMBEDDINGS", "auto").strip().lower()
+        if _rag_emb in ("off", "0", "false", "no", "disabled"):
             logger.info(
-                "🚫 RAG embedding (Gemini) disabled (CLAUDE_BACKEND=cli) — "
-                "hybrid search degrades to keyword-only; new memories "
-                "won't be vector-indexed."
+                "🚫 RAG embedding (Gemini) disabled (RAG_EMBEDDINGS=off) — "
+                "hybrid search runs keyword-only."
             )
         elif GEMINI_API_KEY and _GENAI_AVAILABLE:
             try:
                 self.client = genai.Client(api_key=GEMINI_API_KEY)
+                logger.info("🧠 RAG embedding (Gemini) enabled — semantic + keyword hybrid search.")
             except Exception:
                 logger.exception("Failed to init Gemini Client for RAG")
         elif GEMINI_API_KEY and not _GENAI_AVAILABLE:
             logger.warning(
                 "GEMINI_API_KEY is set but google-genai is not installed; "
-                "RAG embeddings will be disabled."
+                "RAG embeddings will be disabled (keyword-only)."
+            )
+        else:
+            logger.info(
+                "🚫 RAG embedding disabled (no GEMINI_API_KEY) — keyword-only "
+                "hybrid search; set GEMINI_API_KEY to enable semantic recall."
             )
 
     def _evict_cache_if_needed(self) -> None:
@@ -948,6 +955,11 @@ class MemorySystem:
                                 except (ValueError, TypeError, KeyError) as e:
                                     logger.debug("Skipping unreconcilable memory %s: %s", mem_id, e)
                                     continue
+                                # Skip vectorless rows (empty embedding) and any
+                                # wrong-dim vector so FAISS isn't fed a bad shape —
+                                # these stay keyword-searchable via the DB.
+                                if vec.size != EMBEDDING_DIM:
+                                    continue
                                 orphan_vecs.append(vec)
                                 orphan_ids.append(mem_id)
                             if not orphan_vecs:
@@ -1135,24 +1147,28 @@ class MemorySystem:
             return False
 
         embedding = await self.generate_embedding(content)
-        if embedding is None:
-            return False
-
-        # Validate the embedding BEFORE writing to DB so a wrong-shape or
-        # zero-norm vector doesn't produce a permanent DB orphan that fails
-        # to re-index on every subsequent rebuild.
-        if embedding.size != EMBEDDING_DIM:
-            logger.warning(
-                "add_memory: embedding dim %d != expected %d — refusing to save",
-                embedding.size,
-                EMBEDDING_DIM,
-            )
-            return False
-        if float(np.linalg.norm(embedding)) == 0.0:
-            logger.warning("add_memory: embedding is zero-norm — refusing to save")
-            return False
-
-        embedding_bytes = embedding.tobytes()
+        embedding_bytes = b""
+        if embedding is not None:
+            # A PRESENT embedding is validated before writing so a wrong-shape
+            # or zero-norm vector (a data/model error) doesn't become a DB
+            # orphan that fails to re-index — those are refused.
+            if embedding.size != EMBEDDING_DIM:
+                logger.warning(
+                    "add_memory: embedding dim %d != expected %d — refusing to save",
+                    embedding.size,
+                    EMBEDDING_DIM,
+                )
+                return False
+            if float(np.linalg.norm(embedding)) == 0.0:
+                logger.warning("add_memory: embedding is zero-norm — refusing to save")
+                return False
+            embedding_bytes = embedding.tobytes()
+        # A fully ABSENT embedding (embeddings disabled / no GEMINI_API_KEY) is
+        # NOT a data error — PERSIST the memory with an empty vector so it stays
+        # KEYWORD-searchable instead of being silently dropped (the old behavior
+        # returned False here). It's excluded from the FAISS/semantic index (the
+        # size guards in _ensure_index / the linear scan skip empty vectors) and
+        # from the FAISS add below, until a future re-embed gives it a vector.
 
         # DB save is the slow op (sqlite WAL fsync); run it WITHOUT the
         # index lock so concurrent search/_ensure_index calls aren't
@@ -1175,7 +1191,12 @@ class MemorySystem:
         )
 
         async with self._index_lock:
-            if FAISS_AVAILABLE and self._faiss_index and self._index_built:
+            if (
+                embedding is not None
+                and FAISS_AVAILABLE
+                and self._faiss_index
+                and self._index_built
+            ):
                 memory_id = result if isinstance(result, int) and result > 0 else None
                 if memory_id is not None:
                     try:

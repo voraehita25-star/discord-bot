@@ -159,7 +159,7 @@ class RateLimiter:
         self.add_config(
             "gemini_api",
             RateLimitConfig(
-                requests=15,  # 15 requests
+                requests=60,  # 60 requests (raised for a small trusted group)
                 window=60,  # per minute
                 limit_type=RateLimitType.USER,
                 cooldown_message="⏳ กรุณารอ {retry:.1f} วินาที ก่อนส่งข้อความถัดไป",
@@ -170,7 +170,7 @@ class RateLimiter:
         self.add_config(
             "gemini_global",
             RateLimitConfig(
-                requests=60,  # 60 requests
+                requests=300,  # 300 requests (raised; still guards against Anthropic 429s)
                 window=60,  # per minute globally
                 limit_type=RateLimitType.GLOBAL,
                 cooldown_message="⏳ ระบบ AI กำลังยุ่ง กรุณารอ {retry:.1f} วินาที",
@@ -192,18 +192,18 @@ class RateLimiter:
         self.add_config(
             "command",
             RateLimitConfig(
-                requests=5,  # 5 commands
+                requests=20,  # 20 commands (raised for a small trusted group)
                 window=10,  # per 10 seconds
                 limit_type=RateLimitType.USER,
                 cooldown_message="⏳ กรุณารอ {retry:.1f} วินาที",
             ),
         )
 
-        # Spam prevention (very strict)
+        # Spam prevention (anti-flood; loosened for a trusted group)
         self.add_config(
             "spam",
             RateLimitConfig(
-                requests=3,  # 3 messages
+                requests=10,  # 10 messages
                 window=5,  # per 5 seconds
                 limit_type=RateLimitType.USER_CHANNEL,
                 cooldown_message="🚫 ส่งข้อความช้าลงหน่อยนะ",
@@ -215,7 +215,7 @@ class RateLimiter:
         self.add_config(
             "server_management",
             RateLimitConfig(
-                requests=10,  # 10 operations
+                requests=30,  # 30 operations (raised)
                 window=60,  # per minute per guild
                 limit_type=RateLimitType.GUILD,
                 cooldown_message="🔒 ถึงขีดจำกัดการจัดการ server แล้ว รอ {retry:.1f} วินาที",
@@ -226,7 +226,7 @@ class RateLimiter:
         self.add_config(
             "ai_tool_call",
             RateLimitConfig(
-                requests=5,  # 5 tool calls
+                requests=30,  # 30 tool calls (raised)
                 window=60,  # per minute
                 limit_type=RateLimitType.USER,
                 cooldown_message="⏳ AI กำลังทำงานมากเกินไป รอ {retry:.1f} วินาที",
@@ -237,7 +237,7 @@ class RateLimiter:
         self.add_config(
             "ai_guild",
             RateLimitConfig(
-                requests=30,  # 30 AI requests
+                requests=240,  # 240 AI requests (raised; ~4-5 active users)
                 window=60,  # per minute per guild
                 limit_type=RateLimitType.GUILD,
                 cooldown_message="⏳ เซิร์ฟเวอร์นี้ใช้ AI ถึงขีดจำกัดแล้ว รอ {retry:.1f} วินาที",
@@ -249,7 +249,7 @@ class RateLimiter:
         self.add_config(
             "ai_user",
             RateLimitConfig(
-                requests=10,  # 10 AI requests
+                requests=60,  # 60 AI requests (raised for a small trusted group)
                 window=60,  # per minute per user
                 limit_type=RateLimitType.USER,
                 cooldown_message="⏳ คุณส่งข้อความ AI เร็วเกินไป รอ {retry:.1f} วินาที",

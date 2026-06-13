@@ -56,8 +56,10 @@ HISTORY_LIMIT_RP = 30000  # Max stored messages for roleplay server (continuity)
 # Processing timeouts (in seconds)
 LOCK_TIMEOUT = 180.0  # Max wait time for lock acquisition (must exceed API_TIMEOUT so a slow API call doesn't drop queued messages)
 API_TIMEOUT = 120.0  # Max wait time for Claude API response
-STREAMING_TIMEOUT_INITIAL = 30.0  # Initial chunk timeout
-STREAMING_TIMEOUT_CHUNK = 10.0  # Subsequent chunk timeout
+STREAMING_TIMEOUT_INITIAL = 120.0  # Initial chunk timeout (wide enough for extended-thinking first-token latency on hard prompts)
+STREAMING_TIMEOUT_CHUNK = (
+    45.0  # Subsequent chunk timeout (raised so a slow-but-valid thoughtful reply isn't truncated)
+)
 MAX_STALL_TIME = 60.0  # Max time before considering stream stalled
 
 # Database timeouts (in seconds)
@@ -78,7 +80,20 @@ SHUTDOWN_TIMEOUT = 30.0  # Global shutdown timeout
 PROCESS_KILL_TIMEOUT = 5.0  # Wait time before force-killing process
 
 # Content limits
-MAX_HISTORY_ITEMS = 2000  # Max items in chat history
+# In-context conversation history fed to the model PER TURN (distinct from the
+# on-disk retention caps HISTORY_LIMIT_* above). Env-driven; raised from 2000 so
+# long threads keep far more context in front of the 1M-token Opus window.
+MAX_HISTORY_ITEMS = _safe_int_env("MAX_HISTORY_ITEMS", 8000)  # Max items in chat history
+
+# ==================== AI recall depth (env-tunable) ====================
+# How many long-term RAG memories and entities are retrieved into the prompt
+# each turn. Raised well above the old hard-coded 3 — recall was the dominant
+# quality bottleneck and the 1M-token context easily absorbs a dozen+ short
+# memory lines. Set RAG_TOP_K / ENTITY_TOP_K to tune (or lower for cost).
+RAG_TOP_K = _safe_int_env("RAG_TOP_K", 15)  # Long-term memories retrieved per turn
+ENTITY_TOP_K = _safe_int_env("ENTITY_TOP_K", 8)  # Entities retrieved per turn
+# Dashboard (web UI) history window rendered into a fresh-session prompt.
+DASHBOARD_HISTORY_MESSAGES = _safe_int_env("DASHBOARD_HISTORY_MESSAGES", 500)
 MAX_TEXT_TRUNCATE_LENGTH = 10000  # Truncate text longer than this
 TEXT_TRUNCATE_HEAD = 5000  # Keep first N chars when truncating
 TEXT_TRUNCATE_TAIL = 3000  # Keep last N chars when truncating
@@ -97,7 +112,9 @@ MAX_ROLE_NAME_LENGTH = 100  # Max length for role names
 DEFAULT_LIST_MEMBERS_LIMIT = 50  # Default limit for list_members command
 
 # ==================== AI Model Config ====================
-SUMMARIZATION_MAX_OUTPUT_TOKENS = 300  # Max tokens for summarization
+SUMMARIZATION_MAX_OUTPUT_TOKENS = (
+    1000  # Max tokens for summarization (richer summary retains more detail)
+)
 SUMMARIZATION_TEMPERATURE = 0.3  # Temperature for consistent summaries
 
 # ==================== Lock/Cache Settings ====================
