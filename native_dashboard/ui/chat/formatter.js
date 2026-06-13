@@ -33,6 +33,13 @@ export function stripThinkTags(content) {
     return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 export function formatMessage(content) {
+    // Strip the control bytes (\x00-\x04) used as internal block placeholders
+    // from the incoming content FIRST, so user-supplied text can't forge a
+    // placeholder token (e.g. "\x01CODE_BLOCK_0\x01") and get spliced with a
+    // real extracted code/LaTeX block during the restore passes below. These
+    // bytes never carry meaning in chat text. Output-integrity hardening (not
+    // XSS — DOMPurify still runs); prevents garbled/relocated rendering.
+    content = content.replace(/[\x00-\x04]/g, '');
     // Fail-closed if DOMPurify isn't available — return escaped plain text
     // rather than risk emitting any of the markdown HTML pipeline output
     // unsanitised. The same check runs again at the bottom as defence-in-

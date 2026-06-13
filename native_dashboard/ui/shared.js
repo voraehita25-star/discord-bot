@@ -184,7 +184,8 @@ export function escapeHtml(text) {
 export function isSafeAvatarUrl(url) {
     if (!url || typeof url !== 'string')
         return false;
-    const lower = url.trim().toLowerCase();
+    const trimmed = url.trim();
+    const lower = trimmed.toLowerCase();
     if (!lower)
         return false;
     // Tauri custom-protocol URLs need a stricter allowlist than http/https.
@@ -192,18 +193,21 @@ export function isSafeAvatarUrl(url) {
     // can't read arbitrary files on disk (e.g. ``asset://localhost/c:/...``).
     if (lower.startsWith('asset://') || lower.startsWith('tauri://')) {
         try {
-            const parsed = new URL(lower);
+            // Validate the ORIGINAL-cased trimmed URL — the exact string
+            // safeAvatarUrl renders — and lowercase only the host/prefix
+            // comparisons, so we never validate one string and render another.
+            const parsed = new URL(trimmed);
             const path = parsed.pathname || '';
             // Reject Windows drive letters, parent-dir traversal, and any
             // host other than localhost. Only allow paths under ``avatars/``.
-            if (parsed.hostname && parsed.hostname !== 'localhost')
+            if (parsed.hostname && parsed.hostname.toLowerCase() !== 'localhost')
                 return false;
             if (/[a-z]:/i.test(path))
                 return false;
             if (path.includes('..'))
                 return false;
             const stripped = path.replace(/^\/+/, '');
-            return stripped.startsWith('avatars/');
+            return stripped.toLowerCase().startsWith('avatars/');
         }
         catch {
             return false;
