@@ -65,6 +65,7 @@ export class ConversationList {
                     <p>Start a new chat!</p>
                 </div>
             `;
+            this.detachClickHandler(container);
             return;
         }
 
@@ -79,6 +80,7 @@ export class ConversationList {
                     <p>No matches for "${escapeHtml(this.filter)}"</p>
                 </div>
             `;
+            this.detachClickHandler(container);
             return;
         }
 
@@ -124,6 +126,15 @@ export class ConversationList {
         };
         slot._convClickHandler = handler;
         container.addEventListener('click', handler);
+    }
+
+    /** Drop the delegated click handler bound by render() (used by the empty/no-match early returns). */
+    private detachClickHandler(container: HTMLElement): void {
+        const slot = container as unknown as Record<string, EventListener | undefined>;
+        if (slot._convClickHandler) {
+            container.removeEventListener('click', slot._convClickHandler);
+            slot._convClickHandler = undefined;
+        }
     }
 
     /** Render the tag chips + "add tag" input strip under the chat header. */

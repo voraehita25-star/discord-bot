@@ -342,9 +342,19 @@ class TokenTracker:
                 task.cancel()
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):
-                    # CancelledError is expected; any other shutdown error
-                    # is a best-effort cleanup so don't propagate.
+                except asyncio.CancelledError:
+                    # ``await task`` surfaces the CHILD task's cancellation as a
+                    # CancelledError — absorb it (that's the intended drain). But
+                    # if an OUTER shutdown cancelled stop_cleanup_task ITSELF while
+                    # it awaited, re-raise: never swallow a cancellation aimed at
+                    # the current coroutine. ``cancelling()`` > 0 means our own
+                    # task has a pending cancel request.
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling() > 0:
+                        raise
+                except Exception:
+                    # Any other shutdown error is best-effort cleanup; don't
+                    # propagate.
                     pass
             setattr(self, attr, None)
         # Belt-and-suspenders: even if the persist loop's cancel handler
@@ -443,7 +453,11 @@ class TokenTracker:
 
         # Eager flush when the batch is full so a steady-state high-rate
         # workload doesn't accumulate unbounded queue depth between
-        # interval ticks.
+        # interval ticks. NOTE: the bound is approximate, not strict —
+        # _persist_lock is released above before this flush re-acquires it,
+        # so a concurrent _persist_loop / _persist_usage may flush in the
+        # gap and leave this call with an empty or partially-refilled queue
+        # (handled by the early-return in _flush_persist_queue).
         if queue_len >= self.PERSIST_BATCH_SIZE:
             await self._flush_persist_queue()
 

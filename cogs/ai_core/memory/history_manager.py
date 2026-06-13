@@ -5,6 +5,7 @@ Intelligent trimming and management of chat history.
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import logging
 import re
@@ -80,6 +81,11 @@ class HistoryManager:
     DEFAULT_KEEP_RECENT = 200  # Always keep last N messages
     DEFAULT_MAX_HISTORY = 10000  # Max messages after trimming
     DEFAULT_MAX_TOKENS = 600_000  # ~60% of 1M context window
+    # เมื่อ history ใหญ่กว่านี้ การ encode ด้วย tiktoken แบบ synchronous จะ
+    # block event loop / discord.py heartbeat นานเกินไป จึง offload ไป worker
+    # thread ผ่าน asyncio.to_thread (ดู smart_trim_by_tokens). ต่ำกว่า threshold
+    # นี้คำนวณ inline เพื่อเลี่ยง overhead ของ thread-pool บน history เล็ก ๆ
+    TOKEN_ESTIMATE_OFFLOAD_THRESHOLD = 500  # messages
     # (DEFAULT_COMPRESS_THRESHOLD / TOKENS_PER_MESSAGE_ESTIMATE removed —
     # they were stored but nothing ever read them.)
 
@@ -379,7 +385,16 @@ class HistoryManager:
         max_tokens = max_tokens or self.max_tokens
         target_tokens = max_tokens - reserve_tokens
 
-        current_tokens = self.estimate_tokens(history)
+        # tiktoken encode เป็น CPU-bound และ synchronous การรันบน history ใหญ่
+        # จะ block event loop / heartbeat จึง offload ทั้ง estimate_tokens และ
+        # per-message estimation ไป worker thread เมื่อ history ใหญ่กว่า threshold
+        # ส่วน history เล็กคำนวณ inline เพื่อเลี่ยง overhead ของ thread-pool
+        offload = len(history) > self.TOKEN_ESTIMATE_OFFLOAD_THRESHOLD
+
+        if offload:
+            current_tokens = await asyncio.to_thread(self.estimate_tokens, history)
+        else:
+            current_tokens = self.estimate_tokens(history)
 
         if current_tokens <= target_tokens:
             return list(history)  # Already within budget; return a copy so the
@@ -392,7 +407,12 @@ class HistoryManager:
         working_history = list(history)
 
         # Pre-calculate per-message tokens to avoid O(n²) recalculation
-        message_tokens = [self.estimate_message_tokens(msg) for msg in working_history]
+        if offload:
+            message_tokens = await asyncio.to_thread(
+                lambda: [self.estimate_message_tokens(msg) for msg in working_history]
+            )
+        else:
+            message_tokens = [self.estimate_message_tokens(msg) for msg in working_history]
         running_total = sum(message_tokens)
 
         # Always protect the most recent messages

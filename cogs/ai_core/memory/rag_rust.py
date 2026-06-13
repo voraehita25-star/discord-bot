@@ -36,7 +36,10 @@ try:
     RustRagEngine = getattr(_rag_module, "RagEngine", None)
     MemoryEntry = getattr(_rag_module, "MemoryEntry", None)
     SearchResult = getattr(_rag_module, "SearchResult", None)
-    if RustRagEngine:
+    # Gate on ALL required symbols: a partial .pyd that exposes RagEngine but
+    # not MemoryEntry/SearchResult would otherwise set _use_rust=True yet crash
+    # in add() (None(...) -> TypeError) instead of degrading to Python fallback.
+    if RustRagEngine and MemoryEntry and SearchResult:
         RUST_AVAILABLE = True
         logger.info("✅ Rust RAG Engine loaded successfully")
 except ImportError:
@@ -48,7 +51,7 @@ class RagEngineWrapper:
     Wrapper for RAG Engine with automatic fallback to Python implementation.
 
     Usage:
-        engine = RagEngineWrapper(dimension=768)  # text-embedding-004 / 005
+        engine = RagEngineWrapper(dimension=768)  # gemini-embedding-2 (768-dim)
         engine.add("id1", "Some text", embedding_vector, importance=1.0)
         results = engine.search(query_embedding, top_k=5)
     """
@@ -276,6 +279,20 @@ class RagEngineWrapper:
             new_entries: dict[str, dict[str, Any]] = {}
             for entry in entries:
                 if isinstance(entry, dict) and "id" in entry:
+                    # Reject entries written for a different embedding dimension.
+                    # Without this a stale wrong-dim file loads silently and every
+                    # later _python_search raises a dimension-mismatch ValueError
+                    # that is swallowed per-entry, so search returns zero results
+                    # with no error surfaced.
+                    embedding = entry.get("embedding")
+                    if not isinstance(embedding, list) or len(embedding) != self.dimension:
+                        logger.warning(
+                            "Skipping RAG entry %r: embedding dimension %s != expected %d",
+                            entry.get("id"),
+                            len(embedding) if isinstance(embedding, list) else "missing",
+                            self.dimension,
+                        )
+                        continue
                     new_entries[entry["id"]] = entry
             if not new_entries and entries:
                 logger.error("No valid entries in %s; keeping existing data (Rust parity)", path)

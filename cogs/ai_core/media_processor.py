@@ -243,7 +243,11 @@ def is_animated_gif(image_data: bytes) -> bool:
             return True
         except EOFError:
             return False  # Only one frame = static GIF
-    except (OSError, ValueError, Image.DecompressionBombError) as e:
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
+        # ``DecompressionBombWarning`` is a sibling of ``DecompressionBombError``
+        # (both subclass Exception directly), so the module-level
+        # ``filterwarnings("error", ...)`` raises it as its own type for a
+        # 30–60MP image — catch it here too or it escapes process_attachments.
         logger.debug("Failed to check if GIF is animated: %s", e)
         return False
     finally:
@@ -262,6 +266,10 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
     """
     if not IMAGEIO_AVAILABLE or iio is None:
         return None
+
+    # Declared up front so the outer except can safely close it whether or not
+    # execution reached the ``video_buffer = io.BytesIO()`` assignment below.
+    video_buffer = None
 
     try:
         # Pre-check frame count using PIL to prevent decompression bomb
@@ -388,7 +396,21 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
         video_buffer.close()
         return result_bytes
 
-    except (OSError, ValueError, Image.DecompressionBombError, RuntimeError) as e:
+    except (
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        RuntimeError,
+    ) as e:
+        # ``DecompressionBombWarning`` is included for consistency with the other
+        # decode paths; the 1.5MP first-frame guard above already prevents the
+        # promoted warning from firing on realistic inputs.
+        if video_buffer is not None:
+            # Non-timeout failure: future.result() re-raised after the worker
+            # already finished, so the buffer is safe to close here (the timeout
+            # path returns earlier and intentionally leaves the buffer open).
+            video_buffer.close()
         logger.warning("Failed to convert GIF to video: %s", e)
         return None
 
@@ -725,14 +747,22 @@ async def process_attachments(
                     image_copy = image.copy()
                 image_parts.append(image_copy)
                 logger.info("Processed image from %s", user_name)
-            except (OSError, discord.HTTPException, Image.DecompressionBombError) as e:
-                # ``DecompressionBombError`` is raised by the module-level
-                # ``warnings.filterwarnings("error", ...)`` when an image
-                # exceeds the 30MP cap. It inherits from ``Exception``
-                # rather than ``OSError`` so without explicit catch it
-                # would propagate up to logic.py's catch-all and surface
-                # as a generic "AI error" message — the user would never
-                # see that their image was the actual problem.
+            except (
+                OSError,
+                discord.HTTPException,
+                Image.DecompressionBombError,
+                Image.DecompressionBombWarning,
+            ) as e:
+                # The module-level ``warnings.filterwarnings("error", ...)`` makes
+                # Pillow's decompression-bomb check raise. For >2*MAX (>60MP) it
+                # raises ``DecompressionBombError``; for MAX<pixels<=2*MAX
+                # (30–60MP) it raises the ``DecompressionBombWarning`` CLASS
+                # (a sibling of the Error — both subclass Exception directly,
+                # neither subclasses the other), so BOTH must be listed here.
+                # They inherit from ``Exception`` rather than ``OSError`` so
+                # without explicit catch they would propagate up to logic.py's
+                # catch-all and surface as a generic "AI error" message — the
+                # user would never see that their image was the actual problem.
                 logger.warning("Failed to process attachment: %s", e)
 
     return image_parts, video_parts, text_parts

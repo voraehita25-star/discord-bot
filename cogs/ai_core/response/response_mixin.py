@@ -200,9 +200,7 @@ class ResponseMixin:
             # Reuse the already-validated `channel` from the permission check
             # above (guaranteed non-None there — the not-found case returned) —
             # no need to re-fetch via get_channel a second time.
-            guild_name = (
-                channel.guild.name if hasattr(channel, "guild") and channel.guild else "DM"
-            )
+            guild_name = channel.guild.name if hasattr(channel, "guild") and channel.guild else "DM"
             channel_name = channel.name if hasattr(channel, "name") else "Unknown"
             header = f"📜 {guild_name}/#{channel_name}"
 

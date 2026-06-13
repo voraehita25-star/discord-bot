@@ -44,7 +44,7 @@ python -m pytest tests/ --collect-only -q
 ### 4. Run All Tests
 
 ```powershell
-python -m pytest tests/ -v
+.\scripts\run_tests.ps1
 ```
 
 ---
@@ -94,12 +94,12 @@ python -m pytest tests/ -v
 | `ai_cog.py` | Main AI cog - handles Discord commands |
 | `logic.py` | ChatManager - core AI logic |
 | `storage.py` | Chat history storage (SQLite) |
-| `tools.py` | Server management tools, webhooks |
+| `tools/tools.py` | Server management tools, webhooks |
 | `emoji.py` | Discord emoji handling |
 | `voice.py` | Voice channel integration |
 | `fallback_responses.py` | Fallback responses when AI fails |
 | `media_processor.py` | Media processing |
-| `memory_commands.py` | Memory management commands |
+| `commands/memory_commands.py` | Memory management commands |
 
 ---
 
@@ -364,7 +364,7 @@ cd native_dashboard && .\target\release\bot-dashboard.exe
 
 # รัน Tests
 
-python -m pytest tests/ -v
+.\scripts\run_tests.ps1
 ```
 
 ---

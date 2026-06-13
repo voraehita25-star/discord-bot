@@ -496,20 +496,26 @@ async def cmd_delete_role(
         await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
 
-    # Check for duplicate names
-    matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
-    if len(matches) > 1:
-        await origin_channel.send(
-            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
-            allowed_mentions=_NO_MENTIONS,
-        )
-        return
-
-    role = matches[0] if matches else None
-
-    # Try ID
-    if not role and role_name.isdigit():
+    # If the input is purely numeric, prefer ID lookup — it's a more specific
+    # signal of intent than a name match (Discord allows numeric role names, so
+    # a string "12345" could match either a role literally named "12345" or the
+    # role with that snowflake ID; the user almost always means the latter).
+    # Mirrors cmd_delete_channel's ID-first resolution.
+    role = None
+    if role_name.isdigit():
         role = guild.get_role(int(role_name))
+
+    if role is None:
+        # Check for duplicate names
+        matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+        if len(matches) > 1:
+            await origin_channel.send(
+                f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
+            )
+            return
+        role = matches[0] if matches else None
+
     if role:
         try:
             await role.delete()
@@ -1088,15 +1094,18 @@ async def cmd_get_user_info(
         # presences intent (bot.py uses Intents.default() + message_content +
         # members), so member.status is ALWAYS Status.offline and would
         # mislead every lookup. Re-add it only if presences is enabled.
-        info = (
-            f"**👤 User Info:**\n"
-            f"Name: {member.name}\n"
-            f"Display Name: {member.display_name}\n"
-            f"ID: {member.id}\n"
-            f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'Unknown'}\n"
-            f"Roles: {roles}"
-        )
-        await origin_channel.send(f"```\n{info}\n```", allowed_mentions=_NO_MENTIONS)
+        # A member with very many roles can push the info block past Discord's
+        # 2000-char limit. Route through send_long_message (chunks to <1900,
+        # hard-wraps over-long lines, disables mentions) instead of a single
+        # fenced send that would 400 at Discord.
+        info_lines = [
+            f"Name: {member.name}",
+            f"Display Name: {member.display_name}",
+            f"ID: {member.id}",
+            f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'Unknown'}",
+            f"Roles: {roles}",
+        ]
+        await send_long_message(origin_channel, "**👤 User Info:**\n", info_lines)
     else:
         await origin_channel.send(f"❌ ไม่พบผู้ใช้: {target}", allowed_mentions=_NO_MENTIONS)
 

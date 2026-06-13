@@ -74,14 +74,16 @@ tail -f logs/bot_errors.log
 1. **API key invalid** — Check `ANTHROPIC_API_KEY` and `GEMINI_API_KEY`
 
 2. **Rate limited** — Check `utils/reliability/rate_limiter.py` configs:
-   - `ai_user`: 10 req/min per user
-   - `ai_guild`: 30 req/min per guild
+   - `ai_user`: 60 req/min per user
+   - `ai_guild`: 240 req/min per guild
+
+   (both are `adaptive=True` — the effective cap can be lowered dynamically under load)
 
 3. **Circuit breaker open** — After consecutive failures, the circuit opens for 60s:
 
    ```bash
    # Check in Prometheus
-   curl http://localhost:9090/metrics  # Python metrics (PROMETHEUS_PORT, default 9090) | grep circuit_breaker_state
+   curl http://localhost:9090/metrics | grep circuit_breaker_state  # Python metrics (PROMETHEUS_PORT, default 9090)
    ```
 
 4. **API failover** — Direct API failed, proxy should take over. Check endpoint URL:
@@ -112,7 +114,7 @@ process was killed — they're now env-tunable per deployment.
 Check via:
 
 ```bash
-curl http://localhost:9090/metrics  # Python metrics (PROMETHEUS_PORT, default 9090) | grep process_resident_memory
+curl http://localhost:9090/metrics | grep process_resident_memory  # Python metrics (PROMETHEUS_PORT, default 9090)
 # or, for the bot's own report including the configured threshold:
 curl http://localhost:8080/health/deep
 ```

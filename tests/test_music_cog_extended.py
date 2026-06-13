@@ -2360,3 +2360,100 @@ class TestPlayNextOnce:
         ):
             result = await cog._play_next_once(ctx)
         assert result is True
+
+
+# ======================================================================
+# Regression: shared mark_pause / mark_resume bookkeeping (button-pause bug)
+# ======================================================================
+
+
+class TestMarkPauseResume:
+    """Regression tests for Music.mark_pause / Music.mark_resume.
+
+    A button-initiated pause never set ``pause_start``, so resume /
+    nowplaying elapsed math (``time.time() - start_time``) kept advancing
+    past the real audio position while paused. ``mark_pause`` /
+    ``mark_resume`` are the shared helpers used by BOTH the text command
+    and the ``MusicControlView`` button; these tests pin their contract.
+    """
+
+    def test_mark_pause_records_pause_start(self):
+        """mark_pause() must set pause_start — the invariant the bug violated."""
+        from cogs.music.cog import Music
+
+        mock_bot = MagicMock()
+        cog = Music(mock_bot)
+
+        guild_id = 555001
+        gs = cog._gs(guild_id)
+        t0 = 1000.0
+        gs.current_track = {
+            "title": "Test Song",
+            "url": "https://example.com",
+            "start_time": t0,
+        }
+        gs.pause_start = None
+
+        # Freeze the clock so the recorded instant is exact.
+        with patch("cogs.music.cog.time.time", return_value=1234.5):
+            cog.mark_pause(guild_id)
+
+        # Without the fix, a button-pause left pause_start as None.
+        assert gs.pause_start is not None
+        assert gs.pause_start == 1234.5
+
+    def test_mark_resume_shifts_start_time_by_paused_interval(self):
+        """mark_resume() advances start_time by the paused duration and clears pause_start."""
+        from cogs.music.cog import Music
+
+        mock_bot = MagicMock()
+        cog = Music(mock_bot)
+
+        guild_id = 555002
+        gs = cog._gs(guild_id)
+        t0 = 1000.0
+        gs.current_track = {
+            "title": "Test Song",
+            "url": "https://example.com",
+            "start_time": t0,
+        }
+        gs.pause_start = None
+
+        # Deterministic clock: pause at t=1100, resume at t=1130 -> 30s paused.
+        clock = iter([1100.0, 1130.0])
+        with patch("cogs.music.cog.time.time", side_effect=lambda: next(clock)):
+            cog.mark_pause(guild_id)
+            assert gs.pause_start == 1100.0
+            cog.mark_resume(guild_id)
+
+        # start_time shifted forward by exactly the 30s paused interval, so
+        # subsequent (time.time() - start_time) math excludes the pause.
+        assert gs.current_track["start_time"] == t0 + 30.0
+        assert gs.pause_start is None
+
+    def test_mark_pause_is_idempotent(self):
+        """A second mark_pause() must not move the recorded pause_start."""
+        from cogs.music.cog import Music
+
+        mock_bot = MagicMock()
+        cog = Music(mock_bot)
+
+        guild_id = 555003
+        gs = cog._gs(guild_id)
+        gs.current_track = {
+            "title": "Test Song",
+            "url": "https://example.com",
+            "start_time": 1000.0,
+        }
+        gs.pause_start = None
+
+        # First call at t=2000 records the instant; second call at t=2050
+        # must be a no-op so the paused interval isn't shrunk.
+        clock = iter([2000.0, 2050.0])
+        with patch("cogs.music.cog.time.time", side_effect=lambda: next(clock)):
+            cog.mark_pause(guild_id)
+            first = gs.pause_start
+            cog.mark_pause(guild_id)
+
+        assert first == 2000.0
+        assert gs.pause_start == 2000.0

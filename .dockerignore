@@ -79,6 +79,14 @@ docs/
 
 # Development files
 scripts/
+# Re-include the DB migration subtree: bot.py -> run_migrations() reads
+# scripts/maintenance/migrations/ at schema init, and discover_migrations()
+# returns [] when that dir is absent — so excluding it would skip every
+# migration in the built image (no schema_version rows recorded).
+!scripts/
+!scripts/maintenance/
+!scripts/maintenance/migrations/
+!scripts/maintenance/migrations/*
 tools/
 *.bat
 *.ps1

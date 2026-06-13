@@ -45,6 +45,10 @@ def _get_session_lock() -> asyncio.Lock:
     Building it at module-import time can attach the lock to a stale loop
     (or fail outright on Python ≤ 3.9) when this module is imported before
     the bot's event loop starts.
+
+    The plain ``if _session_lock is None`` init needs no threading.Lock guard:
+    these getters are only awaited from the single bot event loop, so no two
+    OS threads race the construction.
     """
     global _session_lock
     if _session_lock is None:
@@ -69,6 +73,12 @@ class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
     lookup (bypassing the pre-check) and a private IP for the second
     (reaching internal services). Enforcing the SSRF policy inside aiohttp's
     own resolver closes that TOCTOU window.
+
+    Note: aiohttp's TCPConnector short-circuits ``_resolve_host`` for literal
+    IP hosts (``http://127.0.0.1``, ``http://[::1]``) and never calls this
+    resolver, so the resolver layer only fires for hostname lookups. Literal
+    private IPs are blocked by the request-entry ``_is_private_url`` check and
+    the per-redirect check, which remain mandatory.
     """
 
     def __init__(self, base: aiohttp.abc.AbstractResolver) -> None:

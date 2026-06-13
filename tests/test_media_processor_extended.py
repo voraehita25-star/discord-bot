@@ -974,3 +974,94 @@ class TestModuleImports:
         from cogs.ai_core.media_processor import load_character_image
 
         assert callable(load_character_image)
+
+
+class TestDecompressionBombWarningBand:
+    """Regression guard: the promoted DecompressionBombWarning (30-60MP band)
+    must be caught, not allowed to escape and abort the attachment batch.
+
+    Importing ``media_processor`` installs a module-level
+    ``warnings.filterwarnings("error", category=Image.DecompressionBombWarning)``
+    and caps ``Image.MAX_IMAGE_PIXELS`` at 30_000_000. Pillow raises
+    ``DecompressionBombError`` only for pixels > 2*MAX; for MAX < pixels <= 2*MAX
+    it raises the ``DecompressionBombWarning`` CLASS instead (a sibling of the
+    Error -- neither subclasses the other). The except tuples in
+    ``is_animated_gif`` and ``process_attachments`` must list the Warning class
+    or it escapes. Patching MAX down to 100 makes a tiny 12x12 = 144px image
+    land in that warning band cheaply and deterministically.
+    """
+
+    def test_is_animated_gif_swallows_warning_band_bomb(self, monkeypatch):
+        """A WARNING-band image (MAX < px <= 2*MAX) must return False, not raise."""
+        from cogs.ai_core import media_processor
+
+        # 12x12 = 144 px. With MAX patched to 100, the warning band is
+        # 100 < px <= 200, so 144 lands strictly inside it (NOT the >2*MAX
+        # error band), proving the promoted DecompressionBombWarning is hit.
+        img = Image.new("RGB", (12, 12), (1, 2, 3))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        data = buf.getvalue()
+
+        # monkeypatch restores the original value (30_000_000) after the test.
+        monkeypatch.setattr(media_processor.Image, "MAX_IMAGE_PIXELS", 100)
+
+        # If the fix were reverted (Warning missing from the except tuple),
+        # the module-level "error" filter would let this propagate and the
+        # call would raise instead of returning False.
+        result = media_processor.is_animated_gif(data)
+        assert result is False
+
+    def test_warning_is_sibling_not_subclass_of_error(self, monkeypatch):
+        """Confirm the test data truly fires the Warning class (band sanity).
+
+        Reproduces the exact open()-time bomb check under the module's
+        ``error`` filter to assert the WARNING -- not the Error -- is what
+        ``is_animated_gif`` must absorb. Guards against the band drifting so the
+        first test could pass for the wrong reason.
+        """
+        import warnings
+
+        from cogs.ai_core import media_processor
+
+        Image = media_processor.Image
+
+        # Sibling relationship is the whole reason both must be listed.
+        assert not issubclass(Image.DecompressionBombWarning, Image.DecompressionBombError)
+        assert not issubclass(Image.DecompressionBombError, Image.DecompressionBombWarning)
+
+        img = Image.new("RGB", (12, 12), (1, 2, 3))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        data = buf.getvalue()
+
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+
+        # Use a local catch_warnings so the module's global "error" filter is
+        # active here too; assert the WARNING class is raised, not the Error.
+        raised = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            try:
+                Image.open(io.BytesIO(data))
+            except Image.DecompressionBombError:
+                raised = "error"
+            except Image.DecompressionBombWarning:
+                raised = "warning"
+        assert raised == "warning"
+
+    def test_except_handlers_list_warning_class(self):
+        """Direct source guard: both except tuples must name the Warning class.
+
+        Belt-and-suspenders alongside the behavioral test -- if someone drops
+        ``DecompressionBombWarning`` from the handlers, this trips immediately.
+        """
+        import inspect
+
+        from cogs.ai_core import media_processor
+
+        for func in (media_processor.is_animated_gif, media_processor.process_attachments):
+            src = inspect.getsource(func)
+            assert "DecompressionBombWarning" in src, (
+                f"{func.__name__} must catch DecompressionBombWarning"
+            )

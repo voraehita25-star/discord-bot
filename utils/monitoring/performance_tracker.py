@@ -161,7 +161,17 @@ class PerformanceTracker:
         return time.perf_counter()
 
     def record(self, operation: str, start_time: float) -> float:
-        """Record timing for an operation. Returns duration."""
+        """Record timing for an operation. Returns duration.
+
+        Concurrency note: this method assumes single-threaded / single
+        event-loop callers. The defaultdict auto-vivification below and the
+        non-atomic `_record_count` read-modify-write are NOT lock-guarded, so
+        concurrent first-time records of the same new operation may briefly
+        double-create a stats entry and the 500-record cleanup tick may be
+        dropped or duplicated under threads. Per-op PerformanceStats.record()
+        is itself locked and readers snapshot via list(), so the impact is
+        bounded to lost/extra cleanup ticks — never data corruption.
+        """
         duration = time.perf_counter() - start_time
         self._stats[operation].record(duration)
 
@@ -318,12 +328,23 @@ class PerformanceTracker:
 perf_tracker = PerformanceTracker()
 
 # ==================== Prometheus Bridge ====================
-# Bridge Python performance stats to prometheus_client histograms
+# Bridge Python performance stats to prometheus_client histograms.
+# NOTE: these histograms live on the private _prom_registry below, which is
+# SEPARATE from prometheus_client's default global REGISTRY that metrics.py
+# exposes via start_http_server(). Until get_prometheus_metrics()/_prom_registry
+# are wired into the metrics HTTP endpoint, observations recorded here are not
+# scraped — do not assume perf timings reach Prometheus through this path yet.
 try:
     from prometheus_client import CollectorRegistry, Histogram, generate_latest
 
     _prom_registry = CollectorRegistry()
     _prom_histograms: dict[str, Histogram] = {}
+    # Hard cap on distinct histograms so a dynamic/attacker-influenced
+    # operation name can't grow the registry and dict without bound. All
+    # current callers pass a small set of static literals, so the cap is
+    # never reached in practice; over-cap names roll into a fixed "other"
+    # bucket — mirroring metrics.py's allowlist-then-"other" clamping.
+    _MAX_PROM_HISTOGRAMS = 256
     # Lock guards _prom_histograms against double-create races. Without
     # it, two threads measuring the same operation simultaneously could
     # both pass the `not in` check and call Histogram(...), and the
@@ -350,6 +371,14 @@ try:
             existing = _prom_histograms.get(safe_name)
             if existing is not None:
                 return existing
+            # Cap distinct histograms: once full, fold any new operation
+            # into a shared "other" bucket so the registry can't grow
+            # unbounded on dynamic names.
+            if len(_prom_histograms) >= _MAX_PROM_HISTOGRAMS:
+                safe_name = "other"
+                existing = _prom_histograms.get(safe_name)
+                if existing is not None:
+                    return existing
             histogram = Histogram(
                 f"bot_{safe_name}_duration_seconds",
                 f"Duration of {operation} in seconds",

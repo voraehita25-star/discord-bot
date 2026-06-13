@@ -2083,7 +2083,7 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
             <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(epLabel)}</div>
             <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${lastError ? ` — ${escapeHtml(lastError)}` : ''}</div>
             <span class="ep-badge ${ep.active ? '' : (ep.healthy ? 'healthy' : 'unhealthy-badge')}">${ep.active ? 'ACTIVE' : (ep.healthy ? 'standby' : 'down')}</span>
-            <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate}%</div>
+            <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate.toFixed(1)}%</div>
         `;
 
         // Click to switch

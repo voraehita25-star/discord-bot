@@ -269,7 +269,12 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
 /// fits in u64 and the None branch is effectively unreachable — it just makes
 /// the intent explicit at zero cost. All public entry points that decode
 /// untrusted bytes go through this so the 100MP cap is enforced uniformly
-/// (load, resize, resize_exact, thumbnail).
+/// (load, resize, resize_exact, thumbnail). The resize/resize_exact/thumbnail
+/// wrappers do parse the header twice — once here and again inside
+/// ``resize_image`` (resize.rs) — but the duplicate probe is cheap next to the
+/// full decode and is deliberate defense-in-depth: ``resize_image`` is ``pub``
+/// (and also reached via ``batch_resize``), so both layers keep the bomb guard
+/// intact. Do NOT drop these calls to save the redundant header parse.
 fn check_bomb_dimensions(bytes: &[u8]) -> PyResult<()> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()

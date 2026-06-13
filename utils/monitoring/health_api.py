@@ -726,10 +726,13 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                     return
 
         if path == "/health":
-            # Full health check (HTML dashboard)
+            # Full health check (HTML dashboard). Mirror the JSON branch:
+            # return 503 when unhealthy so uptime monitors pointed at /health
+            # (the most obvious URL) don't treat an unhealthy bot as UP.
             data = health_data.to_dict()
+            status = 200 if health_data.is_healthy() else 503
             health_html = self._generate_health_html(data)
-            self._send_html_response(health_html)
+            self._send_html_response(health_html, status)
 
         elif path in {"/", "/health/json"}:
             # Full health check (JSON)
@@ -1187,7 +1190,10 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
     try:
         from config import feature_flags as _ff
 
-        health_data.feature_flags = _ff.get_all()
+        # Assign under _data_lock so to_dict()'s locked copy never races
+        # the reassignment (honors the invariant in to_dict's comment).
+        with health_data._data_lock:
+            health_data.feature_flags = _ff.get_all()
     except ImportError:
         pass
 
@@ -1225,7 +1231,10 @@ async def update_health_loop(bot: Bot, interval: float = 10.0) -> None:
                 try:
                     from config import feature_flags as _ff
 
-                    health_data.feature_flags = _ff.get_all()
+                    # Assign under _data_lock so to_dict()'s locked copy never
+                    # races the reassignment (honors to_dict's invariant).
+                    with health_data._data_lock:
+                        health_data.feature_flags = _ff.get_all()
                 except ImportError:
                     pass
 
@@ -1285,7 +1294,9 @@ def setup_health_hooks(bot: Bot) -> None:
 
     @bot.listen("on_ready")
     async def health_on_ready():
-        health_data.is_ready = True
+        # update_from_bot sets is_ready under _data_lock, so the bare
+        # off-lock assignment here was both redundant and inconsistent
+        # with the locked read/write discipline elsewhere.
         health_data.update_from_bot(bot)
 
     @bot.listen("on_message")

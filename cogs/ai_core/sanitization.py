@@ -108,7 +108,13 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     # it; rewind until we land on a base. Cap the rewind so a degenerate
     # input full of combining marks doesn't truncate to nothing.
     if len(content) > max_length:
-        cut = max_length - 3
+        # Clamp the slice point so a pathologically small max_length (< 3)
+        # can't make ``cut`` go 0/negative — a negative ``cut`` would slice
+        # from the END (content[:-1]) and yield output longer than max_length.
+        cut = max(0, max_length - 3)
+        if cut == 0:
+            # Degenerate max_length: nothing fits before the ellipsis.
+            return "..."
         rewind_limit = max(0, cut - 16)
         while cut > rewind_limit and unicodedata.combining(content[cut]):
             cut -= 1

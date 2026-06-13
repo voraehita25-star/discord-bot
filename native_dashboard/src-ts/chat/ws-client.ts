@@ -129,11 +129,16 @@ export class WebSocketClient {
             // no-op → permanent disconnect with no reconnect. Race each call
             // against a timeout that falls back to the default so we always
             // proceed (or fall through to scheduleReconnect()).
-            const withTimeout = <T>(p: Promise<T>, fallback: T): Promise<T> =>
-                Promise.race([
-                    p,
-                    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 8000)),
-                ]);
+            const withTimeout = <T>(p: Promise<T>, fallback: T): Promise<T> => {
+                let timer: number | undefined;
+                const timeout = new Promise<T>((resolve) => {
+                    timer = window.setTimeout(() => resolve(fallback), 8000);
+                });
+                // Clear the timer once the underlying promise settles so it
+                // doesn't outlive a fast invoke() (avoids accumulating pending
+                // no-op timers under connect/reconnect churn).
+                return Promise.race([p.finally(() => clearTimeout(timer)), timeout]);
+            };
             Promise.all([
                 withTimeout(invoke<string>('get_ws_token').catch(() => ''), ''),
                 withTimeout(invoke<string>('get_ws_endpoint').catch(() => DEFAULT_WS_ENDPOINT), DEFAULT_WS_ENDPOINT),
@@ -292,7 +297,10 @@ export class WebSocketClient {
             // (no manual page reload needed). Warn the user only once.
             if (!this.maxAttemptsNotified) {
                 this.maxAttemptsNotified = true;
-                this.callbacks.onConnectStateChange?.(false);
+                // No onConnectStateChange?.(false) here — onclose (the only path
+                // that reaches the cap via repeated socket failures) already
+                // emitted false for this close, so the callback fires exactly
+                // once per close (avoids a spurious duplicate transition).
                 showToast(
                     'Connection to AI server lost — retrying in the background. Restart the bot if it stays offline.',
                     { type: 'warning', duration: 8000 },

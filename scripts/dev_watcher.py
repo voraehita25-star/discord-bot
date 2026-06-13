@@ -171,9 +171,14 @@ def setup_logging(config: DevWatcherConfig) -> logging.Logger:
     logger = logging.getLogger("DevWatcher")
     logger.setLevel(logging.DEBUG if config.debug_mode else logging.INFO)
 
-    # Console handler
+    # Console handler. Attach it to the logger so INFO/DEBUG records reach
+    # the console as intended — without addHandler the 'DevWatcher' logger
+    # had no console output and (when file logging was disabled) fell back
+    # to logging.lastResort, dropping everything below WARNING.
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG if config.debug_mode else logging.INFO)
+    console_handler.setFormatter(logging.Formatter("%(levelname)-8s | %(message)s"))
+    logger.addHandler(console_handler)
 
     # File handler (if enabled)
     if config.log_to_file:
@@ -351,11 +356,16 @@ def check_and_stop_existing_bot() -> None:
 
 def clear_screen() -> None:
     """Clear terminal screen."""
-    subprocess.run(
-        ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
-        shell=False,
-        check=False,
-    )
+    # check=False only suppresses a non-zero exit; it does NOT catch the
+    # FileNotFoundError raised when the `cmd`/`clear` executable is absent
+    # from PATH. Clearing the screen is cosmetic, so a missing binary must
+    # not abort startup (clear_screen is called unconditionally in main()).
+    with contextlib.suppress(FileNotFoundError, OSError):
+        subprocess.run(
+            ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
+            shell=False,
+            check=False,
+        )
 
 
 def print_banner() -> None:

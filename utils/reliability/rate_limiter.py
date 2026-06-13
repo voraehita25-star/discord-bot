@@ -559,6 +559,24 @@ class RateLimiter:
             # Re-setup defaults (in case config changed)
             self._setup_defaults()
 
+            # Reconcile existing buckets to the (possibly restored) config
+            # values. add_config only rewrites self._configs; live buckets
+            # created earlier via setdefault keep their old max_tokens/window
+            # and would refill toward a stale limit until age-eviction. Snapshot
+            # via list() so a concurrent mutation can't raise "dictionary
+            # changed size", mirroring update_all_adaptive_limits.
+            for key, bucket in list(self._buckets.items()):
+                config_name = key.split(":")[0]
+                config = self._configs.get(config_name)
+                if config is None:
+                    continue
+                bucket.max_tokens = config.requests
+                bucket.window = config.window
+                # Clamp current tokens so a lowered limit takes effect
+                # immediately rather than letting a pre-filled bucket overshoot.
+                if bucket.tokens > config.requests:
+                    bucket.tokens = float(config.requests)
+
             # Update adaptive multipliers
             if self._adaptive_enabled:
                 self.update_all_adaptive_limits()

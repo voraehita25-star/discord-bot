@@ -129,8 +129,10 @@ class AIDebug(commands.Cog):
             if perf:
                 perf_lines = []
                 for key, data in perf.items():
-                    if data["count"] > 0:
-                        perf_lines.append(f"{key}: {data['avg_ms']:.0f}ms avg")
+                    # ใช้ .get() กันค่า perf dict ที่ผิดรูป (missing/renamed key)
+                    # ไม่ให้ KeyError ล้มทั้งคำสั่ง !ai_debug — ให้ panel นี้ degrade เอง
+                    if data.get("count", 0) > 0:
+                        perf_lines.append(f"{key}: {data.get('avg_ms', 0.0):.0f}ms avg")
                 if perf_lines:
                     embed.add_field(
                         name="⚡ Performance",
@@ -202,11 +204,13 @@ class AIDebug(commands.Cog):
 
         lines = ["**⚡ AI Performance Metrics**\n"]
         for key, data in perf.items():
-            if data["count"] > 0:
+            # ใช้ .get() กันค่า perf dict ที่ผิดรูป (missing/renamed key)
+            # ไม่ให้ KeyError ล้มทั้งคำสั่ง !ai_perf
+            if data.get("count", 0) > 0:
                 lines.append(
-                    f"**{key}**: {data['avg_ms']:.1f}ms avg "
-                    f"(min: {data['min_ms']:.1f}, max: {data['max_ms']:.1f}, "
-                    f"n={data['count']})"
+                    f"**{key}**: {data.get('avg_ms', 0.0):.1f}ms avg "
+                    f"(min: {data.get('min_ms', 0.0):.1f}, max: {data.get('max_ms', 0.0):.1f}, "
+                    f"n={data.get('count', 0)})"
                 )
 
         await ctx.send("\n".join(lines) if len(lines) > 1 else "No performance data yet")

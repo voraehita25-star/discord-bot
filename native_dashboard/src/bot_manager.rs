@@ -215,8 +215,46 @@ impl BotManager {
                 .with_memory()
                 .with_cpu()
                 .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
-                .with_cmd(sysinfo::UpdateKind::Always),
+                .with_cmd(sysinfo::UpdateKind::Always)
+                // `with_cwd` is required for `process.cwd()` to be populated
+                // (like `with_cmd` above). The "belongs to us" check accepts a
+                // process whose cwd == base_path even when base_path is absent
+                // from argv — the dev-watcher spawns the bot with a RELATIVE
+                // "bot.py" + cwd=PROJECT_ROOT, so base_path never appears in
+                // argv unless the interpreter itself lives under base_path.
+                .with_cwd(sysinfo::UpdateKind::Always),
         );
+    }
+
+    /// Whether `process` belongs to THIS dashboard's project tree.
+    ///
+    /// Two ways a `bot.py` process can be ours:
+    ///   1. its joined argv contains `base_path` (the production `start()` path
+    ///      spawns with the absolute `base_path.join("bot.py")`), or
+    ///   2. its working directory IS `base_path`. The dev-watcher spawns the bot
+    ///      with a RELATIVE `"bot.py"` arg and `cwd=PROJECT_ROOT`, so the
+    ///      base_path string never lands in argv unless the interpreter itself
+    ///      lives under base_path (true for the bundled `.venv`, false for a bare
+    ///      `python` on PATH / an external PYTHON_CMD) — the cwd match recovers
+    ///      that case so dev-mode bots aren't reported as stopped.
+    ///
+    /// `base_path_str` is the caller-precomputed lowercased base_path so each
+    /// site keeps its existing single allocation.
+    fn process_belongs_to_us(
+        process: &sysinfo::Process,
+        cmdline: &str,
+        base_path_str: &str,
+    ) -> bool {
+        if base_path_str.is_empty() {
+            return false;
+        }
+        if cmdline.contains(base_path_str) {
+            return true;
+        }
+        process
+            .cwd()
+            .map(|cwd| cwd.to_string_lossy().to_lowercase() == base_path_str)
+            .unwrap_or(false)
     }
 
     fn dev_watcher_pid_file(&self) -> PathBuf {
@@ -304,9 +342,11 @@ impl BotManager {
             let is_ignored_script = basenames
                 .iter()
                 .any(|b| ignore_basenames.contains(&b.as_str()));
-            // Only kill processes whose cmdline references our own base_path —
-            // never reach across to other Discord-bot installs on the same host.
-            let belongs_to_us = !base_path_str.is_empty() && cmdline.contains(&base_path_str);
+            // Only kill processes that belong to our own base_path (argv
+            // references base_path, OR the process cwd IS base_path for the
+            // dev-watcher's relative-"bot.py" spawn) — never reach across to
+            // other Discord-bot installs on the same host.
+            let belongs_to_us = Self::process_belongs_to_us(process, &cmdline, &base_path_str);
 
             if has_bot_py && !is_test && !is_ignored_script && belongs_to_us {
                 pids_to_kill.push(pid.as_u32());
@@ -342,6 +382,13 @@ impl BotManager {
         &self.base_path
     }
 
+    /// Return up to the last `count` lines of the bot log.
+    ///
+    /// NOTE (return contract): the tail read is capped at 1 MiB. The line
+    /// budget is estimated at ~1 KiB/line, so on a log whose average line
+    /// exceeds ~100 bytes a large request can return FEWER than `count` lines
+    /// even when more exist — only the trailing ~1 MiB is scanned. This is an
+    /// intentional bound to avoid loading a multi-MB log into memory.
     pub fn read_logs(&self, count: usize) -> Vec<String> {
         let log_path = self.log_file();
 
@@ -440,7 +487,8 @@ impl BotManager {
                         .unwrap_or(false)
                 });
                 return has_bot_py
-                    && (base_path_str.is_empty() || cmdline.contains(&base_path_str));
+                    && (base_path_str.is_empty()
+                        || Self::process_belongs_to_us(process, &cmdline, &base_path_str));
             }
             false
         } else {
@@ -502,7 +550,9 @@ impl BotManager {
                         .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
                         .unwrap_or(false)
                 });
-                has_bot_py && (base_path_str.is_empty() || cmdline.contains(&base_path_str))
+                has_bot_py
+                    && (base_path_str.is_empty()
+                        || Self::process_belongs_to_us(process, &cmdline, &base_path_str))
             })
             .unwrap_or(false);
 

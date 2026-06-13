@@ -56,7 +56,7 @@ Drag + drop — or click the 📎 button in the input area — to attach up to
 
 | Category | Formats |
 |----------|---------|
-| Images | PNG, JPEG, GIF, WebP (20 MB cap) |
+| Images | PNG, JPEG, GIF, WebP (10 MB cap) |
 | Documents | PDF, DOCX |
 | Text + code | `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.xml`, `.log`, `.py`, `.js`, `.ts`, `.rs`, `.go`, `.java`, `.html`, `.css`, `.sh`, `.sql`, … |
 
@@ -244,10 +244,12 @@ Manual build (if needed — **must copy both exes**):
 ```bash
 npm run build                          # 1. Compile TypeScript
 cargo build --release                  # 2. Build Rust
-# 3. Copy to Korean name (REQUIRED!)
+# 3. Copy to Korean + English aliases (REQUIRED!)
 Copy-Item target\release\bot-dashboard.exe "target\release\디스코드 봇 대시보드.exe"
+Copy-Item target\release\bot-dashboard.exe "target\release\Discord Bot Dashboard.exe"
 Copy-Item target\release\bot-dashboard.exe ..\bot-dashboard.exe
 Copy-Item target\release\bot-dashboard.exe "..\디스코드 봇 대시보드.exe"
+Copy-Item target\release\bot-dashboard.exe "..\Discord Bot Dashboard.exe"
 ```
 
 ### Create Desktop Shortcut

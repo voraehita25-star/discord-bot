@@ -104,7 +104,12 @@ def clean_history_files() -> None:
 
                 print(f"Cleaned {filepath}: Removed {removed_count} empty messages.")
 
-        except (OSError, json.JSONDecodeError) as e:
+        # Tolerate write-path errors per-file too: the atomic-write block
+        # re-raises any non-OSError (e.g. TypeError from json.dumps on a
+        # non-serializable value, or UnicodeEncodeError). Without TypeError/
+        # ValueError here, one such file would abort the whole run and skip
+        # every remaining file plus the final summary.
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
             print(f"Error processing {filepath}: {e}")
 
     print(f"Done. Removed {total_removed} messages across {files_affected} files.")

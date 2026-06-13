@@ -5,6 +5,7 @@ Provides user-facing commands for memory management.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import Any
@@ -252,7 +253,11 @@ class MemoryCommands(commands.Cog):
             # so it doesn't linger forever implying work is still in progress.
             msg = "❌ เกิดข้อผิดพลาดในการรวบรวม กรุณาลองใหม่"
             if status_msg is not None:
-                await status_msg.edit(content=msg, embed=None)
+                # Guard the recovery edit: the progress message may have been
+                # deleted or the API may return 404/403, and a raise here would
+                # double-fault out of the command (surfacing a raw error).
+                with contextlib.suppress(discord.HTTPException):
+                    await status_msg.edit(content=msg, embed=None)
             else:
                 await ctx.send(msg)
 

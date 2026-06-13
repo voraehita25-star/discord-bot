@@ -1,7 +1,7 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** June 12, 2026
-> **Version:** 3.4.7
+> **Last Updated:** June 14, 2026
+> **Version:** 3.4.8
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
 > **Total Files:** 113 Python test files (5,044 tests) + 11 vitest files (294 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
@@ -447,13 +447,13 @@ CREATOR_ID=your_discord_id
 
 | Constant | Default | Description |
 | --- | --- | --- |
-| `HISTORY_LIMIT_DEFAULT` | 1500 | Approx **token** budget per channel for kept context |
-| `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) — token budget |
-| `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) — token budget |
+| `HISTORY_LIMIT_DEFAULT` | 1500 | Max stored history **messages** per channel for kept context |
+| `HISTORY_LIMIT_MAIN` | 8000 | Main server (higher traffic) — max stored messages |
+| `HISTORY_LIMIT_RP` | 30000 | Roleplay server (critical for continuity) — max stored messages |
 | `LOCK_TIMEOUT` | 180s | Max wait for per-channel lock acquisition (`constants.py`; must exceed `API_TIMEOUT`) |
 | `API_TIMEOUT` | 120s | Max wait for the upstream chat API (Claude) |
-| `STREAMING_TIMEOUT_INITIAL` | 30s | Initial chunk timeout |
-| `MAX_HISTORY_ITEMS` | 2000 | Max items in in-memory chat history |
+| `STREAMING_TIMEOUT_INITIAL` | 120s | Initial chunk timeout |
+| `MAX_HISTORY_ITEMS` | 8000 | Max items in in-memory chat history (env-overridable via `MAX_HISTORY_ITEMS`) |
 | `PERFORMANCE_SAMPLES_MAX` | 100 | Max samples per metric |
 
 > History/metadata cache lives in `cogs/ai_core/storage.py` (not `constants.py`). Defaults:
@@ -868,7 +868,7 @@ async def mycommand(self, ctx):
 
 1. **Lock Timeout:** Uses `asyncio.wait_for()` with 180s timeout (see `LOCK_TIMEOUT` in `cogs/ai_core/data/constants.py`)
 2. **Short Response Detection:** `detect_refusal()` only checks patterns, not length
-3. **Streaming Timeout:** 30s for the initial chunk (`STREAMING_TIMEOUT_INITIAL`), falls back to non-streaming
+3. **Streaming Timeout:** 120s for the initial chunk (`STREAMING_TIMEOUT_INITIAL`), falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
 6. **Webhook Cache:** Auto-cleared when channels are deleted via `on_guild_channel_delete` listener
@@ -887,7 +887,7 @@ async def mycommand(self, ctx):
 19. **Sensitive Data Filter:** Logger filters Discord tokens, API keys, and secrets from all log output via regex patterns
 20. **Path Traversal Guard:** `safe_delete()` validates resolved paths are within `temp/` directory before deletion
 21. **SQL Injection Guard:** `increment_user_stat()` uses a whitelist dict for column names instead of f-string interpolation
-22. **asyncio.TimeoutError Compat:** Dashboard chat catches both `TimeoutError` and `asyncio.TimeoutError` for Python 3.10 compatibility
+22. **asyncio.TimeoutError Compat:** Dashboard chat defensively catches both `TimeoutError` and `asyncio.TimeoutError` (the two are aliased on Python 3.11+)
 23. **Dashboard CLI File-Write Mode:** When `CLAUDE_BACKEND=cli`, the embedded `claude -p` can create/edit files non-interactively only if `DASHBOARD_CLI_ALLOW_WRITE` is on (default off). Writes are confined to `DASHBOARD_CLI_WRITE_DIRS` (default: Desktop/Documents/Downloads, plus OneDrive-redirected Desktop/Documents on Windows). The authoritative path boundary is the PreToolUse hook `cogs/ai_core/api/cli_write_guard.py`, which denies any `Write/Edit/MultiEdit/NotebookEdit` whose canonical path is outside those roots (fails closed) — the repo, `.env`, `~/.ssh`, `~/.claude`, and the home root are excluded. It is files-only: `Bash`, `WebFetch`, `WebSearch`, `NotebookEdit`, and `Task` are denied.
 
 ---
@@ -1138,4 +1138,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: June 12, 2026 - Version 3.4.5 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,044 Python tests + 294 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->
+<!-- Documentation last updated: June 14, 2026 - Version 3.4.8 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,044 Python tests + 294 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

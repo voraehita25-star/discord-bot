@@ -151,6 +151,12 @@ impl RagEngine {
     }
 
     /// Add multiple entries in batch
+    ///
+    /// Silent-skip contract: unlike single-entry `add()` (which raises
+    /// PyValueError on a bad entry), this method silently drops any entry that
+    /// fails dimension / finite-importance / finite-embedding validation and
+    /// returns only the count actually inserted. The returned count can
+    /// therefore be less than `entries_list.len()` for a malformed batch.
     fn add_batch(&self, entries_list: Vec<MemoryEntry>) -> PyResult<usize> {
         let mut entries = self.entries.write();
         let mut added = 0;
@@ -340,6 +346,15 @@ impl RagEngine {
         // rename was atomic on the directory entry but the data pages were
         // never flushed to stable storage. Use the explicit File API so we
         // can call sync_all() on the handle.
+        //
+        // Durability caveat: we fsync the file *data* (temp here, and the
+        // destination on the copy fallback below) but do NOT fsync the
+        // containing directory after the rename/create. On POSIX the
+        // rename's directory entry can therefore still be lost on power
+        // loss even though the data pages are durable, leaving either the
+        // old file or no file. This gap is acceptable here: the target
+        // platform is Windows (different ReplaceFile/rename durability
+        // semantics) and RAG dumps are cheaply regenerable.
         {
             use std::io::Write;
             let mut f = std::fs::File::create(&temp_path)

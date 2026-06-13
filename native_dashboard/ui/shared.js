@@ -175,11 +175,21 @@ export function escapeHtml(text) {
 }
 /**
  * Test whether a URL is safe to use as an <img src>. Allows data:image/,
- * http(s):, tauri/asset schemes, and relative paths. Rejects javascript:,
- * vbscript:, file: and other dangerous schemes.
+ * https:, tauri/asset schemes, and same-origin relative paths. Rejects
+ * javascript:, vbscript:, file: and other dangerous schemes.
  *
  * Defense-in-depth: avatars in this app come from canvas.toDataURL() locally,
  * but localStorage can be tampered with, so we validate before rendering.
+ *
+ * CAVEAT — validator allowlist is WIDER than the effective CSP. The app CSP
+ * (img-src 'self' data: blob:, in tauri.conf.json and ui/index.html) only
+ * permits data:, blob: and same-origin paths. So an avatar that passes this
+ * check with an https:/asset:/tauri: scheme is silently blocked by CSP at
+ * render and never displays, even though isSafeAvatarUrl returns true. Only
+ * data:/blob:/same-origin actually render (canvas data: URIs are the working
+ * path today). If you ever need https/asset/tauri avatars to show, widen
+ * img-src in BOTH CSP locations to match; otherwise keep them in sync to avoid
+ * 'valid but invisible' avatars.
  */
 export function isSafeAvatarUrl(url) {
     if (!url || typeof url !== 'string')
@@ -234,12 +244,18 @@ export function isSafeAvatarUrl(url) {
     // Reject protocol-relative URLs ('//host/...') BEFORE the single-'/'
     // same-origin check: '//attacker.com/pixel' starts with '/' but resolves
     // to an EXTERNAL host, defeating the no-external-beacon rule above.
-    if (lower.startsWith('//')) {
+    // Normalize backslashes to forward slashes first: under WHATWG special
+    // schemes (http/https — what Tauri's WebView2 uses, http://tauri.localhost)
+    // the URL parser treats '\\' as '/', so '/\\evil.com/pixel' would NOT start
+    // with '//' yet resolves to the external host evil.com. Test the normalized
+    // form against both the '//' reject and the '/' same-origin allow.
+    const norm = lower.replace(/\\/g, '/');
+    if (norm.startsWith('//')) {
         return false;
     }
     return (lower.startsWith('data:image/') ||
         lower.startsWith('https://') ||
-        lower.startsWith('/') ||
+        norm.startsWith('/') ||
         lower.startsWith('./'));
 }
 /**

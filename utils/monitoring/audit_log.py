@@ -138,14 +138,16 @@ async def _write_fallback_entry_locked(entry: dict[str, Any]) -> bool:
     lock on the next write.
     """
 
-    def _do_write(line: str) -> None:
+    def _do_write() -> None:
+        # mkdir + json.dumps are blocking syscalls/CPU work; run them inside the
+        # worker thread (not the event loop) alongside the actual file append.
+        _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
         with _FALLBACK_LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line)
 
     try:
-        _FALLBACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        await asyncio.to_thread(_do_write, line)
+        await asyncio.to_thread(_do_write)
         return True
     except Exception:
         logger.exception("Audit fallback write failed; entry lost")

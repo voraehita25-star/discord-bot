@@ -54,6 +54,10 @@ ytdl_opts_hq = {
     # Hard cap on downloaded audio to prevent disk-fill DoS from malicious
     # or oversized URLs. 300 MiB is far larger than any reasonable track
     # (~30 min of 320 kbps audio is ~75 MiB), so legitimate use is unaffected.
+    # NOTE: max_filesize is a yt-dlp *download-side* option only — it is NOT
+    # enforced in stream mode (download=False), where the upstream media URL is
+    # handed straight to ffmpeg. The stream path enforces an equivalent bound
+    # itself via the extracted filesize/duration metadata check in from_url().
     "max_filesize": 300 * 1024 * 1024,
     # Updated Chrome user-agent (2024)
     "user_agent": (
@@ -317,6 +321,19 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if "url" not in data:
                 raise ValueError("Streaming URL not found in data")
             filename = data["url"]
+            # max_filesize (the disk-fill DoS guard in ytdl_opts_hq) is a
+            # download-side option only and is NOT applied in stream mode, so
+            # enforce an equivalent size bound here from the extracted metadata
+            # before handing the upstream URL to ffmpeg. An attacker-supplied
+            # URL resolving to an arbitrarily large/endless stream would
+            # otherwise be streamed without any cap.
+            stream_max_bytes = ytdl_opts_hq["max_filesize"]
+            advertised_size = data.get("filesize") or data.get("filesize_approx")
+            if isinstance(advertised_size, (int, float)) and advertised_size > stream_max_bytes:
+                raise ValueError(
+                    f"Stream advertises {int(advertised_size)} bytes, "
+                    f"exceeding the {stream_max_bytes}-byte cap — refusing"
+                )
         else:
             filename = ytdl_obj.prepare_filename(data)
 

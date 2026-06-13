@@ -132,7 +132,15 @@ class TTLCache(Generic[K, V]):
         return time.monotonic() - entry.created_at > self.ttl
 
     def _estimate_size(self, value: V) -> int:
-        """Estimate memory size of value."""
+        """Estimate memory size of value.
+
+        NOTE: This is a SHALLOW estimate — ``sys.getsizeof`` returns only the
+        top-level container header (e.g. the dict/list/str object itself), not
+        its nested contents. ``get_stats().memory_bytes`` therefore
+        systematically under-reports memory for container payloads. This is a
+        metrics-accuracy caveat only; eviction is count-based (see ``set``) and
+        is unaffected.
+        """
         return sys.getsizeof(value)
 
     def get(self, key: K, default=None):
@@ -443,7 +451,23 @@ class MemoryMonitor:
         for name, callback in list(self._cleanup_callbacks.items()):
             try:
                 cleaned = callback()
-                results[name] = cleaned
+                # Guard against a misregistered async callback: callback() then
+                # returns an un-awaited coroutine (no exception raised), which
+                # would slip past this try/except and later break the
+                # `v > 0` sum in _monitor_loop with a TypeError. Reject any
+                # non-int result here so the failure is visible, not silent.
+                if not isinstance(cleaned, int):
+                    self.logger.error(
+                        "Cleanup callback %s returned %s, expected int (async "
+                        "callbacks are not supported); ignoring result",
+                        name,
+                        type(cleaned).__name__,
+                    )
+                    if asyncio.iscoroutine(cleaned):
+                        cleaned.close()
+                    results[name] = -1
+                else:
+                    results[name] = cleaned
             except Exception as e:
                 self.logger.error("Cleanup callback %s failed: %s", name, e)
                 results[name] = -1

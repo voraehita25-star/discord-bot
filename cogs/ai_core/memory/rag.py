@@ -1190,6 +1190,15 @@ class MemorySystem:
             content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
         )
 
+        # save_rag_memory returns 0 on a None lastrowid (insert produced no
+        # usable row id). Report the failure instead of claiming success —
+        # FAISS was not updated and no persisted row exists, so callers must
+        # be able to detect a non-persisted memory (mirrors the early
+        # "database not available" return above).
+        if not isinstance(result, int) or result <= 0:
+            logger.warning("⚠️ RAG memory save returned no row id (%s) — not persisted", result)
+            return False
+
         async with self._index_lock:
             if (
                 embedding is not None

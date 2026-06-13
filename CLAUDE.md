@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.7). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.8). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |

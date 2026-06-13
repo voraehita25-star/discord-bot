@@ -40,9 +40,15 @@ export default defineConfig({
 
     webServer: {
         // -u flag = unbuffered stdout so Playwright sees ready output instantly.
-        command: 'python -u -m http.server 5173 --directory ui --bind 127.0.0.1',
+        // PYTHON env override lets machines whose interpreter is 'py' or a venv
+        // path (e.g. when the User PATH is not inherited) run the e2e suite.
+        command: `${process.env.PYTHON ?? 'python'} -u -m http.server 5173 --directory ui --bind 127.0.0.1`,
         url: 'http://127.0.0.1:5173/index.html',
-        reuseExistingServer: !process.env.CI,
+        // Reuse a running dev server outside CI for speed. 5173 is the Vite
+        // default, so a stale http.server / another project's Vite could be
+        // reused and serve stale ui/ assets; set PLAYWRIGHT_NO_REUSE_SERVER=1
+        // to force Playwright to launch its own server.
+        reuseExistingServer: !process.env.CI && !process.env.PLAYWRIGHT_NO_REUSE_SERVER,
         timeout: 15_000,
         stdout: 'pipe',
         stderr: 'pipe',

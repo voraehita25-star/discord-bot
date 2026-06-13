@@ -36,6 +36,9 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
         match data[i] {
             0x21 => {
                 // Extension — skip it
+                if i + 2 >= data.len() {
+                    break;
+                }
                 i += 2;
                 while i < data.len() && data[i] != 0 {
                     let block_size = data[i] as usize;

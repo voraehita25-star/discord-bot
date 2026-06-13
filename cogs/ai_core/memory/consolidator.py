@@ -677,8 +677,14 @@ class MemoryConsolidator:
                         )
 
             # Check for relationship contradictions
-            if facts.get("relationships"):
-                for related_name, relation in facts["relationships"].items():
+            # ``relationships`` arrives untyped from AI-extracted JSON; a
+            # poisoned extraction can store it as a non-empty string/list,
+            # which survives EntityFacts.to_dict() (its empty-container skip
+            # only applies to dict/list/set/tuple). Guard with isinstance so
+            # a non-dict can't raise AttributeError on ``.items()``.
+            rels = facts.get("relationships")
+            if isinstance(rels, dict):
+                for related_name, relation in rels.items():
                     # relationship values arrive untyped from AI-extracted JSON;
                     # coerce a scalar to str so the ``not in relation`` membership
                     # test below can't raise TypeError (mirrors the age coercion).

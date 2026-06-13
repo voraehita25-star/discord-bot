@@ -662,7 +662,8 @@ class AI(commands.Cog):
 
         MESSAGE_UPDATE is a partial — ``content`` is only present when the text
         changed, so edits that merely attach an embed (e.g. a link unfurling)
-        carry no ``content`` and are skipped.
+        carry no ``content`` (absent) and are skipped. A genuine edit that clears
+        the text to ``""`` IS honored so memory keeps reading live.
         """
         data = payload.data if isinstance(payload.data, dict) else {}
         # Never sync the bot's own edits: streaming works by repeatedly editing
@@ -672,8 +673,11 @@ class AI(commands.Cog):
         author_id = (data.get("author") or {}).get("id")
         if self.bot.user is not None and str(author_id) == str(self.bot.user.id):
             return
+        # Distinguish absent (no text-change in this partial → skip) from a real
+        # clear-to-empty edit (""). Using ``not new_content`` would conflate the
+        # two and drop legitimate empty edits, leaving stale text in memory.
         new_content = data.get("content")
-        if not new_content:
+        if new_content is None:
             return
         try:
             updated = await self.chat_manager.edit_message_in_history(
@@ -1838,6 +1842,18 @@ class AI(commands.Cog):
             if channel_id not in locks:
                 locks[channel_id] = asyncio.Lock()
             async with locks[channel_id]:
+                # Re-fetch the LIVE session dict INSIDE the lock: between the
+                # unlocked .get() above and acquiring the lock,
+                # cleanup_inactive_sessions can evict+recreate
+                # self.chats[channel_id], leaving the captured dict orphaned —
+                # trimming/saving it would target a dead dict while the live
+                # session keeps full history. Bail if the session is gone.
+                chat_data = self.chat_manager.chats.get(channel_id)
+                if chat_data is None:
+                    await status_msg.edit(
+                        content="❌ Session expired before summarization could run"
+                    )
+                    return
                 # Re-read INSIDE the lock: an in-flight turn finishing while
                 # we waited may have REPLACED chat_data["history"] with a new
                 # list — trimming the stale snapshot captured before the lock
@@ -1901,7 +1917,12 @@ class AI(commands.Cog):
                 current = rate_limiter.get_channel_limit(channel_id)
                 await ctx.send(f"🚦 Channel rate limit: {current} requests/minute")
             else:
-                # Set new limit
+                # Set new limit — reject 0/negative, which would write a
+                # nonsensical bucket (max_tokens/tokens <= 0) and permanently
+                # block the channel. Mirrors the audit_export clamp.
+                if limit < 1:
+                    await ctx.send("❌ Limit must be >= 1")
+                    return
                 await rate_limiter.set_channel_limit(channel_id, limit)
                 await ctx.send(f"✅ Channel rate limit set to: {limit} requests/minute")
 

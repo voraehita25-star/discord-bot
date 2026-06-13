@@ -156,6 +156,12 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
         count = 0
         async with db.get_write_connection() as conn:
             for chan_id, role, content, message_id, ts in rows:
+                # user_id is intentionally left NULL for migrated legacy rows:
+                # the source JSON predates per-user tracking and never stored a
+                # user_id (we read only role/parts/message_id/timestamp). The
+                # ai_history.user_id column is nullable, so this is a deliberate
+                # limitation, not an accidental omission vs. the production
+                # write path (utils/database/database.py).
                 await conn.execute(
                     """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
                        VALUES (?, ?, ?, ?, ?,
@@ -368,8 +374,11 @@ async def _run_migration(args) -> None:
     print(f"        Total: {metadata_count} metadata records")
     print()
 
-    # Delete old JSON files if requested — ONLY files whose migration succeeded
-    if args.delete_json and not args.dry_run and migrated_files > 0:
+    # Delete old JSON files if requested — ONLY files whose migration succeeded.
+    # Gate on either history OR metadata having migrated: a metadata-only run
+    # (no history files present, so migrated_files stays 0) must still be able
+    # to delete its successfully-migrated metadata source JSON.
+    if args.delete_json and not args.dry_run and (migrated_files > 0 or metadata_count > 0):
         print("  [CLEANUP] Deleting successfully migrated JSON files...")
         deleted = 0
 

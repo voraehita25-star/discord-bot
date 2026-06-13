@@ -54,10 +54,12 @@ COPY rust_extensions/Cargo.toml rust_extensions/Cargo.lock* ./rust_extensions/
 COPY rust_extensions/media_processor/Cargo.toml ./rust_extensions/media_processor/
 COPY rust_extensions/rag_engine/Cargo.toml ./rust_extensions/rag_engine/
 
-# Create stub src for dependency caching
+# Create stub src for dependency caching.
+# These crates are cdylib/rlib libraries (no binary target), so the stub must be
+# a library item — a `fn main(){}` would be misleading dead code for a lib crate.
 RUN mkdir -p rust_extensions/media_processor/src rust_extensions/rag_engine/src && \
-    echo "fn main() {}" > rust_extensions/media_processor/src/lib.rs && \
-    echo "fn main() {}" > rust_extensions/rag_engine/src/lib.rs && \
+    echo "pub fn _stub() {}" > rust_extensions/media_processor/src/lib.rs && \
+    echo "pub fn _stub() {}" > rust_extensions/rag_engine/src/lib.rs && \
     cd rust_extensions && cargo build --release 2>/dev/null || true
 
 # Copy real Rust source and rebuild

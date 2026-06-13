@@ -496,6 +496,15 @@ def _load_persisted_sessions() -> None:
         for k, v in data.items():
             if isinstance(k, str) and isinstance(v, str):
                 _CONVERSATION_SESSIONS[k] = v
+        # Enforce the cap up front: _track_session only evicts one entry at a
+        # time, so a pre-existing oversized sidecar (manual tampering / older
+        # build) would otherwise leave the in-memory map above the cap until
+        # enough distinct conversations are touched. Drop the oldest (front of
+        # insertion order) so we keep the most-recent N.
+        if len(_CONVERSATION_SESSIONS) > _MAX_TRACKED_SESSIONS:
+            excess = len(_CONVERSATION_SESSIONS) - _MAX_TRACKED_SESSIONS
+            for stale_conv in list(_CONVERSATION_SESSIONS)[:excess]:
+                _CONVERSATION_SESSIONS.pop(stale_conv, None)
     except Exception:
         logger.exception("Failed to load persisted Claude CLI session map")
 
@@ -930,7 +939,14 @@ def _save_inline_images(
             )
             continue
         path = target_dir / f"{timestamp}_{rand_suffix}_{idx}{ext}"
-        path.write_bytes(data)
+        # Guard the write so one unwritable file (disk full, permission denied,
+        # AV/sharing lock on Windows) doesn't discard the rest of the batch —
+        # matching the lenient per-image decode handling just above.
+        try:
+            path.write_bytes(data)
+        except OSError:
+            logger.warning("Failed to write image attachment %s", path, exc_info=True)
+            continue
         written.append(path)
     return written
 
@@ -1043,7 +1059,14 @@ def _save_inline_documents(
                     max_size_bytes,
                 )
                 continue
-            path.write_bytes(decoded)
+            # Guard the write so one unwritable file (disk full, permission
+            # denied, AV/sharing lock on Windows) doesn't discard the rest of
+            # the batch — matching the lenient per-document decode handling.
+            try:
+                path.write_bytes(decoded)
+            except OSError:
+                logger.warning("Failed to write document attachment %s", path, exc_info=True)
+                continue
         else:
             # Text: UTF-8 string. Size check against raw byte length.
             encoded = data_field.encode("utf-8", errors="replace")
@@ -1055,7 +1078,11 @@ def _save_inline_documents(
                     max_size_bytes,
                 )
                 continue
-            path.write_bytes(encoded)
+            try:
+                path.write_bytes(encoded)
+            except OSError:
+                logger.warning("Failed to write document attachment %s", path, exc_info=True)
+                continue
         written.append(path)
     return written
 
@@ -2046,8 +2073,20 @@ async def _run_claude_subprocess(
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
         # Drop the per-line buffer cap so model JSON deltas with embedded
         # base64 / long text aren't truncated. We still bound below.
-        with contextlib.suppress(AttributeError):
+        # ``_limit`` is a private asyncio.StreamReader attribute; if a future
+        # asyncio release renames/removes it the reader silently falls back to
+        # the 64 KiB default and the first oversized frame ends the stream
+        # early (graceful truncation, not a crash). Log once so that
+        # otherwise-invisible fallback is observable rather than only
+        # manifesting as occasional early-ended streams.
+        if hasattr(proc.stdout, "_limit"):
             proc.stdout._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
+        else:
+            logger.warning(
+                "asyncio StreamReader._limit attribute is missing; stdout falls "
+                "back to the default buffer cap and oversized frames may end the "
+                "stream early"
+            )
         async for raw_line in proc.stdout:
             if len(raw_line) > MAX_STDOUT_LINE_BYTES:
                 logger.warning(
@@ -2364,7 +2403,7 @@ async def handle_chat_message_claude_cli(
             is_regeneration = False
 
     # Thinking-mode requests legitimately spend minutes on the Anthropic
-    # side (Opus 4.7 reasoning silently before any stdout event), so the
+    # side (Opus 4.8 reasoning silently before any stdout event), so the
     # caller's 300s default fires mid-call. Override here where we know
     # thinking_enabled, leaving non-thinking turns on the tighter budget.
     if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:
@@ -2417,7 +2456,10 @@ async def handle_chat_message_claude_cli(
         thinking_enabled,
         len(content),
         len(capped_images),
-        len(documents_raw) if isinstance(documents_raw, list) else 0,
+        # Log the capped doc count (mirrors the capped_images line above) so the
+        # breadcrumb reflects how many docs are actually processed, not the raw
+        # submitted count. Capping itself happens below at capped_docs.
+        min(len(documents_raw), max_documents) if isinstance(documents_raw, list) else 0,
     )
 
     # Save the user's turn to the DB up front, mirroring the SDK backend so

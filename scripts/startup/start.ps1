@@ -107,6 +107,15 @@ while ($true) {
         # Only count crashes (non-zero exit code) toward restart limit
         $RestartCount++
         Save-CrashReport -ExitCode $ExitCode -ErrorMessage "Unexpected exit" -Runtime $Runtime | Out-Null
+    } elseif ($Runtime.TotalSeconds -lt 10) {
+        # Clean exit (code 0) but the bot died almost immediately. Without this
+        # branch an instant exit-0 loop never increments RestartCount, so the
+        # $RestartCount -ge $MaxRestarts guard below never trips and we hot-loop
+        # forever throttled only by $RestartDelay. Treat a too-fast clean exit
+        # as a crash for limiting purposes so the loop is still bounded.
+        $RestartCount++
+        Write-Log "Bot exited cleanly (code 0) after $([int]$Runtime.TotalSeconds)s - counting toward restart limit" -Level WARN
+        Save-CrashReport -ExitCode $ExitCode -ErrorMessage "Immediate clean exit" -Runtime $Runtime | Out-Null
     } else {
         # Clean exit — don't count as crash, just restart if configured
         Write-Log "Bot exited cleanly (code 0)" -Level INFO

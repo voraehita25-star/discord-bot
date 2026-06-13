@@ -100,6 +100,13 @@ class SummaryArchiver:
     MIN_MESSAGES_TO_SUMMARIZE = 20  # Minimum messages before summarizing
     SUMMARY_AGE_THRESHOLD_HOURS = 24  # Summarize messages older than this
     MAX_SUMMARY_LENGTH = 500
+    # Upper bound on rows pulled into a single consolidation pass. Without it,
+    # a very active channel with a large unsummarised backlog (consolidation
+    # disabled for a while, or force=True) loads the entire backlog into memory
+    # and does the join + topic extraction synchronously on the event loop in
+    # one shot. Capping per-pass lets the backlog drain across successive runs
+    # (oldest first, since the SELECT orders by timestamp ASC).
+    MAX_MESSAGES_PER_CONSOLIDATION = 500
 
     def __init__(self):
         self.logger = logging.getLogger("SummaryArchiver")
@@ -113,9 +120,17 @@ class SummaryArchiver:
 
     def _get_channel_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self._channel_locks.get(channel_id)
-        if lock is None:
-            lock = self._channel_locks.setdefault(channel_id, asyncio.Lock())
-        return lock
+        if lock is not None:
+            return lock
+        # Bound growth: this dict otherwise keeps one Lock per distinct channel
+        # forever (a slow leak on a long-running bot). When it grows large,
+        # drop locks that aren't currently held — they're idle and a fresh one
+        # is created on demand. A held lock is in active use, so it's kept.
+        # Mirrors LongTermMemory._get_user_lock.
+        if len(self._channel_locks) >= 10_000:
+            for cid in [c for c, lk in self._channel_locks.items() if not lk.locked()]:
+                del self._channel_locks[cid]
+        return self._channel_locks.setdefault(channel_id, asyncio.Lock())
 
     async def init_schema(self) -> None:
         """Initialize database schema for summaries."""
@@ -242,6 +257,10 @@ class SummaryArchiver:
             # ``idx_ai_history_pending_summary`` only contains unsummarised
             # rows so this filter doesn't cost a scan.
             cursor = await conn.execute(
+                # LIMIT caps a single pass so an unbounded backlog can't be
+                # pulled into one synchronous summarization — see
+                # MAX_MESSAGES_PER_CONSOLIDATION. Oldest rows go first
+                # (ORDER BY timestamp ASC), so the backlog drains across runs.
                 """
                 SELECT id, role, content, timestamp
                 FROM ai_history
@@ -249,8 +268,9 @@ class SummaryArchiver:
                   AND timestamp < ?
                   AND summarized_at IS NULL
                 ORDER BY timestamp ASC, id ASC
+                LIMIT ?
             """,
-                (channel_id, cutoff_time.isoformat()),
+                (channel_id, cutoff_time.isoformat(), self.MAX_MESSAGES_PER_CONSOLIDATION),
             )
             rows = list(await cursor.fetchall())
 

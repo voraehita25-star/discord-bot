@@ -229,8 +229,8 @@ function Test-Dependencies {
 function Stop-ExistingBot {
     $PidFile = Join-Path $ProjectRoot "bot.pid"
     if (Test-Path $PidFile) {
-        $OldPid = Get-Content $PidFile
-        if ($OldPid -match "^\d+$") {
+        $OldPid = (Get-Content $PidFile -Raw).Trim()
+        if ($OldPid -is [string] -and $OldPid -match "^\d+$") {
             $Process = Get-Process -Id $OldPid -ErrorAction SilentlyContinue
             if ($Process -and $Process.ProcessName -match "python") {
                 Write-Log "Stopping existing bot (PID: $OldPid)..." -Level WARN

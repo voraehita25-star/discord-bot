@@ -122,6 +122,13 @@ class CircuitBreaker:
             self._last_failure_time = None  # Also reset last failure time
             self._current_reset_timeout = None
         elif new_state == CircuitState.OPEN:
+            # Clear any in-flight half-open admissions so a probe that failed
+            # (record_failure -> OPEN) doesn't leave a stale timestamp lingering.
+            # Mirrors record_success's pop-on-completion accounting and keeps the
+            # tracking consistent until the next OPEN->HALF_OPEN window.
+            self._half_open_calls = 0
+            self._half_open_successes = 0
+            self._half_open_call_starts.clear()
             # Jitter the reset timeout to prevent thundering herd
             self._current_reset_timeout = self.reset_timeout + random.uniform(
                 0, self.reset_timeout * 0.3

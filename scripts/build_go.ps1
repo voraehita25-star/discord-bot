@@ -43,10 +43,16 @@ try {
         Write-Host "[ERROR] go mod download failed" -ForegroundColor Red
         exit 1
     }
-    & go mod tidy
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] go mod tidy failed" -ForegroundColor Red
-        exit 1
+    # `go mod tidy` mutates go.mod/go.sum and may hit the network, so it is NOT
+    # run on a normal build (which must stay read-only w.r.t. the committed
+    # manifests). Only run it on an explicit -Clean rebuild. `go mod download`
+    # above already resolves everything needed to build.
+    if ($Clean) {
+        & go mod tidy
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] go mod tidy failed" -ForegroundColor Red
+            exit 1
+        }
     }
 
     $BuildFlags = @()

@@ -60,7 +60,10 @@ def _list_backups() -> list[Path]:
 
 def _get_schema_version(db: Path) -> int | None:
     try:
-        with sqlite3.connect(str(db)) as conn:
+        # mode=ro: inspect a backup/DB without ever creating it, touching its
+        # -wal/-shm sidecars, or checkpointing on close — the file the operator
+        # wants kept pristine as a rollback source stays byte-for-byte unchanged.
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
             return int(row[0]) if row and row[0] is not None else 0
     except sqlite3.Error:
@@ -70,7 +73,10 @@ def _get_schema_version(db: Path) -> int | None:
 def _table_row_counts(db: Path) -> dict[str, int]:
     counts: dict[str, int] = {}
     try:
-        with sqlite3.connect(str(db)) as conn:
+        # mode=ro: row counts are SELECT-only, so open read-only to avoid
+        # creating/checkpointing the -wal/-shm sidecars of a backup we only
+        # want to inspect (mirrors watch_history.py's read-only open).
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall()

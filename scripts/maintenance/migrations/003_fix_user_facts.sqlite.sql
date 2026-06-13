@@ -26,6 +26,20 @@ CREATE TABLE user_facts_new (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- CAVEAT (legacy schema drift): this SELECT copies columns BY NAME, so the
+-- source user_facts table must already contain every column listed below:
+--   id, user_id, channel_id, category, content, importance,
+--   first_mentioned, last_confirmed, mention_count, confidence,
+--   source_message, is_active, is_user_defined, created_at
+-- A pre-v3 DB whose user_facts predates one of these columns (e.g.
+-- source_message / confidence / is_user_defined) makes this SELECT fail with
+-- "no such column" and aborts the migration. init_schema's
+-- `CREATE TABLE IF NOT EXISTS user_facts` is a no-op on an existing table and
+-- does NOT backfill, and there is no _add_column_if_missing for user_facts, so
+-- such a DB needs the missing column(s) added manually before running this
+-- migration. SQLite has no dynamic-column SELECT, so this cannot be guarded in
+-- pure migration SQL. Low risk in practice: v3 is historical and already
+-- applied on the live DB; fresh installs build the full schema first.
 INSERT INTO user_facts_new
     SELECT id, user_id, channel_id,
            COALESCE(category, 'general'),

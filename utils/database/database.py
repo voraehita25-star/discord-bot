@@ -1169,9 +1169,14 @@ class Database:
             # Try to get a connection from the pool
             try:
                 conn = self._get_conn_pool().get_nowait()
-                # Validate the pooled connection is still alive
+                # Validate the pooled connection is still alive. Bound the probe
+                # with its own timeout: the busy-handler timeout only covers
+                # SQLite lock contention, so a handle wedged by an OS-level WAL
+                # FS stall or a half-state could otherwise block here while
+                # still holding the semaphore slot. A timed-out probe is treated
+                # exactly like a stale connection below.
                 try:
-                    await conn.execute("SELECT 1")
+                    await asyncio.wait_for(conn.execute("SELECT 1"), timeout=5)
                 except Exception:
                     # Connection is stale, close and create a new one
                     try:
@@ -1204,7 +1209,11 @@ class Database:
 
                     # Performance optimizations — per-connection PRAGMAs only
                     await conn.execute("PRAGMA synchronous=NORMAL")
-                    await conn.execute("PRAGMA cache_size=250000")
+                    # Negative cache_size bounds the cache in KiB regardless of
+                    # page size (-65536 = ~64 MiB/conn). A positive value is
+                    # measured in PAGES, so with the default 4 KiB page that was
+                    # ~1 GiB/conn × up to 32 live connections ≈ 32 GiB aggregate.
+                    await conn.execute("PRAGMA cache_size=-65536")
                     await conn.execute("PRAGMA temp_store=MEMORY")
 
                 # Re-assert foreign_keys=ON on every acquisition (both fresh and
@@ -2385,7 +2394,9 @@ class Database:
         """
         try:
             async with self.get_connection() as conn:
-                conn.row_factory = aiosqlite.Row
+                # row_factory is already aiosqlite.Row from the pool (set on
+                # fresh connect and reset before return-to-pool), so dict(row)
+                # below works without re-setting it here.
 
                 # Build query with optional filters
                 query = """
@@ -2395,7 +2406,10 @@ class Database:
                 """
                 # Force int cast so a non-int sneaking through wouldn't
                 # produce malformed SQLite datetime modifiers. Defense in depth.
-                params: list[Any] = [f"-{int(days)} days"]
+                # Clamp the sign too: a negative ``days`` would yield '--N days',
+                # an invalid modifier that makes datetime('now', ?) return NULL
+                # and silently match zero rows instead of erroring.
+                params: list[Any] = [f"-{max(0, int(days))} days"]
 
                 if guild_id is not None:
                     query += " AND guild_id = ?"
@@ -2594,7 +2608,7 @@ class Database:
         # free but does NOT release the write lock, so the unlink must live
         # outside the `async with`. Mirrors delete_ai_history's ordering.
         try:
-            export_dir = Path("data/db_export/dashboard_chats")
+            export_dir = EXPORT_DIR / "dashboard_chats"
             json_file = export_dir / f"{conversation_id}.json"
 
             def _unlink_if_exists() -> bool:
@@ -3517,9 +3531,16 @@ class Database:
                     # Channel emptied (last message deleted via Discord-delete
                     # mirroring) — remove the stale export instead of leaving
                     # the deleted content on disk forever.
-                    removed = await asyncio.to_thread(
-                        lambda p: (p.unlink(), True)[1] if p.exists() else False, output_file
-                    )
+                    def _unlink_report(p: Path) -> bool:
+                        # missing_ok=True avoids the exists()/unlink() TOCTOU
+                        # race (a concurrent removal would otherwise raise
+                        # FileNotFoundError and log a spurious 'failed'); existed
+                        # is captured before unlink so we still report accurately.
+                        existed = p.exists()
+                        p.unlink(missing_ok=True)
+                        return existed
+
+                    removed = await asyncio.to_thread(_unlink_report, output_file)
                     if removed:
                         logger.debug("📤 Removed stale export for emptied channel %d", channel_id)
         except Exception:

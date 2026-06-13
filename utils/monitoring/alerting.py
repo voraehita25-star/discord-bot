@@ -103,13 +103,17 @@ class AlertManager:
     async def _try_acquire_cooldown(self, alert_type: str) -> tuple[bool, float, float | None]:
         """Atomic check-and-update of the per-type cooldown timestamp.
 
-        Returns ``(acquired, previous_ts)``. ``acquired`` is True if the alert
-        is allowed to fire (and the slot is reserved). ``previous_ts`` is the
-        timestamp that occupied the slot beforehand — pass it to
-        ``_rollback_cooldown`` if the subsequent send FAILS, so a transient
-        delivery error doesn't silence the alert for a full cooldown window
-        (critical for outage alerts, whose webhook POST is most likely to fail
-        exactly when the outage that triggered them is happening).
+        Returns ``(acquired, previous_ts, reserved_ts)``. ``acquired`` is True
+        if the alert is allowed to fire (and the slot is reserved).
+        ``previous_ts`` is the timestamp that occupied the slot beforehand —
+        pass it to ``_rollback_cooldown`` if the subsequent send FAILS, so a
+        transient delivery error doesn't silence the alert for a full cooldown
+        window (critical for outage alerts, whose webhook POST is most likely
+        to fail exactly when the outage that triggered them is happening).
+        ``reserved_ts`` is the timestamp this call wrote into the slot (``None``
+        when not acquired) — also pass it to ``_rollback_cooldown`` for the
+        compare-and-set guard so the rollback only fires when our reservation
+        is still the current value.
 
         The previous split implementation read + wrote the dict in two
         separate steps, so two concurrent callers could both pass the check.

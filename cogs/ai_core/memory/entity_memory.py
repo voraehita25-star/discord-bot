@@ -147,9 +147,7 @@ class Entity:
             # would let DEL (U+007F) and the C1 range (U+0080-U+009F) through, so
             # exclude those too — this is stored-prompt-injection hardening.
             s = "".join(
-                ch
-                for ch in s
-                if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
+                ch for ch in s if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
             )
             # Neutralise leading bracketed system markers per line.
             s = _re.sub(
@@ -421,6 +419,10 @@ class EntityMemoryManager:
                     (row[0],),
                 )
                 await conn.commit()
+                # Note: the returned Entity is built from the pre-UPDATE `row`,
+                # so its access_count is one behind the just-committed value
+                # (the freshly-incremented count lives only in the DB). No
+                # current caller relies on the returned access_count.
                 return self._row_to_entity(row)
 
         except aiosqlite.Error:
@@ -622,6 +624,13 @@ class EntityMemoryManager:
             )
             facts = EntityFacts()
         try:
+            # Explicit None checks (not falsy `or`): a genuinely stored
+            # confidence of 0.0 (low-confidence) or access_count of 0 / empty
+            # source must survive — only a real NULL should fall back to the
+            # default. The falsy `or` silently promoted a stored 0.0 to 1.0.
+            confidence = row["confidence"]
+            source = row["source"]
+            access_count = row["access_count"]
             return Entity(
                 entity_id=row["id"],
                 name=row["name"],
@@ -629,13 +638,16 @@ class EntityMemoryManager:
                 facts=facts,
                 channel_id=row["channel_id"],
                 guild_id=row["guild_id"],
-                confidence=row["confidence"] or 1.0,
-                source=row["source"] or "user",
+                confidence=1.0 if confidence is None else confidence,
+                source="user" if source is None else source,
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
-                access_count=row["access_count"] or 0,
+                access_count=0 if access_count is None else access_count,
             )
         except (IndexError, KeyError, TypeError):
+            confidence = row[6]
+            source = row[7]
+            access_count = row[10]
             return Entity(
                 entity_id=row[0],
                 name=row[1],
@@ -643,11 +655,11 @@ class EntityMemoryManager:
                 facts=facts,
                 channel_id=row[4],
                 guild_id=row[5],
-                confidence=row[6] or 1.0,
-                source=row[7] or "user",
+                confidence=1.0 if confidence is None else confidence,
+                source="user" if source is None else source,
                 created_at=row[8],
                 updated_at=row[9],
-                access_count=row[10] or 0,
+                access_count=0 if access_count is None else access_count,
             )
 
     async def get_entities_for_prompt(

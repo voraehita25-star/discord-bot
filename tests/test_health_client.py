@@ -570,6 +570,112 @@ class TestHelperFunctions:
             assert result["status"] == "healthy"
 
 
+class TestHealthAPIClientFlushBufferMidLoopFailure:
+    """Regression tests for _flush_buffer_locked mid-loop POST failure.
+
+    Guards the fix where a chunked-POST failure must re-queue only the
+    UNDELIVERED tail (metrics[failed_offset:][:spare]) instead of the
+    already-delivered front (the old buggy metrics[:spare]).
+    """
+
+    @pytest.mark.asyncio
+    async def test_midloop_failure_requeues_undelivered_tail_not_delivered_front(self):
+        """Mid-loop POST failure must re-buffer the undelivered tail, not the delivered front.
+
+        With 1000 buffered metrics the loop POSTs two chunks: chunk 0 = indices
+        0..899 (succeeds) and chunk 1 = indices 900..999 (raises). The fixed code
+        tracks failed_offset=900 and re-queues metrics[900:] (the undelivered
+        tail). The old code re-queued metrics[:spare] — the delivered front —
+        and dropped the tail; this test fails on that old behaviour.
+        """
+        from utils.monitoring.health_client import HealthAPIClient
+
+        client = HealthAPIClient()
+        client._service_available = True
+
+        # 1000 distinct, identifiable metrics: index 0..999.
+        client._metrics_buffer = [
+            {"type": "counter", "name": "m", "value": 1, "labels": {"idx": i}} for i in range(1000)
+        ]
+
+        # Build a post() mock: succeed on the first chunk (index 0), raise on
+        # the second chunk (index 900). Success path must consume cleanly via
+        # `async with ... as resp:` and read resp.status (must be < 400).
+        ok_response = MagicMock()
+        ok_response.status = 200
+        ok_cm = MagicMock()
+        ok_cm.__aenter__ = AsyncMock(return_value=ok_response)
+        ok_cm.__aexit__ = AsyncMock(return_value=False)
+
+        call_count = {"n": 0}
+
+        def post_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ok_cm
+            raise RuntimeError("simulated POST failure on second chunk")
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=post_side_effect)
+        client._session = mock_session
+
+        await client._flush_buffer_locked()
+
+        # Exactly two POST attempts: one success, one failure.
+        assert call_count["n"] == 2
+
+        rebuffered_indices = {m["labels"]["idx"] for m in client._metrics_buffer}
+
+        # The undelivered tail (900..999) must be re-queued.
+        assert rebuffered_indices == set(range(900, 1000)), (
+            f"Expected undelivered tail 900..999, got {sorted(rebuffered_indices)[:5]}..."
+        )
+
+        # The already-delivered chunk-0 items (0..899) must NOT be re-queued.
+        assert not (rebuffered_indices & set(range(0, 900))), (
+            "Delivered front (indices 0..899) was wrongly re-buffered — "
+            "this is the old double-count bug."
+        )
+
+    @pytest.mark.asyncio
+    async def test_midloop_failure_respects_buffer_cap(self):
+        """Re-queued tail is bounded by BUFFER_CAP combined with existing buffer.
+
+        Sanity check that the re-buffer path still honours the 1000-item cap on
+        the combined buffer size so a sustained outage cannot grow it unbounded.
+        """
+        from utils.monitoring.health_client import HealthAPIClient
+
+        client = HealthAPIClient()
+        client._service_available = True
+        client._metrics_buffer = [
+            {"type": "counter", "name": "m", "value": 1, "labels": {"idx": i}} for i in range(1000)
+        ]
+
+        ok_response = MagicMock()
+        ok_response.status = 200
+        ok_cm = MagicMock()
+        ok_cm.__aenter__ = AsyncMock(return_value=ok_response)
+        ok_cm.__aexit__ = AsyncMock(return_value=False)
+
+        call_count = {"n": 0}
+
+        def post_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ok_cm
+            raise RuntimeError("boom")
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=post_side_effect)
+        client._session = mock_session
+
+        await client._flush_buffer_locked()
+
+        # Combined buffer never exceeds the 1000-item cap.
+        assert len(client._metrics_buffer) <= 1000
+
+
 class TestConstants:
     """Tests for module constants."""
 

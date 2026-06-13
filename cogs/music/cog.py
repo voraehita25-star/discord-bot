@@ -100,8 +100,6 @@ class Music(commands.Cog):
         the playback on next seek (Linux: continues from inode; Windows:
         PermissionError on the next spawn).
         """
-        import time as _time
-
         temp_dir = Path("temp")
         stale_threshold = 3600  # 1 hour
 
@@ -122,7 +120,7 @@ class Music(commands.Cog):
         def _cleanup_sync(in_use: set[str]) -> int:
             if not temp_dir.exists():
                 return 0
-            now = _time.time()
+            now = time.time()
             cleaned = 0
             for f in temp_dir.iterdir():
                 if not f.is_file():
@@ -167,11 +165,9 @@ class Music(commands.Cog):
         # cutover) doesn't all hit the DB at exactly the same wall-clock
         # boundary. ``random.uniform`` keeps the offset small enough that
         # the tick still averages 300s.
-        import random as _save_random
-
         while True:
             try:
-                jitter = _save_random.uniform(-15.0, 15.0)
+                jitter = random.uniform(-15.0, 15.0)
                 await asyncio.sleep(300 + jitter)
                 # Save only guilds whose queue actually changed since the
                 # last save — the previous version walked every guild_state
@@ -266,8 +262,6 @@ class Music(commands.Cog):
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
-        import contextlib
-
         # Cancel + await temp cleanup task. Without the await, the task
         # is cancelled but discord.py's ``cog_unload`` returns before its
         # except-handler runs, producing "Task was destroyed but it is
@@ -480,9 +474,7 @@ class Music(commands.Cog):
 
         try:
             # Use run_in_executor to avoid blocking the event loop on file I/O
-            import asyncio as _asyncio
-
-            raw = await _asyncio.get_running_loop().run_in_executor(
+            raw = await asyncio.get_running_loop().run_in_executor(
                 None, filepath.read_text, "utf-8"
             )
             data = json.loads(raw)
@@ -1312,6 +1304,37 @@ class Music(commands.Cog):
             )
         await ctx.send(embed=embed)
 
+    def mark_pause(self, guild_id: int) -> None:
+        """Record the pause instant so elapsed-position math stays correct.
+
+        Shared bookkeeping used by BOTH the text ``!pause`` command and the
+        ``MusicControlView`` pause button (views.py). Without going through
+        here, a button-initiated pause never set ``pause_start``, so resume /
+        fix / nowplaying fell back to ``time.time() - start_time`` and the
+        progress kept advancing past the real audio position while paused.
+        Idempotent: a second call while already marked keeps the original
+        instant so the paused interval isn't shrunk.
+        """
+        gs = self._gs(guild_id)
+        if gs.pause_start is None:
+            gs.pause_start = time.time()
+
+    def mark_resume(self, guild_id: int) -> None:
+        """Shift ``start_time`` forward by the paused interval, then clear it.
+
+        Shared bookkeeping used by BOTH the text ``!resume`` command and the
+        ``MusicControlView`` pause button (views.py). Mirrors the original
+        inline resume math so a button-initiated pause/resume corrects
+        ``start_time`` the same way the text command does.
+        """
+        gs = self._gs(guild_id)
+        if gs.pause_start is not None:
+            paused_duration = time.time() - gs.pause_start
+            # Shift start time forward
+            if gs.current_track is not None:
+                gs.current_track["start_time"] += paused_duration
+            gs.pause_start = None
+
     @commands.hybrid_command(name="pause", aliases=["pa"])  # type: ignore[arg-type]
     @commands.guild_only()
     async def pause(self, ctx):
@@ -1333,7 +1356,7 @@ class Music(commands.Cog):
                     color=Colors.ERROR,
                 )
                 return await ctx.send(embed=embed)
-            self._gs(ctx.guild.id).pause_start = time.time()
+            self.mark_pause(ctx.guild.id)
 
             # Get current track info for embed
             track_info = self._gs(ctx.guild.id).current_track or {}
@@ -1365,13 +1388,9 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         if ctx.voice_client.is_paused():
-            # Calculate paused duration
-            if self._gs(ctx.guild.id).pause_start is not None:
-                paused_duration = time.time() - self._gs(ctx.guild.id).pause_start
-                # Shift start time forward
-                if self._gs(ctx.guild.id).current_track is not None:
-                    self._gs(ctx.guild.id).current_track["start_time"] += paused_duration
-                self._gs(ctx.guild.id).pause_start = None
+            # Calculate paused duration and shift start_time forward (shared
+            # bookkeeping so the button-resume path corrects start_time too).
+            self.mark_resume(ctx.guild.id)
 
             ctx.voice_client.resume()
 

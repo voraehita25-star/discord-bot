@@ -34,6 +34,13 @@ LOGGER_DECL = b"logger = logging.getLogger(__name__)"
 # We deliberately do NOT match unindented `logging.X(` — those at module
 # top-level can fire before `logger` is defined and are rarer. Leave them
 # for manual review.
+# Limitation: the leading `(^|\r?\n)` anchor is CONSUMED by each match, and
+# subn resumes scanning after it, so a SECOND `logging.<level>(` on the SAME
+# physical line (e.g. `    logging.info(x); logging.debug(y)`) is not preceded
+# by a newline+indentation and won't be rewritten — only the first call is.
+# This is acceptable for our single-statement-per-line scope; such lines are
+# rare and the result stays valid syntax (mixed `logger.`/`logging.`), so a
+# manual pass can finish them.
 _CALL_RE = re.compile(
     rb"(^|\r?\n)([ \t]+)logging\.(debug|info|warning|error|critical|exception|log)\(",
 )

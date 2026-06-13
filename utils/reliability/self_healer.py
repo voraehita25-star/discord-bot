@@ -208,14 +208,21 @@ class SelfHealer:
                 # Use os.path.basename so the check works on both Windows (\) and POSIX (/)
                 # paths regardless of the host platform.
                 is_bot = False
+                matched_name = ""
                 ignore_list = ["bot_manager", "dev_watcher", "self_healer", "test_bot", "test_"]
                 for arg in cmdline:
                     name = PurePosixPath(arg.replace("\\", "/")).name
                     if name.lower() == "bot.py":
                         is_bot = True
+                        matched_name = name.lower()
                         break
 
-                if is_bot and not any(x in cmdline_str for x in ignore_list):
+                # Apply the ignore-list against the matched script's basename
+                # only — NOT the whole cmdline_str. A real `python bot.py` whose
+                # path or args merely contain a token like 'test_' (e.g.
+                # C:\test_env\bot.py) must not be silently dropped, which would
+                # undercount bots and defeat duplicate detection.
+                if is_bot and not any(x in matched_name for x in ignore_list):
                     # ``psutil.Process(pid)`` itself can raise NoSuchProcess
                     # if the process exited between ``process_iter`` yielding
                     # us its info dict and this call.
@@ -332,7 +339,7 @@ class SelfHealer:
     def diagnose(self) -> dict:
         """Analyze system status"""
         diag_data: dict[str, Any] = {
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "caller": self.caller_script,
             "my_pid": self.my_pid,
             "issues": [],
@@ -356,9 +363,15 @@ class SelfHealer:
         ]
         diag_data["pid_file_pid"] = pid_from_file
 
-        # Check PID file validity
+        # Check PID file validity. find_all_bot_processes strips venv-launcher
+        # PIDs from `bots`, so a still-live launcher PID written to bot.pid would
+        # be misread as STALE_PID_FILE and trigger a spurious CLEAN_PID_FILE.
+        # Fall back to a liveness check so a filtered-but-alive PID isn't treated
+        # as a dead process.
         if pid_from_file:
-            diag_data["pid_file_valid"] = any(b["pid"] == pid_from_file for b in bots)
+            diag_data["pid_file_valid"] = any(
+                b["pid"] == pid_from_file for b in bots
+            ) or psutil.pid_exists(pid_from_file)
 
         # Detect issues
         if len(bots) > 1:
@@ -668,7 +681,7 @@ class SelfHealer:
             Dict with healing results
         """
         heal_results: dict[str, Any] = {
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "diagnosis": None,
             "actions": [],
             "success": True,

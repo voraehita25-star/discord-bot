@@ -158,14 +158,24 @@ def _get_channel_lock(channel_id: int) -> asyncio.Lock:
     """
     lock = _CHANNEL_LOCKS.setdefault(channel_id, asyncio.Lock())
     _CHANNEL_LOCKS.move_to_end(channel_id)
-    while len(_CHANNEL_LOCKS) > _MAX_TRACKED_CHANNELS:
-        evicted_id, evicted_lock = _CHANNEL_LOCKS.popitem(last=False)
-        # Don't drop a lock that's actively held — re-insert it so the
-        # holder still releases the real object on exit.
+    # Scan oldest-first for an unheld lock to evict. A held lock can't be
+    # dropped (the holder must release the real object on exit), so instead
+    # of giving up on the first held entry we move it to the back (it is in
+    # active use right now, so treating it as most-recent is fine) and keep
+    # inspecting the next-oldest, strictly enforcing the cap whenever any
+    # entry is evictable. ``inspections`` bounds the scan to one full pass so
+    # an all-held dict can't spin forever (it just can't shrink this call).
+    inspections = len(_CHANNEL_LOCKS)
+    while len(_CHANNEL_LOCKS) > _MAX_TRACKED_CHANNELS and inspections > 0:
+        inspections -= 1
+        evicted_id, evicted_lock = next(iter(_CHANNEL_LOCKS.items()))
         if evicted_lock.locked():
-            _CHANNEL_LOCKS[evicted_id] = evicted_lock
-            _CHANNEL_LOCKS.move_to_end(evicted_id, last=False)
-            break
+            # Actively held — keep it but move it to the back so the next
+            # iteration inspects a different (newer) entry.
+            _CHANNEL_LOCKS.move_to_end(evicted_id, last=True)
+            continue
+        # Unheld: drop it.
+        del _CHANNEL_LOCKS[evicted_id]
     return lock
 
 
@@ -347,7 +357,12 @@ def _flatten_contents_to_prompt(
 # short delete_after notice is sent instead so repeated messages in a
 # paused channel don't stack interactive views.
 _OVERLIMIT_LAST_WARN: dict[int, float] = {}
-_OVERLIMIT_WARN_COOLDOWN = 120.0
+# Keep the cooldown >= the _OverlimitChoiceView timeout (600s) so a still
+# over-limit channel never has two live interactive views at once: an
+# un-clicked view stays active (with owner-only buttons) for the full
+# view timeout, and only the short delete_after notice is sent until it
+# expires. A shorter cooldown let up to ~5 stacked views accumulate.
+_OVERLIMIT_WARN_COOLDOWN = 600.0
 # Token target handed to smart_trim_by_tokens — same default as the
 # owner command ``!auto_summarize``.
 _OVERLIMIT_SUMMARIZE_TARGET_TOKENS = 500_000
@@ -480,7 +495,20 @@ async def _send_overlimit_warning(
     busy paused channel doesn't accumulate interactive views.
     """
     now = time.monotonic()
-    key = channel_id if channel_id is not None else 0
+    if channel_id is None:
+        # No real channel to summarize/pause — the interactive view would map
+        # to channel id 0 and its Summarize button would run against a session
+        # that doesn't exist. Send only a static notice for the channel-less
+        # caller; the real-channel path (the default) owns the choice flow.
+        with contextlib.suppress(Exception):
+            await send_channel.send(
+                "⚠️ ประวัติแชทยาวเกิน context window ของโมเดลแล้ว "
+                f"(~{prompt_chars:,} ตัวอักษร > {_DISCORD_PROMPT_MAX_CHARS:,}) "
+                "— กรุณาใช้ `!auto_summarize` หรือ `!reset_ai`",
+                delete_after=30,
+            )
+        return
+    key = channel_id
     last = _OVERLIMIT_LAST_WARN.get(key, 0.0)
     with contextlib.suppress(Exception):
         if now - last < _OVERLIMIT_WARN_COOLDOWN:
@@ -489,7 +517,6 @@ async def _send_overlimit_warning(
                 delete_after=15,
             )
             return
-        _OVERLIMIT_LAST_WARN[key] = now
         view = _OverlimitChoiceView(key)
         view.message = await send_channel.send(
             (
@@ -501,6 +528,11 @@ async def _send_overlimit_warning(
             ),
             view=view,
         )
+        # Record the cooldown timestamp only AFTER the interactive view send
+        # succeeds — if the send raises (missing perms, transient Discord
+        # error) the channel must NOT be locked into the short-notice path for
+        # the next cooldown window without ever having received the buttons.
+        _OVERLIMIT_LAST_WARN[key] = now
 
 
 async def call_claude_cli_streaming(
@@ -741,6 +773,13 @@ async def call_claude_cli_streaming(
                         aborted = True
                         _CHANNEL_SESSIONS.pop(channel_id, None)
                         break
+                    # Genuine external cancellation (cog unload / loop
+                    # shutdown): this BaseException skips the post-lock
+                    # placeholder cleanup below, so delete the
+                    # "💭 กำลังคิด..." placeholder here before re-raising.
+                    if placeholder_msg is not None:
+                        with contextlib.suppress(Exception):
+                            await placeholder_msg.delete()
                     raise
                 finally:
                     if watcher is not None:

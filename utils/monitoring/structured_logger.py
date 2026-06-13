@@ -234,7 +234,13 @@ class HumanReadableFormatter(logging.Formatter):
         if ctx:
             parts = []
             if ctx.get("request_id"):
-                parts.append(f"req={ctx['request_id'][:8]}")
+                # Coerce to str before slicing — context()/set_correlation_id
+                # accept arbitrary values, so a non-string request_id (e.g. an
+                # int) would raise TypeError on [:8] and silently drop the
+                # record via handleError. Mirrors the isinstance(str) guard in
+                # get_correlation_id.
+                rid = str(ctx["request_id"])
+                parts.append(f"req={rid[:8]}")
             if ctx.get("user_id"):
                 parts.append(f"user={ctx['user_id']}")
             if parts:

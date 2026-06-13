@@ -214,6 +214,15 @@ def calculate_delay_sync(
 
     Returns:
         Delay in seconds before next retry
+
+    Locking contract:
+        For the DECORRELATED strategy this acquires the module-global
+        ``_backoff_states_lock`` (a non-reentrant ``threading.Lock``) to mutate
+        ``state.previous_delay``. Callers MUST NOT already hold
+        ``_backoff_states_lock`` when invoking this (or ``calculate_delay``),
+        or they will self-deadlock. The in-file caller (``retry_async``) exits
+        its ``with _backoff_states_lock`` block before calling this, so it is
+        safe; external callers must observe the same contract.
     """
     base_exp_delay = config.base_delay * (config.exponential_base**attempt)
     cap = config.max_delay

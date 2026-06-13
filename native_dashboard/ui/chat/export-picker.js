@@ -9,6 +9,13 @@
  * through ChatManager).
  */
 const MODAL_ID = 'export-format-modal';
+// Re-entry guard: the modal is a process-wide singleton, so a second
+// promptExportFormat() call before the first resolves would bind a second set
+// of listeners to the SAME buttons (one click would fire both, resolving the
+// stale promise with a format the user never chose for it). We track the
+// in-flight invocation here and supersede it — cancelling it cleanly (resolve
+// null) — before opening a fresh one.
+let activeCancel = null;
 /** Build the modal once, return the element. Idempotent — reuses existing node. */
 function ensureModal() {
     const existing = document.getElementById(MODAL_ID);
@@ -56,6 +63,11 @@ function ensureModal() {
 }
 /** Show the picker and wait for a choice. Resolves to null if cancelled. */
 export function promptExportFormat() {
+    // Supersede any still-pending invocation: cancel it (resolves it to null and
+    // tears down its listeners) so only one set of handlers is ever bound to the
+    // shared singleton buttons at a time.
+    if (activeCancel)
+        activeCancel();
     return new Promise(resolve => {
         const modal = ensureModal();
         modal.classList.add('active');
@@ -70,8 +82,16 @@ export function promptExportFormat() {
             // the same signal below) — single source of truth for teardown.
             ac.abort();
             modal.classList.remove('active');
+            // Clear the module-scope handle only if it still points at THIS
+            // invocation (a newer promptExportFormat() may have replaced it).
+            if (activeCancel === selfCancel)
+                activeCancel = null;
             resolve(result);
         };
+        // Register this invocation as the in-flight one so a later call can
+        // supersede it via the re-entry guard above.
+        const selfCancel = () => cleanup(null);
+        activeCancel = selfCancel;
         modal.querySelectorAll('[data-close-export]').forEach(el => {
             el.addEventListener('click', () => cleanup(null), opts);
         });

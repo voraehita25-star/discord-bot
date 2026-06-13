@@ -189,7 +189,13 @@ class ConversationSummarizer:
                             e,
                         )
                         continue
-                    logger.exception("Unexpected summarization error (no retry)")
+                    # A retryable error that simply ran out of attempts is not
+                    # "unexpected" — log it as exhausted-retries so it isn't
+                    # mistaken for an unrecognised failure.
+                    if is_retryable:
+                        logger.exception("Summarization retries exhausted (Anthropic %s)", err_name)
+                    else:
+                        logger.exception("Unexpected summarization error (no retry)")
                     break
 
             # All retries failed

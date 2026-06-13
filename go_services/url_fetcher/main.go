@@ -247,19 +247,19 @@ func NewFetcher() *Fetcher {
 }
 
 // Fetch retrieves content from a URL
-func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
+func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 	start := time.Now()
-	result := FetchResult{URL: url}
+	result := FetchResult{URL: rawURL}
 
 	// SSRF Protection: Block private/internal IPs
-	if isPrivate, err := isPrivateURL(url); isPrivate {
+	if isPrivate, err := isPrivateURL(rawURL); isPrivate {
 		errMsg := "SSRF blocked: URL resolves to private/internal address"
 		if err != nil {
 			errMsg = fmt.Sprintf("SSRF blocked: %v", err)
 		}
 		result.Error = errMsg
 		result.FetchTimeMs = time.Since(start).Milliseconds()
-		log.Printf("⚠️ SSRF blocked: %s", url)
+		log.Printf("⚠️ SSRF blocked: %s", rawURL)
 		return result
 	}
 
@@ -274,7 +274,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		result.Error = fmt.Sprintf("invalid URL: %v", err)
 		result.FetchTimeMs = time.Since(start).Milliseconds()

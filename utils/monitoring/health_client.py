@@ -274,10 +274,15 @@ class HealthAPIClient:
         metrics = self._metrics_buffer[:]
         self._metrics_buffer.clear()
 
+        # Track where a mid-loop failure occurs so we only re-queue the
+        # undelivered tail. Chunks at indices < failed_offset already POSTed
+        # successfully; re-buffering from 0 would double-count them on retry.
+        failed_offset: int | None = None
         try:
             # The Go sidecar rejects batches >1000 items with HTTP 400 —
             # chunk so a recovery flush of a full buffer can never trip it.
             for i in range(0, len(metrics), 900):
+                failed_offset = i
                 chunk = metrics[i : i + 900]
                 async with self._session.post(
                     f"{self.base_url}/metrics/batch",
@@ -292,12 +297,16 @@ class HealthAPIClient:
             # Re-add to buffer on failure but cap the buffer so a sustained
             # outage can't grow the buffer without bound + cause OOM. Cap is
             # on the *combined* size (existing buffer + this batch), not on
-            # this batch alone, which the original check missed.
+            # this batch alone, which the original check missed. Only the
+            # current + remaining chunks (metrics[failed_offset:]) are
+            # undelivered — re-queuing from index 0 would re-POST already
+            # delivered chunks and double-count counters/histograms.
             logger.debug("Failed to flush metrics batch: %s", e)
             BUFFER_CAP = 1000
+            undelivered = metrics[failed_offset:] if failed_offset is not None else metrics
             spare = max(0, BUFFER_CAP - len(self._metrics_buffer))
             if spare:
-                self._metrics_buffer.extend(metrics[:spare])
+                self._metrics_buffer.extend(undelivered[:spare])
 
     @property
     def is_available(self) -> bool:

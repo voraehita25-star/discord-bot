@@ -214,14 +214,14 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Windows: ดาวน์โหลดจาก https://rustup.rs
 ```
 
-1. **Tauri CLI v2:**
+2. **Tauri CLI v2:**
 
 ```bash
 cargo install tauri-cli --version "^2.0"
 # Or use the npm script which calls cargo via @tauri-apps/cli
 ```
 
-1. **WebView2 (Windows only):**
+3. **WebView2 (Windows only):**
    - Windows 10+ มีติดตั้งมาแล้วปกติ
    - ถ้าไม่มี: <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>
 
@@ -290,8 +290,8 @@ python --version
 # ตรวจสอบว่าติดตั้ง packages ครบ
 pip list
 
-# รัน tests
-python -m pytest tests/ -v
+# รัน tests (ใช้ wrapper — อย่ารัน `pytest -v` ดิบ ๆ เพราะอาจค้าง)
+.\scripts\run_tests.ps1
 
 # ตรวจสอบ FFmpeg
 ffmpeg -version
@@ -347,8 +347,8 @@ python bot.py
 # Start in dev mode (hot reload)
 python scripts/dev_watcher.py
 
-# Run tests
-python -m pytest tests/ -v
+# Run tests (ใช้ wrapper — อย่ารัน `pytest -v` ดิบ ๆ เพราะอาจค้าง)
+.\scripts\run_tests.ps1
 
 # Build dashboard (TypeScript + Rust + auto-rename to all 3 names)
 cd native_dashboard && npm run release
@@ -363,4 +363,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: June 2026 | Version: 3.4.5*
+*Last Updated: June 2026 | Version: 3.4.7*

@@ -74,11 +74,18 @@ def main() -> int:
     # deadlock. A regular file never blocks the writer; we read captured stderr
     # at the end for the diagnostic tail.
     td_err = tempfile.TemporaryFile()
-    td = subprocess.Popen(
-        [str(_TD), "--port", str(_PORT), "--native-driver", str(_MSED)],
-        stdout=subprocess.DEVNULL,
-        stderr=td_err,
-    )
+    try:
+        td = subprocess.Popen(
+            [str(_TD), "--port", str(_PORT), "--native-driver", str(_MSED)],
+            stdout=subprocess.DEVNULL,
+            stderr=td_err,
+        )
+    except Exception:
+        # Popen failed (e.g. tauri-driver vanished) — close the just-opened temp
+        # file before propagating so the line-86 finally that owns its cleanup
+        # cannot be skipped, leaking the handle.
+        td_err.close()
+        raise
     time.sleep(3.0)
 
     driver = None

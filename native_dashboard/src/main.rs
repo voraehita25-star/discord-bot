@@ -634,7 +634,19 @@ fn get_ws_token(state: State<AppState>) -> Result<String, String> {
 fn normalize_ws_connect_host(host: &str) -> String {
     match host.trim() {
         "" | "0.0.0.0" | "::" | "[::]" | "::1" | "[::1]" => "localhost".to_string(),
-        value => value.to_string(),
+        value => {
+            // A raw IPv6 literal (contains ':' but isn't already bracketed)
+            // must be wrapped in '[' ... ']' before it is joined with ':port'
+            // — otherwise ``ws://2001:db8::5:8765/ws`` makes the address
+            // colons ambiguous with the port and ``new WebSocket()`` can't
+            // parse it. Hostnames and IPv4 literals contain no ':' so they
+            // are returned verbatim.
+            if value.contains(':') && !value.starts_with('[') {
+                format!("[{value}]")
+            } else {
+                value.to_string()
+            }
+        }
     }
 }
 

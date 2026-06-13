@@ -5,6 +5,7 @@ Handles Discord custom emoji extraction, conversion, and fetching.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import re
@@ -69,6 +70,18 @@ async def fetch_emoji_images(
     """
     results: list[tuple[str, Image.Image]] = []
 
+    def _decode_image(data: bytes) -> Image.Image:
+        # CPU-bound PIL work — run off the event loop via asyncio.to_thread so a
+        # large/adversarial CDN payload can't decode-stall the discord.py loop.
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        # Convert to RGB if needed (for GIFs, take first frame)
+        if img.mode in ("RGBA", "P"):
+            converted_img = img.convert("RGB")
+            img.close()  # Close original after conversion
+            img = converted_img
+        return img
+
     async def _fetch_with_session(s: aiohttp.ClientSession) -> None:
         for emoji in emojis[:5]:  # Limit to 5 emojis to avoid overload
             img = None
@@ -76,13 +89,7 @@ async def fetch_emoji_images(
                 async with s.get(emoji["url"], timeout=aiohttp.ClientTimeout(total=3)) as resp:
                     if resp.status == 200:
                         data = await resp.read()
-                        img = Image.open(io.BytesIO(data))
-                        img.load()
-                        # Convert to RGB if needed (for GIFs, take first frame)
-                        if img.mode in ("RGBA", "P"):
-                            converted_img = img.convert("RGB")
-                            img.close()  # Close original after conversion
-                            img = converted_img  # type: ignore[assignment]
+                        img = await asyncio.to_thread(_decode_image, data)
                         results.append((emoji["name"], img))
                         img = None  # Transferred to results, don't close
             except Exception as e:

@@ -98,8 +98,13 @@ def main() -> int:
                     # and rmdir'ing only real directories.
                     for root, dirs, files in os.walk(entry, topdown=False, followlinks=False):
                         for name in files:
+                            full_file = os.path.join(root, name)
                             try:
-                                os.unlink(os.path.join(root, name))
+                                deleted_bytes += Path(full_file).stat().st_size
+                            except OSError:
+                                pass
+                            try:
+                                os.unlink(full_file)
                             except OSError:
                                 pass
                         for name in dirs:
@@ -133,9 +138,9 @@ def main() -> int:
     if WORKDIR.exists():
         for entry in WORKDIR.iterdir():
             if entry.is_file() and entry.suffix.lower() in _STRAY_ALLOWED_SUFFIXES:
-                print(
-                    f"  DELETE stray {WORKDIR / entry.name}  ({entry.stat().st_size / 1024:.1f} KB)"
-                )
+                stray_size = entry.stat().st_size
+                print(f"  DELETE stray {WORKDIR / entry.name}  ({stray_size / 1024:.1f} KB)")
+                deleted_bytes += stray_size
                 if apply:
                     entry.unlink()
                 stray_files += 1

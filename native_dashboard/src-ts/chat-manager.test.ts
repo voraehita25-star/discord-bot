@@ -657,3 +657,119 @@ describe('handleMessage — ai_* frame forwarding', () => {
         expect(handleMessage).toHaveBeenCalledWith(frame);
     });
 });
+
+// ============================================================================
+// Regression: renderMessages() must NOT yank a scrolled-up reader to bottom.
+//
+// The bug: renderMessages() called this.scrollToBottom() UNCONDITIONALLY after
+// replacing innerHTML. scrollToBottom only bailed when this.userScrolledUp was
+// true, but userScrolledUp is *only ever set while streaming*, so an ordinary
+// re-render (a pin/like/ack/tag mutation) while a user read older history
+// snapped them back to the bottom. The fix captures `wasNearBottom` from the
+// container geometry BEFORE the innerHTML swap and only auto-scrolls when the
+// user was already near the bottom (or a stream is feeding chunks):
+//     const wasNearBottom = this.isStreaming || distanceFromBottom <= 150;
+//     ...
+//     if (wasNearBottom) this.scrollToBottom();
+// These tests pin that behaviour: scrolled-up => no scroll, near-bottom => scroll.
+// ============================================================================
+
+describe('renderMessages — scroll preservation for a scrolled-up reader', () => {
+    // jsdom returns 0 for all scroll geometry. Override the three props
+    // renderMessages() reads so `distanceFromBottom` is deterministic:
+    //   distanceFromBottom = scrollHeight - scrollTop - clientHeight
+    function setContainerGeometry(
+        el: HTMLElement,
+        opts: { scrollHeight: number; scrollTop: number; clientHeight: number },
+    ): void {
+        Object.defineProperty(el, 'scrollHeight', { value: opts.scrollHeight, configurable: true });
+        Object.defineProperty(el, 'clientHeight', { value: opts.clientHeight, configurable: true });
+        // scrollTop is writable in jsdom, but pin it via a getter so the
+        // innerHTML swap inside renderMessages() can't quietly reset it to 0.
+        Object.defineProperty(el, 'scrollTop', {
+            value: opts.scrollTop, writable: true, configurable: true,
+        });
+    }
+
+    function mountWithMessages(): import('./chat-manager.js').ChatManager {
+        const cm = mountDomAndChat();
+        // A small, deterministic conversation so renderMessages() has real
+        // content to lay out (length > 0 means it reaches the scroll branch).
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: {
+                id: 'c1', title: 't', role_preset: 'general',
+                thinking_enabled: false, is_starred: false, created_at: '2026-04-01',
+            },
+            messages: [
+                { id: 1, role: 'user', content: 'สวัสดี', created_at: '2026-04-01' },
+                { id: 2, role: 'assistant', content: 'hello', created_at: '2026-04-01' },
+                { id: 3, role: 'user', content: 'more', created_at: '2026-04-01' },
+            ],
+        });
+        return cm;
+    }
+
+    it('does NOT force a scroll to bottom when the reader is scrolled up (not streaming)', () => {
+        const cm = mountWithMessages();
+        const container = document.getElementById('chat-messages')!;
+        // Far from the bottom: distanceFromBottom = 5000 - 100 - 800 = 4100 (> 150).
+        setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 100, clientHeight: 800 });
+        cm.isStreaming = false;
+
+        const scrollSpy = vi.spyOn(cm, 'scrollToBottom');
+        cm.renderMessages();
+
+        // The fix's whole point: a re-render while reading history is a no-op
+        // for scrolling. (Reverting the fix makes renderMessages() call
+        // scrollToBottom() unconditionally here, failing this assertion.)
+        expect(scrollSpy).not.toHaveBeenCalled();
+        // And the viewport is left exactly where the reader put it.
+        expect(container.scrollTop).toBe(100);
+    });
+
+    it('DOES scroll to bottom when the reader is already near the bottom', () => {
+        const cm = mountWithMessages();
+        const container = document.getElementById('chat-messages')!;
+        // Near the bottom: distanceFromBottom = 5000 - 4150 - 800 = 50 (<= 150).
+        setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 4150, clientHeight: 800 });
+        cm.isStreaming = false;
+
+        const scrollSpy = vi.spyOn(cm, 'scrollToBottom');
+        cm.renderMessages();
+
+        // A reader pinned to the live tail should keep following new content.
+        expect(scrollSpy).toHaveBeenCalled();
+    });
+
+    it('always scrolls while streaming, even if geometry reads as scrolled up', () => {
+        const cm = mountWithMessages();
+        const container = document.getElementById('chat-messages')!;
+        setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 0, clientHeight: 800 });
+        cm.isStreaming = true;          // chunks are arriving
+        cm.userScrolledUp = false;      // user is following the stream
+
+        const scrollSpy = vi.spyOn(cm, 'scrollToBottom');
+        cm.renderMessages();
+
+        // isStreaming short-circuits wasNearBottom=true, so chunks keep the
+        // tail in view for a user who hasn't manually scrolled up.
+        expect(scrollSpy).toHaveBeenCalled();
+    });
+
+    it('scrollToBottom() is a no-op when userScrolledUp is true (and force overrides it)', () => {
+        const cm = mountWithMessages();
+        const container = document.getElementById('chat-messages')!;
+        setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 100, clientHeight: 800 });
+
+        // The guard that protects a user who scrolled up DURING a stream.
+        cm.userScrolledUp = true;
+        cm.scrollToBottom();
+        expect(container.scrollTop).toBe(100);        // untouched
+        expect(cm.newMessagesWhileScrolledUp).toBe(1); // badge counter ticked instead
+
+        // force=true bypasses the guard (used by explicit "jump to bottom").
+        cm.scrollToBottom(true);
+        expect(container.scrollTop).toBe(5000);        // == scrollHeight
+    });
+});

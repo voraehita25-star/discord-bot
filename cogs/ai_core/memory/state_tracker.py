@@ -214,9 +214,7 @@ class CharacterStateTracker:
             # tighter filter entity_memory._scrub already uses for the same
             # stored-prompt-injection reason.
             cleaned = "".join(
-                ch
-                for ch in s
-                if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
+                ch for ch in s if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
             )
             cleaned = _SYS_MARKER_RE.sub("[redacted]", cleaned)
             cleaned = cleaned.strip()

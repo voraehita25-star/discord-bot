@@ -387,6 +387,15 @@ export class ChatManager {
                     }
                     else {
                         this.aiProvider = data.default_provider || this.availableProviders[0] || 'gemini';
+                        // Persist the resolved default so the field initializer can
+                        // restore it next launch instead of falling back to 'gemini'.
+                        try {
+                            localStorage.setItem('dashboard_ai_provider', this.aiProvider);
+                        }
+                        catch {
+                            // localStorage write failures are non-fatal — the
+                            // connected handler re-derives the provider each session.
+                        }
                     }
                     this.updateProviderSelects();
                 }
@@ -678,15 +687,17 @@ export class ChatManager {
                 showToast('Conversation deleted', { type: 'success' });
                 break;
             case 'conversation_starred':
-                const conv = this.conversations.find(c => c.id === data.id);
-                if (conv)
-                    conv.is_starred = data.starred;
-                // Also update currentConversation if it's the same one
-                if (this.currentConversation && this.currentConversation.id === data.id) {
-                    this.currentConversation.is_starred = data.starred;
+                {
+                    const conv = this.conversations.find(c => c.id === data.id);
+                    if (conv)
+                        conv.is_starred = data.starred;
+                    // Also update currentConversation if it's the same one
+                    if (this.currentConversation && this.currentConversation.id === data.id) {
+                        this.currentConversation.is_starred = data.starred;
+                    }
+                    this.renderConversationList();
+                    this.updateStarButton();
                 }
-                this.renderConversationList();
-                this.updateStarButton();
                 break;
             case 'conversation_exported':
                 this.downloadExport(data);
@@ -801,19 +812,26 @@ export class ChatManager {
                 // and null the guard that keeps stream_end out of the wrong
                 // conversation. Surface the error + unstick the history editor
                 // and leave every bit of chat state alone.
+                // Guard a missing/non-string `message` the same way the
+                // status/info cases do — without it an error frame that omits
+                // `message` rendered the literal toast "undefined" and logged a
+                // useless "undefined", masking the real failure.
+                const errorMsg = typeof data.message === 'string' && data.message
+                    ? data.message
+                    : 'An error occurred';
                 if (typeof data.scope === 'string' && HISTORY_ERROR_SCOPES.has(data.scope)) {
-                    console.error('Server error (ai history):', data.message);
-                    errorLogger.log('AI_SERVER_ERROR', data.message, JSON.stringify(data));
-                    showToast(data.message, { type: 'error' });
+                    console.error('Server error (ai history):', errorMsg);
+                    errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
+                    showToast(errorMsg, { type: 'error' });
                     // Forward the rejection code so HistoryManager can tell
                     // permanent rejections (ROW_CONFLICT…) — which drop the
                     // doomed undo entry — from transient ones (kept for retry).
                     this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
                     break;
                 }
-                console.error('Server error:', data.message);
-                errorLogger.log('AI_SERVER_ERROR', data.message, JSON.stringify(data));
-                showToast(data.message, { type: 'error' });
+                console.error('Server error:', errorMsg);
+                errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
+                showToast(errorMsg, { type: 'error' });
                 this.isStreaming = false;
                 // Clear the stream-conversation guard so a later stream_end for
                 // a NEW turn isn't evaluated against this stale id.
@@ -1588,8 +1606,12 @@ export class ChatManager {
             cancelAnimationFrame(this.editStreamRafId);
             this.editStreamRafId = null;
         }
-        // Update the local message content
-        const msgIdx = this.messages.findIndex(m => m.id === targetMessageId);
+        // Update the local message content. Fall back to the id captured at
+        // stream_start (still set here — nulled only after this returns) in case
+        // the backend omits target_message_id on the stream_end frame, so an
+        // undefined cast can't make findIndex match a non-persisted message.
+        const resolvedTargetId = targetMessageId ?? this.editTargetMessageId;
+        const msgIdx = this.messages.findIndex(m => m.id === resolvedTargetId);
         if (msgIdx >= 0) {
             this.messages[msgIdx].content = fullResponse;
             if (this.currentMode) {
@@ -1615,6 +1637,16 @@ export class ChatManager {
         const container = document.getElementById('chat-messages');
         if (!container)
             return;
+        // Capture whether the user was reading near the bottom BEFORE we replace
+        // innerHTML below. Outside of streaming, userScrolledUp is always false
+        // (it is only ever set inside `if (this.isStreaming)`), so an
+        // unconditional scrollToBottom() yanked a user reading older history to
+        // the bottom whenever they pinned/liked a message or an ack re-rendered.
+        // Only auto-scroll when the user was already near the bottom (or when a
+        // stream is feeding new chunks).
+        const AUTO_SCROLL_THRESHOLD = 150; // px from bottom — mirrors setupScrollListener
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const wasNearBottom = this.isStreaming || distanceFromBottom <= AUTO_SCROLL_THRESHOLD;
         // Template + virtualization-windowing math now lives in
         // ./chat/message-template.ts. We pass in the formatter/stripThinkTags/
         // formatTime methods as deps; the template never reaches into `this`.
@@ -1635,7 +1667,8 @@ export class ChatManager {
         container.innerHTML = result.html;
         if (this.messages.length === 0)
             return; // no events to bind on the welcome card
-        this.scrollToBottom();
+        if (wasNearBottom)
+            this.scrollToBottom();
         this.setupScrollListener();
         // Fire-and-forget: syntax-highlight any code blocks in the new markup.
         // `await` is intentionally omitted so renderMessages() stays synchronous for callers.
@@ -1795,7 +1828,13 @@ export class ChatManager {
                     this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
                     return;
                 }
-                this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                // Only flip locally if the frame actually went out — send() can
+                // still return false if the socket closes between the connected
+                // check above and ws.send() (InvalidStateError), which would
+                // otherwise drift the UI from the server until the next refresh.
+                const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                if (!ok)
+                    return;
                 // Optimistic local update — server confirmation will re-render.
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg)
@@ -1818,7 +1857,12 @@ export class ChatManager {
                     this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
                     return;
                 }
-                this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                // Only flip locally if the frame actually went out (see pin
+                // handler above) — a send() that returned false would drift the
+                // UI from the server's view until the next list refresh.
+                const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                if (!ok)
+                    return;
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg)
                     targetMsg.liked = nextLiked;
@@ -2262,7 +2306,10 @@ export class ChatManager {
      * back to the list view and request a fresh list so the row shows the
      * new char count / filename. */
     saveChatFileEditor() {
-        if (!this.editingDocId || !this.currentConversation)
+        // Explicit null check (not `!this.editingDocId`) so a document id of 0
+        // isn't treated as "not editing" — consistent with the `msg.id == null`
+        // idiom used elsewhere in this file.
+        if (this.editingDocId == null || !this.currentConversation)
             return;
         const nameInput = document.getElementById('chat-files-edit-name');
         const textInput = document.getElementById('chat-files-edit-text');

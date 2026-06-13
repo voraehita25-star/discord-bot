@@ -140,7 +140,10 @@ def _one_line(content: object, width: int, full: bool) -> str:
     text = " ".join(text.split())
     if full or len(text) <= width:
         return text
-    return text[: width - 1] + "…"
+    # Clamp so a degenerate --width 0 (or negative) doesn't slice from the end
+    # via text[:-1] and drop the final char before appending the ellipsis.
+    cut = max(0, width - 1)
+    return text[:cut] + "…"
 
 
 def _render(row: sqlite3.Row, c: _C, width: int, full: bool, show_ids: bool) -> str:
@@ -210,9 +213,7 @@ def _fetch(
     return conn.execute(sql, args).fetchall()
 
 
-def _initial_tail(
-    conn: sqlite3.Connection, tail: int, channel: int | None
-) -> list[sqlite3.Row]:
+def _initial_tail(conn: sqlite3.Connection, tail: int, channel: int | None) -> list[sqlite3.Row]:
     """Last ``tail`` rows (chronological) to seed the view with context."""
     sql = f"SELECT {_COLUMNS} FROM ai_history"
     args: list[object] = []
@@ -244,7 +245,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tail", type=int, default=20, help="Rows of history to print at start (default 20)"
     )
-    parser.add_argument("--width", type=int, default=100, help="Max content width before truncation")
+    parser.add_argument(
+        "--width", type=int, default=100, help="Max content width before truncation"
+    )
     parser.add_argument("--full", action="store_true", help="Never truncate content")
     parser.add_argument("--ids", action="store_true", help="Show user_id/message_id/row id")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")

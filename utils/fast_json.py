@@ -61,15 +61,12 @@ try:
             # orjson only emits a 2-space indent; the stdlib fallback would honor
             # any width. Reject other values loudly so output can't silently
             # differ between backends (only None / 2 are used in this repo).
-            raise ValueError(
-                "fast_json.json_dumps supports only indent=None or indent=2"
-            )
+            raise ValueError("fast_json.json_dumps supports only indent=None or indent=2")
 
         option = orjson.OPT_NON_STR_KEYS
-        # `if indent:` is falsy for `indent=0` (a valid "no newlines"
-        # JSON option), which would silently drop indentation when the
-        # caller explicitly passed 0. Only skip when indent is None.
-        if indent is not None and indent > 0:
+        # indent is already validated to None or 2 above (line 60 rejects
+        # everything else), so indent=2 is the only indented case.
+        if indent == 2:
             option |= orjson.OPT_INDENT_2
         if sort_keys:
             option |= orjson.OPT_SORT_KEYS
@@ -122,9 +119,7 @@ except ImportError:
         if indent not in (None, 2):
             # Match the orjson branch's contract so the two backends can't
             # diverge on indentation width (only None / 2 are used in this repo).
-            raise ValueError(
-                "fast_json.json_dumps supports only indent=None or indent=2"
-            )
+            raise ValueError("fast_json.json_dumps supports only indent=None or indent=2")
         # Force ``allow_nan=False`` so non-finite floats raise instead of
         # emitting ``NaN`` / ``Infinity`` tokens (non-standard JSON that a
         # strict parser — including orjson loading the same file — rejects).

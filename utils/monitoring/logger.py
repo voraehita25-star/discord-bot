@@ -37,6 +37,11 @@ EMOJI_MAP = {
     "🤖": "[BOT]",
     "ℹ️": "[i]",
     "🌐": "[WEB]",
+    # Bare codepoints without the U+FE0F variation selector — some sources
+    # emit U+26A0 / U+2139 WITHOUT trailing VS-16, which the literal
+    # str.replace above (keyed on the VS-16 form) would otherwise miss.
+    "⚠": "[!]",
+    "ℹ": "[i]",
 }
 
 

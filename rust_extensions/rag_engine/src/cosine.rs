@@ -17,7 +17,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     // similarity 1.0 — while the scalar fallback returns 0.0 (its denom
     // guard). That disagreement would let a junk/zero embedding rank as a
     // perfect match. Treat a zero vector as "no similarity" so both paths
-    // agree. `.all()` short-circuits on the first non-zero element, so
+    // agree. NOTE: this exactly-zero check only guarantees SIMD/scalar parity
+    // for genuinely zero vectors. A vector with tiny non-zero components whose
+    // norm falls below 1e-10 (e.g. denormals) passes this guard, after which
+    // the scalar path still floors to 0.0 (denom guard) but the SIMD path may
+    // return a finite non-zero similarity — a parity gap real embeddings never
+    // reach. `.all()` short-circuits on the first non-zero element, so
     // non-degenerate vectors pay ~one comparison. (clippy::float_cmp exempts
     // comparisons against a zero literal.)
     if a.iter().all(|&x| x == 0.0) || b.iter().all(|&x| x == 0.0) {

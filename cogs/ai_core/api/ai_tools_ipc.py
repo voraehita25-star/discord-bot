@@ -287,7 +287,17 @@ class _AiToolsIpc:
             result, is_error = await self._dispatch(tool, args, ctx)
         except Exception as e:
             logger.exception("AI tool '%s' raised", tool)
-            result, is_error = f"Tool '{tool}' failed: {e}", True
+            # The raw exception string is returned to the MCP child and fed back
+            # to the model, so funnel it through the project-wide secret-redaction
+            # filter first (mirrors api_failover._safe_error_summary). Fall back to
+            # the exception type name if redaction itself is unavailable.
+            try:
+                from utils.monitoring.logger import _redact_sensitive
+
+                detail = _redact_sensitive(str(e))
+            except Exception:
+                detail = type(e).__name__
+            result, is_error = f"Tool '{tool}' failed: {detail}", True
         return web.json_response({"result": result, "is_error": is_error})
 
     async def _dispatch(self, tool: str, args: dict, ctx: dict) -> tuple[str, bool]:

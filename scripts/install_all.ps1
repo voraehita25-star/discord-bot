@@ -82,7 +82,7 @@ function Test-CommandExists {
     $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
-function Refresh-Path {
+function Update-Path {
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
@@ -90,7 +90,7 @@ function Refresh-Path {
 # 0. WINGET
 # ============================================================
 Write-Step "0/9 - Checking winget"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "winget") {
     Write-OK "winget already available"
 } else {
@@ -107,7 +107,7 @@ if (Test-CommandExists "winget") {
         Invoke-VerifiedDownload -Uri $wingetUrl -OutFile $wingetFile
         Add-AppxPackage -Path $wingetFile -ForceApplicationShutdown
         Start-Sleep -Seconds 5
-        Refresh-Path
+        Update-Path
         if (Test-CommandExists "winget") {
             Write-OK "winget installed successfully"
         } else {
@@ -125,7 +125,7 @@ $useWinget = Test-CommandExists "winget"
 # 1. GIT
 # ============================================================
 Write-Step "1/9 - Git"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "git") {
     Write-OK "Git already installed: $(git --version)"
 } else {
@@ -144,7 +144,7 @@ if (Test-CommandExists "git") {
         Write-Info "Running Git installer (silent)..."
         Start-Process -FilePath $gitFile -ArgumentList "/VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES" -Wait
     }
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "git") { Write-OK "Git installed: $(git --version)" }
     else { Write-Fail "Git not found in PATH. May need terminal restart." }
 }
@@ -153,7 +153,7 @@ if (Test-CommandExists "git") {
 # 2. PYTHON 3.14
 # ============================================================
 Write-Step "2/9 - Python 3.14"
-Refresh-Path
+Update-Path
 $pythonVer = try { python --version 2>&1 } catch { "" }
 if ($pythonVer -match "3\.14") {
     Write-OK "Python already installed: $pythonVer"
@@ -169,7 +169,7 @@ if ($pythonVer -match "3\.14") {
         Write-Info "Running Python installer (silent, adding to PATH)..."
         Start-Process -FilePath $pythonFile -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
     }
-    Refresh-Path
+    Update-Path
     $pythonVer = try { python --version 2>&1 } catch { "" }
     if ($pythonVer -match "3\.1") { Write-OK "Python installed: $pythonVer" }
     else { Write-Fail "Python not found in PATH. May need terminal restart." }
@@ -179,7 +179,7 @@ if ($pythonVer -match "3\.14") {
 # 3. FFMPEG
 # ============================================================
 Write-Step "3/9 - FFmpeg"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "ffmpeg") {
     Write-OK "FFmpeg already installed"
 } else {
@@ -195,16 +195,28 @@ if (Test-CommandExists "ffmpeg") {
         Write-Info "Extracting FFmpeg..."
         Expand-Archive -Path $ffmpegZip -DestinationPath "$DownloadDir\ffmpeg_temp" -Force
         $ffmpegDir = Get-ChildItem "$DownloadDir\ffmpeg_temp" -Directory | Select-Object -First 1
-        if (Test-Path $ffmpegInstall) { Remove-Item $ffmpegInstall -Recurse -Force }
-        Move-Item $ffmpegDir.FullName $ffmpegInstall
-        # Add to PATH permanently
-        $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
-        if ($currentPath -notlike "*$ffmpegInstall\bin*") {
-            [System.Environment]::SetEnvironmentVariable("PATH", "$currentPath;$ffmpegInstall\bin", "Machine")
-            Write-Info "Added $ffmpegInstall\bin to system PATH"
+        # Guard against an unexpected archive layout: if extraction produced no
+        # top-level dir, $ffmpegDir is $null and Move-Item would fail silently
+        # (ErrorActionPreference=Continue), leaving a broken C:\ffmpeg\bin PATH entry.
+        if (-not $ffmpegDir) {
+            Write-Fail "FFmpeg archive layout unexpected — skipping install and PATH edit"
+        } else {
+            if (Test-Path $ffmpegInstall) { Remove-Item $ffmpegInstall -Recurse -Force }
+            Move-Item $ffmpegDir.FullName $ffmpegInstall
+            # Only modify PATH after confirming ffmpeg.exe actually exists under the install dir.
+            if (Test-Path "$ffmpegInstall\bin\ffmpeg.exe") {
+                # Add to PATH permanently
+                $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+                if ($currentPath -notlike "*$ffmpegInstall\bin*") {
+                    [System.Environment]::SetEnvironmentVariable("PATH", "$currentPath;$ffmpegInstall\bin", "Machine")
+                    Write-Info "Added $ffmpegInstall\bin to system PATH"
+                }
+            } else {
+                Write-Fail "ffmpeg.exe not found under $ffmpegInstall\bin — skipping PATH edit"
+            }
         }
     }
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "ffmpeg") { Write-OK "FFmpeg installed" }
     else { Write-Fail "FFmpeg not in PATH. May need terminal restart." }
 }
@@ -242,14 +254,14 @@ if ($hasBuildTools) {
 # 5. RUST
 # ============================================================
 Write-Step "5/9 - Rust (via rustup)"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "cargo") {
     Write-OK "Rust already installed: $(cargo --version)"
 } else {
     if ($useWinget) {
         Write-Info "Installing Rust via winget..."
         winget install Rustlang.Rustup --accept-source-agreements --accept-package-agreements -h
-        Refresh-Path
+        Update-Path
         if (Test-CommandExists "rustup") {
             rustup default stable
         }
@@ -261,7 +273,7 @@ if (Test-CommandExists "cargo") {
         Write-Info "Installing Rust (stable)..."
         Start-Process -FilePath $rustupFile -ArgumentList "-y --default-toolchain stable" -Wait
     }
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "cargo") { Write-OK "Rust installed: $(cargo --version)" }
     else { Write-Fail "Rust not in PATH. May need terminal restart." }
 }
@@ -270,7 +282,7 @@ if (Test-CommandExists "cargo") {
 # 6. GO
 # ============================================================
 Write-Step "6/9 - Go"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "go") {
     Write-OK "Go already installed: $(go version)"
 } else {
@@ -285,7 +297,7 @@ if (Test-CommandExists "go") {
         Write-Info "Installing Go (silent)..."
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$goFile`" /quiet /norestart" -Wait
     }
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "go") { Write-OK "Go installed: $(go version)" }
     else { Write-Fail "Go not in PATH. May need terminal restart." }
 }
@@ -294,7 +306,7 @@ if (Test-CommandExists "go") {
 # 7. NODE.JS
 # ============================================================
 Write-Step "7/9 - Node.js LTS"
-Refresh-Path
+Update-Path
 if (Test-CommandExists "node") {
     Write-OK "Node.js already installed: $(node --version)"
 } else {
@@ -309,7 +321,7 @@ if (Test-CommandExists "node") {
         Write-Info "Installing Node.js (silent)..."
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeFile`" /quiet /norestart" -Wait
     }
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "node") { Write-OK "Node.js installed: $(node --version)" }
     else { Write-Fail "Node.js not in PATH. May need terminal restart." }
 }
@@ -321,7 +333,7 @@ Write-Step "8/9 - Docker Desktop"
 if ($SkipDocker) {
     Write-Skip "Docker skipped by parameter"
 } else {
-    Refresh-Path
+    Update-Path
     if (Test-CommandExists "docker") {
         Write-OK "Docker already installed: $(docker --version)"
     } else {
@@ -344,7 +356,7 @@ if ($SkipDocker) {
 # 9. PYTHON ENVIRONMENT SETUP
 # ============================================================
 Write-Step "9/9 - Python Environment Setup"
-Refresh-Path
+Update-Path
 
 if (Test-CommandExists "python") {
     Push-Location $ProjectRoot
@@ -393,7 +405,7 @@ Pop-Location
 # ============================================================
 Write-Host "`n"
 Write-Step "INSTALLATION SUMMARY"
-Refresh-Path
+Update-Path
 
 $results = @(
     @{Name="winget";   Check={winget --version 2>$null; $?}},

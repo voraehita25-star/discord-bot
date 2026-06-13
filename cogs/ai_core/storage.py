@@ -162,6 +162,21 @@ def _enforce_cache_size_limit() -> int:
             )
             for k, _ in oldest_history:
                 _history_cache.pop(k, None)
+                # Drop the companion per-channel maps for the evicted channel so
+                # they don't grow unbounded relative to the cache they shadow.
+                # _cache_generations: re-reads start fresh at 0; an in-flight
+                #   load that snapshotted a non-zero gen just re-reads (safe).
+                # _post_replace_min_id / _db_loaded_channels: rebuilt on the next
+                #   force-replace / DB load respectively.
+                _cache_generations.pop(k, None)
+                _post_replace_min_id.pop(k, None)
+                _db_loaded_channels.discard(k)
+                # Only drop the lock when it is not currently held — a held lock
+                # is in active use by a save/edit and must survive (mirrors the
+                # bounded-lock-dict pattern in long_term_memory/memory_consolidator).
+                _lk = _history_locks.get(k)
+                if _lk is not None and not _lk.locked():
+                    _history_locks.pop(k, None)
                 removed += 1
 
         # Check metadata cache
@@ -482,7 +497,14 @@ async def _replace_history_db(
                 _post_replace_min_id[channel_id] = int(min_id)
 
     thinking_enabled = chat_data.get("thinking_enabled", True)
-    await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
+    # Pass the in-memory system_instruction through so the UPSERT (which
+    # unconditionally sets system_instruction = excluded.system_instruction)
+    # doesn't clobber a persisted per-channel instruction back to NULL.
+    await db.save_ai_metadata(
+        channel_id=channel_id,
+        thinking_enabled=thinking_enabled,
+        system_instruction=chat_data.get("system_instruction"),
+    )
     invalidate_cache(channel_id)
     logger.info(
         "💾 Force-replaced %d messages for channel %s (limit=%d)",
@@ -775,17 +797,42 @@ async def _save_history_db(
                     )
                     raise
 
-    # Prune if over limit. Add a 50-message buffer to avoid count/prune
-    # thrashing under concurrent writes — without this, two near-simultaneous
-    # saves can each see "count > limit" and both call prune, doubling the
-    # write cost and racing on the same rows.
-    total_count = await db.get_ai_history_count(channel_id)
-    if total_count > limit + 50:
-        await db.prune_ai_history(channel_id, limit)
-        logger.info("🧹 Pruned history for channel %s to %d messages", channel_id, limit)
+        # Prune if over limit. Add a 50-message buffer to avoid count/prune
+        # thrashing under concurrent writes — without this, two near-simultaneous
+        # saves can each see "count > limit" and both call prune, doubling the
+        # write cost and racing on the same rows.
+        # Held under get_history_lock so the count-then-prune is atomic against
+        # the restore path (restore_message_by_row, also under this lock): an
+        # unlocked prune could DELETE an old-id row a restore had just
+        # re-inserted, or pull the id floor out from under an in-flight restore.
+        total_count = await db.get_ai_history_count(channel_id)
+        if total_count > limit + 50:
+            await db.prune_ai_history(channel_id, limit)
+            logger.info("🧹 Pruned history for channel %s to %d messages", channel_id, limit)
+            # prune raises the smallest surviving id (it deletes the oldest
+            # rows), so refresh the stale-restore watermark just like
+            # _replace_history_db does. Without this, an undo entry captured
+            # before the prune carries an id below every surviving row, passes
+            # the restore stale guard, and lands at position 0. Still under
+            # get_history_lock, so this is serialized against the restore path.
+            async with db.get_connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT MIN(id) FROM ai_history WHERE channel_id = ?", (channel_id,)
+                )
+                min_row = await cursor.fetchone()
+            min_id = min_row[0] if min_row else None
+            if min_id is not None:
+                _post_replace_min_id[channel_id] = int(min_id)
 
     thinking_enabled = chat_data.get("thinking_enabled", True)
-    await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
+    # Pass the in-memory system_instruction through so the UPSERT (which
+    # unconditionally sets system_instruction = excluded.system_instruction)
+    # doesn't clobber a persisted per-channel instruction back to NULL.
+    await db.save_ai_metadata(
+        channel_id=channel_id,
+        thinking_enabled=thinking_enabled,
+        system_instruction=chat_data.get("system_instruction"),
+    )
     invalidate_cache(channel_id)
     return True
 

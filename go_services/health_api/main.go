@@ -161,11 +161,15 @@ func (h *HealthService) SetServiceStatus(name string, healthy bool) bool {
 
 // GetStatus returns the current health status
 func (h *HealthService) GetStatus() HealthStatus {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	// ReadMemStats is a stop-the-world operation that reads only runtime state,
+	// not h.services, so take it BEFORE acquiring the read lock. This keeps
+	// frequently-polled probes (/health, /health/ready, /stats) from serializing
+	// the brief STW pause behind h.mu.RLock().
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 
 	status := "healthy"
 	for _, healthy := range h.services {
@@ -554,7 +558,13 @@ func main() {
 			}
 
 			w.WriteHeader(http.StatusOK)
-			if err := json.NewEncoder(w).Encode(map[string]int{"processed": processed}); err != nil {
+			// Report skipped alongside processed so a client with a typo in
+			// type/name can detect that entries were dropped (the single-push
+			// endpoint returns 400 for the same conditions; surface it here too).
+			if err := json.NewEncoder(w).Encode(map[string]int{
+				"processed": processed,
+				"skipped":   len(payloads) - processed,
+			}); err != nil {
 				log.Printf("Failed to encode batch response: %v", err)
 			}
 		})

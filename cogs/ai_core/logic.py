@@ -1543,7 +1543,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Auto-compress very long histories using summarizer
                     # COMPRESS_THRESHOLD should be slightly higher than MAX_HISTORY_ITEMS
                     compress_threshold = MAX_HISTORY_ITEMS + 500  # Compress when exceeded
-                    if len(history) > compress_threshold:
+                    # Gate on the summarizer being operational (mirrors the
+                    # ``memory_consolidator.enabled`` gate below). Under
+                    # CLAUDE_BACKEND=cli (the default) the summarizer's SDK
+                    # client is None, so compress_history() returns the history
+                    # unchanged after an awaited round trip — recomputed on every
+                    # message once the threshold is crossed. Skipping it when the
+                    # client is absent avoids that per-turn wasted work; the
+                    # MAX_HISTORY_ITEMS trim below still bounds the prompt size.
+                    if summarizer.client is not None and len(history) > compress_threshold:
                         try:
                             compressed = await asyncio.wait_for(
                                 summarizer.compress_history(
@@ -2000,7 +2008,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     # Small delay to ensure order and prevent rate limits
                                     await asyncio.sleep(0.5)
 
-                        # Update history with the last message ID if we sent anything
+                        # Update history with the last message ID if we sent anything.
+                        # NOTE: only the FINAL webhook message id is stamped onto the
+                        # tail model item, so intermediate per-character webhook
+                        # messages are not tracked and do not participate in Discord
+                        # edit/delete mirroring.
                         if last_msg_id and chat_data.get("history"):
                             history_list = chat_data["history"]
                             if history_list and len(history_list) > 0:

@@ -1,5 +1,8 @@
 """Type stubs for the rag_engine Rust extension (PyO3)."""
 
+__version__: str
+__author__: str
+
 class MemoryEntry:
     id: str
     text: str
