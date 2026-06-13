@@ -55,6 +55,16 @@ class RateLimitConfig:
     silent: bool = False  # If True, don't send cooldown message
     adaptive: bool = False  # If True, adjust based on API health
 
+    def __post_init__(self) -> None:
+        # Fail loudly at config time rather than under the bucket lock at
+        # request time: a window <= 0 would raise ZeroDivisionError inside
+        # RateLimitBucket.consume, and requests < 1 is a nonsensical limit
+        # (it silently clamps to 1 downstream).
+        if self.window <= 0:
+            raise ValueError(f"RateLimitConfig.window must be > 0, got {self.window}")
+        if self.requests < 1:
+            raise ValueError(f"RateLimitConfig.requests must be >= 1, got {self.requests}")
+
 
 @dataclass(slots=True)
 class RateLimitBucket:
@@ -128,6 +138,10 @@ class RateLimiter:
     def __init__(self) -> None:
         self._buckets: dict[str, RateLimitBucket] = {}
         self._configs: dict[str, RateLimitConfig] = {}
+        # Owner-set per-channel limits (!channel_ratelimit). Kept OUTSIDE the
+        # evictable bucket dict so an idle hour doesn't silently erase the
+        # admin's setting.
+        self._channel_limits: dict[int, int] = {}
         self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"allowed": 0, "blocked": 0})
         # Per-bucket locks - using regular dict to prevent auto-creation after cleanup
         self._locks: dict[str, asyncio.Lock] = {}
@@ -377,11 +391,15 @@ class RateLimiter:
                 # window so the caller backs off long enough for some
                 # bucket somewhere to free up.
                 self._stats[config_name]["blocked"] += 1
-                msg = (
-                    config.cooldown_message.format(retry=config.window)
-                    if config.cooldown_message and not config.silent
-                    else "Rate limiter overloaded — please retry shortly"
-                )
+                if config.silent:
+                    # Honor silent configs here too — the normal deny path
+                    # returns message=None for them, and callers post any
+                    # non-None message to the channel.
+                    msg = None
+                elif config.cooldown_message:
+                    msg = config.cooldown_message.format(retry=config.window)
+                else:
+                    msg = "Rate limiter overloaded — please retry shortly"
                 return False, float(config.window), msg
 
             # Apply adaptive multiplier for adaptive configs
@@ -460,31 +478,47 @@ class RateLimiter:
 
     # ==================== Channel Rate Limit Methods ====================
 
+    @staticmethod
+    def channel_config_name(channel_id: int) -> str:
+        """Config name for an owner-set per-channel limit."""
+        return f"channel_custom:{channel_id}"
+
+    def get_custom_channel_limit(self, channel_id: int) -> int | None:
+        """The owner-set per-channel limit, or None when none is configured."""
+        return self._channel_limits.get(channel_id)
+
     def get_channel_limit(self, channel_id: int) -> int:
         """Get current rate limit for a specific channel."""
-        # Check if channel has custom limit
-        key = f"channel_custom:channel:{channel_id}"
-        if key in self._buckets:
-            return self._buckets[key].max_tokens
+        # Custom limit survives bucket eviction now — read the persistent map.
+        custom = self._channel_limits.get(channel_id)
+        if custom is not None:
+            return custom
         # Return default
         gemini_config = self._configs.get("gemini_api")
         return gemini_config.requests if gemini_config else 15
 
     async def set_channel_limit(self, channel_id: int, requests_per_minute: int) -> None:
-        """Set custom rate limit for a specific channel."""
-        config_name = "channel_custom"
+        """Set custom rate limit for a specific channel.
 
-        # Add or update config for channel limits
-        if config_name not in self._configs:
-            self.add_config(
-                config_name,
-                RateLimitConfig(
-                    requests=requests_per_minute,
-                    window=60,
-                    limit_type=RateLimitType.CHANNEL,
-                    cooldown_message="⏳ Channel rate limit reached. Wait {retry:.1f}s",
-                ),
-            )
+        Registers a PER-CHANNEL config (a single shared "channel_custom"
+        config froze the FIRST channel's rpm into every later channel's
+        bucket recreation) and records the limit in ``_channel_limits`` so
+        bucket eviction can't erase it. Enforcement happens in ai_cog's
+        rate-limit gauntlet via ``channel_config_name``.
+        """
+        config_name = self.channel_config_name(channel_id)
+        self._channel_limits[channel_id] = requests_per_minute
+
+        # Add or update config for this channel's limit
+        self.add_config(
+            config_name,
+            RateLimitConfig(
+                requests=requests_per_minute,
+                window=60,
+                limit_type=RateLimitType.CHANNEL,
+                cooldown_message="⏳ Channel rate limit reached. Wait {retry:.1f}s",
+            ),
+        )
 
         # Update or create bucket under lock to prevent race conditions.
         # Use setdefault on the slow path so two simultaneous first-time
@@ -517,7 +551,10 @@ class RateLimiter:
         logger.info("🚦 Set channel %d rate limit to %d/min", channel_id, requests_per_minute)
 
     def reload_limits(self) -> None:
-        """Reload rate limit configurations from config file."""
+        """Re-apply the built-in default configurations and refresh adaptive
+        multipliers. (No file is read — this resets the default names back
+        to their hardcoded values; runtime ``add_config`` overrides of those
+        names are reset too.)"""
         try:
             # Re-setup defaults (in case config changed)
             self._setup_defaults()
@@ -648,6 +685,11 @@ class RateLimiter:
                     await self.cleanup_old_buckets()
                 except asyncio.CancelledError:
                     break
+                except Exception:
+                    # One failed pass must not kill bucket/lock cleanup for
+                    # the life of the process (the task is fire-and-forget,
+                    # so the exception would otherwise vanish unobserved).
+                    logger.exception("rate-limiter cleanup pass failed; retrying next interval")
 
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(_cleanup_loop())
@@ -689,7 +731,9 @@ def ratelimit(
                 cog = None
             else:
                 cog = self_or_ctx
-                ctx = args[0] if args else kwargs.get("ctx")
+                # pop (not get): leaving ctx in kwargs while also passing it
+                # positionally below raises "got multiple values for 'ctx'".
+                ctx = args[0] if args else kwargs.pop("ctx", None)
                 args = args[1:] if args else args
 
             if ctx is None:
@@ -760,9 +804,15 @@ def ai_ratelimit(
             # Always use channel.send for consistency (works for both Message and Context)
             send_func = message_or_ctx.channel.send
 
-            # Check global limit first
-            if check_global:
-                allowed, retry, msg = await rate_limiter.check("gemini_global", guild_id=guild_id)
+            # Check MOST-SPECIFIC first. token-bucket consume() is
+            # destructive: widest-first meant a request denied by the
+            # per-user limit had already burned a shared-global and a guild
+            # token, so one user-limited spammer drained the global budget
+            # for everyone.
+            if per_user:
+                allowed, _retry, msg = await rate_limiter.check(
+                    "ai_user", user_id=user_id, channel_id=channel_id
+                )
                 if not allowed:
                     if send_message and msg:
                         with contextlib.suppress(discord.HTTPException):
@@ -778,11 +828,9 @@ def ai_ratelimit(
                             await send_func(msg, delete_after=10)
                     return None
 
-            # Check per-user limit
-            if per_user:
-                allowed, _retry, msg = await rate_limiter.check(
-                    "ai_user", user_id=user_id, channel_id=channel_id
-                )
+            # Check global limit last
+            if check_global:
+                allowed, _retry, msg = await rate_limiter.check("gemini_global", guild_id=guild_id)
                 if not allowed:
                     if send_message and msg:
                         with contextlib.suppress(discord.HTTPException):

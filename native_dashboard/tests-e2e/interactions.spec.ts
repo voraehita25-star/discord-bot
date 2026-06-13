@@ -16,8 +16,12 @@ test.beforeEach(async ({ page }) => {
 
 test.describe('Navigation interactions', () => {
     test('clicking sidebar nav switches page', async ({ page }) => {
-        await page.click('[data-page="config"]');
-        await expect(page.locator('#page-config')).toHaveClass(/active/);
+        // 'config' was renamed to 'settings' in the sidebar; 'history' is the
+        // AI History page added alongside the rename fix.
+        await page.click('[data-page="settings"]');
+        await expect(page.locator('#page-settings')).toHaveClass(/active/);
+        await page.click('[data-page="history"]');
+        await expect(page.locator('#page-history')).toHaveClass(/active/);
         await page.click('[data-page="logs"]');
         await expect(page.locator('#page-logs')).toHaveClass(/active/);
     });
@@ -254,7 +258,7 @@ test.describe('Console error vigilance during interaction', () => {
         page.on('console', (msg) => {
             if (msg.type() === 'error') errors.push(msg.text());
         });
-        for (const dataPage of ['chat', 'logs', 'connections', 'config', 'about', 'status']) {
+        for (const dataPage of ['chat', 'logs', 'connections', 'config', 'about', 'history', 'status']) {
             const item = page.locator(`[data-page="${dataPage}"]`);
             if ((await item.count()) > 0) {
                 await item.click();

@@ -55,6 +55,72 @@ _ALLOWED_IMAGE_MIMES: frozenset[str] = frozenset(
 )
 
 
+async def _validate_and_decode_images(
+    images: list[str], max_image_size_bytes: int, ws: Any
+) -> tuple[list[Any], list[str]]:
+    """Validate + decode data-URL images into Gemini Parts.
+
+    Returns (parts, accepted_raw_strings). Runs BEFORE the user message is
+    persisted so the DB only stores the accepted subset; a per-image error
+    frame is sent to the client for each rejected attachment.
+    """
+    parts: list[Any] = []
+    accepted: list[str] = []
+    for img_data in images:
+        try:
+            if "," in img_data:
+                header, b64_data = img_data.split(",", 1)
+                mime_type = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
+            else:
+                b64_data = img_data
+                mime_type = "image/png"
+
+            if mime_type not in _ALLOWED_IMAGE_MIMES:
+                logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
+                await ws.send_json(
+                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
+                )
+                continue
+
+            # Validate base64 string length BEFORE decoding to prevent memory
+            # exhaustion: base64 encodes 3 bytes into 4 chars.
+            estimated_size = len(b64_data) * 3 // 4
+            if estimated_size > max_image_size_bytes:
+                logger.warning(
+                    "Rejected image: estimated %s bytes exceeds %s limit",
+                    estimated_size,
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
+                continue
+
+            image_bytes = base64.b64decode(b64_data, validate=True)
+            if len(image_bytes) > max_image_size_bytes:
+                logger.warning(
+                    "Rejected image: %s bytes exceeds %s limit",
+                    len(image_bytes),
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
+                continue
+            parts.append(types.Part(inline_data=types.Blob(mime_type=mime_type, data=image_bytes)))
+            accepted.append(img_data)
+            logger.info("📷 Added image to message (%s bytes)", len(image_bytes))
+        except Exception as e:
+            logger.warning("Failed to process image: %s", e)
+    return parts, accepted
+
+
 async def handle_chat_message(
     ws: WebSocketResponse,
     data: dict[str, Any],
@@ -132,13 +198,20 @@ async def handle_chat_message(
 
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
+    # Validate + decode images BEFORE persisting the user message, so the DB
+    # only records the accepted subset (previously oversized/disallowed images
+    # were stored verbatim and re-served to the UI on every reload).
+    current_parts, accepted_images = await _validate_and_decode_images(
+        images, max_image_size_bytes, ws
+    )
+
     # Save user message to DB (skip for regeneration — the edited message already exists)
     user_msg_id: int = 0
     if DB_AVAILABLE and conversation_id and not is_regeneration:
         try:
             db = _get_db()
             user_msg_id = await db.save_dashboard_message(
-                conversation_id, "user", content, images=images or None
+                conversation_id, "user", content, images=accepted_images or None
             )
         except Exception as e:
             logger.warning("Failed to save user message: %s", e)
@@ -200,9 +273,14 @@ async def handle_chat_message(
             #    last stored row is a PREVIOUS turn and dropping it would silently
             #    discard real conversation context.
             if user_msg_id:
-                hist_msgs = (
-                    db_msgs[:-1] if db_msgs and db_msgs[-1].get("id") == user_msg_id else db_msgs
-                )
+                # Filter our just-saved row out by id regardless of position.
+                # handle_chat_message runs as a concurrent background task with
+                # no per-conversation lock, so a near-simultaneous save on the
+                # same conversation can interleave a newer row AFTER ours —
+                # making db_msgs[-1] not our row. The old "drop last if its id
+                # matches" then kept our row in history AND re-appended the
+                # current turn below, duplicating this user turn in the prompt.
+                hist_msgs = [m for m in db_msgs if m.get("id") != user_msg_id]
             elif is_regeneration and db_msgs and db_msgs[-1]["role"] == "user":
                 hist_msgs = db_msgs[:-1]
             else:
@@ -223,71 +301,22 @@ async def handle_chat_message(
 
     if not _db_history_loaded:
         for msg in history:
+            # Frontend payloads are untrusted JSON — a non-dict entry would
+            # raise AttributeError mid-build with no error frame to the
+            # client (mirrors the container coercions near the top).
+            if not isinstance(msg, dict):
+                continue
             role = "user" if msg.get("role") == "user" else "model"
+            text = msg.get("content")
             contents.append(
-                types.Content(role=role, parts=[types.Part(text=msg.get("content", ""))])
+                types.Content(
+                    role=role,
+                    parts=[types.Part(text=text if isinstance(text, str) else "")],
+                )
             )
 
-    # Build current message parts
-    current_parts = []
-
-    # Add images if present
-    for img_data in images:
-        try:
-            if "," in img_data:
-                header, b64_data = img_data.split(",", 1)
-                mime_type = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
-            else:
-                b64_data = img_data
-                mime_type = "image/png"
-
-            # Validate MIME type against allowlist (constant lives at
-            # module scope — see top of file — so we don't rebuild the
-            # set on every image in a multi-attachment message).
-            if mime_type not in _ALLOWED_IMAGE_MIMES:
-                logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
-                await ws.send_json(
-                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
-                )
-                continue
-
-            # Validate base64 string length BEFORE decoding to prevent memory exhaustion
-            # base64 encodes 3 bytes into 4 chars, so decoded size ≈ len * 3/4
-            estimated_size = len(b64_data) * 3 // 4
-            if estimated_size > max_image_size_bytes:
-                logger.warning(
-                    "Rejected image: estimated %s bytes exceeds %s limit",
-                    estimated_size,
-                    max_image_size_bytes,
-                )
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
-                    }
-                )
-                continue
-
-            image_bytes = base64.b64decode(b64_data, validate=True)
-            if len(image_bytes) > max_image_size_bytes:
-                logger.warning(
-                    "Rejected image: %s bytes exceeds %s limit",
-                    len(image_bytes),
-                    max_image_size_bytes,
-                )
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
-                    }
-                )
-                continue
-            current_parts.append(
-                types.Part(inline_data=types.Blob(mime_type=mime_type, data=image_bytes))
-            )
-            logger.info("📷 Added image to message (%s bytes)", len(image_bytes))
-        except Exception as e:
-            logger.warning("Failed to process image: %s", e)
+    # (current_parts/accepted_images were built by _validate_and_decode_images
+    # BEFORE the user message was persisted — see above.)
 
     # Add text content — prefix with send timestamp so the model can see when
     # the newly arrived message was sent, matching the [timestamp] prefix we
@@ -300,6 +329,18 @@ async def handle_chat_message(
     if content:
         current_parts.append(types.Part(text=f"[{send_timestamp}] {content}"))
 
+    if not current_parts:
+        # Empty content AND every image rejected — an empty-parts Content
+        # would 400 at the Gemini API with no client-facing explanation.
+        await ws.send_json(
+            {
+                "type": "error",
+                "message": "No valid content to send — all attached images were rejected",
+                "conversation_id": conversation_id,
+            }
+        )
+        return
+
     contents.append(types.Content(role="user", parts=current_parts))
 
     # Build config with realtime datetime and context
@@ -311,7 +352,12 @@ async def handle_chat_message(
         "true",
         "yes",
     )
-    if unrestricted_mode and allow_unrestricted:
+    effective_unrestricted = unrestricted_mode and allow_unrestricted
+    if unrestricted_mode and not allow_unrestricted:
+        logger.warning(
+            "🔒 Unrestricted mode requested but DASHBOARD_ALLOW_UNRESTRICTED is off — ignored"
+        )
+    if effective_unrestricted:
         # Use the preset's own unrestricted framing; fall back to GENERAL if not defined
         framing = (
             preset.get("unrestricted_framing")
@@ -390,10 +436,12 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         config.thinking_config = types.ThinkingConfig(thinking_budget=22000, include_thoughts=True)
         mode_info.append("🧠 Thinking")
         logger.info("🧠 Thinking Mode: ENABLED (includeThoughts=True)")
-    if unrestricted_mode:
+    # Badge (and the persisted mode string) only when the framing was
+    # actually injected — not when the env gate silently blocked it.
+    if effective_unrestricted:
         mode_info.append("🔓 Unrestricted")
-    if images:
-        mode_info.append(f"🖼️ {len(images)} image(s)")
+    if accepted_images:
+        mode_info.append(f"🖼️ {len(accepted_images)} image(s)")
 
     # Use the configured model (gemini-3.1-pro-preview supports thinking)
     logger.info("📍 Using model: %s, Thinking: %s", GEMINI_MODEL, thinking_enabled)
@@ -1135,6 +1183,16 @@ async def handle_ai_edit_message(
                 )
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
+            else:
+                # The Claude CLI session replays the conversation server-side;
+                # after rewriting a DB row the cached --resume session is
+                # stale — wipe it like manual edit/delete already does.
+                try:
+                    from .dashboard_chat_claude_cli import delete_session_file
+
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after AI edit")
 
         await ws.send_json(
             {

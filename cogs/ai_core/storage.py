@@ -104,6 +104,12 @@ if os.environ.get("BOT_RUNNING"):
 
 _history_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+# Per-channel invalidation generation counter. Bumped (under _cache_lock) by
+# every invalidate_cache() call so an in-flight load_history() can detect that
+# its DB snapshot went stale mid-await (e.g. a dashboard edit landed while the
+# SELECT was running) and re-read instead of re-poisoning the cache with
+# pre-edit rows for up to CACHE_TTL.
+_cache_generations: dict[int, int] = {}
 HistoryCacheEntry = tuple[float, list[dict[str, Any]]]
 MetadataCacheEntry = tuple[float, dict[str, Any]]
 # Note: threading.RLock used here because cache is accessed from both async coroutines
@@ -208,16 +214,93 @@ def _normalize_history_timestamp(value: Any) -> str | None:
     return parsed.isoformat(timespec="seconds")
 
 
+def _parts_to_text(parts: Any) -> str:
+    """Serialize a history item's ``parts`` into the canonical content string.
+
+    Single source of truth for BOTH the DB INSERT paths and the dedup hashes:
+    previously the INSERTs used ``str(p)`` (which is the Python *repr* for
+    dict parts like ``{"text": ...}`` from legacy JSON histories) while the
+    overlap hash extracted ``p.get("text")`` — so legacy dict-part rows were
+    persisted as repr strings and never matched their own dedup keys.
+    """
+    if not isinstance(parts, list):
+        return str(parts)
+    pieces: list[str] = []
+    for p in parts:
+        if not p:
+            continue
+        if isinstance(p, dict):
+            text = str(p.get("text", ""))
+            if text:
+                pieces.append(text)
+        else:
+            pieces.append(str(p))
+    return "\n".join(pieces)
+
+
 def invalidate_cache(channel_id: int) -> None:
-    """Invalidate cache for a specific channel."""
+    """Invalidate cache for a specific channel.
+
+    Also bumps the channel's generation counter so a load_history() whose DB
+    read was already in flight when this ran knows its snapshot is stale.
+    """
     with _cache_lock:
         _history_cache.pop(channel_id, None)
         _metadata_cache.pop(channel_id, None)
+        _cache_generations[channel_id] = _cache_generations.get(channel_id, 0) + 1
+
+
+def get_cache_generation(channel_id: int) -> int:
+    """Current cache-invalidation generation for a channel.
+
+    Callers (e.g. ``SessionMixin.get_chat_session``) snapshot this before an
+    awaited load and re-check it before registering the result: a bump in
+    between means an external edit invalidated the channel mid-load and the
+    loaded history must be re-read.
+    """
+    with _cache_lock:
+        return _cache_generations.get(channel_id, 0)
+
+
+# Per-channel asyncio locks serializing history SAVES (diff-mode fetch+write
+# and force-replace delete+reinsert) against dashboard row EDITS. Without
+# this, an edit completing inside a save's get_ai_history await makes the
+# save's stale snapshot fail the content-hash overlap and re-append (duplicate)
+# the edited row via the no-overlap fallback. Single event loop — a plain dict
+# setdefault is race-free here.
+_history_locks: dict[int, asyncio.Lock] = {}
+
+
+def get_history_lock(channel_id: int) -> asyncio.Lock:
+    """Per-channel lock serializing history saves against dashboard edits.
+
+    Held by ``_save_history_db`` / ``_replace_history_db`` and by the
+    dashboard's ``handle_edit_ai_history_message`` (read-row + UPDATE +
+    memory patch) / ``handle_delete_ai_history_message`` (read-row + DELETE +
+    memory removal). Nothing inside those regions may await something that
+    takes the same lock — in particular ``load_history`` is NOT under it.
+    """
+    return _history_locks.setdefault(channel_id, asyncio.Lock())
+
+
+# Per-channel watermark: the smallest ai_history row id minted by the last
+# force-replace save (``_replace_history_db``'s DELETE-all + re-INSERT mints
+# fresh AUTOINCREMENT ids above the old maximum). An undo entry captured
+# BEFORE that rewrite holds an id lower than every surviving row, so a
+# restore would silently land the row at position 0 (ordering is by id) with
+# a success ack — ``restore_message_by_row`` rejects such ids as ``'stale'``
+# instead. In-process only (resets on bot restart); updated under
+# ``get_history_lock``, read on the restore path which holds the same lock.
+_post_replace_min_id: dict[int, int] = {}
 
 
 def invalidate_all_cache() -> None:
     """Invalidate all caches."""
     with _cache_lock:
+        # Bump generations for every cached channel so in-flight loads see
+        # the wipe (same staleness rule as the per-channel invalidation).
+        for cid in _history_cache:
+            _cache_generations[cid] = _cache_generations.get(cid, 0) + 1
         _history_cache.clear()
         _metadata_cache.clear()
 
@@ -276,11 +359,15 @@ async def save_history(
 
     if DATABASE_AVAILABLE:
         try:
+            # Both helpers return False when they REFUSE to persist (empty-
+            # history guard, dedup-failure guard). Propagating that is what
+            # keeps eviction paths (cleanup_inactive_sessions, LRU) from
+            # discarding in-memory history that was never written.
             if force:
-                await _replace_history_db(channel_id, chat_data, limit)
+                persisted = await _replace_history_db(channel_id, chat_data, limit)
             else:
-                await _save_history_db(channel_id, chat_data, limit, new_entries)
-            return True
+                persisted = await _save_history_db(channel_id, chat_data, limit, new_entries)
+            return bool(persisted)
         except aiosqlite.Error as e:
             logger.error(
                 "Database save failed for channel %s: %s",
@@ -305,7 +392,7 @@ async def _replace_history_db(
     channel_id: int,
     chat_data: dict[str, Any],
     limit: int,
-) -> None:
+) -> bool:
     """Replace the persisted DB history for a channel with the in-memory view.
 
     Used by save_history(force=True) after auto-trim mutates history.
@@ -326,22 +413,21 @@ async def _replace_history_db(
             "is actually intended.",
             channel_id,
         )
-        return
+        return False
 
-    # Apply the same cap auto-trim already enforces.
-    if len(history) > MAX_HISTORY_ITEMS:
-        history = history[-MAX_HISTORY_ITEMS:]
+    # Honor the per-guild retention limit save_history computed (RP=30000
+    # etc.). The old global MAX_HISTORY_ITEMS cap silently truncated RP
+    # channels to 2000 on force-replace while logging the unused limit.
+    cap = limit if limit and limit > 0 else MAX_HISTORY_ITEMS
+    if len(history) > cap:
+        history = history[-cap:]
 
     rows: list[tuple[Any, ...]] = []
     for item in history:
         if not isinstance(item, dict):
             continue
         role = item.get("role", "user")
-        parts = item.get("parts", [])
-        if isinstance(parts, list):
-            content = "\n".join(str(p) for p in parts if p)
-        else:
-            content = str(parts)
+        content = _parts_to_text(item.get("parts", []))
         if not content:
             continue
         rows.append(
@@ -351,23 +437,49 @@ async def _replace_history_db(
                 role,
                 content,
                 item.get("message_id"),
-                _normalize_history_timestamp(item.get("timestamp")),
+                # A missing timestamp must not insert NULL — NULL bypasses the
+                # column's CURRENT_TIMESTAMP default and sorts inconsistently
+                # under ORDER BY timestamp (same rule as save_ai_messages_batch
+                # in utils/database/database.py). smart_trim summary entries
+                # historically lacked timestamps and landed here via force=True.
+                _normalize_history_timestamp(item.get("timestamp"))
+                or datetime.now(timezone.utc).isoformat(timespec="seconds"),
             )
         )
 
-    async with db.get_write_connection() as conn:
-        await conn.execute("DELETE FROM ai_history WHERE channel_id = ?", (channel_id,))
-        if rows:
-            insert_rows = []
-            for i, (ch, uid, role, content, mid, ts) in enumerate(rows, start=1):
-                insert_rows.append((ch, uid, role, content, mid, ts, i))
-            await conn.executemany(
-                """INSERT INTO ai_history
-                   (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                insert_rows,
+    # Per-channel lock: the delete+reinsert must not interleave with a
+    # dashboard edit (DB UPDATE + memory patch) — see get_history_lock.
+    async with get_history_lock(channel_id):
+        async with db.get_write_connection() as conn:
+            await conn.execute("DELETE FROM ai_history WHERE channel_id = ?", (channel_id,))
+            if rows:
+                insert_rows = []
+                for i, (ch, uid, role, content, mid, ts) in enumerate(rows, start=1):
+                    insert_rows.append((ch, uid, role, content, mid, ts, i))
+                # Upsert on (channel_id, message_id) to match the other ai_history
+                # write paths. The DELETE above clears the channel, so a collision
+                # can only come from two in-memory rows sharing the same non-NULL
+                # message_id; without ON CONFLICT that would raise IntegrityError and
+                # roll back the whole replace (losing the save). Last write wins.
+                await conn.executemany(
+                    """INSERT INTO ai_history
+                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
+                       DO UPDATE SET content = excluded.content""",
+                    insert_rows,
+                )
+            await conn.commit()
+            # Record the smallest id this rewrite minted (still under the
+            # lock): undo entries captured before the rewrite carry ids below
+            # it and must be rejected as stale — see _post_replace_min_id.
+            cursor = await conn.execute(
+                "SELECT MIN(id) FROM ai_history WHERE channel_id = ?", (channel_id,)
             )
-        await conn.commit()
+            min_row = await cursor.fetchone()
+            min_id = min_row[0] if min_row else None
+            if min_id is not None:
+                _post_replace_min_id[channel_id] = int(min_id)
 
     thinking_enabled = chat_data.get("thinking_enabled", True)
     await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
@@ -378,6 +490,7 @@ async def _replace_history_db(
         channel_id,
         limit,
     )
+    return True
 
 
 async def _save_history_db(
@@ -385,233 +498,282 @@ async def _save_history_db(
     chat_data: dict[str, Any],
     limit: int,
     new_entries: list[dict[str, Any]] | None = None,
-) -> None:
-    """Save history using SQLite database with batch operations."""
+) -> bool:
+    """Save history using SQLite database with batch operations.
+
+    Returns True when the save completed (or there was legitimately nothing
+    to write); False when a safety guard REFUSED to persist — callers must
+    not treat a refusal as success (eviction would discard unsaved history).
+    """
 
     # Fetch enough messages from DB for reliable duplicate checking
     # Using a small limit caused missed duplicates when history was long
     history = chat_data.get("history", [])
     dedup_limit = max(50, MAX_HISTORY_ITEMS or 5000) if history else 50
-    db_history = await db.get_ai_history(channel_id, limit=dedup_limit)
+    # Per-channel lock — held from the db_history fetch through the batch
+    # write. A dashboard edit completing inside the fetch await would leave
+    # this snapshot stale: the edited row then fails the content-hash overlap
+    # match and gets re-appended (duplicated) by the no-overlap fallback. With
+    # the lock, a save sees pre-edit or post-edit state consistently on both
+    # sides. Nothing in here awaits anything that takes this lock (in
+    # particular, load_history is NOT called under it).
+    async with get_history_lock(channel_id):
+        db_history = await db.get_ai_history(channel_id, limit=dedup_limit)
 
-    # Use explicitly provided new entries if available
-    new_messages = []
-    if new_entries:
-        new_messages = new_entries
-    else:
-        # Fallback: smarter diffing logic
-        history = chat_data.get("history", [])
-
-        if not db_history:
-            # Refuse to dump entire history if chat_data was previously loaded
-            # from DB. Without this, an empty fetch (transient DB read failure
-            # or post-prune race) would re-insert the whole in-memory history,
-            # creating massive duplicate runs.
-            if history and chat_data.get("_db_loaded"):
-                logger.error(
-                    "❌ Refusing to dump full history for channel %s: db_history is empty "
-                    "but chat_data was DB-loaded (history=%d items). Possible read failure.",
-                    channel_id,
-                    len(history),
-                )
-                return
-            new_messages = history
-        elif not history:
-            new_messages = []
+        # Use explicitly provided new entries if available
+        new_messages = []
+        if new_entries:
+            new_messages = new_entries
         else:
-            # Find where the DB history ends in the current history
-            last_db_msg = db_history[-1]
-            last_db_ts = _normalize_history_timestamp(last_db_msg.get("timestamp"))
-            last_db_dt = _parse_history_timestamp(last_db_msg.get("timestamp"))
+            # Fallback: smarter diffing logic
+            history = chat_data.get("history", [])
 
-            # Look for this message in history (iterate backwards). Match
-            # on timestamp + role + content-hash so two assistant messages
-            # sent in the same second (same timestamp, same role) don't get
-            # collapsed into one. SHA-256 of the FULL joined content matches
-            # the dedup approach at the bottom of this function — using a
-            # 200-char prefix here silently dropped messages whose first
-            # 200 chars matched but tails diverged.
-            def _content_key(item: dict) -> str:
-                # ``item`` can come from either side:
-                #   - history (in-memory): has ``parts`` list (str/dict)
-                #   - db_history (persisted): has flat ``content`` string
-                content_value = item.get("content")
-                if content_value is not None:
-                    content = str(content_value)
-                else:
-                    parts = item.get("parts") or []
-                    pieces: list[str] = []
-                    for p in parts:
-                        if not p:
-                            continue
-                        if isinstance(p, dict):
-                            pieces.append(str(p.get("text", "")))
-                        else:
-                            pieces.append(str(p))
-                    content = "\n".join(pieces)
-                return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
-
-            last_db_content_key = _content_key(last_db_msg)
-            found_idx = -1
-            for i in range(len(history) - 1, -1, -1):
-                item = history[i]
-                if (
-                    _normalize_history_timestamp(item.get("timestamp")) == last_db_ts
-                    and item.get("role") == last_db_msg.get("role")
-                    and _content_key(item) == last_db_content_key
-                ):
-                    found_idx = i
-                    break
-
-            if found_idx != -1:
-                # We found the overlap, everything after is new
-                if found_idx < len(history) - 1:
-                    new_messages = history[found_idx + 1 :]
-            # No overlap found? This implies disjoint history or different timestamps.
-            # Fallback to appending everything that has a timestamp >= last_db_ts,
-            # using a content-key set to dedupe within the same-second boundary.
-            elif last_db_dt is not None:
-                if last_db_ts is None:
-                    logger.warning(
-                        "Unparseable timestamp in DB for channel %s: %s — skipping diff",
+            if not db_history:
+                # Refuse to dump entire history if chat_data was previously loaded
+                # from DB. Without this, an empty fetch (transient DB read failure
+                # or post-prune race) would re-insert the whole in-memory history,
+                # creating massive duplicate runs.
+                if history and chat_data.get("_db_loaded"):
+                    logger.error(
+                        "❌ Refusing to dump full history for channel %s: db_history is empty "
+                        "but chat_data was DB-loaded (history=%d items). Possible read failure.",
                         channel_id,
-                        last_db_msg.get("timestamp"),
+                        len(history),
                     )
-                    new_messages = []
-                else:
-                    # Build dedupe set from DB entries that share the boundary timestamp
-                    # so we don't re-insert messages already persisted in the same second.
-                    # Use the same full-content hash as ``_content_key`` so the
-                    # history side and the DB side hash the same way.
-                    db_boundary_keys: set[tuple[str, str]] = set()
+                    return False
+                new_messages = history
+            elif not history:
+                new_messages = []
+            else:
+                # Find where the DB history ends in the current history
+                last_db_msg = db_history[-1]
+                last_db_ts = _normalize_history_timestamp(last_db_msg.get("timestamp"))
+                last_db_dt = _parse_history_timestamp(last_db_msg.get("timestamp"))
+
+                # Look for this message in history (iterate backwards). Match
+                # on timestamp + role + content-hash so two assistant messages
+                # sent in the same second (same timestamp, same role) don't get
+                # collapsed into one. SHA-256 of the FULL joined content matches
+                # the dedup approach at the bottom of this function — using a
+                # 200-char prefix here silently dropped messages whose first
+                # 200 chars matched but tails diverged.
+                def _content_key(item: dict) -> str:
+                    # ``item`` can come from either side:
+                    #   - history (in-memory): has ``parts`` list (str/dict)
+                    #   - db_history (persisted): has flat ``content`` string
+                    # Both sides MUST hash the same text the INSERT paths persist,
+                    # hence the shared ``_parts_to_text`` serializer.
+                    content_value = item.get("content")
+                    if content_value is not None:
+                        content = str(content_value)
+                    else:
+                        content = _parts_to_text(item.get("parts") or [])
+                    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+                last_db_content_key = _content_key(last_db_msg)
+                found_idx = -1
+                for i in range(len(history) - 1, -1, -1):
+                    item = history[i]
+                    if (
+                        _normalize_history_timestamp(item.get("timestamp")) == last_db_ts
+                        and item.get("role") == last_db_msg.get("role")
+                        and _content_key(item) == last_db_content_key
+                    ):
+                        found_idx = i
+                        break
+
+                if found_idx != -1:
+                    # We found the overlap, everything after is new
+                    if found_idx < len(history) - 1:
+                        new_messages = history[found_idx + 1 :]
+                # No overlap found? This implies disjoint history or different timestamps.
+                # Fallback to appending everything that has a timestamp >= last_db_dt,
+                # using a (role, timestamp, content-hash) set to dedupe against rows
+                # already persisted at/after the boundary. (``last_db_ts`` cannot be
+                # None here: it derives from the same parse that made
+                # ``last_db_dt`` non-None.) Including the timestamp in the key keeps
+                # genuinely distinct repeats (same text sent at different times)
+                # instead of silently dropping the later one.
+                elif last_db_dt is not None:
+                    db_boundary_keys: set[tuple[str, str | None, str]] = set()
                     for db_item in db_history:
                         db_dt = _parse_history_timestamp(db_item.get("timestamp"))
                         if db_dt is not None and db_dt >= last_db_dt:
                             db_role = db_item.get("role") or "user"
-                            db_boundary_keys.add((db_role, _content_key(db_item)))
+                            db_boundary_keys.add(
+                                (
+                                    db_role,
+                                    _normalize_history_timestamp(db_item.get("timestamp")),
+                                    _content_key(db_item),
+                                )
+                            )
 
-                    candidates = [
-                        m
-                        for m in history
-                        if (
-                            _parse_history_timestamp(m.get("timestamp"))
-                            or datetime.min.replace(tzinfo=timezone.utc)
+                    candidates = []
+                    skipped_untimestamped = 0
+                    for m in history:
+                        m_dt = _parse_history_timestamp(m.get("timestamp"))
+                        if m_dt is None:
+                            # Can't position an untimestamped item against the
+                            # boundary — excluded (conservative), but say so
+                            # instead of silently never persisting it.
+                            skipped_untimestamped += 1
+                            continue
+                        if m_dt >= last_db_dt:
+                            candidates.append(m)
+                    if skipped_untimestamped:
+                        logger.warning(
+                            "⚠️ No-overlap fallback for channel %s excluded %d in-memory "
+                            "item(s) without parseable timestamps from persistence",
+                            channel_id,
+                            skipped_untimestamped,
                         )
-                        >= last_db_dt
-                    ]
+
                     new_messages = []
                     for m in candidates:
                         m_role = m.get("role") or "user"
-                        m_key = _content_key(m)
-                        if (m_role, m_key) in db_boundary_keys:
+                        m_key = (
+                            m_role,
+                            _normalize_history_timestamp(m.get("timestamp")),
+                            _content_key(m),
+                        )
+                        if m_key in db_boundary_keys:
                             continue
-                        db_boundary_keys.add((m_role, m_key))
+                        db_boundary_keys.add(m_key)
                         new_messages.append(m)
-            else:
-                # Position-based diff is unsafe — it slices the wrong region
-                # whenever history and db_history don't have aligned positions
-                # (e.g. after a prune). Refuse to write rather than risk
-                # corrupting persisted history with duplicates.
-                logger.error(
-                    "❌ history dedup failed, position-based fallback disabled to prevent corruption "
-                    "(channel %s, history=%d, db=%d)",
-                    channel_id,
-                    len(history),
-                    len(db_history),
+                else:
+                    # Position-based diff is unsafe — it slices the wrong region
+                    # whenever history and db_history don't have aligned positions
+                    # (e.g. after a prune). Refuse to write rather than risk
+                    # corrupting persisted history with duplicates.
+                    logger.error(
+                        "❌ history dedup failed, position-based fallback disabled to prevent corruption "
+                        "(channel %s, history=%d, db=%d)",
+                        channel_id,
+                        len(history),
+                        len(db_history),
+                    )
+                    return False
+
+        # Process new messages
+        if new_messages:
+            # Prepare batch data
+            batch_data = []
+            prev_batch_hash: str | None = None  # adjacent-duplicate tracking
+            prev_batch_timestamp: str | None = None
+            prev_batch_message_id: Any = None
+
+            # Get last message from DB to check for duplicates
+            # Hash the full content (not just a prefix) so two messages that share
+            # a long prefix but diverge later don't get falsely flagged as
+            # duplicates and silently dropped. SHA-256 is fast enough that 500-char
+            # vs full-content makes no measurable difference for chat-sized payloads.
+            last_db_content_hash = None
+            last_db_role = None
+            last_db_message_id = None
+            last_db_timestamp = None
+            if db_history:
+                last_db_message_id = db_history[-1].get("message_id")
+                last_db_timestamp = _normalize_history_timestamp(db_history[-1].get("timestamp"))
+                # ``errors="replace"`` keeps the hash deterministic even when an
+                # older row contains a malformed surrogate from a previous bug —
+                # the default ``strict`` would raise here and abort the whole
+                # save_history path on a single corrupt historic record.
+                last_db_content_hash = hashlib.sha256(
+                    db_history[-1].get("content", "").encode("utf-8", errors="replace")
+                ).hexdigest()
+                last_db_role = db_history[-1].get("role")
+
+            for item in new_messages:
+                if not isinstance(item, dict):
+                    continue
+
+                role = item.get("role", "user")
+                message_id = item.get("message_id")
+                timestamp = _normalize_history_timestamp(item.get("timestamp"))
+
+                # Convert parts to string (shared serializer — keeps the persisted
+                # content identical to what the dedup hashes were computed from).
+                content = _parts_to_text(item.get("parts", []))
+
+                if not content:
+                    continue
+
+                # Hash the content once; reuse for both the per-batch dedupe key
+                # and the just-in-DB comparison. Recomputing twice was wasteful on
+                # long messages and trivially fixable.
+                # Match the ``errors="replace"`` strategy used for the DB-side
+                # hash above so live and historic strings hash identically and
+                # dedupe still works across malformed historic rows.
+                raw_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+                content_hash = f"{role}:{raw_hash}"
+
+                # Skip if this exact content was just in DB (immediate duplicate).
+                # Tiebreakers: message_id for user rows, timestamp for model rows.
+                # Model items have NO message_id at save time (it's back-filled
+                # later by update_message_id), so the message_id wildcard alone
+                # silently dropped a NEW model reply whose text equals the
+                # previous turn's persisted reply — and update_message_id then
+                # back-filled the new Discord id onto the OLD row. A genuinely
+                # re-presented item carries the same timestamp; a new turn gets a
+                # fresh one, so timestamp equality keeps the dedup for true
+                # duplicates while letting legitimate repeats through.
+                if (
+                    last_db_content_hash
+                    and raw_hash == last_db_content_hash
+                    and role == last_db_role
+                    and timestamp == last_db_timestamp
+                    and (message_id is None or message_id == last_db_message_id)
+                ):
+                    logger.warning(
+                        "⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50]
+                    )
+                    continue
+
+                # Skip ADJACENT repeats within the current batch only. The old
+                # batch-wide set dropped non-adjacent legitimate repeats
+                # ([user:"ok", model:..., user:"ok"]) from a pending-queue flush.
+                # Timestamp equality is required for the same reason as the
+                # just-in-DB check above: identical text at a DIFFERENT time is a
+                # legitimate new entry, not a double-append.
+                if (
+                    content_hash == prev_batch_hash
+                    and timestamp == prev_batch_timestamp
+                    and (message_id is None or message_id == prev_batch_message_id)
+                ):
+                    logger.warning(
+                        "⚠️ Skipping duplicate message (adjacent in batch): %s...", content[:50]
+                    )
+                    continue
+
+                prev_batch_hash = content_hash
+                prev_batch_timestamp = timestamp
+                prev_batch_message_id = message_id
+                batch_data.append(
+                    {
+                        "channel_id": channel_id,
+                        "user_id": item.get("user_id"),
+                        "role": role,
+                        "content": content,
+                        "message_id": message_id,
+                        "timestamp": timestamp,
+                    }
                 )
-                return
 
-    # Process new messages
-    if new_messages:
-        # Prepare batch data
-        batch_data = []
-        seen_content_hashes: set[str] = set()  # Track content to prevent duplicates
-
-        # Get last message from DB to check for duplicates
-        # Hash the full content (not just a prefix) so two messages that share
-        # a long prefix but diverge later don't get falsely flagged as
-        # duplicates and silently dropped. SHA-256 is fast enough that 500-char
-        # vs full-content makes no measurable difference for chat-sized payloads.
-        last_db_content_hash = None
-        last_db_role = None
-        if db_history:
-            # ``errors="replace"`` keeps the hash deterministic even when an
-            # older row contains a malformed surrogate from a previous bug —
-            # the default ``strict`` would raise here and abort the whole
-            # save_history path on a single corrupt historic record.
-            last_db_content_hash = hashlib.sha256(
-                db_history[-1].get("content", "").encode("utf-8", errors="replace")
-            ).hexdigest()
-            last_db_role = db_history[-1].get("role")
-
-        for item in new_messages:
-            if not isinstance(item, dict):
-                continue
-
-            role = item.get("role", "user")
-            parts = item.get("parts", [])
-            message_id = item.get("message_id")
-            timestamp = _normalize_history_timestamp(item.get("timestamp"))
-
-            # Convert parts to string
-            if isinstance(parts, list):
-                content = "\n".join(str(p) for p in parts if p)
-            else:
-                content = str(parts)
-
-            if not content:
-                continue
-
-            # Hash the content once; reuse for both the per-batch dedupe key
-            # and the just-in-DB comparison. Recomputing twice was wasteful on
-            # long messages and trivially fixable.
-            # Match the ``errors="replace"`` strategy used for the DB-side
-            # hash above so live and historic strings hash identically and
-            # dedupe still works across malformed historic rows.
-            raw_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
-            content_hash = f"{role}:{raw_hash}"
-
-            # Skip if this exact content was just in DB (immediate duplicate)
-            if last_db_content_hash and raw_hash == last_db_content_hash and role == last_db_role:
-                logger.warning(
-                    "⚠️ Skipping duplicate message (matches last DB entry): %s...", content[:50]
-                )
-                continue
-
-            # Skip if we've already seen this content in current batch
-            if content_hash in seen_content_hashes:
-                logger.warning(
-                    "⚠️ Skipping duplicate message (already in batch): %s...", content[:50]
-                )
-                continue
-
-            seen_content_hashes.add(content_hash)
-            batch_data.append(
-                {
-                    "channel_id": channel_id,
-                    "user_id": item.get("user_id"),
-                    "role": role,
-                    "content": content,
-                    "message_id": message_id,
-                    "timestamp": timestamp,
-                }
-            )
-
-        if batch_data:
-            try:
-                await db.save_ai_messages_batch(batch_data)
-                logger.debug(
-                    "💾 Batch saved %d messages for channel %s", len(batch_data), channel_id
-                )
-            except aiosqlite.Error:
-                # Surface the failure so save_history can flip its return to False
-                # rather than reporting success while silently dropping messages.
-                logger.exception(
-                    "❌ Failed to batch save %d messages for channel %s",
-                    len(batch_data),
-                    channel_id,
-                )
-                raise
+            if batch_data:
+                try:
+                    await db.save_ai_messages_batch(batch_data)
+                    logger.debug(
+                        "💾 Batch saved %d messages for channel %s", len(batch_data), channel_id
+                    )
+                except aiosqlite.Error:
+                    # Surface the failure so save_history can flip its return to False
+                    # rather than reporting success while silently dropping messages.
+                    logger.exception(
+                        "❌ Failed to batch save %d messages for channel %s",
+                        len(batch_data),
+                        channel_id,
+                    )
+                    raise
 
     # Prune if over limit. Add a 50-message buffer to avoid count/prune
     # thrashing under concurrent writes — without this, two near-simultaneous
@@ -625,6 +787,7 @@ async def _save_history_db(
     thinking_enabled = chat_data.get("thinking_enabled", True)
     await db.save_ai_metadata(channel_id=channel_id, thinking_enabled=thinking_enabled)
     invalidate_cache(channel_id)
+    return True
 
 
 async def _save_history_json(
@@ -670,9 +833,14 @@ async def _save_history_json(
         filepath = DATA_DIR / f"ai_history_{channel_id}.json"
         temp_filepath = filepath.with_suffix(".json.tmp")
 
-        temp_filepath.write_text(
-            json_dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        # fsync BEFORE the atomic rename: without it a power loss can persist
+        # the rename while the data blocks were never flushed, leaving an
+        # empty/truncated file — and this JSON path is the only persistence
+        # when the DB is unavailable.
+        with temp_filepath.open("w", encoding="utf-8") as fh:
+            fh.write(json_dumps(history, ensure_ascii=False, indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())
 
         temp_filepath.replace(filepath)  # Atomic replace, works whether target exists or not
 
@@ -691,9 +859,10 @@ async def _save_history_json(
         # naming convention so cleanup tools that glob ``*.json.tmp`` catch
         # orphans uniformly.
         temp_filepath = filepath.with_suffix(".json.tmp")
-        temp_filepath.write_text(
-            json_dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        with temp_filepath.open("w", encoding="utf-8") as fh:
+            fh.write(json_dumps(metadata, ensure_ascii=False, indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())
         temp_filepath.replace(filepath)
 
     await loop.run_in_executor(None, _write_meta)
@@ -705,58 +874,115 @@ async def _save_history_json(
     invalidate_cache(channel_id)
 
 
+# Channels whose most recent non-cached load_history() came from the DATABASE
+# (as opposed to the legacy JSON fallback). session_mixin consults this to set
+# ``_db_loaded`` truthfully — flagging JSON-loaded history as DB-loaded made
+# _save_history_db's empty-fetch guard permanently refuse every save for
+# legacy JSON channels (nothing was ever migrated OR persisted).
+_db_loaded_channels: set[int] = set()
+
+
+def last_load_was_db(channel_id: int) -> bool:
+    """True when the channel's history was last loaded from the database."""
+    return channel_id in _db_loaded_channels
+
+
+# Bounded re-read attempts when an invalidation lands mid-load (see below).
+_LOAD_HISTORY_MAX_ATTEMPTS = 3
+
+
 async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
-    """Load chat history from database or JSON file with caching."""
-    now = time.time()
+    """Load chat history from database or JSON file with caching.
 
-    # Check cache first (thread-safe)
-    with _cache_lock:
-        if channel_id in _history_cache:
-            cached_time, cached_data = _history_cache[channel_id]
-            if now - cached_time < CACHE_TTL:
-                logger.debug(
-                    "📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data)
-                )
-                # Use deep copy to prevent mutation of cached nested objects
-                return copy.deepcopy(cached_data)
+    Guarded against the in-flight-edit race: a dashboard edit can UPDATE the
+    row and invalidate the cache WHILE the DB read below is awaiting. Storing
+    that pre-edit snapshot would re-poison the cache for up to CACHE_TTL after
+    the invalidation, so the generation counter is snapshotted before the read
+    and re-checked before the cache store — on a bump, re-read (bounded); if
+    the bumps keep coming, return the last snapshot WITHOUT caching it.
+    """
+    for attempt in range(_LOAD_HISTORY_MAX_ATTEMPTS):
+        last_attempt = attempt == _LOAD_HISTORY_MAX_ATTEMPTS - 1
+        now = time.time()
 
-    if DATABASE_AVAILABLE:
-        # Try database
-        db_history = await db.get_ai_history(channel_id)
-        if db_history:
-            # Convert DB format {role, content, timestamp, message_id, ...}
-            # to API format. Preserve timestamp/message_id/user_id so the
-            # next save's overlap detection (timestamp+role+content match)
-            # has the data it needs — without these, save_history's
-            # _normalize_history_timestamp returns None on every row and
-            # forces the "dangerous fallback" position-based slice path.
-            history = []
-            for item in db_history:
-                converted: dict[str, Any] = {
-                    "role": item.get("role", "user"),
-                    "parts": [item.get("content", "")],
-                }
-                # Carry forward bookkeeping fields if present so the round
-                # trip is lossless.
-                for k in ("timestamp", "message_id", "user_id"):
-                    if item.get(k) is not None:
-                        converted[k] = item[k]
-                history.append(converted)
-
-            # Update cache with converted format (thread-safe)
-            with _cache_lock:
-                _history_cache[channel_id] = (now, copy.deepcopy(history))
-            logger.info(
-                "📖 Loaded %d messages from database for channel %s", len(history), channel_id
-            )
-            return history
-
-    # Fallback to JSON file
-    history = await _load_history_json(bot, channel_id)
-    if history:
+        # Check cache first (thread-safe), snapshotting the generation the
+        # load starts from in the same locked section.
         with _cache_lock:
-            _history_cache[channel_id] = (now, copy.deepcopy(history))
-    return history
+            generation = _cache_generations.get(channel_id, 0)
+            if channel_id in _history_cache:
+                cached_time, cached_data = _history_cache[channel_id]
+                if now - cached_time < CACHE_TTL:
+                    logger.debug(
+                        "📖 Cache hit for channel %s (%d messages)", channel_id, len(cached_data)
+                    )
+                    # Use deep copy to prevent mutation of cached nested objects
+                    return copy.deepcopy(cached_data)
+
+        if DATABASE_AVAILABLE:
+            # Try database
+            db_history = await db.get_ai_history(channel_id)
+            if db_history:
+                # Convert DB format {role, content, timestamp, message_id, ...}
+                # to API format. Preserve timestamp/message_id/user_id so the
+                # next save's overlap detection (timestamp+role+content match)
+                # has the data it needs — without these, save_history's
+                # _normalize_history_timestamp returns None on every row and
+                # forces the "dangerous fallback" position-based slice path.
+                history = []
+                for item in db_history:
+                    converted: dict[str, Any] = {
+                        "role": item.get("role", "user"),
+                        "parts": [item.get("content", "")],
+                    }
+                    # Carry forward bookkeeping fields if present so the round
+                    # trip is lossless.
+                    for k in ("timestamp", "message_id", "user_id"):
+                        if item.get(k) is not None:
+                            converted[k] = item[k]
+                    history.append(converted)
+
+                # Update cache with converted format (thread-safe) — unless an
+                # invalidation landed during the await above (the snapshot is
+                # then pre-edit and must not be cached).
+                with _cache_lock:
+                    fresh = _cache_generations.get(channel_id, 0) == generation
+                    if fresh:
+                        _history_cache[channel_id] = (now, copy.deepcopy(history))
+                if not fresh and not last_attempt:
+                    continue  # re-read: the post-edit rows are one SELECT away
+                if not fresh:
+                    logger.warning(
+                        "⚠️ load_history for channel %s kept racing invalidations "
+                        "(%d attempts) — returning uncached snapshot",
+                        channel_id,
+                        _LOAD_HISTORY_MAX_ATTEMPTS,
+                    )
+                _db_loaded_channels.add(channel_id)
+                logger.info(
+                    "📖 Loaded %d messages from database for channel %s", len(history), channel_id
+                )
+                return history
+
+        # Fallback to JSON file
+        history = await _load_history_json(bot, channel_id)
+        _db_loaded_channels.discard(channel_id)
+        if history:
+            with _cache_lock:
+                fresh = _cache_generations.get(channel_id, 0) == generation
+                if fresh:
+                    _history_cache[channel_id] = (now, copy.deepcopy(history))
+            if not fresh and not last_attempt:
+                continue
+            if not fresh:
+                logger.warning(
+                    "⚠️ load_history (JSON) for channel %s kept racing invalidations "
+                    "(%d attempts) — returning uncached snapshot",
+                    channel_id,
+                    _LOAD_HISTORY_MAX_ATTEMPTS,
+                )
+        return history
+
+    return []  # unreachable: the last attempt always returns above
 
 
 async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
@@ -871,6 +1097,7 @@ async def _load_metadata_json(bot: Bot, channel_id: int) -> dict[str, Any]:
 async def delete_history(channel_id: int) -> bool:
     """Delete history for a channel."""
     success: bool = False
+    db_failed = False
 
     if DATABASE_AVAILABLE:
         try:
@@ -880,6 +1107,7 @@ async def delete_history(channel_id: int) -> bool:
             await db.delete_ai_history(channel_id)
             success = True
         except aiosqlite.Error:
+            db_failed = True
             logger.exception("Database delete failed for channel %s", channel_id)
 
     # Also try to delete JSON files (for cleanup)
@@ -895,6 +1123,11 @@ async def delete_history(channel_id: int) -> bool:
     # outlive a delete attempt; the next read will re-populate from DB.
     invalidate_cache(channel_id)
 
+    # A failed DB delete means the rows survive and will resurrect on the
+    # next load — never report success just because a legacy JSON file was
+    # also cleaned up.
+    if db_failed:
+        return False
     return success
 
 
@@ -908,6 +1141,98 @@ async def update_message_id(channel_id: int, message_id: int) -> None:
     if DATABASE_AVAILABLE:
         await db.update_message_id(channel_id, message_id)
         invalidate_cache(channel_id)
+
+
+async def delete_message_by_id(channel_id: int, message_id: int) -> int:
+    """Delete the persisted history row(s) for a Discord message_id.
+
+    Mirrors a Discord deletion into the DB so the message stops feeding future
+    prompts. Invalidates the cache so a reader inside the TTL window doesn't keep
+    serving the just-deleted row. Returns rows deleted (0 if DB unavailable).
+    """
+    if not DATABASE_AVAILABLE:
+        return 0
+    deleted = await db.delete_ai_message_by_message_id(message_id, channel_id)
+    invalidate_cache(channel_id)
+    return deleted
+
+
+async def edit_message_by_id(channel_id: int, message_id: int, content: str) -> int:
+    """Update the persisted history content for a Discord message_id.
+
+    Mirrors a Discord edit into the DB. Invalidates the cache so the new text is
+    what the next load serves. Returns rows updated (0 if DB unavailable).
+    """
+    if not DATABASE_AVAILABLE:
+        return 0
+    updated = await db.update_ai_message_by_message_id(message_id, content, channel_id)
+    invalidate_cache(channel_id)
+    return updated
+
+
+async def edit_message_by_row_id(channel_id: int, row_id: int, new_content: str) -> bool:
+    """Update the persisted history content for an ``ai_history`` primary-key id.
+
+    Dashboard edits target rows that may carry no ``message_id`` (e.g. model
+    responses whose sent id was never back-filled), so this keys on the row id
+    instead of the Discord message_id. Invalidates the cache so the new text is
+    what the next load serves. Returns True when a row was updated (False if DB
+    unavailable or no row matched the channel+id pair).
+    """
+    if not DATABASE_AVAILABLE:
+        return False
+    updated = await db.update_ai_history_content(channel_id, row_id, new_content)
+    invalidate_cache(channel_id)
+    return bool(updated)
+
+
+async def delete_message_by_row_id(channel_id: int, row_id: int) -> bool:
+    """Delete the persisted history row for an ``ai_history`` primary-key id.
+
+    Dashboard deletes target rows that may carry no ``message_id`` (e.g. model
+    responses whose sent id was never back-filled), so this keys on the row id
+    instead of the Discord message_id. Invalidates the cache so the next load
+    stops serving the deleted row. Returns True when a row was deleted (False
+    if DB unavailable or no row matched the channel+id pair).
+    """
+    if not DATABASE_AVAILABLE:
+        return False
+    deleted = await db.delete_ai_history_row(channel_id, row_id)
+    invalidate_cache(channel_id)
+    return bool(deleted)
+
+
+async def restore_message_by_row(channel_id: int, row: dict[str, Any]) -> str:
+    """Re-insert a deleted ``ai_history`` row (undo of a dashboard delete).
+
+    ``row`` carries the original column values (id, local_id, role, content,
+    message_id, timestamp, user_id); the insert keeps the original primary-key
+    id so the row returns to its original position. Returns the DB outcome:
+    ``'restored'`` | ``'exists_same'`` (idempotent retry — same role AND
+    content already under that id) | ``'conflict'`` (id taken by a different
+    row, or the (channel_id, message_id) unique index rejected the insert) |
+    ``'stale'`` (the row id predates the last force-replace rewrite of this
+    channel — see ``_post_replace_min_id``: every surviving row was re-minted
+    with a higher id, so "original id = original position" no longer holds
+    and the restore would silently land at position 0). Rows deleted AFTER
+    the rewrite carry ids >= the watermark, so legitimate undos still work.
+
+    Invalidates the cache on ``'restored'`` AND on ``'exists_same'`` — the
+    retry path is cheap to invalidate and must serve fresh rows too (the
+    first attempt's invalidation could have been followed by a re-cache of a
+    snapshot read mid-restore). Returns ``'conflict'`` when the database
+    module is unavailable, but callers gate on DB availability first.
+    """
+    if not DATABASE_AVAILABLE:
+        return "conflict"
+    watermark = _post_replace_min_id.get(channel_id)
+    row_id = row.get("id")
+    if watermark is not None and isinstance(row_id, int) and row_id < watermark:
+        return "stale"
+    result: str = await db.restore_ai_history_row(channel_id, row)
+    if result in ("restored", "exists_same"):
+        invalidate_cache(channel_id)
+    return result
 
 
 async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
@@ -976,10 +1301,20 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                     )
                     next_local_id += 1
 
+                # Upsert on (channel_id, message_id) to match save_ai_message /
+                # save_ai_messages_batch. The partial unique index
+                # idx_ai_history_msgid_unique would otherwise make a plain INSERT
+                # raise IntegrityError (and roll back the whole copy) when the
+                # target already holds a row with one of the source's message_ids
+                # — e.g. re-running the same copy. Re-copying now updates content
+                # instead of crashing. NULL message_ids are excluded by the
+                # partial index, so they always insert.
                 await conn.executemany(
                     """INSERT INTO ai_history
                        (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
+                       DO UPDATE SET content = excluded.content""",
                     insert_rows,
                 )
                 await conn.commit()

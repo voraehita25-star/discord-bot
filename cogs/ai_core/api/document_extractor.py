@@ -425,7 +425,10 @@ _CONTINUOUS_SCRIPT_RANGES = (
     "一-鿿"  # CJK Unified Ideographs
     "㐀-䶿"  # CJK Extension A
     "豈-﫿"  # CJK Compatibility Ideographs
-    "가-힯"  # Hangul Syllables
+    # NOTE: Hangul deliberately EXCLUDED — Korean orthography REQUIRES
+    # spaces between words; including 가-힯 here made the reflow pass
+    # delete every word boundary in Korean text ("안녕하세요 만나서" →
+    # "안녕하세요만나서") for this dashboard's Korean UI users.
 )
 _RE_CONTINUOUS_CHAR = re.compile(rf"[{_CONTINUOUS_SCRIPT_RANGES}]")
 _RE_SPACE_BETWEEN_CONTINUOUS = re.compile(

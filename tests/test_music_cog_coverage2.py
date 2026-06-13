@@ -356,6 +356,9 @@ class TestLeave:
         vc = make_vc()
         ctx = make_ctx(voice_client=vc)
         cog.bot.voice_clients = [vc]
+        # Real discord.py removes the VC from bot.voice_clients during
+        # disconnect(); the presence guard counts the list AFTER that.
+        vc.disconnect = AsyncMock(side_effect=lambda *a, **k: cog.bot.voice_clients.remove(vc))
         gs = cog._gs(ctx.guild.id)
         gs.queue.extend([{"title": "x"}])
         gs.loop = True

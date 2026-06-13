@@ -38,11 +38,14 @@ def _safe_error_summary(err: BaseException, max_len: int = 200) -> str:
     secret-redaction filter and fall back gracefully if the import isn't
     available (e.g. during test isolation).
     """
-    raw = str(err)[:max_len]
+    # Redact FIRST, then truncate. Truncating first could cut a token at the
+    # max_len boundary, leaving a partial too short for the redaction
+    # patterns' minimum lengths (sk-ant-...{40,}, AIza+35, JWT segments) —
+    # the surviving fragment would reach the dashboard unredacted.
     try:
         from utils.monitoring.logger import _redact_sensitive
 
-        return _redact_sensitive(raw)[:max_len]
+        return _redact_sensitive(str(err))[:max_len]
     except Exception:
         # Fail safe: if redaction itself raises, drop everything past
         # the exception type name. Better to lose context than leak a
@@ -145,11 +148,14 @@ class APIFailoverManager:
     # ``FAILURE_THRESHOLD`` mirrors the module-level ``_FAILURE_THRESHOLD``
     # consumed by ``EndpointHealth.is_healthy`` — change both together.
     FAILURE_THRESHOLD = _FAILURE_THRESHOLD  # consecutive failures before switching
-    # Grace period before closing a popped client. Long enough for the
-    # average ``messages.create`` round-trip to complete; short enough
-    # that we don't leak file descriptors after a real switch. 5s is
-    # the largest p99 we've seen for non-stream Anthropic requests.
-    _CLIENT_CLOSE_GRACE_SECONDS = 5.0
+    # Grace period before closing a popped client. Must cover the WORST
+    # legal in-flight request, not the p99: this codebase budgets 120s for
+    # non-streaming calls (api_handler api_timeout / constants.API_TIMEOUT)
+    # — closing the old client's pool at 5s aborted those mid-flight and
+    # fed the resulting connection errors back into failover accounting
+    # against the NEW endpoint. One lingering client object for ~2 minutes
+    # is a trivial fd cost.
+    _CLIENT_CLOSE_GRACE_SECONDS = 130.0
 
     def __init__(self) -> None:
         self._endpoints: dict[EndpointType, EndpointConfig] = {}
@@ -261,12 +267,16 @@ class APIFailoverManager:
             self.initialize()
 
         # Serialize the read-create-write sequence so two threads can't both
-        # see "no client" and each create one (leaking the loser).
+        # see "no client" and each create one (leaking the loser). Snapshot
+        # self._active ONCE — _switch_to_locked can flip it between separate
+        # reads, which previously let a stale client be stored under the new
+        # endpoint's key.
         with self._sync_clients_lock:
-            if self._active in self._clients:
-                return self._clients[self._active]
+            active = self._active
+            if active in self._clients:
+                return self._clients[active]
 
-            config = self._endpoints.get(self._active)
+            config = self._endpoints.get(active)
             if not config:
                 raise RuntimeError("No API endpoint configured")
 
@@ -275,7 +285,7 @@ class APIFailoverManager:
                 kwargs["base_url"] = config.base_url
 
             client = anthropic.AsyncAnthropic(**kwargs)
-            self._clients[self._active] = client
+            self._clients[active] = client
             return client
 
     def _get_other_endpoint(self) -> EndpointType | None:
@@ -299,15 +309,23 @@ class APIFailoverManager:
         switched_to: EndpointType | None = None
         switched_reason: str = ""
         async with self._lock:
+            should_failover = _should_failover(error)
             health = self._health.get(self._active)
             if health:
-                health.consecutive_failures += 1
+                # Only failover-worthy errors advance the trip counter.
+                # Counting 429s / 4xx client errors too primed the counter
+                # so a single later transient error caused an instant
+                # endpoint switch — subverting the _NON_FAILOVER_CODES
+                # rationale above. All other bookkeeping (totals,
+                # last_error) still records every failure.
+                if should_failover:
+                    health.consecutive_failures += 1
                 health.last_failure_time = time.monotonic()
                 health.last_error = _safe_error_summary(error)
                 health.total_requests += 1
                 health.total_failures += 1
 
-            if not _should_failover(error):
+            if not should_failover:
                 return False
 
             if not self.has_failover:
@@ -375,7 +393,13 @@ class APIFailoverManager:
         themselves should call _notify_listeners after release.
         """
         old = self._active
-        self._active = target
+        # Flip + pop under the same sync lock get_client() holds — without
+        # it the writer raced the reader: get_client could check membership
+        # against the OLD active, then store a stale client under the NEW
+        # key. Short non-awaiting section, safe to take inside self._lock.
+        with self._sync_clients_lock:
+            self._active = target
+            old_client = self._clients.pop(old, None)
 
         # Clear old client so a new one is created on next get_client().
         # Schedule a *delayed* .close() on each popped client so its httpx
@@ -391,8 +415,8 @@ class APIFailoverManager:
         # one for the new endpoint. Keep the TARGET client (if cached) — its
         # connection pool and prompt cache are useful for the next call.
         # Previously we popped both, forcing the new endpoint to start from
-        # cold every switchover.
-        old_client = self._clients.pop(old, None)
+        # cold every switchover. (The pop itself happens above, inside the
+        # sync lock, atomically with the _active flip.)
         if old_client is not None:
             with contextlib.suppress(Exception):
                 task = asyncio.create_task(self._graceful_close(old_client))

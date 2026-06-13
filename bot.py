@@ -275,15 +275,17 @@ def bootstrap() -> None:
 
     Called from __main__ to avoid side effects on import (e.g. during tests).
     """
-    # Ensure required directories exist
-    for dir_name in ("temp", "data", "logs"):
-        dir_path = Path(dir_name)
+    # Ensure required directories exist — use the project-root-anchored paths
+    # from settings, NOT the launcher CWD. systemd/dashboard/IDE configs may
+    # start us from another directory (same reason PID_FILE is anchored), and
+    # components write via settings.temp_dir/data_dir/logs_dir.
+    for dir_path in (Path(settings.temp_dir), Path(settings.data_dir), Path(settings.logs_dir)):
         try:
             # exist_ok=True keeps this race-safe if the dir appears between
             # the check and the call (e.g. a concurrent creator); matches config.py.
             dir_path.mkdir(parents=True, exist_ok=True)
         except PermissionError:
-            logger.exception("Cannot create %s directory", dir_name)
+            logger.exception("Cannot create %s directory", dir_path)
             raise
 
     # Check for FFmpeg — honour FFMPEG_PATH and the bundled ./ffmpeg/bin
@@ -306,12 +308,18 @@ def bootstrap() -> None:
 
 
 def remove_pid() -> None:
-    """Remove PID file on exit"""
-    if PID_FILE.exists():
-        try:
+    """Remove PID file on exit — only when it belongs to this process.
+
+    bot.py is imported by tests and tooling; atexit fires in every importing
+    process, so an unconditional unlink let any of them delete the *live*
+    bot's PID file on exit, breaking duplicate-instance detection on the
+    next startup.
+    """
+    try:
+        if PID_FILE.exists() and PID_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
             PID_FILE.unlink()
-        except OSError as e:
-            logger.warning("Failed to remove PID file: %s", e)
+    except OSError as e:
+        logger.warning("Failed to remove PID file: %s", e)
 
 
 atexit.register(remove_pid)
@@ -598,6 +606,16 @@ class MusicBot(commands.AutoShardedBot):
         if isinstance(error, commands.CommandNotFound):
             return
 
+        # Mirror the stock Bot.on_command_error guards: commands/cogs with a
+        # local error handler own the user-facing reply. dispatch_error always
+        # re-dispatches the global event after a local handler returns, so
+        # without these guards every locally-handled error (e.g. !chat
+        # cooldown, !play missing-perms) produced a second duplicate message.
+        if ctx.command is not None and ctx.command.has_error_handler():
+            return
+        if ctx.cog is not None and ctx.cog.has_error_handler():
+            return
+
         # Handle cooldown errors
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(
@@ -773,6 +791,12 @@ def create_bot() -> MusicBot:
         allowed_mentions=safe_mentions,
     )
     new_bot._register_bot_commands()
+    # Route CommandTree errors through the slash-command handler. discord.py
+    # never dispatches an "app_command_error" client event — app command
+    # failures go exclusively to CommandTree.on_error — so without this
+    # assignment on_app_command_error is dead code and slash users get no
+    # error feedback at all.
+    new_bot.tree.on_error = new_bot.on_app_command_error
     return new_bot
 
 
@@ -977,7 +1001,17 @@ def run_bot_with_confirmation() -> None:
                     "❌ Token format invalid — refusing to start. Check DISCORD_TOKEN in .env"
                 )
                 sys.exit(1)
-            bot.run(token)
+            # Run the connect loop ourselves instead of bot.run(): discord.py's
+            # Client.run() swallows KeyboardInterrupt internally (client.py:
+            # `except KeyboardInterrupt: return`), which made the confirm/resume
+            # branch below unreachable — Ctrl+C must land in *this* frame.
+            _current_bot = bot
+
+            async def _runner(_b: MusicBot = _current_bot, _token: str = token) -> None:
+                async with _b:
+                    await _b.start(_token)
+
+            asyncio.run(_runner())
             break  # Normal exit
         except discord.LoginFailure as exc:
             # Bad token surfaces here rather than as a generic Exception.
@@ -1040,7 +1074,10 @@ def run_bot_with_confirmation() -> None:
 
 
 if __name__ == "__main__":
-    # Mark that we are running as the bot so config.__post_init__ creates directories.
+    # Mark that we are running as the real bot — other modules gate side
+    # effects on this (e.g. storage.py). Note: config's `settings` singleton
+    # was already constructed during import, so its __post_init__ ran *before*
+    # this line; directory creation is handled by bootstrap() below instead.
     os.environ["BOT_RUNNING"] = "1"
 
     # Run startup side effects only when executed directly (not on import)

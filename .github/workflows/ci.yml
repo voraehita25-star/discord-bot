@@ -49,6 +49,11 @@ jobs:
     timeout-minutes: 15
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      with:
+        # TruffleHog diffs github.event.before..after on push — with the
+        # default depth-1 clone the base commit is absent and the scan
+        # either errors or silently covers only the tip commit.
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
@@ -87,8 +92,9 @@ jobs:
     timeout-minutes: 25
     # Job-level placeholders so every step inherits the dummy creds.
     # Hoisted from per-step env blocks (was duplicated 3x in this job + 1x
-    # in benchmark). Keep these strings the same across both jobs — config
-    # validation looks for the exact ``test-...-not-real`` prefix.
+    # in benchmark). Tests never validate these values — they just need to
+    # be non-empty so config loading doesn't bail. Keep the two jobs in sync
+    # for consistency only.
     env:
       DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
       ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
@@ -139,9 +145,11 @@ jobs:
         # Capture mypy's own exit code separately. ``mypy ... | grep`` swallows
         # the upstream exit so a crash (segfault/import-error/exit=2+) would
         # silently set ERROR_COUNT=0 and pass — that's strictly worse than a
-        # real regression.
-        mypy cogs/ utils/ bot.py config.py > /tmp/mypy.log 2>&1
-        MYPY_EXIT=$?
+        # real regression. The ``|| MYPY_EXIT=$?`` is load-bearing: GitHub runs
+        # this step under ``bash -e``, so a bare nonzero mypy exit would kill
+        # the step before the baseline-compare logic below ever executed.
+        MYPY_EXIT=0
+        mypy cogs/ utils/ bot.py config.py > /tmp/mypy.log 2>&1 || MYPY_EXIT=$?
         ERROR_COUNT=$(grep -c ': error:' /tmp/mypy.log || true)
         # mypy returns 0 (clean) or 1 (type errors found). Anything else is
         # a crash and we should NOT compare counts — fail loudly instead.
@@ -176,7 +184,7 @@ jobs:
         import utils.monitoring.logger
         import cogs.ai_core.storage
         import cogs.ai_core.cache.ai_cache
-        import cogs.ai_core.processing.guardrails
+        import cogs.ai_core.imports
         import cogs.ai_core.api.api_handler
         print('All core module imports OK')
         "
@@ -201,14 +209,13 @@ jobs:
       uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4
       with:
         files: ./coverage.xml
-        # ``fail_ci_if_error`` and step-level ``continue-on-error`` together
-        # were doing the same job twice and obscuring each other. Picked
-        # ``continue-on-error: true`` (above) as the single source of truth
-        # because it still surfaces a real error code on the step (yellow
-        # warning in the matrix) while keeping the job overall green —
-        # ``fail_ci_if_error: true`` would have masked every codecov failure
-        # as a soft warning. Keep this set to ``false``.
-        fail_ci_if_error: false
+        # ``true`` is required for the ⚠-on-failure behaviour described
+        # above: with ``false`` the ACTION itself swallows every upload
+        # error and exits 0, so step-level ``continue-on-error`` never
+        # engages and failures show as a green ✓. With ``true`` the action
+        # exits nonzero and ``continue-on-error: true`` converts that into
+        # the visible ⚠ without blocking the qa-gate.
+        fail_ci_if_error: true
         verbose: true
 
   # ============================================================
@@ -296,8 +303,11 @@ jobs:
       # whatever the registry serves now — a compromised crates.io publish
       # would propagate immediately. Use ``--locked`` so the pinned
       # release uses its own committed Cargo.lock.
+      # 0.22.1+ is required to parse CVSS 4.0 advisories — the RustSec DB
+      # now contains them and 0.21.2 fails every run with
+      # "unsupported CVSS version: 4.0" (verified in CI logs).
       run: |
-        cargo install cargo-audit --version 0.21.2 --locked
+        cargo install cargo-audit --version 0.22.2 --locked
         cd rust_extensions && cargo audit
 
   # ============================================================
@@ -335,7 +345,7 @@ jobs:
     - name: Install Tauri system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
     - name: Rust check (dashboard)
       run: cargo check --lib
@@ -472,8 +482,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [python-test]
-    # Same placeholder creds as python-test — config validation requires
-    # the ``test-...-not-real`` prefix to recognise CI dummies.
+    # Same placeholder creds as python-test — values are arbitrary
+    # non-empty dummies; nothing validates their format.
     env:
       DISCORD_TOKEN: "test-token-ci-dummy.not-real.placeholder"
       ANTHROPIC_API_KEY: "test-anthropic-key-not-real"
@@ -501,7 +511,7 @@ jobs:
         modules = [
             'cogs.ai_core.storage',
             'cogs.ai_core.cache.ai_cache',
-            'cogs.ai_core.processing.guardrails',
+            'cogs.ai_core.imports',
             'utils.database',
             'utils.monitoring.metrics',
         ]

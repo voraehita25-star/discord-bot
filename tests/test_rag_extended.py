@@ -13,10 +13,11 @@ class TestRAGConstants:
     """Tests for RAG module constants."""
 
     def test_embedding_model(self):
-        """Test EMBEDDING_MODEL constant."""
-        from cogs.ai_core.memory.rag import EMBEDDING_MODEL
+        """Test EMBEDDING_MODEL constant (text-embedding-004 was shut down 2026-01-14)."""
+        from cogs.ai_core.memory.rag import _EMBED_CONFIG, EMBEDDING_MODEL
 
-        assert EMBEDDING_MODEL == "models/text-embedding-004"
+        assert EMBEDDING_MODEL == "gemini-embedding-2"
+        assert _EMBED_CONFIG == {"output_dimensionality": 768}
 
     def test_semantic_min_similarity_constant(self):
         """RAG_SEMANTIC_MIN_SIMILARITY is a clamped float in [0, 1]."""
@@ -713,7 +714,9 @@ class TestAsyncMethods:
             system = MemorySystem()
             system._faiss_index = None
             system._index_built = False
+            system._rebuild_after = None
             system._memories_cache = {}
+            system._all_memories_cache = {}
             system.client = None
 
             with patch("cogs.ai_core.memory.rag.db") as mock_db:
@@ -1453,8 +1456,13 @@ class TestAllMemoriesCache:
         assert second is not system._all_memories_cache[42][1]
 
     @pytest.mark.asyncio
-    async def test_none_channel_skips_cache(self, monkeypatch):
-        """channel_id=None never caches and re-queries every time."""
+    async def test_none_channel_is_cached(self, monkeypatch):
+        """channel_id=None IS cached (it's the hot cross-channel search path).
+
+        Caching the None key avoids re-pulling the entire memory table from
+        SQLite on every Discord message; add_memory invalidates the None
+        snapshot so new rows still surface within the TTL.
+        """
         import cogs.ai_core.memory.rag as rag
 
         system = _new_system()
@@ -1465,8 +1473,9 @@ class TestAllMemoriesCache:
 
         await system._get_all_memories_cached(None)
         await system._get_all_memories_cached(None)
-        assert mock_db.get_all_rag_memories.await_count == 2
-        assert system._all_memories_cache == {}
+        # Second call served from the cache — only ONE DB query.
+        assert mock_db.get_all_rag_memories.await_count == 1
+        assert None in system._all_memories_cache
 
     @pytest.mark.asyncio
     async def test_db_timeout_returns_empty(self, monkeypatch):
@@ -2154,6 +2163,7 @@ class TestEnsureIndex:
 
         system = _new_system()
         system._index_built = True
+        system._rebuild_after = None
         system._index_lock = __import__("asyncio").Lock()
         monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
         mock_db = MagicMock()

@@ -45,12 +45,13 @@ __all__ = [
 ]
 
 # ==================== AI Processing Limits ====================
-# History limits (number of messages to keep per channel type)
-# NOTE: These are token-based limits for API context, not message counts
-# For actual message storage limits, see config.py BotSettings class
-HISTORY_LIMIT_DEFAULT = 1500  # Token limit for regular channels
-HISTORY_LIMIT_MAIN = 8000  # Token limit for main server (higher traffic)
-HISTORY_LIMIT_RP = 30000  # Token limit for roleplay server (critical for continuity)
+# Per-guild MESSAGE-COUNT retention caps. storage.save_history passes these
+# straight to row-count checks and db.prune_ai_history (rows beyond the cap
+# are deleted). Token-based API-context trimming is a separate mechanism —
+# see memory/history_manager.smart_trim_by_tokens.
+HISTORY_LIMIT_DEFAULT = 1500  # Max stored messages for regular channels
+HISTORY_LIMIT_MAIN = 8000  # Max stored messages for main server (higher traffic)
+HISTORY_LIMIT_RP = 30000  # Max stored messages for roleplay server (continuity)
 
 # Processing timeouts (in seconds)
 LOCK_TIMEOUT = 180.0  # Max wait time for lock acquisition (must exceed API_TIMEOUT so a slow API call doesn't drop queued messages)
@@ -87,7 +88,8 @@ PERFORMANCE_SAMPLES_MAX = 100  # Max samples to keep per metric
 
 # ==================== Discord Limits ====================
 DISCORD_MESSAGE_LIMIT = 2000  # Max characters per message
-MAX_DISCORD_LENGTH = DISCORD_MESSAGE_LIMIT  # Alias used by response_sender.py
+# (MAX_DISCORD_LENGTH alias removed — its only consumer, response_sender.py,
+# no longer exists.)
 # WEBHOOK_SEND_TIMEOUT is defined once above in "HTTP/External service timeouts"
 DISCORD_WEBHOOK_LIMIT = 15  # Max webhooks per channel
 MAX_CHANNEL_NAME_LENGTH = 100  # Max length for channel/category names

@@ -263,9 +263,12 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 		return result
 	}
 
-	// Wait for rate limiter
+	// Wait for rate limiter. Wait returns the CONTEXT error on
+	// cancellation/deadline, not a rate-limit condition — labeling every
+	// failure "rate limited" hid real timeouts/cancellations. Surface the
+	// actual cause.
 	if err := f.limiter.Wait(ctx); err != nil {
-		result.Error = "rate limited"
+		result.Error = fmt.Sprintf("aborted before fetch (timeout/cancelled): %v", err)
 		result.FetchTimeMs = time.Since(start).Milliseconds()
 		return result
 	}
@@ -326,11 +329,13 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) FetchResult {
 		}
 	}
 
-	// Extract content
+	// Extract content. Title/description are capped too — a hostile page can
+	// carry a multi-megabyte <title> or meta description (body cap is 10MB),
+	// and uncapped fields would flow into the bot's AI prompt.
 	if strings.Contains(result.ContentType, "text/html") {
 		title, description, content := extractHTMLContent(body)
-		result.Title = title
-		result.Description = description
+		result.Title = truncateString(title, 500)
+		result.Description = truncateString(description, 2000)
 		result.Content = truncateString(content, maxExtractedLength)
 	} else if strings.Contains(result.ContentType, "text/plain") {
 		result.Content = truncateString(string(body), maxExtractedLength)
@@ -506,7 +511,11 @@ func main() {
 	// Middleware
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second))
+	// 125s: must exceed the /fetch/batch handler's documented 120s cap — a
+	// child context can never outlive its parent, so a 60s value here
+	// silently truncated every batch timeout in (60,120] and made the
+	// handler's cap dead logic.
+	r.Use(middleware.Timeout(125 * time.Second))
 	// Trace ID propagation: pass through X-Trace-ID from Python caller.
 	// Use a typed context key (Go idiom) so we don't collide with other
 	// libraries' string keys in the same context.
@@ -623,8 +632,11 @@ func main() {
 		Handler:           r,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// Must exceed the 125s request-timeout middleware (and the batch
+		// handler's 120s cap) or the connection is cut before the
+		// handler's own deadline machinery can respond.
+		WriteTimeout: 130 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Graceful shutdown

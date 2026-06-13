@@ -202,7 +202,10 @@ class FeedbackCollector:
         stats = FeedbackStats()
 
         cutoff: float = 0
-        if hours:
+        # `is not None` (not truthiness): an explicit hours=0 means a
+        # zero-length window and must exclude all past entries (cutoff=now).
+        # `if hours:` treated 0 as falsy and silently returned the full history.
+        if hours is not None:
             cutoff = time.time() - (hours * 3600)
 
         with self._lock:

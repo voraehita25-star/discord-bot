@@ -407,20 +407,30 @@ class AICache:
             pattern: If provided, only invalidate matching keys
 
         Returns:
-            Number of entries invalidated
+            Total rows cleared across BOTH cache layers (L1 in-memory + L2
+            persistent). On the production singleton every L1 entry is
+            write-through-mirrored to L2 under the same key, so an entry
+            present in both layers is counted twice — this is a rows-cleared
+            total, not a distinct-key count, and the operator-facing
+            "cleared N entries" message should be read that way.
         """
         with self._cache_lock:
             if pattern is None:
                 count = len(self.cache)
                 self.cache.clear()
-                return count
+            else:
+                # Find and remove matching entries
+                to_remove = [key for key in self.cache if pattern in key]
+                for key in to_remove:
+                    del self.cache[key]
+                count = len(to_remove)
 
-            # Find and remove matching entries
-            to_remove = [key for key in self.cache if pattern in key]
-            for key in to_remove:
-                del self.cache[key]
+        # Purge the persistent L2 layer too — otherwise load_recent's 24h
+        # warm-up resurrects the cleared entries at the next startup.
+        with contextlib.suppress(Exception):
+            count += _l2_cache.clear(pattern)
 
-            return len(to_remove)
+        return count
 
     def cleanup_expired(self) -> int:
         """Remove expired entries. Returns count removed.
@@ -444,8 +454,6 @@ class AICache:
         Args:
             interval: Seconds between cleanup runs (default: 1 hour).
         """
-        import asyncio
-
         while True:
             try:
                 await asyncio.sleep(interval)
@@ -568,7 +576,11 @@ class L2SqliteCache:
                 "CREATE INDEX IF NOT EXISTS idx_cache_created ON cache_entries(created)"
             )
             self._conn.commit()
-        except sqlite3.DatabaseError as e:
+        except (sqlite3.DatabaseError, OSError) as e:
+            # OSError included: mkdir/connect on a read-only or full disk
+            # raises it, and this runs at IMPORT time via the module-level
+            # singleton — letting it escape aborted the whole ai_core package
+            # load (imports.py's fallback only catches ImportError).
             logger.warning("L2 cache init failed (non-fatal): %s", e)
             if self._conn is not None:
                 try:
@@ -576,6 +588,31 @@ class L2SqliteCache:
                 except Exception:
                     pass
             self._conn = None
+
+    def clear(self, pattern: str | None = None) -> int:
+        """Delete persisted rows (all, or keys containing ``pattern``).
+
+        Returns the number of rows removed. Needed so invalidate() can purge
+        the L2 layer too — an L1-only clear let the 24h warm-up resurrect
+        cleared (possibly poisoned) entries on the next restart.
+        """
+        if self._conn is None:
+            return 0
+        with self._lock:
+            try:
+                if pattern is None:
+                    cur = self._conn.execute("DELETE FROM cache_entries")
+                else:
+                    # Substring match mirrors the L1 `pattern in key` filter.
+                    cur = self._conn.execute(
+                        "DELETE FROM cache_entries WHERE instr(key, ?) > 0",
+                        (pattern,),
+                    )
+                self._conn.commit()
+                return int(cur.rowcount)
+            except sqlite3.DatabaseError:
+                logger.warning("L2 cache clear failed", exc_info=True)
+                return 0
 
     def store(self, key: str, entry: CacheEntry) -> None:
         """Persist a cache entry to SQLite."""

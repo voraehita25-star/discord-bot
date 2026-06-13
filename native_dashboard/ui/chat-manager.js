@@ -14,6 +14,19 @@ import { ImageAttachManager } from './chat/image-attach.js';
 import { DocumentAttachManager } from './chat/document-attach.js';
 import { ContextWindowIndicator } from './chat/context-window.js';
 import { ConversationModals } from './chat/conversation-modals.js';
+// Error-frame `scope` values the backend tags onto AI-History-originated
+// failures (the five ai-history handlers send scope:'ai_history'; the WS
+// rate-limiter echoes the rejected wire msg type). Errors carrying one of
+// these must NOT run the chat-stream teardown — they belong to the History
+// page, not to an in-flight chat response.
+const HISTORY_ERROR_SCOPES = new Set([
+    'ai_history',
+    'list_ai_channels',
+    'load_ai_history',
+    'edit_ai_history_message',
+    'delete_ai_history_message',
+    'restore_ai_history_message',
+]);
 function chatFileIconFor(kind, name) {
     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
     if (ext === 'pdf')
@@ -187,6 +200,10 @@ export class ChatManager {
         // ``conversation_loaded`` WS handler compares against this to drop
         // stale frames when the user switches conversations rapidly.
         this.pendingConversationLoadId = null;
+        // AI History page delegate (history-manager.ts), wired by app.ts after
+        // construction. ChatManager owns the single dashboard WebSocket, so the
+        // incoming ai_* frames are forwarded to it instead of being handled here.
+        this.historyManager = null;
         // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
         // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
         // the same method surface (connect, disconnect, send, scheduleReconnect) +
@@ -208,6 +225,9 @@ export class ChatManager {
                     this.streamingConversationId = null;
                     this.clearStreamBuffers();
                     this.setInputEnabled(true);
+                    // Re-enable auto-scroll (only stream_start/end reset this; a
+                    // mid-stream disconnect left it stuck on for the session).
+                    this.userScrolledUp = false;
                     if (wasEditStreaming) {
                         // /edit stream uses an in-place .edit-streaming-text on an
                         // existing message rather than #streaming-message, so the
@@ -376,6 +396,9 @@ export class ChatManager {
                 // per page load, so after a WS drop/reconnect the failover panel
                 // would otherwise stay stale until a full page reload.
                 this.send({ type: 'get_api_endpoints' });
+                // Let the AI History page flush a channels-list request that
+                // was queued while the socket was down (incl. reconnects).
+                this.historyManager?.onConnected();
                 break;
             case 'conversations_list':
                 this.conversations = (data.conversations || [])
@@ -477,7 +500,15 @@ export class ChatManager {
             }
             case 'stream_start':
                 this.isStreaming = true;
-                this.streamingConversationId = this.currentConversation?.id ?? null;
+                // Bind the stream to the SERVER-provided conversation id —
+                // the user can switch conversations between sendMessage()
+                // and stream_start (seconds on the CLI backend while it
+                // extracts attachments), and binding to the currently-open
+                // conversation mis-attributed the whole stream.
+                this.streamingConversationId =
+                    typeof data.conversation_id === 'string'
+                        ? data.conversation_id
+                        : (this.currentConversation?.id ?? null);
                 // Fresh stream — reset the cross-switch partial buffers.
                 this.clearStreamBuffers();
                 this.currentThinking = '';
@@ -493,8 +524,13 @@ export class ChatManager {
                     this.editStreamContent = '';
                     this.startEditStreamingUI(this.editTargetMessageId);
                 }
-                else if (data._failover_retry) {
-                    // Failover retry: reuse existing streaming bubble, just reset its content
+                else {
+                    // Reuse + reset an existing bubble whether this is a
+                    // failover retry OR the CLI stale-session retry (which
+                    // re-sends a plain stream_start and expects the rendered
+                    // chunks to be cleared). Unconditionally appending here
+                    // created a SECOND #streaming-message div: the duplicate
+                    // id made every chunk land in the stale first bubble.
                     const existingMsg = document.getElementById('streaming-message');
                     if (existingMsg) {
                         const thinkingContainer = existingMsg.querySelector('.thinking-container');
@@ -513,9 +549,6 @@ export class ChatManager {
                     else {
                         this.appendStreamingMessage(data.mode || '');
                     }
-                }
-                else {
-                    this.appendStreamingMessage(data.mode || '');
                 }
                 this.setInputEnabled(false);
                 break;
@@ -761,6 +794,23 @@ export class ChatManager {
                 }
                 break;
             case 'error':
+                // History-scoped errors (backend tags them with `scope`) must
+                // not cross-fire into chat streaming state: a rejected history
+                // edit while a chat response streams in the background would
+                // otherwise kill the stream UI, re-enable the input mid-stream
+                // and null the guard that keeps stream_end out of the wrong
+                // conversation. Surface the error + unstick the history editor
+                // and leave every bit of chat state alone.
+                if (typeof data.scope === 'string' && HISTORY_ERROR_SCOPES.has(data.scope)) {
+                    console.error('Server error (ai history):', data.message);
+                    errorLogger.log('AI_SERVER_ERROR', data.message, JSON.stringify(data));
+                    showToast(data.message, { type: 'error' });
+                    // Forward the rejection code so HistoryManager can tell
+                    // permanent rejections (ROW_CONFLICT…) — which drop the
+                    // doomed undo entry — from transient ones (kept for retry).
+                    this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
+                    break;
+                }
                 console.error('Server error:', data.message);
                 errorLogger.log('AI_SERVER_ERROR', data.message, JSON.stringify(data));
                 showToast(data.message, { type: 'error' });
@@ -770,6 +820,10 @@ export class ChatManager {
                 this.streamingConversationId = null;
                 this.clearStreamBuffers();
                 this.setInputEnabled(true);
+                // Re-enable auto-scroll: only stream_start/stream_end reset
+                // this, so a stream that ENDED with an error frame left the
+                // view permanently stuck at the user's scroll position.
+                this.userScrolledUp = false;
                 // Clean up stuck streaming message on error
                 const stuckErrorMsg = document.getElementById('streaming-message');
                 if (stuckErrorMsg)
@@ -781,6 +835,11 @@ export class ChatManager {
                     this.editStreamContent = '';
                     this.renderMessages(); // Restore original message content
                 }
+                // A rejected history edit (e.g. MSG_NOT_FOUND) arrives as a
+                // plain error frame — unstick the history editor's Save
+                // button, forwarding the code (same contract as the scoped
+                // path above) so permanent rejections drop their undo entry.
+                this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
                 break;
             case 'pong':
                 this.wsClient.notePong();
@@ -888,6 +947,15 @@ export class ChatManager {
             case 'api_health_result':
                 window.dispatchEvent(new CustomEvent('api-health-result', { detail: data }));
                 break;
+            // AI History page frames — owned by history-manager.ts (wired by
+            // app.ts). Grouped labels share one forwarding body.
+            case 'ai_channels_list':
+            case 'ai_history_loaded':
+            case 'ai_history_message_edited':
+            case 'ai_history_message_deleted':
+            case 'ai_history_message_restored':
+                this.historyManager?.handleMessage(data);
+                break;
             default:
                 console.warn('Unknown WebSocket message type:', data.type);
                 break;
@@ -929,6 +997,20 @@ export class ChatManager {
         });
     }
     loadConversation(id) {
+        // Flush any pending debounced draft write for the OLD conversation
+        // BEFORE restoreDraft() replaces the textarea content. The timer
+        // resolves ids/value at fire time, so switching within the 400ms
+        // window wrote the NEW conversation's restored draft (or '') under
+        // the OLD conversation's key, silently destroying that draft.
+        if (this.draftSaveTimer !== null) {
+            clearTimeout(this.draftSaveTimer);
+            this.draftSaveTimer = null;
+            if (this.currentConversation && this.currentConversation.id !== id) {
+                const el = document.getElementById('chat-input');
+                if (el)
+                    this.saveDraft(this.currentConversation.id, el.value);
+            }
+        }
         // Track the most recently requested conversation ID so the
         // ``conversation_loaded`` handler can drop late-arriving frames
         // for a conversation the user already switched away from.
@@ -1099,6 +1181,13 @@ export class ChatManager {
                 // Drop the streaming gate so the user can retry once the WS
                 // reconnects — without this rollback, the input stays locked.
                 this.isStreaming = false;
+                // Restore the typed /edit instruction — it was cleared on the
+                // optimistic path above and was previously lost entirely.
+                if (input) {
+                    input.value = rawContent;
+                    this.autoResizeInput();
+                    input.focus();
+                }
             }
             return;
         }
@@ -1169,6 +1258,17 @@ export class ChatManager {
             this.isStreaming = false;
             this.messages.pop();
             this.renderMessages();
+            // Restore the typed text + draft — both were cleared above on
+            // the optimistic path, so a failed send used to destroy the
+            // user's message entirely (only a toast remained).
+            if (input) {
+                input.value = content;
+                this.autoResizeInput();
+                input.focus();
+            }
+            if (this.currentConversation) {
+                this.saveDraft(this.currentConversation.id, content);
+            }
             return;
         }
         // Clear attached images + documents after sending
@@ -1561,9 +1661,13 @@ export class ChatManager {
                 const src = img.src;
                 if (src) {
                     // Open image in new window safely (no document.write XSS).
-                    // Use noopener,noreferrer + an explicit opener=null so the
-                    // popped window can't reach back into ours via window.opener.
-                    const newWindow = window.open('', '_blank', 'noopener,noreferrer');
+                    // NOTE: 'noopener' must NOT be in the features string —
+                    // per the HTML spec window.open() returns null when
+                    // noopener is present, so the whole `if (newWindow)` body
+                    // (the actual image render) became dead code and clicking
+                    // an image did nothing. We still sever the back-reference
+                    // by setting opener=null on the returned window below.
+                    const newWindow = window.open('', '_blank');
                     if (newWindow) {
                         try {
                             newWindow.opener = null;
@@ -1898,6 +2002,8 @@ export class ChatManager {
             fab.addEventListener('click', () => {
                 container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
                 this.newMessagesWhileScrolledUp = 0;
+                // Clicking "jump to bottom" means: follow the stream again.
+                this.userScrolledUp = false;
                 this.updateScrollFab(false);
             });
         }
@@ -2252,6 +2358,13 @@ export class ChatManager {
         const inputEl = editBar.querySelector('.ai-edit-input');
         inputEl?.focus();
         const submitEdit = () => {
+            // The edit bar can stay open while a normal message starts a
+            // stream; two concurrent streams on one socket garble both
+            // (the backend allows up to 4 concurrent tasks per client).
+            if (this.isStreaming) {
+                showToast('Wait for the current response to finish', { type: 'warning' });
+                return;
+            }
             const instruction = inputEl?.value?.trim();
             if (!instruction) {
                 showToast('Please enter an instruction', { type: 'warning' });
@@ -2286,6 +2399,10 @@ export class ChatManager {
                 actionsEl.style.display = '';
         });
         inputEl?.addEventListener('keydown', (e) => {
+            // IME guard: Enter that commits a Korean/Japanese/Chinese
+            // composition must not submit (keydown fires with isComposing).
+            if (e.isComposing || e.keyCode === 229)
+                return;
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 submitEdit();
@@ -2717,6 +2834,9 @@ export class ChatManager {
         document.getElementById('rename-modal')?.querySelector('.modal-overlay')
             ?.addEventListener('click', () => this.closeRenameModal());
         document.getElementById('rename-input')?.addEventListener('keydown', (e) => {
+            // IME guard — Enter committing a composition must not confirm.
+            if (e.isComposing || e.keyCode === 229)
+                return;
             if (e.key === 'Enter') {
                 e.preventDefault();
                 this.confirmRename();
@@ -2742,6 +2862,12 @@ export class ChatManager {
             }
         });
         input?.addEventListener('keydown', (e) => {
+            // IME guard: in Chromium/WebView2 the Enter that COMMITS a
+            // Korean/Japanese/Chinese composition fires keydown with
+            // isComposing=true (keyCode 229) — sending here would submit a
+            // half-composed message for this dashboard's Korean UI users.
+            if (e.isComposing || e.keyCode === 229)
+                return;
             if (e.key === 'Enter' && !e.shiftKey) {
                 // Enter = send, Shift+Enter = new line
                 e.preventDefault();

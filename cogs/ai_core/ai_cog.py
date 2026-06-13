@@ -43,12 +43,14 @@ from .imports import (  # noqa: F401 - public re-exports
     FEEDBACK_AVAILABLE,
     GUARDRAILS_AVAILABLE,
     LOCALIZATION_AVAILABLE,
+    UNRESTRICTED_AVAILABLE,
     add_feedback_reactions,
     feedback_collector,
     is_unrestricted,
     msg,
     msg_en,
     set_unrestricted,
+    unrestricted_all_enabled,
     unrestricted_channels,
 )
 from .logic import ChatManager
@@ -176,6 +178,13 @@ class AI(commands.Cog):
         # Start webhook cache cleanup task
         start_webhook_cache_cleanup(self.bot)
 
+        # Expose the live ChatManager to the dashboard WS handlers (AI-history
+        # editor) so an external DB edit can also patch the in-memory session —
+        # without the patch, the next diff/force save clobbers the edited row.
+        from cogs.ai_core.api.chat_manager_registry import register_chat_manager
+
+        register_chat_manager(self.chat_manager)
+
         # Start the AI-tools IPC endpoint so the CLI backend's MCP child can
         # execute memory/server tools in-process (with the live bot + perms).
         # Best-effort: a failure just means the AI runs without custom tools.
@@ -249,6 +258,16 @@ class AI(commands.Cog):
 
     async def cog_unload(self) -> None:
         """Called when the cog is unloaded - cleanup resources."""
+        # Drop the dashboard registry's reference first so WS handlers stop
+        # patching a session map that's about to be torn down. Instance-scoped:
+        # a hot-reload's fresh registration is left untouched.
+        try:
+            from cogs.ai_core.api.chat_manager_registry import unregister_chat_manager
+
+            unregister_chat_manager(self.chat_manager)
+        except Exception:
+            logger.exception("Failed to unregister chat manager from dashboard registry")
+
         if self.cleanup_task:
             self.cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -308,9 +327,17 @@ class AI(commands.Cog):
         except Exception as exc:
             logger.debug("token_tracker.stop_cleanup_task suppressed during cog_unload: %s", exc)
 
-        # Stop RAG periodic save and force final save
-        await rag_system.stop_periodic_save()
-        await rag_system.force_save_index()
+        # Stop RAG periodic save and force final save — each guarded like
+        # every other unload step, so one failure can't abort the session
+        # save and the L2/DB flushes further down.
+        try:
+            await rag_system.stop_periodic_save()
+        except Exception:
+            logger.exception("rag_system.stop_periodic_save failed during cog_unload")
+        try:
+            await rag_system.force_save_index()
+        except Exception:
+            logger.exception("rag_system.force_save_index failed during cog_unload")
 
         # Stop the memory consolidator if it was auto-started (idempotent —
         # stop_background_task no-ops when the task was never created).
@@ -321,8 +348,12 @@ class AI(commands.Cog):
         except Exception:
             logger.debug("memory consolidator stop suppressed during cog_unload", exc_info=True)
 
-        # Save all active sessions before unload
-        await self.chat_manager.save_all_sessions()
+        # Save all active sessions before unload — guarded so a single bad
+        # session can't prevent the L2 cache + DB export flushes below.
+        try:
+            await self.chat_manager.save_all_sessions()
+        except Exception:
+            logger.exception("save_all_sessions failed during cog_unload")
 
         # Flush pending L2 SQLite cache writes so anything queued via
         # _post_set_hook actually lands on disk before the loop closes.
@@ -490,40 +521,72 @@ class AI(commands.Cog):
     async def reset_ai(self, ctx):
         """Reset Chat History (Owner Only)."""
         channel_id = ctx.channel.id
+        # RP guild: commands are issued in the COMMAND channel but the session
+        # lives under the OUTPUT channel id (logic.py keys by context channel)
+        # — same redirect as !thinking / !streaming / !resend. Without it the
+        # wipe hit the unused COMMAND-channel session and the real memory,
+        # DB history, and Claude --resume session all survived.
+        if ctx.guild and ctx.guild.id == GUILD_ID_RP and ctx.channel.id == CHANNEL_ID_RP_COMMAND:
+            channel_id = CHANNEL_ID_RP_OUTPUT
 
-        # Remove from memory. Use pop() — `if x in d: del d[x]` races with
-        # the LRU evictor in _enforce_channel_limit which can delete the
-        # key between the check and the del, raising KeyError.
-        self.chat_manager.chats.pop(channel_id, None)
+        # Wait (bounded) for an in-flight generation to finish so its final
+        # save_history / CLI session write lands *before* the wipe instead of
+        # silently resurrecting rows right after we delete them.
+        lock = self.chat_manager.processing_locks.get(channel_id)
+        acquired = False
+        if isinstance(lock, asyncio.Lock):
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=30.0)
+                acquired = True
+            except TimeoutError:
+                logger.warning(
+                    "reset_ai: in-flight turn in channel %s still running after 30s — wiping anyway",
+                    channel_id,
+                )
 
-        # Remove from disk
-        await delete_history(channel_id)
+        # HOLD the lock through the wipe (release in the finally below):
+        # releasing before wiping let a queued turn start mid-wipe and its
+        # save_history re-inserted rows into the channel we just deleted.
+        try:
+            # Remove from memory. Use pop() — `if x in d: del d[x]` races with
+            # the LRU evictor in _enforce_channel_limit which can delete the
+            # key between the check and the del, raising KeyError.
+            self.chat_manager.chats.pop(channel_id, None)
 
-        # Clean up ALL per-channel state to mirror on_guild_channel_delete.
-        # Without this, locks / queued messages / typing markers / cancel
-        # flags persist after the history wipe and the next message lands
-        # in an inconsistent state (e.g. a stale cancel_flag = True that
-        # silently kills the new turn).
-        self.chat_manager.seen_users.pop(channel_id, None)
-        self.chat_manager.last_accessed.pop(channel_id, None)
-        self.chat_manager.processing_locks.pop(channel_id, None)
-        self.chat_manager.streaming_enabled.pop(channel_id, None)
-        self.chat_manager.current_typing_msg.pop(channel_id, None)
-        # Use the public ``clear_channel`` API instead of reaching into
-        # private ``_message_queue`` state — keeps the encapsulation
-        # boundary stable across MessageQueue refactors.
-        self.chat_manager._message_queue.clear_channel(channel_id)
+            # Remove from disk
+            await delete_history(channel_id)
 
-        # In CLI mode, also forget the Claude --resume session_id so the
-        # next message starts a fresh subprocess context. Without this,
-        # the CLI would keep replaying the prior conversation server-side
-        # even though the bot's local history has been wiped.
-        if getattr(self.chat_manager, "cli_mode", False):
-            from cogs.ai_core.api.discord_chat_claude_cli import (
-                reset_channel_session,
-            )
+            # Clean up ALL per-channel state to mirror on_guild_channel_delete.
+            # Without this, locks / queued messages / typing markers / cancel
+            # flags persist after the history wipe and the next message lands
+            # in an inconsistent state (e.g. a stale cancel_flag = True that
+            # silently kills the new turn).
+            self.chat_manager.seen_users.pop(channel_id, None)
+            self.chat_manager.last_accessed.pop(channel_id, None)
+            self.chat_manager.processing_locks.pop(channel_id, None)
+            self.chat_manager.streaming_enabled.pop(channel_id, None)
+            self.chat_manager.current_typing_msg.pop(channel_id, None)
+            # Use the public ``clear_channel`` API instead of reaching into
+            # private ``_message_queue`` state — keeps the encapsulation
+            # boundary stable across MessageQueue refactors.
+            self.chat_manager._message_queue.clear_channel(channel_id)
 
-            reset_channel_session(channel_id)
+            # In CLI mode, also forget the Claude --resume session_id so the
+            # next message starts a fresh subprocess context. Without this,
+            # the CLI would keep replaying the prior conversation server-side
+            # even though the bot's local history has been wiped.
+            if getattr(self.chat_manager, "cli_mode", False):
+                from cogs.ai_core.api.discord_chat_claude_cli import (
+                    reset_channel_session,
+                )
+
+                reset_channel_session(channel_id)
+        finally:
+            # Release the (now-orphaned) lock so any waiter queued behind the
+            # reset wakes up and proceeds against the freshly wiped state
+            # instead of deadlocking on an object no dict references anymore.
+            if acquired:
+                lock.release()
 
         await ctx.send("🧹 ล้างความจำ AI ในห้องนี้เรียบร้อยแล้ว เริ่มต้นคุยใหม่ได้เลย!")
 
@@ -558,6 +621,72 @@ class AI(commands.Cog):
         # private ``_message_queue`` state — see ``reset_ai`` for the
         # rationale.
         self.chat_manager._message_queue.clear_channel(channel.id)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        """Mirror a Discord message deletion into the AI's memory.
+
+        Keeps the bot's stored history in sync with what's actually visible in
+        the channel — a deleted message stops influencing future replies, as if
+        the bot were re-reading the channel live. Uses the *raw* event so it
+        fires even for messages the gateway never cached. Matches the user turn
+        that carried this id and, when the bot's own reply id was recorded, the
+        reply too.
+        """
+        try:
+            removed = await self.chat_manager.remove_message_from_history(
+                payload.channel_id, payload.message_id
+            )
+            if removed:
+                logger.info(
+                    "🗑️ Synced Discord delete → forgot message %s in channel %s",
+                    payload.message_id,
+                    payload.channel_id,
+                )
+        except Exception:
+            logger.exception("Failed to sync Discord delete for message %s", payload.message_id)
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        """Mirror a Discord *bulk* deletion (purge/moderation) into AI memory."""
+        for message_id in payload.message_ids:
+            try:
+                await self.chat_manager.remove_message_from_history(payload.channel_id, message_id)
+            except Exception:
+                logger.exception("Failed to sync bulk Discord delete for message %s", message_id)
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        """Mirror a Discord message edit into the AI's memory so later turns see
+        the new text rather than the original ('like reading live').
+
+        MESSAGE_UPDATE is a partial — ``content`` is only present when the text
+        changed, so edits that merely attach an embed (e.g. a link unfurling)
+        carry no ``content`` and are skipped.
+        """
+        data = payload.data if isinstance(payload.data, dict) else {}
+        # Never sync the bot's own edits: streaming works by repeatedly editing
+        # the bot's message, and a late MESSAGE_UPDATE for a partial chunk
+        # would overwrite the canonical model turn that update_message_id
+        # recorded onto the history row.
+        author_id = (data.get("author") or {}).get("id")
+        if self.bot.user is not None and str(author_id) == str(self.bot.user.id):
+            return
+        new_content = data.get("content")
+        if not new_content:
+            return
+        try:
+            updated = await self.chat_manager.edit_message_in_history(
+                payload.channel_id, payload.message_id, new_content
+            )
+            if updated:
+                logger.info(
+                    "✏️ Synced Discord edit → updated message %s in channel %s",
+                    payload.message_id,
+                    payload.channel_id,
+                )
+        except Exception:
+            logger.exception("Failed to sync Discord edit for message %s", payload.message_id)
 
     async def _resolve_prefix_tuple(self, message: discord.Message) -> tuple[str, ...]:
         """Resolve bot.command_prefix into a tuple of prefix strings.
@@ -775,6 +904,14 @@ class AI(commands.Cog):
                 return
             if not await check_rate_limit("gemini_global", message, send_message=False):
                 return
+            # Owner-set per-channel limit (!channel_ratelimit). This was dead
+            # wiring before: set_channel_limit created a bucket that no live
+            # path ever consumed, so the command reported success for a no-op.
+            if rate_limiter.get_custom_channel_limit(message.channel.id) is not None:
+                if not await check_rate_limit(
+                    rate_limiter.channel_config_name(message.channel.id), message
+                ):
+                    return
 
             user_msg = parts[1] if len(parts) > 1 else ""
 
@@ -784,6 +921,18 @@ class AI(commands.Cog):
                     output_channel = self._as_text_channel(
                         self.bot.get_channel(CHANNEL_ID_RP_OUTPUT)
                     )
+                    if output_channel is None:
+                        # OUTPUT is write-only by design: replying in the
+                        # COMMAND channel would violate that. Mirror
+                        # chat_command's hard-error instead of silently
+                        # falling through with output_channel=None.
+                        logger.error(
+                            "RP OUTPUT channel %s missing/not a text channel — "
+                            "dropping webhook chat from %s",
+                            CHANNEL_ID_RP_OUTPUT,
+                            message.channel.id,
+                        )
+                        return
 
             chat_channel = self._as_chat_channel(message.channel)
             if chat_channel is None:
@@ -880,7 +1029,7 @@ class AI(commands.Cog):
         if message.guild and message.guild.id == GUILD_ID_RP:
             return
 
-        # Check if mentioned or in allowed channel. Guard against
+        # Check if mentioned or replying to the bot. Guard against
         # bot.user being None during very-early ready / disconnect — the
         # `in` operator on None would crash and `==` would compare None
         # to message author, which evaluates as a False match anyway.
@@ -942,8 +1091,11 @@ class AI(commands.Cog):
             if ctx.channel.id == CHANNEL_ID_RP_COMMAND:
                 target_channel_id = CHANNEL_ID_RP_OUTPUT
 
-        # Get current session to check status
-        chat_data = await self.chat_manager.get_chat_session(target_channel_id)
+        # Get current session to check status. Pass the guild so a session
+        # CREATED here for the RP output channel gets the RP persona + lore
+        # instead of the default Faust instruction.
+        guild_id = ctx.guild.id if ctx.guild else None
+        chat_data = await self.chat_manager.get_chat_session(target_channel_id, guild_id)
 
         if mode is None:
             # No argument: Toggle current state
@@ -959,7 +1111,9 @@ class AI(commands.Cog):
                 return
             enable_thinking = mode in ["on", "enable", "open"]
 
-        success = await self.chat_manager.toggle_thinking(target_channel_id, enable_thinking)
+        success = await self.chat_manager.toggle_thinking(
+            target_channel_id, enable_thinking, guild_id
+        )
 
         if success:
             status_str = "เปิดใช้งาน (Enabled)" if enable_thinking else "ปิดใช้งาน (Disabled)"
@@ -1020,13 +1174,18 @@ class AI(commands.Cog):
         """Show rate limit statistics (Owner only)."""
         stats = rate_limiter.get_stats()
 
-        if not stats:
+        # get_stats() mixes per-config dicts with int aggregate keys
+        # (active_buckets / total_blocked); only the dict entries are
+        # per-bucket rows — subscripting the ints crashed every invocation.
+        buckets = {k: v for k, v in stats.items() if isinstance(v, dict)}
+
+        if not buckets:
             await ctx.send("📊 No rate limit data yet.")
             return
 
         embed = discord.Embed(title="📊 Rate Limit Statistics", color=Colors.INFO)
 
-        for name, data in sorted(stats.items()):
+        for name, data in sorted(buckets.items()):
             total = data["allowed"] + data["blocked"]
             if total > 0:
                 block_rate = (data["blocked"] / total) * 100
@@ -1117,7 +1276,10 @@ class AI(commands.Cog):
 
         def check(m):
             return (
-                m.author.id == self.OWNER_ID
+                # Compare against the actual invoker — is_owner() already
+                # gated the command, and OWNER_ID (CREATOR_ID env) can drift
+                # from the application owner, silently timing out every confirm.
+                m.author.id == ctx.author.id
                 and m.channel.id == ctx.channel.id
                 and m.content.lower() in ["yes", "no", "y", "n"]
             )
@@ -1189,8 +1351,11 @@ class AI(commands.Cog):
             if ctx.channel.id == CHANNEL_ID_RP_COMMAND:
                 target_channel_id = CHANNEL_ID_RP_OUTPUT
 
-        # Get chat session
-        chat_data = await self.chat_manager.get_chat_session(target_channel_id)
+        # Get chat session (guild-aware so a freshly created RP session gets
+        # the RP persona instead of the default instruction)
+        chat_data = await self.chat_manager.get_chat_session(
+            target_channel_id, ctx.guild.id if ctx.guild else None
+        )
         if not chat_data or not chat_data.get("history"):
             await ctx.send("❌ ไม่พบประวัติแชทในช่องนี้")
             return
@@ -1378,7 +1543,10 @@ class AI(commands.Cog):
 
         def check(m):
             return (
-                m.author.id == self.OWNER_ID
+                # Compare against the actual invoker — is_owner() already
+                # gated the command, and OWNER_ID (CREATOR_ID env) can drift
+                # from the application owner, silently timing out every confirm.
+                m.author.id == ctx.author.id
                 and m.channel.id == ctx.channel.id
                 and m.content.lower() in ["yes", "no", "y", "n"]
             )
@@ -1631,6 +1799,10 @@ class AI(commands.Cog):
         Default: 500000 tokens (500K)
         """
         channel_id = ctx.channel.id
+        # Same RP redirect as !thinking / !streaming / !reset_ai — sessions in
+        # the RP guild are keyed under the OUTPUT channel id.
+        if ctx.guild and ctx.guild.id == GUILD_ID_RP and ctx.channel.id == CHANNEL_ID_RP_COMMAND:
+            channel_id = CHANNEL_ID_RP_OUTPUT
 
         chat_data = self.chat_manager.chats.get(channel_id)
         if chat_data is None:
@@ -1666,6 +1838,11 @@ class AI(commands.Cog):
             if channel_id not in locks:
                 locks[channel_id] = asyncio.Lock()
             async with locks[channel_id]:
+                # Re-read INSIDE the lock: an in-flight turn finishing while
+                # we waited may have REPLACED chat_data["history"] with a new
+                # list — trimming the stale snapshot captured before the lock
+                # would silently discard those turns.
+                history = chat_data.get("history", [])
                 trimmed = await history_manager.smart_trim_by_tokens(
                     history, max_tokens=max_tokens, reserve_tokens=2000
                 )
@@ -1674,7 +1851,21 @@ class AI(commands.Cog):
 
                 from cogs.ai_core.storage import save_history
 
-                await save_history(self.bot, channel_id, chat_data)
+                # force=True is load-bearing: the non-force diff path finds
+                # the last DB row at the tail of the trimmed list, writes
+                # NOTHING, and the trim/summary silently never persists (the
+                # untrimmed history resurrects on the next reload). Mirrors
+                # the auto-trim in logic.py.
+                persisted = await save_history(self.bot, channel_id, chat_data, force=True)
+
+            if not persisted:
+                await status_msg.edit(
+                    content=(
+                        "⚠️ Summarized in memory, but persisting the trimmed history "
+                        "FAILED (see logs) — the on-disk history is unchanged."
+                    )
+                )
+                return
 
             new_tokens = history_manager.estimate_tokens(trimmed)
 
@@ -1723,11 +1914,10 @@ class AI(commands.Cog):
         """
         Toggle UNRESTRICTED MODE for this channel (Owner only).
 
-        When enabled:
-        - All input guardrails are bypassed
-        - All output guardrails are bypassed
-        - AI receives special "no limits" system prompt injection
-        - Content filters are disabled
+        When enabled, the channel gets the UNRESTRICTED_MODE_INSTRUCTION persona
+        injected into its system prompt (the "no limits" framing). Guardrails were
+        removed from the bot, so this no longer bypasses any content validation —
+        it only controls persona injection. State persists across restarts.
 
         Usage:
         - !unrestricted        - Toggle mode
@@ -1735,17 +1925,25 @@ class AI(commands.Cog):
         - !unrestricted off    - Disable unrestricted mode
         - !unrestricted status - Show current status for all channels
         """
-        if not GUARDRAILS_AVAILABLE:
-            await ctx.send("❌ Guardrails module not available")
+        if not UNRESTRICTED_AVAILABLE:
+            await ctx.send("❌ Unrestricted module not available")
             return
 
         channel_id = ctx.channel.id
 
         # Status mode - show all unrestricted channels
         if mode and mode.lower() == "status":
+            global_note = ""
+            if unrestricted_all_enabled():
+                global_note = (
+                    "🌐 **Global override ACTIVE** (`AI_UNRESTRICTED_ALL`) — "
+                    "**every** channel is unrestricted regardless of the per-channel list.\n\n"
+                )
+
             if not unrestricted_channels:
                 await ctx.send(
-                    "📊 **Unrestricted Mode Status**\n\n❌ No channels are in unrestricted mode."
+                    f"{global_note}📊 **Unrestricted Mode Status**\n\n"
+                    "❌ No channels are individually marked unrestricted."
                 )
                 return
 
@@ -1759,12 +1957,12 @@ class AI(commands.Cog):
 
             embed = discord.Embed(
                 title="🔓 Unrestricted Mode Status",
-                description="\n".join(channel_list),
+                description=global_note + "\n".join(channel_list),
                 color=Colors.WARNING,
             )
             embed.add_field(
                 name="⚠️ Warning",
-                value="These channels have ALL content restrictions DISABLED.",
+                value="ห้องเหล่านี้เปิดโหมด unrestricted — ฉีด persona แบบไม่จำกัดเข้า system prompt",
                 inline=False,
             )
             await ctx.send(embed=embed)
@@ -1790,36 +1988,56 @@ class AI(commands.Cog):
                 return
             enable = mode in ["on", "enable", "yes"]
 
-        # Set the mode
-        set_unrestricted(channel_id, enable)
+        # Set the mode. set_unrestricted returns the disk-persistence outcome
+        # (False if the JSON write failed), so we report durability truthfully
+        # instead of unconditionally promising the change survives a restart.
+        # Offloaded to a thread: the save does open/json.dump/os.fsync, and
+        # fsync can stall the event loop for tens of ms on a slow disk.
+        saved = await asyncio.to_thread(set_unrestricted, channel_id, enable)
+        persist_line = (
+            "สถานะถูกบันทึกถาวร — รอด restart"
+            if saved
+            else "⚠️ บันทึกลงดิสก์ไม่สำเร็จ — มีผลเฉพาะเซสชันนี้ อาจย้อนกลับเมื่อ restart (ดู log)"
+        )
 
         if enable:
             embed = discord.Embed(
                 title="🔓 UNRESTRICTED MODE ENABLED",
                 description=(
                     f"**Channel:** <#{channel_id}>\n\n"
-                    "⚠️ **WARNING: All safety restrictions are now DISABLED**\n\n"
-                    "• Input guardrails: **BYPASSED**\n"
-                    "• Output guardrails: **BYPASSED**\n"
-                    "• Content filters: **DISABLED**\n"
-                    "• Jailbreak detection: **DISABLED**\n\n"
-                    "The AI will now respond without content limitations."
+                    "🔓 **โหมด unrestricted เปิดแล้ว**\n\n"
+                    "• Unrestricted persona: **ACTIVE** "
+                    "(ฉีด UNRESTRICTED_MODE_INSTRUCTION เข้า system prompt)\n"
+                    f"• {persist_line}\n\n"
+                    "หมายเหตุ: guardrails ถูกถอดออกจากบอทแล้ว โหมดนี้ควบคุมเฉพาะ persona เท่านั้น"
                 ),
                 color=Colors.ERROR,  # Red to indicate danger
             )
-            embed.set_footer(text="Use !unrestricted off to re-enable safety features")
+            embed.set_footer(text="ใช้ !unrestricted off เพื่อกลับไปใช้ persona ปกติ")
         else:
             embed = discord.Embed(
                 title="🔒 Unrestricted Mode Disabled",
                 description=(
                     f"**Channel:** <#{channel_id}>\n\n"
-                    "✅ All safety features have been **RE-ENABLED**\n\n"
-                    "• Input guardrails: **ACTIVE**\n"
-                    "• Output guardrails: **ACTIVE**\n"
-                    "• Content filters: **ENABLED**\n"
-                    "• Jailbreak detection: **ENABLED**"
+                    "🔒 **โหมด unrestricted ปิดแล้ว** — กลับไปใช้ persona ปกติ\n\n"
+                    "• Unrestricted persona: **INACTIVE**\n"
+                    f"• {persist_line}"
                 ),
                 color=Colors.SUCCESS,
+            )
+
+        # The global override forces every channel unrestricted, so a per-channel
+        # toggle can't actually change behavior while it's set. Say so plainly,
+        # otherwise "✅ safety RE-ENABLED" reads as a lie.
+        if unrestricted_all_enabled():
+            embed.add_field(
+                name="🌐 Global override is ON",
+                value=(
+                    "`AI_UNRESTRICTED_ALL` is set, so **all channels stay unrestricted "
+                    "regardless of this toggle.** Unset it in `.env` and restart to make "
+                    "per-channel control take effect again."
+                ),
+                inline=False,
             )
 
         await ctx.send(embed=embed)

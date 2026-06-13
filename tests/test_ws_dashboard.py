@@ -49,15 +49,28 @@ def server():
             "ANTHROPIC_API_KEY": "",
             "DEFAULT_AI_PROVIDER": "gemini",
             "DASHBOARD_WS_TOKEN": "",
+            # Pin the SDK path explicitly: the module default is now "cli"
+            # (matching the rest of the repo), and these tests exercise the
+            # SDK validation order (e.g. test_too_many_images). Pinning also
+            # removes order-sensitivity vs other test modules that setdefault
+            # CLAUDE_BACKEND.
+            "CLAUDE_BACKEND": "api",
         },
     ):
         with patch("cogs.ai_core.api.ws_dashboard.genai") as mock_genai:
             mock_genai.Client.return_value = MagicMock()
+            import cogs.ai_core.api.ws_dashboard as ws_module
             from cogs.ai_core.api.ws_dashboard import DashboardWebSocketServer
 
-            srv = DashboardWebSocketServer()
-            srv.gemini_client = MagicMock()
-            return srv
+            # _CLAUDE_BACKEND is a module constant read at IMPORT time, so the
+            # env var above can't override it when another test module already
+            # imported ws_dashboard under CLAUDE_BACKEND=cli. Patch the module
+            # attribute (restored on fixture teardown) so these tests always
+            # exercise the SDK validation path.
+            with patch.object(ws_module, "_CLAUDE_BACKEND", "api"):
+                srv = DashboardWebSocketServer()
+                srv.gemini_client = MagicMock()
+                yield srv
 
 
 @pytest.fixture()
@@ -270,16 +283,17 @@ class TestInputValidation:
                 "ai_provider": "gemini",
             },
         )
-        # Should get an error frame. Under CLAUDE_BACKEND=cli (the new
-        # default) gemini is dropped from VALID_AI_PROVIDERS so the
-        # validation fires "Invalid ai_provider" instead of the legacy
-        # "AI not configured" — accept either to keep the contract test
-        # robust to backend mode.
+        # Should get an error frame. The exact message depends on backend
+        # mode: under CLAUDE_BACKEND=cli gemini is dropped from
+        # VALID_AI_PROVIDERS ("Invalid ai_provider"); under api with both
+        # clients unset the Thai no-backend message fires. Accept any of
+        # them to keep the contract test robust to backend mode.
         errors = ws.find("error")
         assert any(
             "not configured" in e.get("message", "").lower()
             or "not available" in e.get("message", "").lower()
             or "invalid ai_provider" in e.get("message", "").lower()
+            or "ไม่มี ai backend" in e.get("message", "").lower()
             for e in errors
         )
 
@@ -332,6 +346,32 @@ class TestConversationManagement:
             await server.handle_delete_conversation(ws, {"id": "test-id"})
         result = ws.find("conversation_deleted")
         assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_resets_cli_session_after_delete(self, server, ws):
+        """The CLI session reset must run AFTER the delete handler.
+
+        delete_session_file inside the handler needs the session-map entry to
+        find and unlink the .jsonl transcript; resetting first popped that
+        entry and made the transcript cleanup a guaranteed no-op (deleted
+        conversations' content lingered on disk).
+        """
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        order: list[str] = []
+
+        async def fake_delete(_ws, _data):
+            order.append("delete")
+
+        def fake_reset(conv_id):
+            order.append(f"reset:{conv_id}")
+
+        with (
+            patch.object(ws_module, "handle_delete_conversation", new=fake_delete),
+            patch.object(ws_module, "_reset_cli_session", new=fake_reset),
+        ):
+            await server.handle_delete_conversation(ws, {"id": "conv-1"})
+        assert order == ["delete", "reset:conv-1"]
 
     @pytest.mark.asyncio
     async def test_star_conversation(self, server, ws):

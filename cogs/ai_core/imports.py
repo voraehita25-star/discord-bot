@@ -52,31 +52,48 @@ except ImportError:
 # ==========================================
 # 2. AI Enhancements & Processing
 # ==========================================
+# Guardrails REMOVED — the ``cogs.ai_core.processing.guardrails`` module was
+# deleted. Content validation and secret/token redaction are gone; these are
+# permanent no-op shims kept so the rest of ai_core (and the test suite) can
+# still import the old validation surface. ``GUARDRAILS_AVAILABLE`` is always
+# False: input/output passes through unfiltered and secrets are NOT redacted.
+GUARDRAILS_AVAILABLE = False
+_GUARDRAILS_WARNING = "guardrails_unavailable"
+
+
+def validate_response(response: str) -> tuple[bool, str, list[str]]:
+    # Pass-through: allow responses unchanged, flagged as unvalidated.
+    return True, response, [_GUARDRAILS_WARNING]
+
+
+def validate_response_for_channel(response: str, channel_id: int) -> tuple[bool, str, list[str]]:
+    return True, response, [_GUARDRAILS_WARNING]
+
+
+def validate_input_for_channel(
+    user_input: str, channel_id: int
+) -> tuple[bool, str, float, list[str]]:
+    return True, user_input, 0.0, []
+
+
+def is_silent_block(response: str) -> bool:
+    return bool(not response or not response.strip())  # Only flag truly empty responses
+
+
+# Unrestricted mode lives in its own module now (decoupled from the removed
+# guardrails). It controls per-channel persona injection
+# (UNRESTRICTED_MODE_INSTRUCTION), not content filtering.
 try:
-    from .processing.guardrails import (
-        is_silent_block,
+    from .processing.unrestricted import (
         is_unrestricted,
         set_unrestricted,
+        unrestricted_all_enabled,
         unrestricted_channels,
-        validate_input_for_channel,
-        validate_response,
-        validate_response_for_channel,
     )
 
-    GUARDRAILS_AVAILABLE = True
+    UNRESTRICTED_AVAILABLE = True
 except ImportError:
-    GUARDRAILS_AVAILABLE = False
-    logger.critical(
-        "⚠️ GUARDRAILS MODULE UNAVAILABLE — AI responses will NOT be filtered! "
-        "Fix the import error in cogs.ai_core.processing.guardrails to restore safety checks."
-    )
-
-    _GUARDRAILS_WARNING = "guardrails_unavailable"
-
-    def validate_response(response: str) -> tuple[bool, str, list[str]]:
-        # Fail-open: allow responses through but flag them as unvalidated
-        # Blocking all responses would cause a self-inflicted DoS
-        return True, response, [_GUARDRAILS_WARNING]
+    UNRESTRICTED_AVAILABLE = False
 
     def is_unrestricted(channel_id: int) -> bool:
         return False
@@ -84,20 +101,10 @@ except ImportError:
     def set_unrestricted(channel_id: int, enabled: bool) -> bool:
         return False
 
-    unrestricted_channels = set()
+    def unrestricted_all_enabled() -> bool:
+        return False
 
-    def validate_response_for_channel(
-        response: str, channel_id: int
-    ) -> tuple[bool, str, list[str]]:
-        return True, response, [_GUARDRAILS_WARNING]
-
-    def validate_input_for_channel(
-        user_input: str, channel_id: int
-    ) -> tuple[bool, str, float, list[str]]:
-        return True, user_input, 0.0, []
-
-    def is_silent_block(response: str) -> bool:
-        return bool(not response or not response.strip())  # Only flag truly empty responses
+    unrestricted_channels: set[int] = set()
 
 
 try:

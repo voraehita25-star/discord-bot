@@ -174,7 +174,7 @@ async def cmd_create_text(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_channels", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels", allowed_mentions=_NO_MENTIONS)
         return
 
     if not name:
@@ -183,7 +183,7 @@ async def cmd_create_text(
     # Sanitize channel name
     name = sanitize_channel_name(name)
     if not name:
-        await origin_channel.send("❌ ชื่อช่องไม่ถูกต้อง")
+        await origin_channel.send("❌ ชื่อช่องไม่ถูกต้อง", allowed_mentions=_NO_MENTIONS)
         return
 
     category_name = args[1] if len(args) > 1 else None
@@ -201,7 +201,9 @@ async def cmd_create_text(
     try:
         channel = await guild.create_text_channel(name, category=category)
         logger.info("🛠️ AI Created Text Channel: %s", name)
-        await origin_channel.send(f"✅ สร้างช่องข้อความ **#{name}** เรียบร้อยแล้ว")
+        await origin_channel.send(
+            f"✅ สร้างช่องข้อความ **#{name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+        )
 
         # Log to audit trail
         if AUDIT_AVAILABLE and log_channel_change is not None:
@@ -213,10 +215,12 @@ async def cmd_create_text(
                 channel_name=name,
             )
     except discord.Forbidden:
-        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างช่อง")
+        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างช่อง", allowed_mentions=_NO_MENTIONS)
     except discord.HTTPException as e:
         logger.error("Failed to create text channel: %s", e, exc_info=True)
-        await origin_channel.send(f"❌ ไม่สามารถสร้างช่องได้ {_fmt_http_error(e)}")
+        await origin_channel.send(
+            f"❌ ไม่สามารถสร้างช่องได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_create_voice(
@@ -238,7 +242,7 @@ async def cmd_create_voice(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_channels", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels", allowed_mentions=_NO_MENTIONS)
         return
 
     if not name:
@@ -247,7 +251,7 @@ async def cmd_create_voice(
     # Sanitize channel name
     name = sanitize_channel_name(name)
     if not name:
-        await origin_channel.send("❌ ชื่อช่องไม่ถูกต้อง")
+        await origin_channel.send("❌ ชื่อช่องไม่ถูกต้อง", allowed_mentions=_NO_MENTIONS)
         return
 
     category_name = args[1] if len(args) > 1 else None
@@ -261,7 +265,9 @@ async def cmd_create_voice(
     try:
         channel = await guild.create_voice_channel(name, category=category)
         logger.info("🛠️ AI Created Voice Channel: %s", name)
-        await origin_channel.send(f"✅ สร้างช่องเสียง **{name}** เรียบร้อยแล้ว")
+        await origin_channel.send(
+            f"✅ สร้างช่องเสียง **{name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+        )
 
         # Log to audit trail
         if AUDIT_AVAILABLE and log_channel_change is not None:
@@ -273,10 +279,12 @@ async def cmd_create_voice(
                 channel_name=name,
             )
     except discord.Forbidden:
-        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างช่อง")
+        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างช่อง", allowed_mentions=_NO_MENTIONS)
     except discord.HTTPException as e:
         logger.error("Failed to create voice channel: %s", e, exc_info=True)
-        await origin_channel.send(f"❌ ไม่สามารถสร้างช่องได้ {_fmt_http_error(e)}")
+        await origin_channel.send(
+            f"❌ ไม่สามารถสร้างช่องได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_create_category(
@@ -298,7 +306,7 @@ async def cmd_create_category(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_channels", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels", allowed_mentions=_NO_MENTIONS)
         return
 
     if not name:
@@ -307,18 +315,22 @@ async def cmd_create_category(
     # Sanitize category name
     name = sanitize_channel_name(name)
     if not name:
-        await origin_channel.send("❌ ชื่อ Category ไม่ถูกต้อง")
+        await origin_channel.send("❌ ชื่อ Category ไม่ถูกต้อง", allowed_mentions=_NO_MENTIONS)
         return
 
     try:
         await guild.create_category(name)
         logger.info("🛠️ AI Created Category: %s", name)
-        await origin_channel.send(f"✅ สร้าง Category **{name}** เรียบร้อยแล้ว")
+        await origin_channel.send(
+            f"✅ สร้าง Category **{name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+        )
     except discord.Forbidden:
-        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้าง Category")
+        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้าง Category", allowed_mentions=_NO_MENTIONS)
     except discord.HTTPException as e:
         logger.exception("Failed to create category")
-        await origin_channel.send(f"❌ ไม่สามารถสร้าง Category ได้ {_fmt_http_error(e)}")
+        await origin_channel.send(
+            f"❌ ไม่สามารถสร้าง Category ได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_delete_channel(
@@ -340,7 +352,7 @@ async def cmd_delete_channel(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_channels", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels", allowed_mentions=_NO_MENTIONS)
         return
 
     # If the input is purely numeric, prefer ID lookup — it's a more specific
@@ -364,19 +376,25 @@ async def cmd_delete_channel(
 
     if channel:
         if channel.id == origin_channel.id:
-            await origin_channel.send("❌ ไม่สามารถลบช่องที่กำลังใช้งานอยู่ได้")
+            await origin_channel.send(
+                "❌ ไม่สามารถลบช่องที่กำลังใช้งานอยู่ได้", allowed_mentions=_NO_MENTIONS
+            )
             return
         try:
             await channel.delete()
             logger.info("🗑️ AI Deleted Channel: %s", name)
-            await origin_channel.send(f"✅ ลบช่อง **{name}** เรียบร้อยแล้ว")
+            await origin_channel.send(
+                f"✅ ลบช่อง **{name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+            )
         except discord.Forbidden:
             await origin_channel.send(
                 f"❌ บอทไม่มีสิทธิ์ลบช่อง **{name}**", allowed_mentions=_NO_MENTIONS
             )
         except discord.HTTPException as e:
             logger.exception("Failed to delete channel")
-            await origin_channel.send(f"❌ ไม่สามารถลบช่องได้ {_fmt_http_error(e)}")
+            await origin_channel.send(
+                f"❌ ไม่สามารถลบช่องได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+            )
     else:
         logger.warning("AI tried to delete non-existent channel: %s", name)
         await origin_channel.send(f"❌ ไม่พบช่อง: **{name}**", allowed_mentions=_NO_MENTIONS)
@@ -393,22 +411,22 @@ async def cmd_create_role(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_roles", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles", allowed_mentions=_NO_MENTIONS)
         return
 
     if not args or len(args) < 1:
-        await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการสร้าง")
+        await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการสร้าง", allowed_mentions=_NO_MENTIONS)
         return
 
     role_name = args[0].strip()
     if not role_name:
-        await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้")
+        await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
 
     # Sanitize role name
     role_name = sanitize_role_name(role_name)
     if not role_name:
-        await origin_channel.send("❌ ชื่อยศไม่ถูกต้อง")
+        await origin_channel.send("❌ ชื่อยศไม่ถูกต้อง", allowed_mentions=_NO_MENTIONS)
         return
 
     color_hex = args[1] if len(args) > 1 else None
@@ -423,14 +441,19 @@ async def cmd_create_role(
                 color = discord.Color(int_val)
             else:
                 await origin_channel.send(
-                    f"⚠️ ใช้สี default เพราะ hex `{color_hex}` อยู่นอกช่วง 0x000000-0xFFFFFF"
+                    f"⚠️ ใช้สี default เพราะ hex `{color_hex}` อยู่นอกช่วง 0x000000-0xFFFFFF",
+                    allowed_mentions=_NO_MENTIONS,
                 )
         except ValueError:
-            await origin_channel.send(f"⚠️ ใช้สี default เพราะ hex `{color_hex}` ไม่ถูกต้อง")
+            await origin_channel.send(
+                f"⚠️ ใช้สี default เพราะ hex `{color_hex}` ไม่ถูกต้อง", allowed_mentions=_NO_MENTIONS
+            )
     try:
         role = await guild.create_role(name=role_name, color=color)
         logger.info("🛠️ AI Created Role: %s", role_name)
-        await origin_channel.send(f"✅ สร้างยศ **{role_name}** เรียบร้อยแล้ว")
+        await origin_channel.send(
+            f"✅ สร้างยศ **{role_name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+        )
 
         # Log to audit trail
         if AUDIT_AVAILABLE and log_role_change is not None:
@@ -442,10 +465,12 @@ async def cmd_create_role(
                 role_name=role_name,
             )
     except discord.Forbidden:
-        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างยศ")
+        await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้างยศ", allowed_mentions=_NO_MENTIONS)
     except discord.HTTPException as e:
         logger.exception("Failed to create role")
-        await origin_channel.send(f"❌ ไม่สามารถสร้างยศได้ {_fmt_http_error(e)}")
+        await origin_channel.send(
+            f"❌ ไม่สามารถสร้างยศได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_delete_role(
@@ -459,16 +484,16 @@ async def cmd_delete_role(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_roles", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles", allowed_mentions=_NO_MENTIONS)
         return
 
     if not args or len(args) < 1:
-        await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการลบ")
+        await origin_channel.send("❌ กรุณาระบุชื่อยศที่ต้องการลบ", allowed_mentions=_NO_MENTIONS)
         return
 
     role_name = args[0].strip()
     if not role_name:
-        await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้")
+        await origin_channel.send("❌ ชื่อยศไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
 
     # Check for duplicate names
@@ -489,14 +514,18 @@ async def cmd_delete_role(
         try:
             await role.delete()
             logger.info("🗑️ AI Deleted Role: %s", role_name)
-            await origin_channel.send(f"✅ ลบยศ **{role_name}** เรียบร้อยแล้ว")
+            await origin_channel.send(
+                f"✅ ลบยศ **{role_name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
+            )
         except discord.Forbidden:
             await origin_channel.send(
                 f"❌ บอทไม่มีสิทธิ์ลบยศ **{role_name}**", allowed_mentions=_NO_MENTIONS
             )
         except discord.HTTPException as e:
             logger.exception("Failed to delete role")
-            await origin_channel.send(f"❌ ไม่สามารถลบยศได้ {_fmt_http_error(e)}")
+            await origin_channel.send(
+                f"❌ ไม่สามารถลบยศได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+            )
     else:
         logger.warning("AI tried to delete non-existent role: %s", role_name)
         await origin_channel.send(f"❌ ไม่พบยศ: **{role_name}**", allowed_mentions=_NO_MENTIONS)
@@ -513,7 +542,7 @@ async def cmd_add_role(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_roles", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles", allowed_mentions=_NO_MENTIONS)
         return
 
     if len(args) < 2:
@@ -550,14 +579,17 @@ async def cmd_add_role(
     if role and member:
         # Pre-validation: Check role hierarchy before API call
         if guild.me is None:
-            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            await origin_channel.send(
+                "❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง", allowed_mentions=_NO_MENTIONS
+            )
             return
         bot_top_role = guild.me.top_role
         if role >= bot_top_role:
             await origin_channel.send(
                 f"❌ บอทไม่สามารถมอบยศ **{role.name}** ได้ "
                 f"(ยศของบอทอยู่ที่ตำแหน่ง {bot_top_role.position}, "
-                f"ยศที่จะมอบอยู่ที่ตำแหน่ง {role.position})"
+                f"ยศที่จะมอบอยู่ที่ตำแหน่ง {role.position})",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         # Discord also requires the bot's top role to be above the TARGET
@@ -575,20 +607,26 @@ async def cmd_add_role(
             and member_top_pos >= bot_top_pos
         ):
             await origin_channel.send(
-                f"❌ ไม่สามารถมอบยศให้ **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)"
+                f"❌ ไม่สามารถมอบยศให้ **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         try:
             await member.add_roles(role)
             logger.info("➕ AI Added Role %s to %s", role.name, member.display_name)
             await origin_channel.send(
-                f"✅ มอบยศ **{role.name}** ให้กับ **{member.display_name}** เรียบร้อยแล้ว"
+                f"✅ มอบยศ **{role.name}** ให้กับ **{member.display_name}** เรียบร้อยแล้ว",
+                allowed_mentions=_NO_MENTIONS,
             )
         except discord.Forbidden:
-            await origin_channel.send("❌ บอทไม่มีสิทธิ์มอบยศนี้ (ยศของบอทต้องอยู่สูงกว่ายศที่จะมอบ)")
+            await origin_channel.send(
+                "❌ บอทไม่มีสิทธิ์มอบยศนี้ (ยศของบอทต้องอยู่สูงกว่ายศที่จะมอบ)", allowed_mentions=_NO_MENTIONS
+            )
         except discord.HTTPException as e:
             logger.exception("Failed to add role")
-            await origin_channel.send(f"❌ ไม่สามารถมอบยศได้ {_fmt_http_error(e)}")
+            await origin_channel.send(
+                f"❌ ไม่สามารถมอบยศได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+            )
     else:
         if not role:
             await origin_channel.send(f"❌ ไม่พบยศ: **{role_name}**", allowed_mentions=_NO_MENTIONS)
@@ -607,7 +645,7 @@ async def cmd_remove_role(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_roles", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles", allowed_mentions=_NO_MENTIONS)
         return
 
     if len(args) < 2:
@@ -641,14 +679,17 @@ async def cmd_remove_role(
     if role and member:
         # Pre-validation: Check role hierarchy before API call
         if guild.me is None:
-            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            await origin_channel.send(
+                "❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง", allowed_mentions=_NO_MENTIONS
+            )
             return
         bot_top_role = guild.me.top_role
         if role >= bot_top_role:
             await origin_channel.send(
                 f"❌ บอทไม่สามารถลบยศ **{role.name}** ได้ "
                 f"(ยศของบอทอยู่ที่ตำแหน่ง {bot_top_role.position}, "
-                f"ยศที่จะลบอยู่ที่ตำแหน่ง {role.position})"
+                f"ยศที่จะลบอยู่ที่ตำแหน่ง {role.position})",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         # Same target-vs-bot hierarchy guard as cmd_add_role.
@@ -660,20 +701,26 @@ async def cmd_remove_role(
             and member_top_pos >= bot_top_pos
         ):
             await origin_channel.send(
-                f"❌ ไม่สามารถลบยศจาก **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)"
+                f"❌ ไม่สามารถลบยศจาก **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         try:
             await member.remove_roles(role)
             logger.info("➖ AI Removed Role %s from %s", role_name, user_name)
             await origin_channel.send(
-                f"✅ ลบยศ **{role.name}** ออกจาก **{member.display_name}** เรียบร้อยแล้ว"
+                f"✅ ลบยศ **{role.name}** ออกจาก **{member.display_name}** เรียบร้อยแล้ว",
+                allowed_mentions=_NO_MENTIONS,
             )
         except discord.Forbidden:
-            await origin_channel.send("❌ บอทไม่มีสิทธิ์ลบยศนี้ (ยศของบอทต้องอยู่สูงกว่ายศที่จะลบ)")
+            await origin_channel.send(
+                "❌ บอทไม่มีสิทธิ์ลบยศนี้ (ยศของบอทต้องอยู่สูงกว่ายศที่จะลบ)", allowed_mentions=_NO_MENTIONS
+            )
         except discord.HTTPException as err:
             logger.error("Failed to remove role: %s", err)
-            await origin_channel.send(f"❌ ไม่สามารถลบยศได้ {_fmt_http_error(err)}")
+            await origin_channel.send(
+                f"❌ ไม่สามารถลบยศได้ {_fmt_http_error(err)}", allowed_mentions=_NO_MENTIONS
+            )
     else:
         if not role:
             await origin_channel.send(f"❌ ไม่พบยศ: **{role_name}**", allowed_mentions=_NO_MENTIONS)
@@ -692,11 +739,13 @@ async def cmd_set_channel_perm(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_channels", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Channels", allowed_mentions=_NO_MENTIONS)
         return
 
     if len(args) < 4:
-        await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: ช่อง|เป้าหมาย|สิทธิ์|ค่า")
+        await origin_channel.send(
+            "❌ กรุณาระบุพารามิเตอร์ให้ครบ: ช่อง|เป้าหมาย|สิทธิ์|ค่า", allowed_mentions=_NO_MENTIONS
+        )
         return
     channel_name = args[0]
     target_name = args[1]
@@ -704,7 +753,9 @@ async def cmd_set_channel_perm(
     value_str = args[3].lower()
     value = {"true": True, "false": False}.get(value_str)
     if value is None:
-        await origin_channel.send("❌ ค่า permission ต้องเป็น 'true' หรือ 'false'")
+        await origin_channel.send(
+            "❌ ค่า permission ต้องเป็น 'true' หรือ 'false'", allowed_mentions=_NO_MENTIONS
+        )
         return
 
     channel = discord.utils.get(guild.channels, name=channel_name)
@@ -726,11 +777,14 @@ async def cmd_set_channel_perm(
         # Security: Only allow permissions in the safe allowlist
         if perm_name in _DANGEROUS_PERMISSIONS:
             await origin_channel.send(
-                f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+                f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         if perm_name not in _SAFE_PERMISSIONS:
-            await origin_channel.send(f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต")
+            await origin_channel.send(
+                f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต", allowed_mentions=_NO_MENTIONS
+            )
             return
 
         if hasattr(overwrite, perm_name):
@@ -750,12 +804,19 @@ async def cmd_set_channel_perm(
                     allowed_mentions=_NO_MENTIONS,
                 )
             except discord.Forbidden:
-                await origin_channel.send("❌ บอทไม่มีสิทธิ์ตั้งค่า permission")
+                await origin_channel.send(
+                    "❌ บอทไม่มีสิทธิ์ตั้งค่า permission", allowed_mentions=_NO_MENTIONS
+                )
             except discord.HTTPException as e:
                 logger.error("Failed to set channel permission: %s", e, exc_info=True)
-                await origin_channel.send(f"❌ ไม่สามารถตั้งค่า permission ได้ {_fmt_http_error(e)}")
+                await origin_channel.send(
+                    f"❌ ไม่สามารถตั้งค่า permission ได้ {_fmt_http_error(e)}",
+                    allowed_mentions=_NO_MENTIONS,
+                )
         else:
-            await origin_channel.send(f"❌ ไม่พบ permission: **{perm_name}**")
+            await origin_channel.send(
+                f"❌ ไม่พบ permission: **{perm_name}**", allowed_mentions=_NO_MENTIONS
+            )
     elif not target:
         await origin_channel.send(
             f"❌ ไม่พบเป้าหมาย: **{target_name}**", allowed_mentions=_NO_MENTIONS
@@ -773,11 +834,13 @@ async def cmd_set_role_perm(
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_roles", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Roles", allowed_mentions=_NO_MENTIONS)
         return
 
     if len(args) < 3:
-        await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: ยศ|สิทธิ์|ค่า")
+        await origin_channel.send(
+            "❌ กรุณาระบุพารามิเตอร์ให้ครบ: ยศ|สิทธิ์|ค่า", allowed_mentions=_NO_MENTIONS
+        )
         return
     role_name = args[0].strip()
     perm_name = args[1].lower().strip()
@@ -785,7 +848,9 @@ async def cmd_set_role_perm(
 
     # Validate value first
     if value_str not in ("true", "false"):
-        await origin_channel.send("❌ ค่า permission ต้องเป็น 'true' หรือ 'false'")
+        await origin_channel.send(
+            "❌ ค่า permission ต้องเป็น 'true' หรือ 'false'", allowed_mentions=_NO_MENTIONS
+        )
         return
 
     value = value_str == "true"
@@ -811,11 +876,14 @@ async def cmd_set_role_perm(
     # Security: Only allow permissions in the safe allowlist
     if perm_name in _DANGEROUS_PERMISSIONS:
         await origin_channel.send(
-            f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)"
+            f"❌ ไม่อนุญาตให้ตั้งค่า **{perm_name}** ผ่าน AI (permission นี้เป็นอันตราย กรุณาตั้งค่าด้วยตนเอง)",
+            allowed_mentions=_NO_MENTIONS,
         )
         return
     if perm_name not in _SAFE_PERMISSIONS:
-        await origin_channel.send(f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต")
+        await origin_channel.send(
+            f"❌ Permission **{perm_name}** ไม่อยู่ในรายการที่อนุญาต", allowed_mentions=_NO_MENTIONS
+        )
         return
 
     if hasattr(perms, perm_name):
@@ -824,13 +892,16 @@ async def cmd_set_role_perm(
         # at the API and the user just sees a generic error. Surface the
         # specific cause so they understand WHY it was rejected.
         if guild.me is None:
-            await origin_channel.send("❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง")
+            await origin_channel.send(
+                "❌ บอทยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง", allowed_mentions=_NO_MENTIONS
+            )
             return
         if role >= guild.me.top_role:
             await origin_channel.send(
                 f"❌ บอทไม่สามารถแก้ไขยศ **{role.name}** ได้ "
                 f"(ยศของบอทอยู่ที่ตำแหน่ง {guild.me.top_role.position}, "
-                f"ยศเป้าหมายอยู่ที่ตำแหน่ง {role.position})"
+                f"ยศเป้าหมายอยู่ที่ตำแหน่ง {role.position})",
+                allowed_mentions=_NO_MENTIONS,
             )
             return
         try:
@@ -843,12 +914,16 @@ async def cmd_set_role_perm(
                 allowed_mentions=_NO_MENTIONS,
             )
         except discord.Forbidden:
-            await origin_channel.send("❌ บอทไม่มีสิทธิ์แก้ไขยศนี้")
+            await origin_channel.send("❌ บอทไม่มีสิทธิ์แก้ไขยศนี้", allowed_mentions=_NO_MENTIONS)
         except discord.HTTPException as e:
             logger.error("Failed to set role permission: %s", e, exc_info=True)
-            await origin_channel.send(f"❌ ไม่สามารถตั้งค่า permission ได้ {_fmt_http_error(e)}")
+            await origin_channel.send(
+                f"❌ ไม่สามารถตั้งค่า permission ได้ {_fmt_http_error(e)}", allowed_mentions=_NO_MENTIONS
+            )
     else:
-        await origin_channel.send(f"❌ ไม่พบ permission: **{perm_name}**")
+        await origin_channel.send(
+            f"❌ ไม่พบ permission: **{perm_name}**", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_list_channels(
@@ -870,7 +945,14 @@ async def cmd_list_channels(
             if ch.permissions_for(_user).view_channel
         ]
     else:
-        channels = [f"#{ch.name} (ID: {ch.id})" for ch in guild.text_channels]
+        # Fail CLOSED when we can't resolve the caller to a Member — the old
+        # else dumped EVERY channel name unfiltered (private/staff included),
+        # the inverse of cmd_read_channel's fail-closed handling.
+        await origin_channel.send(
+            "⛔ ไม่สามารถระบุสิทธิ์ผู้เรียกได้ จึงไม่แสดงรายชื่อช่อง",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
     await send_long_message(origin_channel, "**📜 Server Text Channels:**\n", channels)
 
 
@@ -902,7 +984,9 @@ async def cmd_list_members(
     visibility isn't scoped per-channel.
     """
     if not isinstance(_user, discord.Member) or not _user.guild_permissions.manage_guild:
-        await origin_channel.send("❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น")
+        await origin_channel.send(
+            "❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น", allowed_mentions=_NO_MENTIONS
+        )
         return
 
     limit = 50  # Default limit
@@ -951,15 +1035,19 @@ async def cmd_get_user_info(
     tool path should be handing out to arbitrary guild members.
     """
     if not isinstance(_user, discord.Member) or not _user.guild_permissions.manage_guild:
-        await origin_channel.send("❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น")
+        await origin_channel.send(
+            "❌ คำสั่งนี้ต้องการสิทธิ์ Manage Server เท่านั้น", allowed_mentions=_NO_MENTIONS
+        )
         return
 
     if not args or len(args) < 1:
-        await origin_channel.send("❌ กรุณาระบุชื่อผู้ใช้หรือ ID ที่ต้องการค้นหา")
+        await origin_channel.send(
+            "❌ กรุณาระบุชื่อผู้ใช้หรือ ID ที่ต้องการค้นหา", allowed_mentions=_NO_MENTIONS
+        )
         return
     target = args[0].strip()
     if not target:
-        await origin_channel.send("❌ ชื่อผู้ใช้ไม่สามารถว่างได้")
+        await origin_channel.send("❌ ชื่อผู้ใช้ไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
     member = None
     if target.isdigit():
@@ -991,21 +1079,24 @@ async def cmd_get_user_info(
             )
             if len(matches) > 10:
                 info += f"...and {len(matches) - 10} more."
-            await origin_channel.send(f"```\n{info}\n```")
+            await origin_channel.send(f"```\n{info}\n```", allowed_mentions=_NO_MENTIONS)
             return
 
     if member:
         roles = ", ".join([r.name for r in member.roles if r.name != "@everyone"])
+        # Note: no "Status" line — the bot doesn't enable the privileged
+        # presences intent (bot.py uses Intents.default() + message_content +
+        # members), so member.status is ALWAYS Status.offline and would
+        # mislead every lookup. Re-add it only if presences is enabled.
         info = (
             f"**👤 User Info:**\n"
             f"Name: {member.name}\n"
             f"Display Name: {member.display_name}\n"
             f"ID: {member.id}\n"
-            f"Status: {str(member.status).title()}\n"
             f"Joined: {member.joined_at.strftime('%Y-%m-%d') if member.joined_at else 'Unknown'}\n"
             f"Roles: {roles}"
         )
-        await origin_channel.send(f"```\n{info}\n```")
+        await origin_channel.send(f"```\n{info}\n```", allowed_mentions=_NO_MENTIONS)
     else:
         await origin_channel.send(f"❌ ไม่พบผู้ใช้: {target}", allowed_mentions=_NO_MENTIONS)
 
@@ -1018,33 +1109,37 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     if user is not None and not getattr(
         getattr(user, "guild_permissions", None), "manage_messages", False
     ):
-        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Messages")
+        await origin_channel.send("❌ คุณไม่มีสิทธิ์ Manage Messages", allowed_mentions=_NO_MENTIONS)
         return
 
     if len(args) < 2:
-        await origin_channel.send("❌ กรุณาระบุพารามิเตอร์ให้ครบ: message_id | new_content")
+        await origin_channel.send(
+            "❌ กรุณาระบุพารามิเตอร์ให้ครบ: message_id | new_content", allowed_mentions=_NO_MENTIONS
+        )
         return
     raw_msg_id = args[0].strip()
     msg_id = int(raw_msg_id) if raw_msg_id.isdigit() else None
     if msg_id is None:
-        await origin_channel.send("❌ Message ID ต้องเป็นตัวเลขเท่านั้น")
+        await origin_channel.send("❌ Message ID ต้องเป็นตัวเลขเท่านั้น", allowed_mentions=_NO_MENTIONS)
         return
     new_content = args[1].strip()
     if not new_content:
-        await origin_channel.send("❌ เนื้อหาใหม่ไม่สามารถว่างได้")
+        await origin_channel.send("❌ เนื้อหาใหม่ไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
 
     # `origin_channel.guild` is None in DMs — bail before dereferencing it.
     guild = getattr(origin_channel, "guild", None)
     if guild is None:
-        await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น")
+        await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น", allowed_mentions=_NO_MENTIONS)
         return
 
     try:
         msg = await origin_channel.fetch_message(msg_id)
         bot = guild.me
         if bot is None:
-            await origin_channel.send("❌ ไม่พบ bot member ใน server นี้")
+            await origin_channel.send(
+                "❌ ไม่พบ bot member ใน server นี้", allowed_mentions=_NO_MENTIONS
+            )
             return
         if msg.author == bot:
             await msg.edit(content=new_content)
@@ -1054,24 +1149,28 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
             if webhook and webhook.user and webhook.user.id == bot.id:  # Check bot ID
                 await webhook.edit_message(msg_id, content=new_content)
             else:
-                await origin_channel.send("❌ แก้ไขไม่ได้: Webhook นี้ไม่ใช่ของบอท")
+                await origin_channel.send(
+                    "❌ แก้ไขไม่ได้: Webhook นี้ไม่ใช่ของบอท", allowed_mentions=_NO_MENTIONS
+                )
         else:
-            await origin_channel.send("❌ แก้ไขไม่ได้: ข้อความไม่ใช่ของบอท")
+            await origin_channel.send(
+                "❌ แก้ไขไม่ได้: ข้อความไม่ใช่ของบอท", allowed_mentions=_NO_MENTIONS
+            )
     except (discord.NotFound, discord.HTTPException) as err:
         # `discord.HTTPException.__str__` can include the raw API response
         # body. Use the shared formatter (which strips internal metadata)
         # for parity with the rest of the file.
-        await origin_channel.send(_fmt_http_error(err))
+        await origin_channel.send(_fmt_http_error(err), allowed_mentions=_NO_MENTIONS)
 
 
 async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
     """Read the last N messages from a channel."""
     if not args or len(args) < 1:
-        await origin_channel.send("❌ กรุณาระบุชื่อช่องที่ต้องการอ่าน")
+        await origin_channel.send("❌ กรุณาระบุชื่อช่องที่ต้องการอ่าน", allowed_mentions=_NO_MENTIONS)
         return
     target_name = args[0].strip()
     if not target_name:
-        await origin_channel.send("❌ ชื่อช่องไม่สามารถว่างได้")
+        await origin_channel.send("❌ ชื่อช่องไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
     limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 10
     # Validate limit
@@ -1089,12 +1188,14 @@ async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
         if user is not None:
             try:
                 if not target_channel.permissions_for(user).read_messages:
-                    await origin_channel.send("❌ คุณไม่มีสิทธิ์อ่านห้องนั้น")
+                    await origin_channel.send("❌ คุณไม่มีสิทธิ์อ่านห้องนั้น", allowed_mentions=_NO_MENTIONS)
                     return
             except (AttributeError, TypeError):
                 # If we can't compute permissions (e.g. user is a User not a
                 # Member), refuse rather than risk leaking.
-                await origin_channel.send("❌ ไม่สามารถตรวจสอบสิทธิ์ของคุณได้")
+                await origin_channel.send(
+                    "❌ ไม่สามารถตรวจสอบสิทธิ์ของคุณได้", allowed_mentions=_NO_MENTIONS
+                )
                 return
         try:
             messages = []
@@ -1130,7 +1231,16 @@ async def send_long_message(channel, header, lines):
     block to inject markdown / mentions / @everyone.
     """
     safe_header = _escape_for_code_block(header)
-    safe_lines = [_escape_for_code_block(line) for line in lines]
+    # Hard-wrap any single line longer than the chunk budget FIRST — the
+    # accumulator below only splits BETWEEN lines, so one ~2000-char history
+    # line (cmd_read_channel renders each message as one line) previously
+    # produced a >2000-char send that 400s at Discord.
+    safe_lines = []
+    for raw_line in (_escape_for_code_block(line) for line in lines):
+        if len(raw_line) > 1800:
+            safe_lines.extend(raw_line[i : i + 1800] for i in range(0, len(raw_line), 1800))
+        else:
+            safe_lines.append(raw_line)
     current_chunk = safe_header
     for line in safe_lines:
         if len(current_chunk) + len(line) + 5 > 1900:

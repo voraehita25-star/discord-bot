@@ -80,9 +80,9 @@ docs: update database schema documentation
 
    ```bash
    make lint          # ruff check
-   make test          # pytest (4,721 Python tests) — also run `npm test` (190 vitest) and `npm run test:e2e` (70 Playwright) in native_dashboard/
-   make build-rust    # cargo test + clippy
-   make build-go      # go test + go vet
+   make test          # pytest (5,052 Python tests) — also run `npm test` (294 vitest) and `npm run test:e2e` (72 Playwright) in native_dashboard/
+   make build-rust    # cargo build + copy .pyd (tests: `make test-rust`, clippy: `make lint-rust`)
+   make build-go      # go build (tests: `make test-go`, vet/lint: `make lint-go`)
    ```
 
 4. ตรวจสอบว่า CI ผ่านทั้งหมด

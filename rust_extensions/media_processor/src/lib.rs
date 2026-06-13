@@ -105,6 +105,11 @@ impl MediaProcessor {
     }
 
     /// Resize image to fit within max dimensions
+    // Explicit signature so the trailing Option args are genuinely optional
+    // from Python. Without it, pyo3 0.28 makes them REQUIRED positional args
+    // (the implicit-None default for trailing Option was removed in 0.23),
+    // so `resize(data)` — as the .pyi stub advertises — would TypeError.
+    #[pyo3(signature = (data, max_width=None, max_height=None))]
     fn resize<'py>(
         &self,
         _py: Python<'py>,

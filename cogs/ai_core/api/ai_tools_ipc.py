@@ -27,6 +27,7 @@ Security model:
 from __future__ import annotations
 
 import functools
+import hmac
 import logging
 import os
 from types import SimpleNamespace
@@ -248,7 +249,11 @@ class _AiToolsIpc:
         return {"BOT_AI_TOOLS_IPC_URL": self.url, "BOT_AI_TOOLS_IPC_TOKEN": self.token}
 
     def _authed(self, request: web.Request) -> bool:
-        return bool(self.token) and request.headers.get("X-Token") == self.token
+        # Constant-time compare — this is the auth gate for Discord-mutating
+        # tool execution; ``==`` on the shared secret leaks length/prefix
+        # timing. (ws_dashboard uses hmac.compare_digest for its equivalent.)
+        token = request.headers.get("X-Token") or ""
+        return bool(self.token) and hmac.compare_digest(token, self.token)
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
         if not self._authed(request):
@@ -262,11 +267,22 @@ class _AiToolsIpc:
             data = await request.json()
         except Exception:
             return web.json_response({"result": "Malformed request body.", "is_error": True})
+        # A valid-JSON non-object (`[]`, `"x"`, `1`) passes request.json() but
+        # would AttributeError on data.get below — return the intended error
+        # instead of an unhandled 500 with a traceback.
+        if not isinstance(data, dict):
+            return web.json_response({"result": "Malformed request body.", "is_error": True})
         tool = str(data.get("tool", ""))
         args = data.get("args") or {}
         ctx = data.get("context") or {}
         if not isinstance(args, dict):
             args = {}
+        # Mirror the args guard: a non-dict truthy `context` (list/str) would
+        # otherwise reach _dispatch_*'s `ctx.get(...)` and AttributeError into
+        # the broad except below, surfacing a confusing "'list' object has no
+        # attribute 'get'" instead of the intended clean empty-context path.
+        if not isinstance(ctx, dict):
+            ctx = {}
         try:
             result, is_error = await self._dispatch(tool, args, ctx)
         except Exception as e:
@@ -297,8 +313,13 @@ class _AiToolsIpc:
             if not content:
                 return "Nothing to remember (empty content).", True
             fact = await long_term_memory.add_explicit_fact(user_id, content, channel_id=channel_id)
+            # add_explicit_fact returns the EXISTING fact on a duplicate and
+            # None ONLY on a store FAILURE — the old `if fact is None` branch
+            # had it backwards: it reported a real write failure as a benign
+            # "already remembered" with is_error=False (masking the failure),
+            # and reported genuine duplicates as a fresh "Remembered: …".
             if fact is None:
-                return "Already remembered something equivalent — not duplicated.", False
+                return "Failed to save memory (storage error).", True
             return f"Remembered: {content}", False
         # recall_memory
         query = str(args.get("query", "")).strip().lower()

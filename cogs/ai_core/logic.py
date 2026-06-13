@@ -146,6 +146,10 @@ from .memory.summarizer import summarizer
 from .response.response_mixin import ResponseMixin
 from .session_mixin import SessionMixin
 from .storage import (
+    _normalize_history_timestamp,
+    _parts_to_text,
+    delete_message_by_id,
+    edit_message_by_id,
     save_history,
     update_message_id,
 )
@@ -259,6 +263,88 @@ def _is_game_search_query(text: str) -> bool:
 # DO NOT redefine here - removed duplicate @lru_cache function
 
 
+def _find_history_item_index(
+    chat_history: list[dict[str, Any]], row: dict[str, Any], occurrence: int = 0
+) -> int | None:
+    """Locate the in-memory history item that a DB ``ai_history`` row refers to.
+
+    Shared matcher for the dashboard's external edit/delete mirroring
+    (``ChatManager.patch_history_content`` / ``remove_history_content``), so
+    both operations identify the same item for the same row. Matching mirrors
+    how the save paths identify rows: by ``message_id`` when the row has one,
+    else by role + normalized timestamp + content equality (the same triple
+    the diff-save overlap hash uses).
+
+    ``occurrence`` disambiguates message_id-less "twins" (multiple items
+    identical on all three fallback keys): it is the row's ordinal among its
+    twins in DB id order, which equals memory order on load. If fewer matches
+    exist than the ordinal, the LAST match wins — twin sets are
+    content-identical, so a best-effort hit at the wrong slot only affects
+    ordering, while no-match would leave the stale item to clobber the DB
+    state on the next save.
+
+    Returns the matched index, or None when nothing matches.
+    """
+    message_id = row.get("message_id")
+    if message_id is not None:
+        for i, item in enumerate(chat_history):
+            if item.get("message_id") == message_id:
+                return i
+        return None
+
+    role = row.get("role")
+    row_ts = _normalize_history_timestamp(row.get("timestamp"))
+    row_content = str(row.get("content") or "")
+    last_match: int | None = None
+    matches_seen = 0
+    for i, item in enumerate(chat_history):
+        if item.get("message_id") is not None:
+            # Carries a Discord id -> corresponds to a non-NULL-message_id DB
+            # row, which the row-id path above would have matched. Skipping
+            # keeps the twin ordinal congruent with the IS NULL filter in
+            # count_identical_history_rows_before.
+            continue
+        if item.get("role") != role:
+            continue
+        if _normalize_history_timestamp(item.get("timestamp")) != row_ts:
+            continue
+        if _parts_to_text(item.get("parts") or []) != row_content:
+            continue
+        if matches_seen == occurrence:
+            return i
+        last_match = i
+        matches_seen += 1
+    # Fewer matches than the requested ordinal: clamp to the LAST match.
+    return last_match
+
+
+def _count_history_item_matches(chat_history: list[dict[str, Any]], row: dict[str, Any]) -> int:
+    """Count message_id-less in-memory twins of a DB ``ai_history`` row.
+
+    Same match keys as ``_find_history_item_index``'s fallback loop (skip
+    items carrying a ``message_id``, match role + normalized timestamp +
+    content), so the count is congruent with the twin-ordinal machinery.
+    ``insert_history_content`` compares this against the DB's twin count to
+    decide whether a restored mid-less row is genuinely already in memory or
+    only a surviving identical twin is.
+    """
+    role = row.get("role")
+    row_ts = _normalize_history_timestamp(row.get("timestamp"))
+    row_content = str(row.get("content") or "")
+    count = 0
+    for item in chat_history:
+        if item.get("message_id") is not None:
+            continue
+        if item.get("role") != role:
+            continue
+        if _normalize_history_timestamp(item.get("timestamp")) != row_ts:
+            continue
+        if _parts_to_text(item.get("parts") or []) != row_content:
+            continue
+        count += 1
+    return count
+
+
 class ChatManager(SessionMixin, ResponseMixin):
     """
     Manages AI chat sessions, history, and interactions with the Gemini API.
@@ -301,6 +387,11 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Strong references to fire-and-forget background tasks (consolidation, LRU save)
         # to prevent them being GC'd mid-execution (event loop only holds weak refs).
         self._background_tasks: set[asyncio.Task] = set()
+
+        # Channels whose pending queue is currently being drained by
+        # _process_pending_messages. process_chat's finally consults this so
+        # nested turns don't re-enter the drain loop recursively.
+        self._draining: set[int] = set()
 
         # Legacy aliases for backward compatibility
         self.pending_messages = self._message_queue.pending_messages
@@ -372,10 +463,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                     ) -> None:
                         if t.cancelled():
                             return
+                        # save_history never raises — it catches internally and
+                        # returns False — so checking t.exception() alone made
+                        # this guard dead code and evicted channels whose save
+                        # had actually failed. Check the bool result too.
                         exc = t.exception()
-                        if exc:
+                        if exc or t.result() is not True:
                             logger.error(
-                                "LRU save failed for channel %s, keeping in memory: %s", _cid, exc
+                                "LRU save failed for channel %s, keeping in memory: %s",
+                                _cid,
+                                exc if exc else "save_history returned False",
                             )
                             return  # Don't delete if save failed — prevents data loss
                         # The channel may have been re-accessed between scheduling
@@ -679,6 +776,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                 contents=contents,
                 config_params=config_params,
                 channel_id=channel_id,
+                cancel_flags=self.cancel_flags,
                 user_id=user_id,
                 guild_id=guild_id,
             )
@@ -742,6 +840,230 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         return PATTERN_AI_TAG_COMMENT.sub(replace_comment_with_tag, text)
 
+    async def remove_message_from_history(self, channel_id: int, message_id: int) -> bool:
+        """Drop a message from the channel's memory by its Discord ``message_id``.
+
+        Called when a message is deleted in Discord so the bot's memory mirrors
+        what's actually visible — a deleted message stops feeding future prompts
+        ("like reading live"). Matches the user turn that stored this id, and
+        also the bot's own reply if its id was recorded via ``update_message_id``.
+
+        Both the in-memory session and the persisted DB row are updated. The
+        in-memory rebuild is a synchronous list comprehension (no ``await`` in
+        the middle), so it is atomic against ``process_chat`` on the single
+        event loop and never corrupts a history being rendered.
+
+        Returns True if anything was removed from memory or storage.
+        """
+        removed_in_memory = False
+        session = self.chats.get(channel_id)
+        if session is not None:
+            history = session.get("history") or []
+            kept = [item for item in history if item.get("message_id") != message_id]
+            if len(kept) != len(history):
+                session["history"] = kept
+                removed_in_memory = True
+
+        deleted_rows = await delete_message_by_id(channel_id, message_id)
+        return removed_in_memory or deleted_rows > 0
+
+    async def edit_message_in_history(
+        self, channel_id: int, message_id: int, new_content: str
+    ) -> bool:
+        """Update a stored message's text by its Discord ``message_id``.
+
+        Called when a message is edited in Discord so later turns see the new
+        text rather than the original. Updates both the in-memory session and the
+        persisted DB row.
+
+        Returns True if anything was updated in memory or storage.
+        """
+        updated_in_memory = False
+        session = self.chats.get(channel_id)
+        if session is not None:
+            for item in session.get("history") or []:
+                if item.get("message_id") == message_id:
+                    item["parts"] = [new_content]
+                    updated_in_memory = True
+
+        updated_rows = await edit_message_by_id(channel_id, message_id, new_content)
+        return updated_in_memory or updated_rows > 0
+
+    def patch_history_content(
+        self, channel_id: int, *, row: dict[str, Any], new_content: str, occurrence: int = 0
+    ) -> bool:
+        """Patch one in-memory history item after an *external* DB edit.
+
+        The dashboard's AI-history editor updates a row directly in SQLite
+        (keyed by the ``ai_history`` primary key). If this channel's session is
+        loaded, the stale in-memory copy would later clobber that edit: a
+        force=True save delete-and-reinserts the in-memory list, and diff-mode
+        saves match overlap by timestamp+role+SHA256(content) — the external
+        edit breaks the hash and the stale tail gets re-appended over it. So
+        the editor calls this to mirror the edit into memory.
+
+        ``row`` is the DB row as it was *before* the edit (id, role, content,
+        message_id, timestamp, ...). Matching strategy mirrors how the save
+        paths identify rows: by ``message_id`` when the row has one, else by
+        role + normalized timestamp + old-content equality (the same triple the
+        diff-save overlap hash uses, so whatever this patches is exactly what
+        the save would have hashed).
+
+        ``occurrence`` disambiguates message_id-less "twins" (multiple items
+        identical on all three fallback keys): it is the edited row's ordinal
+        among its twins in DB id order, which equals memory order on load. The
+        occurrence-th match gets patched; if fewer matches exist, the LAST one
+        is patched — twin sets are content-identical, so a best-effort patch at
+        the wrong slot only affects ordering, while no-patch would let the
+        stale item clobber the DB edit on the next save.
+
+        Purely in-memory and synchronous — atomic against ``process_chat`` on
+        the single event loop. Returns True when an item was patched.
+        """
+        session = self.chats.get(channel_id)
+        if session is None:
+            return False
+        history = session.get("history") or []
+        index = _find_history_item_index(history, row, occurrence)
+        if index is None:
+            return False
+        history[index]["parts"] = [new_content]
+        return True
+
+    def remove_history_content(
+        self, channel_id: int, *, row: dict[str, Any], occurrence: int = 0
+    ) -> bool:
+        """Remove one in-memory history item after an *external* DB delete.
+
+        The dashboard's AI-history editor deletes a row directly in SQLite
+        (keyed by the ``ai_history`` primary key). If this channel's session
+        is loaded, the stale in-memory copy would later resurrect that row: a
+        force=True save delete-and-reinserts the in-memory list, and
+        diff-mode saves re-append the unmatched stale tail via the no-overlap
+        fallback. So the editor calls this to mirror the delete into memory.
+
+        ``row`` is the DB row as it was *before* the delete. Matching is the
+        SAME logic ``patch_history_content`` uses (shared
+        ``_find_history_item_index``): by ``message_id`` when the row has
+        one, else role + normalized timestamp + content with the
+        ``occurrence`` twin ordinal (clamped to the last match).
+
+        Purely in-memory and synchronous — atomic against ``process_chat`` on
+        the single event loop. Returns True when an item was removed.
+        """
+        session = self.chats.get(channel_id)
+        if session is None:
+            return False
+        history = session.get("history") or []
+        index = _find_history_item_index(history, row, occurrence)
+        if index is None:
+            return False
+        del history[index]
+        return True
+
+    def insert_history_content(
+        self,
+        channel_id: int,
+        *,
+        row: dict[str, Any],
+        prev_row: dict[str, Any] | None,
+        next_row: dict[str, Any] | None,
+        prev_occurrence: int = 0,
+        next_occurrence: int = 0,
+        expected_twins: int = 1,
+    ) -> bool:
+        """Re-insert one in-memory history item after an *external* DB restore.
+
+        The dashboard's undo re-inserts a deleted ``ai_history`` row directly
+        in SQLite (with its original primary-key id). If this channel's
+        session is loaded, the in-memory copy must mirror the restore or the
+        next save destroys it: a force=True save delete-and-reinserts the
+        in-memory list (without the restored row), and diff-mode saves treat
+        the DB-only row as not-in-memory.
+
+        ``row`` is the restored row; ``prev_row`` / ``next_row`` are its DB
+        neighbors by id (either may be None at the history's edge).
+        ``prev_occurrence`` / ``next_occurrence`` are each anchor's twin
+        ordinal among message_id-less rows identical on (role, timestamp,
+        content) — the same ordinal machinery the edit/delete paths use — so
+        the insert anchors on the actual DB neighbor instead of its earliest
+        twin. ``expected_twins`` is the DB's post-restore count of the
+        restored row's own mid-less twins. The item is built EXACTLY like
+        ``storage.load_history``'s row→item conversion: role +
+        parts=[content], with timestamp/message_id/user_id carried only when
+        non-NULL.
+
+        Insertion anchors via the shared ``_find_history_item_index``:
+        - the row already in memory → True without inserting (idempotent
+          retry, or the delete's memory removal had missed and the item never
+          left — inserting again would duplicate it). For message_id rows
+          this is plain existence; for mid-less rows mere existence cannot
+          distinguish "the restored row is back" from "a surviving identical
+          twin is here", so the skip compares the in-memory twin count
+          against ``expected_twins`` and only skips when memory already holds
+          as many twins as the DB does;
+        - both neighbors None AND memory empty → seed at index 0 (the
+          restored row is the channel's only DB row, so no wrong order is
+          possible — and it re-seeds the anchor chain for multi-row undo
+          sequences);
+        - ``next_row`` matches an item (at ``next_occurrence``) → insert
+          BEFORE it;
+        - else ``prev_row`` matches (at ``prev_occurrence``) → insert AFTER
+          it;
+        - else False. Never append blindly: a force-save would persist a
+          wrong order — the DB is already correct, so the caller reports
+          ``no_match`` instead.
+
+        Purely in-memory and synchronous — atomic against ``process_chat`` on
+        the single event loop. Returns True when memory reflects the restore.
+        """
+        session = self.chats.get(channel_id)
+        if session is None:
+            return False
+        history = session.get("history") or []
+
+        if row.get("message_id") is not None:
+            if _find_history_item_index(history, row) is not None:
+                return True
+        elif _count_history_item_matches(history, row) >= max(expected_twins, 1):
+            # Memory already holds as many mid-less twins as the DB does
+            # post-restore — the restored row's own item never left (or an
+            # idempotent retry already inserted it). Fewer twins than the DB
+            # means only siblings survive and the insert below is needed.
+            return True
+
+        item: dict[str, Any] = {
+            "role": row.get("role", "user"),
+            "parts": [row.get("content", "")],
+        }
+        # Carry forward bookkeeping fields if present so the round trip is
+        # lossless (same key-omission rule as load_history's conversion).
+        for k in ("timestamp", "message_id", "user_id"):
+            if row.get(k) is not None:
+                item[k] = row[k]
+
+        if prev_row is None and next_row is None and not history:
+            # The restored row is the channel's only DB row and the loaded
+            # session is empty: index 0 cannot produce a wrong order, and it
+            # re-seeds the anchor chain so multi-row undo sequences patch
+            # memory instead of cascading no_match warnings. Assign back —
+            # ``history`` may be the ``or []`` fallback list, so inserting
+            # into it would be lost.
+            session["history"] = [item]
+            return True
+
+        if next_row is not None:
+            index = _find_history_item_index(history, next_row, next_occurrence)
+            if index is not None:
+                history.insert(index, item)
+                return True
+        if prev_row is not None:
+            index = _find_history_item_index(history, prev_row, prev_occurrence)
+            if index is not None:
+                history.insert(index + 1, item)
+                return True
+        return False
+
     async def _process_pending_messages(self, channel_id: int) -> None:
         """Process any pending messages for a channel.
         Uses MessageQueue module for message merging.
@@ -754,6 +1076,22 @@ class ChatManager(SessionMixin, ResponseMixin):
         limit on the AI turn's already-deep call stack. The loop runs
         until the pending queue is empty for this channel.
         """
+        if channel_id in self._draining:
+            # Re-entered from a nested process_chat's finally: the outer drain
+            # loop below is already consuming this channel's queue. Returning
+            # here is what actually breaks the old recursion chain
+            # (process_chat → finally → _ppm → process_chat → finally → ...);
+            # without this guard the while-loop conversion was ineffective and
+            # stack depth still grew with every mid-turn message burst.
+            return
+        self._draining.add(channel_id)
+        try:
+            await self._drain_pending_loop(channel_id)
+        finally:
+            self._draining.discard(channel_id)
+
+    async def _drain_pending_loop(self, channel_id: int) -> None:
+        """Iteratively consume the channel's pending queue (see caller)."""
         # Hard cap on iterations as a defence against a hypothetical bug
         # where ``merge_pending_messages`` returns the same message
         # forever — without it, an infinite loop would hold the bot
@@ -817,9 +1155,10 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Input length validation - prevent extremely large messages
         MAX_MESSAGE_LENGTH = 100_000  # 100KB max
         if message and len(message) > MAX_MESSAGE_LENGTH:
+            original_length = len(message)
             message = message[:MAX_MESSAGE_LENGTH] + "\n[... ข้อความถูกตัดเนื่องจากยาวเกินไป ...]"
             logger.warning(
-                "Truncated oversized message from user %s (%d chars)", user.id, len(message)
+                "Truncated oversized message from user %s (%d chars)", user.id, original_length
             )
 
         # Determine Context and Send channels
@@ -827,40 +1166,21 @@ class ChatManager(SessionMixin, ResponseMixin):
         send_channel = output_channel if output_channel else channel
         channel_id = context_channel.id
 
-        # Optional input guardrails. OFF by default so roleplay content is never
-        # silently altered/dropped. With INPUT_GUARDRAILS=1 the message is
-        # sanitized (secrets redacted, control chars stripped, length capped) and
-        # injection attempts are logged before the text reaches RAG/the prompt;
-        # it only REFUSES when INPUT_GUARDRAILS_ENFORCE=1 AND the input is flagged
-        # invalid (so "sanitize-only" is the safe middle setting). Unrestricted
-        # channels are already handled inside validate_input_for_channel.
-        if message and os.getenv("INPUT_GUARDRAILS", "").strip().lower() in ("1", "true", "yes"):
-            try:
-                from .processing.guardrails import validate_input_for_channel
+        # (Input guardrails removed: the guardrails module was deleted, so the
+        # old INPUT_GUARDRAILS/INPUT_GUARDRAILS_ENFORCE opt-in here only called a
+        # no-op shim — it sanitized nothing and never enforced. The dead control
+        # was removed so it can't imply a protection that no longer exists.)
 
-                ig_valid, ig_sanitized, ig_risk, ig_flags = validate_input_for_channel(
-                    message, channel_id
-                )
-                if ig_flags:
-                    logger.info(
-                        "🛡️ input guardrails flagged channel %s (risk=%.2f): %s",
-                        channel_id,
-                        ig_risk,
-                        ig_flags,
-                    )
-                message = ig_sanitized
-                if not ig_valid and os.getenv("INPUT_GUARDRAILS_ENFORCE", "").strip().lower() in (
-                    "1",
-                    "true",
-                    "yes",
-                ):
-                    logger.warning("🛡️ input guardrails refused a message in channel %s", channel_id)
-                    return
-            except Exception:
-                logger.debug("input guardrails check failed (non-fatal)", exc_info=True)
-
-        # Request deduplication - prevent double processing of same message
-        request_key = self._deduplicator.generate_key(channel_id, user.id, message or "")
+        # Request deduplication - prevent double processing of same message.
+        # Include attachment identity in the key material: attachment-only
+        # messages otherwise all collapse to the same ":empty" key, so a
+        # SECOND image-only message sent while the first is still processing
+        # was classified as a duplicate and silently dropped instead of being
+        # queued/merged by MessageQueue.
+        dedup_material = message or ""
+        if attachments:
+            dedup_material += "|att:" + ",".join(str(a.id) for a in attachments)
+        request_key = self._deduplicator.generate_key(channel_id, user.id, dedup_material)
         if self._deduplicator.check_and_add(request_key):
             logger.debug("🔄 Duplicate request blocked: %s", request_key[:30])
             return
@@ -956,12 +1276,24 @@ class ChatManager(SessionMixin, ResponseMixin):
             # is no longer needed and avoids the double-release race.
             await asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT)
             lock_acquired = True
+        except asyncio.CancelledError:
+            # Cancelled while waiting for the lock (shutdown / cog reload):
+            # drop the dedup key so the identical message isn't silently
+            # suppressed for the next 60s if it's retried after restart.
+            self._deduplicator.remove_request(request_key)
+            raise
         except TimeoutError:
             logger.error(
                 "⚠️ Lock acquisition timeout for channel %s (>%ss)", channel_id, LOCK_TIMEOUT
             )
             self._deduplicator.remove_request(request_key)
-            await send_channel.send("⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15)
+            # Suppress send failures — a raising send here would escape
+            # process_chat entirely (same rationale as the circuit-breaker
+            # early-out above).
+            with contextlib.suppress(discord.HTTPException):
+                await send_channel.send(
+                    "⏳ ระบบกำลังประมวลผลอยู่ กรุณารอสักครู่แล้วลองใหม่", delete_after=15
+                )
             return
 
         try:  # Manual lock management with timeout protection
@@ -1274,9 +1606,10 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     contents = []
 
-                    # Helper: normalize any stored timestamp to Bangkok ISO so
-                    # history prefixes share a single timezone with the current
-                    # message (which is already Bangkok via _utc_now_iso).
+                    # Helper: normalize any stored timestamp to Bangkok ISO at
+                    # render time. Timestamps are STORED as UTC (_utc_now_iso);
+                    # Bangkok is applied only when formatting, matching the
+                    # Bangkok "Current Time" header embedded in the live prompt.
                     from .api.dashboard_common import normalize_timestamp_to_bangkok as _norm_ts
 
                     for item in history:
@@ -1338,6 +1671,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                             "role": "user",
                             "parts": [user_msg_text],
                             "timestamp": current_time,
+                            # message_id keeps Discord delete/edit sync working
+                            # for rows saved on this path (same as the normal
+                            # save path below).
+                            "message_id": user_message_id,
                             "user_id": user.id,
                         }
                         chat_data["history"].append(new_item)
@@ -1446,6 +1783,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                             "role": "user",
                             "parts": [user_msg_text],
                             "timestamp": current_time,
+                            # message_id keeps Discord delete/edit sync working
+                            # for rows saved by the cancelled-turn path — this
+                            # branch fires precisely during rapid sends, so
+                            # without it those rows could never be unlinked.
+                            "message_id": user_message_id,
                             "user_id": user.id,
                         }
                         chat_data["history"].append(user_item)
@@ -1462,9 +1804,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                             model_item = {
                                 "role": "model",
                                 "parts": [model_text],
-                                # Distinct timestamp so the reply sorts AFTER the
-                                # user message in rendered history rather than
-                                # sharing the same second.
+                                # NOTE: seconds-resolution — usually IDENTICAL
+                                # to the user item's timestamp (ordering is by
+                                # DB insertion id, not this field).
                                 "timestamp": _utc_now_iso(),
                             }
                             chat_data["history"].append(model_item)
@@ -1501,9 +1843,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         model_item = {
                             "role": "model",
                             "parts": [model_text],
-                            # Distinct timestamp so the reply sorts AFTER the user
-                            # message in rendered history rather than sharing the
-                            # same second.
+                            # NOTE: seconds-resolution — usually IDENTICAL to
+                            # the user item's timestamp above (history order
+                            # comes from the DB insertion id, not this field).
                             "timestamp": _utc_now_iso(),
                         }
                         chat_data["history"].append(model_item)
@@ -1542,14 +1884,22 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # this, the in-memory trim is lost on next save
                                 # (which would re-diff against the un-trimmed
                                 # DB and re-append everything).
-                                await save_history(
+                                trim_persisted = await save_history(
                                     self.bot,
                                     context_channel.id,
                                     chat_data,
                                     force=True,
                                 )
+                                if not trim_persisted:
+                                    logger.warning(
+                                        "Auto-trim for channel %s was NOT persisted "
+                                        "(save refused) — memory and DB now diverge",
+                                        channel_id,
+                                    )
                         except Exception as e:
-                            logger.debug("Auto-trim failed: %s", e)
+                            # warning, not debug: a silently failing trim-save
+                            # means memory(trimmed)/DB(untrimmed) divergence.
+                            logger.warning("Auto-trim failed: %s", e)
 
                     # --- Memory Enhancement: Update state tracker and consolidator ---
                     if guild_id == GUILD_ID_RP and model_text:
@@ -1608,14 +1958,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                         response_text, guild_id, search_indicator
                     )
 
-                    # 10.5 Apply guardrails to sanitize response
-                    if GUARDRAILS_AVAILABLE:
-                        _is_valid, sanitized, warnings = validate_response_for_channel(
-                            response_text, channel_id
-                        )
-                        if warnings:
-                            logger.info("🛡️ Guardrails applied: %s", warnings)
-                        response_text = sanitized
+                    # (Output guardrails removed along with the input ones —
+                    # GUARDRAILS_AVAILABLE is hardcoded False in imports.py and
+                    # the shim is a pass-through, so the old "10.5 sanitize"
+                    # block here could never run and only implied a protection
+                    # that no longer exists.)
 
                     # Sanitize mentions in all AI output (defense-in-depth).
                     # Must happen BEFORE split so webhook parts are also
@@ -1652,12 +1999,17 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # If parts has more than 1 element, it means we found {{...}}
                     if len(parts) > 1:
-                        # parts[0] is the text before the first {{...}} (Narrator/Intro)
+                        # parts[0] is the text before the first {{...}} (Narrator/Intro).
+                        # Must be chunked to Discord's 2000-char limit — a long
+                        # narrator intro previously went out as ONE send, whose
+                        # 400 error aborted the entire multi-character response.
                         if parts[0] and parts[0].strip():
-                            await send_channel.send(
-                                parts[0].strip(),
-                                allowed_mentions=discord.AllowedMentions.none(),
-                            )
+                            narrator_text = parts[0].strip()
+                            for _start in range(0, len(narrator_text), 2000):
+                                await send_channel.send(
+                                    narrator_text[_start : _start + 2000],
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
 
                         # Iterate through the rest: odd indices are Names, even are Messages.
                         # ``range(1, len(parts), 2)`` already bounds ``i`` to
@@ -1686,7 +2038,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                             history_list = chat_data["history"]
                             if history_list and len(history_list) > 0:
                                 last_item = history_list[-1]
-                                if isinstance(last_item, dict):
+                                # role guard mirrors the normal-send path below:
+                                # a dashboard delete during the per-character
+                                # webhook loop can remove the in-flight model
+                                # item, leaving the user item (or the previous
+                                # turn) at the tail — stamping that would also
+                                # make update_message_id retarget the previous
+                                # turn's model row in the DB.
+                                if isinstance(last_item, dict) and last_item.get("role") == "model":
                                     last_item["message_id"] = last_msg_id
                                     await update_message_id(context_channel.id, last_msg_id)
 
@@ -1714,22 +2073,21 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 split_at = remaining.rfind(" ", 0, 2000)
                             if split_at == -1 or split_at < 1000:
                                 split_at = 2000
-                            # Walk forward past Thai combining marks so they
-                            # stay attached to their base character. Cap at
-                            # 2000 — a stream of combining marks at the
-                            # boundary would otherwise push the chunk past
-                            # Discord's 2000-char hard limit. If we hit the
-                            # cap, walk backward to the last non-combining
-                            # char so the resulting chunk fits.
-                            while (
-                                split_at < len(remaining)
-                                and split_at < 2000
-                                and ord(remaining[split_at]) in THAI_COMBINING
-                            ):
-                                split_at += 1
+                            # Keep Thai combining marks attached to their base
+                            # character on a hard split at 2000. Newline/space
+                            # split points can never land on a combining mark,
+                            # so only the hard-split case needs handling: walk
+                            # back past the marks AND past their base char —
+                            # stopping at the base leaves its marks orphaned at
+                            # the START of the next chunk, which renders as the
+                            # stray ◌-form glyph this code exists to prevent.
                             if split_at >= 2000:
                                 rewind = split_at
                                 while rewind > 1 and ord(remaining[rewind - 1]) in THAI_COMBINING:
+                                    rewind -= 1
+                                if rewind > 1 and rewind < split_at:
+                                    # We skipped marks; move their base char
+                                    # into the next chunk too.
                                     rewind -= 1
                                 split_at = rewind
                             sent_message = await send_channel.send(
@@ -1760,13 +2118,17 @@ class ChatManager(SessionMixin, ResponseMixin):
                     logger.info("🔄 Processing cancelled")
                     raise
                 except (discord.HTTPException, ValueError, TypeError) as e:
+                    # Truncate so a giant payload in the exception can't flood the log
                     error_msg = str(e)
-                    # Truncate error message if too long
                     if len(error_msg) > 500:
                         error_msg = error_msg[:500] + "..."
-                    logger.error("Gemini Error: %s", e)
-                    # Send generic error to user (don't leak internal details)
-                    await send_channel.send("❌ เกิดข้อผิดพลาดจาก AI กรุณาลองใหม่อีกครั้ง")
+                    logger.error("AI provider error: %s", error_msg)
+                    # Send generic error to user (don't leak internal details).
+                    # Suppressed: this handler already catches HTTPException —
+                    # the same failure class would make this send raise too and
+                    # escape process_chat (the catch-all below suppresses it).
+                    with contextlib.suppress(discord.HTTPException):
+                        await send_channel.send("❌ เกิดข้อผิดพลาดจาก AI กรุณาลองใหม่อีกครั้ง")
                 except Exception as e:
                     # Catch-all so unexpected errors don't escape `process_chat`
                     # and orphan queued messages (the `_process_pending_messages`
@@ -1802,6 +2164,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                 pass  # Lock was not acquired or already released
             # Clear lock time tracking
             self._message_queue._lock_times.pop(channel_id, None)
+            # Idempotent dedup-key cleanup. The inner finally only runs once
+            # we're INSIDE `async with typing_context:` — if typing()'s
+            # __aenter__ raises (Forbidden/HTTPException on send_typing), the
+            # key would otherwise stay stranded and identical retries would be
+            # silently dropped until the TTL cleanup.
+            self._deduplicator.remove_request(request_key)
             # Drain pending messages even on error paths so a single failure
             # doesn't leave queued user messages stranded until the next turn.
             # Log the failure instead of swallowing silently — if this raises

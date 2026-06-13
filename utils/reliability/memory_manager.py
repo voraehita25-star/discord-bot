@@ -343,7 +343,12 @@ class WeakRefCache(Generic[K, V]):
     def cleanup(self) -> int:
         """Remove dead references. Returns count removed."""
         with self._lock:
-            dead_keys = [key for key, ref in self._cache.items() if ref() is None]
+            # Snapshot via list() before iterating: ref() can let cyclic GC
+            # reclaim a referent mid-comprehension, whose on_collected callback
+            # re-enters this RLock (same thread) and does `del self._cache[key]`,
+            # mutating the dict during iteration -> RuntimeError. The list is
+            # built atomically, so a re-entrant delete can't corrupt the loop.
+            dead_keys = [key for key, ref in list(self._cache.items()) if ref() is None]
 
             for key in dead_keys:
                 self._cache.pop(key, None)
@@ -353,7 +358,8 @@ class WeakRefCache(Generic[K, V]):
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
         with self._lock:
-            alive = sum(1 for ref in self._cache.values() if ref() is not None)
+            # list() snapshot — same re-entrant-GC reason as cleanup() above.
+            alive = sum(1 for ref in list(self._cache.values()) if ref() is not None)
 
             return {
                 "name": self.name,

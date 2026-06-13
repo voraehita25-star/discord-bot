@@ -8,8 +8,10 @@ integration tests elsewhere — these tests run without any `claude` binary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,10 +33,21 @@ def _isolated_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "_CLAUDE_CLI_WORKDIR", workdir)
     monkeypatch.setattr(cli_mod, "_SESSIONS_FILE", sessions_file)
     monkeypatch.setattr(cli_mod.Path, "home", classmethod(lambda cls: fake_home))
+    # Hermetic env: a dev machine's CLAUDE_CONFIG_DIR / OAuth token would
+    # otherwise steer _claude_config_dir() (and the projects folder every
+    # cleanup test asserts on) at a REAL directory.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     # The map is module-global; clear before + after to keep tests independent.
     cli_mod._CONVERSATION_SESSIONS.clear()
     yield
     cli_mod._CONVERSATION_SESSIONS.clear()
+
+
+async def _settle_session_cleanups() -> None:
+    """Await any in-flight background .jsonl unlink tasks."""
+    if cli_mod._PENDING_SESSION_CLEANUPS:
+        await asyncio.gather(*cli_mod._PENDING_SESSION_CLEANUPS, return_exceptions=True)
 
 
 # ============================================================================
@@ -163,6 +176,23 @@ class TestResetSession:
         # Must not raise when the conv has no tracked session.
         cli_mod.reset_session("never-tracked")
 
+    @pytest.mark.asyncio
+    async def test_reset_unlinks_discarded_transcript(self):
+        # After the pop the .jsonl is unreachable by every cleanup path
+        # (per-turn unlink, LRU eviction, delete_session_file all key off the
+        # latest tracked id) — reset must unlink it, best-effort.
+        folder = cli_mod._claude_projects_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "sess-reset.jsonl"
+        target.write_text('{"type":"init"}\n', encoding="utf-8")
+        cli_mod._track_session("conv-reset", "sess-reset")
+
+        cli_mod.reset_session("conv-reset")
+        await _settle_session_cleanups()
+
+        assert not target.exists()
+        assert "conv-reset" not in cli_mod._CONVERSATION_SESSIONS
+
 
 # ============================================================================
 # delete_session_file — removes the .jsonl + drops from map
@@ -214,3 +244,228 @@ class TestDeleteSessionFile:
             await asyncio.gather(*cli_mod._PERSIST_TASKS, return_exceptions=True)
         saved = json.loads(cli_mod._SESSIONS_FILE.read_text(encoding="utf-8"))
         assert "conv-p" not in saved
+
+
+# ============================================================================
+# _claude_config_dir / _make_subprocess_env — must resolve identically
+# ============================================================================
+
+
+class TestClaudeConfigDirParity:
+    """Session-file cleanup must target the same projects dir the child uses."""
+
+    def test_operator_config_dir_wins_in_both(self, monkeypatch, tmp_path):
+        op = tmp_path / "opcfg"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(op))
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-x")
+        env = cli_mod._make_subprocess_env()
+        assert env.get("CLAUDE_CONFIG_DIR") == str(op)
+        assert cli_mod._claude_config_dir() == op
+
+    def test_blank_config_dir_with_oauth_token_redirects_both(self, monkeypatch):
+        # A set-but-blank CLAUDE_CONFIG_DIR means "unset" (e.g. a scaffolded
+        # `CLAUDE_CONFIG_DIR=` line in .env): the redirect must apply AND
+        # cleanup must look at the same redirected dir.
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-x")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "   ")
+        env = cli_mod._make_subprocess_env()
+        clean_cfg = cli_mod._CLAUDE_CLI_WORKDIR / "claude_home"
+        assert env.get("CLAUDE_CONFIG_DIR") == str(clean_cfg)
+        assert cli_mod._claude_config_dir() == clean_cfg
+
+    def test_mkdir_failure_falls_back_to_home_in_both(self, monkeypatch):
+        # If the claude_home mkdir fails at spawn time the child silently uses
+        # ~/.claude — _claude_config_dir() must report the same fallback or
+        # every cleanup becomes a silent no-op.
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-x")
+        cli_mod._CLAUDE_CLI_WORKDIR.mkdir(parents=True, exist_ok=True)
+        # A FILE named claude_home makes mkdir(exist_ok=True) raise OSError.
+        (cli_mod._CLAUDE_CLI_WORKDIR / "claude_home").write_text("", encoding="utf-8")
+        env = cli_mod._make_subprocess_env()
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert cli_mod._claude_config_dir() == cli_mod.Path.home() / ".claude"
+
+
+# ============================================================================
+# handle_chat_message_claude_cli — handler-level recovery behavior
+# ============================================================================
+
+
+class _FakeWS:
+    """Minimal fake aiohttp WebSocketResponse recording every frame."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    def find(self, msg_type: str) -> list[dict]:
+        return [m for m in self.sent if m.get("type") == msg_type]
+
+
+def _mock_db() -> MagicMock:
+    db = MagicMock()
+    db.save_dashboard_message = AsyncMock(return_value=99)
+    db.get_dashboard_messages = AsyncMock(return_value=[])
+    db.get_dashboard_conversation = AsyncMock(return_value={"title": "set"})
+    db.update_dashboard_conversation = AsyncMock()
+    return db
+
+
+@contextlib.contextmanager
+def _handler_patches(db, fake_subprocess, prewarm_mock=None):
+    with (
+        patch.object(cli_mod, "get_db", return_value=db),
+        patch.object(cli_mod, "DB_AVAILABLE", True),
+        patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+        patch.object(cli_mod, "_resolve_claude_executable", return_value="claude"),
+        patch.object(cli_mod, "_track_session"),
+        patch.object(cli_mod, "_schedule_prewarm", new=prewarm_mock or MagicMock()),
+        patch.object(cli_mod, "build_user_context", new=AsyncMock(return_value=("ctx", False))),
+        patch.object(cli_mod, "_run_claude_subprocess", new=fake_subprocess),
+    ):
+        yield
+
+
+class TestHandlerStaleSessionRetry:
+    """Pins the four stale-retry behaviors: reset_session, full-history
+    prompt rebuild, accumulator reset + second stream_start, and the
+    no-duplication guarantee for the persisted body. Mirror of the Discord
+    side's test_stale_session_retries_with_fresh_id_once."""
+
+    @pytest.mark.asyncio
+    async def test_stale_retry_resets_stream_and_rebuilds_history(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "stale-sess"
+        calls: list[tuple[list[str], str]] = []
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            calls.append((list(argv), stdin_payload))
+            if len(calls) == 1:
+                await on_text_delta("attempt-1 partial")
+                raise cli_mod._StaleSessionError("stale")
+            await on_text_delta("attempt-2 final")
+            return "fresh-sess", None
+
+        try:
+            with _handler_patches(_mock_db(), fake_subprocess):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {
+                        "conversation_id": "c1",
+                        "content": "hello",
+                        "role_preset": "general",
+                        "history": [{"role": "user", "content": "earlier turn"}],
+                    },
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        # Client told to clear attempt-1 chunks via a SECOND stream_start.
+        assert len(ws.find("stream_start")) == 2
+        ends = ws.find("stream_end")
+        assert ends and ends[-1]["full_response"] == "attempt-2 final"  # no duplication
+        assert len(calls) == 2
+        argv1, prompt1 = calls[0]
+        argv2, prompt2 = calls[1]
+        assert "--resume" in argv1 and "stale-sess" in argv1
+        assert "--resume" not in argv2  # session dropped for the retry
+        assert "# Conversation so far" not in prompt1  # resumed → minimal prompt
+        assert "# Conversation so far" in prompt2  # retry rebuilt full history
+        assert cli_mod._CONVERSATION_SESSIONS.get("c1") in (None, "fresh-sess")
+
+
+class TestHandlerErrorPathsDropSession:
+    """Timeout/overload/unclassified failures leave the user's turn in the DB
+    but not in the resumed session — the handler must drop the CLI session so
+    the next turn rebuilds the history block (which carries the dangling row)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TimeoutError("stream timed out"),
+            cli_mod._OverloadedError("API Error: 529 Overloaded"),
+            RuntimeError("claude -p exit 1: boom"),
+            ValueError("unclassified"),
+        ],
+    )
+    async def test_error_path_drops_session(self, monkeypatch, tmp_path, exc):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "sess-err"
+
+        async def fake_subprocess(*_a, **_k):
+            raise exc
+
+        try:
+            with _handler_patches(_mock_db(), fake_subprocess):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert ws.find("error"), "handler must surface an error frame"
+        # The stale session id must be gone so the next turn rebuilds fresh.
+        assert "c1" not in cli_mod._CONVERSATION_SESSIONS
+
+
+class TestHandlerPrewarmThinking:
+    """The warm argv must carry the turn's thinking flag (conversation-sticky
+    in the frontend) or it never matches and every thinking turn wastes a
+    ~150MB spawn."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_argv_carries_thinking_flag(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        prewarm_mock = MagicMock()
+
+        async def fake_subprocess(*_a, **_k):
+            return "sess-think", None
+
+        try:
+            with _handler_patches(_mock_db(), fake_subprocess, prewarm_mock=prewarm_mock):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {
+                        "conversation_id": "c1",
+                        "content": "think hard",
+                        "role_preset": "general",
+                        "thinking_enabled": True,
+                    },
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        prewarm_mock.assert_called_once()
+        warm_argv = prewarm_mock.call_args[0][1]
+        assert "--effort" in warm_argv and "xhigh" in warm_argv
+        assert "--resume" in warm_argv and "sess-think" in warm_argv

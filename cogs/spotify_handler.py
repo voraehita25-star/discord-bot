@@ -230,7 +230,12 @@ class SpotifyHandler:
                     if attempt >= 1:
                         bound_target = getattr(func, "__self__", None)
                         async with self._get_setup_lock():
-                            if self.sp is None or self.sp is bound_target:
+                            # ``bound_target is None`` for closure-based calls
+                            # (the whole playlist path): without this clause the
+                            # recreate never fired for them, so a stale token
+                            # was never refreshed — contradicting the retry's
+                            # stated intent.
+                            if self.sp is None or bound_target is None or self.sp is bound_target:
                                 logger.info("🔄 Recreating Spotify client...")
                                 self._setup_client()
                             if self.sp is None:
@@ -447,10 +452,8 @@ class SpotifyHandler:
             raise
         except (RequestsConnectionError, ReadTimeout) as e:
             # Try to delete loading message, but don't fail if already deleted
-            try:
+            with contextlib.suppress(discord.NotFound, discord.HTTPException):
                 await msg.delete()
-            except (discord.NotFound, discord.HTTPException):
-                pass
             # Send error message (caller will also handle, so just log)
             embed = discord.Embed(
                 title=f"{Emojis.CROSS} ข้อผิดพลาด Spotify",
@@ -460,6 +463,14 @@ class SpotifyHandler:
             embed.set_footer(text="ลองใหม่อีกครั้ง")
             await ctx.send(embed=embed)
             return False
+        except Exception:
+            # Any OTHER failure (spotipy.SpotifyException for a private/404
+            # playlist, circuit-breaker ConnectionError, etc.) re-raises to
+            # process_spotify_url, which knows nothing about ``msg`` — the
+            # loading embed used to sit on screen forever. Delete it first.
+            with contextlib.suppress(discord.NotFound, discord.HTTPException):
+                await msg.delete()
+            raise
 
         if not results or not isinstance(results, list):
             try:

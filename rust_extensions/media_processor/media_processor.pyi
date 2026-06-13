@@ -1,7 +1,9 @@
 """Type stubs for the media_processor Rust extension (PyO3)."""
 
 class ImageData:
-    data: bytes
+    # NOTE: ``data`` is a constructor arg but NOT a readable attribute (the
+    # Rust field has no #[pyo3(get)]); use get_data(). Only these four are
+    # readable as attributes.
     width: int
     height: int
     channels: int

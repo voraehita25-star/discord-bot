@@ -271,7 +271,13 @@ class TestUrlFetcherFallback:
 
 
 class TestGuardrailsFallback:
-    """Forced-ImportError path for processing.guardrails — must FAIL OPEN."""
+    """Guardrails module removed — imports exposes permanent no-op shims.
+
+    ``processing.guardrails`` no longer exists; these assert the pass-through
+    behaviour of the validation shims that replaced it (``GUARDRAILS_AVAILABLE``
+    is always False, validation never blocks). Unrestricted mode moved to its own
+    module — see ``tests/test_unrestricted.py``.
+    """
 
     BLOCK = {"processing.guardrails"}
 
@@ -302,30 +308,11 @@ class TestGuardrailsFallback:
         assert score == 0.0
         assert flags == []
 
-    def test_is_unrestricted_returns_false(self):
-        m = _reload_imports_blocking(self.BLOCK)
-        assert m.is_unrestricted(123) is False
-
-    def test_set_unrestricted_returns_false(self):
-        m = _reload_imports_blocking(self.BLOCK)
-        assert m.set_unrestricted(123, True) is False
-
-    def test_unrestricted_channels_is_empty_set(self):
-        m = _reload_imports_blocking(self.BLOCK)
-        assert m.unrestricted_channels == set()
-
     def test_is_silent_block_only_flags_empty(self):
         m = _reload_imports_blocking(self.BLOCK)
         assert m.is_silent_block("") is True
         assert m.is_silent_block("   ") is True
         assert m.is_silent_block("real text") is False
-
-    def test_critical_log_emitted(self, caplog):
-        import logging
-
-        with caplog.at_level(logging.CRITICAL, logger="cogs.ai_core.imports"):
-            _reload_imports_blocking(self.BLOCK)
-        assert any("GUARDRAILS MODULE UNAVAILABLE" in r.message for r in caplog.records)
 
 
 class TestTokenTrackerFallback:

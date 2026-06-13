@@ -333,23 +333,30 @@ try:
 
     def _get_or_create_histogram(operation: str) -> Histogram:
         """Get or create a Prometheus histogram for an operation."""
-        existing = _prom_histograms.get(operation)
+        # Key the cache on the SANITIZED metric name, not the raw operation.
+        # Two distinct operation strings that normalize to the same safe_name
+        # (e.g. "ai.response" / "ai-response" / "AI Response") would otherwise
+        # both miss the operation-keyed cache and call Histogram() with an
+        # identical metric name on the same registry -> ValueError("Duplicated
+        # timeseries"), failing the operation. Sharing one histogram is the
+        # intended behavior since they produce the same metric name anyway.
+        safe_name = operation.replace(".", "_").replace("-", "_").replace(" ", "_").lower()
+        existing = _prom_histograms.get(safe_name)
         if existing is not None:
             return existing
         with _histogram_lock:
             # Re-check inside the lock — another thread may have created
             # it while we were waiting.
-            existing = _prom_histograms.get(operation)
+            existing = _prom_histograms.get(safe_name)
             if existing is not None:
                 return existing
-            safe_name = operation.replace(".", "_").replace("-", "_").replace(" ", "_").lower()
             histogram = Histogram(
                 f"bot_{safe_name}_duration_seconds",
                 f"Duration of {operation} in seconds",
                 registry=_prom_registry,
                 buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
             )
-            _prom_histograms[operation] = histogram
+            _prom_histograms[safe_name] = histogram
             return histogram
 
     def record_to_prometheus(operation: str, duration: float) -> None:

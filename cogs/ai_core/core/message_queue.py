@@ -24,6 +24,23 @@ logger = logging.getLogger(__name__)
 _MAX_MERGED_ATTACHMENTS = 10
 
 
+def _lock_in_use(lock: asyncio.Lock | None) -> bool:
+    """True if the lock is held OR has coroutines queued waiting on it.
+
+    ``locked()`` alone is insufficient for safe eviction: right after a holder
+    calls ``release()`` the lock reports ``locked() == False`` while a queued
+    waiter is still pending resume. Evicting in that window pops the lock and
+    lets the next caller create a brand-new one for the same channel, so two
+    ``process_chat`` turns run concurrently — the exact thing the per-channel
+    lock exists to prevent. ``_waiters`` is a private CPython detail; guard
+    with getattr so a future asyncio change degrades to the old behaviour
+    rather than crashing.
+    """
+    if lock is None:
+        return False
+    return lock.locked() or bool(getattr(lock, "_waiters", None))
+
+
 @dataclass
 class PendingMessage:
     """Represents a pending message in the queue."""
@@ -145,9 +162,7 @@ class MessageQueue:
                     candidates = [
                         cid
                         for cid in self.pending_messages
-                        if not (
-                            cid in self.processing_locks and self.processing_locks[cid].locked()
-                        )
+                        if not _lock_in_use(self.processing_locks.get(cid))
                     ]
                     if not candidates:
                         logger.warning(
@@ -365,8 +380,11 @@ class MessageQueue:
     def release_lock(self, channel_id: int) -> None:
         """Release the lock for a channel.
 
-        Only releases if the current task owns the lock — otherwise we would
-        grant the lock to a waiter that the caller does not intend to signal.
+        NOTE: asyncio.Lock has NO ownership concept — release() succeeds from
+        any task, and the unlocked case is already guarded below. The except
+        is pure defence against a concurrent release between our locked()
+        check and the release() call; it does not (and cannot) enforce
+        owner-only semantics.
 
         Args:
             channel_id: Channel ID
@@ -379,10 +397,10 @@ class MessageQueue:
         try:
             lock.release()
         except RuntimeError as exc:
-            # asyncio.Lock.release() raises RuntimeError when the current task
-            # is not the owner. Log so silent ownership bugs surface.
+            # Lock was already released concurrently (asyncio.Lock raises
+            # RuntimeError only on releasing an UNLOCKED lock).
             logger.warning(
-                "release_lock skipped for channel %s (not owner): %s",
+                "release_lock raced for channel %s (already released): %s",
                 channel_id,
                 exc,
             )
@@ -452,8 +470,12 @@ class MessageQueue:
                 if lock is None:
                     continue
 
-                # Skip if lock is currently held
-                if lock.locked():
+                # Skip if lock is currently held OR has queued waiters. A lock
+                # whose holder just called release() reads locked()==False
+                # while a waiter is still pending resume — popping it then
+                # hands the next caller a fresh Lock and two process_chat
+                # turns run concurrently on one channel.
+                if _lock_in_use(lock):
                     continue
 
                 # Skip if channel has pending messages

@@ -770,7 +770,13 @@ impl BotManager {
     pub fn restart(&mut self) -> Result<String, String> {
         if self.is_running() {
             let old_pid = self.get_pid();
-            self.stop()?;
+            // Don't hard-propagate a benign stop() failure during restart: if
+            // the bot process exits on its own in the window between is_running()
+            // above and here, stop() returns Err("Bot is not running") and the
+            // `?` would abort restart() before start() — leaving the bot stopped
+            // right after the user clicked Restart. Swallow it so we always fall
+            // through to start().
+            let _ = self.stop();
             // Poll until process is gone (max 5 seconds)
             if let Some(pid) = old_pid {
                 for _ in 0..10 {

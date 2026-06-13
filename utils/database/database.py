@@ -109,6 +109,13 @@ class Database:
             # 32 connections for 8-core/16-thread CPU (2 per thread)
             self._pool_semaphore: asyncio.Semaphore | None = None
             self._connection_count = 0
+            # In-flight request count = semaphore slots acquired but not yet
+            # released. Distinct from _connection_count (total OPEN handles,
+            # idle-in-pool + in-flight): the db_pool_available gauge needs the
+            # true free-slot count (32 - in_flight), not 32 - open_handles,
+            # which understated availability whenever idle connections sat in
+            # the pool. Mutated only on the single event loop, so no lock.
+            self._inflight_count = 0
             # Persistent connection pool for reuse (avoids open/close overhead).
             # Queue size is half the semaphore cap so most concurrent connections
             # get a reused handle rather than opening a new one each time.
@@ -322,16 +329,15 @@ class Database:
             )
             # Cap the wait so a stuck export (e.g. Windows file-lock
             # contention) can't stall the shutdown sequence forever.
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending_tasks, return_exceptions=True),
-                    timeout=30.0,
-                )
-            except TimeoutError:
-                still_pending = sum(1 for t in pending_tasks if not t.done())
+            # asyncio.wait (NOT wait_for+gather): wait_for cancels the inner
+            # gather on timeout, and a cancelled gather cancels every still-
+            # running export task — exactly the mid-write data loss the
+            # docstring promises to avoid. asyncio.wait leaves them running.
+            _done, still = await asyncio.wait(pending_tasks, timeout=30.0)
+            if still:
                 logger.warning(
                     "💾 %d export task(s) still running after 30s — proceeding with shutdown",
-                    still_pending,
+                    len(still),
                 )
         self._export_tasks.clear()
 
@@ -433,6 +439,46 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_ai_history_user_id
                 ON ai_history(user_id)
             """)
+
+            # Enforce one row per Discord message. Dedup any existing duplicate
+            # (channel_id, message_id) rows — keeping the most recent (MAX(id)) —
+            # then add a PARTIAL unique index. NULL message_ids are excluded:
+            # model responses are stored with message_id=NULL until the sent
+            # message's id is back-filled, so many rows legitimately share NULL.
+            # Guarded by an index-existence check so the dedup scan runs only once.
+            try:
+                cursor = await conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='index' AND name='idx_ai_history_msgid_unique'"
+                )
+                if not await cursor.fetchone():
+                    await conn.execute("""
+                        DELETE FROM ai_history
+                        WHERE message_id IS NOT NULL
+                          AND id NOT IN (
+                              SELECT MAX(id) FROM ai_history
+                              WHERE message_id IS NOT NULL
+                              GROUP BY channel_id, message_id
+                          )
+                    """)
+                    await conn.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_history_msgid_unique
+                        ON ai_history(channel_id, message_id)
+                        WHERE message_id IS NOT NULL
+                    """)
+                    logger.info("🔄 Migrated ai_history: deduped + unique (channel_id, message_id)")
+            except Exception:
+                # The ai_history write path hard-depends on this index: every save
+                # uses ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT
+                # NULL, which requires this exact partial unique index to exist.
+                # Swallowing a CREATE failure would leave the bot running but
+                # break every history write permanently, so fail closed —
+                # consistent with the versioned-migration path. The next startup
+                # retries (e.g. after a transient lock clears).
+                logger.exception(
+                    "ai_history message_id uniqueness migration failed — refusing to continue"
+                )
+                raise
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS ai_metadata (
@@ -1114,6 +1160,10 @@ class Database:
             ) from None
 
         try:
+            # Mark this acquired slot as in-flight (paired 1:1 with the
+            # release/decrement in the finally below — this can't raise, so the
+            # pairing holds). Feeds the db_pool_available gauge.
+            self._inflight_count += 1
             conn = None
 
             # Try to get a connection from the pool
@@ -1214,17 +1264,29 @@ class Database:
                         await conn.close()
                         self._connection_count -= 1
         finally:
-            sem.release()
-            # Export pool utilization to Prometheus.
-            # Compute available slots from the in-flight connection count we
-            # already track instead of reading asyncio.Semaphore's private
-            # _value attribute (undocumented, may change between CPython
-            # releases).
+            try:
+                sem.release()
+            except ValueError:
+                # BoundedSemaphore over-release: _reinitialize_pool may have
+                # force-replenished slots while we were still in flight; our
+                # own release then exceeds the bound. Losing this release is
+                # correct (the slot was already restored) — crashing the
+                # caller's cleanup path is not.
+                logger.warning(
+                    "Connection semaphore over-release suppressed (pool was reinitialized)"
+                )
+            # This slot is no longer in flight. max(0, …) is defensive against
+            # any reinit edge where a reset wiped the counter mid-flight.
+            self._inflight_count = max(0, self._inflight_count - 1)
+            # Export pool utilization to Prometheus. available = free SLOTS =
+            # 32 - in_flight (the real concurrency budget the semaphore gates),
+            # NOT 32 - open_handles — idle pooled connections are still free
+            # slots. Avoids reading asyncio.Semaphore's private _value.
             try:
                 from utils.monitoring.metrics import metrics
 
                 if metrics.enabled:
-                    available = max(0, 32 - self._connection_count)
+                    available = max(0, 32 - self._inflight_count)
                     metrics.set_db_pool(32, available)
             except ImportError:
                 pass
@@ -1484,14 +1546,28 @@ class Database:
             ts = timestamp or datetime.now(timezone.utc).isoformat()
 
             # Atomic local_id generation + insert in a single statement
-            # Prevents race condition where two concurrent saves get the same local_id
+            # Prevents race condition where two concurrent saves get the same local_id.
+            #
+            # Upsert on (channel_id, message_id): a Discord message maps to one
+            # row, so re-saving the same message_id updates the stored content
+            # instead of inserting a duplicate. NULL message_ids (e.g. model
+            # responses before their sent id is back-filled) are excluded by the
+            # partial unique index, so they always insert.
             cursor = await conn.execute(
                 """INSERT INTO ai_history (channel_id, user_id, role, content, message_id, timestamp, local_id)
                    VALUES (?, ?, ?, ?, ?, ?,
-                       (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
+                       (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))
+                   ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
+                   DO UPDATE SET content = excluded.content
+                   RETURNING id""",
                 (channel_id, user_id, role, content, message_id, ts, channel_id),
             )
-            lastrowid = cursor.lastrowid
+            # Use RETURNING rather than cursor.lastrowid: on the conflict→UPDATE
+            # branch SQLite leaves lastrowid at the last *inserted* rowid (which
+            # can be an unrelated row), so it would not identify the row that
+            # actually changed. RETURNING id is correct for both insert and update.
+            returned = await cursor.fetchone()
+            lastrowid = returned[0] if returned else None
 
         # Trigger auto-export
         self._schedule_export(channel_id)
@@ -1567,7 +1643,9 @@ class Database:
                 await conn.executemany(
                     """INSERT INTO ai_history
                        (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
+                       DO UPDATE SET content = excluded.content""",
                     rows_to_insert,
                 )
                 inserted += len(rows_to_insert)
@@ -1586,11 +1664,16 @@ class Database:
         async with self.get_connection() as conn:
             # `is not None` (not truthiness): limit=0 means "return zero rows"
             # (SQLite LIMIT 0 -> []), not "no limit -> dump entire history".
+            # user_id is in the SELECT so the load/save round trip is
+            # lossless — without it, every force-replace re-inserted rows
+            # with user_id=NULL, permanently wiping per-user attribution.
+            # local_id is additive (dashboard AI-history viewer shows it);
+            # existing consumers key into the dicts and ignore extra keys.
             if limit is not None:
                 cursor = await conn.execute(
-                    """SELECT id, role, content, message_id, timestamp
+                    """SELECT id, local_id, role, content, message_id, timestamp, user_id
                        FROM (
-                           SELECT id, role, content, message_id, timestamp
+                           SELECT id, local_id, role, content, message_id, timestamp, user_id
                            FROM ai_history WHERE channel_id = ?
                            ORDER BY id DESC LIMIT ?
                        ) sub ORDER BY id ASC""",
@@ -1598,7 +1681,7 @@ class Database:
                 )
             else:
                 cursor = await conn.execute(
-                    """SELECT id, role, content, message_id, timestamp
+                    """SELECT id, local_id, role, content, message_id, timestamp, user_id
                        FROM ai_history WHERE channel_id = ?
                        ORDER BY id ASC""",
                     (channel_id,),
@@ -1665,6 +1748,353 @@ class Database:
             )
             return bool(cursor.rowcount > 0)
 
+    async def delete_ai_message_by_message_id(
+        self, message_id: int, channel_id: int | None = None
+    ) -> int:
+        """Delete the history row(s) carrying a given Discord message_id.
+
+        Used to mirror a Discord message deletion into the AI's stored memory.
+        Discord snowflake IDs are globally unique, so matching on ``message_id``
+        alone is sufficient; ``channel_id`` is accepted as defence-in-depth
+        scoping and so we can regenerate the channel's export afterwards.
+
+        Returns the number of rows deleted.
+        """
+        async with self.get_write_connection() as conn:
+            if channel_id is not None:
+                cursor = await conn.execute(
+                    "DELETE FROM ai_history WHERE message_id = ? AND channel_id = ?",
+                    (message_id, channel_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    "DELETE FROM ai_history WHERE message_id = ?",
+                    (message_id,),
+                )
+            deleted: int = cursor.rowcount
+
+        if deleted > 0 and channel_id is not None:
+            # Keep the auto-export in sync with the pruned history.
+            self._schedule_export(channel_id)
+        return deleted
+
+    async def update_ai_message_by_message_id(
+        self, message_id: int, content: str, channel_id: int | None = None
+    ) -> int:
+        """Update the stored content of the history row carrying ``message_id``.
+
+        Mirrors a Discord message *edit* into the AI's stored memory so the new
+        text is what later turns see. Returns the number of rows updated.
+        """
+        async with self.get_write_connection() as conn:
+            if channel_id is not None:
+                cursor = await conn.execute(
+                    "UPDATE ai_history SET content = ? WHERE message_id = ? AND channel_id = ?",
+                    (content, message_id, channel_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE ai_history SET content = ? WHERE message_id = ?",
+                    (content, message_id),
+                )
+            updated: int = cursor.rowcount
+
+        if updated > 0 and channel_id is not None:
+            self._schedule_export(channel_id)
+        return updated
+
+    async def get_ai_history_message(self, channel_id: int, row_id: int) -> dict[str, Any] | None:
+        """Get a single AI history row by its primary-key ``id``.
+
+        Scoped to ``channel_id`` so a dashboard client can't read rows from a
+        channel other than the one it asked about. Returns None when no such
+        row exists in that channel.
+        """
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                   FROM ai_history WHERE id = ? AND channel_id = ?""",
+                (row_id, channel_id),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_ai_history_content(self, channel_id: int, row_id: int, content: str) -> bool:
+        """Update the stored content of an AI history row by primary-key ``id``.
+
+        Complements ``update_ai_message_by_message_id`` for rows whose
+        ``message_id`` is NULL (e.g. model responses whose sent id was never
+        back-filled) — those are unreachable by message_id but still editable
+        by row id. Scoped to ``channel_id`` (same ownership rationale as
+        ``get_ai_history_message``). Returns True when a row was updated.
+        """
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE ai_history SET content = ? WHERE id = ? AND channel_id = ?",
+                (content, row_id, channel_id),
+            )
+            updated: int = cursor.rowcount
+
+        if updated > 0:
+            self._schedule_export(channel_id)
+        return updated > 0
+
+    async def delete_ai_history_row(self, channel_id: int, row_id: int) -> bool:
+        """Delete one AI history row by primary-key ``id``.
+
+        Complements ``delete_ai_message_by_message_id`` for rows whose
+        ``message_id`` is NULL (e.g. model responses whose sent id was never
+        back-filled) — those are unreachable by message_id but still
+        deletable by row id. Scoped to ``channel_id`` (same ownership
+        rationale as ``get_ai_history_message``). Returns True when a row was
+        deleted.
+        """
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM ai_history WHERE id = ? AND channel_id = ?",
+                (row_id, channel_id),
+            )
+            deleted: int = cursor.rowcount
+
+        if deleted > 0:
+            # Keep the auto-export in sync with the pruned history.
+            self._schedule_export(channel_id)
+        return deleted > 0
+
+    async def restore_ai_history_row(self, channel_id: int, row: dict[str, Any]) -> str:
+        """Re-insert a previously deleted ``ai_history`` row with its ORIGINAL id.
+
+        Undo for the dashboard's row delete: ``ai_history`` ordering is by
+        primary-key ``id``, so inserting with the original id puts the row
+        back in its original position. SQLite allows explicit-id inserts into
+        an AUTOINCREMENT table, and a re-used (previously issued) id is never
+        above the sequence, so the sequence is unaffected.
+
+        Returns one of:
+        - ``'restored'`` — the row was inserted.
+        - ``'exists_same'`` — a row with that id already exists in the channel
+          with the SAME role AND content (idempotent retry, e.g. a lost ack).
+        - ``'conflict'`` — that id exists with DIFFERENT role/content (the id
+          was recycled by an unrelated insert), or the partial unique index on
+          (channel_id, message_id) rejected the insert (the Discord message
+          was re-saved under a new row id while this one was deleted).
+
+        ``timestamp`` is inserted verbatim — including NULL — so the restored
+        row reads back through ``get_ai_history`` exactly like the original
+        did (letting the column default backfill CURRENT_TIMESTAMP would
+        change the row and break the live-session content matcher).
+
+        ``summarized_at`` is conservatively re-stamped: the wire contract
+        never carries it (the client cannot round-trip the stamp), so when
+        the row's timestamp falls within the channel's newest
+        ``conversation_summaries`` window (MAX(end_time)) the restored row is
+        stamped now — otherwise the consolidator would roll the already-
+        summarized content into a SECOND summary (duplicate facts in
+        long-term memory; with CONSOLIDATOR_DELETE_ORIGINALS=1 it would then
+        hard-delete the just-restored row). Trade-off: a row deleted BEFORE
+        being summarized and restored AFTER a pass covering its era gets
+        stamped without its content ever entering a summary — a tiny window,
+        preferred over duplicates.
+
+        ``local_id`` is recomputed when the original is already taken in the
+        channel (the deleted row held MAX(local_id) and a later save
+        re-issued it) so (channel_id, local_id) stays unambiguous in exports.
+        """
+        row_id = row["id"]
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT role, content FROM ai_history WHERE id = ? AND channel_id = ?",
+                (row_id, channel_id),
+            )
+            existing = await cursor.fetchone()
+            if existing is not None:
+                if existing["role"] == row.get("role") and existing["content"] == row.get(
+                    "content"
+                ):
+                    return "exists_same"
+                return "conflict"
+
+            summarized_at = await self._restore_summarized_at_stamp(
+                conn, channel_id, row.get("timestamp")
+            )
+
+            local_id = row.get("local_id")
+            if local_id is not None:
+                cursor = await conn.execute(
+                    "SELECT 1 FROM ai_history WHERE channel_id = ? AND local_id = ? LIMIT 1",
+                    (channel_id, local_id),
+                )
+                if await cursor.fetchone() is not None:
+                    # The deleted row held MAX(local_id) and a later save
+                    # re-issued it — reassign so the local_id-keyed export
+                    # ('id' after rename) stays unambiguous. Race-free under
+                    # the write lock.
+                    cursor = await conn.execute(
+                        "SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history "
+                        "WHERE channel_id = ?",
+                        (channel_id,),
+                    )
+                    fetched = await cursor.fetchone()
+                    local_id = fetched[0] if fetched else None
+
+            try:
+                await conn.execute(
+                    """INSERT INTO ai_history
+                       (id, local_id, channel_id, user_id, role, content, message_id,
+                        timestamp, summarized_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row_id,
+                        local_id,
+                        channel_id,
+                        row.get("user_id"),
+                        row["role"],
+                        row["content"],
+                        row.get("message_id"),
+                        row.get("timestamp"),
+                        summarized_at,
+                    ),
+                )
+            except aiosqlite.IntegrityError:
+                # idx_ai_history_msgid_unique: another row in this channel
+                # already carries this message_id. (The PK collision case is
+                # handled by the SELECT above — under the write lock nothing
+                # can insert between the read and this INSERT.)
+                return "conflict"
+
+        # Keep the auto-export in sync with the restored history (same
+        # pattern as the sibling update/delete methods).
+        self._schedule_export(channel_id)
+        return "restored"
+
+    @staticmethod
+    async def _restore_summarized_at_stamp(
+        conn: aiosqlite.Connection, channel_id: int, row_timestamp: Any
+    ) -> str | None:
+        """The ``summarized_at`` value for a restored row (see restore docstring).
+
+        Returns a fresh UTC stamp when the row's timestamp parses to a
+        datetime <= the channel's newest ``conversation_summaries.end_time``,
+        else None. The summaries table is created lazily by
+        ``SummaryArchiver.init_schema`` — a missing table means nothing was
+        ever summarized. Comparison is via ``datetime.fromisoformat`` on both
+        values, NOT raw strings: ai_history timestamps use ISO-8601 'T'
+        format while end_time may carry a space separator, so a lexical
+        compare would be unreliable. Unparseable values mean no stamp.
+        """
+        if row_timestamp is None:
+            return None
+        try:
+            cursor = await conn.execute(
+                "SELECT MAX(end_time) FROM conversation_summaries WHERE channel_id = ?",
+                (channel_id,),
+            )
+            fetched = await cursor.fetchone()
+        except aiosqlite.OperationalError:
+            return None  # lazy table absent -> never summarized
+        boundary = fetched[0] if fetched else None
+        if boundary is None:
+            return None
+        try:
+            row_dt = datetime.fromisoformat(str(row_timestamp))
+            boundary_dt = datetime.fromisoformat(str(boundary))
+        except ValueError:
+            return None
+        # Mixed naive/aware would raise on comparison — both writers use UTC,
+        # so pin the naive side to UTC instead of failing the restore.
+        if (row_dt.tzinfo is None) != (boundary_dt.tzinfo is None):
+            if row_dt.tzinfo is None:
+                row_dt = row_dt.replace(tzinfo=timezone.utc)
+            else:
+                boundary_dt = boundary_dt.replace(tzinfo=timezone.utc)
+        if row_dt <= boundary_dt:
+            return datetime.now(timezone.utc).isoformat()
+        return None
+
+    async def get_ai_history_neighbor_rows(
+        self, channel_id: int, row_id: int
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The full rows immediately before and after ``row_id`` in a channel.
+
+        ``(prev_row, next_row)`` — MAX(id) < row_id and MIN(id) > row_id, with
+        the same columns ``get_ai_history_message`` returns. These are the
+        in-memory insertion anchors for mirroring a restored row into the live
+        session (memory order equals id order on load). Either side is None at
+        the history's edge.
+        """
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                   FROM ai_history WHERE channel_id = ? AND id < ?
+                   ORDER BY id DESC LIMIT 1""",
+                (channel_id, row_id),
+            )
+            prev_row = await cursor.fetchone()
+            cursor = await conn.execute(
+                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                   FROM ai_history WHERE channel_id = ? AND id > ?
+                   ORDER BY id ASC LIMIT 1""",
+                (channel_id, row_id),
+            )
+            next_row = await cursor.fetchone()
+            return (
+                dict(prev_row) if prev_row else None,
+                dict(next_row) if next_row else None,
+            )
+
+    async def count_identical_history_rows_before(
+        self,
+        channel_id: int,
+        row_id: int,
+        role: str,
+        timestamp: str | None,
+        content: str,
+    ) -> int:
+        """Count message_id-less twins of a row that precede it (id order).
+
+        Supports the dashboard editor's ordinal targeting: rows without a
+        ``message_id`` are matched in the live session by (role, timestamp,
+        content), and identical "twin" rows are indistinguishable on those
+        keys — this ordinal tells the in-memory patch WHICH twin the edited
+        row id refers to (memory order equals id order on load). ``IS ?``
+        instead of ``= ?`` so a NULL timestamp matches NULL.
+        """
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT COUNT(*) FROM ai_history
+                   WHERE channel_id = ? AND id < ? AND message_id IS NULL
+                     AND role = ? AND timestamp IS ? AND content = ?""",
+                (channel_id, row_id, role, timestamp, content),
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    async def count_identical_history_rows(
+        self,
+        channel_id: int,
+        role: str,
+        timestamp: str | None,
+        content: str,
+    ) -> int:
+        """Count ALL message_id-less twins of a row in a channel (no id bound).
+
+        Same matching as ``count_identical_history_rows_before`` without the
+        ``id < ?`` clause. The restore handler compares this post-restore DB
+        twin count against the in-memory twin count so the idempotency guard
+        in ``insert_history_content`` can tell "the restored row is already
+        in memory" apart from "only a surviving identical twin is in memory".
+        ``IS ?`` instead of ``= ?`` so a NULL timestamp matches NULL.
+        """
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """SELECT COUNT(*) FROM ai_history
+                   WHERE channel_id = ? AND message_id IS NULL
+                     AND role = ? AND timestamp IS ? AND content = ?""",
+                (channel_id, role, timestamp, content),
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
     async def get_all_ai_channel_ids(self) -> list[int]:
         """Get all channel IDs that have AI chat history."""
         async with self.get_connection() as conn:
@@ -1673,13 +2103,29 @@ class Database:
             return [row[0] for row in rows]
 
     async def get_all_ai_channels_summary(self) -> list[dict[str, Any]]:
-        """Get summary of all channels with message counts in a single query."""
+        """Get summary of all channels with message counts in a single query.
+
+        ``last_active`` (MAX over timestamps per channel, NULL when every
+        row's timestamp is NULL) is additive — existing consumers read the
+        dicts with key access on channel_id/message_count and tolerate extra
+        keys. ``datetime()`` canonicalizes both the legacy space-separated
+        'YYYY-MM-DD HH:MM:SS' format (column DEFAULT CURRENT_TIMESTAMP) and
+        the ISO-T format the save paths write, so MAX compares chronologically
+        instead of lexicographically ('T' > ' ' made a T-format 00:00 row beat
+        a same-day legacy 23:59 row). Unparseable values become NULL, which
+        MAX skips.
+        """
         async with self.get_connection() as conn:
             cursor = await conn.execute(
-                "SELECT channel_id, COUNT(*) as message_count FROM ai_history GROUP BY channel_id"
+                """SELECT channel_id, COUNT(*) as message_count,
+                          MAX(datetime(timestamp)) as last_active
+                   FROM ai_history GROUP BY channel_id"""
             )
             rows = await cursor.fetchall()
-            return [{"channel_id": row[0], "message_count": row[1]} for row in rows]
+            return [
+                {"channel_id": row[0], "message_count": row[1], "last_active": row[2]}
+                for row in rows
+            ]
 
     # ==================== AI Metadata Operations ====================
 
@@ -2140,26 +2586,30 @@ class Database:
                 (conversation_id,),
             )
 
-            # Delete the exported JSON file if it exists. Run the sync
-            # filesystem ops in a worker so a slow disk doesn't stall the
-            # event loop while we're inside delete_dashboard_conversation.
-            try:
-                export_dir = Path("data/db_export/dashboard_chats")
-                json_file = export_dir / f"{conversation_id}.json"
+        # Delete the exported JSON file AFTER the write block exits — the DB
+        # transaction is logically complete once the DELETEs above commit, and
+        # holding the global single-writer lock across a slow filesystem op
+        # (Windows file-lock contention, a network share) would stall every
+        # other serialized DB writer. asyncio.to_thread keeps the event loop
+        # free but does NOT release the write lock, so the unlink must live
+        # outside the `async with`. Mirrors delete_ai_history's ordering.
+        try:
+            export_dir = Path("data/db_export/dashboard_chats")
+            json_file = export_dir / f"{conversation_id}.json"
 
-                def _unlink_if_exists() -> bool:
-                    if json_file.exists():
-                        json_file.unlink()
-                        return True
-                    return False
+            def _unlink_if_exists() -> bool:
+                if json_file.exists():
+                    json_file.unlink()
+                    return True
+                return False
 
-                deleted = await asyncio.to_thread(_unlink_if_exists)
-                if deleted:
-                    logger.info("🗑️ Deleted exported JSON: %s", json_file.name)
-            except Exception as e:
-                logger.warning("Failed to delete exported JSON for %s: %s", conversation_id, e)
+            deleted = await asyncio.to_thread(_unlink_if_exists)
+            if deleted:
+                logger.info("🗑️ Deleted exported JSON: %s", json_file.name)
+        except Exception as e:
+            logger.warning("Failed to delete exported JSON for %s: %s", conversation_id, e)
 
-            return True
+        return True
 
     async def save_dashboard_message(
         self,
@@ -2214,7 +2664,10 @@ class Database:
         import json
 
         async with self.get_connection() as conn:
-            if limit:
+            # `is not None` (not truthiness): limit=0 means "return zero rows"
+            # (SQLite LIMIT 0 -> []), not "no limit -> dump the whole
+            # conversation". Same convention get_ai_history documents.
+            if limit is not None:
                 cursor = await conn.execute(
                     """SELECT id, role, content, thinking, mode, images, is_pinned, liked, created_at
                        FROM dashboard_messages
@@ -2488,6 +2941,34 @@ class Database:
                 (conversation_id, after_message_id),
             )
             return int(cursor.rowcount)
+
+    async def edit_and_truncate_dashboard_message(
+        self, message_id: int, content: str, conversation_id: str
+    ) -> tuple[bool, int]:
+        """Atomically edit a message AND delete everything after it (regenerate
+        pivot) in one transaction on the serialized write connection.
+
+        Closes the race where a concurrent send could insert a new message
+        between a separate update and delete-after call and get silently
+        wiped. Returns (updated, deleted_count).
+        """
+        async with self.get_write_connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE dashboard_messages SET content = ? WHERE id = ? AND conversation_id = ?",
+                (content, message_id, conversation_id),
+            )
+            if cursor.rowcount == 0:
+                return False, 0
+            del_cursor = await conn.execute(
+                "DELETE FROM dashboard_messages WHERE conversation_id = ? AND id > ?",
+                (conversation_id, message_id),
+            )
+            # Mirror update_dashboard_message: bump conversation freshness.
+            await conn.execute(
+                "UPDATE dashboard_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (conversation_id,),
+            )
+            return True, int(del_cursor.rowcount)
 
     async def export_dashboard_conversation(
         self, conversation_id: str, export_format: str = "json"
@@ -3017,8 +3498,8 @@ class Database:
                     item["id"] = item.pop("local_id")  # Rename local_id to id
                     data.append(item)
 
+                output_file = ai_history_dir / f"{channel_id}.json"
                 if data:
-                    output_file = ai_history_dir / f"{channel_id}.json"
                     # Push the json.dumps + write_text off the event loop —
                     # for big channels this can be tens of MB and would
                     # otherwise stall every other coroutine for the duration
@@ -3032,6 +3513,15 @@ class Database:
                     )
 
                     logger.debug("📤 Exported %d messages for channel %d", len(data), channel_id)
+                else:
+                    # Channel emptied (last message deleted via Discord-delete
+                    # mirroring) — remove the stale export instead of leaving
+                    # the deleted content on disk forever.
+                    removed = await asyncio.to_thread(
+                        lambda p: (p.unlink(), True)[1] if p.exists() else False, output_file
+                    )
+                    if removed:
+                        logger.debug("📤 Removed stale export for emptied channel %d", channel_id)
         except Exception:
             logger.exception("Channel export failed")
 

@@ -42,7 +42,6 @@ class TestHistoryManagerInit:
 
         assert manager.keep_recent == 200
         assert manager.max_history == 10000
-        assert manager.compress_threshold == 2000
         # Default trim target is now 600K (~60% of 1M context window). The
         # old 1.2M default assumed Gemini 2M; both providers now cap at 1M
         # so 1.2M would overflow the context if a caller used the default.
@@ -55,13 +54,11 @@ class TestHistoryManagerInit:
         manager = HistoryManager(
             keep_recent=100,
             max_history=500,
-            compress_threshold=100,
             max_tokens=50000,
         )
 
         assert manager.keep_recent == 100
         assert manager.max_history == 500
-        assert manager.compress_threshold == 100
         assert manager.max_tokens == 50000
 
     def test_patterns_compiled(self):

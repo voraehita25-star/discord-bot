@@ -14,7 +14,11 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiohttp.web import WebSocketResponse
+
+    from ..logic import ChatManager
 
 MAX_PREFERENCE_KEYS = 50  # Prevent DoS via unbounded dict keys
 # Edit-message content cap. Mirrors ``WSDashboardServer.MAX_CONTENT_LENGTH``
@@ -23,6 +27,15 @@ MAX_PREFERENCE_KEYS = 50  # Prevent DoS via unbounded dict keys
 # import the server class — and a hardcoded literal in two places drifts
 # silently when one gets bumped.
 MAX_EDIT_CONTENT_LENGTH = 200_000
+
+# Cumulative content budget for one ``ai_history_loaded`` reply. Rows are
+# individually unbounded (the edit op above allows 200K chars/row, 2000 rows
+# ≈ 400MB worst case), and the dashboard client silently DROPS any frame over
+# 50MB (ws-client.ts MAX_MESSAGE_LENGTH) while ``ws.send_json`` serializes the
+# whole payload synchronously on the event loop the Discord bot shares. ~20MB
+# of content keeps the final JSON well under the client's cap and the
+# serialization stall negligible.
+MAX_HISTORY_RESPONSE_CHARS = 20_000_000
 
 # Unicode bidirectional override marks that ``str.isprintable`` returns
 # True for (U+200E/U+200F LRM/RLM, U+202A-U+202E LRE/RLE/PDF/LRO/RLO,
@@ -56,6 +69,12 @@ _BIDI_MARKS = frozenset(
     )
 )
 
+from ..storage import (
+    delete_message_by_row_id,
+    edit_message_by_row_id,
+    get_history_lock,
+    restore_message_by_row,
+)
 from .dashboard_common import invalidate_user_context_cache, sanitize_profile_field
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
@@ -75,11 +94,12 @@ def _get_db():
     return Database()
 
 
-# Per-conversation regenerate lock — held across the
-# ``update_dashboard_message`` / ``delete_dashboard_messages_after``
-# pair so a concurrent send can't slip a new message into the gap and
-# get wiped by the delete-after-pivot. Capped to bound dict growth in
-# long-running deployments; LRU eviction on first miss past the cap.
+# Per-conversation regenerate lock — serializes concurrent EDIT requests
+# (double-click, tab resend). NOTE: update+delete atomicity against
+# concurrent SEND paths (which never take this lock) is provided by the
+# single-transaction ``edit_and_truncate_dashboard_message`` instead.
+# Capped to bound dict growth in long-running deployments; LRU eviction
+# on first miss past the cap.
 _REGEN_LOCKS: dict[str, asyncio.Lock] = {}
 _REGEN_LOCKS_MAX = 256
 
@@ -257,7 +277,9 @@ async def handle_delete_conversation(ws: WebSocketResponse, data: dict[str, Any]
 async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Toggle star status of a conversation."""
     conversation_id = data.get("id")
-    starred = data.get("starred", True)
+    # Coerce to a real bool to match the pin/like handlers — guards against a
+    # non-bool JSON payload flipping the star the wrong way.
+    starred = bool(data.get("starred", True))
 
     logger.info("Star conversation request: id=%s, starred=%s", conversation_id, starred)
 
@@ -440,6 +462,24 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID type"}
         )
         return
+    # Normalize to str. The DB stores conversation_id as TEXT and the CLI
+    # session map (_CONVERSATION_SESSIONS) is keyed by str — leaving an int
+    # here split the _REGEN_LOCKS key (int N vs str "N" → no serialization)
+    # AND made delete_session_file(int) silently no-op, so the CLI --resume
+    # session was never wiped after an edit (stale-transcript replay).
+    if isinstance(conversation_id, int):
+        conversation_id = str(conversation_id)
+
+    # Validate format (defense in depth, consistent with every other
+    # conversation-scoped handler — load/delete/star/rename/export/tag).
+    # Gated on ``is not None`` because edit permits a null conversation_id;
+    # this rejects junk ids (spaces, control chars) before they churn the
+    # LRU-capped _REGEN_LOCKS dict and reach the DB / CLI-session map.
+    if conversation_id is not None and not _validate_conversation_id(conversation_id):
+        await ws.send_json(
+            {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
+        )
+        return
 
     if not message_id or not content or not DB_AVAILABLE:
         await ws.send_json(
@@ -473,22 +513,25 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
     try:
         db = _get_db()
-        # Hold a per-conversation lock across update + delete so a
-        # concurrent send (from a second dashboard window or a tab
-        # reload that resends the same edit) can't insert a new message
-        # between ``update_dashboard_message`` and
-        # ``delete_dashboard_messages_after`` — the new message would
-        # otherwise be wiped by the delete-after-pivot, surprising the
-        # user.
+        # The lock serializes concurrent EDIT requests (double-click, tab
+        # resend). True update+delete atomicity against concurrent SENDs —
+        # which never take this lock — comes from the single-transaction
+        # ``edit_and_truncate_dashboard_message`` below.
         regen_lock_key = conversation_id or f"_msg:{message_id_int}"
         async with _get_regen_lock(regen_lock_key):
             # Pass conversation_id to enforce ownership — without this the
             # client could edit any message ID in any conversation by guessing.
-            updated = await db.update_dashboard_message(
-                message_id_int,
-                content,
-                expected_conversation_id=conversation_id,
-            )
+            deleted_count = 0
+            if regenerate and conversation_id:
+                updated, deleted_count = await db.edit_and_truncate_dashboard_message(
+                    message_id_int, content, conversation_id
+                )
+            else:
+                updated = await db.update_dashboard_message(
+                    message_id_int,
+                    content,
+                    expected_conversation_id=conversation_id,
+                )
             if not updated:
                 await ws.send_json(
                     {
@@ -498,12 +541,6 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
                     }
                 )
                 return
-
-            deleted_count = 0
-            if regenerate and conversation_id:
-                deleted_count = await db.delete_dashboard_messages_after(
-                    conversation_id, message_id_int
-                )
 
         # Edit/regenerate diverges the DB from Claude's server-side --resume
         # transcript. If we leave the CLI session id in place, the next turn
@@ -1448,9 +1485,18 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
                     clean[key] = v if _math.isfinite(v) else 0.0
                 elif isinstance(v, list):
-                    clean[key] = [
-                        str(i)[:200] for i in v[:20] if isinstance(i, str | int | float | bool)
-                    ]
+                    # List string items reach the AI context just like the
+                    # scalar str branch above, so they MUST go through the
+                    # same sanitizer — the previous code only truncated them,
+                    # leaving a second prompt-injection landing zone for
+                    # ``["[System] You are now...", ...]`` payloads.
+                    cleaned_list: list[str] = []
+                    for i in v[:20]:
+                        if isinstance(i, str):
+                            cleaned_list.append(_sanitize_profile_field(i, max_length=200) or "")
+                        elif isinstance(i, bool | int | float):
+                            cleaned_list.append(str(i)[:200])
+                    clean[key] = cleaned_list
             sanitized_prefs = json.dumps(clean, ensure_ascii=False) if clean else None
         await db.save_dashboard_user_profile(
             display_name=display_name,
@@ -1483,4 +1529,958 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         logger.exception("WebSocket handler error")
         await ws.send_json(
             {"type": "error", "code": "INTERNAL_ERROR", "message": "Failed to save profile"}
+        )
+
+
+# ============================================================================
+# AI history handlers (Discord-channel ai_history viewer/editor)
+# ============================================================================
+
+# Discord snowflakes exceed JS Number.MAX_SAFE_INTEGER, so the wire contract
+# carries them as digit strings; a JSON number is tolerated too. 20 digits
+# covers the full unsigned-64-bit range, but the parsers below additionally
+# cap at SQLite's signed-64-bit max: binding anything larger raises
+# OverflowError inside conn.execute, surfacing as INTERNAL_ERROR (plus a full
+# stack-trace log) where the wire contract specifies INVALID_ID.
+_SNOWFLAKE_RE = re.compile(r"[0-9]{1,20}")
+_SQLITE_INT_MAX = (1 << 63) - 1
+
+
+def _parse_snowflake(value: Any) -> int | None:
+    """Parse a Discord snowflake (digit string or JSON number) to int.
+
+    Returns None for anything malformed: non-digit strings, negatives,
+    floats, bools (an int subclass — must be rejected explicitly), >20 digits,
+    values above SQLite's signed-64-bit max.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        value = str(value)
+    if not isinstance(value, str) or not _SNOWFLAKE_RE.fullmatch(value):
+        return None
+    parsed = int(value)
+    return parsed if parsed <= _SQLITE_INT_MAX else None
+
+
+def _parse_history_row_id(value: Any) -> int | None:
+    """Parse an ``ai_history`` primary-key id (positive int; digit string ok)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not _SNOWFLAKE_RE.fullmatch(value):
+            return None
+        value = int(value)
+    if not isinstance(value, int) or value <= 0 or value > _SQLITE_INT_MAX:
+        return None
+    return value
+
+
+def _get_chat_manager() -> ChatManager | None:
+    """Resolve the live ChatManager (None when the AI cog isn't loaded).
+
+    Module-local indirection (mirroring ``_get_db``) so handler tests patch a
+    single name here instead of reaching into the registry module.
+    """
+    from .chat_manager_registry import get_chat_manager
+
+    return get_chat_manager()
+
+
+def _live_session_sync(
+    cm: ChatManager | None, channel_id: int, sync: Callable[[ChatManager], bool]
+) -> tuple[str, bool]:
+    """Best-effort live-session sync after a durable DB edit/delete.
+
+    Returns ``(live_session, live_session_patched)`` for the ack.
+    ``live_session`` is a five-state string so the frontend can tell the
+    benign miss apart from the warning-worthy one:
+
+    - ``"unavailable"`` — AI cog not loaded; no live memory exists at all.
+    - ``"not_loaded"`` — the channel's session isn't in bot RAM (restart, or
+      evicted after idle). Benign and the common case: the DB is the source
+      of truth and the next session load reads the fresh rows. ``sync`` is
+      NOT called — there is nothing in memory to go stale, and a False
+      return here would be indistinguishable from a real matcher miss.
+    - ``"patched"`` — the in-memory item was updated/removed.
+    - ``"no_match"`` — the session IS loaded but the matcher missed: stale
+      RAM can clobber the DB edit (or resurrect the deleted row) on the
+      next save, so this one deserves a warning.
+    - ``"error"`` — the sync call raised. The DB mutation already
+      succeeded, so the request must never fail over the best-effort
+      memory work; the exception is logged and reported as this state.
+
+    ``live_session_patched`` stays in the ack for backward compat and is
+    True only for ``"patched"``.
+
+    Side effect: always drops the channel's Discord Claude-CLI ``--resume``
+    session (when the CLI backend module is importable) — the server-side
+    session context still contains the pre-mutation history, and under
+    delta-on-resume prompts the next turn would otherwise keep answering
+    from the contradicted context forever.
+    """
+    try:
+        from .discord_chat_claude_cli import reset_channel_session
+
+        reset_channel_session(channel_id)
+    except Exception:
+        logger.exception("Failed to reset Discord CLI session for channel %s", channel_id)
+    if cm is None:
+        return "unavailable", False
+    if channel_id not in cm.chats:
+        return "not_loaded", False
+    try:
+        return ("patched", True) if sync(cm) else ("no_match", False)
+    except Exception:
+        logger.exception("Live-session sync failed for channel %s", channel_id)
+        return "error", False
+
+
+async def handle_list_ai_channels(ws: WebSocketResponse) -> None:
+    """List Discord channels that have rows in ``ai_history``.
+
+    Error envelopes from the three AI-history handlers all carry
+    ``"scope": "ai_history"``: the dashboard shares one socket and one
+    ``{type: "error"}`` shape between chat streaming and this feature, and an
+    unscoped history error would trigger ChatManager's full chat-stream
+    teardown (and vice versa, chat errors would unstick the history editor).
+    """
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "DB_UNAVAILABLE",
+                "message": "Database not available",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    try:
+        db = _get_db()
+        summaries = await db.get_all_ai_channels_summary()
+
+        # Resolve channel names through the live bot when the AI cog is loaded
+        # (the dashboard runs in the same process, so ``get_channel`` is a
+        # cache lookup). Formatting mirrors
+        # ``ResponseMixin._get_chat_history_index``: guild + #channel, "DM"
+        # for guildless channels, and a plain "Channel <id>" fallback when the
+        # bot can't see the channel (or no cog is registered).
+        cm = _get_chat_manager()
+        bot = getattr(cm, "bot", None) if cm is not None else None
+
+        channels: list[dict[str, Any]] = []
+        for s in summaries:
+            cid = s["channel_id"]
+            name = f"Channel {cid}"
+            if bot is not None:
+                channel = bot.get_channel(cid)
+                if channel is not None:
+                    guild = getattr(channel, "guild", None)
+                    guild_name = guild.name if guild else "DM"
+                    channel_name = getattr(channel, "name", None) or "Unknown"
+                    name = f"{guild_name} / #{channel_name}"
+            channels.append(
+                {
+                    # Snowflakes go over the wire as strings — they exceed JS
+                    # Number.MAX_SAFE_INTEGER and would lose precision.
+                    "channel_id": str(cid),
+                    "name": name,
+                    "message_count": s["message_count"],
+                    "last_active": s.get("last_active"),
+                }
+            )
+
+        # last_active DESC with NULLs last. Key is (has_timestamp, timestamp)
+        # reversed: non-null entries (True, ts) sort before null ones
+        # (False, "") and among themselves by ISO timestamp descending.
+        channels.sort(
+            key=lambda c: (c["last_active"] is not None, c["last_active"] or ""),
+            reverse=True,
+        )
+
+        await ws.send_json({"type": "ai_channels_list", "channels": channels})
+    except Exception:
+        logger.exception("WebSocket handler error")
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to list AI channels",
+                "scope": "ai_history",
+            }
+        )
+
+
+async def handle_load_ai_history(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Load a channel's ``ai_history`` rows (newest ``limit``, ascending id order)."""
+    raw_channel = data.get("channel_id")
+    if raw_channel is None or raw_channel == "":
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_ID",
+                "message": "Missing channel ID",
+                "scope": "ai_history",
+            }
+        )
+        return
+    channel_id = _parse_snowflake(raw_channel)
+    if channel_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid channel ID format",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # limit: default 200, clamped to [1, 2000]. Non-numeric garbage falls back
+    # to the default rather than erroring — the contract defines no error code
+    # for a bad limit and the value gets clamped anyway.
+    raw_limit = data.get("limit", 200)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int | float | str):
+        limit = 200
+    else:
+        try:
+            limit = int(raw_limit)
+        except (ValueError, OverflowError):
+            limit = 200
+    limit = max(1, min(2000, limit))
+
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "DB_UNAVAILABLE",
+                "message": "Database not available",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    try:
+        db = _get_db()
+        rows = await db.get_ai_history(channel_id, limit=limit)
+        total_count = await db.get_ai_history_count(channel_id)
+
+        # Cumulative content budget (see MAX_HISTORY_RESPONSE_CHARS): iterate
+        # NEWEST-first so truncation drops the OLDEST rows, then re-reverse to
+        # restore ascending order. Always keep at least one row.
+        messages: list[dict[str, Any]] = []
+        budget = MAX_HISTORY_RESPONSE_CHARS
+        truncated = False
+        for row in reversed(rows):
+            content = row["content"] or ""
+            if messages and budget - len(content) < 0:
+                truncated = True
+                break
+            budget -= len(content)
+            messages.append(
+                {
+                    # Row "id" / "local_id" are small DB integers — they stay
+                    # numbers. Snowflakes (message_id/user_id) become strings,
+                    # None stays null.
+                    "id": row["id"],
+                    "local_id": row.get("local_id"),
+                    "role": row["role"],
+                    "content": content,
+                    "message_id": (
+                        str(row["message_id"]) if row.get("message_id") is not None else None
+                    ),
+                    "timestamp": row.get("timestamp"),
+                    "user_id": str(row["user_id"]) if row.get("user_id") is not None else None,
+                }
+            )
+        messages.reverse()
+
+        payload: dict[str, Any] = {
+            "type": "ai_history_loaded",
+            "channel_id": str(channel_id),
+            "messages": messages,
+            "total_count": total_count,
+            "has_more": total_count > len(messages),
+        }
+        if truncated:
+            # The frontend stops offering "Load all" when the server itself
+            # truncated — a bigger limit could not deliver more rows.
+            payload["truncated"] = True
+        await ws.send_json(payload)
+    except Exception:
+        logger.exception("WebSocket handler error")
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to load AI history",
+                "scope": "ai_history",
+            }
+        )
+
+
+async def handle_edit_ai_history_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Edit one ``ai_history`` row's content by primary-key id.
+
+    Updates the DB row first, then patches the live in-memory session (when
+    that channel's chat is loaded). The memory patch is NOT optional polish:
+    a DB-only edit gets destroyed later — force=True saves DELETE+reinsert
+    the in-memory list, and diff-mode saves match overlap by
+    timestamp+role+SHA256(content), so the external edit breaks the hash and
+    the stale in-memory tail is re-upserted over it.
+    """
+    raw_channel = data.get("channel_id")
+    raw_row_id = data.get("id")
+    if raw_channel is None or raw_channel == "" or raw_row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_ID",
+                "message": "Missing channel ID or message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    channel_id = _parse_snowflake(raw_channel)
+    if channel_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid channel ID format",
+                "scope": "ai_history",
+            }
+        )
+        return
+    row_id = _parse_history_row_id(raw_row_id)
+    if row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid history message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # Coerce-then-strip mirrors ``handle_edit_message``: a non-string payload
+    # (number, list) must not crash on ``.strip()``.
+    raw_content = data.get("content")
+    content = str(raw_content).strip() if raw_content is not None else ""
+    if not content:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_CONTENT",
+                "message": "Missing message content",
+                "scope": "ai_history",
+            }
+        )
+        return
+    if len(content) > MAX_EDIT_CONTENT_LENGTH:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "CONTENT_TOO_LONG",
+                "message": f"Content too long (max {MAX_EDIT_CONTENT_LENGTH:,} characters)",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "DB_UNAVAILABLE",
+                "message": "Database not available",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    try:
+        db = _get_db()
+        # Per-channel lock shared with the save paths (_save_history_db /
+        # _replace_history_db) AND with concurrent edits: it makes the
+        # read-row + UPDATE + memory-patch atomic relative to a save's
+        # fetch+diff+write (which would otherwise duplicate the edited row via
+        # the no-overlap fallback) and to a second edit's pre-edit read (which
+        # would otherwise patch memory against a stale old-content snapshot
+        # and silently revert on the next force save). Nothing in here awaits
+        # anything that takes the same lock; patch_history_content is sync.
+        async with get_history_lock(channel_id):
+            # Read the pre-edit row first: MSG_NOT_FOUND needs the
+            # channel-scoped existence check, and the in-memory patch below
+            # matches against the OLD content/timestamp (that's what the live
+            # session still holds).
+            row = await db.get_ai_history_message(channel_id, row_id)
+            if row is None:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MSG_NOT_FOUND",
+                        "message": "History message not found",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+
+            # message_id-less rows are matched in memory by (role, timestamp,
+            # content) — identical "twins" are indistinguishable on those
+            # keys, so compute the edited row's ordinal among its twins (in id
+            # order, which equals memory order) for position-precise patching.
+            occurrence = 0
+            if row.get("message_id") is None:
+                occurrence = await db.count_identical_history_rows_before(
+                    channel_id,
+                    row_id,
+                    row.get("role") or "user",
+                    row.get("timestamp"),
+                    row.get("content") or "",
+                )
+
+            # DB first (TTL cache invalidated inside), memory second — if the
+            # process dies between the two, the durable state is the edited one.
+            updated = await edit_message_by_row_id(channel_id, row_id, content)
+            if not updated:
+                # Row vanished between the read and the UPDATE (concurrent prune
+                # or delete) — report it like a missing row.
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MSG_NOT_FOUND",
+                        "message": "History message not found",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+
+            # Five-state outcome (see _live_session_sync): only a loaded
+            # session with a missed matcher warrants a frontend warning.
+            live_session, live_session_patched = _live_session_sync(
+                _get_chat_manager(),
+                channel_id,
+                lambda m: m.patch_history_content(
+                    channel_id, row=row, new_content=content, occurrence=occurrence
+                ),
+            )
+
+        await ws.send_json(
+            {
+                "type": "ai_history_message_edited",
+                "channel_id": str(channel_id),
+                "id": row_id,
+                "content": content,
+                "live_session": live_session,
+                "live_session_patched": live_session_patched,
+            }
+        )
+    except Exception:
+        logger.exception("WebSocket handler error")
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to edit AI history message",
+                "scope": "ai_history",
+            }
+        )
+
+
+async def handle_delete_ai_history_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Delete one ``ai_history`` row by primary-key id.
+
+    Deletes the DB row first, then removes the matching item from the live
+    in-memory session (when that channel's chat is loaded). The memory
+    removal is NOT optional polish: a DB-only delete gets resurrected later —
+    force=True saves DELETE+reinsert the in-memory list (the deleted row
+    included), and diff-mode saves re-append the unmatched stale tail via the
+    no-overlap fallback.
+    """
+    raw_channel = data.get("channel_id")
+    raw_row_id = data.get("id")
+    if raw_channel is None or raw_channel == "" or raw_row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_ID",
+                "message": "Missing channel ID or message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    channel_id = _parse_snowflake(raw_channel)
+    if channel_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid channel ID format",
+                "scope": "ai_history",
+            }
+        )
+        return
+    row_id = _parse_history_row_id(raw_row_id)
+    if row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid history message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "DB_UNAVAILABLE",
+                "message": "Database not available",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    try:
+        db = _get_db()
+        # Same per-channel lock discipline as the edit handler: read-row +
+        # DELETE + memory removal must be atomic relative to a save's
+        # fetch+diff+write (a stale snapshot would re-insert the deleted row)
+        # and to a concurrent edit/delete's pre-mutation read. Nothing in here
+        # awaits anything that takes the same lock; remove_history_content is
+        # sync.
+        async with get_history_lock(channel_id):
+            # Read the row first: MSG_NOT_FOUND needs the channel-scoped
+            # existence check, and the in-memory removal below matches against
+            # the row's content/timestamp (that's what the live session holds).
+            row = await db.get_ai_history_message(channel_id, row_id)
+            if row is None:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MSG_NOT_FOUND",
+                        "message": "History message not found",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+
+            # message_id-less rows are matched in memory by (role, timestamp,
+            # content) — identical "twins" are indistinguishable on those
+            # keys, so compute the deleted row's ordinal among its twins (in
+            # id order, which equals memory order) for position-precise
+            # removal.
+            occurrence = 0
+            if row.get("message_id") is None:
+                occurrence = await db.count_identical_history_rows_before(
+                    channel_id,
+                    row_id,
+                    row.get("role") or "user",
+                    row.get("timestamp"),
+                    row.get("content") or "",
+                )
+
+            # DB first (TTL cache invalidated inside), memory second — if the
+            # process dies between the two, the durable state is the deleted
+            # one.
+            deleted = await delete_message_by_row_id(channel_id, row_id)
+            if not deleted:
+                # Row vanished between the read and the DELETE (concurrent
+                # prune or delete) — report it like a missing row.
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MSG_NOT_FOUND",
+                        "message": "History message not found",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+
+            # Five-state outcome (see _live_session_sync): only a loaded
+            # session with a missed matcher warrants a frontend warning.
+            live_session, live_session_patched = _live_session_sync(
+                _get_chat_manager(),
+                channel_id,
+                lambda m: m.remove_history_content(channel_id, row=row, occurrence=occurrence),
+            )
+
+        # Outside the lock — a plain COUNT needs no serialization against
+        # saves. Best-effort: the row is already durably deleted, so a COUNT
+        # failure must not turn the ack into INTERNAL_ERROR (the client would
+        # keep showing a row that is gone). The frontend falls back to a
+        # local decrement when total_count is absent.
+        ack: dict[str, Any] = {
+            "type": "ai_history_message_deleted",
+            "channel_id": str(channel_id),
+            "id": row_id,
+            "live_session": live_session,
+            "live_session_patched": live_session_patched,
+        }
+        try:
+            ack["total_count"] = await db.get_ai_history_count(channel_id)
+        except Exception:
+            logger.exception("Post-delete count failed for channel %s", channel_id)
+        await ws.send_json(ack)
+    except Exception:
+        logger.exception("WebSocket handler error")
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to delete AI history message",
+                "scope": "ai_history",
+            }
+        )
+
+
+async def handle_restore_ai_history_message(ws: WebSocketResponse, data: dict[str, Any]) -> None:
+    """Restore (undo-delete) one ``ai_history`` row with its original id.
+
+    ``data["message"]`` is byte-for-byte the message object the client
+    received in ``ai_history_loaded`` (snowflakes as digit strings). The row
+    is re-INSERTed with its ORIGINAL primary-key id — ``ai_history`` ordering
+    is by id, so it returns to its original position. Idempotent: if the id
+    already exists in the channel with the SAME role AND content, the restore
+    acks as success (already restored); a different row under that id (or a
+    (channel_id, message_id) unique-index hit) is ROW_CONFLICT. A row id that
+    predates the channel's last force-replace rewrite (``'stale'`` from
+    ``restore_message_by_row``) is also ROW_CONFLICT — the original position
+    no longer exists, so the frontend discards the undo entry and reloads.
+
+    DB first, then the live in-memory session is patched (when that channel's
+    chat is loaded) — mirroring the edit/delete handlers: a DB-only restore
+    gets destroyed later by a force=True save (delete+reinsert of the
+    in-memory list, restored row excluded). The neighbor anchors and their
+    twin ordinals are computed BEFORE the DB insert so the just-restored row
+    cannot pollute the counts; the restored row's own DB twin count is read
+    AFTER it (memory must end up with as many twins as the DB holds).
+    """
+    raw_channel = data.get("channel_id")
+    if raw_channel is None or raw_channel == "":
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_ID",
+                "message": "Missing channel ID",
+                "scope": "ai_history",
+            }
+        )
+        return
+    channel_id = _parse_snowflake(raw_channel)
+    if channel_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid channel ID format",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    message = data.get("message")
+    if not isinstance(message, dict):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Missing or invalid message payload",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    raw_row_id = message.get("id")
+    if raw_row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_ID",
+                "message": "Missing message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+    row_id = _parse_history_row_id(raw_row_id)
+    if row_id is None:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ID",
+                "message": "Invalid history message id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # role feeds the CHECK(role IN ('user','model')) column constraint AND the
+    # idempotency comparison — only the two literal strings pass (a bool/int/
+    # None fails the membership test).
+    role = message.get("role")
+    if role not in ("user", "model"):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Invalid message role",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # Content must round-trip byte-for-byte (the idempotency check and the
+    # live-session matcher both compare exact strings), so unlike the edit op
+    # nothing is coerced or stripped — strip() is validation-only here.
+    raw_content = message.get("content")
+    if raw_content is not None and not isinstance(raw_content, str):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Invalid message content",
+                "scope": "ai_history",
+            }
+        )
+        return
+    if raw_content is None or not raw_content.strip():
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_CONTENT",
+                "message": "Missing message content",
+                "scope": "ai_history",
+            }
+        )
+        return
+    content = raw_content
+    if len(content) > MAX_EDIT_CONTENT_LENGTH:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "CONTENT_TOO_LONG",
+                "message": f"Content too long (max {MAX_EDIT_CONTENT_LENGTH:,} characters)",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # Snowflakes arrive as digit strings (None stays None); anything else is
+    # malformed.
+    message_id: int | None = None
+    raw_message_id = message.get("message_id")
+    if raw_message_id is not None:
+        message_id = _parse_snowflake(raw_message_id)
+        if message_id is None:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_ID",
+                    "message": "Invalid message_id format",
+                    "scope": "ai_history",
+                }
+            )
+            return
+    user_id: int | None = None
+    raw_user_id = message.get("user_id")
+    if raw_user_id is not None:
+        user_id = _parse_snowflake(raw_user_id)
+        if user_id is None:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_ID",
+                    "message": "Invalid user_id format",
+                    "scope": "ai_history",
+                }
+            )
+            return
+
+    # local_id is a small per-channel DB counter — a JSON number on the wire
+    # (bools are int subclasses and must be rejected explicitly).
+    local_id = message.get("local_id")
+    if local_id is not None and (
+        isinstance(local_id, bool)
+        or not isinstance(local_id, int)
+        or local_id < 0
+        or local_id > _SQLITE_INT_MAX
+    ):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Invalid message local_id",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # timestamp is stored verbatim; 64 chars covers every format the save
+    # paths write (ISO-8601 with offset) with headroom, while still bounding
+    # the column against arbitrary blobs.
+    timestamp = message.get("timestamp")
+    if timestamp is not None and (not isinstance(timestamp, str) or len(timestamp) > 64):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Invalid message timestamp",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "DB_UNAVAILABLE",
+                "message": "Database not available",
+                "scope": "ai_history",
+            }
+        )
+        return
+
+    # The validated row, shaped like a get_ai_history_message result (parsed
+    # ints, not wire strings) — both the DB insert and the in-memory matcher
+    # consume this.
+    row: dict[str, Any] = {
+        "id": row_id,
+        "local_id": local_id,
+        "role": role,
+        "content": content,
+        "message_id": message_id,
+        "timestamp": timestamp,
+        "user_id": user_id,
+    }
+
+    try:
+        db = _get_db()
+        # Same per-channel lock discipline as the edit/delete handlers: the
+        # INSERT + neighbor reads + memory insert must be atomic relative to
+        # a save's fetch+diff+write (a save between the INSERT and the memory
+        # patch would see the restored row as not-in-memory) and to a
+        # concurrent edit/delete's pre-mutation read. Nothing in here awaits
+        # anything that takes the same lock; insert_history_content is sync.
+        async with get_history_lock(channel_id):
+            # Anchors + twin ordinals BEFORE the DB restore so the
+            # just-restored row cannot pollute the counts (the neighbor query
+            # itself is unaffected — it keys on id </> row_id). message_id-less
+            # anchors are matched in memory by (role, timestamp, content), so
+            # each needs its ordinal among identical twins (id order equals
+            # memory order on load) — the same machinery the edit/delete
+            # handlers use — or the insert anchors on the earliest twin
+            # instead of the actual DB neighbor.
+            prev_row, next_row = await db.get_ai_history_neighbor_rows(channel_id, row_id)
+            prev_occ = next_occ = 0
+            if prev_row is not None and prev_row.get("message_id") is None:
+                prev_occ = await db.count_identical_history_rows_before(
+                    channel_id,
+                    prev_row["id"],
+                    prev_row.get("role") or "user",
+                    prev_row.get("timestamp"),
+                    prev_row.get("content") or "",
+                )
+            if next_row is not None and next_row.get("message_id") is None:
+                next_occ = await db.count_identical_history_rows_before(
+                    channel_id,
+                    next_row["id"],
+                    next_row.get("role") or "user",
+                    next_row.get("timestamp"),
+                    next_row.get("content") or "",
+                )
+
+            result = await restore_message_by_row(channel_id, row)
+            if result == "stale":
+                # The channel's history was force-replace rewritten (fresh
+                # ids) after this undo entry was captured — the original
+                # position no longer exists. ROW_CONFLICT so the frontend's
+                # discard+reload handling covers it.
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "ROW_CONFLICT",
+                        "message": "History was rewritten since this undo was recorded",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+            if result == "conflict":
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "ROW_CONFLICT",
+                        "message": "A different message already occupies this history slot",
+                        "scope": "ai_history",
+                    }
+                )
+                return
+
+            # 'restored' and 'exists_same' both ack as success — the latter is
+            # the idempotent retry (lost ack / second client) and the live
+            # session is evaluated as usual either way.
+
+            # The restored row's own post-restore DB twin count (mid-less rows
+            # only): insert_history_content's skip-insert guard compares the
+            # in-memory twin count against it — mere existence cannot tell
+            # "the restored row is back in memory" from "a surviving identical
+            # twin is in memory".
+            expected_twins = 1
+            if row.get("message_id") is None:
+                expected_twins = await db.count_identical_history_rows(
+                    channel_id,
+                    row.get("role") or "user",
+                    row.get("timestamp"),
+                    row.get("content") or "",
+                )
+
+            # Five-state outcome (see _live_session_sync): only a loaded
+            # session with a missed anchor warrants a frontend warning.
+            live_session, live_session_patched = _live_session_sync(
+                _get_chat_manager(),
+                channel_id,
+                lambda m: m.insert_history_content(
+                    channel_id,
+                    row=row,
+                    prev_row=prev_row,
+                    next_row=next_row,
+                    prev_occurrence=prev_occ,
+                    next_occurrence=next_occ,
+                    expected_twins=expected_twins,
+                ),
+            )
+
+        # Outside the lock — a plain COUNT needs no serialization against
+        # saves. Best-effort: the row is already durably restored, so a COUNT
+        # failure must not turn the ack into INTERNAL_ERROR (the client would
+        # keep hiding a row that is back). The frontend falls back to a local
+        # increment when total_count is absent.
+        ack: dict[str, Any] = {
+            "type": "ai_history_message_restored",
+            "channel_id": str(channel_id),
+            "id": row_id,
+            "live_session": live_session,
+            "live_session_patched": live_session_patched,
+        }
+        try:
+            ack["total_count"] = await db.get_ai_history_count(channel_id)
+        except Exception:
+            logger.exception("Post-restore count failed for channel %s", channel_id)
+        await ws.send_json(ack)
+    except Exception:
+        logger.exception("WebSocket handler error")
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INTERNAL_ERROR",
+                "message": "Failed to restore AI history message",
+                "scope": "ai_history",
+            }
         )

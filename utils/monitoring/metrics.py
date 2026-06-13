@@ -284,12 +284,18 @@ class BotMetrics:
     def _recompute_queue_aggregates(self) -> None:
         if not self.enabled:
             return
+        # Compute AND publish under the lock so the last thread to take the
+        # snapshot is also the last to publish — otherwise two concurrent
+        # recompute calls can interleave (thread A snapshots, thread B
+        # snapshots + publishes, thread A publishes its stale snapshot last),
+        # leaving the exported gauges transiently inconsistent with
+        # _guild_queue_sizes.
         with self._queue_lock:
             sizes = list(self._guild_queue_sizes.values())
-        non_empty = [s for s in sizes if s > 0]
-        self.queue_size_total.set(sum(non_empty))
-        self.queue_size_max.set(max(non_empty) if non_empty else 0)
-        self.queues_active.set(len(non_empty))
+            non_empty = [s for s in sizes if s > 0]
+            self.queue_size_total.set(sum(non_empty))
+            self.queue_size_max.set(max(non_empty) if non_empty else 0)
+            self.queues_active.set(len(non_empty))
 
     def set_queue_size(self, guild_id: int, size: int):
         """Update per-guild queue size and refresh aggregates."""

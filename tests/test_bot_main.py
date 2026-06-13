@@ -73,16 +73,30 @@ class TestRemovePid:
     """Tests for remove_pid function."""
 
     def test_remove_pid_file_exists(self):
-        """Test remove_pid when file exists."""
+        """Test remove_pid when file exists and belongs to this process."""
+        import os
+
         from bot import PID_FILE, remove_pid
 
-        # Create a temporary PID file
-        PID_FILE.write_text("12345", encoding="utf-8")
+        # Create a PID file owned by the current process
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
         remove_pid()
 
         # Should be removed
         assert not PID_FILE.exists()  # Verify PID file was actually removed
+
+    def test_remove_pid_foreign_pid_kept(self):
+        """remove_pid must NOT delete a PID file owned by another process."""
+        from bot import PID_FILE, remove_pid
+
+        PID_FILE.write_text("12345", encoding="utf-8")
+        try:
+            remove_pid()
+            # Still present — belongs to PID 12345, not us
+            assert PID_FILE.exists()
+        finally:
+            PID_FILE.unlink(missing_ok=True)
 
     def test_remove_pid_file_not_exists(self):
         """Test remove_pid when file doesn't exist."""

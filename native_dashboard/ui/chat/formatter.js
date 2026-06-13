@@ -84,6 +84,17 @@ export function formatMessage(content) {
             `</div>`);
         return `${codePlaceholder}${idx}\x01`;
     });
+    // Extract INLINE `code` spans before the LaTeX passes — otherwise the
+    // inline-math regex below eats '$' inside code (`$HOME`, `$PATH`) and
+    // currency in prose ("$5 ... $10"). Restored near the end alongside the
+    // bold/em passes (the existing `code` restore at the inline-code step).
+    const inlineCodeBlocks = [];
+    const inlineCodePlaceholder = '\x04ICODE_';
+    content = content.replace(/`([^`\n]+)`/g, (_match, code) => {
+        const idx = inlineCodeBlocks.length;
+        inlineCodeBlocks.push(`<code>${escapeHtml(code)}</code>`);
+        return `${inlineCodePlaceholder}${idx}\x04`;
+    });
     // Extract block LaTeX ($$...$$). The pattern allows `\$` (escaped dollar)
     // inside the formula so equations like `$$\frac{1}{\$x}$$` survive
     // extraction instead of slipping past as plain text. The alternation is
@@ -110,8 +121,9 @@ export function formatMessage(content) {
         }
         return `${blockPlaceholder}${idx}\x00`;
     });
-    // Extract inline LaTeX ($...$).
-    processed = processed.replace(/(?<!\$)\$(?!\$)([^$]+)\$(?!\$)/g, (_match, tex) => {
+    // Extract inline LaTeX ($...$). Single-line only ([^$\n]) so unmatched
+    // currency dollars in prose can't span paragraphs into a math span.
+    processed = processed.replace(/(?<!\$)\$(?!\$)([^$\n]+)\$(?!\$)/g, (_match, tex) => {
         const idx = latexBlocks.length;
         try {
             if (katex) {
@@ -144,8 +156,12 @@ export function formatMessage(content) {
     // The placeholders survive escapeHtml and the markdown passes and are
     // restored near the end alongside tables/lists.)
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    // Single-line only, and never match a bullet ("* item"): the old
+    // [^*]+ spanned newlines, so the * at the start of one list line paired
+    // with the * starting the NEXT line and italicized the whole list before
+    // the list extraction below ever saw it (Gemini emits * bullets).
+    html = html.replace(/\*(?!\s)([^*\n]+?)(?<!\s)\*/g, '<em>$1</em>');
     // Headings (# to ######) — must be at start of line.
     html = html.replace(/^#{6}\s+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
     html = html.replace(/^#{5}\s+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
@@ -220,6 +236,7 @@ export function formatMessage(content) {
     html = html.replace(/\x03LIST_BLOCK_(\d+)\x03/g, (_match, idx) => listBlocks[parseInt(idx)] || '');
     html = html.replace(/\x02TABLE_BLOCK_(\d+)\x02/g, (_match, idx) => tableBlocks[parseInt(idx)] || '');
     html = html.replace(/\x01CODE_BLOCK_(\d+)\x01/g, (_match, idx) => codeBlocks[parseInt(idx)] || '');
+    html = html.replace(/\x04ICODE_(\d+)\x04/g, (_match, idx) => inlineCodeBlocks[parseInt(idx)] || '');
     // Sanitize final HTML output with DOMPurify (whitelist approach). DOMPurify
     // is bundled locally in vendor/; if it fails to load we return '' rather
     // than risk rendering un-sanitized HTML.

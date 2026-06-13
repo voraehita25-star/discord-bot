@@ -66,28 +66,6 @@ TEST_USER_ID = 123456789
 TEST_GUILD_ID = 111222333
 
 
-# Cache guardrails module reference once to avoid repeated import overhead
-# (guardrails import chain takes ~900ms on first import)
-_guardrails_module: Any = None
-try:
-    from cogs.ai_core.processing import guardrails as _guardrails_module
-except ImportError:
-    pass
-
-
-@pytest.fixture(autouse=True)
-def _reset_guardrails_state():
-    """Reset module-level mutable state in guardrails to prevent test pollution.
-
-    The guardrails module has a module-level `unrestricted_channels` set that
-    persists across tests. Tests that call set_unrestricted() can leak state
-    into subsequent tests, causing spurious failures.
-    """
-    yield
-    if _guardrails_module is not None and hasattr(_guardrails_module, "unrestricted_channels"):
-        _guardrails_module.unrestricted_channels.clear()
-
-
 @pytest.fixture
 def temp_db() -> Generator[str]:
     """Create a temporary database file."""

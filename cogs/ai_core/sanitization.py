@@ -94,7 +94,10 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>)
     # from AI output. Same idempotency guard via negative lookahead.
     content = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", content)
-    content = re.sub(r"<@!?(?!\u200b)(\d+)>", "<@\u200b\\1>", content)
+    # Capture the optional legacy-nickname bang so it survives the rewrite \u2014
+    # ``<@!123>`` must become ``<@!\u200b123>``, not ``<@\u200b123>`` (the old
+    # ``!?`` consumed the ``!`` and the replacement silently dropped it).
+    content = re.sub(r"<@(!?)(?!\u200b)(\d+)>", "<@\\1\u200b\\2>", content)
 
     # Limit length (after sanitization to preserve escape sequences).
     # Walk back from the slice point to the last non-combining

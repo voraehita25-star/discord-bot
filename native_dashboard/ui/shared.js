@@ -227,6 +227,12 @@ export function isSafeAvatarUrl(url) {
     // avatar purpose and is a traversal-shaped string we don't want flowing
     // into an <img src> within the webview's asset scope. Legit avatars are
     // local canvas data: URIs, https, or './'/'/' same-origin paths.
+    // Reject protocol-relative URLs ('//host/...') BEFORE the single-'/'
+    // same-origin check: '//attacker.com/pixel' starts with '/' but resolves
+    // to an EXTERNAL host, defeating the no-external-beacon rule above.
+    if (lower.startsWith('//')) {
+        return false;
+    }
     return (lower.startsWith('data:image/') ||
         lower.startsWith('https://') ||
         lower.startsWith('/') ||
@@ -628,10 +634,16 @@ export function animateNumber(el, to, options = {}) {
     // float artifact (e.g. 85.40000000000001 → ~14 digits) can't blow up the
     // rendered fraction-digit count; 2 covers the dashboard's display needs.
     const decimals = options.decimals ?? (Number.isInteger(to) ? 0 : Math.min(to.toString().split('.')[1]?.length ?? 0, 2));
-    // Extract current number from textContent (strip non-numeric chars except minus and dot)
-    const current = parseFloat((el.textContent || '0').replace(/[^\d.\-]/g, '')) || 0;
-    if (current === to)
+    // Read the current value from a stored numeric attribute, NOT by parsing
+    // the rendered text. formatN uses the OS locale, so on locales that group
+    // with '.' (de-DE, pt-BR, id-ID…) re-parsing "1.234" gave 1.234 and the
+    // no-op check below never matched → perpetual re-animation.
+    const current = Number(el.dataset.animValue ?? '') || 0;
+    if (current === to) {
+        el.dataset.animValue = String(to);
         return;
+    }
+    el.dataset.animValue = String(to);
     // Respect reduced motion — just set the final value
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         el.textContent = prefix + formatN(to, decimals, useLocale) + suffix;

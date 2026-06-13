@@ -12,7 +12,10 @@ the whole cwd subtree. Neither confines an absolute out-of-scope write. This hoo
 closes that gap deterministically: it DENIES (exit code 2) any edit whose
 canonicalised target path is not strictly inside one of the resolved write roots,
 so a prompt-injected upload cannot drive a write to ``.env``, ``~/.claude``,
-``~/.ssh``, the repo, the home root, or the bot's own workdir.
+``~/.ssh``, the repo, the home root, or the bot's own workdir. The repo tree,
+``~/.ssh``, and ``~/.claude`` are additionally denylisted INSIDE any allowed
+root (see ``_denied_subtrees``), so the exclusion holds even when the repo is
+cloned under a write root such as ``~/Documents``.
 
 Contract (Claude Code hooks):
   - stdin  : JSON ``{"tool_name": ..., "tool_input": {...}, ...}``
@@ -73,6 +76,23 @@ def _is_within(target: Path, root: Path) -> bool:
     return target == root or root in target.parents
 
 
+def _denied_subtrees() -> list[Path]:
+    """Subtrees that are NEVER writable, even inside an allowed root.
+
+    The allowed roots are a pure whitelist, so the documented exclusion of the
+    repo (which contains ``.env``, the bot source, AND this guard script) held
+    only positionally — a repo cloned under ``~/Documents`` sat inside a
+    default write root and everything in it became auto-approved. Subtract the
+    repo tree plus ``~/.ssh`` / ``~/.claude`` here so the promise is enforced
+    in code regardless of where the repo lives or what roots an operator
+    configures. Fails closed: an unresolvable entry denies via the caller.
+    """
+    # cogs/ai_core/api/cli_write_guard.py → parents[3] is the repo root.
+    repo_root = Path(__file__).resolve().parents[3]
+    home = Path.home()
+    return [repo_root, (home / ".ssh").resolve(), (home / ".claude").resolve()]
+
+
 def main() -> None:
     raw = sys.stdin.read()
     try:
@@ -80,12 +100,20 @@ def main() -> None:
     except (ValueError, TypeError):
         _deny("unparseable PreToolUse payload; denying edit (fail-closed)")
 
+    # A valid-JSON non-object (array/string/number) would AttributeError on
+    # payload.get below; that escapes as exit 1, which Claude Code treats as
+    # NON-blocking (the edit proceeds). Deny instead (fail-closed).
+    if not isinstance(payload, dict):
+        _deny("PreToolUse payload is not an object; denying edit (fail-closed)")
+
     tool = payload.get("tool_name", "")
     if tool not in _GUARDED_TOOLS:
         # Not a file-mutation tool — no opinion, let normal flow handle it.
         raise SystemExit(0)
 
-    tool_input = payload.get("tool_input") or {}
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        _deny(f"{tool} call with non-object tool_input; denying (fail-closed)")
     target_raw = next((tool_input[k] for k in _PATH_KEYS if tool_input.get(k)), None)
     if not target_raw or not isinstance(target_raw, str):
         _deny(f"{tool} call with no resolvable target path; denying (fail-closed)")
@@ -93,10 +121,24 @@ def main() -> None:
     try:
         # resolve() canonicalises: collapses ``..`` and follows symlinks, so a
         # symlink planted inside a root that points outside it still resolves to
-        # the outside target and is denied.
+        # the outside target and is denied. ValueError (not just OSError) is
+        # caught because an embedded-NUL path raises ValueError on Windows —
+        # uncaught it would exit 1 (non-blocking) and let the write through.
         target = Path(target_raw).resolve()
-    except OSError:
+    except (OSError, ValueError):
         _deny(f"cannot resolve target path {target_raw!r}; denying (fail-closed)")
+
+    # Denylist BEFORE the allow check: sensitive subtrees stay protected even
+    # when an operator points a write root at an ancestor (e.g. the repo
+    # cloned under ~/Documents). Resolution failure here must deny, never
+    # widen — the __main__ backstop also converts any escape into exit 2.
+    try:
+        denied = _denied_subtrees()
+    except (OSError, RuntimeError, IndexError):
+        _deny("cannot resolve protected locations; denying edit (fail-closed)")
+    for sub in denied:
+        if _is_within(target, sub):
+            _deny(f"write to {target} is inside protected location {sub}; denied")
 
     roots = _allowed_roots()
     if not roots:
@@ -115,4 +157,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Top-level fail-closed backstop: SystemExit (the intentional 0/2 exits)
+    # propagates unchanged, but ANY other unhandled exception must BLOCK the
+    # edit (exit 2), never fall through to the default exit 1 that Claude
+    # Code reads as "no opinion → proceed".
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # deliberate catch-all fail-closed boundary
+        sys.stderr.write(f"cli_write_guard: unexpected error {exc!r}; denying (fail-closed)\n")
+        raise SystemExit(2) from exc

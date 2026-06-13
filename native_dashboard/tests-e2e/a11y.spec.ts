@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const PAGES_TO_AUDIT = ['status', 'chat', 'logs', 'config'];
+const PAGES_TO_AUDIT = ['status', 'chat', 'logs', 'config', 'history'];
 
 for (const pageName of PAGES_TO_AUDIT) {
     test(`a11y: ${pageName} page has no critical/serious violations`, async ({ page }) => {

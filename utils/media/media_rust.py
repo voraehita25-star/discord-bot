@@ -29,11 +29,19 @@ get_dimensions = None
 to_base64 = None
 
 try:
-    _media_module = importlib.import_module("media_processor")
+    # The built .pyd lives next to this wrapper (utils/media/media_processor.pyd),
+    # so the package-qualified import is the one that works; the bare top-level
+    # name is only resolvable if someone installed the extension into the venv.
+    try:
+        _media_module = importlib.import_module("utils.media.media_processor")
+    except ImportError:
+        _media_module = importlib.import_module("media_processor")
     RustMediaProcessor = getattr(_media_module, "MediaProcessor", None)
-    is_animated = getattr(_media_module, "is_animated", None)
-    get_dimensions = getattr(_media_module, "get_dimensions", None)
-    to_base64 = getattr(_media_module, "to_base64", None)
+    # PyO3 exports the helpers under their Rust names (py_*) — lib.rs has no
+    # #[pyo3(name=...)] renames.
+    is_animated = getattr(_media_module, "py_is_animated", None)
+    get_dimensions = getattr(_media_module, "py_get_dimensions", None)
+    to_base64 = getattr(_media_module, "py_to_base64", None)
     # Gate RUST_AVAILABLE on the FULL surface — including the standalone
     # functions — not just the class. If the binding ships the class but
     # one of the helpers is missing, callers using ``_use_rust`` would
@@ -152,9 +160,18 @@ class MediaProcessorWrapper:
                     img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)  # type: ignore[assignment]
                     opened.append(img)
 
-                    # Save to bytes
+                    # Save to bytes. Route ANY alpha-carrying image to PNG, not
+                    # just RGBA — "LA"/"PA" and palette ("P") images with a
+                    # `transparency` key also carry alpha and survive .resize()
+                    # keeping their mode; the old RGBA-only check flattened them
+                    # to JPEG (transparent pixels -> opaque gray), corrupting
+                    # transparent stickers/emoji. Matches the Rust extension's
+                    # has_alpha()-based format choice.
                     output = io.BytesIO()
-                    if img.mode == "RGBA":
+                    has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+                        img.mode == "P" and "transparency" in img.info
+                    )
+                    if has_alpha:
                         format_str = "PNG"
                         save_kwargs = {}
                     else:

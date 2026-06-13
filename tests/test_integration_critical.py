@@ -129,6 +129,7 @@ class TestDatabasePoolTimeout:
         db = Database.__new__(Database)
         db.db_path = temp_db
         db._connection_count = 0
+        db._inflight_count = 0
         db._pool_semaphore = asyncio.Semaphore(1)
         db._conn_pool = asyncio.Queue(maxsize=1)
         db._write_lock = None
@@ -154,6 +155,7 @@ class TestDatabasePoolTimeout:
         db = Database.__new__(Database)
         db.db_path = "/nonexistent/path/to/db.sqlite"
         db._connection_count = 0
+        db._inflight_count = 0
         db._pool_semaphore = asyncio.Semaphore(2)
         db._conn_pool = asyncio.Queue(maxsize=2)
         db._write_lock = None

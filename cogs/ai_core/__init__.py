@@ -9,7 +9,7 @@ Reorganized into subdirectories (v3.3.7):
 - core/      - Performance, message queue
 - data/      - Constants and configuration
 - memory/    - RAG, entity memory, history
-- processing/ - Guardrails, intent detection
+- processing/ - Unrestricted mode, intent detection
 - response/  - Response sending, webhooks
 - tools/     - Tool definitions and execution
 """
@@ -42,7 +42,8 @@ from .memory.summarizer import summarizer
 
 # Optional processing modules — gracefully degrade if dependencies are missing
 try:
-    from .processing.guardrails import validate_response
+    # Guardrails removed — sourced from the no-op shim in ``imports``.
+    from .imports import validate_response
 except ImportError:
     validate_response = None  # type: ignore[assignment]
 

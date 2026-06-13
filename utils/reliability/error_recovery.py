@@ -564,11 +564,15 @@ class GracefulDegradation:
             self.error = exc_val
             self.result = self.fallback
 
-            if self.log_errors and issubclass(exc_type, self.suppress_errors):
-                self.logger.warning(
-                    "🔄 Graceful degradation activated: %s. Using fallback.",
-                    str(exc_val)[:100],
-                )
+            # log_errors only gates LOGGING — it must not gate suppression.
+            # Previously log_errors=False re-raised even explicitly-listed
+            # suppress_errors types, disabling the fallback entirely.
+            if issubclass(exc_type, self.suppress_errors):
+                if self.log_errors:
+                    self.logger.warning(
+                        "🔄 Graceful degradation activated: %s. Using fallback.",
+                        str(exc_val)[:100],
+                    )
                 return True  # Suppress the exception
 
             return False  # Re-raise

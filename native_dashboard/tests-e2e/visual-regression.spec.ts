@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const BASELINE_PAGES = ['status', 'chat', 'logs', 'config'] as const;
+const BASELINE_PAGES = ['status', 'chat', 'logs', 'config', 'history'] as const;
 
 for (const pageName of BASELINE_PAGES) {
     test(`visual: ${pageName} page baseline`, async ({ page }) => {

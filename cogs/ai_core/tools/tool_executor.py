@@ -88,6 +88,32 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     return chunks
 
 
+async def _send_plain_fallback(channel: Any, name: str, message: str) -> Any:
+    """Plain-text fallback send that honors Discord's 2000-char limit.
+
+    Every fallback path previously sent ``**name**: message`` as ONE call —
+    a long character message (or the prefix pushing a ~2000-char one over)
+    400'd, and the surrounding except handler re-tried the same oversized
+    send. Returns the last sent message (mirrors send_as_webhook's contract).
+    """
+    # ``name`` is AI-controlled (parsed from {{Name}} markers) with no upstream
+    # length clamp. A pathologically long name would make len(prefix) >= 2000,
+    # driving the per-chunk limit <= 0 — which _safe_split_message resets to
+    # 2000 — so chunk0 (prefix + a full 2000-char chunk) would blow past
+    # Discord's 2000-char body limit and 400. Clamp the name (Discord usernames
+    # cap near 80 anyway) and floor the per-chunk limit.
+    name = name[:80]
+    prefix = f"**{name}**: "
+    chunk_limit = max(256, 2000 - len(prefix))
+    last = None
+    for i, chunk in enumerate(_safe_split_message(message, chunk_limit)):
+        last = await channel.send(
+            (prefix if i == 0 else "") + chunk,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return last
+
+
 async def execute_tool_call(
     _bot: commands.Bot,
     origin_channel: discord.TextChannel,
@@ -190,11 +216,15 @@ async def execute_tool_call(
         "remove_role",
         "set_role_permission",
     }
-    if fname in _CHANNEL_MUTATION_TOOLS and not (
-        user.guild_permissions.manage_channels or is_admin
-    ):
+    # NOTE: no ``or is_admin`` here — non-admins already returned above, so
+    # including it made both checks tautologically dead (the comment above
+    # promises the OPPOSITE: that even an admin-tagged caller needs the
+    # specific bit). For true administrators discord.py resolves
+    # guild_permissions to Permissions.all() anyway, so this only bites
+    # callers whose admin flag came from a derived/partial source.
+    if fname in _CHANNEL_MUTATION_TOOLS and not user.guild_permissions.manage_channels:
         return "⛔ Permission denied: requires manage_channels permission."
-    if fname in _ROLE_MUTATION_TOOLS and not (user.guild_permissions.manage_roles or is_admin):
+    if fname in _ROLE_MUTATION_TOOLS and not user.guild_permissions.manage_roles:
         return "⛔ Permission denied: requires manage_roles permission."
 
     try:
@@ -327,7 +357,10 @@ async def execute_tool_call(
                 if not origin_channel.permissions_for(cast(Any, user)).view_channel:
                     return "⛔ Permission denied: you cannot view this channel."
             except (AttributeError, TypeError):
-                pass
+                # Fail CLOSED like the read_channel check below — failing
+                # open here let an unresolvable permission state list every
+                # member anyway.
+                return "⛔ Permission denied: you cannot view this channel."
             cmd_args = []
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
@@ -551,7 +584,18 @@ async def execute_tool_call(
             )
             _forbidden_normalized = (
                 "[system]",
+                # Bracket/tag markers from the first (plain) screen, also run
+                # against the de-confused+NFKD form — otherwise a confusable
+                # spelling (e.g. ``<ѕystem>`` / ``[иnst]`` / ``иgnore the
+                # previous``) slips past BOTH layers: the plain screen on the
+                # confusable char, this screen because the marker was absent.
+                "[inst]",
+                "<system>",
+                "</system>",
+                "<inst>",
+                "</inst>",
                 "ignore previous",
+                "ignore the previous",
                 "pretend",
                 "you are now",
                 "system:",
@@ -580,7 +624,12 @@ async def execute_tool_call(
                 c for c in str(user_display) if c.isprintable() and c not in "\r\n"
             )[:32]
             attributed = f"[user {safe_display} (id={user_id})] {content}"
-            await rag_system.add_memory(attributed, channel_id=origin_channel.id)
+            saved = await rag_system.add_memory(attributed, channel_id=origin_channel.id)
+            if not saved:
+                # add_memory returns False when the DB/RAG store is
+                # unavailable — reporting "Saved" anyway taught the model
+                # (and the user) that a lost memory was persisted.
+                return "❌ Failed to save memory: memory storage is unavailable"
             return f"✅ Saved to long-term memory: {content[:100]}{'...' if len(content) > 100 else ''}"
 
         else:
@@ -625,18 +674,29 @@ async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):
     # attribute access used to crash with AttributeError before the DM guard
     # below kicked in. Reject DM invocations explicitly first.
     if not hasattr(user, "guild_permissions"):
-        await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น")
+        await origin_channel.send(
+            "❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
         return
     if not user.guild_permissions.administrator:
         logger.warning("⚠️ User %s tried Admin Command %s without perm.", user, cmd_type)
-        await origin_channel.send(f"⛔ คำสั่งนี้สำหรับ Admin เท่านั้น ({user.display_name})")
+        # display_name is user-controlled (a nickname can embed <@id> text);
+        # the bot default allows user pings, so disable mentions explicitly.
+        await origin_channel.send(
+            f"⛔ คำสั่งนี้สำหรับ Admin เท่านั้น ({user.display_name})",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
         return
 
     try:
         # Check if channel has guild (should always be true for server commands)
         if not hasattr(origin_channel, "guild") or not origin_channel.guild:
             logger.warning("Server command called in non-guild channel")
-            await origin_channel.send("❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น")
+            await origin_channel.send(
+                "❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
 
         guild = origin_channel.guild
@@ -650,7 +710,10 @@ async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):
 
         # Validation
         if name and len(name) > 100:
-            await origin_channel.send("❌ ชื่อยาวเกินไป (สูงสุด 100 ตัวอักษร)")
+            await origin_channel.send(
+                "❌ ชื่อยาวเกินไป (สูงสุด 100 ตัวอักษร)",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
 
         # Dispatch. Pass the requesting user so each handler can enforce a
@@ -694,27 +757,35 @@ async def send_as_webhook(bot, channel, name, message):
         # all fallback paths — ``name`` is AI-controlled and may contain
         # raw ``<@everyone>``/``<@id>`` that the per-message regexes don't cover.
         if not hasattr(channel, "guild") or channel.guild is None:
-            await channel.send(
-                f"**{name}**: {message}",
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            await _send_plain_fallback(channel, name, message)
+            return None
+
+        # Threads (and any other guild channel without webhook ownership)
+        # have no .webhooks()/.create_webhook() — their webhooks live on the
+        # parent channel. Reaching line `await channel.webhooks()` below with
+        # a Thread raised AttributeError, which is NOT in the except clauses
+        # and killed the whole AI turn.
+        if not hasattr(channel, "webhooks"):
+            await _send_plain_fallback(channel, name, message)
             return None
 
         # Check bot permissions first
         if not channel.permissions_for(channel.guild.me).manage_webhooks:
-            await channel.send(
-                f"**{name}**: {message}",
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            await _send_plain_fallback(channel, name, message)
             return None
 
         webhook_name = f"AI: {name}"
         channel_id = channel.id
 
+        # When a chunked cached-webhook send fails mid-loop, this carries the
+        # exact UNDELIVERED chunks over to the find/create path below.
+        pending_chunks: list[str] | None = None
+
         # Try cache first
         webhook = get_cached_webhook(channel_id, webhook_name)
 
         if webhook:
+            sent_chunks = 0
             try:
                 # Try sending with cached webhook
                 sent_message = None
@@ -728,6 +799,7 @@ async def send_as_webhook(bot, channel, name, message):
                             wait=True,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
+                        sent_chunks += 1
                 else:
                     sent_message = await webhook.send(
                         content=message,
@@ -745,6 +817,14 @@ async def send_as_webhook(bot, channel, name, message):
                 # Other error, invalidate and continue
                 invalidate_webhook_cache(channel_id, webhook_name)
                 webhook = None
+            if sent_chunks:
+                # Resume from the first UNDELIVERED chunk, reusing the SAME
+                # chunk list. (Re-splitting a ``"".join(...)`` reconstruction
+                # glued newline-split chunks together — the splitter consumes
+                # the newline at each boundary, so joining with "" lost it.)
+                pending_chunks = chunks[sent_chunks:]
+                if not pending_chunks:
+                    return sent_message
 
         # Determine Avatar
         avatar_bytes = None
@@ -870,9 +950,19 @@ async def send_as_webhook(bot, channel, name, message):
                 set_cached_webhook(channel_id, webhook_name, webhook)
 
             sent_message = None
-            # Send message (split safely if too long)
+            # Send message (split safely if too long). ``pending_chunks``
+            # takes priority: it is the undelivered tail of a chunked send
+            # that failed on the cached webhook.
             limit = 2000
-            if len(message) > limit:
+            if pending_chunks is not None:
+                for chunk in pending_chunks:
+                    sent_message = await webhook.send(
+                        content=chunk,
+                        username=name,
+                        wait=True,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+            elif len(message) > limit:
                 chunks = _safe_split_message(message, limit)
                 for chunk in chunks:
                     sent_message = await webhook.send(
@@ -892,23 +982,21 @@ async def send_as_webhook(bot, channel, name, message):
             return sent_message
 
         # Fallback if no webhook could be found/created
-        return await channel.send(
-            f"**{name}**: {message}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        if pending_chunks is not None:
+            message = "\n".join(pending_chunks)
+        return await _send_plain_fallback(channel, name, message)
 
     except discord.Forbidden:
-        logger.warning("No permission to manage webhooks in %s", channel.name)
-        return await channel.send(
-            f"**{name}**: {message}",
-            allowed_mentions=discord.AllowedMentions.none(),
+        # ``channel.name`` doesn't exist on DMChannel — evaluating it inside
+        # this handler raised AttributeError and masked the original error.
+        logger.warning(
+            "No permission to manage webhooks in %s",
+            getattr(channel, "name", f"channel:{getattr(channel, 'id', '?')}"),
         )
+        return await _send_plain_fallback(channel, name, message)
     except discord.HTTPException as err:
         logger.error("Failed to send webhook: %s", err)
-        return await channel.send(
-            f"**{name}**: {message}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        return await _send_plain_fallback(channel, name, message)
 
 
 __all__ = [

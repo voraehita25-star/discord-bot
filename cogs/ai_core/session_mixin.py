@@ -18,7 +18,13 @@ from .data import (
     SERVER_LORE,
     UNRESTRICTED_MODE_INSTRUCTION,
 )
-from .storage import load_history, load_metadata, save_history
+from .storage import (
+    get_cache_generation,
+    last_load_was_db,
+    load_history,
+    load_metadata,
+    save_history,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +119,35 @@ class SessionMixin:
                 system_instruction = system_instruction + "\n\n" + lore
                 logger.info("Applied server lore for guild %s", guild_id)
 
+            # Snapshot the cache generation before the awaits below: a
+            # dashboard edit landing while load_history/load_metadata is in
+            # flight invalidates the cache (generation bump) AFTER our read —
+            # registering that pre-edit history would silently lose the edit
+            # on the next force-save. load_history retries internally for
+            # bumps during ITS await; this covers the residual window between
+            # its return and the session registration (incl. load_metadata).
+            generation = get_cache_generation(channel_id)
             history = await load_history(self.bot, channel_id)
 
             # Load metadata (thinking_enabled, etc.) from file
             metadata = await load_metadata(self.bot, channel_id)
 
+            if get_cache_generation(channel_id) != generation:
+                # An external edit invalidated this channel mid-load — re-read
+                # once so the session registers post-edit history.
+                history = await load_history(self.bot, channel_id)
+
             self.chats[channel_id] = {
                 "history": history,
                 "system_instruction": system_instruction,
                 "thinking_enabled": metadata.get("thinking_enabled", True),
-                # Flag whether history came from DB so save_history can refuse
-                # to dump the full in-memory history if a later DB read returns
-                # empty (which would corrupt persisted history with duplicates).
-                "_db_loaded": bool(history),
+                # Flag whether history came from THE DATABASE so save_history
+                # can refuse to dump the full in-memory history if a later DB
+                # read returns empty. Must be False for JSON-fallback loads —
+                # otherwise the refusal guard permanently blocked both the
+                # JSON→DB migration and persistence of every new message in
+                # legacy JSON channels.
+                "_db_loaded": bool(history) and last_load_was_db(channel_id),
             }
         else:
             # Cached session exists - verify system_instruction is correct for guild
@@ -133,7 +155,7 @@ class SessionMixin:
             if guild_id == GUILD_ID_RP and ROLEPLAY_ASSISTANT_INSTRUCTION not in cached_instruction:
                 logger.warning("⚠️ Correcting system_instruction for RP channel %s", channel_id)
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
-                # Mirror the cache-miss path's 8000-char cap so an
+                # Mirror the cache-miss path's 20000-char lore cap so an
                 # oversized lore entry can't bypass the API token limit
                 # just because we hit the cache-correction branch.
                 if guild_id in SERVER_LORE:
@@ -165,7 +187,7 @@ class SessionMixin:
         # prompt grew unbounded on every get_chat_session call and the disable
         # path never ran.
         try:
-            from .processing.guardrails import is_unrestricted
+            from .imports import is_unrestricted
 
             # Re-read AFTER any RP-fix branch above so we don't clobber its update.
             current_instruction = self.chats[channel_id].get("system_instruction", "")
@@ -198,6 +220,7 @@ class SessionMixin:
 
     async def save_all_sessions(self) -> None:
         """Save all active sessions to persistent storage."""
+        failed: list[int] = []
         for channel_id in list(self.chats.keys()):
             # The session may be evicted by cleanup_inactive_sessions during an
             # await in a previous iteration — re-fetch and skip if it's gone so
@@ -205,8 +228,24 @@ class SessionMixin:
             chat_data = self.chats.get(channel_id)
             if chat_data is None:
                 continue
-            await save_history(self.bot, channel_id, chat_data)
-        logger.info("All AI sessions saved.")
+            # save_history returns False on REFUSAL (guard paths) without
+            # raising — on shutdown that silently lost the in-memory history
+            # while an unconditional "All AI sessions saved." printed.
+            try:
+                persisted = await save_history(self.bot, channel_id, chat_data)
+            except Exception:
+                logger.exception("save_all_sessions: save raised for channel %s", channel_id)
+                persisted = False
+            if not persisted:
+                failed.append(channel_id)
+        if failed:
+            logger.error(
+                "save_all_sessions: %d session(s) were NOT persisted: %s",
+                len(failed),
+                failed,
+            )
+        else:
+            logger.info("All AI sessions saved.")
 
     async def cleanup_inactive_sessions(self) -> None:
         """Background task to unload inactive chat sessions from RAM."""
@@ -258,6 +297,12 @@ class SessionMixin:
                                 channel_id in self.last_accessed
                                 and time.time() - self.last_accessed[channel_id] > timeout
                             ):
+                                # NEVER pop a HELD lock — orphaning it lets two
+                                # process_chat turns run concurrently (mirrors
+                                # logic.py's LRU-eviction guard).
+                                lock = self.processing_locks.get(channel_id)
+                                if lock is not None and lock.locked():
+                                    continue
                                 # Atomically remove all related state for this channel
                                 self.chats.pop(channel_id, None)
                                 self.last_accessed.pop(channel_id, None)
@@ -282,17 +327,23 @@ class SessionMixin:
         except asyncio.CancelledError:
             logger.info("Session cleanup task cancelled")
 
-    async def toggle_thinking(self, channel_id: int, enabled: bool) -> bool:
+    async def toggle_thinking(
+        self, channel_id: int, enabled: bool, guild_id: int | None = None
+    ) -> bool:
         """Toggle thinking mode for a specific channel session.
 
         Args:
             channel_id: Discord channel ID.
             enabled: Whether to enable thinking mode.
+            guild_id: Guild the channel belongs to. Without it, a session
+                CREATED here for an RP channel would get the default Faust
+                persona (no RP instruction, no lore) and skip the RP
+                force-thinking rule.
 
         Returns:
             True if toggled successfully, False otherwise.
         """
-        chat_data = await self.get_chat_session(channel_id)
+        chat_data = await self.get_chat_session(channel_id, guild_id)
         if chat_data:
             chat_data["thinking_enabled"] = enabled
             # Re-save session to persist changes

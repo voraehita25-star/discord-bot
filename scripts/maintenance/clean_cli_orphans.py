@@ -103,8 +103,17 @@ def main() -> int:
                             except OSError:
                                 pass
                         for name in dirs:
+                            full = os.path.join(root, name)
                             try:
-                                os.rmdir(os.path.join(root, name))
+                                # A symlink-to-dir appears in `dirs` even with
+                                # followlinks=False; on POSIX os.rmdir on it
+                                # fails with ENOTDIR. Unlink it (removes the
+                                # link, never its target) so the parent can then
+                                # be removed; real dirs still go through rmdir.
+                                if os.path.islink(full):  # noqa: PTH114 (os.* style; cf. PTH106/108 ignores)
+                                    os.unlink(full)
+                                else:
+                                    os.rmdir(full)
                             except OSError:
                                 pass
                     try:

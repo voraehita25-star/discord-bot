@@ -13,6 +13,7 @@ delete this file once all callers are migrated.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -195,22 +196,26 @@ class TokenTracker:
         )
 
     def get_user_stats(self, user_id: int) -> UserTokenStats | None:
-        """Get token stats for a specific user."""
+        """Get token stats for a specific user (a snapshot copy)."""
+        # Return a deep copy under the lock: the live object stays mutable by
+        # record() after the lock releases, so handing back the reference would
+        # let a caller observe a torn cross-field snapshot (or mutate internal
+        # totals). Copying keeps the returned value stable and read-only.
         with self._lock:
-            return self._user_stats.get(user_id)
+            return copy.deepcopy(self._user_stats.get(user_id))
 
     def get_top_users(self, limit: int = 10) -> list[tuple[int, UserTokenStats]]:
-        """Get top users by total token usage."""
+        """Get top users by total token usage (snapshot copies)."""
         with self._lock:
             sorted_users = sorted(
                 self._user_stats.items(), key=lambda x: x[1].total_tokens, reverse=True
             )
-            return sorted_users[:limit]
+            return [(uid, copy.deepcopy(stats)) for uid, stats in sorted_users[:limit]]
 
     def get_channel_stats(self, channel_id: int) -> TokenUsage:
-        """Get token stats for a channel."""
+        """Get token stats for a channel (a snapshot copy)."""
         with self._lock:
-            return self._channel_usage.get(channel_id, TokenUsage())
+            return copy.deepcopy(self._channel_usage.get(channel_id, TokenUsage()))
 
     def get_global_stats(self) -> dict[str, Any]:
         """Get global token usage statistics."""

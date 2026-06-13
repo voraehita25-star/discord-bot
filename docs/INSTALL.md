@@ -110,7 +110,7 @@ nano .env     # Linux
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | ✅ | Token จาก Discord Developer Portal |
 | `ANTHROPIC_API_KEY` | ⚠️ | API Key จาก Anthropic — ต้องตั้งเฉพาะตอน `CLAUDE_BACKEND=api`. โหมดดีฟอลต์ `cli` อ่าน credentials จาก Claude Code login ในเครื่องแทน |
-| `CLAUDE_BACKEND` | ❌ | (Optional) Mode การคุยกับ Claude: `cli` (default — spawn `claude -p` ใช้โควต้า Claude Code Max subscription, ไม่เสียค่า per-token) หรือ `api` (anthropic SDK + per-token billing, เปิดใช้ Discord AI replies + memory consolidator + summarizer) |
+| `CLAUDE_BACKEND` | ❌ | (Optional) Mode การคุยกับ Claude: `cli` (default — spawn `claude -p` ใช้โควต้า Claude Code Max subscription, ไม่เสียค่า per-token) หรือ `api` (ใช้ anthropic SDK + per-token billing เป็น backend ตอบ Claude แทน subprocess `claude -p`). ทั้งสองโหมดตอบ Discord AI replies ได้ — ดีฟอลต์ `cli` ก็ตอบใน Discord ผ่าน `discord_chat_claude_cli` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | (Optional) ตั้งเฉพาะตอนใช้ `CLAUDE_BACKEND=cli` และ bot รันคนละ OS user กับที่ login Claude Code (เช่น service account / Docker) |
 | `GEMINI_API_KEY` | ❌ | (Optional) API Key จาก Google AI Studio สำหรับ RAG embeddings (โหลดเฉพาะตอน `CLAUDE_BACKEND=api`) |
 | `RAG_ALLOW_LEGACY_PICKLE` | ❌ | (Optional) Opt-in อนุญาตให้โหลด FAISS sidecar `.npy` (pickle) แบบเก่า ปิดดีฟอลต์เพื่อกัน RCE จากไฟล์บนดิสก์ ตั้งเฉพาะตอน migrate deployment เก่าที่เชื่อถือได้ |
@@ -363,4 +363,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: May 2026 | Version: 3.4.1*
+*Last Updated: June 2026 | Version: 3.4.5*

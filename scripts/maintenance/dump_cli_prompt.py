@@ -13,12 +13,18 @@ unredacted.
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+# build_user_context goes through get_db(), whose path is CWD-relative
+# ("data/bot_database.db"); without chdir, running this from any other
+# directory reads a DIFFERENT database than the root-anchored direct query
+# above, so the dumped context wouldn't match the listed conversation.
+os.chdir(ROOT)
 
 # Avoid the dashboard-CLI module pulling its full dep graph at import time
 # we just want build_user_context + the prompt builder.
@@ -53,12 +59,34 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
         ).fetchall()
         print(f"DB messages  : {len(msgs)}")
 
-    # build_user_context relies on the bot's get_db() singleton.
-    user_context, _ = await build_user_context(
-        "User",
-        False,
-        conversation_id=conv_id,
-    )
+    # build_user_context relies on the bot's get_db() singleton, which opens
+    # pooled aiosqlite connections on NON-daemon threads — without an explicit
+    # close the interpreter blocks forever at exit. Close the pool in finally.
+    from cogs.ai_core.api.dashboard_common import get_db
+
+    try:
+        user_context, _ = await build_user_context(
+            "User",
+            False,
+            conversation_id=conv_id,
+        )
+    finally:
+        # Guard the get_db() call: when the DB package failed to import,
+        # dashboard_common sets Database = None and get_db() -> Database()
+        # raises TypeError. Letting that escape the finally would mask the
+        # real result/exception of the try block above.
+        try:
+            _db = get_db()
+        except Exception:
+            _db = None
+        if _db is not None:
+            for _closer in ("stop_background_tasks", "close_pool"):
+                _fn = getattr(_db, _closer, None)
+                if _fn is not None:
+                    try:
+                        await _fn()
+                    except Exception:
+                        pass
 
     history = [
         {"role": m["role"], "content": m["content"], "created_at": m["created_at"]} for m in msgs

@@ -26,6 +26,7 @@ import {
     chatManager,
     initChatManager,
 } from './chat-manager.js';
+import { HistoryManager } from './history-manager.js';
 
 // ============================================================================
 // Performance Cache System
@@ -76,6 +77,7 @@ const dataCache = new DataCache();
 // ============================================================================
 
 let currentPage = 'status';
+let historyManager: HistoryManager | null = null;
 let refreshInterval: number | null = null;
 let logsRefreshInterval: number | null = null;
 let logsAutoScrollEnabled = true;
@@ -109,6 +111,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (sakuraEnabled) initSakuraAnimation();
     initKeyboardShortcuts();
     initChatManager();
+    initHistoryManager();
     // Update AI avatars after all init
     updateAiAvatars();
     initApiFailoverUI();
@@ -149,9 +152,9 @@ window.addEventListener('beforeunload', () => {
 
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-        // Ctrl+1-5 for page navigation
-        if (e.ctrlKey && e.key >= '1' && e.key <= '5') {
-            const pages = ['status', 'chat', 'logs', 'database', 'settings'];
+        // Ctrl+1-6 for page navigation
+        if (e.ctrlKey && e.key >= '1' && e.key <= '6') {
+            const pages = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
             const index = parseInt(e.key) - 1;
             if (pages[index]) {
                 e.preventDefault();
@@ -722,6 +725,20 @@ function initNavigation(): void {
     });
 }
 
+// AI History page manager — uses ChatManager's WebSocket for transport, so
+// it is created right after initChatManager() and wired both ways: outgoing
+// frames go through chatManager.send, incoming ai_* frames are forwarded
+// back via chatManager.historyManager (see chat-manager.ts handleMessage).
+function initHistoryManager(): void {
+    historyManager = new HistoryManager({
+        send: (data) => chatManager?.send(data) ?? false,
+        isConnected: () => chatManager?.connected ?? false,
+        connect: () => chatManager?.connect(),
+    });
+    historyManager.init();
+    if (chatManager) chatManager.historyManager = historyManager;
+}
+
 function switchPage(page: string): void {
     currentPage = page;
 
@@ -762,6 +779,15 @@ function switchPage(page: string): void {
         } else {
             chatManager.hideChatContainer();
         }
+    }
+    if (page === 'history' && chatManager) {
+        // Same WS-readiness mechanism as the chat hook above: reconnect if
+        // disconnected, then request data. onEnter() queues the channels
+        // request until the 'connected' frame when the socket is still down.
+        if (!chatManager.connected) {
+            chatManager.connect();
+        }
+        historyManager?.onEnter();
     }
 }
 
@@ -2018,8 +2044,17 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
     const container = document.getElementById('api-endpoints');
     if (!section || !container) return;
 
-    if (!data.available || !data.endpoints) {
+    // Hide only on an EXPLICIT "not available". The api_endpoint_switched
+    // frames (manual switch + auto-failover broadcast) carry endpoints but
+    // no `available` key — treating that as unavailable hid the panel the
+    // moment the user clicked a standby endpoint.
+    if (data.available === false) {
         section.style.display = 'none';
+        return;
+    }
+    if (!Array.isArray(data.endpoints)) {
+        // Frame without endpoint data (e.g. the unauthenticated
+        // safe-notification variant) — leave the panel as-is.
         return;
     }
 

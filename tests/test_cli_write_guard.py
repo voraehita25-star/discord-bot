@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -75,6 +76,17 @@ class TestWriteGuardAllows:
         root = tmp_path / "out"
         root.mkdir()
         res = run_guard(write_payload(root / "f.txt", tool=tool), [root])
+        assert res.returncode == ALLOW
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="NTFS case-insensitive path semantics")
+    def test_allows_case_divergent_path_within_root_windows(self, tmp_path):
+        # _is_within relies on PureWindowsPath case-insensitive equality; a
+        # future refactor to a casefold-unaware string-prefix check would
+        # silently start denying legitimate writes like this one.
+        root = tmp_path / "Out"
+        root.mkdir()
+        # Divergent case both in the existing dir and a not-yet-existing tail.
+        res = run_guard(write_payload(tmp_path / "out" / "NewDir" / "f.txt"), [root])
         assert res.returncode == ALLOW
 
     def test_passthrough_for_non_guarded_tool(self, tmp_path):
@@ -152,6 +164,66 @@ class TestWriteGuardDenies:
         link.symlink_to(outside, target_is_directory=True)
         # Path resolves through the symlink to outside the root → denied.
         res = run_guard(write_payload(link / "f.txt"), [root])
+        assert res.returncode == DENY
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows reparse points")
+    def test_denies_junction_escape_windows(self, tmp_path):
+        # Junctions need NO admin rights (unlike symlinks) and are the
+        # realistic escape primitive on the deployment platform — a junction
+        # planted inside a write root must still resolve to its target and
+        # be denied. _winapi.CreateJunction is the same private-but-stable
+        # API CPython's own test suite uses.
+        import _winapi
+
+        root = tmp_path / "out"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = root / "link"
+        try:
+            _winapi.CreateJunction(str(outside), str(link))
+        except OSError as exc:  # e.g. non-NTFS temp volume
+            pytest.skip(f"cannot create junction here: {exc}")
+        # resolve() traverses the junction to outside the root → denied.
+        res = run_guard(write_payload(link / "f.txt"), [root])
+        assert res.returncode == DENY
+
+
+class TestWriteGuardDeniedSubtrees:
+    """The repo / ~/.ssh / ~/.claude denylist holds INSIDE allowed roots.
+
+    These run the real guard subprocess; it only reads env + stdin, so using
+    real paths (repo root, home) is safe — nothing is ever written.
+    """
+
+    def test_denies_repo_tree_even_when_repo_is_the_allowed_root(self):
+        repo_root = Path(SCRIPT).resolve().parents[3]
+        res = run_guard(write_payload(repo_root / "newfile.txt"), [repo_root])
+        assert res.returncode == DENY
+
+    def test_denies_env_file_via_ancestor_root(self):
+        # The documented "an injected write cannot reach .env" guarantee must
+        # hold even when an operator points a write root at a repo ancestor
+        # (e.g. the repo cloned under ~/Documents).
+        repo_root = Path(SCRIPT).resolve().parents[3]
+        res = run_guard(write_payload(repo_root / ".env"), [repo_root.parent])
+        assert res.returncode == DENY
+
+    def test_denies_overwriting_guard_script_itself(self):
+        # The guard is re-read from disk per edit — overwriting it would
+        # neutralise the boundary for every later in-root write.
+        script = Path(SCRIPT).resolve()
+        res = run_guard(write_payload(script), [script.parent])
+        assert res.returncode == DENY
+
+    def test_denies_dot_claude_inside_allowed_root(self):
+        home = Path.home()
+        res = run_guard(write_payload(home / ".claude" / "settings.json"), [home])
+        assert res.returncode == DENY
+
+    def test_denies_dot_ssh_inside_allowed_root(self):
+        home = Path.home()
+        res = run_guard(write_payload(home / ".ssh" / "authorized_keys"), [home])
         assert res.returncode == DENY
 
 

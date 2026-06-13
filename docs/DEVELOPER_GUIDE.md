@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
-> **Last Updated:** June 8, 2026
-> **Version:** 3.4.5
+> **Last Updated:** June 12, 2026
+> **Version:** 3.4.6
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 110 Python test files (4,768 tests) + 10 vitest files (191 frontend tests) + 8 Playwright spec files (e2e + a11y + visual regression tests)
+> **Total Files:** 113 Python test files (5,052 tests) + 11 vitest files (294 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -65,9 +65,14 @@ BOT/
 │       │   ├── dashboard_chat.py       # Gemini-backed dashboard chat
 │       │   ├── dashboard_chat_claude.py     # Claude streaming chat + edit via anthropic SDK (per-token billing)
 │       │   ├── dashboard_chat_claude_cli.py # Claude streaming chat + edit via `claude -p` subprocess (Max subscription). Toggle with CLAUDE_BACKEND=cli
+│       │   ├── discord_chat_claude_cli.py   # Discord-side Claude CLI backend (delta-on-resume sessions, over-limit owner buttons)
+│       │   ├── chat_manager_registry.py     # Weakref registry — dashboard handlers sync the live ChatManager
+│       │   ├── cli_write_guard.py      # Fail-closed PreToolUse hook confining CLI file writes
+│       │   ├── ai_tools_ipc.py         # Localhost IPC executing CLI tool calls in the bot process
+│       │   ├── mcp_tools_server.py     # Stdio MCP proxy spawned by `claude -p` → ai_tools_ipc
 │       │   ├── dashboard_common.py     # Shared helpers (timestamps, persona+context builder, memory cache)
 │       │   ├── dashboard_config.py     # Dashboard env config
-│       │   ├── dashboard_handlers.py   # Conversation CRUD with invalidate_user_context_cache hooks
+│       │   ├── dashboard_handlers.py   # Conversation CRUD with invalidate_user_context_cache hooks + AI-history browse/edit/delete/restore handlers
 │       │   └── document_extractor.py   # PDF/DOCX/text extraction → dashboard_document_memories
 │       │
 │       ├── core/             # 🏗️ Core Components
@@ -114,7 +119,7 @@ BOT/
 │       │
 │       ├── processing/       # 🔄 Request Processing
 │       │   ├── __init__.py
-│       │   ├── guardrails.py # ⚠️ Safety (is_silent_block) & unrestricted mode
+│       │   ├── unrestricted.py # Per-channel unrestricted-mode registry (persona injection)
 │       │   └── intent_detector.py # Message intent classification
 │       │
 │       └── cache/            # 📊 Caching & Analytics
@@ -182,7 +187,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (4,721 tests in 110 files)
+├── tests/                    # 🧪 Python test suite (5,052 tests in 113 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -191,12 +196,13 @@ BOT/
 │   ├── test_circuit_breaker.py
 │   ├── test_consolidator.py  # Memory consolidator
 │   ├── test_content_processor.py
-│   ├── test_dashboard_handlers.py # Dashboard handler tests (53 tests)
+│   ├── test_dashboard_handlers.py # Dashboard handler tests (48 tests)
+│   ├── test_dashboard_ai_history.py # AI-history WS handler tests (225 tests)
 │   ├── test_database.py
 │   ├── test_emoji_voice.py
 │   ├── test_error_recovery.py
 │   ├── test_fast_json.py     # 🆕 Fast JSON utilities tests
-│   ├── test_guardrails.py
+│   ├── test_unrestricted.py  # Unrestricted-mode registry tests
 │   ├── test_memory_manager.py # 🆕 TTL/WeakRef cache tests
 │   ├── test_memory_modules.py
 │   ├── test_music_integration.py
@@ -226,26 +232,31 @@ BOT/
 │   │   ├── bot_manager.rs    # Bot process control
 │   │   └── database.rs       # SQLite queries
 │   ├── src-ts/
-│   │   ├── app.ts            # Status/logs/DB/settings UI (~1,853 lines)
-│   │   ├── chat-manager.ts   # ChatManager orchestrator (~2,649 lines after 2026-04 split)
+│   │   ├── app.ts            # Status/logs/DB/settings UI (~1,900 lines)
+│   │   ├── chat-manager.ts   # ChatManager orchestrator (~2,800 lines after 2026-04 split)
+│   │   ├── history-manager.ts # AI History page (Ctrl+6) — browse/edit/delete/undo Discord ai_history
 │   │   ├── shared.ts         # Shared utils (invoke wrapper, errors, settings, toasts)
 │   │   ├── types.ts          # Shared TypeScript interfaces
 │   │   ├── faust_avatar.ts   # Default AI avatar (base64)
 │   │   ├── app.test.ts       # app.ts unit tests
-│   │   ├── chat-manager.test.ts       # ChatManager dispatcher + state (22 tests)
+│   │   ├── chat-manager.test.ts       # ChatManager dispatcher + state (35 tests)
+│   │   ├── history-manager.test.ts    # AI History page (91 tests)
 │   │   ├── e2e_smoke.test.ts          # Smoke-level end-to-end
 │   │   └── chat/             # Chat modules extracted from chat-manager.ts
 │   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
 │   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
 │   │       ├── search.ts, prism.ts, image-attach.ts, document-attach.ts, export-picker.ts
-│   │       └── *.test.ts     # 10 vitest files (190 tests)
-│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI
+│   │       └── *.test.ts     # 11 vitest files total (294 tests)
+│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI (72 tests, incl. the history page)
 │   │   ├── _fixtures/mock-tauri.ts      # Tauri IPC shim + WS mock + page-error tracker
 │   │   ├── dashboard-smoke.spec.ts      # 18 smoke tests covering UI fixes
 │   │   ├── interactions.spec.ts         # 16 user-flow tests
 │   │   ├── a11y.spec.ts                 # 8 axe-core audits
 │   │   ├── visual-regression.spec.ts    # 8 baseline screenshots
-│   │   └── screenshots.spec.ts          # 13 manual-inspection captures
+│   │   ├── dashboard-inspection.spec.ts # 8 deep UI inspections
+│   │   ├── h5-importmap.spec.ts         # 1 import-map IPC regression
+│   │   ├── h7-csp.spec.ts               # 1 strict-CSP render regression
+│   │   └── screenshots.spec.ts          # 12 manual-inspection captures
 │   ├── playwright.config.ts  # Playwright config (python http.server + Chromium)
 │   ├── scripts/
 │   │   ├── build-tauri.ps1   # Build + auto-rename
@@ -357,16 +368,20 @@ User Message
            ┌───────────────┼───────────────┐
            ▼               ▼               ▼
     ┌───────────┐   ┌───────────┐   ┌───────────┐
-    │ rag.py    │   │ guardrails│   │ storage.py│
-    │ (Memory + │   │ (Safety)  │   │ (Persist) │
-    │  Gemini   │   │           │   │           │
-    │ embeds)   │   │           │   │           │
+    │ rag.py    │   │ message_  │   │ storage.py│
+    │ (Memory + │   │ queue.py  │   │ (Persist) │
+    │  Gemini   │   │ (Per-chan │   │           │
+    │ embeds)   │   │  locks)   │   │           │
     └───────────┘   └───────────┘   └───────────┘
 ```
 
 > The bot's primary AI is Claude (Anthropic). Gemini is used for RAG embeddings only,
-> not for chat completions. Dashboard chat additionally supports a Claude CLI backend
-> (`claude -p` subprocess, Max-subscription quota) — see `cogs/ai_core/api/dashboard_chat_claude_cli.py`.
+> not for chat completions. The default backend is the Claude CLI (`CLAUDE_BACKEND=cli`,
+> `claude -p` subprocess, Max-subscription quota) for **both** Discord replies and dashboard
+> chat — see `cogs/ai_core/api/discord_chat_claude_cli.py` / `dashboard_chat_claude_cli.py`.
+> CLI turns resume the server-side session and send only the new message (delta-on-resume);
+> full history is sent only on fresh sessions. The Anthropic SDK path above is the
+> `CLAUDE_BACKEND=api` opt-in.
 
 ### Key Classes
 
@@ -518,30 +533,35 @@ assets/RP/              # Large images for AI to see ([IMAGE:] references)
    - History save
 ```
 
-### 2. Unrestricted Mode (`guardrails.py`)
+### 2. Guardrails (removed) + Unrestricted Mode
 
-Channels ที่เปิด unrestricted mode จะ:
+> **หมายเหตุ:** โมดูล `cogs/ai_core/processing/guardrails.py` ถูกลบออกแล้ว —
+> content validation และ secret/token redaction ไม่มีผลอีกต่อไป (ข้อความถูกส่งผ่าน
+> โดยไม่กรอง) ฟังก์ชัน validation เดิม (`validate_response`,
+> `validate_input_for_channel`, `validate_response_for_channel`, `is_silent_block`)
+> ยังคงอยู่เป็น **no-op shim** ใน `cogs/ai_core/imports.py` โดย
+> `GUARDRAILS_AVAILABLE` เป็น `False` เสมอ
 
-- Bypass all input/output validation
-- Get special "Creative Writing" framing in system prompt
-- Stored persistently in `unrestricted_channels.json`
+**Unrestricted mode ยังใช้งานได้** — ถูกย้ายไปเป็นโมดูลของตัวเองที่
+`cogs/ai_core/processing/unrestricted.py` (decoupled จาก guardrails) ทำหน้าที่
+ควบคุมการฉีด persona `UNRESTRICTED_MODE_INSTRUCTION` ต่อห้อง และจำสถานะถาวรใน
+`unrestricted_channels.json`
 
 ```python
-# Enable unrestricted
-from cogs.ai_core.processing.guardrails import set_unrestricted
+# เปิด/ปิด unrestricted ต่อห้อง (owner: !unrestricted)
+from cogs.ai_core.processing.unrestricted import is_unrestricted, set_unrestricted
 set_unrestricted(channel_id, True)
-
-# Check status
-from cogs.ai_core.processing.guardrails import is_unrestricted
 if is_unrestricted(channel_id):
-    # No guardrails
+    ...  # session_mixin ฉีด UNRESTRICTED_MODE_INSTRUCTION เข้า system prompt
+
+# global override: ตั้ง env AI_UNRESTRICTED_ALL=1 → ทุกห้องเป็น unrestricted
 ```
 
 ### 3. RAG System (`rag.py`)
 
 FAISS-based memory retrieval:
 
-- **Embedding:** Gemini embeddings (`text-embedding-004` via `GEMINI_API_KEY`) — only loaded when `CLAUDE_BACKEND=api`. In the default `cli` mode the RAG add/query path is disabled at the cog level.
+- **Embedding:** Gemini embeddings (`gemini-embedding-2`, 768-dim via `output_dimensionality`, requested with `GEMINI_API_KEY`) — only loaded when `CLAUDE_BACKEND=api`. In the default `cli` mode the RAG add/query path is disabled at the cog level. (The previous `text-embedding-004` model was shut down by Google on 2026-01-14.)
 - **Backend:** Optional Rust extension (`rag_engine.pyd`, ~10–25× faster) with Python fallback
 - **Hybrid Search:** Semantic + keyword + time decay
 - **Auto-indexing:** Conversations automatically indexed
@@ -1118,4 +1138,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: April 27, 2026 - Version 3.3.15 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 3,371 Python tests + 189 frontend vitest tests + 73 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) -->
+<!-- Documentation last updated: June 12, 2026 - Version 3.4.5 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,052 Python tests + 294 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

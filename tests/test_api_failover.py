@@ -385,8 +385,12 @@ class TestRecordSuccessAndFailure:
         result = await m.record_failure(ValueError("bad input"))
         assert result is False
         h = m._health[EndpointType.DIRECT]
-        assert h.consecutive_failures == 1
+        # Client errors are recorded in the totals/last_error but must NOT
+        # advance the failover trip counter — counting them primed the
+        # counter so one later transient error caused an instant switch.
+        assert h.consecutive_failures == 0
         assert h.total_failures == 1
+        assert h.last_error
         # No switch happened.
         assert m.active_endpoint == EndpointType.DIRECT
 
@@ -423,6 +427,32 @@ class TestRecordSuccessAndFailure:
         target, reason = listener.await_args.args
         assert target == EndpointType.PROXY
         assert "auto-failover" in reason
+
+    async def test_client_error_burst_does_not_prime_failover(self):
+        """Regression: a burst of account-wide 429s used to prime
+        consecutive_failures to the threshold, so the NEXT single
+        transient error instantly switched endpoints — subverting the
+        _NON_FAILOVER_CODES intent that 429s be handled by call-site
+        backoff. Client errors must not count toward the trip counter."""
+        m = _make_both_manager()
+
+        class FakeRateLimit(anthropic.RateLimitError):
+            def __init__(self) -> None:  # type: ignore[no-untyped-def]
+                pass
+
+        for _ in range(APIFailoverManager.FAILURE_THRESHOLD - 1):
+            assert await m.record_failure(FakeRateLimit()) is False
+        # One real transient error after the 429 burst: still below the
+        # threshold, so NO switch.
+        result = await m.record_failure(OSError("transient blip"))
+        assert result is False
+        assert m.active_endpoint == EndpointType.DIRECT
+        h = m._health[EndpointType.DIRECT]
+        assert h.consecutive_failures == 1  # only the OSError counted
+        assert h.total_failures == APIFailoverManager.FAILURE_THRESHOLD
+        # The endpoint stays healthy in get_status() — pure client errors
+        # must not flip the dashboard's unhealthy badge.
+        assert h.is_healthy is True
 
     async def test_record_failure_immediate_on_401(self):
         m = _make_both_manager()

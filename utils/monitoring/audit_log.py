@@ -211,10 +211,16 @@ class AuditLogger:
             if target_type:
                 try:
                     d = json.loads(full_details) if full_details != "{}" else {}
+                    if not isinstance(d, dict):
+                        # Valid JSON but not an object ("[1,2]", "5", '"x"')
+                        # — subscripting raised TypeError, which the handler
+                        # below missed, diverting the entry to the JSONL
+                        # fallback instead of the DB.
+                        raise json.JSONDecodeError("not a JSON object", str(full_details), 0)
                     d["target_type"] = target_type
                     full_details = json.dumps(d, ensure_ascii=False)
                 except json.JSONDecodeError:
-                    # If details is not valid JSON, wrap it
+                    # If details is not valid JSON (or not an object), wrap it
                     full_details = json.dumps({"original": details, "target_type": target_type})
 
             # Set created_at explicitly (not via the column DEFAULT) so the

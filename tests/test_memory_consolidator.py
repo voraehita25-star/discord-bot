@@ -669,8 +669,10 @@ class TestConsolidateChannelFull:
 
         result = await archiver.consolidate_channel(777, force=True)
 
-        # Result object is still returned, but originals untouched
-        assert result is not None
+        # Failed save now reports failure (None) — callers previously counted
+        # the un-persisted summary as success ("✅ สำเร็จ" in !consolidate).
+        # Originals stay untouched either way.
+        assert result is None
         archiver._mark_consolidated_messages.assert_not_called()
 
     @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: June 3, 2026 | Python 3.14+ | Python Tests: 4,721 ✅ (110 files) + 2 skipped | Frontend Tests: 190 ✅ (10 vitest files) + 73 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: June 12, 2026 | Python 3.14+ | Python Tests: 5,052 ✅ (113 files) + 2 skipped + 3 deselected | Frontend Tests: 294 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run `make test` / `npm test` / `npm run test:e2e` for the live numbers.
 
@@ -32,17 +32,17 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (110 Python files, 4,721 tests)
+## Test Structure (113 Python files, 5,052 tests)
 
 ```text
 tests/
 ├── __init__.py              # Package init
-├── conftest.py              # Shared fixtures (mock bot, temp DB, guardrails reset)
+├── conftest.py              # Shared fixtures (mock bot, temp DB, env/singleton reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
-├── test_*.py                # 95 consolidated test files
+├── test_*.py                # 112 consolidated test files
 │   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
 │   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
-│   ├── Dashboard            # 1 test file (dashboard_handlers — 53 tests)
+│   ├── Dashboard            # 2 test files (dashboard_handlers — 48 tests; dashboard_ai_history — 225 tests)
 │   ├── Database             # 1 test file (consolidated from 3)
 │   ├── Reliability          # ~8 test files (circuit_breaker, rate_limiter, etc.)
 │   ├── Monitoring           # ~5 test files (health_api, metrics, feedback, etc.)
@@ -53,9 +53,9 @@ tests/
 > into their base files and parametrized boilerplate tests. A later coverage push
 > (mid-2026) added dedicated/regression suites (e.g. `test_migrations`,
 > `test_url_fetcher_client`, `test_url_safety`, `test_core_performance`,
-> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **110 files**.
+> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **113 files**.
 
-## Frontend Test Structure (10 vitest files, 190 tests)
+## Frontend Test Structure (11 vitest files, 294 tests)
 
 TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment
 (DOMPurify + KaTeX globals attached via test setup).
@@ -63,10 +63,11 @@ TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environm
 ```text
 native_dashboard/src-ts/
 ├── app.test.ts                     # app.ts — status/logs/DB/settings (legacy suite)
-├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (23 tests)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (35 tests)
+├── history-manager.test.ts         # AI History page — load/edit/delete/undo + refresh (91 tests)
 ├── e2e_smoke.test.ts               # Smoke-level end-to-end flows
 └── chat/
-    ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (25 tests)
+    ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (26 tests)
     ├── message-template.test.ts    # computeWindow + renderMessagesHtml (19 tests)
     ├── context-window.test.ts      # Token bar + LRU cache + localStorage (16 tests)
     ├── conversation-list.test.ts   # Filter + 200-cap + tag chips (18 tests)
@@ -83,13 +84,14 @@ npm run test:watch       # Watch mode
 npm run test:coverage    # With coverage report
 ```
 
-## Headless E2E Tests (8 Playwright files, 70 tests)
+## Headless E2E Tests (8 Playwright files, 72 tests)
 
 Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
 served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
 (`tests-e2e/_fixtures/mock-tauri.ts`) that mocks `window.__TAURI__.core.invoke` and the WebSocket
 stream — so no Tauri runtime, no bot process, no Discord token needed. (For a *real* Tauri Rust-IPC
-round-trip — no mock — see the `validate_ipc.py` validator below.)
+round-trip — no mock — see the `validate_ipc.py` validator below.) The page-level suites
+(a11y / inspection / interactions / visual) cover all six nav pages, including the AI History page.
 
 ```text
 native_dashboard/tests-e2e/
@@ -109,7 +111,7 @@ native_dashboard/tests-e2e/
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 70 tests, headless Chromium
+npm run test:e2e                 # All 72 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures
@@ -160,7 +162,7 @@ run), so they can be wired into a manual release-gate if desired.
 
 - **test_ai_core*.py**: RAG, chat storage, session management
 - **test_ai_integration.py**: End-to-end AI integration
-- **test_memory_*.py**: History, guardrails, intent, entity, cache
+- **test_memory_*.py**: History, intent, entity, cache
 
 ## Running Tests with Markers
 

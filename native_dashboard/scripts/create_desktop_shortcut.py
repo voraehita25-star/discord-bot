@@ -1,4 +1,5 @@
 """Create desktop shortcut for 디스코드 봇 대시보드 using IShellLink"""
+
 from pathlib import Path
 
 
@@ -16,7 +17,7 @@ def create_shortcut_via_pythoncom():
     # Resolve paths relative to this script instead of hardcoding
     script_dir = Path(__file__).resolve().parent
     dashboard_dir = script_dir.parent  # native_dashboard/
-    bot_dir = dashboard_dir.parent     # BOT/
+    bot_dir = dashboard_dir.parent  # BOT/
 
     exe_path = dashboard_dir / "target" / "release" / f"{korean_name}.exe"
     desktop = Path.home() / "Desktop"
@@ -41,23 +42,31 @@ def create_shortcut_via_pythoncom():
         shortcut_path.unlink()
         print("Removed existing shortcut")
 
-    # Create IShellLink
-    shortcut = pythoncom.CoCreateInstance(
-        shell.CLSID_ShellLink,
-        None,
-        pythoncom.CLSCTX_INPROC_SERVER,
-        shell.IID_IShellLink
-    )
+    # COM must be initialized on this thread before CoCreateInstance (an
+    # uninitialized thread raises CO_E_NOTINITIALIZED). Wrap the whole block so
+    # any COM failure prints a friendly message and returns False — matching the
+    # rest of this function — instead of surfacing an uncaught traceback.
+    pythoncom.CoInitialize()
+    try:
+        # Create IShellLink
+        shortcut = pythoncom.CoCreateInstance(
+            shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
+        )
 
-    shortcut.SetPath(str(exe_path))
-    shortcut.SetWorkingDirectory(str(work_dir))
-    if icon_path.exists():
-        shortcut.SetIconLocation(str(icon_path), 0)
-    shortcut.SetDescription("Discord Bot Dashboard")
+        shortcut.SetPath(str(exe_path))
+        shortcut.SetWorkingDirectory(str(work_dir))
+        if icon_path.exists():
+            shortcut.SetIconLocation(str(icon_path), 0)
+        shortcut.SetDescription("Discord Bot Dashboard")
 
-    # Save via IPersistFile
-    persist_file = shortcut.QueryInterface(pythoncom.IID_IPersistFile)
-    persist_file.Save(str(shortcut_path), 0)
+        # Save via IPersistFile
+        persist_file = shortcut.QueryInterface(pythoncom.IID_IPersistFile)
+        persist_file.Save(str(shortcut_path), 0)
+    except Exception as e:
+        print(f"ERROR: Failed to create shortcut via COM: {e}")
+        return False
+    finally:
+        pythoncom.CoUninitialize()
 
     if shortcut_path.exists():
         print("\n✅ Shortcut created successfully!")
@@ -66,6 +75,7 @@ def create_shortcut_via_pythoncom():
     else:
         print("❌ Failed to create shortcut")
         return False
+
 
 if __name__ == "__main__":
     create_shortcut_via_pythoncom()

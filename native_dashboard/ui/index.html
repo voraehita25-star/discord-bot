@@ -82,6 +82,11 @@
                     <span>Database</span>
                     <kbd class="shortcut">Ctrl+4</kbd>
                 </button>
+                <button class="nav-item" data-page="history">
+                    <span class="nav-icon">🗨️</span>
+                    <span>AI History</span>
+                    <kbd class="shortcut">Ctrl+6</kbd>
+                </button>
                 <button class="nav-item" data-page="settings">
                     <span class="nav-icon">⚙️</span>
                     <span>Settings</span>
@@ -554,6 +559,41 @@
                 </div>
             </section>
 
+            <!-- AI History Page -->
+            <section id="page-history" class="page">
+                <div class="history-layout">
+                    <!-- Channel List Sidebar -->
+                    <aside class="history-sidebar">
+                        <div class="history-sidebar-header">
+                            <h2>🗨️ AI History</h2>
+                            <button class="btn btn-sm" id="ai-history-refresh" title="Refresh channel list" aria-label="Refresh AI history channel list">↻ Refresh</button>
+                        </div>
+                        <div class="history-channel-list" id="ai-channel-list">
+                            <p class="no-data">No channels loaded yet.</p>
+                        </div>
+                    </aside>
+
+                    <!-- Message Viewer -->
+                    <div class="history-main">
+                        <div class="history-header" id="ai-history-header">
+                            <h2>Select a channel</h2>
+                        </div>
+                        <div class="history-messages" id="ai-history-messages" aria-label="AI chat history messages">
+                            <p class="no-data">Pick a channel on the left to view its AI chat history.</p>
+                        </div>
+                        <div class="history-load-all hidden" id="ai-history-load-all-container">
+                            <button class="btn" id="ai-history-load-all">Load all</button>
+                        </div>
+                        <!-- Static sibling of the load-all container — NOT inside
+                             #ai-history-header, whose innerHTML is rewritten by
+                             updateHeader() (that would drop the bound listener). -->
+                        <div class="history-undo">
+                            <button id="ai-history-undo" class="btn btn-sm" title="Undo last edit/delete in this channel" aria-label="Undo last edit or delete" disabled>↶ Undo</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Settings Page -->
             <section id="page-settings" class="page">
                 <h1>⚙️ Settings</h1>
@@ -710,6 +750,9 @@
                             <kbd>Ctrl + 5</kbd> <span>Go to Settings</span>
                         </div>
                         <div class="shortcut-item">
+                            <kbd>Ctrl + 6</kbd> <span>Go to AI History</span>
+                        </div>
+                        <div class="shortcut-item">
                             <kbd>Ctrl + R</kbd> <span>Refresh All Data</span>
                         </div>
                         <div class="shortcut-item">
@@ -764,6 +807,7 @@
                     <div class="shortcut-item"><kbd>Ctrl + 3</kbd><span>Go to Logs</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + 4</kbd><span>Go to Database</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + 5</kbd><span>Go to Settings</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl + 6</kbd><span>Go to AI History</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + R</kbd><span>Refresh All Data</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + T</kbd><span>Toggle Theme</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + Enter</kbd><span>Send Message (in Chat)</span></div>

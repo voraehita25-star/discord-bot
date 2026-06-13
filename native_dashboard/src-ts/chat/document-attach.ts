@@ -43,7 +43,11 @@ const MAX_ATTACHED_DOCS = 5;
 // backend, so binary file types MUST NOT be here.
 const TEXT_EXTENSIONS = new Set<string>([
     'txt', 'md', 'markdown', 'rst',
-    'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'env',
+    // NOTE: 'env' deliberately OMITTED — the backend allowlist
+    // (_SUPPORTED_DOC_TEXT_EXT) excludes .env so a malicious frontend can't
+    // exfiltrate secrets; accepting it here only produced a silent server-
+    // side drop with no user feedback.
+    'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg',
     'csv', 'tsv', 'xml', 'log',
     'py', 'pyi', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
     'rs', 'go', 'java', 'kt', 'scala', 'swift',

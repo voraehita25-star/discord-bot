@@ -25,7 +25,14 @@ MemoryEntry = None
 SearchResult = None
 
 try:
-    _rag_module = importlib.import_module("rag_engine")
+    # The built .pyd sits next to this wrapper (cogs/ai_core/memory/
+    # rag_engine.pyd), so the package-qualified import is the one that
+    # resolves; the bare top-level name only works if the extension was
+    # installed into the environment.
+    try:
+        _rag_module = importlib.import_module("cogs.ai_core.memory.rag_engine")
+    except ImportError:
+        _rag_module = importlib.import_module("rag_engine")
     RustRagEngine = getattr(_rag_module, "RagEngine", None)
     MemoryEntry = getattr(_rag_module, "MemoryEntry", None)
     SearchResult = getattr(_rag_module, "SearchResult", None)
@@ -151,8 +158,12 @@ class RagEngineWrapper:
                 base_score = self._cosine_similarity(query_embedding, entry["embedding"])
 
                 if time_decay_factor > 0:
-                    age_hours = (current_time - entry["timestamp"]) / 3600.0
-                    decay = math.exp(-time_decay_factor * age_hours)
+                    # Mirror the Rust backend's clamps (lib.rs:228-232): a
+                    # future-dated timestamp must not inflate the score, and a
+                    # hugely negative age would overflow math.exp entirely.
+                    factor = min(time_decay_factor, 1.0)
+                    age_hours = max(0.0, (current_time - entry["timestamp"]) / 3600.0)
+                    decay = math.exp(-factor * age_hours)
                     score = base_score * decay * entry["importance"]
                 else:
                     score = base_score * entry["importance"]
@@ -166,7 +177,7 @@ class RagEngineWrapper:
                             "timestamp": entry["timestamp"],
                         }
                     )
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, OverflowError):
                 # Skip a single malformed entry rather than crashing the whole
                 # search. The whole per-entry body is guarded because load()
                 # only validates "id" — timestamp/importance/text can be absent
@@ -258,14 +269,20 @@ class RagEngineWrapper:
             except (json.JSONDecodeError, OSError):
                 logger.exception("Failed to load RAG data from %s", path)
                 return 0
-            loaded = 0
+            # Validate into a fresh dict FIRST. Clearing before validation
+            # meant a parseable-but-wrong-shaped file (JSON object, list of
+            # non-dicts) silently destroyed all in-memory entries; the Rust
+            # backend explicitly refuses to replace data on a zero-match load.
+            new_entries: dict[str, dict[str, Any]] = {}
+            for entry in entries:
+                if isinstance(entry, dict) and "id" in entry:
+                    new_entries[entry["id"]] = entry
+            if not new_entries and entries:
+                logger.error("No valid entries in %s; keeping existing data (Rust parity)", path)
+                return 0
             with self._entries_lock:
-                self._entries.clear()
-                for entry in entries:
-                    if isinstance(entry, dict) and "id" in entry:
-                        self._entries[entry["id"]] = entry
-                        loaded += 1
-            return loaded
+                self._entries = new_entries
+            return len(new_entries)
 
     @property
     def is_rust(self) -> bool:

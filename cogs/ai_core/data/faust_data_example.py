@@ -5,7 +5,7 @@ Faust Data - Example Persona Configuration
 This is an EXAMPLE file. Copy this to `faust_data.py` and customize it.
 
 To use:
-    cp faust_data.example.py faust_data.py
+    cp faust_data_example.py faust_data.py
     # Then edit faust_data.py with your persona
 """
 

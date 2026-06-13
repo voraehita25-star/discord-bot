@@ -100,7 +100,7 @@ class AlertManager:
         last_sent = self._last_alert_times.get(alert_type, 0.0)
         return (now - last_sent) >= self._cooldown
 
-    async def _try_acquire_cooldown(self, alert_type: str) -> tuple[bool, float]:
+    async def _try_acquire_cooldown(self, alert_type: str) -> tuple[bool, float, float | None]:
         """Atomic check-and-update of the per-type cooldown timestamp.
 
         Returns ``(acquired, previous_ts)``. ``acquired`` is True if the alert
@@ -118,7 +118,7 @@ class AlertManager:
         async with self._cooldown_lock:
             last_sent = self._last_alert_times.get(alert_type, 0.0)
             if (now - last_sent) < self._cooldown:
-                return False, last_sent
+                return False, last_sent, None
             # Evict oldest entry if we're at the cap. This is best-effort —
             # the next caller can always re-add an entry.
             if (
@@ -137,17 +137,27 @@ class AlertManager:
                 )
                 self._last_alert_times.pop(oldest_key, None)
             self._last_alert_times[alert_type] = now
-            return True, last_sent
+            return True, last_sent, now
 
-    async def _rollback_cooldown(self, alert_type: str, previous_ts: float) -> None:
+    async def _rollback_cooldown(
+        self, alert_type: str, previous_ts: float, reserved_ts: float | None
+    ) -> None:
         """Undo a cooldown reservation after a failed send so it can retry.
 
         Restores the prior timestamp (so retries are still gated on the last
         *successful* send, not on a failed attempt), or clears the slot if it
-        had none. Only restores when our reservation is still the most recent
-        one, to avoid clobbering a concurrent successful send.
+        had none. Compare-and-set against ``reserved_ts`` (the timestamp this
+        caller wrote in ``_try_acquire_cooldown``): only mutate when our
+        reservation is STILL the current value — otherwise a concurrent caller
+        legitimately acquired + sent after us, and overwriting their newer
+        timestamp would re-open the cooldown and permit a duplicate alert
+        (lost-update race). The docstring previously promised this guard but
+        the body restored unconditionally.
         """
         async with self._cooldown_lock:
+            if self._last_alert_times.get(alert_type) != reserved_ts:
+                # A newer writer took the slot after us — leave it untouched.
+                return
             if previous_ts:
                 self._last_alert_times[alert_type] = previous_ts
             else:
@@ -182,7 +192,9 @@ class AlertManager:
         # Keep the prior timestamp so we can roll the reservation back if the
         # send fails (otherwise a transient failure mutes this alert type for
         # a full cooldown window).
-        acquired, prev_cooldown_ts = await self._try_acquire_cooldown(alert_type)
+        acquired, prev_cooldown_ts, reserved_cooldown_ts = await self._try_acquire_cooldown(
+            alert_type
+        )
         if not acquired:
             logger.debug("Alert skipped (cooldown): %s", title)
             return False
@@ -234,14 +246,16 @@ class AlertManager:
                     return True
                 else:
                     logger.warning("Alert failed (HTTP %d): %s", resp.status, title)
-                    await self._rollback_cooldown(alert_type, prev_cooldown_ts)
+                    await self._rollback_cooldown(
+                        alert_type, prev_cooldown_ts, reserved_cooldown_ts
+                    )
                     return False
         except Exception:
             # Don't put `e` (repr of which may include the webhook URL on
             # some aiohttp errors) into the log line — use exception() so
             # the traceback goes through the secret-redaction filter.
             logger.exception("Failed to send alert (title=%s)", title[:100])
-            await self._rollback_cooldown(alert_type, prev_cooldown_ts)
+            await self._rollback_cooldown(alert_type, prev_cooldown_ts, reserved_cooldown_ts)
             return False
 
     async def alert_circuit_breaker_open(self, breaker_name: str) -> bool:

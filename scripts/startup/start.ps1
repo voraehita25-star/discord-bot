@@ -5,7 +5,11 @@
 
 param(
     [switch]$NoRestart,
-    [switch]$Debug
+    [switch]$Debug,
+    # Skip interactive Read-Host prompts. Used by bot_manager's hidden mode —
+    # in a hidden window a blocked prompt can never be seen or answered, so
+    # a failed start would hang an invisible powershell.exe forever.
+    [switch]$NoPrompt
 )
 
 # Import common module
@@ -33,16 +37,20 @@ Stop-ExistingBot
 # Health checks
 if (-not (Test-Environment)) {
     Write-Log "Health checks failed - aborting" -Level ERROR
-    Read-Host "Press Enter to exit"
+    if (-not $NoPrompt) { Read-Host "Press Enter to exit" }
     exit 1
 }
 
 # Check dependencies
 if ($Config.bot.check_dependencies) {
     if (-not (Test-Dependencies)) {
-        $Install = Read-Host "Install dependencies now? (y/n)"
-        if ($Install -eq "y") {
-            pip install -r (Join-Path $ProjectRoot "requirements.txt")
+        if ($NoPrompt) {
+            Write-Log "Dependencies missing - skipping install prompt (NoPrompt mode)" -Level WARN
+        } else {
+            $Install = Read-Host "Install dependencies now? (y/n)"
+            if ($Install -eq "y") {
+                pip install -r (Join-Path $ProjectRoot "requirements.txt")
+            }
         }
     }
 }
@@ -129,6 +137,15 @@ while ($true) {
         Start-Sleep -Seconds 1
     }
     Write-Host ""
+
+    # Re-check the stop flag AFTER the countdown — bot_manager's "Stop Bot"
+    # can write it while we sleep here; without this check the flag was only
+    # consumed after a whole extra bot session.
+    if (Test-Path $StopFlag) {
+        Remove-Item $StopFlag
+        Write-Log "Stop signal received during countdown - shutting down" -Level OK
+        break
+    }
 }
 
 Write-Host ""

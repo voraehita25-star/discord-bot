@@ -115,40 +115,23 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
 
             statements: list[str] = []
             current: list[str] = []
-            in_block_comment = False
             for line in sql.splitlines():
-                # Strip comments before passing to ``sqlite3.complete_statement``
-                # — that builtin doesn't ignore `--` line comments or
-                # `/* ... */` block comments containing semicolons, so a
-                # comment with a `;` would split a statement prematurely.
-                stripped_line = line
-                if in_block_comment:
-                    end = stripped_line.find("*/")
-                    if end == -1:
-                        current.append(line)
-                        continue
-                    stripped_line = stripped_line[end + 2 :]
-                    in_block_comment = False
-                # Single-line comment
-                comment_pos = stripped_line.find("--")
-                if comment_pos != -1:
-                    stripped_line = stripped_line[:comment_pos]
-                # Block comment opening
-                start = stripped_line.find("/*")
-                if start != -1:
-                    rest = stripped_line[start:]
-                    end = rest.find("*/")
-                    if end == -1:
-                        in_block_comment = True
-                        stripped_line = stripped_line[:start]
-                    else:
-                        stripped_line = stripped_line[:start] + stripped_line[start + end + 2 :]
-
                 current.append(line)
                 candidate = "\n".join(current).strip()
-                # Use the comment-stripped accumulated text for the
-                # complete_statement check, but preserve the original lines
-                # in `current` so executed SQL keeps its formatting.
+                # Strip comments before passing to ``sqlite3.complete_statement``
+                # — that builtin doesn't ignore `--` line comments or
+                # `/* ... */` block comments containing semicolons, so a comment
+                # with a `;` would split a statement prematurely. The inner loop
+                # below reprocesses the whole accumulated ``current`` from
+                # scratch each iteration (its own ``local_in_block`` tracks
+                # multi-line block comments), so a separate outer state machine
+                # would be redundant. We build the comment-stripped text only for
+                # the completeness check and keep the original lines in
+                # ``current`` so executed SQL keeps its formatting.
+                # CAVEAT: this stripper is not string-literal aware — a ``--`` or
+                # ``/* */`` *inside* a quoted SQL string literal would be wrongly
+                # treated as a comment. No migration SQL may embed comment
+                # markers inside string literals (all current migrations comply).
                 check_lines: list[str] = []
                 local_in_block = False
                 for ln in current:
@@ -181,6 +164,16 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
             if trailing:
                 statements.append(trailing)
 
+            # NOTE: We deliberately do NOT wrap this in an explicit BEGIN.
+            # Under aiosqlite's legacy isolation, leading DDL autocommits — so
+            # a mid-migration crash leaves a partial schema without the
+            # version row — but the rebuild migrations (003/007/010/011/012/
+            # 016) guard against that with `DROP TABLE IF EXISTS <x>_new`,
+            # making a re-run safe. An explicit BEGIN would turn migration
+            # 010's `PRAGMA foreign_keys=OFF` into a no-op (SQLite ignores it
+            # inside a transaction), so the subsequent DROP TABLE would
+            # ON DELETE CASCADE-wipe dashboard_messages — data loss. Leave
+            # DDL autocommitting.
             for stmt in statements:
                 await conn.execute(stmt)
 

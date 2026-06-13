@@ -61,16 +61,27 @@ class TokenUsage:
     # (``claude-opus-4-8``). Order matters: longer/more-specific
     # prefixes must come first.
     # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
-    # Rates verified against https://www.anthropic.com/pricing (May 2026):
-    # Opus 4.6/4.7/4.8 are $5/$25 (no long-context premium on the 1M window).
+    # Rates verified against https://www.anthropic.com/pricing (June 2026):
+    # Opus 4.5/4.6/4.7/4.8 are $5/$25 (no long-context premium on the 1M
+    # window); Fable 5 / Mythos 5 are the most-capable tier at $10/$50.
     # Class-level constant so it's interned once at import time rather
     # than rebuilt on every ``estimated_cost`` access. ``ClassVar`` keeps
     # the dataclass machinery from treating it as an instance field.
     _CLAUDE_PRICING: ClassVar[tuple[tuple[str, tuple[float, float]], ...]] = (
         ("claude-opus-4-8", (5.0, 25.0)),
         ("claude-opus-4-7", (5.0, 25.0)),
+        ("claude-opus-4-6", (5.0, 25.0)),
+        ("claude-opus-4-5", (5.0, 25.0)),
+        # Fable 5 / Mythos 5 share the same $10/$50 most-capable-tier rate;
+        # without these prefixes they fall to the generic "claude" branch and
+        # are silently under-billed at Sonnet rates.
+        ("claude-fable-5", (10.0, 50.0)),
+        ("claude-mythos-5", (10.0, 50.0)),
         ("claude-sonnet-4-6", (3.0, 15.0)),
-        ("claude-haiku-4-5", (0.80, 4.0)),
+        # Haiku 4.5 launched at $1/$5 per MTok — the previous 0.80/4.0 here
+        # was the 3.5-Haiku rate (that legacy rate remains the haiku FAMILY
+        # fallback below for undated/older names).
+        ("claude-haiku-4-5", (1.0, 5.0)),
     )
 
     @property
@@ -94,10 +105,12 @@ class TokenUsage:
                 output_rate = _out / 1_000_000
                 return self.input_tokens * input_rate + self.output_tokens * output_rate
         # Family-level fallbacks for older / undated names.
-        # Claude Opus 4.x family (~$15 input / $75 output per 1M tokens)
+        # Claude Opus family (~$5 input / $25 output per 1M tokens) — every
+        # current Opus-tier model (4.5–4.8) bills at this rate; the old
+        # $15/$75 here was the retired Opus 3 rate and overcharged 3x.
         if "opus" in model_lower:
-            input_rate = 15.0 / 1_000_000
-            output_rate = 75.0 / 1_000_000
+            input_rate = 5.0 / 1_000_000
+            output_rate = 25.0 / 1_000_000
         # Claude Sonnet family (~$3 input / $15 output per 1M)
         elif "sonnet" in model_lower:
             input_rate = 3.0 / 1_000_000

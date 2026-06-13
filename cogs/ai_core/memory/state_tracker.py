@@ -23,7 +23,10 @@ _LOCATION_RE = re.compile(
     r"(?:^|[\s])(?:อยู่ที่|มาถึง|เดินไป|ยืนอยู่|นั่งอยู่)\s*"
     r"[\"']?([^\"',.!?\n]{3,30})[\"']?"
 )
-_ACTIVITY_RE = re.compile(r"(?:^|[\s])(?:กำลัง|พยายาม)\s+([^,.!?\n]{3,50})")
+# \s* (not \s+): Thai writes without inter-word spaces — "กำลังทำอาหาร" has
+# no whitespace after the keyword, so \s+ matched essentially never.
+# Mirrors _LOCATION_RE's \s* convention above.
+_ACTIVITY_RE = re.compile(r"(?:^|[\s])(?:กำลัง|พยายาม)\s*([^,.!?\n]{3,50})")
 _DIALOGUE_RE = re.compile(r'"([^"]{5,200})"' r"|" r"'([^']{5,200})'")
 _ACTION_RE = re.compile(r">\s*([^<\n]{10,150})")
 
@@ -205,8 +208,16 @@ class CharacterStateTracker:
         # prompt via get_states_for_prompt(), so unsanitised input becomes a
         # stored prompt-injection vector.
         def _scrub_state_value(s: str, *, max_len: int) -> str:
-            # Drop ASCII control chars except \n / \t.
-            cleaned = "".join(ch for ch in s if ch >= " " or ch in ("\n", "\t"))
+            # Drop control chars except \n / \t. The bare ``ch >= " "`` test
+            # let DEL (U+007F) and the C1 range (U+0080-U+009F) through into
+            # stored state that get_states_for_prompt re-injects — mirror the
+            # tighter filter entity_memory._scrub already uses for the same
+            # stored-prompt-injection reason.
+            cleaned = "".join(
+                ch
+                for ch in s
+                if ch in ("\n", "\t") or (ch >= " " and not ("\x7f" <= ch <= "\x9f"))
+            )
             cleaned = _SYS_MARKER_RE.sub("[redacted]", cleaned)
             cleaned = cleaned.strip()
             return cleaned[:max_len]

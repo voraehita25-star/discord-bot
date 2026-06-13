@@ -50,7 +50,9 @@ def _compile_relationship_pattern(name: str, related_name: str) -> re.Pattern[st
         rf"{re.escape(name)}.{{0,200}}?{re.escape(related_name)}"
         r".{0,80}?(พี่|น้อง|แฟน|เพื่อน|ศัตรู|แม่|พ่อ)"
     )
-    return re.compile(pattern, re.IGNORECASE)
+    # DOTALL: relationship mentions can span a newline; the fixed {0,200}/
+    # {0,80} bounds keep backtracking safe even with . matching newlines.
+    return re.compile(pattern, re.IGNORECASE | re.DOTALL)
 
 
 def _find_matching_close(
@@ -475,6 +477,11 @@ class MemoryConsolidator:
             # Handle case where AI returns list directly
             if isinstance(result, list):
                 return {"entities": result}
+            # Single-entity object (no "entities" wrapper) — wrap it the same
+            # way the brace-matching fallback below does, so the primary path
+            # doesn't drop what the fallback would accept.
+            if isinstance(result, dict) and "name" in result:
+                return {"entities": [result]}
             # Otherwise (string, number, bool, etc) the model emitted unparseable
             # output; treat as no extraction rather than returning a non-dict that
             # crashes callers expecting .get('entities', []).
@@ -619,11 +626,17 @@ class MemoryConsolidator:
         # Extract entity names from text
         name_patterns = re.findall(r"\{\{([^}]+)\}\}", new_text)
 
-        for name in set(name_patterns):
+        for raw_name in set(name_patterns):
+            # Strip ONCE and use the stripped form everywhere — the DB lookup
+            # used the stripped name while the regexes and reported "entity"
+            # fields used the raw "{{ Name }}" capture (leading/trailing
+            # whitespace), so age/relationship patterns silently never matched
+            # for padded mentions.
+            name = raw_name.strip()
+            if not name:
+                continue
             # Read-only contradiction check — skip access_count bump.
-            entity = await entity_memory.get_entity(
-                name.strip(), channel_id, guild_id, update_access=False
-            )
+            entity = await entity_memory.get_entity(name, channel_id, guild_id, update_access=False)
             if not entity:
                 continue
 
@@ -637,10 +650,12 @@ class MemoryConsolidator:
                 # Bound the .*? span to a fixed window so a
                 # pathological input with the entity name + 100k
                 # characters before the age literal can't burn CPU.
+                # DOTALL so a newline between the name and the age literal
+                # doesn't defeat the bounded window match.
                 age_match = re.search(
                     rf"{re.escape(name)}.{{0,200}}?(\d+)\s*(?:ปี|years?|ขวบ)",
                     new_text,
-                    re.IGNORECASE,
+                    re.IGNORECASE | re.DOTALL,
                 )
                 if age_match:
                     mentioned_age = int(age_match.group(1))

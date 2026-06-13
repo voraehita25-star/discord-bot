@@ -71,35 +71,39 @@ from .dashboard_config import (
 #   CLAUDE_BACKEND=cli  → spawn `claude -p` (uses subscription via CLAUDE_CODE_OAUTH_TOKEN)
 #   anything else / unset → use anthropic SDK with ANTHROPIC_API_KEY (per-token billing)
 #
-# NOTE on the default: this file defaults to ``"api"`` while every
-# other reader of CLAUDE_BACKEND defaults to ``"cli"``. Switching this
-# to ``"cli"`` to match would be more consistent BUT breaks
-# test_too_many_images and a couple of other handlers that depend on
-# the SDK validation order. The deployment runs with CLAUDE_BACKEND
-# explicitly set so the inconsistency only surfaces in fresh dev
-# checkouts; documenting it here so the next diff doesn't try to
-# "harmonise" the default and break the same tests again.
-_CLAUDE_BACKEND = os.getenv("CLAUDE_BACKEND", "api").strip().lower()
+# Default "cli" — matches dashboard_config.py, api_failover.py,
+# memory/summarizer.py, env.example and CLAUDE.md. This file previously
+# defaulted to "api", which split a fresh checkout into two contradictory
+# modes: dashboard_config computed API_AI_DISABLED=True while this module
+# initialised the paid Gemini/Anthropic SDK clients and skipped the working
+# CLI backend. (Tests that exercise the SDK path pin CLAUDE_BACKEND=api in
+# their fixture instead of relying on the default.)
+_CLAUDE_BACKEND = os.getenv("CLAUDE_BACKEND", "cli").strip().lower()
 
 if API_FAILOVER_AVAILABLE:
     from .api_failover import EndpointType, api_failover
 from .dashboard_handlers import (
     handle_add_conversation_tag,
+    handle_delete_ai_history_message,
     handle_delete_conversation,
     handle_delete_document_memory,
     handle_delete_message,
+    handle_edit_ai_history_message,
     handle_edit_message,
     handle_export_conversation,
     handle_get_document_memory_content,
     handle_get_profile,
     handle_like_message,
+    handle_list_ai_channels,
     handle_list_all_tags,
     handle_list_conversation_documents,
     handle_list_conversations,
+    handle_load_ai_history,
     handle_load_conversation,
     handle_pin_message,
     handle_remove_conversation_tag,
     handle_rename_conversation,
+    handle_restore_ai_history_message,
     handle_save_profile,
     handle_star_conversation,
     handle_update_document_memory,
@@ -133,6 +137,14 @@ class DashboardWebSocketServer:
             # budget the design intended to be free.
             "list_tags",
             "list_conversation_documents",
+            # AI-history viewer: only the channel-list summary (one cheap
+            # GROUP BY) is exempt. "load_ai_history" is NOT — it is the
+            # heaviest read op (up to 2000 full-content rows fetched, then
+            # serialized synchronously on the event loop the Discord bot
+            # shares), so it stays under the 30/min budget like the write ops
+            # ("edit_ai_history_message" / "delete_ai_history_message" /
+            # "restore_ai_history_message").
+            "list_ai_channels",
         }
     )
     # Raised from 50K → 200K: matches the direct-API backend ceiling and lets
@@ -208,12 +220,11 @@ class DashboardWebSocketServer:
         # Initialize Gemini client. Skipped under CLAUDE_BACKEND=cli —
         # Gemini is paid-API-only and dashboard_config drops it from
         # AVAILABLE_PROVIDERS in CLI mode, so its handler is unreachable.
-        # Use the SAME default ("api") as the module-level ``_CLAUDE_BACKEND``
-        # above. Previously this branch defaulted to "cli" while the module
-        # default was "api", so an unset env var disabled API clients here
-        # but left `_CLAUDE_BACKEND == "api"` — downstream branches that
-        # check the module constant would route to a non-initialised SDK.
-        _api_disabled = os.getenv("CLAUDE_BACKEND", "api").strip().lower() == "cli"
+        # Uses the SAME default ("cli") as the module-level
+        # ``_CLAUDE_BACKEND`` above and every other CLAUDE_BACKEND reader,
+        # so an unset env var consistently means subscription-only CLI mode
+        # and never initialises paid SDK clients from lingering .env keys.
+        _api_disabled = os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli"
         if _api_disabled:
             logger.info("🚫 Dashboard WS: Gemini disabled (CLAUDE_BACKEND=cli)")
         elif GEMINI_API_KEY:
@@ -589,8 +600,18 @@ class DashboardWebSocketServer:
             if auth_header:
                 parts = auth_header.split(" ", 1)
                 if len(parts) == 2 and parts[0].lower() == "bearer":
-                    auth_match = hmac.compare_digest(parts[1], expected_token)
-            token_match = hmac.compare_digest(query_token, expected_token) if query_token else False
+                    # Compare as bytes — str compare_digest raises TypeError
+                    # on ANY non-ASCII input, turning a crafted token into a
+                    # 500 (bypassing the fail bucket) and breaking auth
+                    # entirely for a non-ASCII DASHBOARD_WS_TOKEN.
+                    auth_match = hmac.compare_digest(
+                        parts[1].encode("utf-8"), expected_token.encode("utf-8")
+                    )
+            token_match = (
+                hmac.compare_digest(query_token.encode("utf-8"), expected_token.encode("utf-8"))
+                if query_token
+                else False
+            )
             if not auth_match and not token_match:
                 # Use a fresh ``time.monotonic()`` here rather than
                 # the ``now`` captured at function entry — a slow
@@ -666,17 +687,21 @@ class DashboardWebSocketServer:
             )
             return web.Response(status=503, text="Service Unavailable: Too many connections")
 
-        # Frame cap derived from the per-attachment limits the handler itself
-        # advertises (MAX_DOCUMENT_SIZE_BYTES + MAX_IMAGE_SIZE_BYTES + content
-        # + ~1MB headroom for headers/history). The previous fixed 10 MB cap
-        # contradicted MAX_DOCUMENT_SIZE_BYTES=32 MB and silently rejected any
-        # single-document payload over 10 MB before the handler could process it.
-        max_frame = (
-            self.MAX_DOCUMENT_SIZE_BYTES
-            + self.MAX_IMAGE_SIZE_BYTES
-            + self.MAX_CONTENT_LENGTH
-            + 1 * 1024 * 1024
+        # Frame cap sized for the WORST legal payload the handlers themselves
+        # accept: MAX_DOCUMENTS docs + MAX_IMAGES images per message, all
+        # arriving as base64 data URLs inside one JSON frame (4/3 inflation),
+        # plus content and headroom for the JSON envelope/history. The
+        # previous cap was computed from DECODED sizes of a SINGLE document +
+        # image, so e.g. one 32 MB document (≈44.7 MB encoded) plus any image
+        # blew the frame limit — aiohttp killed the socket with
+        # MESSAGE_TOO_BIG and no application-level error ever reached the UI.
+        # Localhost-only single-user dashboard, so the large transient buffer
+        # is acceptable; the per-attachment checks still enforce real limits.
+        max_decoded = (
+            self.MAX_DOCUMENTS * self.MAX_DOCUMENT_SIZE_BYTES
+            + self.MAX_IMAGES * self.MAX_IMAGE_SIZE_BYTES
         )
+        max_frame = (max_decoded * 4) // 3 + self.MAX_CONTENT_LENGTH * 4 + 4 * 1024 * 1024
         ws = web.WebSocketResponse(max_msg_size=max_frame)
         await ws.prepare(request)
 
@@ -740,23 +765,20 @@ class DashboardWebSocketServer:
                         deadline_msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
                     except TimeoutError:
                         break
-                    if deadline_msg.type != WSMsgType.TEXT:
-                        # Non-text (close, error) — exit loop.
-                        if deadline_msg.type in (
-                            WSMsgType.CLOSE,
-                            WSMsgType.CLOSING,
-                            WSMsgType.CLOSED,
-                            WSMsgType.ERROR,
-                        ):
-                            break
-                        continue
                     # Pre-auth message size cap. The connection-wide
-                    # max_msg_size is sized for chat payloads (~43 MB) which
-                    # is far too generous for an unauthenticated client.
-                    # Enforce a 4 KiB cap until the client has authenticated.
-                    # Cover binary frames too — earlier code only checked
-                    # ``str`` data, so a client could ship arbitrarily-large
-                    # ``bytes`` frames before auth.
+                    # max_msg_size is sized for chat payloads (hundreds of
+                    # MB) which is far too generous for an unauthenticated
+                    # client. NOTE: this is a post-hoc check — aiohttp has
+                    # already buffered the full frame by the time we see it,
+                    # so the cap limits what gets PROCESSED pre-auth, not
+                    # what can be buffered; the localhost origin/host gate is
+                    # what actually bounds that exposure.
+                    #
+                    # Checked BEFORE the TEXT filter so it actually covers
+                    # BINARY frames: the old order `continue`d on non-TEXT
+                    # before reaching the cap, leaving the bytes/bytearray
+                    # arm unreachable and letting an unauthenticated client
+                    # stream large BINARY frames for the whole auth window.
                     if (
                         isinstance(deadline_msg.data, (str, bytes, bytearray))
                         and len(deadline_msg.data) > 4096
@@ -767,6 +789,16 @@ class DashboardWebSocketServer:
                             len(deadline_msg.data),
                         )
                         break
+                    if deadline_msg.type != WSMsgType.TEXT:
+                        # Non-text (close, error) — exit loop.
+                        if deadline_msg.type in (
+                            WSMsgType.CLOSE,
+                            WSMsgType.CLOSING,
+                            WSMsgType.CLOSED,
+                            WSMsgType.ERROR,
+                        ):
+                            break
+                        continue
                     try:
                         auth_data = json.loads(deadline_msg.data)
                     except json.JSONDecodeError:
@@ -779,7 +811,11 @@ class DashboardWebSocketServer:
                         continue
                     if msg_type == "auth":
                         token = auth_data.get("token", "")
-                        if hmac.compare_digest(str(token), expected_token):
+                        # bytes compare — see upgrade-time auth note (str
+                        # compare_digest raises TypeError on non-ASCII).
+                        if hmac.compare_digest(
+                            str(token).encode("utf-8"), expected_token.encode("utf-8")
+                        ):
                             self._authenticated_clients.add(client_id)
                             self._authenticated_ws.add(ws)
                             auth_received = True
@@ -842,10 +878,16 @@ class DashboardWebSocketServer:
                             while times and now - times[0] >= 60:
                                 times.popleft()
                             if len(times) >= self.RATE_LIMIT_MESSAGES_PER_MINUTE:
+                                # "scope" echoes the rejected request type so
+                                # the frontend can attribute the error (e.g. a
+                                # rate-limited edit_ai_history_message must
+                                # unstick the history editor, not tear down an
+                                # unrelated in-flight chat stream).
                                 await ws.send_json(
                                     {
                                         "type": "error",
                                         "message": "Rate limit exceeded. Please wait.",
+                                        "scope": msg_type,
                                     }
                                 )
                                 continue
@@ -887,6 +929,17 @@ class DashboardWebSocketServer:
                                 if cid == client_id and not t.done()
                             )
                             if current_inflight >= 4:
+                                # Roll back the rate-limit slot consumed at
+                                # ``times.append(now)`` above: this request is
+                                # rejected before any work is spawned, so it must
+                                # not burn the client's per-minute budget — a UI
+                                # that auto-retries against the concurrency cap
+                                # would otherwise exhaust its 30/min allowance on
+                                # never-serviced requests and self-lock-out for
+                                # up to a minute.
+                                _times = self._client_message_times.get(client_id)
+                                if _times and _times[-1] == now:
+                                    _times.pop()
                                 await ws.send_json(
                                     {
                                         "type": "error",
@@ -1023,6 +1076,18 @@ class DashboardWebSocketServer:
                 )
         elif msg_type == "delete_message":
             await handle_delete_message(ws, data)
+        elif msg_type == "list_ai_channels":
+            await handle_list_ai_channels(ws)
+        elif msg_type == "load_ai_history":
+            await handle_load_ai_history(ws, data)
+        elif msg_type == "edit_ai_history_message":
+            await handle_edit_ai_history_message(ws, data)
+        elif msg_type == "delete_ai_history_message":
+            await handle_delete_ai_history_message(ws, data)
+        elif msg_type == "restore_ai_history_message":
+            # Undo of a history delete — a write op, so it stays rate-limited
+            # like edit/delete (NOT in RATE_EXEMPT_MESSAGE_TYPES).
+            await handle_restore_ai_history_message(ws, data)
         elif msg_type == "pin_message":
             await handle_pin_message(ws, data)
         elif msg_type == "like_message":
@@ -1058,7 +1123,8 @@ class DashboardWebSocketServer:
                 # has already rejected the original handshake; a re-auth that
                 # would silently grant access if expected becomes "" is unsafe.
                 return
-            if not hmac.compare_digest(str(token), expected):
+            # bytes compare — str compare_digest raises TypeError on non-ASCII
+            if not hmac.compare_digest(str(token).encode("utf-8"), expected.encode("utf-8")):
                 fails = self._client_auth_failures.get(client_id, 0) + 1
                 self._client_auth_failures[client_id] = fails
                 logger.warning(
@@ -1339,12 +1405,18 @@ class DashboardWebSocketServer:
         await handle_load_conversation(ws, data)
 
     async def handle_delete_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
-        # Also forget the CLI session — the conversation is gone, the session
-        # would be a leak.
+        # Delete FIRST: delete_session_file inside the handler needs the
+        # session-map entry to find and unlink the .jsonl transcript.
+        # Resetting before the delete popped that entry, so the transcript
+        # cleanup was a guaranteed no-op and deleted conversations' content
+        # lingered on disk under <config>/projects/.
+        await handle_delete_conversation(ws, data)
+        # Then forget the CLI session — this drops the per-conversation send
+        # lock, which delete_session_file does not (the map entry is already
+        # popped by delete_session_file, so reset_session's pop is a no-op).
         conv_id = data.get("id")
         if isinstance(conv_id, str) and conv_id:
             _reset_cli_session(conv_id)
-        await handle_delete_conversation(ws, data)
 
     async def handle_star_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         await handle_star_conversation(ws, data)
@@ -1546,8 +1618,22 @@ class DashboardWebSocketServer:
             return_exceptions=False,
         )
         for ws_client, outcome in zip(clients_snapshot, results, strict=False):
-            if outcome is not None:
-                self.clients.discard(ws_client)
+            if outcome is None:
+                continue
+            # Evict only on definite-dead errors. A bare 2s send timeout on a
+            # momentarily slow but live client must NOT drop the socket from
+            # bookkeeping — that broke MAX_CLIENTS accounting, left the ws in
+            # _authenticated_ws (still receiving sensitive broadcasts), and
+            # stop() no longer closed it on shutdown.
+            is_dead = isinstance(outcome, (ConnectionError, RuntimeError)) or bool(
+                getattr(ws_client, "closed", False)
+            )
+            if not is_dead:
+                continue
+            self.clients.discard(ws_client)
+            self._authenticated_ws.discard(ws_client)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws_client.close(), timeout=2.0)
 
 
 # ============================================================================

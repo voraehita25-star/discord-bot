@@ -703,9 +703,10 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         path = self.path.split("?")[0]  # Remove query string
 
-        # Check authentication for protected endpoints
-        # When HEALTH_API_TOKEN is set, require it for sensitive endpoints.
-        # When not set, only allow requests from localhost (enforced by binding).
+        # Check authentication for protected endpoints. HEALTH_API_TOKEN is
+        # ALWAYS set (an ephemeral token is generated at import when the env
+        # var is empty), so this gate is always active for protected paths —
+        # unauthenticated probes must use /health/live or /health/ready.
         if path in _PROTECTED_ENDPOINTS:
             if HEALTH_API_TOKEN:
                 auth_header = self.headers.get("Authorization", "")
@@ -941,14 +942,20 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         try:
             from utils.database import db
 
+            # Snapshot the bot reference once under the lock and use the local,
+            # matching this file's convention everywhere else (get_ai_performance_stats,
+            # the Prometheus path) — avoids reading health_data.bot multiple times
+            # off-lock for a consistent view.
+            with health_data._data_lock:
+                bot = health_data.bot
             # Execute the async health check in the main event loop
             if (
-                health_data.bot
-                and hasattr(health_data.bot, "loop")
-                and isinstance(health_data.bot.loop, asyncio.AbstractEventLoop)
+                bot
+                and hasattr(bot, "loop")
+                and isinstance(bot.loop, asyncio.AbstractEventLoop)
                 and db
             ):
-                fut = asyncio.run_coroutine_threadsafe(db.health_check(), health_data.bot.loop)
+                fut = asyncio.run_coroutine_threadsafe(db.health_check(), bot.loop)
                 try:
                     is_healthy = fut.result(timeout=2.0)
                     if is_healthy:

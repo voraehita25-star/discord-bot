@@ -229,8 +229,37 @@ def cmd_restore(args: argparse.Namespace) -> int:
     tmp_target = DB_PATH.with_suffix(DB_PATH.suffix + ".restoring")
     try:
         shutil.copy2(backup, tmp_target)
-    except OSError as e:
+        # The backup was taken WITH its -wal/-shm sidecars (init_schema's
+        # auto-backup copies them precisely because the bare .db misses the
+        # latest transactions — and cmd_diff's row counts INCLUDE the WAL).
+        # Stage them too, then checkpoint so the staged file is self-
+        # contained before the swap; otherwise restore silently drops every
+        # transaction that lived in the backup's WAL.
+        backup_wal = Path(str(backup) + "-wal")
+        backup_shm = Path(str(backup) + "-shm")
+        tmp_wal = Path(str(tmp_target) + "-wal")
+        tmp_shm = Path(str(tmp_target) + "-shm")
+        if backup_wal.exists():
+            shutil.copy2(backup_wal, tmp_wal)
+            if backup_shm.exists():
+                shutil.copy2(backup_shm, tmp_shm)
+            conn = sqlite3.connect(str(tmp_target))
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                conn.close()
+            for sidecar in (tmp_wal, tmp_shm):
+                with contextlib.suppress(OSError):
+                    sidecar.unlink()
+    except (OSError, sqlite3.Error) as e:
         print(f"FATAL: could not stage restored DB at {tmp_target.name}: {e}")
+        for leftover in (
+            tmp_target,
+            Path(str(tmp_target) + "-wal"),
+            Path(str(tmp_target) + "-shm"),
+        ):
+            with contextlib.suppress(OSError):
+                leftover.unlink()
         return 1
 
     # Wipe stale WAL/SHM BEFORE swapping in the restored file. SQLite's

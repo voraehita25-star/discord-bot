@@ -178,6 +178,13 @@ def invalidate_webhook_cache(channel_id: int, webhook_name: str | None = None) -
         if webhook_name:
             if channel_id in _webhook_cache:
                 _webhook_cache[channel_id].pop(webhook_name, None)
+                # If that was the channel's last webhook, drop the now-empty
+                # per-channel dict AND its timestamp — otherwise the channel
+                # keeps occupying one of MAX_WEBHOOK_CACHE_SIZE eviction slots
+                # forever (repeated 404-driven invalidations never free it).
+                if not _webhook_cache[channel_id]:
+                    _webhook_cache.pop(channel_id, None)
+                    _webhook_cache_time.pop(channel_id, None)
         else:
             _webhook_cache.pop(channel_id, None)
             _webhook_cache_time.pop(channel_id, None)

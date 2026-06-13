@@ -58,6 +58,7 @@ async def fresh_db():
         instance._export_tasks = set()
         instance._pool_semaphore = None
         instance._connection_count = 0
+        instance._inflight_count = 0
         instance._conn_pool = None
         instance._pool_initialized = False
         instance._checkpoint_task = None

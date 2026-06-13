@@ -44,6 +44,7 @@ def mock_db():
     db.get_dashboard_message_count = AsyncMock(return_value=0)
     db.has_messages_before = AsyncMock(return_value=False)
     db.delete_dashboard_conversation = AsyncMock()
+    db.edit_and_truncate_dashboard_message = AsyncMock(return_value=(True, 0))
     db.update_dashboard_conversation_star = AsyncMock(return_value=True)
     db.rename_dashboard_conversation = AsyncMock()
     db.export_dashboard_conversation = AsyncMock(return_value={})
@@ -313,7 +314,8 @@ class TestEditMessage:
     async def test_edit_with_regenerate(self, ws, mock_db):
         from cogs.ai_core.api.dashboard_handlers import handle_edit_message
 
-        mock_db.delete_dashboard_messages_after.return_value = 3
+        # Regenerate now uses the atomic single-transaction update+truncate.
+        mock_db.edit_and_truncate_dashboard_message = AsyncMock(return_value=(True, 3))
         with (
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),

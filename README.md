@@ -19,7 +19,7 @@ Production-ready Discord bot with Claude AI chat, music player, and advanced mem
 | 🔗 **URL Reading** | Auto-fetch and summarize web pages & GitHub repos |
 | 📊 **Monitoring** | Built-in health API, token tracking, and metrics |
 | 🛡️ **Reliability** | Circuit breaker, rate limiting, auto-recovery, graceful shutdown, memory management |
-| 🖥️ **Dashboard** | Native Tauri desktop app — 3D UI polish, PDF attach, persistent doc memory, file editor |
+| 🖥️ **Dashboard** | Native Tauri desktop app — 3D UI polish, PDF attach, persistent doc memory, file editor, AI history editor |
 | 🦀 **Native Extensions** | Optional Rust (RAG, media) & Go (URL fetch, metrics) for 5-25x speedup |
 
 ## 🚀 Quick Start
@@ -104,7 +104,7 @@ discord-bot/
 │   │   ├── commands/       # 🔧 Debug, memory, server commands
 │   │   ├── tools/          # ⚡ AI function calling
 │   │   ├── memory/         # 🧠 Memory systems (incl. Rust RAG)
-│   │   ├── processing/     # 🔄 Guardrails, intent detection
+│   │   ├── processing/     # 🔄 Intent detection, unrestricted-mode gating
 │   │   ├── cache/          # 📊 Caching & analytics
 │   │   └── data/           # Prompts & constants
 │   ├── music/          # Music player module
@@ -125,7 +125,7 @@ discord-bot/
 ├── docs/               # Documentation
 │   ├── reviews/        # Code review reports
 │   └── release-notes/  # Version release notes
-├── tests/              # Python suite (4,768 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
+├── tests/              # Python suite (5,052 pytest); native_dashboard/tests-e2e/ for Playwright (8 spec files: e2e + a11y + visual)
 └── scripts/            # Build & maintenance scripts
 ```
 
@@ -223,13 +223,14 @@ A Tauri-based desktop application for managing the bot with Korean UI support.
 - 📎 **Document Attachments** — Drag-drop PDF, DOCX, or any text/code file (20+ types). 32 MB per file, 5 per message. Claude reads PDFs natively (text + embedded images).
 - 📂 **Persistent Document Memory** — Extracted text saved to SQLite per-conversation; auto-injected into every AI turn so you don't re-upload RP material.
 - ✏️ **File Editor** — 📎 button in chat header shows per-conversation file list. Inline editor for filename + text content, with Ctrl+S save + delete.
+- 📜 **AI History Editor (Ctrl+6)** — Browse the Discord bot's `ai_history` channels, view messages (200 default, "Load all" up to 2,000), click-to-edit, delete, and ↶ Undo (last 20 ack-confirmed ops). Edits/deletes sync into the live bot session and reset the channel's CLI session.
 - 🎨 **3D UI Polish** — Layered shadows, cursor-tracking tilt, ripple clicks, glassmorphism noise, custom scrollbars, skeleton loaders, number count-up, chart entrance.
 - 🌸 **Sakura Animation** — Cherry-blossom petals with mouse parallax (toggleable).
 - 🔊 **Sound + Haptic** — Optional synth click + vibration on button press (off by default).
 - 🌙 **Dark / Light Theme** — Pink/purple anime palette with localStorage persistence.
 - 📈 **Real-time Performance Charts** — Memory & message count graphs.
 - 🔔 **Toast Notifications** — Animated slide-in confirmations / errors.
-- ⌨️ **Keyboard Shortcuts** — Ctrl+1-5 nav, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter send, Ctrl+S save-in-editor, Ctrl+F search-in-chat.
+- ⌨️ **Keyboard Shortcuts** — Ctrl+1-6 nav, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter send, Ctrl+S save-in-editor, Ctrl+F search-in-chat.
 
 ### Quick Start
 
@@ -309,4 +310,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.5 | **Python:** 3.14+ | **Tests:** 4,768 pytest ✅ + 191 vitest ✅ + 70 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + 3D UI polish | **Last Update:** June 8, 2026
+**Version:** 3.4.6 | **Python:** 3.14+ | **Tests:** 5,052 pytest ✅ + 294 vitest ✅ + 72 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + AI history editor + 3D UI polish | **Last Update:** June 12, 2026

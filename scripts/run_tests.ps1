@@ -50,6 +50,7 @@ Set-Location -Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
 $args_list = @(
     "-m", "pytest"
     "--override-ini=addopts="     # Clear -v from pyproject.toml
+    "--timeout=30"                # Re-add the hang killer wiped by the override
     "--tb=short"
     "-q"                          # Quiet mode — compact output
 )

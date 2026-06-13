@@ -599,7 +599,19 @@ async def handle_chat_message_claude(
         ext_match = re.search(r"\.[A-Za-z0-9]+$", doc_name)
         ext = ext_match.group(0).lower() if ext_match else ""
 
-        if ext == ".pdf" or doc_kind == "binary":
+        if ext != ".pdf" and doc_kind == "binary":
+            # Non-PDF binary (the frontend ships .docx this way): the
+            # Anthropic document block only accepts application/pdf — sending
+            # DOCX bytes labeled as PDF is a non-retryable 400 that failed
+            # the WHOLE turn. Skip the raw block; the extracted text was
+            # already persisted into document memory (extract_and_persist
+            # ran above) and reaches the model via user_context.
+            logger.info(
+                "📎 %s: skipping raw binary block (non-PDF); using extracted text via context",
+                doc_name,
+            )
+            continue
+        if ext == ".pdf":
             # Binary payload arrives as a data URL; pull the base64 part.
             if "," not in doc_data or not doc_data.startswith("data:"):
                 logger.warning("Rejected document %s: malformed data URL", doc_name)
@@ -675,10 +687,13 @@ async def handle_chat_message_claude(
 
     # Build unrestricted mode injection if enabled
     unrestricted_injection = ""
-    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
+    # Parse identically to the CLI backend (.strip() + "on") so the same env
+    # value enables unrestricted mode regardless of which backend is active.
+    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower() in (
         "1",
         "true",
         "yes",
+        "on",
     )
     if unrestricted_mode and allow_unrestricted:
         framing = (
@@ -781,9 +796,16 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     if thinking_enabled:
         if _uses_adaptive_thinking(CLAUDE_MODEL):
             api_kwargs["thinking"] = {"type": "adaptive"}
-        else:
-            _think_budget = min(32000, CLAUDE_MAX_TOKENS - 1024)
-            api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": max(_think_budget, 1024)}
+        elif CLAUDE_MAX_TOKENS > 1024:
+            # budget_tokens MUST be strictly < max_tokens (Anthropic 400s
+            # otherwise). max(…, 1024) alone could push budget >= max_tokens
+            # when an operator sets CLAUDE_MAX_TOKENS very low, so cap it below
+            # max_tokens; and skip the thinking config entirely when
+            # CLAUDE_MAX_TOKENS <= 1024 (the 1024 floor) where no valid budget
+            # exists — a non-retryable 400 that would fail the whole turn.
+            _think_budget = max(1024, min(32000, CLAUDE_MAX_TOKENS - 1024))
+            _think_budget = min(_think_budget, CLAUDE_MAX_TOKENS - 1)
+            api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _think_budget}
 
     # Stream response
     try:
@@ -1116,8 +1138,12 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 r"<think>.*?</think>", "", full_response, flags=re.DOTALL
             ).strip()
 
-        # Fallback: estimate tokens from content if API didn't return usage
-        if not input_tokens:
+        # Fallback: estimate tokens from content if API didn't return usage.
+        # A full-cache-hit turn legitimately reports 0 fresh input tokens with
+        # nonzero cache reads — that's real usage, not "missing", so it must
+        # NOT be clobbered by the char-count estimate (the stream_end sum
+        # below would then double count it).
+        if not (input_tokens or cache_read_tokens or cache_creation_tokens):
             # Estimate input tokens from system prompt + conversation history.
             # The system prompt is now sent as two blocks (stable + volatile)
             # for prompt caching, so concat both back together for the estimate.
@@ -1167,6 +1193,15 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             except Exception as e:
                 logger.warning("Failed to save assistant message: %s", e)
 
+        # Report context-window OCCUPANCY, matching the CLI backend: Anthropic
+        # bills three flavors of input (fresh, cache-creation, cache-read) and
+        # all three occupy the context, so the FE indicator must see their sum.
+        # Raw fresh-only input_tokens made the bar collapse to ~the latest turn
+        # on every cache-hit resumed turn (the norm with prompt caching on).
+        # Frame-local sum only — the cache-effectiveness log above keeps
+        # reporting the true fresh input, and the raw split stays in the
+        # cache_* fields.
+        reported_input = input_tokens + cache_creation_tokens + cache_read_tokens
         await ws.send_json(
             {
                 "type": "stream_end",
@@ -1176,9 +1211,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 "user_message_id": user_msg_id or None,
                 "assistant_message_id": assistant_msg_id or None,
                 "token_usage": {
-                    "input_tokens": input_tokens,
+                    "input_tokens": reported_input,
                     "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
+                    "total_tokens": reported_input + output_tokens,
                     "cache_creation_input_tokens": cache_creation_tokens,
                     "cache_read_input_tokens": cache_read_tokens,
                     "context_window": CLAUDE_CONTEXT_WINDOW,
@@ -1488,9 +1523,12 @@ async def handle_ai_edit_message_claude(
     if thinking_enabled:
         if _uses_adaptive_thinking(CLAUDE_MODEL):
             api_kwargs["thinking"] = {"type": "adaptive"}
-        else:
-            _think_budget = min(32000, CLAUDE_MAX_TOKENS - 1024)
-            api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": max(_think_budget, 1024)}
+        elif CLAUDE_MAX_TOKENS > 1024:
+            # budget_tokens MUST be strictly < max_tokens — see the matching
+            # block in the primary chat handler above for the full rationale.
+            _think_budget = max(1024, min(32000, CLAUDE_MAX_TOKENS - 1024))
+            _think_budget = min(_think_budget, CLAUDE_MAX_TOKENS - 1)
+            api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _think_budget}
 
     logger.info("📍 AI Edit via Claude model: %s", CLAUDE_MODEL)
 
@@ -1684,11 +1722,26 @@ async def handle_ai_edit_message_claude(
                 )
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
+            else:
+                # After rewriting a DB row the cached --resume session replays
+                # the OLD content server-side; wipe it so a later CLI-backend
+                # turn doesn't resume pre-edit state. Both sibling backends
+                # (gemini dashboard_chat.py, CLI dashboard_chat_claude_cli.py)
+                # already do this; the SDK path was the only one that didn't.
+                try:
+                    from .dashboard_chat_claude_cli import delete_session_file
+
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after SDK AI edit")
         elif full_response:
             logger.warning(
                 "AI edit produced empty/whitespace content; keeping original message %s",
                 target_message_id_int,
             )
+            # Keep the DB row intact AND echo the original back so the client
+            # doesn't blank the bubble (it renders full_response unconditionally).
+            final_content = original_content
 
         await ws.send_json(
             {

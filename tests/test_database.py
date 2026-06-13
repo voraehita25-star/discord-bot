@@ -818,6 +818,251 @@ class TestDeleteMethods:
         count = await db.get_ai_history_count(test_channel_id)
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_delete_ai_message_by_message_id(self):
+        """Deleting by Discord message_id removes only the matching row."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920001
+        # Database() is a process-wide singleton backed by the real on-disk DB,
+        # so rows persist across test runs. Start from a clean slate (and clean
+        # up after) to keep the assertions deterministic and avoid leaking test
+        # rows into the shared database.
+        await db.delete_ai_history(channel_id)
+        await db.save_ai_message(channel_id, "user", "keep me", message_id=111)
+        await db.save_ai_message(channel_id, "user", "delete me", message_id=222)
+
+        deleted = await db.delete_ai_message_by_message_id(222, channel_id)
+        assert deleted == 1
+
+        history = await db.get_ai_history(channel_id)
+        contents = [row["content"] for row in history]
+        assert "keep me" in contents
+        assert "delete me" not in contents
+
+        await db.delete_ai_history(channel_id)
+
+    @pytest.mark.asyncio
+    async def test_delete_ai_message_by_message_id_missing_is_zero(self):
+        """Deleting an unknown message_id is a no-op returning 0."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        deleted = await db.delete_ai_message_by_message_id(999999, 920002)
+        assert deleted == 0
+
+    @pytest.mark.asyncio
+    async def test_update_ai_message_by_message_id(self):
+        """Updating by Discord message_id rewrites the stored content."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920003
+        # Database() is a process-wide singleton backed by the real on-disk DB,
+        # so rows persist across test runs. Start from a clean slate (and clean
+        # up after) to keep the assertions deterministic and avoid leaking test
+        # rows into the shared database.
+        await db.delete_ai_history(channel_id)
+        await db.save_ai_message(channel_id, "user", "original text", message_id=333)
+
+        updated = await db.update_ai_message_by_message_id(333, "edited text", channel_id)
+        assert updated == 1
+
+        history = await db.get_ai_history(channel_id)
+        contents = [row["content"] for row in history]
+        assert "edited text" in contents
+        assert "original text" not in contents
+
+        await db.delete_ai_history(channel_id)
+
+
+class TestMessageIdUniqueness:
+    """A non-NULL Discord message_id maps to exactly one ai_history row.
+
+    Enforced at the data layer by a partial unique index on
+    (channel_id, message_id) WHERE message_id IS NOT NULL, plus an upsert in
+    save_ai_message / save_ai_messages_batch. NULL message_ids are not deduped.
+    """
+
+    @pytest.mark.asyncio
+    async def test_save_same_message_id_upserts(self):
+        """Re-saving the same message_id updates content instead of duplicating."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920010
+        await db.delete_ai_history(channel_id)
+        await db.save_ai_message(channel_id, "user", "first version", message_id=500)
+        await db.save_ai_message(channel_id, "user", "second version", message_id=500)
+
+        history = await db.get_ai_history(channel_id)
+        rows = [r for r in history if r["message_id"] == 500]
+        assert len(rows) == 1  # no duplicate row
+        assert rows[0]["content"] == "second version"  # latest write wins
+
+        await db.delete_ai_history(channel_id)
+
+    @pytest.mark.asyncio
+    async def test_save_returns_correct_row_id_on_upsert(self):
+        """save_ai_message returns the updated row's id on conflict (RETURNING id).
+
+        Without RETURNING, cursor.lastrowid on the upsert-UPDATE branch points at
+        the last *inserted* row (here message_id=901), not the row that changed.
+        """
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920013
+        await db.delete_ai_history(channel_id)
+
+        id1 = await db.save_ai_message(channel_id, "user", "v1", message_id=900)
+        # Unrelated row inserted after — its id is what lastrowid would wrongly return.
+        await db.save_ai_message(channel_id, "user", "other", message_id=901)
+        id1_again = await db.save_ai_message(channel_id, "user", "v2", message_id=900)
+
+        assert id1_again == id1  # the id of the row actually updated, not 901's
+
+        await db.delete_ai_history(channel_id)
+
+    @pytest.mark.asyncio
+    async def test_null_message_id_allows_multiple_rows(self):
+        """NULL message_ids (e.g. model replies) are never deduped."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920011
+        await db.delete_ai_history(channel_id)
+        await db.save_ai_message(channel_id, "model", "reply A", message_id=None)
+        await db.save_ai_message(channel_id, "model", "reply B", message_id=None)
+
+        history = await db.get_ai_history(channel_id)
+        assert len(history) == 2
+
+        await db.delete_ai_history(channel_id)
+
+    @pytest.mark.asyncio
+    async def test_batch_dedupes_same_message_id(self):
+        """A batch carrying the same message_id twice collapses to one row."""
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920012
+        await db.delete_ai_history(channel_id)
+        await db.save_ai_messages_batch(
+            [
+                {
+                    "channel_id": channel_id,
+                    "role": "user",
+                    "content": "batch v1",
+                    "message_id": 600,
+                },
+                {
+                    "channel_id": channel_id,
+                    "role": "user",
+                    "content": "batch v2",
+                    "message_id": 600,
+                },
+            ]
+        )
+
+        history = await db.get_ai_history(channel_id)
+        rows = [r for r in history if r["message_id"] == 600]
+        assert len(rows) == 1
+        assert rows[0]["content"] == "batch v2"
+
+        await db.delete_ai_history(channel_id)
+
+
+class TestCopyHistoryUpsert:
+    """copy_history must survive the partial unique index on (channel_id, message_id).
+
+    Regression guard: when the target already holds a row whose message_id
+    matches one in the source (e.g. the same copy run twice), a plain INSERT
+    would raise IntegrityError and roll back the whole copy. The ON CONFLICT
+    upsert in copy_history must update the row instead of crashing.
+
+    Lives here (not test_storage.py) because it exercises the real singleton DB;
+    test_storage.py mocks ``db`` and some tests there change cwd, which breaks the
+    relative ``data/bot_database.db`` path for a real connection.
+    """
+
+    @pytest.mark.asyncio
+    async def test_copy_into_overlapping_target_upserts(self):
+        from cogs.ai_core.storage import copy_history
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        src, tgt = 920020, 920021
+        await db.delete_ai_history(src)
+        await db.delete_ai_history(tgt)
+
+        await db.save_ai_message(src, "user", "source content", message_id=700)
+        # Target already holds a row with the SAME message_id — collides on copy.
+        await db.save_ai_message(tgt, "user", "stale target content", message_id=700)
+
+        copied = await copy_history(src, tgt)  # must NOT raise IntegrityError
+
+        assert copied == 1
+        rows = [r for r in await db.get_ai_history(tgt) if r["message_id"] == 700]
+        assert len(rows) == 1  # upserted, not duplicated
+        assert rows[0]["content"] == "source content"  # source content wins
+
+        await db.delete_ai_history(src)
+        await db.delete_ai_history(tgt)
+
+
+class TestReplaceHistoryUpsert:
+    """save_history(force=True) -> _replace_history_db must survive the unique index.
+
+    The force-replace path DELETEs the channel then bulk-inserts the in-memory
+    view. If that view holds two rows with the same non-NULL message_id, a plain
+    INSERT would raise IntegrityError and roll back the whole replace (losing the
+    save). The ON CONFLICT upsert collapses them to one row (last write wins).
+    """
+
+    @pytest.mark.asyncio
+    async def test_duplicate_message_id_in_memory_does_not_crash(self):
+        from cogs.ai_core.storage import _replace_history_db
+        from utils.database.database import Database
+
+        db = Database()
+        await db.init_schema()
+
+        channel_id = 920030
+        await db.delete_ai_history(channel_id)
+
+        chat_data = {
+            "history": [
+                {"role": "user", "parts": ["first"], "message_id": 800},
+                {"role": "user", "parts": ["second"], "message_id": 800},  # dup id
+            ],
+            "_db_loaded": False,
+        }
+        await _replace_history_db(channel_id, chat_data, limit=1000)  # must NOT raise
+
+        rows = [r for r in await db.get_ai_history(channel_id) if r["message_id"] == 800]
+        assert len(rows) == 1  # collapsed, not duplicated
+        assert rows[0]["content"] == "second"  # last write wins
+
+        await db.delete_ai_history(channel_id)
+
 
 # ======================================================================
 # Merged from test_database_module.py

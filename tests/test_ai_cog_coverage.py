@@ -72,7 +72,9 @@ class TestToggleThinkingCmd:
         await cog.toggle_thinking_cmd.callback(cog, ctx, None)
 
         # default-enable path: toggle called with True
-        cog.chat_manager.toggle_thinking.assert_awaited_once_with(ctx.channel.id, True)
+        cog.chat_manager.toggle_thinking.assert_awaited_once_with(
+            ctx.channel.id, True, ctx.guild.id
+        )
         ctx.send.assert_awaited()
         assert "embed" in ctx.send.call_args.kwargs
 
@@ -86,7 +88,9 @@ class TestToggleThinkingCmd:
         await cog.toggle_thinking_cmd.callback(cog, ctx, None)
 
         # current True -> toggle to False
-        cog.chat_manager.toggle_thinking.assert_awaited_once_with(ctx.channel.id, False)
+        cog.chat_manager.toggle_thinking.assert_awaited_once_with(
+            ctx.channel.id, False, ctx.guild.id
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_mode_sends_error(self):
@@ -107,7 +111,9 @@ class TestToggleThinkingCmd:
 
         await cog.toggle_thinking_cmd.callback(cog, ctx, "on")
 
-        cog.chat_manager.toggle_thinking.assert_awaited_once_with(ctx.channel.id, True)
+        cog.chat_manager.toggle_thinking.assert_awaited_once_with(
+            ctx.channel.id, True, ctx.guild.id
+        )
 
     @pytest.mark.asyncio
     async def test_mode_off_disables_and_warning_color(self):
@@ -117,7 +123,9 @@ class TestToggleThinkingCmd:
 
         await cog.toggle_thinking_cmd.callback(cog, ctx, "OFF")
 
-        cog.chat_manager.toggle_thinking.assert_awaited_once_with(ctx.channel.id, False)
+        cog.chat_manager.toggle_thinking.assert_awaited_once_with(
+            ctx.channel.id, False, ctx.guild.id
+        )
         ctx.send.assert_awaited()
 
     @pytest.mark.asyncio
@@ -144,8 +152,9 @@ class TestToggleThinkingCmd:
             ctx = _make_ctx(channel_id=6000, guild_id=5000)
             await cog.toggle_thinking_cmd.callback(cog, ctx, "on")
 
-        # toggle should target the OUTPUT channel, not the command channel
-        cog.chat_manager.toggle_thinking.assert_awaited_once_with(7000, True)
+        # toggle should target the OUTPUT channel, not the command channel,
+        # and carry the guild so a created session gets the RP persona
+        cog.chat_manager.toggle_thinking.assert_awaited_once_with(7000, True, 5000)
 
 
 # ============================================================================
@@ -390,10 +399,11 @@ class TestLinkMemoryCmd:
             raise TimeoutError()
 
         cog.bot.wait_for = fake_wait_for
+        ctx.author.id = 4242  # confirmation must come from the invoker
         await cog.link_memory_cmd.callback(cog, ctx, "999")
         check = captured["check"]
         good = MagicMock()
-        good.author.id = cog.OWNER_ID
+        good.author.id = ctx.author.id
         good.channel.id = 555
         good.content = "YES"
         assert check(good) is True
@@ -602,7 +612,7 @@ class TestResendLastMessage:
         ):
             ctx = _make_ctx(channel_id=6000, guild_id=5000)
             await cog.resend_last_message.callback(cog, ctx, None)
-        cog.chat_manager.get_chat_session.assert_awaited_once_with(7000)
+        cog.chat_manager.get_chat_session.assert_awaited_once_with(7000, 5000)
 
 
 # ============================================================================
@@ -739,10 +749,11 @@ class TestMoveMemoryCmd:
             raise TimeoutError()
 
         cog.bot.wait_for = fake_wait_for
+        ctx.author.id = 4242  # confirmation must come from the invoker
         await cog.move_memory_cmd.callback(cog, ctx, "888")
         check = captured["check"]
         m = MagicMock()
-        m.author.id = cog.OWNER_ID
+        m.author.id = ctx.author.id
         m.channel.id = 777
         m.content = "no"
         assert check(m) is True
@@ -1050,12 +1061,12 @@ class TestChannelRatelimitCmd:
 
 class TestUnrestrictedModeCmd:
     @pytest.mark.asyncio
-    async def test_guardrails_unavailable(self):
+    async def test_unrestricted_unavailable(self):
         cog = _make_cog()
         ctx = _make_ctx()
-        with patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", False):
+        with patch("cogs.ai_core.ai_cog.UNRESTRICTED_AVAILABLE", False):
             await cog.unrestricted_mode_cmd.callback(cog, ctx, None)
-        assert "Guardrails module not available" in ctx.send.call_args.args[0]
+        assert "Unrestricted module not available" in ctx.send.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_status_empty(self):
@@ -1064,9 +1075,23 @@ class TestUnrestrictedModeCmd:
         with (
             patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", True),
             patch("cogs.ai_core.ai_cog.unrestricted_channels", set()),
+            patch("cogs.ai_core.ai_cog.unrestricted_all_enabled", MagicMock(return_value=False)),
         ):
             await cog.unrestricted_mode_cmd.callback(cog, ctx, "status")
-        assert "No channels are in unrestricted mode" in ctx.send.call_args.args[0]
+        assert "No channels are individually marked unrestricted" in ctx.send.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_status_global_override_active(self):
+        """When AI_UNRESTRICTED_ALL is on, status surfaces the global override note."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        with (
+            patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", True),
+            patch("cogs.ai_core.ai_cog.unrestricted_channels", set()),
+            patch("cogs.ai_core.ai_cog.unrestricted_all_enabled", MagicMock(return_value=True)),
+        ):
+            await cog.unrestricted_mode_cmd.callback(cog, ctx, "status")
+        assert "Global override ACTIVE" in ctx.send.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_status_with_channels(self):

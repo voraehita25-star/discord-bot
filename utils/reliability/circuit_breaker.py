@@ -162,18 +162,17 @@ class CircuitBreaker:
                 # crashed silently could permanently exhaust the slot pool
                 # and starve the circuit.
                 if self._half_open_call_starts:
+                    # Forgive only genuinely IN-FLIGHT probes that outlived the
+                    # call timeout. Completed probes are popped on record_*,
+                    # so _half_open_call_starts holds only still-running ones —
+                    # no success clamp here (the old clamp wiped successes
+                    # earned by completed probes, wedging HALF_OPEN forever
+                    # under sparse traffic).
                     cutoff = now - self.half_open_call_timeout
                     self._half_open_call_starts = [
                         ts for ts in self._half_open_call_starts if ts > cutoff
                     ]
                     self._half_open_calls = len(self._half_open_call_starts)
-                    # Clamp success/failure counters so they can't exceed the
-                    # number of probes still being tracked. Without this clamp,
-                    # forgiving stuck probes left _half_open_successes inflated
-                    # and the circuit could close based on stale credits.
-                    self._half_open_successes = min(
-                        self._half_open_successes, self._half_open_calls
-                    )
                 if self._half_open_calls < self.half_open_max_calls:
                     self._half_open_calls += 1
                     self._half_open_call_starts.append(now)
@@ -188,25 +187,12 @@ class CircuitBreaker:
             self._success_count += 1
 
             if self._state == CircuitState.HALF_OPEN:
-                # Forgive stuck probes that exceeded the call timeout
-                # BEFORE incrementing successes. This keeps the success
-                # count and the in-flight probe set consistent:
-                # without it, a probe that was forgiven by ``can_execute``
-                # could later return success and inflate
-                # _half_open_successes past the inflight count, closing
-                # the circuit early. Only clamp when forgive actually
-                # ran — otherwise a test that bypasses ``can_execute``
-                # (forcing HALF_OPEN with empty _half_open_call_starts)
-                # would never close.
+                # This probe COMPLETED — remove its admission timestamp from
+                # the in-flight set so a later ``can_execute`` can't mistake
+                # it for a stuck probe and forgive away its success credit.
                 if self._half_open_call_starts:
-                    cutoff = time.time() - self.half_open_call_timeout
-                    forgiven = [ts for ts in self._half_open_call_starts if ts > cutoff]
-                    if len(forgiven) != len(self._half_open_call_starts):
-                        self._half_open_call_starts = forgiven
-                        self._half_open_calls = len(forgiven)
-                        self._half_open_successes = min(
-                            self._half_open_successes, self._half_open_calls
-                        )
+                    self._half_open_call_starts.pop(0)
+                    self._half_open_calls = len(self._half_open_call_starts)
                 self._half_open_successes += 1
                 # Wait until ALL admitted probes confirm before closing —
                 # otherwise the first 1/3 probes could succeed, the circuit
@@ -302,15 +288,17 @@ class CircuitBreaker:
                     return True
                 elif current_state == CircuitState.HALF_OPEN:
                     if self._half_open_call_starts:
+                        # Forgive only genuinely IN-FLIGHT probes that outlived
+                        # the call timeout (mirrors the fixed sync can_execute).
+                        # NO success clamp here — completed probes are popped in
+                        # async_record_success, so the old clamp wiped successes
+                        # they earned and could wedge HALF_OPEN forever under
+                        # sparse traffic.
                         cutoff = now - self.half_open_call_timeout
                         self._half_open_call_starts = [
                             ts for ts in self._half_open_call_starts if ts > cutoff
                         ]
                         self._half_open_calls = len(self._half_open_call_starts)
-                        # Clamp counters to active-probe count (see sync version).
-                        self._half_open_successes = min(
-                            self._half_open_successes, self._half_open_calls
-                        )
                     if self._half_open_calls < self.half_open_max_calls:
                         self._half_open_calls += 1
                         self._half_open_call_starts.append(now)
@@ -333,20 +321,16 @@ class CircuitBreaker:
                 self._success_count += 1
 
                 if self._state == CircuitState.HALF_OPEN:
-                    # Mirror the sync ``record_success`` forgive-timeout
-                    # logic. Without it, an async caller whose probe was
-                    # forgiven by ``async_can_execute`` could inflate
-                    # _half_open_successes past _half_open_calls and close
-                    # the circuit before all admitted probes confirmed.
+                    # This probe COMPLETED — pop its admission timestamp from
+                    # the in-flight set so a later ``async_can_execute`` can't
+                    # mistake it for a stuck probe and forgive away its success
+                    # credit. Mirrors the fixed sync ``record_success`` exactly;
+                    # the previous async path only ran a forgive filter + clamp,
+                    # which wiped legitimately-earned successes under sparse
+                    # traffic and could wedge HALF_OPEN forever.
                     if self._half_open_call_starts:
-                        cutoff = time.time() - self.half_open_call_timeout
-                        forgiven = [ts for ts in self._half_open_call_starts if ts > cutoff]
-                        if len(forgiven) != len(self._half_open_call_starts):
-                            self._half_open_call_starts = forgiven
-                            self._half_open_calls = len(forgiven)
-                            self._half_open_successes = min(
-                                self._half_open_successes, self._half_open_calls
-                            )
+                        self._half_open_call_starts.pop(0)
+                        self._half_open_calls = len(self._half_open_call_starts)
                     self._half_open_successes += 1
                     if self._half_open_successes >= self.half_open_max_calls:
                         self._transition_to_unlocked(CircuitState.CLOSED)

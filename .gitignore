@@ -88,6 +88,7 @@ Thumbs.db
 # Project specific
 bot.pid
 bot.singleton.lock
+stop_loop.flag
 dev_watcher.pid
 .cache
 

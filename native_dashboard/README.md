@@ -10,6 +10,7 @@
 | 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
 | 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
 | ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |
+| 🕘 **AI History** | Browse the Discord bot's `ai_history` channels, view a channel's messages (newest 200, "Load all" up to 2,000), click-to-edit, delete with confirm, ↶ Undo (ack-confirmed stack of 20). Edits patch the bot's live session and reset its Claude-CLI `--resume` session. `Ctrl+6`. See [AI History](#-ai-history-discord-chat-editor). |
 | 🎨 **3D UI Polish** | Layered shadows, cursor-tracking card tilt, ripple on click, button press feedback, glassmorphism noise overlay, 3D sphere status dot, custom scrollbars, skeleton loaders, number count-up animations, chart entrance fade. |
 | 🌸 **Sakura Animation** | Cherry-blossom petals with mouse-parallax drift. Toggleable. |
 | 🔊 **Sound + Haptic** | Optional synth click + vibration on button press (off by default). |
@@ -17,9 +18,9 @@
 | 🔔 **Toast Notifications** | Animated slide-in for confirmations / errors. |
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+1-5 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 190 tests across 10 vitest files: `app.test.ts`, `chat-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
-| 🤖 **Headless E2E** | 70 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection. Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
+| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
+| 🧪 **Unit Tests** | 294 tests across 11 vitest files: `app.test.ts`, `chat-manager.test.ts`, `history-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
+| 🤖 **Headless E2E** | 72 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -41,6 +42,7 @@
 | `Ctrl+3` | Go to Logs |
 | `Ctrl+4` | Go to Database |
 | `Ctrl+5` | Go to Settings |
+| `Ctrl+6` | Go to AI History |
 | `Ctrl+R` | Refresh All Data |
 | `Ctrl+T` | Toggle Dark/Light Theme |
 | `Ctrl+Enter` | Send Message (in Chat) |
@@ -71,6 +73,42 @@ to the current conversation. Per-row **Edit** opens a roomy editor (filename
 > so browser `dataTransfer.files` works normally inside WebView2. Without this
 > flip, the OS would intercept file drops and hand the JS layer empty file
 > arrays.
+
+## 🕘 AI History (Discord chat editor)
+
+The **History** tab (`Ctrl+6`, `src-ts/history-manager.ts`) lists every Discord
+channel that has rows in the bot's `ai_history` table (sorted by last activity)
+and lets you curate what the AI remembers:
+
+- **Open a channel** → newest 200 messages. **Load all** re-requests up to
+  2,000; the server applies a ~20 MB content budget and sets a `truncated`
+  flag when even that window couldn't fit (the button is then hidden — a
+  bigger limit couldn't deliver more rows).
+- **Click a message to edit** (200K char cap), **delete** (confirm dialog),
+  **↶ Undo** — an ack-confirmed stack of 20. Undoing an edit re-sends the
+  prior content, so pressing it again acts as redo; undoing a delete restores
+  the row under its original row id, back in its original position.
+- **↻ Refresh** reloads BOTH the channel list and the open channel (same
+  limit window you last loaded) with a "Refreshed" toast — and starts a
+  reconnect when the socket is down.
+
+Mutations land in SQLite first, then best-effort patch the bot's live
+in-memory session: the ack's `live_session` field reports
+`patched` / `not_loaded` / `no_match` / `unavailable` / `error`, and the
+channel's Claude-CLI `--resume` session is reset so the next Discord turn
+re-reads the edited history instead of replaying the old context.
+
+WS wire types (same socket as chat; errors carry `scope:"ai_history"` plus a
+code such as `MSG_NOT_FOUND` / `ROW_CONFLICT` / `CONTENT_TOO_LONG` /
+`DB_UNAVAILABLE`; snowflake ids travel as JSON strings):
+
+| Request | Response |
+|---------|----------|
+| `list_ai_channels` | `ai_channels_list` (the only rate-limit-exempt type) |
+| `load_ai_history` | `ai_history_loaded` |
+| `edit_ai_history_message` | `ai_history_message_edited` |
+| `delete_ai_history_message` | `ai_history_message_deleted` (+ best-effort `total_count`) |
+| `restore_ai_history_message` | `ai_history_message_restored` (+ best-effort `total_count`) |
 
 ## 🏗️ Tech Stack
 
@@ -112,11 +150,13 @@ native_dashboard/
 ├── src-ts/
 │   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~1.8k lines)
 │   ├── chat-manager.ts     # ChatManager orchestrator (~2.2k lines) — chat + file memory modal + editor
+│   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
-│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (23 tests)
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (35 tests)
+│   ├── history-manager.test.ts # HistoryManager load/edit/delete/undo + live_session-ack tests
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
 │       ├── types.ts              # Shared chat TypeScript interfaces
@@ -131,7 +171,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 10 vitest files (190 tests total)
+│       └── *.test.ts             # 7 vitest files (294 tests total across all 11)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
@@ -152,6 +192,7 @@ native_dashboard/
 │   ├── styles.css          # Dark/Light theme styling
 │   ├── app.js              # Compiled from src-ts/app.ts (do not edit)
 │   ├── chat-manager.js     # Compiled from src-ts/chat-manager.ts
+│   ├── history-manager.js  # Compiled from src-ts/history-manager.ts
 │   ├── shared.js           # Compiled from src-ts/shared.ts
 │   ├── chat/               # Compiled from src-ts/chat/*.ts (do not edit)
 │   └── vendor/             # Bundled KaTeX + DOMPurify (CSP-friendly, no CDN)
@@ -219,12 +260,12 @@ python scripts/create_desktop_shortcut.py
 
 ```bash
 # Unit tests (vitest, ~5s)
-npm test                       # Run all 190 vitest tests
+npm test                       # Run all 294 vitest tests
 npm run test:watch             # Watch mode
 npm run test:coverage          # With coverage report
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 70 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
+npm run test:e2e               # Run all 72 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection

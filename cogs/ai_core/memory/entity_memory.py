@@ -497,8 +497,19 @@ class EntityMemoryManager:
 
         try:
             if merge:
-                # Merge with existing facts
+                # Merge with existing facts. A plain dict.update() REPLACES
+                # the nested ``relationships``/``custom`` dicts wholesale, so
+                # an AI extraction mentioning one relationship wiped every
+                # previously stored relationship for the entity. Deep-merge
+                # those two known nested-dict fields instead.
                 existing = entity.facts.to_dict()
+                for _nested_key in ("relationships", "custom"):
+                    base = existing.get(_nested_key)
+                    incoming = new_facts.get(_nested_key)
+                    if isinstance(base, dict) and isinstance(incoming, dict):
+                        merged = dict(base)
+                        merged.update(incoming)
+                        new_facts = {**new_facts, _nested_key: merged}
                 existing.update(new_facts)
                 updated_facts = EntityFacts.from_dict(existing)
             else:
@@ -524,7 +535,10 @@ class EntityMemoryManager:
                 is not None
             )
 
-        except (aiosqlite.Error, ValueError):
+        except (aiosqlite.Error, ValueError, TypeError):
+            # TypeError included: AI-extracted facts are untyped JSON and a
+            # malformed shape must return False per the bool contract, not
+            # escape to the caller (matches _row_to_entity's guard).
             logger.exception("Failed to update entity %s", name)
             return False
 

@@ -138,6 +138,9 @@ class ShutdownManager:
         # safe even when called from a signal-handler thread before any
         # event loop is running.
         self._init_lock: threading.Lock = threading.Lock()
+        # Set synchronously by the FIRST signal so the second one can force-
+        # exit even when the event loop never gets to run the shutdown task.
+        self._signal_seen: bool = False
         self._pending_shutdown_task: asyncio.Task[ShutdownState] | None = None
         # Strong refs for tasks spawned from signal handlers, so they are not
         # GC'd before they run. Initialized here so AttributeError can't occur
@@ -575,9 +578,16 @@ class ShutdownManager:
         sig_name = signal.Signals(signum).name
         self.logger.info("🛑 Received signal: %s", sig_name)
 
-        if self._state.phase != ShutdownPhase.RUNNING:
+        # Gate force-exit on a flag set SYNCHRONOUSLY in this handler, not on
+        # the phase: the phase only changes when the event loop runs the
+        # scheduled shutdown task. If the loop is stuck in synchronous code —
+        # the very situation that makes an operator hammer Ctrl-C — the phase
+        # stays RUNNING forever and the second signal previously just queued
+        # another shutdown task instead of hard-exiting.
+        if self._signal_seen or self._state.phase != ShutdownPhase.RUNNING:
             self.logger.warning("Force exit requested during shutdown")
             os._exit(1)
+        self._signal_seen = True
 
         # Schedule async shutdown but do NOT exit immediately --
         # let the event loop run the cleanup tasks first

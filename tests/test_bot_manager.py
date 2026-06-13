@@ -236,22 +236,32 @@ class TestGetLauncherInfo:
         assert info["type"] == "development"
         assert info["script"] == "dev_watcher.py"
 
-    def test_start_dev_mode_bat_script_name(self):
-        proc = _make_obj_proc("cmd.exe", ["cmd", "/c", "start_dev_mode.bat"])
+    def test_start_dev_ps1_script_name(self):
+        proc = _make_obj_proc(
+            "powershell.exe", ["powershell", "-File", r"scripts\startup\start_dev.ps1"]
+        )
         info = bm._get_launcher_info(proc)
         assert info["type"] == "development"
-        assert info["script"] == "start_dev_mode.bat"
+        assert info["script"] == "start_dev.ps1"
 
     def test_production_detected(self):
-        proc = _make_obj_proc("cmd.exe", ["cmd", "/c", "start_bot.bat"])
+        proc = _make_obj_proc("cmd.exe", ["cmd", "/c", r"scripts\startup\start.bat"])
         assert bm._get_launcher_info(proc)["type"] == "production"
 
+    def test_hidden_detected_via_windowstyle(self):
+        # bot_manager's hidden mode: powershell -WindowStyle Hidden -File start.ps1
+        proc = _make_obj_proc(
+            "powershell.exe",
+            ["powershell", "-WindowStyle", "Hidden", "-File", r"scripts\startup\start.ps1"],
+        )
+        info = bm._get_launcher_info(proc)
+        assert info["type"] == "hidden"
+
     def test_hidden_detected_via_bot_py(self):
-        # wscript pointing at bot.py (no "start_bot" substring) -> hidden.
+        # legacy wscript wrapper pointing at bot.py -> hidden.
         proc = _make_obj_proc("wscript.exe", ["wscript", "run", "bot.py"])
         info = bm._get_launcher_info(proc)
         assert info["type"] == "hidden"
-        assert info["script"] == "start_bot_hidden.vbs"
 
     def test_unrelated_wscript_not_matched(self):
         proc = _make_obj_proc("wscript.exe", ["wscript", "something.vbs"])
@@ -265,11 +275,13 @@ class TestGetLauncherInfo:
         proc = _make_obj_proc("svchost.exe", ["svchost", "-k", "netsvcs"])
         assert bm._get_launcher_info(proc) is None
 
-    def test_terminal_with_start_bot_is_production(self):
-        proc = _make_obj_proc("powershell.exe", ["powershell", "start_bot.bat"])
+    def test_terminal_with_start_ps1_is_production(self):
+        proc = _make_obj_proc(
+            "powershell.exe", ["powershell", "-File", r"scripts\startup\start.ps1"]
+        )
         assert bm._get_launcher_info(proc)["type"] == "production"
 
-    def test_terminal_without_start_bot_returns_none(self):
+    def test_terminal_without_start_script_returns_none(self):
         proc = _make_obj_proc("powershell.exe", ["powershell", "foo"])
         assert bm._get_launcher_info(proc) is None
 
@@ -290,13 +302,13 @@ class TestDetectLauncher:
     """Tests for detect_launcher (walks the parent chain)."""
 
     def test_direct_parent_match(self):
-        parent = _make_obj_proc("cmd.exe", ["cmd", "/c", "start_bot.bat"])
+        parent = _make_obj_proc("cmd.exe", ["cmd", "/c", r"scripts\startup\start.bat"])
         proc = MagicMock()
         proc.parent.return_value = parent
         assert bm.detect_launcher(proc)["type"] == "production"
 
     def test_grandparent_match(self):
-        grandparent = _make_obj_proc("cmd.exe", ["cmd", "/c", "start_bot.bat"])
+        grandparent = _make_obj_proc("cmd.exe", ["cmd", "/c", r"scripts\startup\start.bat"])
         middle = _make_obj_proc("python", ["python", "x"])
         middle.parent.return_value = grandparent
         proc = MagicMock()
@@ -451,36 +463,61 @@ class TestAutoStopExistingBot:
         status = {"running": True, "all_pids": [1], "dev_watcher_pids": [2]}
         with (
             patch.object(bm, "stop_process_list") as stop,
+            patch.object(bm, "_find_launcher_processes", return_value=[]),
             patch.object(bm.time, "sleep"),
             patch.object(bm.Path, "unlink"),
+            patch.object(bm.Path, "write_text"),
         ):
             result = bm.auto_stop_existing_bot(status, assume_yes=True)
         assert result is True
-        assert stop.call_count == 2  # dev_watcher list + bot list
+        assert stop.call_count == 3  # launcher + dev_watcher + bot list
 
     def test_env_var_bypasses_prompt(self, monkeypatch):
         monkeypatch.setenv("BOT_MANAGER_ASSUME_YES", "1")
         status = {"running": True, "all_pids": [1], "dev_watcher_pids": []}
         with (
             patch.object(bm, "stop_process_list") as stop,
+            patch.object(bm, "_find_launcher_processes", return_value=[]),
             patch.object(bm.time, "sleep"),
             patch.object(bm.Path, "unlink"),
+            patch.object(bm.Path, "write_text"),
         ):
             result = bm.auto_stop_existing_bot(status)
         assert result is True
-        assert stop.call_count == 2
+        assert stop.call_count == 3
 
     def test_prompt_yes_stops(self):
         status = {"running": True, "all_pids": [1], "dev_watcher_pids": []}
         with (
             patch("builtins.input", return_value="yes"),
             patch.object(bm, "stop_process_list") as stop,
+            patch.object(bm, "_find_launcher_processes", return_value=[]),
             patch.object(bm.time, "sleep"),
             patch.object(bm.Path, "unlink"),
+            patch.object(bm.Path, "write_text"),
         ):
             result = bm.auto_stop_existing_bot(status)
         assert result is True
-        assert stop.call_count == 2
+        assert stop.call_count == 3
+
+    def test_kills_launcher_loop_and_writes_stop_flag(self):
+        # Regression: auto_stop must kill the start.ps1 restart-loop launcher
+        # (and write STOP_FLAG) like stop_bot, otherwise the surviving loop
+        # re-spawns the old bot and races the fresh instance.
+        status = {"running": True, "all_pids": [1], "dev_watcher_pids": [2]}
+        with (
+            patch.object(bm, "stop_process_list") as stop,
+            patch.object(bm, "_find_launcher_processes", return_value=[99]),
+            patch.object(bm.time, "sleep"),
+            patch.object(bm.Path, "unlink"),
+            patch.object(bm.Path, "write_text") as write_text,
+        ):
+            result = bm.auto_stop_existing_bot(status, assume_yes=True)
+        assert result is True
+        # First stop_process_list call is the launcher kill with its PIDs.
+        assert stop.call_args_list[0].args[0] == [99]
+        # STOP_FLAG was written so a mid-countdown launcher breaks its loop.
+        assert write_text.called
 
     def test_prompt_no_aborts(self):
         status = {"running": True, "all_pids": [1], "dev_watcher_pids": []}
@@ -613,13 +650,11 @@ class TestModuleConstants:
 
     def test_paths_anchored_to_project_root(self):
         root = str(bm.PROJECT_ROOT)
-        assert bm.STATUS_FILE.startswith(root)
         assert bm.PID_FILE.startswith(root)
         assert bm.STOP_FLAG.startswith(root)
 
-    def test_pid_and_status_filenames(self):
+    def test_pid_and_flag_filenames(self):
         assert bm.PID_FILE.endswith("bot.pid")
-        assert bm.STATUS_FILE.endswith("bot_status.json")
         assert bm.STOP_FLAG.endswith("stop_loop.flag")
 
     def test_box_width_positive(self):

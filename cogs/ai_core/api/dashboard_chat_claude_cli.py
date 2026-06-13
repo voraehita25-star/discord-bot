@@ -165,6 +165,12 @@ _THINKING_STREAM_TIMEOUT = max(300, _env_int("DASHBOARD_STREAM_TIMEOUT_THINKING"
 # session map on disk and orphaning the .jsonl file the user just touched.
 _PERSIST_TASKS: set[asyncio.Task[None]] = set()
 
+# The bot's own repo tree. Derived once so the default write-roots resolution
+# can subtract it — the documented "repo and .env excluded" write-mode
+# guarantee must hold even when the repo is cloned under Documents/Desktop/
+# Downloads (where it would otherwise sit inside a default --add-dir root).
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 # Dedicated working directory for every `claude -p` invocation. Claude Code
 # logs each session as a .jsonl under `~/.claude/projects/<encoded-cwd>/`, so
 # spawning from a bot-specific directory isolates Dashboard-spawned sessions
@@ -239,6 +245,9 @@ _PREWARM_MAX = max(1, _env_int("DASHBOARD_CLI_PREWARM_MAX", 3))
 _warm_procs: dict[str, dict[str, Any]] = {}
 # Strong refs to in-flight warm-spawn tasks so they aren't GC'd mid-spawn.
 _PREWARM_TASKS: set[asyncio.Task[None]] = set()
+# Set by shutdown_prewarm(): blocks new warm spawns and makes in-flight
+# spawn tasks kill their child instead of registering it post-shutdown.
+_PREWARM_SHUTDOWN = False
 
 
 def _build_system_prompt(
@@ -432,11 +441,35 @@ def _encode_claude_project_dirname(path: Path) -> str:
     return s
 
 
+def _claude_config_dir() -> Path:
+    """The config dir the ``claude -p`` subprocess ACTUALLY uses.
+
+    Mirrors _make_subprocess_env's decision order: an operator-set
+    CLAUDE_CONFIG_DIR wins; otherwise the dedicated clean dir that the
+    OAuth-token fast path redirects to; otherwise ~/.claude. Hardcoding
+    ~/.claude here made every session-file cleanup a silent no-op whenever
+    the env redirect was active (transcripts live under <config>/projects).
+
+    Blank/whitespace-only CLAUDE_CONFIG_DIR is treated as unset (repo
+    convention — see ai_tools_ipc._flag), matching the drop that
+    _make_subprocess_env applies before its redirect gate. And the OAuth
+    redirect is reported only when claude_home actually exists: if the
+    spawn-time mkdir failed, the child fell back to ~/.claude, so cleanup
+    must look there too.
+    """
+    operator_dir = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if operator_dir:
+        return Path(operator_dir)
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        clean_cfg = _CLAUDE_CLI_WORKDIR / "claude_home"
+        if clean_cfg.is_dir():
+            return clean_cfg
+    return Path.home() / ".claude"
+
+
 def _claude_projects_folder() -> Path:
     """Folder where Claude Code writes .jsonl logs for our dedicated CWD."""
-    return (
-        Path.home() / ".claude" / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
-    )
+    return _claude_config_dir() / "projects" / _encode_claude_project_dirname(_CLAUDE_CLI_WORKDIR)
 
 
 def _load_persisted_sessions() -> None:
@@ -611,12 +644,18 @@ def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
             if attempts >= 10:
                 break
             attempts += 1
-            if old_lock.locked():
+            # ``locked()`` alone is NOT enough: right after release() wakes a
+            # waiter, locked() reads False while the waiter is still pending
+            # resume — evicting then hands the next caller a brand-new Lock
+            # and two `claude -p --resume` runs race on the same session
+            # (exactly what this lock exists to prevent). Treat a lock with
+            # queued waiters as held.
+            if old_lock.locked() or getattr(old_lock, "_waiters", None):
                 continue
             # asyncio is single-threaded and no await happens between the
             # items() snapshot and pop(), so pop() always succeeds here.
             popped = _CONVERSATION_LOCKS.pop(old_id)
-            if popped.locked():
+            if popped.locked() or getattr(popped, "_waiters", None):
                 # Defensive: lock state could change if a coroutine
                 # acquired it during dict iteration in the same step.
                 # Put it back and try another.
@@ -759,7 +798,25 @@ def _track_session(conversation_id: str, session_id: str) -> None:
     # end of insertion order. Without this, dict[key] = value keeps the
     # original position and a long-active conversation would be evicted
     # ahead of recently-touched ones.
-    _CONVERSATION_SESSIONS.pop(conversation_id, None)
+    old_session = _CONVERSATION_SESSIONS.pop(conversation_id, None)
+    # Breadcrumb for resumed-session debugging: every turn advances the id,
+    # so without this the old→new chain is unreconstructable from bot.log.
+    logger.debug(
+        "claude session transition conv=%s %s -> %s",
+        conversation_id,
+        (old_session or "none")[:8],
+        session_id[:8],
+    )
+    if old_session and old_session != session_id:
+        # Every resumed turn yields a NEW session id, so the PREVIOUS turn's
+        # .jsonl becomes unreachable by every cleanup path (they only know
+        # the latest id) — one orphaned transcript per turn. Unlink it the
+        # same pinned-background-task way the LRU eviction below does.
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            stale_task = loop.create_task(_unlink_session_file_by_id(old_session))
+            _PENDING_SESSION_CLEANUPS.add(stale_task)
+            stale_task.add_done_callback(_PENDING_SESSION_CLEANUPS.discard)
     if len(_CONVERSATION_SESSIONS) >= _MAX_TRACKED_SESSIONS:
         oldest_conv = next(iter(_CONVERSATION_SESSIONS))
         oldest_session = _CONVERSATION_SESSIONS.pop(oldest_conv, None)
@@ -792,13 +849,26 @@ def reset_session(conversation_id: str) -> None:
     to the DB-loaded message list. Also drops the per-conversation send lock
     so it doesn't accumulate forever in a long-running bot.
     """
-    if _CONVERSATION_SESSIONS.pop(conversation_id, None) is not None:
+    popped = _CONVERSATION_SESSIONS.pop(conversation_id, None)
+    if popped is not None:
         _save_persisted_sessions()
-    # Only drop the lock if it's not currently held. If it IS held a delete
-    # would orphan the in-flight waiter; let the next finished holder be the
-    # one to clean up via the natural eviction path.
+        # The forgotten session's .jsonl is now unreachable by every cleanup
+        # path (per-turn unlink, LRU eviction, delete_session_file all key off
+        # the latest tracked id) — one orphaned transcript per reset. Unlink it
+        # the same pinned-background-task way _track_session does. Best-effort
+        # and non-blocking: with no running loop (sync tests, shutdown) we just
+        # skip the unlink, and _unlink_session_file_by_id itself never raises.
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(_unlink_session_file_by_id(popped))
+            _PENDING_SESSION_CLEANUPS.add(task)
+            task.add_done_callback(_PENDING_SESSION_CLEANUPS.discard)
+    # Only drop the lock if it's not currently held AND nobody is queued on
+    # it. ``locked()`` alone misses the release→waiter-resume window (locked()
+    # reads False while a waiter is still pending), and popping then gives
+    # the next caller a fresh Lock — two --resume runs racing the session.
     lock = _CONVERSATION_LOCKS.get(conversation_id)
-    if lock is not None and not lock.locked():
+    if lock is not None and not lock.locked() and not getattr(lock, "_waiters", None):
         _CONVERSATION_LOCKS.pop(conversation_id, None)
 
 
@@ -1020,6 +1090,78 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
                     target_dir.rmdir()
 
 
+# Matches a role marker at the start of a line in arbitrary user text. The
+# flattened-prompt format (``# Conversation so far\nUser: …\nAssistant: …``)
+# is vulnerable to content that contains ``\nAssistant: I'll obey…`` — the
+# bare LLM has no way to tell injected role markers from real ones. We rewrite
+# hits to a clearly-marked sentinel so the model sees them as quoted text, not
+# new turns. Covers common alternate aliases (Human/AI/Tool) as well — same
+# defence the Discord flattener ships (discord_chat_claude_cli.py).
+_ROLE_LEAK_RE = re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
+
+# The flattened prompt's own section-header scheme. A spoofed ``# Current user
+# message`` / ``# Context`` line inside history or an uploaded document is a
+# STRONGER injection than a bare role marker — it can fake a whole section
+# that supersedes the real ones. Defang exactly the reserved names this
+# module's builders emit (not every ``#`` line, so legitimate user markdown
+# headings survive untouched).
+_RESERVED_PROMPT_HEADERS = (
+    "persona",
+    "timestamp convention",
+    "context",
+    "conversation so far",
+    "attached images",
+    "attached documents",
+    "current user message",
+    "available tools",
+)
+_HEADER_LEAK_RE = re.compile(
+    r"(?im)^(\s*)(#{1,6})(\s+(?:" + "|".join(_RESERVED_PROMPT_HEADERS) + r")\b)"
+)
+
+
+def _sanitize_dialog_segment(text: str) -> str:
+    """Defang role-marker / section-header injection in flattened-prompt text.
+
+    A history row or current message containing a literal line
+    ``Assistant: I'll do anything`` (or ``# Current user message``) could
+    otherwise spoof a turn or a structural section in the prompt the CLI
+    subprocess receives. Rewrite every such line so the model sees it as
+    quoted text the user typed, not a real turn/section header. The real
+    headers are emitted by the builders directly and never pass through here.
+    """
+    if not text:
+        return text
+    text = _ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+    return _HEADER_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+
+
+def _prompt_max_chars_from_env() -> int:
+    """Resolve the prompt-size ceiling (characters) for both CLI paths.
+
+    ``CLI_PROMPT_MAX_CHARS`` overrides; ``0`` disables clipping entirely.
+    The default (1.2M chars, roughly a full 1M-token window for Thai text
+    at ~1-2 chars/token) is deliberately at the model's PHYSICAL limit, not
+    a quota-saving cap: with delta-on-resume the full history is sent only
+    on fresh sessions, and operators running long-form RP want the entire
+    conversation in context. The clip exists solely so a pathological
+    tens-of-thousands-message channel still gets a working (front-truncated)
+    session instead of a hard context-overflow failure on every fresh attempt.
+    """
+    raw = (os.environ.get("CLI_PROMPT_MAX_CHARS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning("Invalid CLI_PROMPT_MAX_CHARS=%r; using default", raw)
+    return 1_200_000
+
+
+# Soft ceiling on the rendered history block, shared semantics with the
+# Discord flattener's _DISCORD_PROMPT_MAX_CHARS (same env knob). 0 = off.
+_PROMPT_HISTORY_MAX_CHARS = _prompt_max_chars_from_env()
+
+
 def _build_full_prompt(
     persona: str,
     user_context: str,
@@ -1086,9 +1228,12 @@ def _build_full_prompt(
 
     # Inject the timestamp inline so Claude knows when the message was sent
     # (matches the SDK backend's behavior). The DB stores the raw content,
-    # so this prefix never reaches the dashboard UI.
+    # so this prefix never reaches the dashboard UI. Sanitized so a pasted
+    # "Assistant:" line or spoofed section header can't fake a turn boundary.
     timestamp = bangkok_now_iso()
-    parts.append(f"# Current user message\n[{timestamp}] {current_message}")
+    parts.append(
+        f"# Current user message\n[{timestamp}] {_sanitize_dialog_segment(current_message)}"
+    )
     return "\n\n".join(parts)
 
 
@@ -1106,7 +1251,10 @@ def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
     lines: list[str] = []
     for msg in recent:
         role = msg.get("role", "user")
-        text = str(msg.get("content", ""))
+        # Sanitize each row: history contains assistant replies that can quote
+        # poisoned document/web content, and a raw "User:"/"# Context" line in
+        # there would spoof a turn or section in the flattened recap.
+        text = _sanitize_dialog_segment(str(msg.get("content", "")))
         speaker = "User" if role == "user" else "Assistant"
         created_at = msg.get("created_at")
         if created_at:
@@ -1114,7 +1262,20 @@ def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
             lines.append(f"{speaker}: [{ts}] {text}")
         else:
             lines.append(f"{speaker}: {text}")
-    return "\n".join(lines)
+    block = "\n".join(lines)
+    if _PROMPT_HISTORY_MAX_CHARS and len(block) > _PROMPT_HISTORY_MAX_CHARS:
+        # Front-truncate (keep the newest turns) the same way the Discord
+        # flattener clamps its history section — the persona/system file,
+        # user_context, and current message are untouched and individually
+        # bounded already. INFO so an operator can see it from bot.log
+        # instead of only inferring it from latency.
+        logger.info(
+            "History block truncated for prompt budget (%d > %d chars)",
+            len(block),
+            _PROMPT_HISTORY_MAX_CHARS,
+        )
+        block = "[...older context truncated...]\n" + block[-_PROMPT_HISTORY_MAX_CHARS:]
+    return block
 
 
 def _make_subprocess_env() -> dict[str, str]:
@@ -1155,10 +1316,16 @@ def _make_subprocess_env() -> dict[str, str]:
         "LC_CTYPE",
         "LANGUAGE",
         "TZ",
-        # Claude-CLI specific (auth + telemetry opt-out)
+        # Claude-CLI specific (auth + telemetry opt-out). The documented
+        # opt-out names are DISABLE_TELEMETRY and
+        # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC — the allowlist previously
+        # passed only the nonexistent CLAUDE_DISABLE_TELEMETRY, silently
+        # stripping an operator's real opt-out from the subprocess env.
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CONFIG_DIR",
         "CLAUDE_DISABLE_TELEMETRY",
+        "DISABLE_TELEMETRY",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         # Node runtime tuning (claude binary is Node-based)
         "NODE_OPTIONS",
         "NPM_CONFIG_PREFIX",
@@ -1204,6 +1371,15 @@ def _make_subprocess_env() -> dict[str, str]:
     # DISABLE_BUG_COMMAND. We SET it (not just allowlist it) so the speedup
     # doesn't depend on operator configuration.
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+
+    # A set-but-blank CLAUDE_CONFIG_DIR means "unset" (repo convention — see
+    # ai_tools_ipc._flag): the Node CLI treats "" as absent and falls back to
+    # ~/.claude, but the membership gate below would see the var as present
+    # and skip the claude_home redirect — desyncing _claude_config_dir() from
+    # the dir the child actually uses, so every transcript cleanup no-ops.
+    # Drop it so both functions resolve identically.
+    if not env.get("CLAUDE_CONFIG_DIR", "x").strip():
+        env.pop("CLAUDE_CONFIG_DIR", None)
 
     # When an explicit OAuth token is available, point CLAUDE_CONFIG_DIR at a
     # dedicated minimal config dir for the bot. That skips loading the operator's
@@ -1267,6 +1443,7 @@ def _dashboard_cli_write_dirs() -> list[Path]:
     to answer it, and is therefore denied.
     """
     raw = os.getenv("DASHBOARD_CLI_WRITE_DIRS", "").strip()
+    using_defaults = not raw
     if raw:
         candidates = [Path(p.strip()).expanduser() for p in raw.split(os.pathsep) if p.strip()]
     else:
@@ -1278,19 +1455,40 @@ def _dashboard_cli_write_dirs() -> list[Path]:
         if onedrive:
             od = Path(onedrive)
             candidates += [od / "Desktop", od / "Documents"]
+    # Locations the default roots must never enclose (or sit inside): the bot's
+    # own tree carries .env, the source, AND the write-guard script itself — a
+    # repo cloned under ~/Documents would otherwise land all of them inside an
+    # auto-approved --add-dir root. An explicit DASHBOARD_CLI_WRITE_DIRS
+    # override is honoured as-is (the guard-side denylist in cli_write_guard.py
+    # still protects the repo subtree authoritatively); the DEFAULTS must be
+    # safe out of the box. These module constants are already resolve()d.
+    sensitive = (_REPO_ROOT, _CLAUDE_CLI_WORKDIR, _WRITE_GUARD_HOOK_SCRIPT.parent)
     # De-dupe by resolved path while preserving order; keep only real dirs.
     seen: set[str] = set()
     roots: list[Path] = []
     for cand in candidates:
         try:
-            key = str(cand.resolve())
+            resolved = cand.resolve()
+            key = str(resolved)
         except OSError:
+            resolved = cand
             key = str(cand)
         if key in seen:
             continue
         seen.add(key)
-        if cand.is_dir():
-            roots.append(cand)
+        if not cand.is_dir():
+            continue
+        if using_defaults and any(
+            s == resolved or s.is_relative_to(resolved) or resolved.is_relative_to(s)
+            for s in sensitive
+        ):
+            logger.warning(
+                "Dropping default CLI write root %s: it overlaps the bot's own "
+                "tree (repo/.env/write-guard must stay outside every write root)",
+                cand,
+            )
+            continue
+        roots.append(cand)
     return roots
 
 
@@ -1401,6 +1599,15 @@ def _build_claude_argv(
         # docstring: custom betas are ignored (and noisily warned about) in
         # subscription mode, and that warning used to mask real stdout errors.
         argv.extend(["--effort", "xhigh"])
+    else:
+        # Pin a non-thinking tier EXPLICITLY. Without a flag the subprocess
+        # inherits the OPERATOR's ~/.claude/settings.json `effortLevel`
+        # (e.g. "max"), silently coupling the bot's reasoning spend to the
+        # operator's interactive Claude Code preference — same philosophy as
+        # the pinned --permission-mode above. "high" keeps thinking-OFF
+        # conversations on a fast non-deep tier per the toggle's contract;
+        # the bot's reasoning ceiling stays xhigh (operator decision).
+        argv.extend(["--effort", "high"])
     if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
     elif session_id:
@@ -1580,9 +1787,12 @@ async def _spawn_warm_async(conversation_id: str, argv: list[str]) -> None:
     except Exception:
         logger.debug("pre-warm spawn failed for %s", conversation_id, exc_info=True)
         return
-    # If a turn already claimed/created a warm proc while we were spawning, or
-    # we're at the cap, don't clobber — kill this surplus one.
-    if conversation_id in _warm_procs or len(_warm_procs) >= _PREWARM_MAX:
+    # If shutdown ran while we were spawning, or a turn already
+    # claimed/created a warm proc, or we're at the cap, don't clobber —
+    # kill this surplus one. The shutdown check matters: after
+    # shutdown_prewarm() cleared the dict, an in-flight spawn would
+    # otherwise register a fresh DETACHED child nothing ever kills.
+    if _PREWARM_SHUTDOWN or conversation_id in _warm_procs or len(_warm_procs) >= _PREWARM_MAX:
         with contextlib.suppress(ProcessLookupError, Exception):
             if proc.returncode is None:
                 proc.kill()
@@ -1596,7 +1806,7 @@ async def _spawn_warm_async(conversation_id: str, argv: list[str]) -> None:
 
 def _schedule_prewarm(conversation_id: str | None, argv: list[str]) -> None:
     """Fire-and-forget pre-warm of the next turn's process (latency hiding)."""
-    if not _PREWARM_ENABLED or not conversation_id:
+    if not _PREWARM_ENABLED or not conversation_id or _PREWARM_SHUTDOWN:
         return
     # Reclaim expired/dead warm procs from abandoned conversations first so any
     # freed slots become reusable below.
@@ -1618,6 +1828,12 @@ def _schedule_prewarm(conversation_id: str | None, argv: list[str]) -> None:
 
 def shutdown_prewarm() -> None:
     """Kill every warm process. Call on dashboard/server shutdown."""
+    global _PREWARM_SHUTDOWN
+    _PREWARM_SHUTDOWN = True
+    # Cancel in-flight spawn tasks — a spawn completing after the clear()
+    # below would otherwise re-register a warm proc post-shutdown.
+    for task in list(_PREWARM_TASKS):
+        task.cancel()
     for wp in list(_warm_procs.values()):
         _kill_warm(wp)
     _warm_procs.clear()
@@ -1671,13 +1887,133 @@ async def _run_claude_subprocess(
     if proc.stdin is None:
         # Defensive: with stdin=PIPE, stdin should always exist; raise a
         # real error rather than relying on `assert` (stripped under -O).
-        raise RuntimeError("Subprocess stdin pipe is unexpectedly None")
-    try:
-        proc.stdin.write((json.dumps(user_msg) + "\n").encode("utf-8"))
-        await proc.stdin.drain()
-    finally:
+        # Kill the just-spawned process first — this raise happens BEFORE
+        # the kill-guaranteeing try/finally around the stream loop below,
+        # so without it the claude child would be orphaned.
         with contextlib.suppress(Exception):
-            proc.stdin.close()
+            if proc.returncode is None:
+                proc.kill()
+        raise RuntimeError("Subprocess stdin pipe is unexpectedly None")
+
+    # Drain stderr concurrently from the very start — BEFORE the stdin
+    # write/drain, not just during the stdout phase. drain() blocks when the
+    # prompt exceeds the pipe buffer; a child that also emits more than a
+    # pipe buffer of early output before consuming stdin would otherwise
+    # deadlock against us (classic write-write deadlock), and during the
+    # stdout phase a verbose warning chain filling the stderr pipe would
+    # block the child and stall consume_stdout the same way.
+    stderr_chunks: list[bytes] = []
+
+    def _start_stderr_pump(p: asyncio.subprocess.Process) -> asyncio.Task[None]:
+        async def _pump() -> None:
+            if p.stderr is None:
+                return
+            async for chunk in p.stderr:
+                stderr_chunks.append(chunk)
+
+        return asyncio.create_task(_pump())
+
+    async def _stop_stderr_pump(task: asyncio.Task[None], *, drain_window: float = 0.0) -> None:
+        """Settle the pump task (optionally letting it drain briefly first)."""
+        if drain_window > 0:
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=drain_window)
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    stderr_task = _start_stderr_pump(proc)
+
+    payload = (json.dumps(user_msg) + "\n").encode("utf-8")
+    for write_attempt in (1, 2):
+        try:
+            proc.stdin.write(payload)
+            # Bound the drain with its own budget: the stream timeout below
+            # only guards the stdout phase, so an unbounded drain against a
+            # child that boots but never reads stdin (network-stalled auth,
+            # wedged node boot) would hang the handler forever HOLDING the
+            # per-conversation lock. Generous cap — the prewarm pool exists
+            # because cold boots are slow — but never above `timeout` itself.
+            await asyncio.wait_for(proc.stdin.drain(), timeout=min(60.0, timeout))
+            break
+        except TimeoutError:
+            # Stalled child (drain budget exhausted). Kill it and surface the
+            # standard timeout — the call sites' ``except TimeoutError`` sends
+            # the timeout frame and releases the conversation lock.
+            with contextlib.suppress(Exception):
+                if proc.returncode is None:
+                    proc.kill()
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+            await _stop_stderr_pump(stderr_task)
+            logger.warning(
+                "claude -p never consumed stdin within %.0fs; killed (prewarmed=%s)",
+                min(60.0, timeout),
+                prewarmed,
+            )
+            raise
+        except OSError as write_err:
+            # The child died before reading stdin (BrokenPipeError /
+            # ConnectionResetError). Kill + salvage its stderr (bounded —
+            # the pump drains the dead pipe to EOF) so the log names the
+            # real cause instead of a bare pipe error.
+            with contextlib.suppress(Exception):
+                if proc.returncode is None:
+                    proc.kill()
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+            await _stop_stderr_pump(stderr_task, drain_window=2.0)
+            tail_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")[:500].strip()
+            if prewarmed and write_attempt == 1:
+                # A warm proc can die during its idle TTL between _take_warm's
+                # aliveness check and this write. One cold retry with the SAME
+                # argv (the warm claim was an exact-argv match, so semantics
+                # incl. --resume are identical) almost certainly succeeds.
+                # Strictly pre-drain-success, so the prompt never reached the
+                # child and no turn can have been applied server-side.
+                logger.warning(
+                    "pre-warmed claude -p died before reading stdin (%s); "
+                    "falling back to a cold spawn | stderr=%s",
+                    write_err,
+                    tail_text or "<empty>",
+                )
+                prewarmed = False
+                stderr_chunks.clear()
+                proc = await _spawn_claude(argv, extra_env=extra_env)
+                t_write = time.monotonic()
+                if proc.stdin is None:
+                    with contextlib.suppress(Exception):
+                        if proc.returncode is None:
+                            proc.kill()
+                    raise RuntimeError("Subprocess stdin pipe is unexpectedly None") from write_err
+                stderr_task = _start_stderr_pump(proc)
+                continue
+            logger.error(
+                "claude -p died before reading stdin: %s | stderr=%s",
+                write_err,
+                tail_text or "<empty>",
+            )
+            raise RuntimeError(
+                f"claude -p died before reading stdin: {tail_text[:200] or write_err}"
+            ) from write_err
+        except BaseException:
+            # CancelledError (client disconnect mid-drain — drain blocks when
+            # the prompt exceeds the pipe buffer) lands BEFORE the stream-loop
+            # try/finally that normally guarantees the kill: without this
+            # handler the freshly spawned claude process survived unkilled.
+            # The early-started stderr pump must die with it too, or it leaks
+            # as a pending task holding the stderr pipe handle.
+            with contextlib.suppress(Exception):
+                if proc.returncode is None:
+                    proc.kill()
+            with contextlib.suppress(Exception):
+                proc.stdin.close()
+            await _stop_stderr_pump(stderr_task)
+            raise
+    # Close stdin on the success path so claude knows there's no more input.
+    with contextlib.suppress(Exception):
+        proc.stdin.close()
 
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
@@ -1807,21 +2143,9 @@ async def _run_claude_subprocess(
                 if thinking and on_thinking_delta is not None:
                     await on_thinking_delta(thinking)
 
-    # Drain stderr concurrently with stdout so the child can't deadlock
-    # when its stderr pipe buffer (default 64 KiB) fills before stdout
-    # closes. Without this, a verbose claude warning chain on a long
-    # turn would block the subprocess, which in turn blocks consume_stdout
-    # from ever seeing EOF — bot stalls until the wait_for timeout fires.
-    stderr_chunks: list[bytes] = []
-
-    async def consume_stderr() -> None:
-        if proc.stderr is None:
-            return
-        async for chunk in proc.stderr:
-            stderr_chunks.append(chunk)
-
-    stderr_task = asyncio.create_task(consume_stderr())
-
+    # (The stderr pump was already started before the stdin write above —
+    # `stderr_task` is still draining concurrently here so the child can't
+    # deadlock when its stderr pipe buffer fills before stdout closes.)
     stdout_timed_out = False
     try:
         try:
@@ -1936,9 +2260,15 @@ async def _run_claude_subprocess(
     if isinstance(final_usage, dict):
         cache_read = final_usage.get("cache_read_input_tokens", -1)
         cache_creation = final_usage.get("cache_creation_input_tokens", -1)
+    # session/resumed make concurrent conversations' lines correlatable from
+    # bot.log (8-char prefix keeps lines tidy; full ids already appear on the
+    # error paths, so no new disclosure class).
     logger.info(
-        "⚡ claude-cli perf: prewarmed=%s ttft=%dms cache_read=%s cache_creation=%s",
+        "⚡ claude-cli perf: prewarmed=%s resumed=%s session=%s ttft=%dms "
+        "cache_read=%s cache_creation=%s",
         prewarmed,
+        "--resume" in argv,
+        (final_session_id or "")[:8] or "none",
         int(ttft_ms),
         cache_read,
         cache_creation,
@@ -2181,8 +2511,12 @@ async def handle_chat_message_claude_cli(
     # persona-in-body (system_prompt_file=None, persona_in_system=False).
     system_prompt_file: Path | None = None
     try:
+        # Advertise web tools only when the argv actually allows them: write
+        # mode appends --disallowedTools "… WebFetch WebSearch …", and telling
+        # the model a denied tool is "available right now — call it directly"
+        # produces confident tool calls that hard-fail every time.
         system_prompt_file = _ensure_system_prompt_file(
-            _build_system_prompt(persona, web_enabled=_CLI_WEB_TOOLS_ENABLED)
+            _build_system_prompt(persona, web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled)
         )
     except OSError:
         logger.warning(
@@ -2498,6 +2832,14 @@ async def handle_chat_message_claude_cli(
                 else:
                     raise
         except TimeoutError:
+            # The user turn is already in the DB but never reached the resumed
+            # server-side session — leaving the session id in place would make
+            # every later turn silently omit this message (resumed prompts skip
+            # the history block). Drop the session so the next turn rebuilds the
+            # full '# Conversation so far' block from the DB, which includes the
+            # dangling row — the same recovery the stale-session retry performs.
+            if conversation_id:
+                reset_session(conversation_id)
             await ws.send_json(
                 {
                     "type": "error",
@@ -2516,6 +2858,11 @@ async def handle_chat_message_claude_cli(
                 "advising client to retry",
                 conversation_id,
             )
+            # See the TimeoutError handler: the failed user turn is in the DB
+            # but not in the resumed session — drop the session so the next
+            # turn's rebuilt history block carries it.
+            if conversation_id:
+                reset_session(conversation_id)
             await ws.send_json(
                 {
                     "type": "error",
@@ -2532,6 +2879,9 @@ async def handle_chat_message_claude_cli(
             # absolute paths and env-derived diagnostics — log full detail
             # for operators but only surface a stable message to the client.
             logger.error("Claude CLI subprocess error: %s", err, exc_info=True)
+            # Same DB/session desync as the timeout path — rebuild fresh next turn.
+            if conversation_id:
+                reset_session(conversation_id)
             await ws.send_json(
                 {
                     "type": "error",
@@ -2542,6 +2892,9 @@ async def handle_chat_message_claude_cli(
             return
         except Exception:
             logger.exception("Claude CLI streaming failed")
+            # Same DB/session desync as the timeout path — rebuild fresh next turn.
+            if conversation_id:
+                reset_session(conversation_id)
             await ws.send_json(
                 {
                     "type": "error",
@@ -2563,15 +2916,18 @@ async def handle_chat_message_claude_cli(
             # Pre-warm the next turn's process (#1). The common follow-up is a
             # plain-text turn in the same conversation + persona, so spawn that
             # exact argv now — booted and blocked on stdin — to hide its cold
-            # start. A next turn with thinking/attachments simply won't match the
-            # warm argv and spawns fresh. Fire-and-forget; never blocks this turn.
+            # start. Thinking is conversation-sticky in the frontend, so the
+            # warm argv must carry THIS turn's value or it never matches in a
+            # thinking conversation (one wasted ~150MB spawn per turn). A next
+            # turn with attachments (or a flipped thinking toggle) simply won't
+            # match and spawns fresh. Fire-and-forget; never blocks this turn.
             _schedule_prewarm(
                 conversation_id,
                 _build_claude_argv(
                     claude_exe,
                     session_id=new_session_id,
                     allow_read_for_images=False,
-                    enable_thinking=False,
+                    enable_thinking=thinking_enabled,
                     enable_write=write_enabled,
                     system_prompt_file=system_prompt_file,
                     enable_web=_CLI_WEB_TOOLS_ENABLED,
@@ -2650,10 +3006,15 @@ async def handle_chat_message_claude_cli(
         # token bar reflects what's actually being charged.
         # output_tokens already includes any extended-thinking tokens
         # (Anthropic bills thinking as output), so no extra addition.
-        cache_creation = int(usage.get("cache_creation_input_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        in_tok = int(usage.get("input_tokens", 0)) + cache_read + cache_creation
-        out_tok = int(usage.get("output_tokens", 0))
+        # `... or 0` (not `.get(k, 0)`): the raw CLI result JSON can carry these
+        # keys with an explicit null, and `.get(k, 0)` returns that None — so
+        # `int(None)` would raise TypeError here, outside any try/except, after
+        # the reply is already streamed+persisted, hanging the UI with no
+        # terminal stream_end frame. The SDK backend guards the same fields.
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        in_tok = int(usage.get("input_tokens") or 0) + cache_read + cache_creation
+        out_tok = int(usage.get("output_tokens") or 0)
     else:
         cache_creation = 0
         cache_read = 0
@@ -2687,12 +3048,13 @@ async def handle_chat_message_claude_cli(
     # only the happy path needs an explicit done line. Duration is wall-clock
     # from after CLI-readiness check; tokens come from the ``result`` event.
     logger.info(
-        "✅ chat-cli done conv=%s duration=%.1fs in=%d out=%d response_len=%d",
+        "✅ chat-cli done conv=%s duration=%.1fs in=%d out=%d response_len=%d session=%s",
         conversation_id,
         time.monotonic() - start_ts,
         in_tok,
         out_tok,
         len(full_response),
+        (new_session_id or "")[:8] or "none",
     )
 
 
@@ -3088,6 +3450,10 @@ async def handle_ai_edit_message_claude_cli(
             "AI edit produced empty content for message %d — keeping original",
             target_id_int,
         )
+        # The stream_end below echoes new_content as full_response and the
+        # client renders it unconditionally — sending "" blanked the bubble
+        # while the DB kept the original (UI/DB desync until reload).
+        new_content = original_content
     else:
         # Persist the rewritten message. Pass conversation_id so the UPDATE only
         # matches when the row is in the conversation the AI was editing —
@@ -3102,12 +3468,25 @@ async def handle_ai_edit_message_claude_cli(
             )
         except Exception:
             logger.exception("Failed to update AI-edited message (CLI backend)")
+        else:
+            # The cached --resume session replays the OLD content server-side;
+            # wipe it after a successful rewrite (manual edit/delete already
+            # does this via dashboard_handlers).
+            try:
+                await delete_session_file(conversation_id)
+            except Exception:
+                logger.exception("Failed to reset CLI session after AI edit")
 
     if usage:
-        cache_creation = int(usage.get("cache_creation_input_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        in_tok = int(usage.get("input_tokens", 0)) + cache_read + cache_creation
-        out_tok = int(usage.get("output_tokens", 0))
+        # `... or 0` (not `.get(k, 0)`): the raw CLI result JSON can carry these
+        # keys with an explicit null, and `.get(k, 0)` returns that None — so
+        # `int(None)` would raise TypeError here, outside any try/except, after
+        # the reply is already streamed+persisted, hanging the UI with no
+        # terminal stream_end frame. The SDK backend guards the same fields.
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        in_tok = int(usage.get("input_tokens") or 0) + cache_read + cache_creation
+        out_tok = int(usage.get("output_tokens") or 0)
     else:
         cache_creation = 0
         cache_read = 0

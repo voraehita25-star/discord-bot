@@ -6,6 +6,7 @@ Used by scripts that may run outside the main bot environment.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -50,6 +51,22 @@ try:
 except ImportError:
     Colors = _FallbackColors
     COLORS_FROM_UTILS = False
+    # utils.media.colors (which calls enable_windows_ansi) is unavailable on
+    # this branch, so best-effort enable Windows VT processing ourselves —
+    # otherwise on a legacy Windows console without VT support the ANSI escape
+    # codes above print as literal text instead of color.
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            _k = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            _h = _k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            _mode = ctypes.c_uint()
+            if _k.GetConsoleMode(_h, ctypes.byref(_mode)):
+                # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+                _k.SetConsoleMode(_h, _mode.value | 0x0004)
+        except Exception:
+            pass
 
 
 __all__ = ["COLORS_FROM_UTILS", "Colors"]

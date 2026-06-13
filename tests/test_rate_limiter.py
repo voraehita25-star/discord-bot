@@ -266,10 +266,13 @@ class TestChannelLimits:
 
     @pytest.mark.asyncio
     async def test_set_channel_limit_creates_config(self, limiter):
-        """Test set_channel_limit creates config if not exists."""
+        """Test set_channel_limit creates a PER-CHANNEL config."""
         await limiter.set_channel_limit(777777, 30)
 
-        assert "channel_custom" in limiter._configs
+        # Per-channel config name — a single shared "channel_custom" config
+        # froze the first channel's rpm into every later channel's bucket.
+        assert limiter.channel_config_name(777777) in limiter._configs
+        assert limiter.get_custom_channel_limit(777777) == 30
 
     @pytest.mark.asyncio
     async def test_set_channel_limit_updates_existing(self, limiter):

@@ -255,7 +255,10 @@ class AIDebug(commands.Cog):
 
         # Basic info
         thinking = "✅" if chat_data.get("thinking_enabled") else "❌"
-        streaming = "✅" if chat_data.get("streaming_enabled") else "❌"
+        # Streaming state lives in chat_manager.streaming_enabled (a separate
+        # dict), NOT in the per-channel chat dict — chat_data.get() always
+        # returned None, so the flag showed ❌ even when streaming was on.
+        streaming = "✅" if chat_manager.is_streaming_enabled(channel_id) else "❌"
         embed.add_field(
             name="📝 Session Info",
             value=(

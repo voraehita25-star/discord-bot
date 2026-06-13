@@ -67,8 +67,12 @@ class MemoryCommands(commands.Cog):
             )
 
             if result:
+                # Neutralize backticks so the echoed fact can't break out of
+                # the inline code block (same guard forget_fact applies at the
+                # ``safe_query`` line below).
+                safe_fact = fact.replace("`", "ʻ")
                 embed = discord.Embed(
-                    title="✅ จำแล้ว!", description=f"```{fact}```", color=Colors.SUCCESS
+                    title="✅ จำแล้ว!", description=f"```{safe_fact}```", color=Colors.SUCCESS
                 )
                 embed.set_footer(text="ข้อมูลนี้จะถูกจำอย่างถาวร")
                 await ctx.send(embed=embed)

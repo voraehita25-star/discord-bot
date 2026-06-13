@@ -440,6 +440,10 @@ describe('sendMessage — prerequisites', () => {
         };
         const input = document.getElementById('chat-input') as HTMLTextAreaElement;
         input.value = 'hello there';
+        // Model a SUCCESSFUL send — sendMessage now restores the typed text
+        // when send() reports failure, so the default undefined-returning
+        // mock would (correctly) leave the input populated.
+        (cm.wsClient.send as ReturnType<typeof vi.fn>).mockReturnValue(true);
         cm.sendMessage();
         expect(cm.wsClient.send).toHaveBeenCalledWith(expect.objectContaining({
             type: 'message',
@@ -463,5 +467,193 @@ describe('loadConversation', () => {
         cm.loadConversation('abc');
         expect(settings.lastConversationId).toBe('abc');
         saveSettings();  // ensure it doesn't throw downstream
+    });
+});
+
+// ============================================================================
+// History-scoped error frames — must NOT cross-fire into chat streaming state
+// ============================================================================
+
+// Minimal mirror of the #page-history DOM (same ids history-manager.test.ts
+// uses) so a REAL HistoryManager can run its edit flow alongside ChatManager.
+const HISTORY_PANE_DOM = `
+    <section id="page-history">
+        <button id="ai-history-refresh"></button>
+        <div id="ai-channel-list"></div>
+        <div id="ai-history-header"></div>
+        <div id="ai-history-messages"></div>
+        <div id="ai-history-load-all-container" class="hidden">
+            <button id="ai-history-load-all">Load all</button>
+        </div>
+    </section>
+`;
+
+/**
+ * Mounts ChatManager + a real HistoryManager wired as in app.ts, loads one
+ * history message and puts an edit ack in flight (Save disabled), so tests
+ * can observe whether an incoming error frame unsticks the editor and/or
+ * tears down chat streaming state.
+ */
+async function mountChatWithInFlightHistoryEdit(): Promise<{
+    cm: import('./chat-manager.js').ChatManager;
+    saveBtn: HTMLButtonElement;
+}> {
+    const { HistoryManager } = await import('./history-manager.js');
+    const cm = mountDomAndChat();
+    document.body.insertAdjacentHTML('beforeend', HISTORY_PANE_DOM);
+    const hm = new HistoryManager({ send: vi.fn(() => true), isConnected: () => true });
+    hm.init();
+    cm.historyManager = hm;
+    hm.openChannel('111111111111111111');
+    hm.handleMessage({
+        type: 'ai_history_loaded',
+        channel_id: '111111111111111111',
+        messages: [{
+            id: 7, local_id: 1, role: 'model', content: 'old text',
+            message_id: null, timestamp: null, user_id: null,
+        }],
+        total_count: 1,
+        has_more: false,
+    });
+    (document.querySelector('.history-edit-btn') as HTMLElement).click();
+    (document.querySelector('.edit-textarea') as HTMLTextAreaElement).value = 'new text';
+    const saveBtn = document.querySelector('.edit-save-btn') as HTMLButtonElement;
+    saveBtn.click();
+    expect(saveBtn.disabled).toBe(true); // ack in flight
+    return { cm, saveBtn };
+}
+
+const STREAM_CONV = {
+    id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+    is_starred: false, created_at: '2026-04-01',
+};
+
+describe('handleMessage — history-scoped error frames', () => {
+    it('scope:ai_history leaves an in-flight chat stream untouched and unsticks the history editor', async () => {
+        const { cm, saveBtn } = await mountChatWithInFlightHistoryEdit();
+        cm.currentConversation = { ...STREAM_CONV };
+        cm.handleMessage({ type: 'stream_start' });
+        expect(cm.isStreaming).toBe(true);
+        expect(document.getElementById('streaming-message')).not.toBeNull();
+
+        cm.handleMessage({
+            type: 'error', scope: 'ai_history',
+            code: 'MSG_NOT_FOUND', message: 'Message not found',
+        });
+
+        // Chat streaming state is fully preserved…
+        expect(cm.isStreaming).toBe(true);
+        expect(cm.streamingConversationId).toBe('c1');
+        expect(document.getElementById('streaming-message')).not.toBeNull();
+        // …while the history editor is re-enabled for a retry.
+        expect(saveBtn.disabled).toBe(false);
+        expect((document.querySelector('.edit-textarea') as HTMLTextAreaElement).value).toBe('new text');
+    });
+
+    it.each([
+        'edit_ai_history_message',
+        'restore_ai_history_message',
+    ])('rate-limit scope %s (wire msg type echoed by the backend) also skips the teardown', async (scope) => {
+        const { cm, saveBtn } = await mountChatWithInFlightHistoryEdit();
+        cm.currentConversation = { ...STREAM_CONV };
+        cm.handleMessage({ type: 'stream_start' });
+        cm.handleMessage({
+            type: 'error', scope,
+            message: 'Rate limit exceeded. Please wait.',
+        });
+        expect(cm.isStreaming).toBe(true);
+        expect(document.getElementById('streaming-message')).not.toBeNull();
+        expect(saveBtn.disabled).toBe(false);
+    });
+
+    it('an UNscoped error still runs the full chat-stream teardown', async () => {
+        const { cm, saveBtn } = await mountChatWithInFlightHistoryEdit();
+        cm.currentConversation = { ...STREAM_CONV };
+        cm.handleMessage({ type: 'stream_start' });
+        expect(cm.isStreaming).toBe(true);
+
+        cm.handleMessage({ type: 'error', message: 'boom' });
+
+        expect(cm.isStreaming).toBe(false);
+        expect(cm.streamingConversationId).toBeNull();
+        expect(document.getElementById('streaming-message')).toBeNull();
+        // Trailing resilience kept on the unscoped path: the editor is
+        // unstuck there too (harmless for chat, vital pre-`scope` clients).
+        expect(saveBtn.disabled).toBe(false);
+    });
+});
+
+// ============================================================================
+// Error-code forwarding — HistoryManager.onError must receive the envelope's
+// `code` so permanent rejections (ROW_CONFLICT…) can drop their undo entry
+// while transient/codeless ones keep it for a retry
+// ============================================================================
+
+describe('handleMessage — error-code forwarding to HistoryManager.onError', () => {
+    function mountWithOnErrorSpy(): {
+        cm: import('./chat-manager.js').ChatManager;
+        onError: ReturnType<typeof vi.fn>;
+    } {
+        const cm = mountDomAndChat();
+        const onError = vi.fn();
+        cm.historyManager = { onError, handleMessage: vi.fn() } as unknown as
+            import('./history-manager.js').HistoryManager;
+        return { cm, onError };
+    }
+
+    it('forwards the code on a history-SCOPED error frame', () => {
+        const { cm, onError } = mountWithOnErrorSpy();
+        cm.handleMessage({
+            type: 'error', scope: 'ai_history',
+            code: 'ROW_CONFLICT',
+            message: 'History was rewritten since this undo was recorded',
+        });
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledWith('ROW_CONFLICT');
+    });
+
+    it('forwards undefined when the scoped frame carries no code (rate-limit envelope)', () => {
+        const { cm, onError } = mountWithOnErrorSpy();
+        cm.handleMessage({
+            type: 'error', scope: 'restore_ai_history_message',
+            message: 'Rate limit exceeded. Please wait.',
+        });
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledWith(undefined);
+    });
+
+    it('forwards the code on the UNSCOPED error path too (trailing resilience call)', () => {
+        const { cm, onError } = mountWithOnErrorSpy();
+        cm.handleMessage({
+            type: 'error',
+            code: 'MSG_NOT_FOUND',
+            message: 'Message not found',
+        });
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledWith('MSG_NOT_FOUND');
+    });
+});
+
+// ============================================================================
+// ai_* frame forwarding — ChatManager owns the socket and hands the History
+// page's frames to the HistoryManager delegate verbatim
+// ============================================================================
+
+describe('handleMessage — ai_* frame forwarding', () => {
+    it.each([
+        'ai_channels_list',
+        'ai_history_loaded',
+        'ai_history_message_edited',
+        'ai_history_message_deleted',
+        'ai_history_message_restored',
+    ])('forwards %s to historyManager.handleMessage', (type) => {
+        const cm = mountDomAndChat();
+        const handleMessage = vi.fn();
+        cm.historyManager = { handleMessage } as unknown as
+            import('./history-manager.js').HistoryManager;
+        const frame = { type, channel_id: '111111111111111111', id: 7 };
+        cm.handleMessage(frame);
+        expect(handleMessage).toHaveBeenCalledTimes(1);
+        expect(handleMessage).toHaveBeenCalledWith(frame);
     });
 });

@@ -108,6 +108,10 @@ def init_sentry(
                             data[k] = _redact_sensitive(v)
             except Exception:
                 # Never let scrubbing crash the client — drop the crumb instead.
+                # Log first (debug, below the WARNING breadcrumb level so it
+                # can't loop back to Sentry) so a scrubber regression that
+                # silently suppresses crumbs is at least observable locally.
+                logger.debug("Sentry breadcrumb scrub failed; dropping crumb", exc_info=True)
                 return None
             return crumb
 
@@ -126,6 +130,25 @@ def init_sentry(
                     msg = event.get("message")
                     if isinstance(msg, str):
                         event["message"] = _redact_sensitive(msg)
+                    # LoggingIntegration events carry the text in
+                    # ``logentry`` (message/formatted/params) and ``extra``
+                    # — NOT in event["message"] — so redact those too;
+                    # they are the dominant event source here.
+                    logentry = event.get("logentry")
+                    if isinstance(logentry, dict):
+                        for k in ("message", "formatted"):
+                            if isinstance(logentry.get(k), str):
+                                logentry[k] = _redact_sensitive(logentry[k])
+                        params = logentry.get("params")
+                        if isinstance(params, (list, tuple)):
+                            logentry["params"] = [
+                                _redact_sensitive(p) if isinstance(p, str) else p for p in params
+                            ]
+                    extra = event.get("extra")
+                    if isinstance(extra, dict):
+                        for k, v in list(extra.items()):
+                            if isinstance(v, str):
+                                extra[k] = _redact_sensitive(v)
 
                 def _scrub_stack(stack: dict[str, Any]) -> None:
                     frames = stack.get("frames") or []
@@ -155,6 +178,10 @@ def init_sentry(
                         _scrub_stack(stack)
             except Exception:
                 # Failing to scrub must not poison legitimate events; drop instead.
+                # Log first (debug, below the ERROR event level so it can't loop
+                # back to Sentry) so a scrubber regression that silently kills
+                # error reporting is at least observable locally.
+                logger.debug("Sentry before_send scrub failed; dropping event", exc_info=True)
                 return None
             return event
 

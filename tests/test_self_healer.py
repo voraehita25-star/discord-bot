@@ -862,9 +862,14 @@ class TestConstants:
 
     def test_pid_file_constant(self):
         """Test PID_FILE constant."""
+        from pathlib import Path
+
         from utils.reliability.self_healer import PID_FILE
 
-        assert PID_FILE == "bot.pid"
+        # Anchored to the repo root (matches bot.py) — a CWD-relative
+        # "bot.pid" broke stale-PID detection from other launch dirs.
+        assert PID_FILE.endswith("bot.pid")
+        assert Path(PID_FILE).is_absolute()
 
     def test_healer_log_file_constant(self):
         """Test HEALER_LOG_FILE constant."""
@@ -1048,7 +1053,12 @@ class TestConstants:
             pytest.skip("self_healer not available")
             return
 
-        assert PID_FILE == "bot.pid"
+        # Anchored to the repo root (matches bot.py) — a CWD-relative
+        # "bot.pid" broke stale-PID detection from other launch dirs.
+        from pathlib import Path
+
+        assert PID_FILE.endswith("bot.pid")
+        assert Path(PID_FILE).is_absolute()
 
     def test_healer_log_file_constant(self):
         """Test HEALER_LOG_FILE constant is defined."""
@@ -1481,9 +1491,14 @@ class TestModuleConstants:
 
     def test_pid_file_constant(self):
         """Test PID_FILE constant."""
+        from pathlib import Path
+
         from utils.reliability.self_healer import PID_FILE
 
-        assert PID_FILE == "bot.pid"
+        # Anchored to the repo root (matches bot.py) — a CWD-relative
+        # "bot.pid" broke stale-PID detection from other launch dirs.
+        assert PID_FILE.endswith("bot.pid")
+        assert Path(PID_FILE).is_absolute()
 
     def test_healer_log_file_constant(self):
         """Test HEALER_LOG_FILE constant."""

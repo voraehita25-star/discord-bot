@@ -247,45 +247,6 @@ async def probe_api_handler_retry() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10. guardrails: prompt-injection / mention escape
-# ---------------------------------------------------------------------------
-def probe_guardrails() -> None:
-    print("\n[guardrails] prompt injection sanitisation")
-    try:
-        from cogs.ai_core.processing.guardrails import validate_response
-    except ImportError as e:
-        print(f"  [SKIP] {e}")
-        return
-
-    # API key redaction
-    inp = "my key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test"
-    _ok, out, _warn = validate_response(inp)
-    check(
-        "sk-ant-* keys redacted in output",
-        "sk-ant-api03-AAAAA" not in out,
-        f"got: {out}",
-    )
-
-    # OpenAI key
-    inp2 = "OpenAI key sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    _ok, out2, _warn = validate_response(inp2)
-    check(
-        "sk-* keys redacted in output",
-        "sk-AAAAAAAAAAA" not in out2,
-        f"got: {out2}",
-    )
-
-    # Bearer token
-    inp3 = "Authorization: Bearer abcdef0123456789ghijklmnop"
-    _ok, out3, _warn = validate_response(inp3)
-    check(
-        "Bearer token redacted",
-        "abcdef0123456789ghijkl" not in out3,
-        f"got: {out3}",
-    )
-
-
-# ---------------------------------------------------------------------------
 # 11. summarizer: empty / short history shortcut
 # ---------------------------------------------------------------------------
 async def probe_summarizer_short() -> None:
@@ -360,7 +321,6 @@ async def main_async() -> None:
     await probe_long_term_memory_cycle()
     probe_state_tracker_roundtrip()
     await probe_api_handler_retry()
-    probe_guardrails()
     await probe_summarizer_short()
     await probe_tool_executor_permission()
 

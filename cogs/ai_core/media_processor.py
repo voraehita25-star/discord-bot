@@ -7,6 +7,7 @@ Extracted from logic.py for better modularity.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import io
 import logging
@@ -58,6 +59,14 @@ _GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="gif-encode",
 )
+
+# Tear the pool down on interpreter exit. It's a module-level, non-daemon
+# executor that was never shut down — its worker threads can delay interpreter
+# exit (CPython's atexit joins executor threads) — unlike bot.py's
+# _default_executor which is explicitly torn down on graceful shutdown. Mirror
+# that teardown (wait=False, cancel_futures=True) so shutdown isn't stalled by
+# an in-flight slow GIF encode.
+atexit.register(lambda: _GIF_ENCODE_EXECUTOR.shutdown(wait=False, cancel_futures=True))
 
 # ==================== Image Caching ====================
 
@@ -667,7 +676,10 @@ async def process_attachments(
                         user_name,
                         len(content),
                     )
-            except (OSError, UnicodeDecodeError) as e:
+            except (OSError, UnicodeDecodeError, discord.HTTPException) as e:
+                # discord.HTTPException covers a deleted/unfetchable
+                # attachment — the image branch already catches it; without
+                # it here a failed text download aborted the whole AI turn.
                 logger.warning("Failed to process text attachment '%s': %s", attachment.filename, e)
             continue
 

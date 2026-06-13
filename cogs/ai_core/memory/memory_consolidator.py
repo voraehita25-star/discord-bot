@@ -104,6 +104,18 @@ class SummaryArchiver:
     def __init__(self):
         self.logger = logging.getLogger("SummaryArchiver")
         self._consolidation_task: asyncio.Task | None = None
+        # Per-channel locks: the 6h background loop and the manual
+        # !consolidate command can hit the same channel concurrently — both
+        # would SELECT the same unsummarized rows and INSERT duplicate
+        # summary rows (the summarized_at filter only prevents double-
+        # MARKING, not double-summarizing).
+        self._channel_locks: dict[int, asyncio.Lock] = {}
+
+    def _get_channel_lock(self, channel_id: int) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = self._channel_locks.setdefault(channel_id, asyncio.Lock())
+        return lock
 
     async def init_schema(self) -> None:
         """Initialize database schema for summaries."""
@@ -197,6 +209,16 @@ class SummaryArchiver:
         if not DB_AVAILABLE or db is None:
             return None
 
+        # Serialize the whole select→summarize→save→mark sequence per
+        # channel — see _channel_locks in __init__ for the duplicate-summary
+        # race this prevents.
+        async with self._get_channel_lock(channel_id):
+            return await self._consolidate_channel_locked(channel_id, force)
+
+    async def _consolidate_channel_locked(
+        self, channel_id: int, force: bool = False
+    ) -> ConversationSummary | None:
+        """Body of consolidate_channel — caller holds the per-channel lock."""
         # Ensure the conversation_summaries table exists. SummaryArchiver.init_schema()
         # is not wired into bot startup, so a manual !consolidate on a fresh DB
         # would otherwise hit "no such table". init_schema is idempotent
@@ -327,14 +349,17 @@ class SummaryArchiver:
             # Only report success when the summary was actually persisted. This
             # INFO previously ran unconditionally after the if/else, so a failed
             # save still logged "Consolidated …", masking the failure.
-            self.logger.info(
-                "📦 Consolidated %d messages for channel %d", len(rows), channel_id
-            )
+            self.logger.info("📦 Consolidated %d messages for channel %d", len(rows), channel_id)
         else:
             self.logger.warning(
                 "⚠️ Summary save failed for channel %d — keeping original messages",
                 channel_id,
             )
+            # A failed save must not look like success: callers count a
+            # non-None result as "consolidated" (consolidate_all_channels)
+            # and !consolidate shows "สำเร็จ" — while nothing was persisted
+            # and the source rows remain unmarked (re-summarized next pass).
+            return None
 
         return result
 
@@ -533,8 +558,25 @@ class SummaryArchiver:
             "นั้น",
         }
 
-        # Extract words longer than 3 chars
-        words = re.findall(r"\b\w{4,}\b", text.lower())
+        # Tokenize. Latin words split cleanly on ``\b``, but Thai has no
+        # inter-word spaces, so ``\b\w{4,}\b`` collapses a spaceless Thai run
+        # into one mega-token AND the 4-char floor discards every (2-3 char)
+        # Thai stopword in ``common_words`` above — making Thai key_topics
+        # garbage on this Thai-first bot. Use pythainlp's segmenter when it's
+        # installed (then the ``common_words`` filter actually applies to Thai);
+        # otherwise fall back to the original Latin-script-oriented regex
+        # unchanged, so behaviour is identical when pythainlp is absent.
+        try:
+            from pythainlp.tokenize import word_tokenize as _thai_word_tokenize
+
+            words = [
+                w.strip().lower()
+                for w in _thai_word_tokenize(text)
+                if len(w.strip()) >= 2 and not w.isspace()
+            ]
+        except Exception:
+            # Extract words longer than 3 chars (Latin-script fallback)
+            words = re.findall(r"\b\w{4,}\b", text.lower())
 
         # Count frequency
         word_counts: dict[str, int] = {}

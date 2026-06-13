@@ -30,7 +30,12 @@ from ..data import (
     FAUST_INSTRUCTION,
     ROLEPLAY_ASSISTANT_INSTRUCTION,
 )
-from ..data.constants import CLAUDE_EFFORT, CLAUDE_MAX_TOKENS
+from ..data.constants import (
+    CLAUDE_EFFORT,
+    CLAUDE_MAX_TOKENS,
+    STREAMING_TIMEOUT_CHUNK,
+    STREAMING_TIMEOUT_INITIAL,
+)
 
 # Import circuit breaker for API protection
 try:
@@ -59,18 +64,13 @@ except ImportError:
     ERROR_RECOVERY_AVAILABLE = False
     service_monitor = None  # type: ignore[assignment]
 
-# Import guardrails
-try:
-    from ..processing.guardrails import is_silent_block
-except ImportError:
 
-    def is_silent_block(response: str) -> bool:
-        """No-op fallback used when ``processing.guardrails`` is unavailable.
-
-        Explicit no-op (returns ``False``) rather than silently letting tests
-        pass. Keep the signature in sync with the real implementation.
-        """
-        return False
+# Guardrails removed — ``is_silent_block`` is a local no-op (never flags a
+# response as silent). Kept only because tests import it; no production code
+# path calls it anymore. NOTE: the same-named shim in imports.py has different
+# semantics (returns True for empty strings) — don't conflate the two.
+def is_silent_block(response: str) -> bool:
+    return False
 
 
 logger = logging.getLogger(__name__)
@@ -737,9 +737,10 @@ async def call_claude_api_streaming(
         # visible chunk, which defeats the point of streaming. The
         # non-streaming path (call_claude_api) applies thinking + effort for
         # depth; the difference is intentional, not an oversight.
-        streaming_config = copy.deepcopy(config_params)
-        if "thinking" in streaming_config:
-            streaming_config.pop("thinking")
+        # (No config mutation needed — the stream call below only passes
+        # model/max_tokens/system/messages, so thinking/effort are simply
+        # never sent. The old deepcopy-and-pop built a dict nothing read.)
+        if "thinking" in config_params:
             logger.info("🌊 Streaming mode: Disabled thinking + effort for real-time updates")
     except Exception as e:
         logger.warning("⚠️ Streaming setup failed, falling back to normal API: %s", e)
@@ -749,10 +750,11 @@ async def call_claude_api_streaming(
         if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
             gemini_circuit.record_failure()
         if fallback_func:
-            return await fallback_func(contents, config_params, channel_id)  # type: ignore[no-any-return]
+            return await fallback_func(  # type: ignore[no-any-return]
+                contents, config_params, channel_id, user_id, guild_id
+            )
         return "", "", []
 
-    max_stall_time = 60.0
     while stream_attempt <= _CLAUDE_MAX_STREAM_RETRIES:
         current_model_text = ""
         current_chunks_received = 0
@@ -774,7 +776,29 @@ async def call_claude_api_streaming(
 
             _stream_final_message = None
             async with stream as response_stream:
-                async for text in response_stream.text_stream:
+                # Per-chunk timeouts (STREAMING_TIMEOUT_INITIAL/_CHUNK were
+                # defined for exactly this). The old in-loop stall check only
+                # ran when a NEW chunk arrived, so a stream that hung entirely
+                # blocked in the async-for until the SDK's 10-minute read
+                # timeout — and it measured time since stream START, killing
+                # legitimately slow short replies (<50 chars after 60s).
+                text_iter = response_stream.text_stream.__aiter__()
+                while True:
+                    chunk_timeout = (
+                        STREAMING_TIMEOUT_INITIAL
+                        if current_chunks_received == 0
+                        else STREAMING_TIMEOUT_CHUNK
+                    )
+                    try:
+                        text = await asyncio.wait_for(text_iter.__anext__(), chunk_timeout)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError:
+                        elapsed = time.time() - stream_start_time
+                        raise TimeoutError(
+                            f"Claude stream stalled: no chunk for {chunk_timeout:.0f}s "
+                            f"({current_chunks_received} chunks in {elapsed:.1f}s)"
+                        ) from None
                     current_chunks_received += 1
 
                     if channel_id and cancel_flags and cancel_flags.get(channel_id, False):
@@ -783,10 +807,6 @@ async def call_claude_api_streaming(
                             with contextlib.suppress(Exception):
                                 await placeholder_msg.delete()
                         return "", "", []
-
-                    elapsed = time.time() - stream_start_time
-                    if elapsed > max_stall_time and len(current_model_text) < 50:
-                        raise TimeoutError(f"Claude stream stalled after {elapsed:.1f}s")
 
                     if text:
                         current_model_text += text
@@ -933,7 +953,9 @@ async def call_claude_api_streaming(
                 gemini_circuit.record_failure()
             await _failover_record_failure(e)
             if fallback_func:
-                return await fallback_func(contents, config_params, channel_id)  # type: ignore[no-any-return]
+                return await fallback_func(  # type: ignore[no-any-return]
+                    contents, config_params, channel_id, user_id, guild_id
+                )
             return "", "", []
 
         model_text = ""
@@ -954,7 +976,9 @@ async def call_claude_api_streaming(
         with contextlib.suppress(Exception):
             await placeholder_msg.delete()
     if fallback_func:
-        return await fallback_func(contents, config_params, channel_id)  # type: ignore[no-any-return]
+        return await fallback_func(  # type: ignore[no-any-return]
+            contents, config_params, channel_id, user_id, guild_id
+        )
     return "", "", []
 
 
@@ -1039,11 +1063,22 @@ async def call_claude_api(
 
             api_timeout = 120.0
             try:
+                # The explicit ``timeout=`` is load-bearing: without it the
+                # anthropic SDK estimates non-streaming duration from
+                # max_tokens (128000 default → ~3600s > 10min) and raises
+                # ValueError("Streaming is required...") before any request
+                # is sent — every non-streaming call returned a blank reply.
                 response = await asyncio.wait_for(
-                    client.messages.create(**api_kwargs),
+                    client.messages.create(**api_kwargs, timeout=api_timeout),
                     timeout=api_timeout,
                 )
-            except TimeoutError:
+            # ``anthropic.APITimeoutError`` subclasses ``APIConnectionError`` (NOT
+            # builtin ``TimeoutError``), so an SDK-internal deadline would
+            # otherwise skip this branch and be mis-recorded as a generic
+            # connection failure below. Catch it here so both the outer
+            # ``asyncio.wait_for`` deadline and the SDK timeout share the
+            # dedicated "timeout" metric/retry path.
+            except (TimeoutError, anthropic.APITimeoutError):
                 delay = _claude_retry_delay_seconds(api_attempt)
                 logger.error(
                     "⏱️ Claude API timeout after %.0fs (attempt %d). Retrying in %.1fs",
@@ -1093,13 +1128,8 @@ async def call_claude_api(
                 model_text = temp_text
                 break
 
-            if is_silent_block(temp_text):
-                logger.warning(
-                    "⚠️ Silent block detected (attempt %s). AI response: %s",
-                    content_retry_attempt + 1,
-                    repr(temp_text) if temp_text else "(empty)",
-                )
-
+            # (Silent-block branch removed — is_silent_block is a constant-
+            # False shim post-guardrails, so the warning could never fire.)
             content_retry_attempt += 1
             logger.warning(
                 "Attempt %s/%s: Claude returned empty response",

@@ -68,13 +68,13 @@
 
 | Module | Purpose |
 | -------- | --------- |
-| `api/` | Claude SDK wrapper, direct/proxy failover, dashboard WebSocket + chat backends (SDK + CLI), conversation + document-memory CRUD handlers, document text extractor |
+| `api/` | Claude SDK wrapper, direct/proxy failover, dashboard WebSocket + chat backends (SDK + CLI), Discord-side Claude CLI backend, conversation + document-memory + AI-history CRUD handlers (live-session sync via the weakref `chat_manager_registry`), document text extractor |
 | `cache/` | AI response cache, analytics, tz-aware token tracker |
 | `commands/` | Slash commands (debug, memory, server) |
 | `core/` | Message queue, performance tracking |
 | `data/` | Constants, env vars, persona + roleplay data |
 | `memory/` | Entity memory, RAG (FAISS / Rust SIMD), summarizer, state tracker, long-term facts, history manager |
-| `processing/` | Content safety guardrails, intent detection |
+| `processing/` | Unrestricted-mode registry (persona injection), intent detection |
 | `response/` | Webhook cache, response mixin |
 | `tools/` | AI function-calling tool definitions and executor |
 
@@ -94,9 +94,9 @@
 | ----------- | ---------- | --------- |
 | Bot ↔ Discord | WS/HTTP | discord.py AutoShardedBot |
 | Bot → Claude API | HTTP | api_failover.py — direct + proxy failover; hybrid prompt caching (explicit system + automatic history, 5-min ephemeral). Active when `CLAUDE_BACKEND=api` (not the default): serves Discord AI cog + dashboard chat, and is **required** for the memory consolidator + history summarizer (both disabled under `cli`). |
-| Bot/Dashboard → Claude CLI | subprocess | **Default path** (`CLAUDE_BACKEND=cli`): spawns `claude -p --output-format stream-json` and bills against the user's Claude Code Max plan instead of per-token API. Serves **both** Discord-side AI replies and dashboard chat. The consolidator + summarizer are skipped in this mode (they need the SDK path above). Dashboard chat over this path also accepts image + document attachments (decoded to per-conversation temp dirs, read via Claude's `Read` tool) and the `/edit` SEARCH/REPLACE rewrite. An opt-in **file-write mode** (`DASHBOARD_CLI_ALLOW_WRITE`, default off) lets the embedded `claude -p` create/edit files non-interactively (`--permission-mode acceptEdits`) under `DASHBOARD_CLI_WRITE_DIRS` — default the user's existing Desktop/Documents/Downloads (incl. OneDrive-redirected), overridable via that env var. A `PreToolUse` hook (`cli_write_guard.py`) is the authoritative, fail-closed path boundary: files-only (`Bash`/`WebFetch`/`WebSearch`/`NotebookEdit`/`Task` denied), and any Write/Edit/MultiEdit whose canonical target is outside those roots — the repo, `.env`, `~/.claude`, `~/.ssh`, the home root, the cwd subtree — is rejected. |
+| Bot/Dashboard → Claude CLI | subprocess | **Default path** (`CLAUDE_BACKEND=cli`): spawns `claude -p --output-format stream-json` and bills against the user's Claude Code Max plan instead of per-token API. Serves **both** Discord-side AI replies and dashboard chat. Turns `--resume` the server-side Claude session and send only the new user message (delta-on-resume); the full flattened history is sent only on fresh sessions and the stale-session retry. Failed turns (timeout/overload) drop the session so the next turn self-heals fresh, and superseded/reset session `.jsonl` transcripts are unlinked. A prompt-size ceiling (`CLI_PROMPT_MAX_CHARS`, default 1,200,000 chars ≈ the 1M-token window, `0` = off) stops over-limit Discord turns with owner-only summarize/pause buttons instead of truncating; the dashboard front-truncates its history block instead. The consolidator + summarizer are skipped in this mode (they need the SDK path above). Dashboard chat over this path also accepts image + document attachments (decoded to per-conversation temp dirs, read via Claude's `Read` tool) and the `/edit` SEARCH/REPLACE rewrite. An opt-in **file-write mode** (`DASHBOARD_CLI_ALLOW_WRITE`, default off) lets the embedded `claude -p` create/edit files non-interactively (`--permission-mode acceptEdits`) under `DASHBOARD_CLI_WRITE_DIRS` — default the user's existing Desktop/Documents/Downloads (incl. OneDrive-redirected), overridable via that env var. A `PreToolUse` hook (`cli_write_guard.py`) is the authoritative, fail-closed path boundary: files-only (`Bash`/`WebFetch`/`WebSearch`/`NotebookEdit`/`Task` denied), and any Write/Edit/MultiEdit whose canonical target is outside those roots — the repo, `.env`, `~/.claude`, `~/.ssh`, the home root, the cwd subtree — is rejected. |
 | Bot → Gemini API | HTTP | RAG embeddings, dashboard chat |
-| Dashboard ↔ Bot | WebSocket | :8765, HMAC auth via `DASHBOARD_WS_TOKEN` |
+| Dashboard ↔ Bot | WebSocket | :8765, HMAC auth via `DASHBOARD_WS_TOKEN`; also serves the AI-history page (browse/edit/delete/restore of Discord `ai_history` rows, synced into the live ChatManager session) |
 | Bot → url_fetcher | HTTP | Python → Go service on :8081 |
 | Bot → media_processor | FFI (PyO3) | Direct Python ↔ Rust calls |
 | Bot → rag_engine | FFI (PyO3) | Direct Python ↔ Rust calls |

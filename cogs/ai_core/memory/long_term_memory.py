@@ -457,7 +457,10 @@ class LongTermMemory:
             category: Fact category
 
         Returns:
-            Stored fact or None if duplicate
+            The stored Fact on success, the EXISTING Fact when the content
+            duplicates one already stored, or None only when the underlying
+            store failed (``_store_fact`` returned no id). Callers must treat
+            None as a failure — not as "duplicate".
         """
         # Serialize concurrent ``add_explicit_fact`` calls for the SAME
         # user so two near-simultaneous calls (e.g. user double-clicking
@@ -688,7 +691,16 @@ class LongTermMemory:
         spuriously dedupe "John Smith died yesterday".
         """
         content_lower = content.lower().strip()
-        if len(content_lower) < 5 or not facts:
+        if not content_lower or not facts:
+            return None
+        # Exact match works at ANY length — the <5 bail-out below previously
+        # let short facts (2-4 char Thai nicknames like "บอม") bypass dedup
+        # entirely, inserting a fresh identical row on every mention.
+        for fact in facts:
+            if fact.content.lower().strip() == content_lower:
+                return fact
+        if len(content_lower) < 5:
+            # Too short for the fuzzy substring/Jaccard checks below.
             return None
 
         content_words = set(content_lower.split())

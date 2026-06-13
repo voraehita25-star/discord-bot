@@ -85,9 +85,16 @@ except ImportError:
     logger.info("ℹ️ FAISS not installed - using linear scan fallback")
 
 
-# Embedding Model
-EMBEDDING_MODEL = "models/text-embedding-004"
-EMBEDDING_DIM = 768  # text-embedding-004 produces 768-dim vectors
+# Embedding Model — gemini-embedding-2 (Matryoshka, auto-normalizes truncated
+# dims). Migrated from text-embedding-004, which Google SHUT DOWN on
+# 2026-01-14 (gemini-embedding-001 follows on 2026-07-14): every embed call
+# against the old model now errors, silently degrading search to keyword-only.
+# output_dimensionality=768 keeps the FAISS index / DB rows shape-compatible.
+# NOTE: vectors from the old model live in a different space — old rows still
+# match approximately via cosine but re-embedding improves quality over time.
+EMBEDDING_MODEL = "gemini-embedding-2"
+EMBEDDING_DIM = 768
+_EMBED_CONFIG = {"output_dimensionality": EMBEDDING_DIM}
 
 # Time decay settings
 TIME_DECAY_HALF_LIFE_DAYS = 30  # Memories lose half importance after 30 days
@@ -566,8 +573,10 @@ class MemorySystem:
     - Hybrid search (semantic + keyword)
     - Reciprocal Rank Fusion for merging results
     - Time decay for older memories
-    - Importance scoring
     - Debounced FAISS index persistence
+
+    (MemoryMetadata.calculate_importance exists as a helper but is not wired
+    into the search ranking path.)
     """
 
     # Maximum cache size to prevent unbounded memory growth
@@ -586,9 +595,15 @@ class MemorySystem:
         self.client = None
         self._faiss_index: FAISSIndex | None = None
         self._index_built = False
+        # When a DB timeout forces a "built-empty" index, this holds the
+        # monotonic deadline after which _ensure_index retries the rebuild.
+        self._rebuild_after: float | None = None
         self._memories_cache: dict[int, dict] = {}  # id -> memory dict
-        # channel_id -> (expiry_monotonic, rows)
-        self._all_memories_cache: dict[int, tuple[float, list[Any]]] = {}
+        # channel_id -> (expiry_monotonic, rows). Keyed by ``int | None``: the
+        # None key is the intentional cross-channel ("all channels") slot,
+        # written/read/popped as a literal None throughout, so the annotation
+        # must admit None or mypy/pyright flags the real call sites.
+        self._all_memories_cache: dict[int | None, tuple[float, list[Any]]] = {}
 
         # Debounced save state
         self._save_task: asyncio.Task | None = None
@@ -654,21 +669,22 @@ class MemorySystem:
         TTL is short enough that newly-stored memories show up in the
         next query without operator action.
 
-        ``channel_id=None`` skips the cache because that path crosses
-        every channel and a single shared snapshot would let one channel
-        starve out fresh reads for all the others.
+        ``channel_id=None`` (the cross-channel path that every Discord
+        message hits via ``search_memory``) is cached under the ``None``
+        key with the same TTL — it was previously uncached, which meant
+        re-pulling the ENTIRE memory table from SQLite on every message.
+        New memories still show up within the 30s TTL, same as channels.
         """
         now = time.monotonic()
-        if channel_id is not None:
-            cached = self._all_memories_cache.get(channel_id)
-            if cached is not None and cached[0] > now:
-                # Return a SHALLOW COPY of the cached list so callers
-                # that mutate the result (filter/sort in place) don't
-                # corrupt the cache for the next reader. The previous
-                # shape returned the live cache list and a single
-                # in-place ``.sort()`` would persist into every future
-                # cache hit.
-                return list(cached[1])
+        cached = self._all_memories_cache.get(channel_id)
+        if cached is not None and cached[0] > now:
+            # Return a SHALLOW COPY of the cached list so callers
+            # that mutate the result (filter/sort in place) don't
+            # corrupt the cache for the next reader. The previous
+            # shape returned the live cache list and a single
+            # in-place ``.sort()`` would persist into every future
+            # cache hit.
+            return list(cached[1])
 
         try:
             rows = await asyncio.wait_for(
@@ -678,9 +694,13 @@ class MemorySystem:
             logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
             return []
         rows = list(rows or [])
-        if channel_id is not None:
-            self._all_memories_cache[channel_id] = (now + self._ALL_MEMORIES_TTL_SECONDS, rows)
-            self._evict_all_memories_cache_if_needed(now)
+        # Cache the None (cross-channel) key too — search_memory hits this on
+        # EVERY Discord message, and skipping it here re-pulled the entire
+        # memory table from SQLite each time, exactly the regression the
+        # docstring says was fixed. add_memory invalidates both the channel
+        # and the None snapshot so new rows still surface within the TTL.
+        self._all_memories_cache[channel_id] = (now + self._ALL_MEMORIES_TTL_SECONDS, rows)
+        self._evict_all_memories_cache_if_needed(now)
         # Same defensive copy on cache-miss return so callers can mutate
         # freely without aliasing into the cache.
         return list(rows)
@@ -725,7 +745,7 @@ class MemorySystem:
 
         try:
             result = await self.client.aio.models.embed_content(
-                model=EMBEDDING_MODEL, contents=text
+                model=EMBEDDING_MODEL, contents=text, config=_EMBED_CONFIG
             )
 
             # Validate the embedding shape before indexing — the API may
@@ -779,6 +799,7 @@ class MemorySystem:
                 return await self.client.aio.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=text,
+                    config=_EMBED_CONFIG,
                 )
 
         for i in range(0, len(texts), batch_size):
@@ -843,8 +864,16 @@ class MemorySystem:
         UNUSED: the FAISS index is global (built from ``get_all_rag_memories(None)``).
         Per-channel scoping is applied later in ``hybrid_search`` via ``_chan_by_id``.
         """
-        if not FAISS_AVAILABLE or self._index_built:
+        if not FAISS_AVAILABLE:
             return
+        if self._index_built:
+            # Built-empty after a transient DB timeout? Allow a retry once
+            # the cool-down passes instead of latching empty until restart
+            # (the "periodic rebuild" the old comment promised never existed).
+            if self._rebuild_after is None or time.monotonic() < self._rebuild_after:
+                return
+            self._rebuild_after = None
+            self._index_built = False
 
         # Use lock to prevent multiple concurrent index builds
         async with self._index_lock:
@@ -855,7 +884,9 @@ class MemorySystem:
             # Try to load from disk first (fast path)
             if self._faiss_index is None:
                 self._faiss_index = FAISSIndex(EMBEDDING_DIM)
-                if self._faiss_index.load_from_disk():
+                # faiss.read_index + JSON load can be hundreds of MB of disk
+                # I/O — run off-loop (the save paths already use to_thread).
+                if await asyncio.to_thread(self._faiss_index.load_from_disk):
                     self._index_built = True
                     # Load memories cache from DB. Cap to MAX_CACHE_SIZE
                     # so a multi-million-row table doesn't OOM startup —
@@ -957,10 +988,15 @@ class MemorySystem:
                 )
             except TimeoutError:
                 # Mark as "built" with empty state so we don't re-enter this
-                # branch on every search and re-time-out. The next periodic
-                # rebuild (or an explicit ``_invalidate_index``) gets us back.
-                logger.warning("RAG full-rebuild DB query timed out; marking index as built-empty")
+                # branch on every search and re-time-out, but schedule a
+                # retry — _ensure_index re-attempts the rebuild after the
+                # cool-down instead of staying empty until restart.
+                logger.warning(
+                    "RAG full-rebuild DB query timed out; marking index as "
+                    "built-empty (retry in 300s)"
+                )
                 self._index_built = True
+                self._rebuild_after = time.monotonic() + 300.0
                 return
             if not all_memories:
                 # Same flag flip — empty DB is a valid "built" state.
@@ -999,10 +1035,14 @@ class MemorySystem:
 
             if vectors:
                 self._faiss_index = FAISSIndex(EMBEDDING_DIM)
-                self._faiss_index.build(np.array(vectors), ids)
+                # Full build + save are heavy FAISS/disk work — keep them off
+                # the event loop (the debounced/periodic save paths already
+                # use to_thread for exactly this reason).
+                vec_array = np.array(vectors)
+                await asyncio.to_thread(self._faiss_index.build, vec_array, ids)
                 self._index_built = True
                 # Save to disk for next restart
-                self._faiss_index.save_to_disk()
+                await asyncio.to_thread(self._faiss_index.save_to_disk)
                 self._evict_cache_if_needed()
                 logger.info("🚀 FAISS index built with %d memories", len(vectors))
             else:
@@ -1027,12 +1067,19 @@ class MemorySystem:
                 await asyncio.sleep(delay)
                 if self._faiss_index and self._index_built:
                     # Run the synchronous save on a worker thread —
-                    # ``save_to_disk`` calls ``faiss.write_index`` and
-                    # ``np.save`` which can block the event loop for
+                    # ``save_to_disk`` calls ``faiss.write_index`` plus a JSON
+                    # sidecar write (``json.dumps`` of the id_map; the old
+                    # ``np.save`` path was removed with the pickle/.npy
+                    # migration) which can block the event loop for
                     # 100-500ms on large indices.
                     await asyncio.to_thread(self._faiss_index.save_to_disk)
             except asyncio.CancelledError:
                 raise  # Re-raise to properly handle cancellation
+            except Exception:
+                # Fire-and-forget task: without this guard a non-cancellation
+                # error escapes as a GC-time "Task exception was never
+                # retrieved" warning. Mirror start_periodic_save's save_loop().
+                logger.exception("Debounced FAISS index save failed")
 
         self._save_task = asyncio.create_task(do_save())
 
@@ -1151,10 +1198,14 @@ class MemorySystem:
                 else:
                     logger.warning("⚠️ RAG memory saved to DB but got invalid ID: %s", result)
 
-        # Drop the cached snapshot so the next hybrid_search picks up
-        # this row instead of waiting for the TTL.
-        if channel_id is not None:
-            self.invalidate_all_memories_cache(channel_id)
+        # Drop the cached snapshots so the next hybrid_search picks up this
+        # row instead of waiting for the TTL. A new row invalidates BOTH the
+        # per-channel snapshot AND the cross-channel (None-key) snapshot that
+        # search_memory reads on every message — popping only the channel key
+        # (and skipping it entirely for None) left the hot path serving a
+        # stale all-memories list for up to the full TTL.
+        self._all_memories_cache.pop(channel_id, None)
+        self._all_memories_cache.pop(None, None)
 
         logger.info("🧠 Saved RAG memory: %s...", content[:30])
         return True
@@ -1404,8 +1455,11 @@ class MemorySystem:
         # mainly guards the FAISS path. Keyword hits below stay untouched.
         semantic_results = self._apply_semantic_floor(semantic_results, RAG_SEMANTIC_MIN_SIMILARITY)
 
-        # Keyword search
-        keyword_results = self._keyword_search(query, all_memories, limit * 2)
+        # Keyword search — regex-tokenizes every row, so run it in a worker
+        # thread like the linear cosine scan of the same row count above.
+        keyword_results = await asyncio.to_thread(
+            self._keyword_search, query, all_memories, limit * 2
+        )
 
         # Merge using RRF, honouring caller-supplied weights so a
         # `semantic_weight=0.9` actually emphasises semantic ranking
@@ -1524,7 +1578,13 @@ class MemorySystem:
                     continue
 
                 if similarity > LINEAR_SEARCH_MIN_SIMILARITY:
-                    scored.append((mem.get("id", -1), similarity))
+                    mem_id = mem.get("id")
+                    if mem_id is None:
+                        # Missing-id rows can't be resolved downstream and a
+                        # -1 fallback key collides across rows, burning rank
+                        # slots — same guard as _keyword_search/_ensure_index.
+                        continue
+                    scored.append((mem_id, similarity))
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Skipping invalid memory in linear search: %s", e)
                 continue

@@ -142,7 +142,7 @@ By design. Each conversation has its own scoped document library — uploads in 
 
 **"Document too large" on a file under 32 MB:**
 
-The post-auth WebSocket frame cap is ~43 MB (`max_msg_size` in `ws_dashboard.py`, sized to fit the 32 MB document cap plus base64 overhead and headroom); the 10 MB figure is the *per-image* limit (`MAX_IMAGE_SIZE_BYTES`), not the frame cap. Documents are capped at 32 MB raw (`MAX_DOCUMENT_SIZE_BYTES`); base64 inflates that ~33%, so a raw PDF in the high-20s MB can still exceed the frame once encoded. Split very large PDFs with a PDF editor. (Before authentication the frame cap is only 4 KiB.)
+The post-auth WebSocket frame cap (`max_msg_size` in `ws_dashboard.py`) is sized to hold the worst legal payload in a single frame — every attachment at once: `MAX_DOCUMENTS` (5) × `MAX_DOCUMENT_SIZE_BYTES` (32 MB) + `MAX_IMAGES` (10) × `MAX_IMAGE_SIZE_BYTES` (10 MB) = 260 MB decoded, inflated ~33% for base64 plus content and headroom (≈ 351 MB). So a single sub-32 MB document is well under the frame cap — if you hit "Document too large", it's the per-document **raw** 32 MB limit (`MAX_DOCUMENT_SIZE_BYTES`) that rejects it (base64 size doesn't count against that raw check), and the 10 MB figure is the *per-image* limit (`MAX_IMAGE_SIZE_BYTES`). Split very large PDFs with a PDF editor, or trim the number of simultaneous attachments. (Before authentication the frame cap is only 4 KiB.)
 
 **Storage caps are hit — oldest documents disappearing:**
 
@@ -166,8 +166,9 @@ print(conn.execute('PRAGMA user_version').fetchone())
 "
 
 # Migrations apply automatically on the next bot start (init_schema → run_migrations).
-# To inspect the current schema/tables without starting the bot:
-python scripts/maintenance/check_db.py
+# To dump the current schema/tables without starting the bot (sqlite_master):
+python scripts/maintenance/inspect_db.py
+# (scripts/maintenance/check_db.py instead reports per-channel ai_history row counts.)
 ```
 
 **WAL file growing large:**

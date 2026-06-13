@@ -55,6 +55,14 @@ def extract_imports(filepath):
             if node.level == 0:
                 if node.module:
                     imports.add(node.module)
+                    # Also record ``<module>.<name>`` for each imported name:
+                    # ``from cogs.ai_core import logic`` imports the SUBMODULE
+                    # logic.py, but recording only ``cogs.ai_core`` marked just
+                    # __init__.py used and falsely flagged logic.py unused.
+                    # module_to_file finds no file for non-module names (a
+                    # function/class), so the extra entries are harmless.
+                    for alias in node.names:
+                        imports.add(f"{node.module}.{alias.name}")
             else:
                 base = list(pkg_parts[: max(0, len(pkg_parts) - node.level + 1)])
                 if node.module:

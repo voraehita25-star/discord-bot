@@ -4,14 +4,14 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.5). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.6). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~4,768+ pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,050+ pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
 | Go services | `go_services/` | Go 1.25 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
-| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 190 vitest + 70 Playwright |
+| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 294 vitest + 72 Playwright |
 
 The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/`.
 
@@ -75,7 +75,7 @@ A cross-platform `Makefile` mirrors most of these (`make test`, `make lint-all`,
 
 - **Python**: 3.14+, ruff (line-length 100, double quotes, isort), mypy (`python_version = 3.14`), bandit. Lint config and the full ignore rationale live in `pyproject.toml` — respect the existing ignores rather than re-enabling them.
 - **Security posture is a feature.** The codebase hardens against SSRF (DNS-rebind + IPv6), path traversal (`safe_delete` confined to `temp/`), secret leakage (regex log redaction), and Discord mention abuse (sanitization + `AllowedMentions`). Preserve these when editing `utils/web/`, `utils/reliability/`, and `cogs/ai_core/sanitization.py`. Pickle/`.npy` RAG loading is gated behind `RAG_ALLOW_LEGACY_PICKLE` (off by default) — keep it off. The dashboard CLI backend's autonomous file-write mode is similarly gated behind `DASHBOARD_CLI_ALLOW_WRITE` (off by default): when on, the embedded `claude -p` may create/edit files non-interactively, but only inside `DASHBOARD_CLI_WRITE_DIRS` (default the user's Desktop/Documents/Downloads). It is files-only (Bash/web/NotebookEdit/Task denied) and confined by the `cogs/ai_core/api/cli_write_guard.py` PreToolUse hook (fail-closed, exit 2) — preserve that hook as the authoritative path boundary.
-- **Claude backend** defaults to `cli` mode (spawns `claude -p`, uses Max-subscription quota, no per-token billing). `api` mode (Anthropic SDK) is opt-in via `CLAUDE_BACKEND=api`.
+- **Claude backend** defaults to `cli` mode (spawns `claude -p`, uses Max-subscription quota, no per-token billing). `api` mode (Anthropic SDK) is opt-in via `CLAUDE_BACKEND=api`. CLI turns `--resume` the server-side session and send only the new message (delta-on-resume); full flattened history goes out only on fresh sessions and the stale-session retry.
 - Tests are the source of truth for behavior; update them alongside code changes.
 
 ## Claude Code tooling installed for this repo

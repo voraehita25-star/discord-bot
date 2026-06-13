@@ -45,6 +45,14 @@ def _send(message: dict) -> None:
     sys.stdout.flush()
 
 
+# The IPC endpoint is always loopback (127.0.0.1 / localhost). Build a
+# dedicated opener with an EMPTY ProxyHandler so an operator's HTTP_PROXY /
+# HTTPS_PROXY — which the bot deliberately allowlists into this subprocess's
+# env so claude itself can reach Anthropic — doesn't route the loopback IPC
+# call (and the X-Token shared secret) out through that external proxy.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _ipc_request(path: str, payload: dict | None) -> dict:
     """Call the bot IPC. Returns the parsed JSON body, or raises on failure."""
     base = os.environ.get("BOT_AI_TOOLS_IPC_URL", "").rstrip("/")
@@ -59,7 +67,7 @@ def _ipc_request(path: str, payload: dict | None) -> dict:
         method="POST" if data is not None else "GET",
         headers={"Content-Type": "application/json", "X-Token": token},
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+    with _OPENER.open(req, timeout=_HTTP_TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -117,6 +125,18 @@ def _handle_tools_call(mid, params: dict) -> None:
 
 
 def main() -> None:
+    # Force UTF-8 on stdio: claude writes UTF-8 JSON-RPC, but on Windows (and
+    # any locale where Python's default stdio encoding is a legacy codepage,
+    # e.g. cp874/cp1252) a non-ASCII tool argument — Thai text in this repo —
+    # would raise UnicodeDecodeError on read and kill the server mid-session.
+    # PYTHONUTF8/PYTHONIOENCODING are NOT in the bot's subprocess env
+    # allowlist, so reconfigure here rather than relying on the environment.
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass  # already UTF-8, or a stream that doesn't support reconfigure
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -124,6 +144,11 @@ def main() -> None:
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        # A valid-JSON non-object (batch array, string, number) would make
+        # req.get(...) raise AttributeError and kill the whole server,
+        # dropping every tool for the session. Skip it instead.
+        if not isinstance(req, dict):
             continue
         method = req.get("method")
         mid = req.get("id")

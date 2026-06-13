@@ -73,8 +73,7 @@ except ImportError:
 # Resolve to absolute paths under PROJECT_ROOT so we don't drift with the
 # caller's CWD. ``start.ps1`` looks for ``$ProjectRoot/stop_loop.flag`` —
 # if we wrote it relative to the invocation CWD, the restart loop would
-# never see it. Same trap for ``bot.pid`` and ``bot_status.json``.
-STATUS_FILE = str(PROJECT_ROOT / "bot_status.json")
+# never see it. Same trap for ``bot.pid``.
 PID_FILE = str(PROJECT_ROOT / "bot.pid")
 STOP_FLAG = str(PROJECT_ROOT / "stop_loop.flag")
 BOX_WIDTH = 50
@@ -335,9 +334,10 @@ def _get_launcher_info(proc):
         cmdline_str = " ".join(cmdline_list).lower()
         name = proc.name().lower()
 
-        # Check dev watcher
-        if "dev_watcher" in cmdline_str or "start_dev_mode" in cmdline_str:
-            script = "dev_watcher.py" if "dev_watcher" in cmdline_str else "start_dev_mode.bat"
+        # Check dev watcher. Real launchers are scripts/startup/dev.bat →
+        # start_dev.ps1 (the old start_dev_mode.bat no longer exists).
+        if "dev_watcher" in cmdline_str or "start_dev" in cmdline_str:
+            script = "dev_watcher.py" if "dev_watcher" in cmdline_str else "start_dev.ps1"
             return {
                 "name": "Dev Mode (Hot Reload)",
                 "script": script,
@@ -345,33 +345,32 @@ def _get_launcher_info(proc):
                 "features": ["Auto-restart on file changes", "Live reload"],
             }
 
-        # Check production
-        if "start_bot" in cmdline_str:
-            return {
-                "name": "Production Mode",
-                "script": "start_bot.bat",
-                "type": "production",
-                "features": ["Standard startup"],
-            }
-
-        # Check hidden — verify the cmdline actually points at our launcher
-        # to avoid mislabelling unrelated wscript instances as our bot's
-        # hidden-startup wrapper.
-        if name in ("wscript.exe", "cscript.exe") and (
-            "start_bot_hidden" in cmdline_str or "bot.py" in cmdline_str
-        ):
+        # Check hidden BEFORE production — the hidden launcher is the same
+        # start.ps1, just spawned with "-WindowStyle Hidden" (see
+        # _launch_script). Matching production first would always win.
+        if "start.ps1" in cmdline_str and "hidden" in cmdline_str:
             return {
                 "name": "Hidden Startup",
-                "script": "start_bot_hidden.vbs",
+                "script": "start.ps1 (hidden window)",
                 "type": "hidden",
                 "features": ["No visible window", "Background execution"],
             }
 
-        # Check Task Scheduler — same idea: svchost/taskeng/taskhost are
-        # parents of nearly every Windows process, so require evidence
-        # that THIS chain actually launched our bot before claiming it.
+        # Legacy wscript/cscript wrappers — verify the cmdline actually
+        # points at our bot to avoid mislabelling unrelated instances.
+        if name in ("wscript.exe", "cscript.exe") and "bot.py" in cmdline_str:
+            return {
+                "name": "Hidden Startup",
+                "script": "wscript wrapper",
+                "type": "hidden",
+                "features": ["No visible window", "Background execution"],
+            }
+
+        # Check Task Scheduler — svchost/taskeng/taskhost are parents of
+        # nearly every Windows process, so require evidence that THIS
+        # chain actually launched our bot before claiming it.
         if name in ("svchost.exe", "taskeng.exe", "taskhost.exe") and (
-            "bot.py" in cmdline_str or "start_bot" in cmdline_str
+            "bot.py" in cmdline_str or "start.ps1" in cmdline_str
         ):
             return {
                 "name": "Scheduled Task",
@@ -380,15 +379,17 @@ def _get_launcher_info(proc):
                 "features": ["Auto-start on schedule", "Background execution"],
             }
 
-        # Check Terminal/Console launching
-        if name in ("cmd.exe", "powershell.exe", "pwsh.exe", "wt.exe"):
-            if "start_bot" in cmdline_str:
-                return {
-                    "name": "Production Mode",
-                    "script": "start_bot.bat",
-                    "type": "production",
-                    "features": ["Standard startup"],
-                }
+        # Check production — the real launchers are scripts/startup/start.bat
+        # and start.ps1 (the old start_bot.bat never matched anything, so
+        # production/hidden bots were always reported "Unknown" and
+        # restart_bot downgraded them to a visible foreground process).
+        if "start.ps1" in cmdline_str or "start.bat" in cmdline_str:
+            return {
+                "name": "Production Mode",
+                "script": "scripts/startup/start.ps1",
+                "type": "production",
+                "features": ["Standard startup", "Auto-restart loop"],
+            }
 
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
@@ -480,7 +481,10 @@ def get_bot_status():
 
             status["launcher"] = detect_launcher(proc)
             try:
-                status["python_version"] = sys.version.split()[0]
+                # This is the manager's interpreter, not necessarily the bot
+                # process's — label it so the status panel doesn't mislead
+                # when the bot runs under a different Python (.venv vs system).
+                status["python_version"] = sys.version.split()[0] + " (manager)"
             except (IndexError, AttributeError):
                 pass
 
@@ -535,9 +539,14 @@ def print_status():
         if launcher["features"]:
             print(pad_line("  Features:"))
             for feat in launcher["features"]:
-                txt = f"    - {Colors.DIM}{feat}{Colors.RESET}"
-                if len(re.sub(r"\033\[[0-9;]*m", "", txt)) > BOX_WIDTH - 2:
-                    txt = txt[: BOX_WIDTH - 5] + "..." + Colors.RESET
+                # Truncate the PLAIN text before colorizing — slicing the
+                # colored string cut visible chars short by the escape-code
+                # length and could split an ANSI sequence mid-escape.
+                feat_budget = BOX_WIDTH - 2 - len("    - ")
+                feat_text = feat
+                if len(feat_text) > feat_budget:
+                    feat_text = feat_text[: feat_budget - 3] + "..."
+                txt = f"    - {Colors.DIM}{feat_text}{Colors.RESET}"
                 print(pad_line(txt))
     else:
         print(pad_line(f"  Status:     {Colors.BRIGHT_RED}OFFLINE{Colors.RESET}"))
@@ -645,13 +654,35 @@ def auto_stop_existing_bot(status, *, assume_yes: bool = False):
 
     print(f"{Colors.BRIGHT_YELLOW}[*] Stopping existing bot...{Colors.RESET}")
 
+    # Write the stop flag and kill the start.ps1 restart-loop wrapper FIRST,
+    # mirroring stop_bot(). Without this, a surviving launcher loop (start.ps1
+    # runs `while($true)` and re-spawns the bot whenever stop_loop.flag is
+    # absent) revives the old bot moments after we kill it — racing the fresh
+    # instance start_bot() is about to launch and producing the duplicate
+    # "N INSTANCES RUNNING!" condition the status banner warns about.
+    try:
+        Path(STOP_FLAG).write_text("stop", encoding="utf-8")
+    except OSError:
+        pass
+
+    stop_process_list(_find_launcher_processes(), "launcher")
     stop_process_list(status["dev_watcher_pids"], "dev_watcher")
     stop_process_list(status["all_pids"], "bot")
 
     Path(PID_FILE).unlink(missing_ok=True)
 
-    print(f"{Colors.GREEN}[OK] Stopped all instances!{Colors.RESET}")
+    # Remove the stop flag before returning: start_bot() is about to launch a
+    # fresh instance (possibly via start.ps1 itself), and a lingering flag
+    # would tell that new launcher to stop immediately. The brief sleep lets
+    # any still-dying launcher consume the flag first; missing_ok handles the
+    # race.
     time.sleep(1)
+    try:
+        Path(STOP_FLAG).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    print(f"{Colors.GREEN}[OK] Stopped all instances!{Colors.RESET}")
     return True
 
 
@@ -688,6 +719,10 @@ def _launch_script(path, name, hidden=False):
                     "Hidden",
                     "-File",
                     path_str,
+                    # start.ps1 switch: skip Read-Host prompts — they can
+                    # never be answered in a hidden window and would hang
+                    # an invisible powershell.exe forever on failure.
+                    "-NoPrompt",
                 ],
                 shell=False,
                 cwd=cwd,
@@ -744,10 +779,27 @@ def start_bot(mode="production"):
     return False
 
 
+def _find_launcher_processes():
+    """Find live start.ps1 restart-loop wrappers (powershell/pwsh)."""
+    pids = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            name = (proc.info["name"] or "").lower()
+            if name not in ("powershell.exe", "pwsh.exe"):
+                continue
+            cmdline = " ".join(proc.info["cmdline"] or []).lower()
+            if "start.ps1" in cmdline and "startup" in cmdline:
+                pids.append(proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return pids
+
+
 def stop_bot():
-    """Stop ALL bot instances"""
+    """Stop ALL bot instances (and their start.ps1 restart loops)."""
     status = get_bot_status()
-    if not status["running"]:
+    launcher_pids = _find_launcher_processes()
+    if not status["running"] and not launcher_pids:
         print(f"{Colors.YELLOW}Bot is not running{Colors.RESET}")
         return False
 
@@ -757,6 +809,10 @@ def stop_bot():
         pass
 
     stopped = 0
+    # Kill the restart-loop wrapper FIRST. If the bot crashed and start.ps1
+    # is mid-countdown, killing only bot processes does nothing and the
+    # launcher revives the bot seconds later.
+    stopped += stop_process_list(launcher_pids, "launcher")
     stopped += stop_process_list(status["dev_watcher_pids"], "dev_watcher")
     stopped += stop_process_list(status["all_pids"], "bot")
 
@@ -926,9 +982,12 @@ def _tail_lines(path: Path, n: int = 20, encoding: str = "utf-8") -> list[str]:
 
 def view_logs():
     """View recent logs"""
-    for f_name in ["bot.log", "bot_errors.log", "logs/self_healer.log"]:
+    # The bot's RotatingFileHandlers write logs/bot.log and
+    # logs/bot_errors.log (utils/monitoring/logger.py) — the old bare
+    # "bot.log" entries always printed "not found".
+    for f_name in ["logs/bot.log", "logs/bot_errors.log", "logs/self_healer.log"]:
         # Anchor to PROJECT_ROOT so logs are found regardless of the CWD the
-        # manager was launched from (STATUS_FILE/PID_FILE are anchored too).
+        # manager was launched from (PID_FILE is anchored too).
         log_path = PROJECT_ROOT / f_name
         if log_path.exists():
             print(f"\n{Colors.BRIGHT_CYAN}═══ {f_name} (Last 20 lines) ═══{Colors.RESET}")

@@ -562,7 +562,11 @@ func main() {
 
 	// Stats summary
 	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-		collectSystemMetrics()
+		// GetStatus() does its own fresh runtime.ReadMemStats for the JSON
+		// body, and the background collector already refreshes the Prometheus
+		// gauges every 10s — so calling collectSystemMetrics() here was a
+		// redundant second stop-the-world MemStats read per request with no
+		// effect on the response. Dropped.
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(status); err != nil {

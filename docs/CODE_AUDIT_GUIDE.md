@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot
-> **Last Updated:** June 3, 2026 | **Tests:** 4,721 Python ✅ + 190 frontend vitest ✅ + 70 Playwright ✅ | **Skipped:** 2 ✅ | **Python Test Files:** 110 | **Frontend Test Files:** 10 vitest + 8 Playwright e2e
+> **Last Updated:** June 12, 2026 | **Tests:** 5,052 Python ✅ + 294 frontend vitest ✅ + 72 Playwright ✅ | **Skipped:** 2 ✅ | **Python Test Files:** 113 | **Frontend Test Files:** 11 vitest + 8 Playwright e2e
 >
 > Tooling configs live in `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`, `[tool.coverage]`. There is no separate `requirements-dev.txt` — dev tooling installs are listed in `Makefile`'s `install` target.
 
@@ -141,15 +141,13 @@ python -m pytest tests/ -v
 
 ---
 
-### cogs/ai_core/processing/ (5 ไฟล์)
+### cogs/ai_core/processing/ (3 ไฟล์)
 
 | ไฟล์ | คำอธิบาย |
 | --- | --- |
 | `__init__.py` | Package init |
-| `guardrails.py` | Input/output validation, safety (is_silent_block) |
+| `unrestricted.py` | Per-channel unrestricted-mode registry (persona injection) |
 | `intent_detector.py` | User intent detection |
-| `prompt_manager.py` | Prompt template management |
-| `self_reflection.py` | AI self-reflection |
 
 ---
 
@@ -180,7 +178,7 @@ python -m pytest tests/ -v
 
 ---
 
-### tests/ (84 ไฟล์)
+### tests/ (113 ไฟล์)
 
 | ไฟล์ | คำอธิบาย |
 | --- | --- |
@@ -195,7 +193,7 @@ python -m pytest tests/ -v
 | `test_database.py` | Database tests |
 | `test_emoji_voice.py` | Emoji/voice tests |
 | `test_error_recovery.py` | Error recovery tests |
-| `test_guardrails.py` | Guardrails tests |
+| `test_unrestricted.py` | Unrestricted-mode registry tests |
 | `test_memory_modules.py` | Memory module tests |
 | `test_music_integration.py` | Music integration tests |
 | `test_performance_tracker.py` | Performance tracker tests |

@@ -1784,10 +1784,12 @@ class TestAutoDisconnect:
         empty_channel = MagicMock()
         empty_channel.members = [MagicMock(bot=True)]
         vc.channel = empty_channel
-        vc.disconnect = AsyncMock()
+        # Real discord.py removes the VC from bot.voice_clients during
+        # disconnect(); the presence guard counts the list AFTER that.
+        vc.disconnect = AsyncMock(side_effect=lambda *a, **k: mock_bot.voice_clients.remove(vc))
 
         cog.cleanup_guild_data = AsyncMock()
-        mock_bot.voice_clients = [vc]  # <=1 so presence resets
+        mock_bot.voice_clients = [vc]  # removed by disconnect -> 0 left -> presence resets
 
         with patch("asyncio.sleep", new=AsyncMock()):
             await cog._auto_disconnect(gid, vc)

@@ -60,6 +60,9 @@ class MusicGuildState:
     auto_disconnect_task: asyncio.Task | None = None
     mode_247: bool = False
     last_text_channel: int | None = None
+    # True once load_queue() has been attempted for this guild — the
+    # persisted queue is restored lazily on first activity after a restart.
+    queue_loaded: bool = False
 
 
 class Music(commands.Cog):
@@ -250,9 +253,16 @@ class Music(commands.Cog):
 
                 future = asyncio.run_coroutine_threadsafe(coro, loop)
                 future.add_done_callback(_on_done)
+            else:
+                # Loop unavailable — close the coroutine object explicitly so
+                # shutdown doesn't spray "coroutine ... was never awaited"
+                # warnings for the dropped cleanup.
+                coro.close()
         except (RuntimeError, AttributeError):
-            # Event loop closed or bot shutting down - silently ignore
-            pass
+            # Event loop closed or bot shutting down - silently ignore the
+            # drop, but still close the un-run coroutine object.
+            with contextlib.suppress(Exception):
+                coro.close()
 
     async def cog_unload(self) -> None:
         """Cleanup when cog is unloaded."""
@@ -322,8 +332,12 @@ class Music(commands.Cog):
             )
             return
 
-        # Save queue before cleanup for persistence
-        await self.save_queue(guild_id)
+        # Save queue before cleanup for persistence. Guarded — a DB failure
+        # must not abort the cleanup below (state removal, task cancel).
+        try:
+            await self.save_queue(guild_id)
+        except Exception as e:
+            logger.warning("Queue save during cleanup failed for guild %s: %s", guild_id, e)
 
         if guild_id in self._guild_states:
             gs = self._guild_states[guild_id]
@@ -361,13 +375,20 @@ class Music(commands.Cog):
             await self._save_queue_json(guild_id)
             return
 
+        # db.save_music_queue / clear_music_queue never raise — they catch
+        # internally and return False. Raising here on failure is what lets
+        # _periodic_queue_save's per-guild retry re-mark the pending flag;
+        # ignoring the bool made that retry logic unreachable and logged
+        # false success while the queue change was silently lost.
         if not queue:
             # Clear queue from database if empty
-            await db.clear_music_queue(guild_id)
+            if not await db.clear_music_queue(guild_id):
+                raise RuntimeError(f"clear_music_queue failed for guild {guild_id}")
             return
 
         # Save to database (convert deque to list for serialization)
-        await db.save_music_queue(guild_id, list(queue))
+        if not await db.save_music_queue(guild_id, list(queue)):
+            raise RuntimeError(f"save_music_queue failed for guild {guild_id}")
         logger.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
 
     async def _save_queue_json(self, guild_id: int) -> None:
@@ -718,7 +739,10 @@ class Music(commands.Cog):
                     # listening status if no other voice clients are still
                     # active, otherwise we clobber the now-playing presence
                     # of every other guild this bot is serving simultaneously.
-                    if len(self.bot.voice_clients) <= 1:
+                    # ``== 0`` (not <= 1): disconnect() above already removed
+                    # THIS VC from bot.voice_clients, so 1 here means one
+                    # OTHER guild is still playing.
+                    if len(self.bot.voice_clients) == 0:
                         await self.bot.change_presence(
                             activity=discord.Activity(
                                 type=discord.ActivityType.listening, name="คำสั่งเพลง"
@@ -733,8 +757,12 @@ class Music(commands.Cog):
         except discord.DiscordException:
             logger.exception("Auto-disconnect error")
         finally:
-            # Remove task from dict
-            self._gs(guild_id).auto_disconnect_task = None
+            # Clear the task field WITHOUT _gs() — its setdefault would
+            # recreate the state object cleanup_guild_data just deleted,
+            # leaking one empty MusicGuildState per auto-disconnect.
+            gs = self._guild_states.get(guild_id)
+            if gs is not None:
+                gs.auto_disconnect_task = None
 
     async def safe_delete(self, filename):
         """Safely delete a file with exponential backoff (Non-blocking)."""
@@ -970,14 +998,20 @@ class Music(commands.Cog):
                                 logger.debug("Loop player cleanup failed: %s", _e)
                             raise
 
-                        # Loop embed
-                        embed = discord.Embed(
-                            title=f"{Emojis.LOOP} Looping",
-                            description=f"**{player.title}**",
-                            color=Colors.LOOP,
-                        )
-                        embed.set_footer(text="Use !loop to disable • !skip to skip")
-                        await ctx.send(embed=embed)
+                        # Loop embed — suppress send failures. Playback is
+                        # already running at this point; letting a Forbidden/
+                        # HTTPException escape fell into the handlers below,
+                        # which disabled loop and then fell through to the
+                        # normal queue logic, popping and discarding the next
+                        # queued track while audio was still playing.
+                        with contextlib.suppress(discord.DiscordException):
+                            embed = discord.Embed(
+                                title=f"{Emojis.LOOP} Looping",
+                                description=f"**{player.title}**",
+                                color=Colors.LOOP,
+                            )
+                            embed.set_footer(text="Use !loop to disable • !skip to skip")
+                            await ctx.send(embed=embed)
                         return False
                     except discord.DiscordException:
                         logger.exception("Loop replay failed (Discord)")
@@ -1209,10 +1243,14 @@ class Music(commands.Cog):
                     await ctx.send(embed=embed)
                     logger.error("Play error (audio/file): %s\n%s", e, traceback.format_exc())
                     _retry_next = True
-                except yt_dlp.DownloadError as e:
+                except (yt_dlp.DownloadError, ValueError) as e:
                     # A bad URL / 4xx from YouTube would otherwise propagate
                     # uncaught, kill _play_next_once, and freeze the queue
                     # behind a now-popped track. Skip to the next item instead.
+                    # ValueError covers YTDLSource.from_url's own rejections
+                    # (unavailable video, empty playlist, SSRF refusal,
+                    # suspicious filename) which previously escaped uncaught
+                    # and stalled the queue with no user feedback.
                     embed = discord.Embed(
                         title=f"{Emojis.CROSS} Download Error",
                         description="โหลดเพลงนี้ไม่ได้ ข้ามไปเพลงถัดไป",
@@ -1431,11 +1469,12 @@ class Music(commands.Cog):
             filename = track_info["filename"]
             data = track_info["data"]
 
-            # Mirror the existence check that ``seek`` (line ~1905) does:
-            # the previous track's after-callback may have already deleted
-            # the file (loop=False path), in which case ffmpeg silently
-            # produces no audio. Bail out cleanly so the user can re-issue.
-            if not Path(filename).exists():
+            # Mirror the existence check that ``seek`` does: the previous
+            # track's after-callback may have already deleted the file
+            # (loop=False path), in which case ffmpeg silently produces no
+            # audio. Bail out cleanly so the user can re-issue. Off-loop —
+            # a stat on a hung disk would block every guild's playback.
+            if not await asyncio.to_thread(Path(filename).exists):
                 self._gs(guild_id).fixing = False
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} ไฟล์เพลงถูกลบไปแล้ว ลอง !play ใหม่",
@@ -1610,6 +1649,21 @@ class Music(commands.Cog):
     @commands.bot_has_guild_permissions(connect=True, speak=True)
     async def play(self, ctx: Context, *, query: str | None = None) -> None:
         """เล่นเพลงจาก YouTube หรือ Spotify."""
+        # Restore any queue persisted before the last restart (lazy, once per
+        # guild). The save side has always run (periodic/unload/cleanup), but
+        # nothing in production ever called load_queue — persisted queues
+        # were write-only and every restart silently started empty.
+        if ctx.guild:
+            _gs_restore = self._gs(ctx.guild.id)
+            if not _gs_restore.queue_loaded:
+                _gs_restore.queue_loaded = True
+                if not _gs_restore.queue:
+                    try:
+                        await self.load_queue(ctx.guild.id)
+                    except Exception:
+                        logger.warning(
+                            "Queue restore failed for guild %s", ctx.guild.id, exc_info=True
+                        )
         # Validate query parameter
         if query:
             # Strip Discord's "suppress embed" angle brackets — users habitually
@@ -1739,6 +1793,21 @@ class Music(commands.Cog):
             # (line below in the else-branch) — otherwise tracks queued via a
             # Spotify link are lost on a restart until some other action saves.
             self._schedule_queue_save(ctx.guild.id)
+        elif is_spotify_url:
+            # Spotify URL but the integration is unconfigured. Short-circuit
+            # with a clear message instead of falling through to the YouTube
+            # branch, where yt-dlp would try to extract the raw
+            # https://open.spotify.com/... URL directly and surface a confusing
+            # generic "No results found".
+            embed = discord.Embed(
+                description=(
+                    f"{Emojis.CROSS} Spotify links aren't available — Spotify "
+                    f"integration is not configured."
+                ),
+                color=Colors.ERROR,
+            )
+            await ctx.send(embed=embed)
+            return
         else:
             # YouTube / Search
             async with ctx.typing():
@@ -1984,8 +2053,10 @@ class Music(commands.Cog):
                 gs.auto_disconnect_task = None
 
             await ctx.voice_client.disconnect()
-            # Only change global presence if this was the last voice client
-            if len(self.bot.voice_clients) <= 1:
+            # Only change global presence if this was the last voice client.
+            # ``== 0`` (not <= 1): disconnect() already removed this VC from
+            # bot.voice_clients, so 1 here means another guild is playing.
+            if len(self.bot.voice_clients) == 0:
                 await self.bot.change_presence(
                     activity=discord.Activity(type=discord.ActivityType.listening, name="คำสั่งเพลง")
                 )
@@ -2260,7 +2331,7 @@ class Music(commands.Cog):
             # "playing" UI without sound. Surface the issue instead.
             from pathlib import Path as _P
 
-            if not filename or not _P(filename).exists():
+            if not filename or not await asyncio.to_thread(_P(filename).exists):
                 self._gs(guild_id).fixing = False
                 embed = discord.Embed(
                     title="Cannot Seek",
@@ -2296,8 +2367,15 @@ class Music(commands.Cog):
             vc_seek = ctx.voice_client
 
             def after_seek(error):
-                # Reset fixing flag in callback to prevent race condition
-                self._gs(guild_id).fixing = False
+                # Same entry guard as every other after-callback: a newer
+                # !seek/!fix sets fixing=True and stops THIS player on
+                # purpose. Without the guard, this callback fired anyway,
+                # clobbered the new command's flag back to False and deleted
+                # the very file the new command was about to replay. The
+                # success-path reset now happens in the seek command itself,
+                # right after vc_seek.play() succeeds.
+                if self._gs(guild_id).fixing:
+                    return
 
                 # Look up the live voice_client at callback time. The
                 # captured ``vc_seek`` reference is only used as a last
@@ -2324,6 +2402,12 @@ class Music(commands.Cog):
 
             try:
                 vc_seek.play(player, after=after_seek)
+                # Seek is live — release the flag NOW instead of in the
+                # after-callback. Holding it for the whole remainder of the
+                # track made cleanup_guild_data defer (cleanup_pending) into
+                # a void nothing ever drained, and suppressed every other
+                # after-callback for the duration.
+                self._gs(guild_id).fixing = False
             except Exception as e:
                 # Reset fixing flag if play() fails
                 self._gs(guild_id).fixing = False
@@ -2388,6 +2472,10 @@ class Music(commands.Cog):
             elapsed = time.time() - start_time
 
         elapsed = min(elapsed, duration) if duration else elapsed
+        # Lower-clamp too: clock skew between track start and pause_start can
+        # make `elapsed` negative, which format_duration renders as garbage
+        # (e.g. -5 -> "59:55"). create_progress_bar already clamps via max(0,…).
+        elapsed = max(0, elapsed)
 
         # Create progress bar
         progress_bar = create_progress_bar(elapsed, duration)
@@ -2516,7 +2604,9 @@ class Music(commands.Cog):
 
         if self.bot.user and self.bot.user.display_avatar:
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-        embed.set_footer(text="Music Bot v3.2 Pro • !h for help")
+        # No hardcoded version — the old "v3.2" footer drifted from every
+        # release (project is versioned in pyproject.toml).
+        embed.set_footer(text="Music Bot • !h for help")
 
         await ctx.send(embed=embed)
 

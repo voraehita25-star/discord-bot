@@ -8,7 +8,9 @@ claude→MCP→IPC round-trip is exercised separately as an integration check.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
 
 from cogs.ai_core.api import ai_tools_ipc as ipc
 
@@ -237,15 +239,20 @@ class TestServerDispatchIntegration:
 
     async def test_list_channels_returns_real_data_via_capture(self, monkeypatch):
         monkeypatch.setenv("DASHBOARD_CLI_SERVER_ACTIONS", "1")
+        # Channels expose permissions_for so cmd_list_channels can run its
+        # view-permission filter (the unfiltered else path now fails closed
+        # for non-Member callers).
+        _view_ok = SimpleNamespace(view_channel=True)
         text_channels = [
-            SimpleNamespace(name="general", id=1),
-            SimpleNamespace(name="random", id=2),
+            SimpleNamespace(name="general", id=1, permissions_for=lambda _u: _view_ok),
+            SimpleNamespace(name="random", id=2, permissions_for=lambda _u: _view_ok),
         ]
-        member = SimpleNamespace(
-            display_name="tester",
-            guild_permissions=SimpleNamespace(
-                administrator=False, manage_channels=False, manage_roles=False
-            ),
+        # spec=discord.Member so the isinstance(_user, discord.Member) gate
+        # passes (a duck-typed SimpleNamespace would now be refused).
+        member = MagicMock(spec=discord.Member)
+        member.display_name = "tester"
+        member.guild_permissions = SimpleNamespace(
+            administrator=False, manage_channels=False, manage_roles=False
         )
         guild = SimpleNamespace(text_channels=text_channels, get_member=lambda uid: member)
         channel = SimpleNamespace(guild=guild)

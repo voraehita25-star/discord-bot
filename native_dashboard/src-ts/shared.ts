@@ -229,22 +229,26 @@ export function escapeHtml(text: string): string {
  */
 export function isSafeAvatarUrl(url: string | undefined | null): boolean {
     if (!url || typeof url !== 'string') return false;
-    const lower = url.trim().toLowerCase();
+    const trimmed = url.trim();
+    const lower = trimmed.toLowerCase();
     if (!lower) return false;
     // Tauri custom-protocol URLs need a stricter allowlist than http/https.
     // Restrict the path portion to a known prefix so a tampered avatar string
     // can't read arbitrary files on disk (e.g. ``asset://localhost/c:/...``).
     if (lower.startsWith('asset://') || lower.startsWith('tauri://')) {
         try {
-            const parsed = new URL(lower);
+            // Validate the ORIGINAL-cased trimmed URL — the exact string
+            // safeAvatarUrl renders — and lowercase only the host/prefix
+            // comparisons, so we never validate one string and render another.
+            const parsed = new URL(trimmed);
             const path = parsed.pathname || '';
             // Reject Windows drive letters, parent-dir traversal, and any
             // host other than localhost. Only allow paths under ``avatars/``.
-            if (parsed.hostname && parsed.hostname !== 'localhost') return false;
+            if (parsed.hostname && parsed.hostname.toLowerCase() !== 'localhost') return false;
             if (/[a-z]:/i.test(path)) return false;
             if (path.includes('..')) return false;
             const stripped = path.replace(/^\/+/, '');
-            return stripped.startsWith('avatars/');
+            return stripped.toLowerCase().startsWith('avatars/');
         } catch {
             return false;
         }
@@ -269,6 +273,12 @@ export function isSafeAvatarUrl(url: string | undefined | null): boolean {
     // avatar purpose and is a traversal-shaped string we don't want flowing
     // into an <img src> within the webview's asset scope. Legit avatars are
     // local canvas data: URIs, https, or './'/'/' same-origin paths.
+    // Reject protocol-relative URLs ('//host/...') BEFORE the single-'/'
+    // same-origin check: '//attacker.com/pixel' starts with '/' but resolves
+    // to an EXTERNAL host, defeating the no-external-beacon rule above.
+    if (lower.startsWith('//')) {
+        return false;
+    }
     return (
         lower.startsWith('data:image/') ||
         lower.startsWith('https://') ||
@@ -734,9 +744,16 @@ export function animateNumber(
     // rendered fraction-digit count; 2 covers the dashboard's display needs.
     const decimals = options.decimals ?? (Number.isInteger(to) ? 0 : Math.min(to.toString().split('.')[1]?.length ?? 0, 2));
 
-    // Extract current number from textContent (strip non-numeric chars except minus and dot)
-    const current = parseFloat((el.textContent || '0').replace(/[^\d.\-]/g, '')) || 0;
-    if (current === to) return;
+    // Read the current value from a stored numeric attribute, NOT by parsing
+    // the rendered text. formatN uses the OS locale, so on locales that group
+    // with '.' (de-DE, pt-BR, id-ID…) re-parsing "1.234" gave 1.234 and the
+    // no-op check below never matched → perpetual re-animation.
+    const current = Number(el.dataset.animValue ?? '') || 0;
+    if (current === to) {
+        el.dataset.animValue = String(to);
+        return;
+    }
+    el.dataset.animValue = String(to);
 
     // Respect reduced motion — just set the final value
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {

@@ -382,7 +382,7 @@ impl DatabaseService {
                 SELECT id, role, content, created_at, images, thinking, mode
                 FROM dashboard_messages
                 WHERE conversation_id = ?
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, id ASC
             "#,
             )
             .map_err(|e| format!("Failed to prepare dashboard message query: {}", e))?;

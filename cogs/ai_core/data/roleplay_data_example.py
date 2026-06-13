@@ -5,7 +5,7 @@ Roleplay Data - Example Configuration
 This is an EXAMPLE file. Copy this to `roleplay_data.py` and customize it.
 
 To use:
-    cp roleplay_data.example.py roleplay_data.py
+    cp roleplay_data_example.py roleplay_data.py
     # Then edit roleplay_data.py with your RP content
 """
 

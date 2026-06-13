@@ -9,6 +9,7 @@ import heapq
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 # Import summarizer for compression
@@ -78,20 +79,18 @@ class HistoryManager:
     # you want a tighter target, pass max_tokens explicitly to smart_trim_by_tokens.
     DEFAULT_KEEP_RECENT = 200  # Always keep last N messages
     DEFAULT_MAX_HISTORY = 10000  # Max messages after trimming
-    DEFAULT_COMPRESS_THRESHOLD = 2000  # Start compressing after this
     DEFAULT_MAX_TOKENS = 600_000  # ~60% of 1M context window
-    TOKENS_PER_MESSAGE_ESTIMATE = 50  # Fallback rough estimate
+    # (DEFAULT_COMPRESS_THRESHOLD / TOKENS_PER_MESSAGE_ESTIMATE removed —
+    # they were stored but nothing ever read them.)
 
     def __init__(
         self,
         keep_recent: int = DEFAULT_KEEP_RECENT,
         max_history: int = DEFAULT_MAX_HISTORY,
-        compress_threshold: int = DEFAULT_COMPRESS_THRESHOLD,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ):
         self.keep_recent = keep_recent
         self.max_history = max_history
-        self.compress_threshold = compress_threshold
         self.max_tokens = max_tokens
         self.logger = logging.getLogger("HistoryManager")
 
@@ -283,8 +282,11 @@ class HistoryManager:
         # 4. Calculate how many older messages we can keep
         available_slots = max_messages - len(recent)
 
-        # Reserve some slots for a summary
-        summary_slots = 1 if SUMMARIZER_AVAILABLE else 0
+        # Reserve some slots for a summary — only when a slot actually
+        # exists. With max_messages <= keep_recent there are zero available
+        # slots, and appending a summary anyway exceeded the caller's cap by
+        # one (and wasted a summarizer API call).
+        summary_slots = 1 if (SUMMARIZER_AVAILABLE and available_slots > 0) else 0
         message_slots = max(0, available_slots - summary_slots)
 
         # 5. Select top important messages (preserving order)
@@ -296,7 +298,7 @@ class HistoryManager:
         discarded = [msg for i, msg in enumerate(older) if i not in important_indices]
 
         summary_entry = None
-        if SUMMARIZER_AVAILABLE and len(discarded) >= 10:
+        if summary_slots and len(discarded) >= 10:
             try:
                 summary_text = await summarizer.summarize(discarded, max_messages=50)
                 if summary_text:
@@ -305,6 +307,11 @@ class HistoryManager:
                         "parts": [
                             f"[📝 สรุปบทสนทนาก่อนหน้า ({len(discarded)} messages)]\n{summary_text}"
                         ],
+                        # Timestamp matters downstream: storage force-replace
+                        # must not insert NULL (bypasses the column default),
+                        # and the SummaryArchiver's `WHERE timestamp < ?`
+                        # would never see a NULL-timestamp row.
+                        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     }
                     self.logger.info(
                         "📝 Created summary from %d discarded messages", len(discarded)

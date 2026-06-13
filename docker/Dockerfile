@@ -35,7 +35,7 @@ USER botuser
 
 # Health check for container orchestration
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready')" || exit 1
 
 EXPOSE 8080 8081 8082 8765 9090
 

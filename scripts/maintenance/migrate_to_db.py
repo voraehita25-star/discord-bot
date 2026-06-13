@@ -3,9 +3,10 @@ Migration Script: JSON to SQLite Database
 Converts existing JSON history files to the new SQLite database.
 
 Usage:
-    python scripts/migrate_to_db.py
-    python scripts/migrate_to_db.py --dry-run  # Preview without changes
-    python scripts/migrate_to_db.py --backup   # Create backup before migration
+    python scripts/maintenance/migrate_to_db.py
+    python scripts/maintenance/migrate_to_db.py --dry-run   # Preview without changes
+    python scripts/maintenance/migrate_to_db.py --backup    # Backup before migration
+    python scripts/maintenance/migrate_to_db.py --delete-json  # Delete JSON after (needs --backup or --yes-delete-json)
 """
 
 from __future__ import annotations
@@ -32,6 +33,18 @@ from utils.database import db
 
 JsonFileGroup = list[tuple[int, Path]]
 JsonFileBuckets = dict[str, JsonFileGroup]
+
+
+def _extract_text(part: Any) -> str:
+    """Render one history ``part`` to text. Hoisted to module scope so it's
+    defined once, not rebuilt on every loop iteration (it closes over nothing
+    loop-specific)."""
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict) and "text" in part:
+        text = part["text"]
+        return text if isinstance(text, str) else str(text)
+    return str(part)
 
 
 def find_json_files() -> JsonFileBuckets:
@@ -101,20 +114,18 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
                 continue
 
             role = item.get("role", "user")
+            # Normalize the role to the values ai_history's
+            # CHECK(role IN ('user','model')) constraint permits. A hand-edited
+            # file or an 'assistant'-style export would otherwise raise
+            # sqlite3.IntegrityError on its INSERT and — since the whole file
+            # migrates in one transaction — roll back the ENTIRE file.
+            if role not in ("user", "model"):
+                role = "model" if role == "assistant" else "user"
             parts = item.get("parts", [])
             message_id = item.get("message_id")
             timestamp = item.get("timestamp")
 
             if isinstance(parts, list):
-
-                def _extract_text(part: Any) -> str:
-                    if isinstance(part, str):
-                        return part
-                    if isinstance(part, dict) and "text" in part:
-                        text = part["text"]
-                        return text if isinstance(text, str) else str(text)
-                    return str(part)
-
                 content = "\n".join(_extract_text(p) for p in parts if p)
             else:
                 content = str(parts)
@@ -137,13 +148,20 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
         # explicit transaction control with the driver's implicit BEGIN can
         # raise "cannot start a transaction within a transaction" and would
         # also double-commit against the context manager's own commit.
+        # `count` is rows UPSERTED (insert OR update), not strictly new inserts:
+        # a duplicated non-null message_id takes the ON CONFLICT DO UPDATE path,
+        # so for files with duplicate ids this slightly overstates distinct rows
+        # added. The authoritative figure is the separate `SELECT COUNT(*) FROM
+        # ai_history` printed as Database Statistics; this is a progress tally.
         count = 0
         async with db.get_write_connection() as conn:
             for chan_id, role, content, message_id, ts in rows:
                 await conn.execute(
                     """INSERT INTO ai_history (channel_id, role, content, message_id, timestamp, local_id)
                        VALUES (?, ?, ?, ?, ?,
-                           (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))""",
+                           (SELECT COALESCE(MAX(local_id), 0) + 1 FROM ai_history WHERE channel_id = ?))
+                       ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
+                       DO UPDATE SET content = excluded.content""",
                     (chan_id, role, content, message_id, ts, chan_id),
                 )
                 count += 1
@@ -240,6 +258,20 @@ async def async_main():
         await db.init_schema()
     else:
         print("  [DRY RUN] Skipping db.init_schema() — no schema changes will be applied.")
+
+    try:
+        await _run_migration(args)
+    finally:
+        # The pool's aiosqlite connections run on NON-daemon threads; without
+        # an explicit close the interpreter blocks forever in
+        # threading._shutdown() and the script hangs at exit
+        # (mirrors schema_smoke.py).
+        await db.stop_background_tasks()
+        await db.close_pool()
+
+
+async def _run_migration(args) -> None:
+    """Body of the migration (separated so async_main can guarantee pool close)."""
 
     print()
     print("=" * 60)

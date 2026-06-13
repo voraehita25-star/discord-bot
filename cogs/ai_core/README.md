@@ -1,7 +1,7 @@
 # AI Core Module
 
-> Last Updated: June 8, 2026
-> Version: 3.4.5
+> Last Updated: June 12, 2026
+> Version: 3.4.6
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.8 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
@@ -20,6 +20,7 @@ cogs/ai_core/
 ├── session_mixin.py   # Session management mixin
 ├── media_processor.py # Media processing
 ├── claude_payloads.py # Typed Claude message builders + prompt-cache helpers
+├── character_tags.py  # Cached character-name → {{Tag}} replacement
 ├── imports.py         # Centralised optional-dependency imports
 │
 ├── api/               # 🔌 AI APIs + dashboard backend
@@ -32,9 +33,12 @@ cogs/ai_core/
 │   ├── dashboard_chat_claude_cli.py  # Claude via `claude -p` subprocess (Max subscription)
 │   ├── dashboard_common.py       # Shared helpers (timestamps, persona+context builder)
 │   ├── dashboard_config.py       # Dashboard env config
-│   ├── dashboard_handlers.py     # Conversation/memory CRUD handlers (with cache invalidation hooks)
+│   ├── dashboard_handlers.py     # Conversation/memory CRUD + AI-history browse/edit/delete/restore handlers
+│   ├── chat_manager_registry.py  # Weakref registry exposing the live ChatManager to dashboard handlers
 │   ├── document_extractor.py     # PDF/DOCX/text extraction for dashboard attachments
 │   ├── discord_chat_claude_cli.py    # Discord-side `claude -p` client (CLAUDE_BACKEND=cli)
+│   ├── ai_tools_ipc.py           # Localhost IPC endpoint executing the AI's tool calls in the bot process
+│   ├── mcp_tools_server.py       # Stdio MCP proxy that `claude -p` spawns for custom AI tools
 │   └── cli_write_guard.py        # 🛡️ PreToolUse hook: confines CLI file-write mode to allowed roots
 │
 ├── core/              # 🏗️ Core components
@@ -62,6 +66,7 @@ cogs/ai_core/
 ├── data/              # Static data & prompts
 │   ├── __init__.py
 │   ├── constants.py   # ⚙️ Config constants
+│   ├── constants_env.py # Env-loaded config (explicit env-dependency boundary)
 │   ├── faust_data.py  # Faust persona instructions
 │   └── roleplay_data.py  # RP server lore
 │
@@ -79,7 +84,7 @@ cogs/ai_core/
 │
 ├── processing/        # 🔄 Request processing
 │   ├── __init__.py
-│   ├── guardrails.py  # ⚠️ Safety (is_silent_block) & unrestricted mode
+│   ├── unrestricted.py    # Per-channel unrestricted-mode registry (persona injection)
 │   └── intent_detector.py # Intent classification
 │
 └── cache/             # 📊 Caching & Analytics
@@ -159,8 +164,8 @@ AI Core รองรับ Rust extensions สำหรับ performance:
 # Auto-selects Rust if available, else Python
 from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
-engine = RagEngineWrapper(dimension=384, similarity_threshold=0.7)
-engine.add(entry)  # SIMD-optimized vector ops
+engine = RagEngineWrapper(dimension=768, similarity_threshold=0.7)  # 768 = Gemini text-embedding-004/005
+engine.add("mem-1", "some text", embedding_vector, importance=1.0)  # add(entry_id, text, embedding, ...)
 results = engine.search(query_embedding, top_k=5)
 
 # Check backend
@@ -190,17 +195,77 @@ await chat_manager.process_chat(
 
 ## Tests
 
-```bash
-# All AI tests
-python -m pytest tests/test_ai_core.py -v
-python -m pytest tests/test_ai_integration.py -v
-python -m pytest tests/test_emoji_voice.py -v
-python -m pytest tests/test_memory_modules.py -v
-python -m pytest tests/test_tools.py -v
-python -m pytest tests/test_webhooks.py -v
+```powershell
+# AI tests — use the wrapper (raw `pytest -v` can hang; see repo CLAUDE.md)
+.\scripts\run_tests.ps1 -File test_ai_core.py
+.\scripts\run_tests.ps1 -File test_ai_integration.py
+.\scripts\run_tests.ps1 -File test_emoji_voice.py
+.\scripts\run_tests.ps1 -File test_memory_modules.py
+.\scripts\run_tests.ps1 -File test_tools.py
+.\scripts\run_tests.ps1 -File test_webhooks.py
 ```
 
 ## Recent Updates
+
+### Unreleased — Dashboard AI-history editor + Claude CLI session overhaul
+
+- **AI-history editing over the dashboard WS** (`api/dashboard_handlers.py`,
+  dispatched from `ws_dashboard.py`): `list_ai_channels` / `load_ai_history` /
+  `edit_ai_history_message` / `delete_ai_history_message` /
+  `restore_ai_history_message` → `ai_channels_list` / `ai_history_loaded` /
+  `ai_history_message_edited` / `_deleted` / `_restored`. Loads default to the
+  newest 200 rows (max 2000) under a ~20MB content budget with a `truncated`
+  flag; every error carries `scope:"ai_history"` plus a stable code
+  (`MISSING_ID`, `INVALID_ID`, `INVALID_PAYLOAD`, `MISSING_CONTENT`,
+  `CONTENT_TOO_LONG`, `MSG_NOT_FOUND`, `ROW_CONFLICT`, `DB_UNAVAILABLE`,
+  `INTERNAL_ERROR`); snowflakes travel as JSON strings; only
+  `list_ai_channels` is rate-limit-exempt. Delete/restore acks include a
+  best-effort `total_count`.
+- **Live-session sync.** Every mutation also patches the in-memory
+  `ChatManager` session via new `logic.py` methods
+  (`patch_history_content` / `remove_history_content` /
+  `insert_history_content`, twin-ordinal matching) and reports a five-state
+  `live_session` in the ack — `patched` / `not_loaded` / `no_match` /
+  `unavailable` / `error` (legacy `live_session_patched` kept) — and resets
+  the channel's Discord CLI `--resume` session so delta-on-resume prompts
+  can't keep answering from the pre-edit context.
+- **`api/chat_manager_registry.py`** (new) — weakref registry, registered in
+  `AICog.cog_load`, so the argument-less dashboard WS server can reach the
+  live `ChatManager` without holding it alive past a cog unload.
+- **`storage.py`** — per-channel asyncio history lock (`get_history_lock`,
+  held by `_save_history_db` / `_replace_history_db` and the dashboard edit
+  handler) plus a cache generation counter (`invalidate_cache` bumps it;
+  `load_history` re-reads when its DB snapshot went stale mid-await), so
+  dashboard row edits and bot saves can't clobber each other.
+- **Claude CLI delta-on-resume** (`api/discord_chat_claude_cli.py` +
+  `dashboard_chat_claude_cli.py`): resumed turns send only `# System` +
+  `# Formatting rules` + `# Current user message` — the server-side session
+  already holds the history. Only fresh sessions (incl. the attempt-2
+  stale-session retry) send the full flattened history. Failure paths
+  (timeout/overload/unclassified) drop the session so the next turn
+  self-heals fresh, and infrastructure error strings are no longer persisted
+  into history (the Discord streaming path posts a `delete_after=30` notice
+  instead). Superseded/reset session `.jsonl` transcripts are unlinked on
+  both sides.
+- **`CLI_PROMPT_MAX_CHARS` over-limit flow** (default 1.2M chars ≈ the
+  1M-token window for Thai; `0` = off): on the Discord path a fresh-session
+  prompt over the ceiling is **never silently truncated** — the turn stops
+  and the bot posts a warning with OWNER-ONLY buttons: 📝 สรุปแชททั้งหมด
+  (same trim+force-save as `!auto_summarize`, target 500k tokens, then the
+  CLI session resets and chat continues) or ❌ ไม่สรุป (พักแชทนี้ไว้)
+  (history kept intact; the channel can't continue until summarized or
+  `!reset_ai`). A 2-minute cooldown posts short auto-deleting reminders
+  instead of stacking button views; the non-streaming path just logs and
+  skips the turn. The dashboard path front-truncates its history block
+  (newest turns kept) instead.
+- **CLI hardening** — prompt-injection defang on both sides now covers role
+  markers *and* the prompt's own section headers (dashboard prompts also got
+  a size budget); `cli_write_guard.py` denylists the repo root, `~/.ssh` and
+  `~/.claude` even when `DASHBOARD_CLI_WRITE_DIRS` points at an ancestor;
+  `api_failover` no longer counts 4xx client errors toward the failover trip
+  threshold; the pre-warm pool only reuses a warm `claude -p` whose argv
+  exactly matches the turn (incl. thinking), falling back to a cold spawn;
+  perf/debug logs carry session ids.
 
 ### Unreleased — Dashboard CLI file-write mode
 

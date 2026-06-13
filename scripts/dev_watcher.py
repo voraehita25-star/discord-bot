@@ -116,7 +116,20 @@ class DevWatcherConfig:
                 for key, value in data.items():
                     if hasattr(config, key):
                         expected_type = type(getattr(config, key))
-                        if isinstance(value, expected_type):
+                        # JSON has no float literal for whole numbers, so a
+                        # user writing "poll_interval": 2 yields an int —
+                        # coerce to float for float-typed fields rather than
+                        # silently discarding the setting. (bool is an int
+                        # subclass; exclude it from int fields.)
+                        if (
+                            expected_type is float
+                            and isinstance(value, int)
+                            and not isinstance(value, bool)
+                        ):
+                            value = float(value)
+                        if isinstance(value, expected_type) and not (
+                            expected_type is int and isinstance(value, bool)
+                        ):
                             setattr(config, key, value)
                         else:
                             print(
@@ -640,7 +653,18 @@ if WATCHDOG_AVAILABLE:
             and ``.json`` ignored ``data/foo.jsonbackup``.
             """
             p = Path(path)
-            parts = {part.lower() for part in p.parts}
+            # Scope component/hidden matching to the path RELATIVE to the repo
+            # root. watchdog yields absolute src_paths (the observer watches an
+            # absolute root), so p.parts otherwise carries the full ancestor
+            # chain: a checkout under a dot-prefixed ancestor (~/.local,
+            # ~/.cache, a CI cache dir) would make the hidden-dir check below
+            # match EVERY event and silently disable hot reload, and an ancestor
+            # dir named temp/logs/venv/data would wrongly trip an ignore pattern.
+            try:
+                rel = p.relative_to(PROJECT_ROOT)
+            except ValueError:
+                rel = p
+            parts = {part.lower() for part in rel.parts}
             suffixes = {s.lower() for s in p.suffixes}
             stem_lower = p.stem.lower()
 
@@ -668,7 +692,7 @@ if WATCHDOG_AVAILABLE:
                 # component compare can't catch these).
                 if "/" in pat or "\\" in pat:
                     pat_parts = tuple(seg for seg in pat.replace("\\", "/").split("/") if seg)
-                    path_parts = tuple(part.lower() for part in p.parts)
+                    path_parts = tuple(part.lower() for part in rel.parts)
                     span = len(pat_parts)
                     if span and any(
                         path_parts[i : i + span] == pat_parts
@@ -680,8 +704,8 @@ if WATCHDOG_AVAILABLE:
                 if pat in parts or pat == stem_lower or pat == p.name.lower():
                     return True
 
-            # Check hidden directories
-            return bool(any(part.startswith(".") for part in p.parts if part not in ("", "/")))
+            # Check hidden directories (repo-relative — see the rel note above).
+            return bool(any(part.startswith(".") for part in rel.parts if part not in ("", "/")))
 
         def _handle_change(self, event) -> None:
             """Handle file change events."""

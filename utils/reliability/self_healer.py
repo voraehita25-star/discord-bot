@@ -24,9 +24,17 @@ from typing import Any
 
 import psutil
 
-# Constants
-PID_FILE = "bot.pid"
-HEALER_LOG_FILE = "logs/self_healer.log"
+# Constants — PID_FILE anchored to the repo root, matching bot.py's own
+# anchoring (a CWD-relative "bot.pid" silently broke stale-PID detection
+# whenever the process was launched from another directory: systemd,
+# dashboard wrapper, IDE run configs).
+PID_FILE = str(Path(__file__).resolve().parents[2] / "bot.pid")
+# Repo-root-anchored for the same reason as PID_FILE above: a CWD-relative
+# "logs/self_healer.log" scattered the diagnostic trail under whatever
+# directory the bot/healer happened to be launched from (systemd, the
+# dashboard wrapper, an IDE), and scripts/bot_manager.py reads it at the
+# repo-root path.
+HEALER_LOG_FILE = str(Path(__file__).resolve().parents[2] / "logs" / "self_healer.log")
 
 # Authorization gate for bulk-kill operations. Without this, a stray
 # `import utils.reliability.self_healer; kill_everything()` from any module
@@ -50,8 +58,12 @@ def _kill_authorized(authorized: bool) -> tuple[bool, str]:
 
 # Lockfile for serialising single-instance enforcement (see
 # ``_singleton_enforcement_lock``). Separate from PID_FILE — it's an OS advisory
-# lock, never read for content.
-_SINGLETON_LOCK_FILE = "bot.singleton.lock"
+# lock, never read for content. Repo-root-anchored like PID_FILE: a
+# CWD-relative path would let two bots launched from different working
+# directories open two different lock files, so the advisory lock (bound to the
+# open file object) would provide no mutual exclusion and both would proceed
+# into the kill step — the exact mutual-kill race this lock prevents.
+_SINGLETON_LOCK_FILE = str(Path(__file__).resolve().parents[2] / "bot.singleton.lock")
 
 
 @contextlib.contextmanager
@@ -141,9 +153,10 @@ class SelfHealer:
         logger = logging.getLogger("SelfHealer")
         logger.setLevel(logging.DEBUG)
 
-        # Create logs directory if not exists
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
+        # Create logs directory if not exists (anchored to HEALER_LOG_FILE so
+        # it lands at the repo root, not the launch CWD).
+        log_dir = Path(HEALER_LOG_FILE).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         # File handler
         if not logger.handlers:
@@ -431,6 +444,15 @@ class SelfHealer:
         except OSError as e:
             self.log("error", f"Failed to stop PID {pid}: {e}")
             return False
+        except psutil.Error as e:
+            # Base-class catch-all for any other psutil.Error subclass (e.g.
+            # ZombieProcess on platforms where it isn't a NoSuchProcess, or a
+            # future subclass). psutil.Error does NOT subclass OSError, so
+            # without this an unexpected psutil failure would escape and crash
+            # the startup-critical callers (ensure_single_instance, the kill
+            # sweeps). Matches the file's own psutil.Error catch-all elsewhere.
+            self.log("error", f"psutil error when stopping PID {pid}: {e}")
+            return False
 
     def clean_pid_file(self, *, force: bool = False) -> bool:
         """Remove stale PID file.
@@ -689,12 +711,31 @@ class SelfHealer:
                         # process and leave a stale one running.
                         killed_count = self.kill_duplicate_bots(keep_newest=True)
                         action_result["details"] = f"Killed {killed_count} duplicate bot(s)"
-                    action_result["success"] = True
+                    # Success = duplicates are actually GONE. kill_process can
+                    # fail per-PID (AccessDenied → False) with no exception, so
+                    # a blind True let smart_startup_check print "[OK] Resolved"
+                    # and boot a second instance alongside the survivor.
+                    remaining = self.find_all_bot_processes()
+                    action_result["success"] = len(remaining) <= (0 if aggressive else 1)
+                    if not action_result["success"]:
+                        action_result["details"] += (
+                            f" — {len(remaining)} instance(s) still running (kill failed?)"
+                        )
+                        heal_results["success"] = False
 
                 elif rec == "KILL_DUPLICATE_WATCHERS":
                     killed_count = self.kill_duplicate_watchers()
                     action_result["details"] = f"Killed {killed_count} duplicate watcher(s)"
-                    action_result["success"] = True
+                    # Mirror the bots branch: verify the duplicates are actually
+                    # gone. kill_process can fail per-PID (AccessDenied → False)
+                    # with no exception, so a blind True would overstate the heal.
+                    remaining = self.find_all_dev_watchers()
+                    action_result["success"] = len(remaining) <= 1
+                    if not action_result["success"]:
+                        action_result["details"] += (
+                            f" — {len(remaining)} watcher(s) still running (kill failed?)"
+                        )
+                        heal_results["success"] = False
 
                 elif rec == "CLEAN_PID_FILE":
                     # Honor the return value: clean_pid_file() refuses (returns
@@ -708,6 +749,8 @@ class SelfHealer:
                         if cleaned
                         else "PID file left in place (points to a live non-bot process)"
                     )
+                    if not cleaned:
+                        heal_results["success"] = False
 
             except (psutil.Error, OSError) as e:
                 action_result["details"] = f"Error: {e}"
@@ -762,9 +805,13 @@ class SelfHealer:
 
                 self.log("warning", f"Found {len(other_now)} existing instance(s) - killing them")
 
-                # Also kill any dev_watchers to prevent auto-restart
+                # Also kill any dev_watchers to prevent auto-restart — but
+                # NEVER our own parent: a bot spawned by dev_watcher (the
+                # documented dev flow) would otherwise kill its own watcher
+                # and destroy hot-reload (diagnose() documents this rule).
+                parent_pid = os.getppid()
                 watchers = self.find_all_dev_watchers()
-                other_watchers = [w for w in watchers if w["pid"] != self.my_pid]
+                other_watchers = [w for w in watchers if w["pid"] not in (self.my_pid, parent_pid)]
 
                 for watcher in other_watchers:
                     self.kill_process(watcher["pid"])

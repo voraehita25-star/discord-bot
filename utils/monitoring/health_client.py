@@ -275,12 +275,19 @@ class HealthAPIClient:
         self._metrics_buffer.clear()
 
         try:
-            async with self._session.post(
-                f"{self.base_url}/metrics/batch",
-                json=metrics,
-                headers=_auth_headers(),
-            ):
-                pass  # Response is auto-closed by async with
+            # The Go sidecar rejects batches >1000 items with HTTP 400 —
+            # chunk so a recovery flush of a full buffer can never trip it.
+            for i in range(0, len(metrics), 900):
+                chunk = metrics[i : i + 900]
+                async with self._session.post(
+                    f"{self.base_url}/metrics/batch",
+                    json=chunk,
+                    headers=_auth_headers(),
+                ) as resp:
+                    # Non-2xx (400 batch-too-large, 401 bad token) was
+                    # previously treated as delivered and the data dropped.
+                    if resp.status >= 400:
+                        logger.warning("Metrics batch rejected by sidecar: HTTP %s", resp.status)
         except Exception as e:
             # Re-add to buffer on failure but cap the buffer so a sustained
             # outage can't grow the buffer without bound + cause OOM. Cap is

@@ -29,7 +29,7 @@ interface InspectionFinding {
 const findings: InspectionFinding[] = [];
 
 // Real nav items rendered in ui/index.html (not the speculative list I had).
-const PAGES = ['status', 'chat', 'logs', 'database', 'settings'];
+const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
 
 function attachLogging(page: Page, pageName: string): void {
     page.on('console', (msg: ConsoleMessage) => {

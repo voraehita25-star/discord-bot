@@ -69,7 +69,22 @@ class URLFetcherClient:
         self._service_check_time: float = 0
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
+        # Build the session with the SSRF-safe resolver so _fetch_fallback's
+        # plain session.get() can't be DNS-rebound after the _is_private_url
+        # pre-check (the pre-check resolves once, then aiohttp re-resolves at
+        # connect time — a TTL-0 attacker domain returns public for the check
+        # and private for the connect). Mirrors url_fetcher._get_shared_session.
+        connector = None
+        try:
+            from utils.web.url_fetcher import _SSRFSafeResolver
+
+            connector = aiohttp.TCPConnector(resolver=_SSRFSafeResolver(aiohttp.ThreadedResolver()))
+        except Exception:
+            logger.warning("SSRF-safe resolver unavailable; fallback fetch uses default resolver")
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=self.timeout),
+            connector=connector,
+        )
         await self._check_service()
         return self
 

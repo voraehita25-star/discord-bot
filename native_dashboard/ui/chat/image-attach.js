@@ -116,7 +116,7 @@ export class ImageAttachManager {
         if (fileInput && documents) {
             fileInput.setAttribute('accept', 'image/*,application/pdf,text/*,' +
                 '.pdf,.docx,.txt,.md,.markdown,.json,.jsonc,.yaml,.yml,.toml,' +
-                '.ini,.conf,.cfg,.env,.csv,.tsv,.xml,.log,' +
+                '.ini,.conf,.cfg,.csv,.tsv,.xml,.log,' + // .env excluded — backend rejects it
                 '.py,.pyi,.js,.mjs,.cjs,.ts,.tsx,.jsx,.rs,.go,.java,.kt,' +
                 '.c,.cc,.cpp,.h,.hpp,.cs,.rb,.php,.pl,.r,.lua,' +
                 '.sh,.bash,.zsh,.ps1,.bat,.cmd,' +
