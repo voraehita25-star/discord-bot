@@ -258,6 +258,48 @@ def _is_game_search_query(text: str) -> bool:
     return any(kw in lowered for kw in _GAME_KW_NONASCII)
 
 
+# Thai combining marks (tone marks, vowel marks) cannot appear at the start of
+# a chunk — splitting just before one renders as a stray ◌-form glyph.
+_THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
+
+
+def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
+    """Split ``text`` into ``<=limit``-char chunks at natural boundaries.
+
+    Prefers a newline boundary, then a space, then a hard cut at ``limit``.
+    A hard cut is rewound past any Thai combining marks AND their base char so
+    a mark never lands orphaned at the start of the next chunk. Shared by the
+    narrator-intro path and the normal-send path so both are Thai-safe — the
+    narrator path previously used a raw fixed-width slice and could orphan a
+    combining mark on a long (>2000-char) intro.
+    """
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        # Find best split point near `limit` chars.
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at == -1 or split_at < limit // 2:
+            split_at = remaining.rfind(" ", 0, limit)
+        if split_at == -1 or split_at < limit // 2:
+            split_at = limit
+        # Newline/space split points can never land on a combining mark, so
+        # only the hard-split case needs the rewind: walk back past the marks
+        # AND their base char (stopping at the base would orphan its marks).
+        if split_at >= limit:
+            rewind = split_at
+            while rewind > 1 and ord(remaining[rewind - 1]) in _THAI_COMBINING:
+                rewind -= 1
+            if rewind > 1 and rewind < split_at:
+                rewind -= 1
+            split_at = rewind
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+    return chunks
+
+
 # NOTE: convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 # are imported from .emoji module (line 45) - DO NOT redefine here
 
@@ -1980,9 +2022,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                         # 400 error aborted the entire multi-character response.
                         if parts[0] and parts[0].strip():
                             narrator_text = parts[0].strip()
-                            for _start in range(0, len(narrator_text), 2000):
+                            # Thai-combining-aware split (shared with the
+                            # normal-send path) — a raw 2000-char slice could
+                            # orphan a combining mark on a long intro.
+                            for _chunk in _split_for_discord(narrator_text):
                                 await send_channel.send(
-                                    narrator_text[_start : _start + 2000],
+                                    _chunk,
                                     allowed_mentions=discord.AllowedMentions.none(),
                                 )
 
@@ -2030,54 +2075,17 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                         return  # Skip normal sending
 
-                    # Normal Sending (Discord has a 2000 char limit)
+                    # Normal Sending (Discord has a 2000 char limit). Split at
+                    # natural boundaries, keeping Thai combining marks attached
+                    # to their base char (see _split_for_discord). sent_message
+                    # ends as the LAST chunk's send, which is what the history
+                    # message-id stamping below expects.
                     sent_message = None
-                    if len(response_text) > 2000:
-                        # Smart split at natural boundaries to avoid breaking
-                        # multi-byte chars (Thai text) or markdown
-                        # Thai combining marks (tone marks, vowel marks) cannot
-                        # appear at the start of a chunk — splitting just
-                        # before one would render as a stray ◌-form glyph.
-                        THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
-                        remaining = response_text
-                        while remaining:
-                            if len(remaining) <= 2000:
-                                sent_message = await send_channel.send(
-                                    remaining, allowed_mentions=discord.AllowedMentions.none()
-                                )
-                                break
-                            # Find best split point near 2000 chars
-                            split_at = remaining.rfind("\n", 0, 2000)
-                            if split_at == -1 or split_at < 1000:
-                                split_at = remaining.rfind(" ", 0, 2000)
-                            if split_at == -1 or split_at < 1000:
-                                split_at = 2000
-                            # Keep Thai combining marks attached to their base
-                            # character on a hard split at 2000. Newline/space
-                            # split points can never land on a combining mark,
-                            # so only the hard-split case needs handling: walk
-                            # back past the marks AND past their base char —
-                            # stopping at the base leaves its marks orphaned at
-                            # the START of the next chunk, which renders as the
-                            # stray ◌-form glyph this code exists to prevent.
-                            if split_at >= 2000:
-                                rewind = split_at
-                                while rewind > 1 and ord(remaining[rewind - 1]) in THAI_COMBINING:
-                                    rewind -= 1
-                                if rewind > 1 and rewind < split_at:
-                                    # We skipped marks; move their base char
-                                    # into the next chunk too.
-                                    rewind -= 1
-                                split_at = rewind
+                    if response_text:  # Only send if there is text left
+                        for _chunk in _split_for_discord(response_text):
                             sent_message = await send_channel.send(
-                                remaining[:split_at],
-                                allowed_mentions=discord.AllowedMentions.none(),
+                                _chunk, allowed_mentions=discord.AllowedMentions.none()
                             )
-                            remaining = remaining[split_at:].lstrip("\n")
-                    elif response_text:  # Only send if there is text left
-                        sent_message = await send_channel.send(
-                            response_text, allowed_mentions=discord.AllowedMentions.none()
-                        )
 
                     # Update history with Message ID if available
                     if sent_message and chat_data.get("history"):

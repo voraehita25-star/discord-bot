@@ -251,7 +251,11 @@ _PREWARM_SHUTDOWN = False
 
 
 def _build_system_prompt(
-    persona: str, *, web_enabled: bool = False, ai_tools_enabled: bool = False
+    persona: str,
+    *,
+    web_enabled: bool = False,
+    webfetch_enabled: bool = False,
+    ai_tools_enabled: bool = False,
 ) -> str:
     """The cacheable system block sent via --append-system-prompt-file.
 
@@ -278,6 +282,11 @@ def _build_system_prompt(
             "information. Use it whenever the answer depends on recent events or "
             "facts you're unsure of — do NOT claim you lack web access."
         )
+    # WebFetch is advertised separately: the argv withholds it on attachment
+    # (Read) turns for exfil-safety, so advertising it there would tell the
+    # model to "call directly" a tool that is denied. webfetch_enabled already
+    # implies web_enabled at the call site.
+    if webfetch_enabled:
         tool_lines.append("- WebFetch: fetch and read the contents of a specific URL.")
     if ai_tools_enabled:
         tool_lines.append(
@@ -428,17 +437,19 @@ def _encode_claude_project_dirname(path: Path) -> str:
     """Replicate Claude Code's path encoding for its session-log folder.
 
     Claude Code stores `~/.claude/projects/<encoded>/<session-id>.jsonl`
-    where `<encoded>` replaces `:`, `\\`, `/`, space, and `_` with `-`:
+    where `<encoded>` replaces *every* non-ASCII-alphanumeric character with
+    `-` (consecutive specials are NOT collapsed):
         `c:\\Users\\ME\\BOT Discord\\data\\claude_cli_workdir`
             →  `c--Users-ME-BOT-Discord-data-claude-cli-workdir`
-    We need the same encoding to locate the session file to delete —
-    missing the `_` substitution silently breaks `delete_session_file()`
-    so deleted dashboard conversations leave orphan .jsonl behind.
+    We need the same encoding to locate the session file to delete. A fixed
+    subset (`: \\ / space _`) omitted `.` (and every other special), so any
+    path segment containing a dot — e.g. a Windows profile like `me.name`
+    or a versioned dir — diverged from the real folder name and silently
+    broke `delete_session_file()`, LRU eviction and per-turn stale unlink,
+    leaving orphan .jsonl behind. Verified against the installed CLI:
+    `_` and `.` both map to `-`.
     """
-    s = str(path)
-    for ch in (":", "\\", "/", " ", "_"):
-        s = s.replace(ch, "-")
-    return s
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def _claude_config_dir() -> Path:
@@ -2556,9 +2567,17 @@ async def handle_chat_message_claude_cli(
         # Advertise web tools only when the argv actually allows them: write
         # mode appends --disallowedTools "… WebFetch WebSearch …", and telling
         # the model a denied tool is "available right now — call it directly"
-        # produces confident tool calls that hard-fail every time.
+        # produces confident tool calls that hard-fail every time. WebFetch is
+        # ALSO withheld on attachment (Read) turns for exfil-safety, so gate
+        # its advertising on has_attachments too; WebSearch stays under web.
         system_prompt_file = _ensure_system_prompt_file(
-            _build_system_prompt(persona, web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled)
+            _build_system_prompt(
+                persona,
+                web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled,
+                webfetch_enabled=(
+                    _CLI_WEB_TOOLS_ENABLED and not write_enabled and not has_attachments
+                ),
+            )
         )
     except OSError:
         logger.warning(

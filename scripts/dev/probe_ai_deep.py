@@ -243,7 +243,9 @@ async def probe_api_handler_retry() -> None:
     if fn is None:
         print("  [SKIP] no retry-aware function exposed")
         return
-    print(f"  [INFO] testing {fn.__name__}")
+    # Retry assertions for this path were never implemented — emit an honest
+    # SKIP rather than an [INFO]/[OK] that claims coverage we don't exercise.
+    print(f"  [SKIP] found {fn.__name__} but retry assertions not implemented")
 
 
 # ---------------------------------------------------------------------------

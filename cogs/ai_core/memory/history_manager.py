@@ -333,10 +333,11 @@ class HistoryManager:
         result.extend(recent)
 
         self.logger.info(
-            "📦 History trimmed: %d total (kept %d important, %d recent, 1 summary)",
+            "📦 History trimmed: %d total (kept %d important, %d recent, %d summary)",
             len(result),
             len(kept_older),
             len(recent),
+            1 if summary_entry else 0,
         )
 
         return result

@@ -70,6 +70,11 @@ class MusicControlView(discord.ui.View):
             button.emoji = "⏸️"
             try:
                 voice_client.resume()
+                # Shared bookkeeping (mirrors the text !resume command) so a
+                # button-initiated resume advances start_time by the paused
+                # interval — otherwise nowplaying/progress drifts past the
+                # real audio position. Only on a successful state toggle.
+                self.cog.mark_resume(self.guild_id)
             except discord.ClientException as e:
                 # Restore the emoji and surface the failure to the user
                 button.emoji = previous_emoji
@@ -81,6 +86,9 @@ class MusicControlView(discord.ui.View):
             button.emoji = "▶️"
             try:
                 voice_client.pause()
+                # Record the pause instant via the shared helper so resume /
+                # fix / nowplaying compute elapsed position correctly.
+                self.cog.mark_pause(self.guild_id)
             except discord.ClientException as e:
                 button.emoji = previous_emoji
                 await interaction.response.send_message(

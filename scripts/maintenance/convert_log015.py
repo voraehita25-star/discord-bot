@@ -29,6 +29,14 @@ from pathlib import Path
 
 LOGGER_DECL = b"logger = logging.getLogger(__name__)"
 
+# Recognise an existing ``logger = logging.getLogger(...)`` binding regardless
+# of whitespace (e.g. ``logger=logging.getLogger(...)``) and only on a real
+# code line (leading indentation only — not inside a comment/docstring that
+# merely contains the literal). A bare ``LOGGER_DECL in original`` substring
+# test missed non-canonical spacing (inserting a duplicate binding) and could
+# be fooled by the literal string appearing inside a comment.
+_LOGGER_DECL_RE = re.compile(rb"^[ \t]*logger[ \t]*=[ \t]*logging\.getLogger\(")
+
 # Match indented `logging.<level>(`. The leading capture group keeps the
 # original whitespace (tab, 4-space, 8-space etc.) so we don't reformat.
 # We deliberately do NOT match unindented `logging.X(` — those at module
@@ -41,6 +49,11 @@ LOGGER_DECL = b"logger = logging.getLogger(__name__)"
 # This is acceptable for our single-statement-per-line scope; such lines are
 # rare and the result stays valid syntax (mixed `logger.`/`logging.`), so a
 # manual pass can finish them.
+# Limitation 2: the rewrite is purely textual (no tokenizer), so an indented
+# `logging.<level>(` inside a triple-quoted string/docstring or after a `#`
+# comment is rewritten too. py_compile still passes (the edit stays valid),
+# so such a false-positive would be committed silently. No first-party source
+# in this repo has that shape; review the diff if you re-run on new inputs.
 _CALL_RE = re.compile(
     rb"(^|\r?\n)([ \t]+)logging\.(debug|info|warning|error|critical|exception|log)\(",
 )
@@ -79,7 +92,7 @@ def convert_file(path: Path) -> tuple[bool, str]:
 
     new_lines = list(text_lines)
     inserted = False
-    if LOGGER_DECL not in original:
+    if not any(_LOGGER_DECL_RE.match(ln) for ln in text_lines):
         # Insert right after the import line, preserving the line-ending style of the
         # import line (handled by splitting on \n — \r stays attached to the line above).
         new_lines.insert(

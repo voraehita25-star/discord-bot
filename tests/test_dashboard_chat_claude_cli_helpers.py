@@ -555,11 +555,24 @@ class TestSystemPromptFile:
         out = cli._build_system_prompt("Use GOOGLE SEARCH for facts.", web_enabled=True)
         assert "# Available tools (this session)" in out
         assert "WebSearch" in out
-        assert "WebFetch" in out
+        # WebFetch is advertised separately (gated on webfetch_enabled) so it
+        # is NOT declared on web_enabled alone — the argv withholds WebFetch on
+        # attachment/Read turns, and advertising a denied tool causes confident
+        # calls that hard-fail.
+        assert "WebFetch" not in out
         assert "not enabled" in out  # explicit instruction not to refuse
         assert "Google Search" in out  # the bridging note referencing personas
         # The tool note comes AFTER the persona so it supersedes stale claims.
         assert out.index("Available tools") > out.index("Use GOOGLE SEARCH")
+
+    def test_webfetch_enabled_declares_webfetch_alongside_websearch(self):
+        # WebFetch is advertised only when the argv actually allow-lists it
+        # (web on, not write mode, not an attachment/Read turn). Mirrors the
+        # _build_claude_argv gate so the system prompt never drifts from the
+        # real allowed tool set.
+        out = cli._build_system_prompt("P", web_enabled=True, webfetch_enabled=True)
+        assert "WebSearch" in out
+        assert "WebFetch" in out
 
     def test_ai_tools_enabled_declares_memory_and_server_tools(self):
         out = cli._build_system_prompt("P", ai_tools_enabled=True)

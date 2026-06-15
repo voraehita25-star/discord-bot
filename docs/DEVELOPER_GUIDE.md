@@ -4,7 +4,7 @@
 > **Version:** 3.4.8
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 113 Python test files (5,044 tests) + 11 vitest files (294 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
+> **Total Files:** 114 Python test files (5,066 tests) + 11 vitest files (298 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -24,7 +24,7 @@ Discord Bot ที่รวม AI Chat (Claude เป็นหลัก + Gemini
 
 ---
 
-## 📁 Directory Structure (233 Python Files)
+## 📁 Directory Structure (256 Python Files)
 
 ```text
 BOT/
@@ -187,7 +187,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (5,044 tests in 113 files)
+├── tests/                    # 🧪 Python test suite (5,066 tests in 114 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -867,7 +867,7 @@ async def mycommand(self, ctx):
 ## ⚠️ Known Gotchas
 
 1. **Lock Timeout:** Uses `asyncio.wait_for()` with 180s timeout (see `LOCK_TIMEOUT` in `cogs/ai_core/data/constants.py`)
-2. **Short Response Detection:** `detect_refusal()` only checks patterns, not length
+2. **Refusal Handling:** Refusal detection is pattern-based (keys off response content patterns, not length) — see the refusal guards in `cogs/ai_core/storage.py` / `session_mixin.py` and `call_claude_api`'s retry/refusal logic (no standalone `detect_refusal()` function exists)
 3. **Streaming Timeout:** 120s for the initial chunk (`STREAMING_TIMEOUT_INITIAL`), falls back to non-streaming
 4. **Memory Cleanup:** Old RAG entries need periodic pruning
 5. **Thread Safety:** `CircuitBreaker` and `RateLimiter` use `threading.Lock` for thread-safe operations
@@ -880,7 +880,7 @@ async def mycommand(self, ctx):
 12. **SSRF Protection:** Go services bind to `127.0.0.1` by default and url_fetcher uses `ssrfSafeDialContext` to block DNS rebinding attacks with full IPv6 coverage
 13. **Permission Allowlists:** AI server commands validate against `_SAFE_PERMISSIONS` / `_DANGEROUS_PERMISSIONS` frozensets — administrator, manage_guild, ban_members etc. are blocked
 14. **Dashboard Auth:** WebSocket dashboard requires `DASHBOARD_WS_TOKEN` env var for authentication; unrestricted mode gated behind `DASHBOARD_ALLOW_UNRESTRICTED`
-15. **Lock Safety:** `asyncio.shield()` used for lock acquisition to avoid known CPython deadlock (#42130); `ShutdownManager` defers Event/Lock creation to correct event loop
+15. **Lock Safety:** AI-core lock acquisition uses `asyncio.wait_for(lock.acquire(), timeout=LOCK_TIMEOUT)` directly — the CPython #42130 deadlock fix landed in Python 3.12+ (repo requires 3.14+), so the former `asyncio.shield()` workaround was removed (it caused a double-release race); `ShutdownManager` still defers Event/Lock creation to the correct event loop
 16. **Mention Sanitization:** Both `sanitization.py` and webhook `send_as_webhook()` sanitize role mentions (`<@&ID>`) and user mentions (`<@ID>`) with zero-width space
 17. **Atomic Persistence:** RAG engine persists its in-memory store via temp-file+rename (write to a temp file, then atomic rename) so a crash mid-save can't corrupt the index
 18. **AllowedMentions Default:** Bot-level `AllowedMentions(everyone=False, roles=False)` prevents AI-generated @everyone/@here from mass-pinging
@@ -1138,4 +1138,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: June 14, 2026 - Version 3.4.8 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,044 Python tests + 294 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->
+<!-- Documentation last updated: June 14, 2026 - Version 3.4.8 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,066 Python tests + 298 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

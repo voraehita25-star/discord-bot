@@ -821,11 +821,15 @@ def validate_token(token: str | None) -> bool:
     parts = token.split(".")
     if len(parts) != 3:
         return False
-    # Length check — modern Discord bot tokens are ~70+ chars (token v2 is
-    # longer than v1). 50 was the v1 floor and would accept truncated or
-    # garbage strings as valid; raise it so the rejection at startup is
-    # informative rather than letting discord.py fail later with a 401.
-    return len(token) >= 70
+    # Each of the 3 segments must be non-empty — a stronger structural
+    # invariant than a bare global-length heuristic, and it rejects
+    # malformed "a..b" / ".x.y" tokens that a length check alone passes.
+    if not all(parts):
+        return False
+    # Length floor: keep out truncated/garbage strings while still accepting
+    # valid legacy (v1) bot tokens, which run ~59 chars — Discord does not
+    # formally guarantee a 70-char minimum, so 70 false-rejected real tokens.
+    return len(token) >= 59
 
 
 async def graceful_shutdown(

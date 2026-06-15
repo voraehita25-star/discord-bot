@@ -251,8 +251,10 @@ class FactExtractor:
         # patterns use unanchored ``(.+?)`` with alternation tails — on
         # adversarially long input this is a ReDoS vector. 4096 bytes
         # is plenty for normal user messages and bounds the worst-case
-        # backtracking cost. Truncate from the END so a "remember that
-        # …" pattern at message tail still matches when present.
+        # backtracking cost. We keep the leading 4096 chars (head); a
+        # remember/forget command past that boundary is dropped — acceptable
+        # since Discord messages stay well under 4096 chars, so this branch
+        # rarely fires in practice.
         if len(message) > _MAX_FACT_EXTRACTION_LEN:
             message = message[:_MAX_FACT_EXTRACTION_LEN]
 

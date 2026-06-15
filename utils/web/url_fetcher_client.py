@@ -45,7 +45,12 @@ except ValueError:
         _URL_FETCHER_PORT_RAW,
     )
     URL_FETCHER_PORT = "8081"
-URL_FETCHER_URL = f"http://{URL_FETCHER_HOST}:{URL_FETCHER_PORT}"
+# Bracket bare IPv6 literals (e.g. "::1") so the assembled URL is valid —
+# `http://::1:8081` is unparseable and would make every health check raise
+# ValueError, silently forcing the aiohttp fallback for the allowlisted
+# "::1" host. `http://[::1]:8081` parses correctly.
+_HOST_FOR_URL = f"[{URL_FETCHER_HOST}]" if ":" in URL_FETCHER_HOST else URL_FETCHER_HOST
+URL_FETCHER_URL = f"http://{_HOST_FOR_URL}:{URL_FETCHER_PORT}"
 
 
 class URLFetcherClient:

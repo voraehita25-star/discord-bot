@@ -131,7 +131,7 @@ if _GUILD_ID_RP:
 
 # Per-guild character image map.
 # Format: guild_id -> {character_name: image_path_relative_to_project_root}
-# Used by media_processor.load_character_image (line 325-345) to find a
+# Used by cogs.ai_core.media_processor.load_character_image to find a
 # character image when {{Name}} appears in the AI response. Keys are matched
 # case-insensitively against the message text; values must be paths under the
 # project directory (path traversal is blocked).

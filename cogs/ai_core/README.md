@@ -164,7 +164,7 @@ AI Core รองรับ Rust extensions สำหรับ performance:
 # Auto-selects Rust if available, else Python
 from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
-engine = RagEngineWrapper(dimension=768, similarity_threshold=0.7)  # 768 = Gemini text-embedding-004/005
+engine = RagEngineWrapper(dimension=768, similarity_threshold=0.7)  # 768 = Gemini gemini-embedding-2 (output_dimensionality=768)
 engine.add("mem-1", "some text", embedding_vector, importance=1.0)  # add(entry_id, text, embedding, ...)
 results = engine.search(query_embedding, top_k=5)
 

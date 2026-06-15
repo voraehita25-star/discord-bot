@@ -76,7 +76,7 @@ Copy-Item target\release\media_processor.dll ..\utils\media\media_processor.pyd 
 # Automatic fallback to pure Python if Rust not available
 from cogs.ai_core.memory.rag_rust import RagEngineWrapper
 
-engine = RagEngineWrapper(dimension=384, similarity_threshold=0.7)
+engine = RagEngineWrapper(dimension=768, similarity_threshold=0.7)  # 768 = gemini-embedding-2
 
 # Add entries
 engine.add("id1", "Some text", embedding_vector, importance=1.0)

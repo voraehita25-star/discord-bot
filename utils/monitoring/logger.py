@@ -204,11 +204,14 @@ _SECRET_PATTERNS_CI = re.compile(
     r"[A-Za-z0-9_-]{24,90}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,90}"
     r"|"
     # Generic long base64-like API key (32+ alphanumeric chars).
-    # Capture the keyword + delimiter into a non-emit group so the
-    # replacement only redacts the SECRET, leaving the keyword visible.
-    # Without this, a JSON-formatted log line like ``"key":"abc..."``
-    # has the entire chunk (including ``"key":"``) replaced by
-    # ``[REDACTED]``, breaking JSON validity for downstream parsers.
+    # Keyword + delimiter sit in zero-width lookbehinds so the replacement
+    # only redacts the SECRET, leaving the keyword visible (so you can see
+    # *which* class of secret was scrubbed). Note the match still consumes
+    # the surrounding quotes and the ``:``/``=`` delimiter, so a secret in
+    # raw JSON (``"key":"abc..."``) becomes ``"key[REDACTED]`` — the value is
+    # fully redacted (no leak), but the text is NOT kept structurally valid
+    # JSON. The JSON *log file* path (JSONLogFormatter) is unaffected: this
+    # text is re-escaped inside a JSON string field there.
     #
     # NOTE on the lookbehinds: each keyword needs a word boundary BEFORE
     # it so a keyword embedded in a larger word (e.g. ``monkey: <hex>``

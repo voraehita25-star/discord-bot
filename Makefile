@@ -1,7 +1,7 @@
 # Cross-platform Makefile for Discord Bot
 # Works on Linux, macOS, and Windows (with GNU Make)
 
-.PHONY: help test lint build run docker clean install
+.PHONY: help test lint build run docker clean install docs-sync docs-check
 
 # Default target
 help: ## Show this help message
@@ -108,6 +108,14 @@ db-migrate: ## Run database migrations
 
 db-export: ## Export database to JSON
 	python scripts/maintenance/view_db.py
+
+# ======================== Documentation ========================
+
+docs-sync: ## Sync volatile numbers (test/file counts, version, ...) in docs to the live repo
+	python scripts/maintenance/sync_doc_stats.py
+
+docs-check: ## Verify docs numbers match the live repo (exit 1 if stale) — for CI
+	python scripts/maintenance/sync_doc_stats.py --check
 
 # ======================== Cleanup ========================
 

@@ -83,6 +83,17 @@ class TestEncodeProjectDirname:
         assert "claude-cli-workdir" in result
         assert "_" not in result
 
+    def test_dots_replaced_with_dash_to_match_claude_code(self):
+        # Claude Code replaces EVERY non-alphanumeric char with '-', including
+        # '.' — not just the ":\\/ _" subset. A path segment with a dot (e.g. a
+        # Windows profile "me.name" or a versioned dir) must encode the dot too,
+        # or the computed projects folder diverges from the real one and cleanup
+        # silently no-ops, leaving orphan .jsonl behind.
+        result = cli_mod._encode_claude_project_dirname(Path("/home/me.name/proj.v2"))
+        assert "." not in result
+        assert "me-name" in result
+        assert "proj-v2" in result
+
 
 # ============================================================================
 # _claude_projects_folder — where Claude Code logs our sessions

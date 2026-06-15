@@ -122,9 +122,9 @@ def build_api_config(
         "max_tokens": CLAUDE_MAX_TOKENS,
     }
 
-    # Enable adaptive thinking for RP/Faust modes when thinking is enabled
-    # Claude Opus 4.7 uses adaptive thinking (type: "adaptive") instead of
-    # manual budget_tokens which is deprecated on this model.
+    # Enable adaptive thinking for RP/Faust modes when thinking is enabled.
+    # Opus 4.x adaptive-thinking models use thinking type:"adaptive" instead
+    # of a manual budget_tokens (removed on these models — sending it 400s).
     if (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         config_params["thinking"] = {"type": "adaptive"}
         logger.info("🧠 Adaptive Thinking Mode: ENABLED")

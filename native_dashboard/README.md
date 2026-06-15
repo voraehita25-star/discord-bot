@@ -19,7 +19,7 @@
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 294 tests across 11 vitest files: `app.test.ts`, `chat-manager.test.ts`, `history-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
+| 🧪 **Unit Tests** | 298 tests across 11 vitest files: `app.test.ts`, `chat-manager.test.ts`, `history-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
 | 🤖 **Headless E2E** | 72 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
@@ -148,14 +148,14 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~1.8k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~2.2k lines) — chat + file memory modal + editor
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.1k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~3.1k lines) — chat + file memory modal + editor
 │   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
-│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (35 tests)
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (39 tests)
 │   ├── history-manager.test.ts # HistoryManager load/edit/delete/undo + live_session-ack tests
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
@@ -171,7 +171,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 7 vitest files (294 tests total across all 11)
+│       └── *.test.ts             # 7 vitest files (298 tests total across all 11)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
@@ -262,7 +262,7 @@ python scripts/create_desktop_shortcut.py
 
 ```bash
 # Unit tests (vitest, ~5s)
-npm test                       # Run all 294 vitest tests
+npm test                       # Run all 298 vitest tests
 npm run test:watch             # Watch mode
 npm run test:coverage          # With coverage report
 
@@ -300,7 +300,7 @@ python scripts/dev/validate_ipc.py     # drives the built .exe, calls get_base_p
 target/release/bot-dashboard.exe                  # Source binary (Cargo output)
 target/release/Discord Bot Dashboard.exe          # English alias (copy)
 target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
-target/release/bundle/nsis/디스코드 봇 대시보드_2.0.0_x64-setup.exe  # NSIS installer
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.8_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI

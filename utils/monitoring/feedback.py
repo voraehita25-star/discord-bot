@@ -187,8 +187,11 @@ class FeedbackCollector:
         for callback in callbacks_snapshot:
             try:
                 callback(entry)
-            except Exception as e:
-                self.logger.error("Feedback callback error: %s", e)
+            except Exception:
+                # exception() captures the traceback so the failing callback
+                # line is identifiable; matches the logger.exception() pattern
+                # used elsewhere in utils/monitoring/.
+                self.logger.exception("Feedback callback error")
 
         return entry
 

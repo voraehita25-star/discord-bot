@@ -1,8 +1,8 @@
 # Testing Guide
 
-> Last Updated: June 12, 2026 | Python 3.14+ | Python Tests: 5,044 ✅ (113 files) + 2 skipped + 3 deselected | Frontend Tests: 294 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: June 15, 2026 | Python 3.14+ | Python Tests: 5,066 ✅ (114 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 298 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
 >
-> Counts drift as tests are added — run `make test` / `npm test` / `npm run test:e2e` for the live numbers.
+> Counts drift as tests are added — run **`make docs-sync`** to refresh every number in the docs from the live repo in one pass (or `make test` / `npm test` / `npm run test:e2e` for the live numbers directly). CI can guard drift with `make docs-check`.
 
 This document explains how to run tests for the Discord Bot project.
 
@@ -32,7 +32,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (113 Python files, 5,044 tests)
+## Test Structure (114 Python files, 5,066 tests)
 
 ```text
 tests/
@@ -55,7 +55,7 @@ tests/
 > `test_url_fetcher_client`, `test_url_safety`, `test_core_performance`,
 > `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **113 files**.
 
-## Frontend Test Structure (11 vitest files, 294 tests)
+## Frontend Test Structure (11 vitest files, 298 tests)
 
 TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment
 (DOMPurify + KaTeX globals attached via test setup).
@@ -63,7 +63,7 @@ TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environm
 ```text
 native_dashboard/src-ts/
 ├── app.test.ts                     # app.ts — status/logs/DB/settings (legacy suite)
-├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (35 tests)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (39 tests)
 ├── history-manager.test.ts         # AI History page — load/edit/delete/undo + refresh (91 tests)
 ├── e2e_smoke.test.ts               # Smoke-level end-to-end flows
 └── chat/

@@ -2427,6 +2427,11 @@ class Music(commands.Cog):
                 # a void nothing ever drained, and suppressed every other
                 # after-callback for the duration.
                 self._gs(guild_id).fixing = False
+                # Seek can run while paused (the guard permits is_paused) but
+                # leaves the client PLAYING, so clear any stale pause_start —
+                # otherwise the next pause/resume would add a bogus paused
+                # interval (mark_pause is idempotent) and corrupt elapsed math.
+                self._gs(guild_id).pause_start = None
             except Exception as e:
                 # Reset fixing flag if play() fails
                 self._gs(guild_id).fixing = False

@@ -24,7 +24,7 @@ The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ 
   ```
   Installed toolchain locations:
   - **Python 3.14.4** — `C:\Users\ME\AppData\Local\Programs\Python\Python314`; use the venv: `.venv\Scripts\python.exe`
-  - **Ruff** — `.venv\Scripts\ruff.exe` (also at `C:\Users\ME\AppData\Local\Zed\languages\ruff\ruff-0.15.0\ruff.exe`)
+  - **Ruff** — `.venv\Scripts\ruff.exe` (ruff 0.15.12)
   - **Node v24 / npm** — `C:\Users\ME\.local\node` (also holds npm-global LSP shims)
   - **Go 1.26** — `C:\Users\ME\.local\go\bin` (GOROOT); `go install` tools land in `C:\Users\ME\go\bin`
   - **Rust** — `C:\Users\ME\.cargo\bin` (cargo/rustc 1.95). ⚠️ Installed *without* MSVC build tools, so `cargo build`/`cargo test` of the `.pyd` extensions needs VS Build Tools (`link.exe`) before it will link.

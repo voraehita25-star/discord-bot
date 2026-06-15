@@ -326,7 +326,7 @@ Indexes: `idx_user_facts_user(user_id, is_active)`, `idx_user_facts_category(use
 
 - **WAL mode** + `mmap_size=2GB` + `wal_autocheckpoint=2000`
 - **Connection pool:** 32 semaphore slots, 16 reusable connections
-- **PRAGMAs:** `synchronous=NORMAL`, `cache_size=250000`, `temp_store=MEMORY`, `foreign_keys=ON`
+- **PRAGMAs:** `synchronous=NORMAL`, `cache_size=-65536` (~64 MiB/conn; negative = KiB bound), `temp_store=MEMORY`, `foreign_keys=ON`
 - **Write lock:** `asyncio.Lock` prevents concurrent writers
 - **WAL checkpoint:** Every 10 minutes (TRUNCATE)
 - **Auto-export:** Debounced JSON export to `data/db_export/`

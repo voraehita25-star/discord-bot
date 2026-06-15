@@ -344,10 +344,12 @@ class DashboardWebSocketServer:
             return False
 
     async def _ensure_port_available(self) -> None:
-        """Ensure port is available, killing old process if needed.
+        """Wait (up to 5s) for the port to become free; never kills any process.
 
-        SAFETY: Only kills processes that are confirmed to be our own bot instances
-        by checking for specific identifiers in the command line.
+        Polls the port with a short socket connect check. If it stays in use
+        after the wait, logs a warning and returns so the subsequent bind
+        fails gracefully. (Auto-killing was deliberately removed to avoid
+        ever terminating an unrelated process — see the inline note below.)
         """
         import socket
 
@@ -929,12 +931,17 @@ class DashboardWebSocketServer:
                             # ``_client_inflight`` cap inside
                             # handle_chat_message only sees the task
                             # AFTER create_task). Reject before spawning.
+                            # The cap matches the inner ``_client_inflight
+                            # >= 2`` guard so a frame can't pass here only to
+                            # be rejected inside handle_message — that path
+                            # spawned a task and silently burned a rate-limit
+                            # slot (the inner guard doesn't roll it back).
                             current_inflight = sum(
                                 1
                                 for t, cid in self._client_tasks.items()
                                 if cid == client_id and not t.done()
                             )
-                            if current_inflight >= 4:
+                            if current_inflight >= 2:
                                 # Roll back the rate-limit slot consumed at
                                 # ``times.append(now)`` above: this request is
                                 # rejected before any work is spawned, so it must
