@@ -15,7 +15,8 @@
  * Reconnect uses exponential backoff (1s → 30s cap) with 0-30% jitter to
  * prevent a thundering herd when the bot restarts. The client also runs a
  * 30-second ping/pong loop so half-open connections (silent WiFi drops, NAT
- * timeouts) surface within ~60 seconds instead of hanging forever.
+ * timeouts) surface within ~90 seconds (3 × 30s interval; reconnect fires on
+ * the 2nd missed pong) instead of hanging forever.
  *
  * Call `notePong()` from your onMessage handler when you see a `{type:'pong'}`
  * frame so the client can clear its missed-pong counter.

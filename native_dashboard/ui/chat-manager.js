@@ -2728,7 +2728,8 @@ export class ChatManager {
     downloadExport(data) {
         const filename = `chat_${data.id.slice(0, 8)}_${Date.now()}.${data.format}`;
         const content = data.data;
-        const blob = new Blob([content], { type: data.format === 'json' ? 'application/json' : 'text/markdown' });
+        const mime = { json: 'application/json', markdown: 'text/markdown', html: 'text/html', txt: 'text/plain' }[data.format] ?? 'text/plain';
+        const blob = new Blob([content], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
