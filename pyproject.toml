@@ -3,7 +3,7 @@
 
 [project]
 name = "discord-bot"
-version = "3.4.10"
+version = "3.4.11"
 description = "Production Discord Bot with AI, Music, and Native Extensions (Rust/Go)"
 requires-python = ">=3.14"
 
@@ -39,7 +39,7 @@ filterwarnings = [
 [tool.ruff]
 # py313 (not py314) — intentionally one minor below the >=3.14 runtime floor
 # because not every CI tool that ingests ruff config accepts PEP 758 syntax
-# yet (see .github/workflows/ci.yml). pre-commit ruff is pinned to v0.15.12
+# yet (see .github/workflows/ci.yml). pre-commit ruff is pinned to v0.15.17
 # (.pre-commit-config.yaml); py313 is a strict subset so lint coverage is fine.
 target-version = "py313"
 line-length = 100
