@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, ClassVar
@@ -386,6 +386,13 @@ class AICache:
                 self._evict_lru()
                 self.cache[key] = entry
 
+            # Snapshot the (now possibly refresh-merged) entry while still
+            # holding _cache_lock. On a refresh ``entry`` is the live object
+            # stored in self.cache, so a concurrent get() can mutate its
+            # hits/ttl_multiplier — pass an immutable copy to the hook so L2
+            # persistence sees a consistent, torn-read-free snapshot.
+            entry_snapshot = replace(entry)
+
         # Optional persistence hook (e.g. write-through to L2). Set on the
         # instance, not the class — that way subclasses, test instances, and
         # alternate caches don't all inherit the same persistence target via
@@ -393,7 +400,7 @@ class AICache:
         hook = getattr(self, "_post_set_hook", None)
         if hook is not None:
             try:
-                hook(key, entry)
+                hook(key, entry_snapshot)
             except Exception:
                 self.logger.exception("AICache post_set_hook raised")
 
@@ -601,7 +608,15 @@ class L2SqliteCache:
         with self._lock:
             try:
                 if pattern is None:
-                    cur = self._conn.execute("DELETE FROM cache_entries")
+                    # An unqualified DELETE is truncate-optimized by SQLite, so
+                    # cur.rowcount comes back 0/-1 and under-reports the rows
+                    # cleared. Count first, then delete, and return that count.
+                    count = int(
+                        self._conn.execute("SELECT COUNT(*) FROM cache_entries").fetchone()[0]
+                    )
+                    self._conn.execute("DELETE FROM cache_entries")
+                    self._conn.commit()
+                    return count
                 else:
                     # Substring match mirrors the L1 `pattern in key` filter.
                     cur = self._conn.execute(

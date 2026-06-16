@@ -343,7 +343,9 @@ class TestHealthAPIClientPushMetric:
 
     @pytest.mark.asyncio
     async def test_push_metric_unavailable(self):
-        """Test _push_metric returns early when unavailable."""
+        """Test _push_metric buffers (does not drop) when the sidecar is
+        unavailable, so startup/outage-window metrics deliver once it comes up.
+        The buffer is bounded by the cap; delivery stays gated on availability."""
         from utils.monitoring.health_client import HealthAPIClient
 
         client = HealthAPIClient()
@@ -351,7 +353,8 @@ class TestHealthAPIClientPushMetric:
 
         await client._push_metric("counter", "test", 1, {})
 
-        assert len(client._metrics_buffer) == 0
+        # Buffered for later delivery rather than dropped on the floor.
+        assert len(client._metrics_buffer) == 1
 
     @pytest.mark.asyncio
     async def test_push_metric_adds_to_buffer(self):

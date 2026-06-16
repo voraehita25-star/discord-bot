@@ -42,6 +42,19 @@ type traceIDContextKey struct{}
 // Initialized once to avoid repeated parsing.
 var privateNetworks []*net.IPNet
 
+// dangerousHosts is the denylist of known dangerous hostnames (cloud metadata
+// endpoints). Shared between isPrivateURL (initial URL) and the client's
+// CheckRedirect (every redirect hop) so the blocklist is enforced on all hops.
+var dangerousHosts = []string{
+	"metadata.google.internal",
+	"metadata.internal",
+	"169.254.169.254",           // AWS/GCP instance metadata
+	"metadata.google.internal.", // trailing dot variant
+	"instance-data",             // AWS alternative
+	"100.100.100.200",           // Alibaba Cloud metadata
+	"fd00:ec2::254",             // AWS IMDSv2 IPv6
+}
+
 func init() {
 	ranges := []string{
 		"127.0.0.0/8",            // Loopback
@@ -94,15 +107,6 @@ func isPrivateURL(rawURL string) (bool, error) {
 	}
 
 	// Block known dangerous hostnames (cloud metadata endpoints)
-	dangerousHosts := []string{
-		"metadata.google.internal",
-		"metadata.internal",
-		"169.254.169.254",           // AWS/GCP instance metadata
-		"metadata.google.internal.", // trailing dot variant
-		"instance-data",             // AWS alternative
-		"100.100.100.200",           // Alibaba Cloud metadata
-		"fd00:ec2::254",             // AWS IMDSv2 IPv6
-	}
 	for _, h := range dangerousHosts {
 		if strings.EqualFold(hostname, h) {
 			return true, nil
@@ -237,8 +241,16 @@ func NewFetcher() *Fetcher {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
-				// Redirect target IP is validated by ssrfSafeDialContext
-				// so no additional check needed here.
+				// Redirect target IP is validated by ssrfSafeDialContext, but
+				// the dangerousHosts metadata denylist (isPrivateURL) is only
+				// applied to the initial URL — re-enforce it on every hop so a
+				// redirect can't reach a metadata hostname.
+				host := req.URL.Hostname()
+				for _, h := range dangerousHosts {
+					if strings.EqualFold(host, h) {
+						return fmt.Errorf("SSRF blocked: redirect to dangerous host %q", host)
+					}
+				}
 				return nil
 			},
 		},

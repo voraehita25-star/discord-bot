@@ -505,26 +505,33 @@ class LongTermMemory:
         Returns:
             True if fact was found and forgotten
         """
-        similar = await self._find_similar_fact(user_id, content_query)
-        if similar and similar.id:
-            # Hold _lock across BOTH the DB write and the cache mutation.
-            # `_update_fact_confirmation` holds the same lock across its DB
-            # write, so doing only the cache update under lock here would
-            # let an interleaving cache rebuild from the DB observe the
-            # not-yet-deactivated row.
-            async with self._lock:
-                if DB_AVAILABLE and db is not None:
-                    async with db.get_write_connection() as conn:
-                        await conn.execute(
-                            "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
-                        )
-                        await conn.commit()
+        # Serialize the whole forget on the per-user lock (outermost) so it
+        # can't interleave with process_message/add_explicit_fact for this
+        # user — otherwise a concurrent re-confirm could resurrect the fact
+        # we're forgetting.
+        async with self._get_user_lock(user_id):
+            similar = await self._find_similar_fact(user_id, content_query)
+            if similar and similar.id:
+                # Hold _lock across BOTH the DB write and the cache mutation.
+                # `_update_fact_confirmation` holds the same lock across its DB
+                # write, so doing only the cache update under lock here would
+                # let an interleaving cache rebuild from the DB observe the
+                # not-yet-deactivated row.
+                async with self._lock:
+                    if DB_AVAILABLE and db is not None:
+                        async with db.get_write_connection() as conn:
+                            await conn.execute(
+                                "UPDATE user_facts SET is_active = 0 WHERE id = ?", (similar.id,)
+                            )
+                            await conn.commit()
 
-                if user_id in self._cache:
-                    self._cache[user_id] = [f for f in self._cache[user_id] if f.id != similar.id]
+                    if user_id in self._cache:
+                        self._cache[user_id] = [
+                            f for f in self._cache[user_id] if f.id != similar.id
+                        ]
 
-            self.logger.info("Forgot fact: %s", similar.content[:50])
-            return True
+                self.logger.info("Forgot fact: %s", similar.content[:50])
+                return True
 
         return False
 

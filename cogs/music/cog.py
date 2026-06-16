@@ -369,6 +369,15 @@ class Music(commands.Cog):
             await self._save_queue_json(guild_id)
             return
 
+        # The music_queue DB schema only stores the track list, so volume/
+        # loop/mode_247 would otherwise be lost on restart when the DB
+        # backend is active (the JSON path persists all four). Mirror those
+        # settings to a small dedicated sidecar regardless of DB availability
+        # so they survive a restart without a schema migration. mode_247 in
+        # particular must persist — losing it makes a 24/7 channel auto-
+        # disconnect after a restart.
+        await self._save_queue_settings(guild_id)
+
         # db.save_music_queue / clear_music_queue never raise — they catch
         # internally and return False. Raising here on failure is what lets
         # _periodic_queue_save's per-guild retry re-mark the pending flag;
@@ -384,6 +393,71 @@ class Music(commands.Cog):
         if not await db.save_music_queue(guild_id, list(queue)):
             raise RuntimeError(f"save_music_queue failed for guild {guild_id}")
         logger.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
+
+    async def _save_queue_settings(self, guild_id: int) -> None:
+        """Persist volume/loop/mode_247 to a sidecar (DB-path settings safety).
+
+        The ``music_queue`` DB table only holds the track list, so these
+        per-guild playback settings would be lost on restart when the DB
+        backend is active. This writes them to a dedicated
+        ``data/queue_settings_{guild_id}.json`` file (separate from the
+        queue JSON so it doesn't interfere with the JSON-to-DB queue
+        migration/unlink logic in ``load_queue``). Read back by
+        ``_load_queue_settings``.
+        """
+        gs = self._gs(guild_id)
+        snapshot = {
+            "volume": gs.volume,
+            "loop": gs.loop,
+            "mode_247": gs.mode_247,
+        }
+        await asyncio.to_thread(self._save_queue_settings_sync, guild_id, snapshot)
+
+    def _save_queue_settings_sync(self, guild_id: int, snapshot: dict) -> None:
+        """Synchronous settings-sidecar write (atomic via temp + replace)."""
+        try:
+            filepath = Path(f"data/queue_settings_{guild_id}.json")
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = filepath.with_suffix(".json.tmp")
+            temp_path.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            temp_path.replace(filepath)  # Atomic on POSIX; near-atomic on Windows
+        except OSError:
+            logger.exception("Failed to save queue settings for guild %s", guild_id)
+            with contextlib.suppress(OSError):
+                temp_path = Path(f"data/queue_settings_{guild_id}.json.tmp")
+                if temp_path.exists():
+                    temp_path.unlink()
+
+    async def _load_queue_settings(self, guild_id: int) -> None:
+        """Restore volume/loop/mode_247 from the settings sidecar, if present.
+
+        Counterpart to ``_save_queue_settings`` — used by the DB load path so
+        these settings survive a restart even though the DB only stores the
+        track list. Values are validated the same way as the queue-JSON path.
+        """
+        filepath = Path(f"data/queue_settings_{guild_id}.json")
+        if not await asyncio.to_thread(filepath.exists):
+            return
+        try:
+            raw = await asyncio.get_running_loop().run_in_executor(
+                None, filepath.read_text, "utf-8"
+            )
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                logger.warning("Invalid queue settings file for guild %s — skipping", guild_id)
+                return
+            # Clamp volume to the same [0.0, 2.0] range !volume enforces and
+            # reject NaN/±inf so a corrupt sidecar can't poison the transformer.
+            _loaded_vol = float(data.get("volume", 0.5))
+            self._gs(guild_id).volume = (
+                max(0.0, min(2.0, _loaded_vol)) if math.isfinite(_loaded_vol) else 0.5
+            )
+            self._gs(guild_id).loop = bool(data.get("loop", False))
+            self._gs(guild_id).mode_247 = bool(data.get("mode_247", False))
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            logger.exception("Failed to load queue settings for guild %s", guild_id)
 
     async def _save_queue_json(self, guild_id: int) -> None:
         """Legacy JSON save as fallback. Runs blocking I/O in a thread."""
@@ -460,6 +534,11 @@ class Music(commands.Cog):
                 # change (or by another process); mirror the JSON path's limit so
                 # an oversized queue can't slip in through the database branch.
                 self._gs(guild_id).queue = collections.deque(queue[:MAX_QUEUE_SIZE])
+                # The DB only stores the track list — restore volume/loop/
+                # mode_247 from the settings sidecar so they survive a restart
+                # (see _save_queue_settings). Especially mode_247, whose loss
+                # would auto-disconnect a 24/7 channel after a restart.
+                await self._load_queue_settings(guild_id)
                 logger.info(
                     "📂 Loaded queue for guild %s (%d tracks) from database", guild_id, len(queue)
                 )

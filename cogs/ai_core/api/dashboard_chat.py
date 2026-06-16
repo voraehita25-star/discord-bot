@@ -118,6 +118,9 @@ async def _validate_and_decode_images(
             logger.info("📷 Added image to message (%s bytes)", len(image_bytes))
         except Exception as e:
             logger.warning("Failed to process image: %s", e)
+            await ws.send_json(
+                {"type": "error", "message": "Failed to process image (corrupt or invalid)"}
+            )
     return parts, accepted
 
 

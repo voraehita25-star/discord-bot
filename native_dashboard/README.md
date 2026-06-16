@@ -149,7 +149,7 @@ native_dashboard/
 │   └── database.rs         # SQLite queries
 ├── src-ts/
 │   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.2k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~3.1k lines) — chat + file memory modal + editor
+│   ├── chat-manager.ts     # ChatManager orchestrator (~3.2k lines) — chat + file memory modal + editor
 │   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
@@ -300,7 +300,7 @@ python scripts/dev/validate_ipc.py     # drives the built .exe, calls get_base_p
 target/release/bot-dashboard.exe                  # Source binary (Cargo output)
 target/release/Discord Bot Dashboard.exe          # English alias (copy)
 target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
-target/release/bundle/nsis/디스코드 봇 대시보드_3.4.10_x64-setup.exe  # NSIS installer
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.11_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI

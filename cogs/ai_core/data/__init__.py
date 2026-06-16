@@ -22,49 +22,50 @@ from .constants import (
     GUILD_ID_RP,
 )
 
-# Try to import from faust_data.py, fallback to example
+# Load the persona module, falling back to the example ONLY when faust_data.py
+# is genuinely absent. The previous code did an all-or-nothing
+# ``from .faust_data import (FAUST_INSTRUCTION, ...)`` on the *new* canonical
+# names, so a real faust_data.py that uses the *older* names
+# (FAUST_PERSONA/FAUST_DM_MODE/FAUST_ROLEPLAY) or omits an optional slot raised
+# ImportError and silently swapped the ENTIRE configured persona for the generic
+# example — and the backward-compat alias block lived *after* that failing import
+# so it never ran. Resolve each canonical name per-symbol instead (new name ->
+# legacy name -> neutral default) so a legacy or partial persona file loads
+# correctly. The optional "unrestricted / escalation / code-override" slots
+# default to EMPTY when the operator's file doesn't define them, so nothing the
+# operator didn't explicitly author in their own faust_data.py is injected.
 try:
-    from .faust_data import (
-        ENI_ESCALATION_FRAMING,
-        ESCALATION_FRAMINGS,
-        FAUST_CODE_OVERRIDE,
-        FAUST_DM_INSTRUCTION,
-        FAUST_INSTRUCTION,
-        FAUST_SANDBOX,
-        UNRESTRICTED_MODE_INSTRUCTION,
-    )
-
-    # Backward compatibility aliases
-    try:
-        from .faust_data import FAUST_DM_MODE, FAUST_PERSONA, FAUST_ROLEPLAY
-    except ImportError:
-        FAUST_DM_MODE = FAUST_DM_INSTRUCTION
-        FAUST_PERSONA = FAUST_INSTRUCTION
-        FAUST_ROLEPLAY = FAUST_INSTRUCTION
+    from . import faust_data as _faust_mod
 except ImportError as _faust_exc:
-    # Fallback to example file. Log it: a REAL faust_data.py that exists but
-    # raises ImportError (e.g. one renamed symbol in the import list) would
-    # otherwise silently swap the entire live persona for the generic
-    # example with no signal. A genuinely-absent file is the expected
-    # "some assembly required" case, so keep it at WARNING, not ERROR.
     import logging as _logging
 
     _logging.getLogger(__name__).warning(
-        "faust_data import failed (%s) — falling back to faust_data_example", _faust_exc
+        "faust_data.py not found (%s) — falling back to faust_data_example", _faust_exc
     )
-    from .faust_data_example import (  # type: ignore[assignment]
-        ENI_ESCALATION_FRAMING,
-        ESCALATION_FRAMINGS,
-        FAUST_CODE_OVERRIDE,
-        FAUST_DM_INSTRUCTION,
-        FAUST_INSTRUCTION,
-        FAUST_SANDBOX,
-        UNRESTRICTED_MODE_INSTRUCTION,
-    )
+    from . import faust_data_example as _faust_mod  # type: ignore[no-redef]
 
-    FAUST_DM_MODE = FAUST_DM_INSTRUCTION
-    FAUST_PERSONA = FAUST_INSTRUCTION
-    FAUST_ROLEPLAY = FAUST_INSTRUCTION
+
+def _faust_attr(*names: str, default: object = "") -> object:
+    """First defined (truthy for strings) attribute among ``names``, else default."""
+    for _n in names:
+        _v = getattr(_faust_mod, _n, None)
+        if _v is not None and _v != "":
+            return _v
+    return default
+
+
+FAUST_INSTRUCTION = _faust_attr("FAUST_INSTRUCTION", "FAUST_PERSONA")
+FAUST_DM_INSTRUCTION = _faust_attr("FAUST_DM_INSTRUCTION", "FAUST_DM_MODE")
+FAUST_SANDBOX = _faust_attr("FAUST_SANDBOX")
+ENI_ESCALATION_FRAMING = _faust_attr("ENI_ESCALATION_FRAMING")
+FAUST_CODE_OVERRIDE = _faust_attr("FAUST_CODE_OVERRIDE")
+UNRESTRICTED_MODE_INSTRUCTION = _faust_attr("UNRESTRICTED_MODE_INSTRUCTION")
+ESCALATION_FRAMINGS = getattr(_faust_mod, "ESCALATION_FRAMINGS", []) or []
+
+# Backward-compat aliases used elsewhere in the codebase.
+FAUST_PERSONA = getattr(_faust_mod, "FAUST_PERSONA", None) or FAUST_INSTRUCTION
+FAUST_DM_MODE = getattr(_faust_mod, "FAUST_DM_MODE", None) or FAUST_DM_INSTRUCTION
+FAUST_ROLEPLAY = getattr(_faust_mod, "FAUST_ROLEPLAY", None) or FAUST_INSTRUCTION
 
 # Try to import from roleplay_data.py, fallback to example
 try:

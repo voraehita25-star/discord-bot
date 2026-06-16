@@ -178,6 +178,12 @@ class URLFetcherClient:
             ) as resp:
                 return await resp.json()  # type: ignore[no-any-return]
         except Exception as e:
+            # The Go service call failed (likely the service died mid-interval).
+            # Invalidate the cached availability and reset the check time so the
+            # very next fetch() re-routes through the aiohttp fallback instead of
+            # hard-failing for up to SERVICE_CHECK_INTERVAL seconds.
+            self._service_available = False
+            self._service_check_time = 0
             return {"url": url, "error": str(e)}
 
     async def _fetch_fallback(self, url: str) -> dict[str, Any]:

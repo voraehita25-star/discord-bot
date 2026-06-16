@@ -394,13 +394,25 @@ class MusicBot(commands.AutoShardedBot):
                 if _loop.is_closed():
                     return
                 try:
-                    asyncio.run_coroutine_threadsafe(
+                    fut = asyncio.run_coroutine_threadsafe(
                         # Pin teardown to the instance whose setup_hook registered
                         # this handler (matches the Unix _schedule_shutdown path),
                         # not the module-level global which a resume may rebind.
                         graceful_shutdown(signal.SIGTERM, bot_instance=_self),
                         _loop,
                     )
+
+                    def _swallow(f: concurrent.futures.Future[None]) -> None:
+                        # Mirror the Unix _schedule_shutdown _swallow callback:
+                        # swallow cancellation noise but log a real exception so a
+                        # failed graceful_shutdown doesn't disappear silently.
+                        if f.cancelled():
+                            return
+                        exc = f.exception()
+                        if exc is not None:
+                            logger.warning("Windows SIGTERM shutdown ended with: %s", exc)
+
+                    fut.add_done_callback(_swallow)
                 except RuntimeError:
                     # Loop closed concurrently between is_closed() and submit
                     pass
@@ -739,6 +751,23 @@ class MusicBot(commands.AutoShardedBot):
                 f"⏳ **กรุณารอสักครู่**\nคำสั่งนี้จะพร้อมใช้อีกครั้งใน `{original.retry_after:.1f}` วินาที"
             )
         else:
+            # Send to Sentry (without message content to prevent PII leak).
+            # Only non-user-facing errors reach this branch — the handled
+            # permission/cooldown cases above are expected, not crashes.
+            if SENTRY_AVAILABLE and capture_exception is not None:
+                capture_exception(
+                    original,
+                    context={
+                        "command": (
+                            interaction.command.qualified_name
+                            if interaction.command is not None
+                            else None
+                        ),
+                        "error_id": error_id,
+                    },
+                    user_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                )
             await respond(f"❌ **เกิดข้อผิดพลาด**\nกรุณาลองใหม่อีกครั้ง\n🔖 Error ID: `{error_id}`")
 
     async def on_message(self, message: discord.Message) -> None:

@@ -154,6 +154,13 @@ class PerformanceTracker:
         self._max_history_hours = max_history_hours
         self._cleanup_task: asyncio.Task | None = None
         self._record_count: int = 0
+        # Guards the container dicts (_stats / _hourly_stats) and _record_count
+        # against concurrent mutation. The sync decorator can run record() in
+        # executor threads while cleanup/get_all_stats/get_hourly_trend iterate
+        # these dicts, so the auto-vivification, _record_count read-modify-write
+        # and snapshot reads must be serialized. Per-op PerformanceStats keeps
+        # its own finer-grained lock; this one is held only briefly.
+        self._container_lock = threading.Lock()
         self.logger = logging.getLogger("PerformanceTracker")
 
     def start_timer(self) -> float:
@@ -163,26 +170,28 @@ class PerformanceTracker:
     def record(self, operation: str, start_time: float) -> float:
         """Record timing for an operation. Returns duration.
 
-        Concurrency note: this method assumes single-threaded / single
-        event-loop callers. The defaultdict auto-vivification below and the
-        non-atomic `_record_count` read-modify-write are NOT lock-guarded, so
-        concurrent first-time records of the same new operation may briefly
-        double-create a stats entry and the 500-record cleanup tick may be
-        dropped or duplicated under threads. Per-op PerformanceStats.record()
-        is itself locked and readers snapshot via list(), so the impact is
-        bounded to lost/extra cleanup ticks — never data corruption.
+        Concurrency note: the sync decorator can dispatch record() from
+        executor threads, so the defaultdict auto-vivification below and the
+        non-atomic `_record_count` read-modify-write are guarded by
+        `_container_lock` (shared with cleanup/get_all_stats/get_hourly_trend
+        snapshot reads). The lock is held only across the cheap container
+        mutations; the per-op PerformanceStats.record() call keeps its own
+        lock, and the Prometheus bridge / debug log stay outside.
         """
         duration = time.perf_counter() - start_time
-        self._stats[operation].record(duration)
 
         # Also track hourly stats
         hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
-        self._hourly_stats[operation][hour_key].record(duration)
-
         # Auto-prune old hourly stats every 500 records
-        self._record_count += 1
-        if self._record_count >= 500:
-            self._record_count = 0
+        run_cleanup = False
+        with self._container_lock:
+            self._stats[operation].record(duration)
+            self._hourly_stats[operation][hour_key].record(duration)
+            self._record_count += 1
+            if self._record_count >= 500:
+                self._record_count = 0
+                run_cleanup = True
+        if run_cleanup:
             self.cleanup_old_stats()
 
         # Bridge to Prometheus
@@ -220,22 +229,30 @@ class PerformanceTracker:
 
     def get_all_stats(self) -> dict[str, dict[str, Any]]:
         """Get statistics for all operations."""
-        # Snapshot via list() so a concurrent record() of a new operation name
-        # (which resizes the dict) can't raise "dictionary changed size during
-        # iteration" — mirrors cleanup_old_stats().
-        return {op: stats.to_dict() for op, stats in list(self._stats.items())}
+        # Snapshot under _container_lock so a concurrent record() of a new
+        # operation name (which resizes the dict) can't raise "dictionary
+        # changed size during iteration" — mirrors cleanup_old_stats().
+        with self._container_lock:
+            items = list(self._stats.items())
+        return {op: stats.to_dict() for op, stats in items}
 
     def get_hourly_trend(self, operation: str, hours: int = 24) -> list[dict[str, Any]]:
         """Get hourly performance trend for last N hours."""
-        if operation not in self._hourly_stats:
-            return []
+        # Snapshot the inner per-hour mapping under _container_lock so a
+        # concurrent record() can't auto-vivify a partially-populated inner
+        # defaultdict mid-read (and so `operation not in` stays consistent
+        # with the lookups below).
+        with self._container_lock:
+            if operation not in self._hourly_stats:
+                return []
+            hourly = dict(self._hourly_stats[operation])
 
         trends = []
         for i in range(hours - 1, -1, -1):
             hour = datetime.now(timezone.utc) - timedelta(hours=i)
             hour_key = hour.strftime("%Y-%m-%d-%H")
-            if hour_key in self._hourly_stats[operation]:
-                stats = self._hourly_stats[operation][hour_key]
+            if hour_key in hourly:
+                stats = hourly[hour_key]
                 trends.append(
                     {
                         "hour": hour_key,
@@ -255,17 +272,18 @@ class PerformanceTracker:
         cutoff_key = cutoff.strftime("%Y-%m-%d-%H")
         removed = 0
 
-        # Snapshot keys first so concurrent writers can't trigger
-        # "dictionary changed size during iteration" RuntimeError on the
-        # outer dict.
-        for operation in list(self._hourly_stats.keys()):
-            inner = self._hourly_stats.get(operation)
-            if not inner:
-                continue
-            old_keys = [k for k in list(inner.keys()) if k < cutoff_key]
-            for key in old_keys:
-                inner.pop(key, None)
-                removed += 1
+        # Snapshot keys + mutate under _container_lock so concurrent record()
+        # writers can't trigger "dictionary changed size during iteration"
+        # RuntimeError on the outer/inner dicts.
+        with self._container_lock:
+            for operation in list(self._hourly_stats.keys()):
+                inner = self._hourly_stats.get(operation)
+                if not inner:
+                    continue
+                old_keys = [k for k in list(inner.keys()) if k < cutoff_key]
+                for key in old_keys:
+                    inner.pop(key, None)
+                    removed += 1
 
         if removed > 0:
             self.logger.info("Cleaned up %d old performance records", removed)
@@ -302,10 +320,11 @@ class PerformanceTracker:
 
     def get_summary(self) -> dict[str, Any]:
         """Get a summary of all tracked operations."""
-        # Single snapshot so a concurrent record() of a new operation can't
-        # resize the dict mid-iteration, and so the counts stay mutually
-        # consistent with the per-op stats below.
-        items = list(self._stats.items())
+        # Single snapshot under _container_lock so a concurrent record() of a
+        # new operation can't resize the dict mid-iteration, and so the counts
+        # stay mutually consistent with the per-op stats below.
+        with self._container_lock:
+            items = list(self._stats.items())
         summary = {
             "operations": len(items),
             "total_measurements": sum(stats.count for _, stats in items),

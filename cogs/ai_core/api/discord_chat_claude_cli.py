@@ -170,6 +170,14 @@ def _get_channel_lock(channel_id: int) -> asyncio.Lock:
     while len(_CHANNEL_LOCKS) > _MAX_TRACKED_CHANNELS and inspections > 0:
         inspections -= 1
         evicted_id, evicted_lock = next(iter(_CHANNEL_LOCKS.items()))
+        if evicted_id == channel_id:
+            # Never evict the entry we just returned to the caller: it hasn't
+            # acquired ``lock`` yet, so deleting it here would let a later
+            # caller create a second Lock and defeat per-channel serialization.
+            # Move it to the back and keep scanning; the dict may transiently
+            # sit one over the cap until the next call shrinks it.
+            _CHANNEL_LOCKS.move_to_end(evicted_id, last=True)
+            continue
         if evicted_lock.locked():
             # Actively held — keep it but move it to the back so the next
             # iteration inspects a different (newer) entry.
@@ -519,6 +527,11 @@ async def _send_overlimit_warning(
             )
         return
     key = channel_id
+    # Purge stale entries unconditionally — a channel that stays over-limit
+    # hits the cooldown early-return below and would otherwise never run this,
+    # so abandoned entries (channels long past their cooldown) would linger.
+    for cid in [c for c, t in _OVERLIMIT_LAST_WARN.items() if now - t >= _OVERLIMIT_WARN_COOLDOWN]:
+        _OVERLIMIT_LAST_WARN.pop(cid, None)
     last = _OVERLIMIT_LAST_WARN.get(key, 0.0)
     with contextlib.suppress(Exception):
         if now - last < _OVERLIMIT_WARN_COOLDOWN:
@@ -542,10 +555,6 @@ async def _send_overlimit_warning(
         # succeeds — if the send raises (missing perms, transient Discord
         # error) the channel must NOT be locked into the short-notice path for
         # the next cooldown window without ever having received the buttons.
-        for cid in [
-            c for c, t in _OVERLIMIT_LAST_WARN.items() if now - t >= _OVERLIMIT_WARN_COOLDOWN
-        ]:
-            _OVERLIMIT_LAST_WARN.pop(cid, None)
         _OVERLIMIT_LAST_WARN[key] = now
 
 

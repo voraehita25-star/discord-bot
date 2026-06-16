@@ -281,7 +281,12 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
             break
         # Find best split point near `limit` chars.
         split_at = remaining.rfind("\n", 0, limit)
-        if split_at == -1 or split_at < limit // 2:
+        # Track whether the chosen boundary is the delimiter newline: only then
+        # may we consume it. A hard mid-content cut must NOT strip leading
+        # newlines, or intentional blank lines straddling the boundary
+        # (ASCII art / code) are dropped.
+        split_on_newline = split_at != -1 and split_at >= limit // 2
+        if not split_on_newline:
             split_at = remaining.rfind(" ", 0, limit)
         if split_at == -1 or split_at < limit // 2:
             split_at = limit
@@ -296,7 +301,13 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
                 rewind -= 1
             split_at = rewind
         chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip("\n")
+        if split_on_newline:
+            # Consume exactly the single delimiter newline (preserve any
+            # further intentional blank lines).
+            remaining = remaining[split_at + 1 :]
+        else:
+            # Space split keeps its leading space; hard cut keeps content as-is.
+            remaining = remaining[split_at:]
     return chunks
 
 
@@ -1593,24 +1604,42 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # message once the threshold is crossed. Skipping it when the
                     # client is absent avoids that per-turn wasted work; the
                     # MAX_HISTORY_ITEMS trim below still bounds the prompt size.
+                    # Avoid recomputing the (prompt-only) compression on every
+                    # message once the threshold is crossed: the source history
+                    # is unchanged unless its length moved, so the summarizer
+                    # would return the same result. Cache the last compressed
+                    # length keyed on the source length; recompute only when the
+                    # source length differs. Prompt-only semantics are preserved
+                    # (compressed is never written back to chat_data["history"]).
                     if summarizer.client is not None and len(history) > compress_threshold:
-                        try:
-                            compressed = await asyncio.wait_for(
-                                summarizer.compress_history(
-                                    history,
-                                    keep_recent=200,  # Keep 200 most recent messages intact (less lossy)
-                                ),
-                                timeout=60,  # 60s timeout to prevent indefinite blocking
-                            )
-                            if len(compressed) < len(history):
-                                history = compressed
-                                logger.info(
-                                    "📦 Auto-compressed history: %d → %d messages",
-                                    len(chat_data.get("history", [])),
-                                    len(compressed),
+                        _cur_len = len(history)
+                        _cache = chat_data.get("_compress_cache")
+                        if not (isinstance(_cache, dict) and _cache.get("src_len") == _cur_len):
+                            try:
+                                compressed = await asyncio.wait_for(
+                                    summarizer.compress_history(
+                                        history,
+                                        keep_recent=200,  # Keep 200 most recent messages intact (less lossy)
+                                    ),
+                                    timeout=60,  # 60s timeout to prevent indefinite blocking
                                 )
-                        except (TimeoutError, ValueError, TypeError, KeyError) as e:
-                            logger.warning("Auto-summarize failed: %s", e)
+                                if len(compressed) < len(history):
+                                    history = compressed
+                                    logger.info(
+                                        "📦 Auto-compressed history: %d → %d messages",
+                                        len(chat_data.get("history", [])),
+                                        len(compressed),
+                                    )
+                                chat_data["_compress_cache"] = {
+                                    "src_len": _cur_len,
+                                    "history": history,
+                                }
+                            except (TimeoutError, ValueError, TypeError, KeyError) as e:
+                                logger.warning("Auto-summarize failed: %s", e)
+                        else:
+                            # Reuse the previously computed compression for this
+                            # unchanged source length (prompt-only, not persisted).
+                            history = _cache["history"]
 
                     # Use only recent history if too long (constant in data/constants.py)
                     if len(history) > MAX_HISTORY_ITEMS:

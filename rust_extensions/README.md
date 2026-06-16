@@ -38,7 +38,7 @@ High-performance image processing for Discord attachments.
 ### Prerequisites
 
 - Rust 1.75+ (install from <https://rustup.rs>)
-- Python 3.14+ (for PyO3 0.28 bindings)
+- Python 3.14+ (for PyO3 0.29 bindings)
 
 > **Note:** Uses simsimd 6.5+ for SIMD operations (API changed from older 0.x versions)
 

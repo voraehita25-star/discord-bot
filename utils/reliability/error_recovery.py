@@ -102,6 +102,13 @@ _backoff_states: dict[str, BackoffState] = {}
 _backoff_states_lock = threading.Lock()  # Single lock for both sync and async access
 _BACKOFF_STATE_TTL = 3600  # 1 hour TTL for backoff states
 _MAX_BACKOFF_STATES = 1000  # Maximum number of states to keep
+# Refcount of keys with an in-flight retry_async loop holding a live reference
+# to their BackoffState. The hard-cap eviction below must NOT drop one of these,
+# or the in-flight coroutine would keep mutating an orphaned object while a
+# later _get_backoff_state recreates a fresh state under the same key (and the
+# final _reset_backoff_state would then reset the wrong object). Guarded by
+# _backoff_states_lock. >0 means "do not evict this key".
+_in_flight_backoff_keys: dict[str, int] = {}
 
 
 def _cleanup_old_backoff_states() -> None:
@@ -157,12 +164,18 @@ def _get_backoff_state(key: str) -> BackoffState:
         # be evicted), evict the oldest entry to make room. Without this guard
         # the dict can grow unboundedly with one new entry per failing service
         # during an outage and OOM the process.
+        #
+        # Never evict a key that has an in-flight retry holding a live reference
+        # to its BackoffState — dropping it would orphan that object and let a
+        # later recreate-under-same-key race with the running coroutine.
         if len(_backoff_states) >= _MAX_BACKOFF_STATES and key not in _backoff_states:
-            oldest_key = min(
-                _backoff_states,
-                key=lambda k: _backoff_states[k].last_failure_time,
-            )
-            _backoff_states.pop(oldest_key, None)
+            evictable = [k for k in _backoff_states if k not in _in_flight_backoff_keys]
+            if evictable:
+                oldest_key = min(
+                    evictable,
+                    key=lambda k: _backoff_states[k].last_failure_time,
+                )
+                _backoff_states.pop(oldest_key, None)
 
         if key not in _backoff_states:
             _backoff_states[key] = BackoffState()
@@ -261,7 +274,10 @@ def calculate_delay_sync(
     if config.adaptive_multiplier and service_health < 1.0:
         # Unhealthy service = longer delays (up to 2x)
         health_multiplier = 1.0 + (1.0 - service_health)
-        delay *= health_multiplier
+        # Re-clamp to cap: the per-branch min(cap, ...) above runs BEFORE this
+        # multiplier, so without this the returned delay could reach 2*max_delay
+        # and defeat the documented Retry-After / max_delay freeze guarantee.
+        delay = min(delay * health_multiplier, cap)
 
     return delay
 
@@ -382,111 +398,124 @@ async def retry_async(
     # Get backoff state for this function
     state_key = service_name or func.__name__
     state = await _get_backoff_state_async(state_key)
+    # Pin this key so the hard-cap eviction in _get_backoff_state can't drop
+    # (and a later call recreate) the BackoffState we hold a reference to.
+    with _backoff_states_lock:
+        _in_flight_backoff_keys[state_key] = _in_flight_backoff_keys.get(state_key, 0) + 1
 
-    # Get service health for adaptive delays
-    service_health = 1.0
-    if config.adaptive_multiplier and service_name:
-        status = service_monitor.get_status(service_name)
-        service_health = status.get("success_rate", 1.0)
+    try:
+        # Get service health for adaptive delays
+        service_health = 1.0
+        if config.adaptive_multiplier and service_name:
+            status = service_monitor.get_status(service_name)
+            service_health = status.get("success_rate", 1.0)
 
-    # Check circuit breaker before starting. We look the breaker up by
-    # service_name in the shared registry so callers retrying ``spotify``,
-    # ``database``, etc. honor their own breakers — the previous code
-    # only ever consulted ``gemini_circuit`` and silently bypassed every
-    # other service's protection.
-    if config.respect_circuit_breaker and service_name:
-        try:
-            from .circuit_breaker import CircuitState, get_circuit_for_service
+        # Check circuit breaker before starting. We look the breaker up by
+        # service_name in the shared registry so callers retrying ``spotify``,
+        # ``database``, etc. honor their own breakers — the previous code
+        # only ever consulted ``gemini_circuit`` and silently bypassed every
+        # other service's protection.
+        if config.respect_circuit_breaker and service_name:
+            try:
+                from .circuit_breaker import CircuitState, get_circuit_for_service
 
-            breaker = get_circuit_for_service(service_name)
-            # Read-only state check — do NOT call can_execute() here: in
-            # HALF_OPEN it consumes a probe slot, but retry_async never records
-            # success/failure to confirm it, so the slot would leak to the 60s
-            # forgive timer. Only fast-fail on a definitively OPEN circuit;
-            # HALF_OPEN admission is handled by the request path's own breaker.
-            if breaker is not None and breaker.state == CircuitState.OPEN:
-                logger.warning("⚡ Circuit breaker OPEN - skipping retry for %s", service_name)
-                if fallback is not None:
-                    return fallback
-                raise RuntimeError(f"Circuit breaker open for {service_name}")
-        except ImportError:
-            pass
+                breaker = get_circuit_for_service(service_name)
+                # Read-only state check — do NOT call can_execute() here: in
+                # HALF_OPEN it consumes a probe slot, but retry_async never records
+                # success/failure to confirm it, so the slot would leak to the 60s
+                # forgive timer. Only fast-fail on a definitively OPEN circuit;
+                # HALF_OPEN admission is handled by the request path's own breaker.
+                if breaker is not None and breaker.state == CircuitState.OPEN:
+                    logger.warning("⚡ Circuit breaker OPEN - skipping retry for %s", service_name)
+                    if fallback is not None:
+                        return fallback
+                    raise RuntimeError(f"Circuit breaker open for {service_name}")
+            except ImportError:
+                pass
 
-    for attempt in range(config.max_retries):
-        try:
-            result = await func(*args, **kwargs)
+        for attempt in range(config.max_retries):
+            try:
+                result = await func(*args, **kwargs)
 
-            # Success! Reset backoff state and record health
-            _reset_backoff_state(state_key)
-            if service_name:
-                service_monitor.record_success(service_name)
+                # Success! Reset backoff state and record health
+                _reset_backoff_state(state_key)
+                if service_name:
+                    service_monitor.record_success(service_name)
 
-            return result
+                return result
 
-        except config.recoverable_errors as e:
-            last_error = e
-            # Mutate the shared state under the global lock so concurrent
-            # retries against the same service don't trample
-            # consecutive_failures / last_failure_time on each other.
-            with _backoff_states_lock:
-                state.consecutive_failures += 1
-                state.last_failure_time = time.time()
+            except config.recoverable_errors as e:
+                last_error = e
+                # Mutate the shared state under the global lock so concurrent
+                # retries against the same service don't trample
+                # consecutive_failures / last_failure_time on each other.
+                with _backoff_states_lock:
+                    state.consecutive_failures += 1
+                    state.last_failure_time = time.time()
 
-            if service_name:
-                service_monitor.record_failure(service_name, str(e)[:100])
+                if service_name:
+                    service_monitor.record_failure(service_name, str(e)[:100])
 
-            if on_retry:
-                on_retry(attempt + 1, e)
+                if on_retry:
+                    on_retry(attempt + 1, e)
 
-            if attempt < config.max_retries - 1:
-                # Calculate delay with smart jitter
-                delay = await calculate_delay(attempt, config, state, service_health)
+                if attempt < config.max_retries - 1:
+                    # Calculate delay with smart jitter
+                    delay = await calculate_delay(attempt, config, state, service_health)
 
-                # Honor Retry-After header if present, but clamp to the
-                # config's max_delay so a hostile/buggy server returning
-                # ``Retry-After: 999999`` can't freeze the retry loop.
-                if config.respect_retry_after:
-                    retry_after = extract_retry_after(e)
-                    if retry_after is not None and retry_after > 0:
-                        bounded = min(retry_after, config.max_delay)
-                        delay = max(delay, bounded)
-                        if bounded < retry_after:
-                            logger.info(
-                                "⏳ Respecting Retry-After: %.1fs (clamped from %.1fs)",
-                                bounded,
-                                retry_after,
-                            )
-                        else:
-                            logger.info("⏳ Respecting Retry-After: %.1fs", retry_after)
+                    # Honor Retry-After header if present, but clamp to the
+                    # config's max_delay so a hostile/buggy server returning
+                    # ``Retry-After: 999999`` can't freeze the retry loop.
+                    if config.respect_retry_after:
+                        retry_after = extract_retry_after(e)
+                        if retry_after is not None and retry_after > 0:
+                            bounded = min(retry_after, config.max_delay)
+                            delay = max(delay, bounded)
+                            if bounded < retry_after:
+                                logger.info(
+                                    "⏳ Respecting Retry-After: %.1fs (clamped from %.1fs)",
+                                    bounded,
+                                    retry_after,
+                                )
+                            else:
+                                logger.info("⏳ Respecting Retry-After: %.1fs", retry_after)
 
-                logger.warning(
-                    "⚠️ Attempt %d/%d failed: %s. Retrying in %.2fs (jitter: %s)...",
-                    attempt + 1,
-                    config.max_retries,
-                    str(e)[:100],
-                    delay,
-                    config.jitter_strategy.value,
-                )
-                await asyncio.sleep(delay)
+                    logger.warning(
+                        "⚠️ Attempt %d/%d failed: %s. Retrying in %.2fs (jitter: %s)...",
+                        attempt + 1,
+                        config.max_retries,
+                        str(e)[:100],
+                        delay,
+                        config.jitter_strategy.value,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "❌ All %d attempts failed for %s: %s (total failures: %d)",
+                        config.max_retries,
+                        func.__name__,
+                        str(e)[:200],
+                        state.consecutive_failures,
+                    )
+
+        # All retries failed
+        if fallback is not None:
+            logger.info("📦 Using fallback value after retries exhausted")
+            return fallback
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(
+            f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})"
+        )
+    finally:
+        # Unpin the key; allow eviction again once no retry loop references it.
+        with _backoff_states_lock:
+            remaining = _in_flight_backoff_keys.get(state_key, 0) - 1
+            if remaining > 0:
+                _in_flight_backoff_keys[state_key] = remaining
             else:
-                logger.error(
-                    "❌ All %d attempts failed for %s: %s (total failures: %d)",
-                    config.max_retries,
-                    func.__name__,
-                    str(e)[:200],
-                    state.consecutive_failures,
-                )
-
-    # All retries failed
-    if fallback is not None:
-        logger.info("📦 Using fallback value after retries exhausted")
-        return fallback
-
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError(
-        f"retry_async failed for {func.__name__} with no error captured (max_retries={config.max_retries})"
-    )
+                _in_flight_backoff_keys.pop(state_key, None)
 
 
 def with_retry(

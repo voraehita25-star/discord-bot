@@ -113,7 +113,7 @@ def _handle_tools_call(mid, params: dict) -> None:
         is_error = True
     except Exception as e:
         _log(f"tools/call '{name}' failed: {e}")
-        text = f"Tool call failed: {e}"
+        text = f"Tool call failed: {type(e).__name__}"
         is_error = True
     _send(
         {

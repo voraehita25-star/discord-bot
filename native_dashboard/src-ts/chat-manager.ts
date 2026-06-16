@@ -1471,7 +1471,7 @@ export class ChatManager {
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         if (thinkingContent) {
             thinkingContent.appendChild(document.createTextNode(text));
-            this.scrollToBottom();
+            this.followStream();
         }
     }
 
@@ -1520,7 +1520,7 @@ export class ChatManager {
             // append a text node instead of concatenating onto
             // ``textContent`` so chunk N doesn't re-copy chunks 1..N-1.
             streamingText.appendChild(document.createTextNode(text));
-            this.scrollToBottom();
+            this.followStream();
         }
     }
 
@@ -2113,6 +2113,26 @@ export class ChatManager {
         // Any explicit scroll-to-bottom resets the "new message" counter.
         this.newMessagesWhileScrolledUp = 0;
         this.updateScrollFab(false);
+    }
+
+    /**
+     * Per-chunk auto-follow during streaming. Unlike scrollToBottom(), this
+     * does NOT touch newMessagesWhileScrolledUp — a single response emits
+     * hundreds of chunks, so counting them would climb the FAB badge into the
+     * hundreds for one message. The badge is only bumped on message-boundary
+     * events (scrollToBottom from appendStreamingMessage / finalizeStreamingMessage).
+     * When the user has scrolled up we leave the viewport alone and just keep
+     * the FAB visible; otherwise we keep the latest text in view.
+     */
+    followStream(): void {
+        if (this.userScrolledUp) {
+            this.updateScrollFab(true);
+            return;
+        }
+        const container = document.getElementById('chat-messages');
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
     }
 
     /** Count of messages that arrived while the user was scrolled up. */

@@ -101,10 +101,12 @@ jobs:
       GEMINI_API_KEY: "test-gemini-key-not-real"
       CREATOR_ID: "123456789"
       # mypy regression baseline — bump when intentionally adding/fixing
-      # type errors. Pre-existing arch issues at the time of writing:
+      # type errors. Jumped 16 -> 78 with the mypy 1.x -> 2.x major upgrade
+      # (2.x enables stricter default inference; the delta is tooling
+      # strictness, not new code defects). Pre-existing arch issues:
       # discord.py union types, sentry SDK signature, lambda inference,
-      # ssrf helper signature.
-      MYPY_BASELINE: "16"
+      # ssrf helper signature, method-assign monkeypatch in bot.py.
+      MYPY_BASELINE: "78"
     strategy:
       matrix:
         # The runtime floor is ``requires-python = ">=3.14"`` (set in
@@ -238,7 +240,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
       with:
-        go-version: '1.25'
+        go-version: '1.26'
         cache-dependency-path: go_services/go.sum
 
     - name: Run Go tests
@@ -360,7 +362,7 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       with:
-        node-version: '22'
+        node-version: '24'
         cache: 'npm'
         cache-dependency-path: native_dashboard/package-lock.json
 
@@ -418,7 +420,7 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       with:
-        node-version: '22'
+        node-version: '24'
         cache: 'npm'
         cache-dependency-path: native_dashboard/package-lock.json
 

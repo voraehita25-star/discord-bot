@@ -43,6 +43,12 @@ def unrestricted_all_enabled() -> bool:
 
 _UNRESTRICTED_FILE = Path(__file__).parent.parent / "data" / "unrestricted_channels.json"
 _unrestricted_lock = threading.Lock()  # Thread-safe access to unrestricted_channels
+# Serializes disk writes so the on-disk order matches mutation order. Paired with
+# a monotonically increasing version: an older snapshot is never written after a
+# newer one (prevents a turned-off channel re-enabling after restart).
+_unrestricted_save_lock = threading.Lock()
+_unrestricted_version = 0
+_unrestricted_saved_version = 0
 unrestricted_channels: set[int] = set()
 
 # Hard cap on persisted file size to prevent memory exhaustion via malicious/corrupt file
@@ -137,16 +143,31 @@ def set_unrestricted(channel_id: int, enabled: bool) -> bool:
 
     Returns the persistence outcome so callers can surface save failures.
     """
+    global _unrestricted_version
     with _unrestricted_lock:
         if enabled:
             unrestricted_channels.add(channel_id)
         else:
             unrestricted_channels.discard(channel_id)
-        # Snapshot data while holding the lock
+        # Snapshot data while holding the lock, tagged with a monotonic version so
+        # the write below can discard a snapshot that a later mutation superseded.
+        _unrestricted_version += 1
+        my_version = _unrestricted_version
         channels_snapshot = list(unrestricted_channels)
 
-    # Save to disk OUTSIDE the lock to avoid file I/O under threading.Lock
-    saved = _save_unrestricted_channels(channels_snapshot)
+    # Save to disk OUTSIDE the mutation lock (no file I/O under it), but serialize
+    # writes through a dedicated save lock so on-disk order matches mutation order.
+    # A version guard skips any snapshot older than one already written, so a
+    # turned-off channel can never re-enable after restart due to a reordered write.
+    global _unrestricted_saved_version
+    with _unrestricted_save_lock:
+        if my_version <= _unrestricted_saved_version:
+            # A newer snapshot has already been persisted; skip this stale write.
+            saved = True
+        else:
+            saved = _save_unrestricted_channels(channels_snapshot)
+            if saved:
+                _unrestricted_saved_version = my_version
     if not saved:
         logger.error("Failed to persist unrestricted channel state for %s", channel_id)
 

@@ -151,26 +151,26 @@ python bot.py
 |---------|---------|---------|
 | `discord.py[voice]` | 2.7.1 | Discord API + Voice Support |
 | `python-dotenv` | 1.2.2 | อ่านค่าจาก .env |
-| `aiohttp` | 3.13.5 | Async HTTP requests |
+| `aiohttp` | 3.14.1 | Async HTTP requests |
 | `psutil` | 7.2.2 | System monitoring |
 
 ### AI (จำเป็น)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `google-genai` | 1.75.0 | Gemini AI API |
+| `google-genai` | 2.8.0 | Gemini AI API |
 | `Pillow` | 12.2.0 | Image processing |
-| `beautifulsoup4` | 4.14.3 | HTML parsing (URL fetching) |
-| `lxml` | 6.1.0 | Fast HTML parser |
-| `numpy` | 2.4.4 | Numerical ops (RAG) |
-| `faiss-cpu` | 1.13.2 | Vector search (RAG memory) |
+| `beautifulsoup4` | 4.15.0 | HTML parsing (URL fetching) |
+| `lxml` | 6.1.1 | Fast HTML parser |
+| `numpy` | 2.4.6 | Numerical ops (RAG) |
+| `faiss-cpu` | 1.14.3 | Vector search (RAG memory) |
 | `imageio[ffmpeg]` | 2.37.3 | GIF to video conversion |
 
 ### Music (จำเป็นสำหรับ Music feature)
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `yt-dlp` | 2026.3.17 | YouTube download |
+| `yt-dlp` | 2026.6.9 | YouTube download |
 | `spotipy` | 2.26.0 | Spotify API |
 | `PyNaCl` | >=1.6.2,<2 | Voice encryption |
 
@@ -184,8 +184,8 @@ python bot.py
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `pytest` | 9.0.3 | Testing framework |
-| `pytest-asyncio` | 1.3.0 | Async test support |
+| `pytest` | 9.1.0 | Testing framework |
+| `pytest-asyncio` | 1.4.0 | Async test support |
 | `pytest-timeout` | 2.4.0 | Test timeout safety net |
 | `watchdog` | 6.0.0 | Hot reload (dev mode) |
 | `colorama` | 0.4.6 | Windows colors |
@@ -194,8 +194,8 @@ python bot.py
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `orjson` | 3.11.8 | 10x faster JSON |
-| `sentry-sdk` | 2.59.0 | Error tracking |
+| `orjson` | 3.11.9 | 10x faster JSON |
+| `sentry-sdk` | 2.63.0 | Error tracking |
 
 ---
 
@@ -363,4 +363,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: June 2026 | Version: 3.4.10*
+*Last Updated: June 2026 | Version: 3.4.11*

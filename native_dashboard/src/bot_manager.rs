@@ -82,6 +82,15 @@ pub enum StartProgress {
 
 pub struct BotManager {
     base_path: PathBuf,
+    /// Canonicalized `base_path` (lowercased string form), computed once at
+    /// construction. Used as a fallback comparison in `process_belongs_to_us`
+    /// so a process whose cmdline/cwd uses a Windows 8.3 short path (e.g.
+    /// `C:\Users\RUNNER~1\BOT`) still matches our long-form `base_path` — a
+    /// plain substring/equality check would otherwise fail closed and the bot
+    /// would look dead in the UI. `None` if canonicalization failed (the
+    /// path doesn't exist yet), in which case we fall back to the literal
+    /// `base_path` check only.
+    base_path_canonical: Option<String>,
     /// Process snapshot used by every is_running / get_status / orphan-kill
     /// path. ⚠️ NEVER call `sys.refresh_processes(...)` directly on this —
     /// always go through `Self::refresh_processes_with_cmd`. The plain
@@ -146,8 +155,16 @@ impl BotManager {
                     "python".to_string()
                 }
             });
+        // Canonicalize base_path once so process_belongs_to_us can match
+        // processes that report a Windows 8.3 short path form of the same dir.
+        // Fail-closed: if the path can't be canonicalized we keep None and the
+        // comparison falls back to the literal base_path check.
+        let base_path_canonical = std::fs::canonicalize(&base_path)
+            .ok()
+            .map(|p| p.to_string_lossy().to_lowercase().to_string());
         Self {
             base_path,
+            base_path_canonical,
             sys,
             python_cmd,
             child: None,
@@ -239,11 +256,15 @@ impl BotManager {
     ///      that case so dev-mode bots aren't reported as stopped.
     ///
     /// `base_path_str` is the caller-precomputed lowercased base_path so each
-    /// site keeps its existing single allocation.
+    /// site keeps its existing single allocation. `base_path_canonical` is the
+    /// canonicalized lowercased base_path (`self.base_path_canonical`) used as a
+    /// fallback so a process reporting a Windows 8.3 short path of the same
+    /// directory still matches — see the field doc on `BotManager`.
     fn process_belongs_to_us(
         process: &sysinfo::Process,
         cmdline: &str,
         base_path_str: &str,
+        base_path_canonical: Option<&str>,
     ) -> bool {
         if base_path_str.is_empty() {
             return false;
@@ -251,10 +272,40 @@ impl BotManager {
         if cmdline.contains(base_path_str) {
             return true;
         }
-        process
+        if process
             .cwd()
             .map(|cwd| cwd.to_string_lossy().to_lowercase() == base_path_str)
             .unwrap_or(false)
+        {
+            return true;
+        }
+        // Fallback for Windows 8.3 short paths: the literal string compares
+        // above miss when the process reports e.g. `C:\Users\RUNNER~1\BOT` for
+        // our long-form base_path. Canonicalize the process cwd / exe and the
+        // base_path (precomputed) and compare those. Fail-closed: any
+        // canonicalize error simply yields no match here.
+        if let Some(base_canon) = base_path_canonical {
+            let cwd_matches = process
+                .cwd()
+                .and_then(|cwd| std::fs::canonicalize(cwd).ok())
+                .map(|c| c.to_string_lossy().to_lowercase() == base_canon)
+                .unwrap_or(false);
+            if cwd_matches {
+                return true;
+            }
+            // Accept a process whose canonicalized exe lives under base_path
+            // (covers the bundled `.venv` interpreter spawn where base_path
+            // never appears literally in argv).
+            let exe_under_base = process
+                .exe()
+                .and_then(|exe| std::fs::canonicalize(exe).ok())
+                .map(|c| c.to_string_lossy().to_lowercase().starts_with(base_canon))
+                .unwrap_or(false);
+            if exe_under_base {
+                return true;
+            }
+        }
+        false
     }
 
     fn dev_watcher_pid_file(&self) -> PathBuf {
@@ -338,7 +389,23 @@ impl BotManager {
                 .collect();
 
             let has_bot_py = basenames.iter().any(|b| b == "bot.py");
-            let is_test = basenames.iter().any(|b| b.starts_with("test_"));
+            // Skip pytest-style processes, but ONLY when the ENTRY SCRIPT itself
+            // is a test_* file — not when any later argv token happens to be a
+            // test_ path (e.g. a legit bot launched with `--config
+            // test_local.yaml` would otherwise be wrongly skipped + orphaned).
+            // The entry script is the first non-interpreter argv element: skip
+            // the interpreter (cmd[0]) and any leading `-` option flags.
+            let is_test = cmd
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .map(|arg| {
+                    std::path::Path::new(arg.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_lowercase().starts_with("test_"))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
             let is_ignored_script = basenames
                 .iter()
                 .any(|b| ignore_basenames.contains(&b.as_str()));
@@ -346,7 +413,12 @@ impl BotManager {
             // references base_path, OR the process cwd IS base_path for the
             // dev-watcher's relative-"bot.py" spawn) — never reach across to
             // other Discord-bot installs on the same host.
-            let belongs_to_us = Self::process_belongs_to_us(process, &cmdline, &base_path_str);
+            let belongs_to_us = Self::process_belongs_to_us(
+                process,
+                &cmdline,
+                &base_path_str,
+                self.base_path_canonical.as_deref(),
+            );
 
             if has_bot_py && !is_test && !is_ignored_script && belongs_to_us {
                 pids_to_kill.push(pid.as_u32());
@@ -488,7 +560,12 @@ impl BotManager {
                 });
                 return has_bot_py
                     && (base_path_str.is_empty()
-                        || Self::process_belongs_to_us(process, &cmdline, &base_path_str));
+                        || Self::process_belongs_to_us(
+                            process,
+                            &cmdline,
+                            &base_path_str,
+                            self.base_path_canonical.as_deref(),
+                        ));
             }
             false
         } else {
@@ -535,6 +612,9 @@ impl BotManager {
         // Mirror is_running()'s cmdline verification — pure PID existence is
         // unreliable on Windows due to aggressive PID reuse.
         let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
+        // Bind before the borrow of self.sys below so the closure doesn't take a
+        // second borrow of self.
+        let base_path_canonical = self.base_path_canonical.clone();
         let is_running = pid
             .and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
             .map(|process| {
@@ -552,7 +632,12 @@ impl BotManager {
                 });
                 has_bot_py
                     && (base_path_str.is_empty()
-                        || Self::process_belongs_to_us(process, &cmdline, &base_path_str))
+                        || Self::process_belongs_to_us(
+                            process,
+                            &cmdline,
+                            &base_path_str,
+                            base_path_canonical.as_deref(),
+                        ))
             })
             .unwrap_or(false);
 
@@ -774,11 +859,24 @@ impl BotManager {
         if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
             let name = process.name().to_string_lossy().to_lowercase();
             if !name.contains("python") {
-                // PID was reused by a non-Python process — stale PID file
+                // PID was reused by a non-Python process — stale PID file.
+                // Reap any still-tracked startup Child first so a child that
+                // spawned but never wrote bot.pid isn't orphaned on this early
+                // return (mirrors the no-PID-file branch above).
+                if let Some(mut c) = self.child.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
                 let _ = fs::remove_file(self.pid_file());
                 return Err("Bot PID was stale (process is no longer Python)".to_string());
             }
         } else {
+            // PID gone (reused/exited). Reap any still-tracked startup Child
+            // first so it isn't orphaned on this early return.
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
             let _ = fs::remove_file(self.pid_file());
             return Err("Bot process no longer exists".to_string());
         }

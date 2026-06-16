@@ -726,7 +726,8 @@ class TestConsolidateAllChannelsFull:
 
     @pytest.mark.asyncio
     async def test_iterates_channels_and_counts(self, monkeypatch):
-        """Each returned channel row triggers consolidate_channel; truthy ones counted."""
+        """Each channel is DRAINED across capped passes until consolidate_channel
+        returns None (below-threshold/drained); every truthy pass is counted."""
         from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
         channels = [{"channel_id": 1, "count": 30}, {"channel_id": 2, "count": 25}]
@@ -735,16 +736,19 @@ class TestConsolidateAllChannelsFull:
 
         archiver = SummaryArchiver()
 
-        # First channel succeeds, second returns None (e.g. below threshold)
-        results = iter([object(), None])
+        # Channel 1 drains over two successful passes then None; channel 2 has
+        # nothing eligible (None on the first pass).
+        per_channel = {1: iter([object(), object(), None]), 2: iter([None])}
         archiver.consolidate_channel = AsyncMock(  # type: ignore[method-assign]
-            side_effect=lambda cid: next(results)
+            side_effect=lambda cid: next(per_channel[cid])
         )
 
         count = await archiver.consolidate_all_channels()
 
-        assert count == 1
-        assert archiver.consolidate_channel.await_count == 2
+        # 2 successful passes on channel 1; channel 2 contributes 0.
+        assert count == 2
+        # ch1: 3 calls (2 results + 1 drained None), ch2: 1 call.
+        assert archiver.consolidate_channel.await_count == 4
 
     @pytest.mark.asyncio
     async def test_no_channels_returns_zero(self, monkeypatch):

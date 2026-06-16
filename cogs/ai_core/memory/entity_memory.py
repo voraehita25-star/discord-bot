@@ -309,7 +309,8 @@ class EntityMemoryManager:
                             """,
                             (entity_type, facts_json, confidence, source, now, existing_id),
                         )
-                        await conn.commit()
+                        if _own_tx:
+                            await conn.commit()
                         entity_id = existing_id
                     else:
                         # INSERT new entity
@@ -333,7 +334,8 @@ class EntityMemoryManager:
                                 now,
                             ),
                         )
-                        await conn.commit()
+                        if _own_tx:
+                            await conn.commit()
                         entity_id = cursor.lastrowid
                 except aiosqlite.Error:
                     # Roll back OUR transaction so the pooled connection
@@ -392,10 +394,13 @@ class EntityMemoryManager:
                         return None
                     return self._row_to_entity(row)
 
-            # Run read + access_count bump in the SAME write connection so
-            # they share a transaction. Previously the read used the read
-            # pool and the bump used a fresh write connection, so a delete
-            # between them could yield a stale Entity object referencing
+            # Run read + access_count bump on the SAME write connection,
+            # serialized by the global _write_lock (NOT a shared SQLite tx:
+            # under aiosqlite's default isolation a bare SELECT does not open
+            # a transaction, so the two statements aren't atomic at the DB
+            # level). The lock still gives ordering — previously the read used
+            # the read pool and the bump used a fresh write connection, so a
+            # delete between them could yield a stale Entity object referencing
             # an id no longer in the DB. Also avoids a write+commit per
             # read on hot lookup paths (we COULD batch these in future,
             # but keeping correctness wins over the WAL churn for now).

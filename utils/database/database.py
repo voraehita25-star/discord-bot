@@ -1331,6 +1331,10 @@ class Database:
         Call this during shutdown or test teardown to release resources
         cleanly and prevent the event loop from hanging.
         """
+        # Cancel the periodic WAL-checkpoint task so it cannot re-acquire a
+        # connection against the torn-down pool after we close it.
+        if self._checkpoint_task is not None and not self._checkpoint_task.done():
+            self._checkpoint_task.cancel()
         pool = self._conn_pool
         if pool is not None:
             closed = 0
@@ -1359,6 +1363,10 @@ class Database:
         cannot be awaited. This method closes the underlying sqlite3
         connections directly.
         """
+        # Cancel the periodic WAL-checkpoint task so it cannot re-acquire a
+        # connection against the torn-down pool after we close it.
+        if self._checkpoint_task is not None and not self._checkpoint_task.done():
+            self._checkpoint_task.cancel()
         pool = self._conn_pool
         if pool is not None:
             while not pool.empty():

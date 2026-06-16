@@ -283,11 +283,17 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
             # reaction GIF and bounds total memory at ~1.3GB worst case.
             first_w = pil_check.width
             first_h = pil_check.height
-            if first_w * first_h > 1_500_000:
+            # Animated GIFs can composite later frames onto a larger logical
+            # canvas, so a tiny frame0 with a big canvas would otherwise slip
+            # past this gate. Guard against the canvas (pil_check.size) too.
+            canvas_w, canvas_h = pil_check.size
+            if first_w * first_h > 1_500_000 or canvas_w * canvas_h > 1_500_000:
                 logger.warning(
-                    "GIF too large to process: %sx%s",
+                    "GIF too large to process: %sx%s (canvas %sx%s)",
                     first_w,
                     first_h,
+                    canvas_w,
+                    canvas_h,
                 )
                 return None
             frame_count = 0

@@ -66,6 +66,8 @@ def format_duration(seconds: int | float | None) -> str:
     if not seconds:
         return "00:00"
     seconds = int(seconds)
+    if seconds <= 0:
+        return "00:00"
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     secs = seconds % 60

@@ -216,6 +216,14 @@ class MemoryConsolidator:
         """Record that a message was processed for this channel."""
         with self._data_lock:
             self._message_counts[channel_id] = self._message_counts.get(channel_id, 0) + 1
+            # Seed the consolidation baseline on first-seen so cold channels
+            # (which never hit the count threshold) still get a non-zero
+            # last_time. Without this, ``_last_consolidation`` is only written
+            # in ``_consolidate_locked``'s finally, so a low-traffic channel
+            # keeps last_time=0 and the elapsed-time, >=5-message trigger in
+            # ``should_consolidate`` can never fire.
+            if channel_id not in self._last_consolidation:
+                self._last_consolidation[channel_id] = time.time()
 
     def cleanup_old_channels(
         self,

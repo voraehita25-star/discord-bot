@@ -201,7 +201,7 @@ High-performance extensions for CPU/IO-intensive operations. **Fully optional** 
 ### Building Native Extensions
 
 ```powershell
-# Prerequisites: Rust 1.75+, Go 1.25+
+# Prerequisites: Rust 1.75+, Go 1.26+
 
 # Build everything
 .\scripts\build_all.ps1 -Release
@@ -246,7 +246,7 @@ npm run release      # Build + auto-rename to Korean
 target/release/bot-dashboard.exe
 target/release/Discord Bot Dashboard.exe
 target/release/디스코드 봇 대시보드.exe
-target/release/bundle/nsis/디스코드 봇 대시보드_3.4.10_x64-setup.exe
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.11_x64-setup.exe
 ```
 
 See [native_dashboard/README.md](native_dashboard/README.md) for details.
@@ -310,4 +310,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.10 | **Python:** 3.14+ | **Tests:** 5,066 pytest ✅ + 298 vitest ✅ + 72 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + AI history editor + 3D UI polish | **Last Update:** June 16, 2026
+**Version:** 3.4.11 | **Python:** 3.14+ | **Tests:** 5,066 pytest ✅ + 298 vitest ✅ + 72 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + AI history editor + 3D UI polish | **Last Update:** June 17, 2026

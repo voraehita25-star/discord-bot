@@ -1779,6 +1779,14 @@ def _kill_warm(wp: dict[str, Any]) -> None:
     with contextlib.suppress(ProcessLookupError, Exception):
         if proc.returncode is None:
             proc.kill()
+            # Reap the killed child so its zombie/pipe FDs are released —
+            # proc.kill() alone leaks them (mirrors the kill();await wait()
+            # pattern on the live path). Schedule wait() on the running loop;
+            # suppress RuntimeError for no-loop contexts (e.g. shutdown).
+            with contextlib.suppress(RuntimeError):
+                _reap = asyncio.ensure_future(proc.wait())
+                _PREWARM_TASKS.add(_reap)
+                _reap.add_done_callback(_PREWARM_TASKS.discard)
 
 
 def _sweep_expired_warm() -> None:
@@ -2520,6 +2528,17 @@ async def handle_chat_message_claude_cli(
         if capped_docs
         else []
     )
+
+    # Re-check emptiness AFTER saving: the earlier guard only knew the raw
+    # attachment lists were non-empty, but _save_inline_images/_documents can
+    # drop every attachment (decode/size failures), leaving image_paths and
+    # doc_paths empty with no content either. Spawning claude -p on that body
+    # burns a turn for nothing, so bail with the same empty/no-usable frame.
+    if not content and not image_paths and not doc_paths:
+        await ws.send_json(
+            {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
+        )
+        return
 
     # Persistent document memory — extract text from every attached document
     # and save it to the DB so future turns (in any conversation) see the

@@ -1056,12 +1056,23 @@ class TestHandleAlbumDeep:
     def _album_track(self, name="AT", artist="AA"):
         return {"name": name, "artists": [{"name": artist}]}
 
-    async def test_success_adds_tracks(self):
-        from unittest.mock import AsyncMock
+    def _wire(self, handler, album_result, next_results=None):
+        # _handle_album now wraps the whole pagination in a closure passed to
+        # _api_call_with_retry (mirrors _handle_playlist), so a retry re-reads
+        # self.sp and re-paginates atomically. Mock at the raw-client level and
+        # let _api_call_with_retry run the closure synchronously.
+        from unittest.mock import AsyncMock, MagicMock
 
+        handler.sp = MagicMock()
+        handler.sp.album_tracks.return_value = album_result
+        if next_results is not None:
+            handler.sp.next.side_effect = list(next_results)
+        handler.RATE_LIMIT_DELAY = 0  # closure uses time.sleep(RATE_LIMIT_DELAY)
+        handler._api_call_with_retry = AsyncMock(side_effect=lambda f, *a, **k: f(*a, **k))
+
+    async def test_success_adds_tracks(self):
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
-        results = {"items": [self._album_track("S1", "A1")], "next": None}
-        handler._api_call_with_retry = AsyncMock(return_value=results)
+        self._wire(handler, {"items": [self._album_track("S1", "A1")], "next": None})
         ctx = _make_ctx()
         queue = []
         ok = await handler._handle_album(ctx, "spotify:album:abc", queue)
@@ -1070,37 +1081,25 @@ class TestHandleAlbumDeep:
         assert queue[0]["title"] == "A1 - S1"
 
     async def test_no_results_returns_false(self):
-        from unittest.mock import AsyncMock
-
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
-        handler._api_call_with_retry = AsyncMock(return_value=None)
+        self._wire(handler, None)
         ctx = _make_ctx()
         ok = await handler._handle_album(ctx, "spotify:album:abc", [])
         assert ok is False
         ctx.send.assert_awaited_once()
 
     async def test_empty_items_returns_false(self):
-        from unittest.mock import AsyncMock
-
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
-        handler._api_call_with_retry = AsyncMock(return_value={"items": [], "next": None})
+        self._wire(handler, {"items": [], "next": None})
         ctx = _make_ctx()
         ok = await handler._handle_album(ctx, "spotify:album:abc", [])
         assert ok is False
 
-    async def test_pagination_follows_next(self, monkeypatch):
-        from unittest.mock import AsyncMock
-
+    async def test_pagination_follows_next(self):
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
-
-        async def _no_sleep(_):
-            return None
-
-        monkeypatch.setattr("cogs.spotify_handler.asyncio.sleep", _no_sleep)
-
         page1 = {"items": [self._album_track("S1", "A1")], "next": "url2"}
         page2 = {"items": [self._album_track("S2", "A2")], "next": None}
-        handler._api_call_with_retry = AsyncMock(side_effect=[page1, page2])
+        self._wire(handler, page1, next_results=[page2])
         ctx = _make_ctx()
         queue = []
         ok = await handler._handle_album(ctx, "spotify:album:abc", queue)
@@ -1108,27 +1107,21 @@ class TestHandleAlbumDeep:
         assert len(queue) == 2
 
     async def test_queue_full_returns_false(self):
-        from unittest.mock import AsyncMock
-
         from cogs.music.queue import MAX_QUEUE_SIZE
 
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
-        results = {"items": [self._album_track()], "next": None}
-        handler._api_call_with_retry = AsyncMock(return_value=results)
+        self._wire(handler, {"items": [self._album_track()], "next": None})
         ctx = _make_ctx()
         queue = [{"x": i} for i in range(MAX_QUEUE_SIZE)]
         ok = await handler._handle_album(ctx, "spotify:album:abc", queue)
         assert ok is False
 
     async def test_truncates_to_remaining_capacity(self):
-        from unittest.mock import AsyncMock
-
         from cogs.music.queue import MAX_QUEUE_SIZE
 
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
         items = [self._album_track(f"S{i}", f"A{i}") for i in range(3)]
-        results = {"items": items, "next": None}
-        handler._api_call_with_retry = AsyncMock(return_value=results)
+        self._wire(handler, {"items": items, "next": None})
         ctx = _make_ctx()
         queue = [{"x": i} for i in range(MAX_QUEUE_SIZE - 2)]
         ok = await handler._handle_album(ctx, "spotify:album:abc", queue)
@@ -1138,12 +1131,9 @@ class TestHandleAlbumDeep:
         assert any("Truncated" in (f.name or "") for f in embed.fields)
 
     async def test_all_tracks_invalid_count_zero(self):
-        from unittest.mock import AsyncMock
-
         handler, _ = _make_handler({"SPOTIPY_CLIENT_ID": "id", "SPOTIPY_CLIENT_SECRET": "secret"})
         # non-empty items so we pass the empty check, but no valid track fields.
-        results = {"items": [{"artists": [], "name": "x"}], "next": None}
-        handler._api_call_with_retry = AsyncMock(return_value=results)
+        self._wire(handler, {"items": [{"artists": [], "name": "x"}], "next": None})
         ctx = _make_ctx()
         queue = []
         ok = await handler._handle_album(ctx, "spotify:album:abc", queue)

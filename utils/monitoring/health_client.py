@@ -243,10 +243,15 @@ class HealthAPIClient:
         await self._push_metric("gauge", name, value, labels)
 
     async def _push_metric(self, metric_type: str, name: str, value: float, labels: dict):
-        """Push a metric to the buffer."""
-        if not self._service_available:
-            return
+        """Buffer a metric for delivery to the health sidecar.
 
+        Metrics are buffered even while the sidecar is unavailable (startup
+        before the first health check, or during an outage) so they can be
+        delivered once it comes back up — dropping them here silently lost the
+        whole startup/outage window. The buffer is bounded by _BUFFER_CAP so a
+        sustained outage can't grow it without limit; actual delivery still only
+        happens when the sidecar is known-available (gated in _flush_buffer_locked).
+        """
         metric = {
             "type": metric_type,
             "name": name,
@@ -257,8 +262,15 @@ class HealthAPIClient:
         async with self._get_buffer_lock():
             self._metrics_buffer.append(metric)
 
-            # Auto-flush if buffer is large
-            if len(self._metrics_buffer) >= 50:
+            # Bound the buffer (matches the flush re-buffer cap); drop the oldest
+            # overflow since the newest metrics are the most useful to keep.
+            _BUFFER_CAP = 1000
+            overflow = len(self._metrics_buffer) - _BUFFER_CAP
+            if overflow > 0:
+                del self._metrics_buffer[:overflow]
+
+            # Auto-flush if buffer is large AND the sidecar is reachable.
+            if self._service_available and len(self._metrics_buffer) >= 50:
                 await self._flush_buffer_locked()
 
     async def _flush_buffer(self):

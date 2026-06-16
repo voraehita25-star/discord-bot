@@ -564,10 +564,23 @@ def setup_structured_logging(
     json_formatter = StructuredFormatter(service_name=service_name)
     human_formatter = HumanReadableFormatter()
 
+    # Secret-redaction filter, shared with logger.py. Attached to every
+    # handler below so secrets interpolated into a message string are
+    # scrubbed even on the human-readable console path (which, unlike
+    # StructuredFormatter, does not redact its own output).
+    try:
+        from utils.monitoring.logger import SensitiveDataFilter
+
+        secret_filter: logging.Filter | None = SensitiveDataFilter()
+    except Exception:  # pragma: no cover — never let logging setup crash
+        secret_filter = None
+
     # Configure console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(json_formatter if json_console else human_formatter)
+    if secret_filter is not None:
+        console_handler.addFilter(secret_filter)
     root_logger.addHandler(console_handler)
 
     # Configure JSON file handler with rotation
@@ -583,6 +596,8 @@ def setup_structured_logging(
         )
         file_handler.setFormatter(json_formatter)
         file_handler.setLevel(level)
+        if secret_filter is not None:
+            file_handler.addFilter(secret_filter)
         root_logger.addHandler(file_handler)
 
     root_logger.setLevel(level)

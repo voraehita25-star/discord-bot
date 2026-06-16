@@ -773,7 +773,29 @@ async def cmd_set_channel_perm(
         )
         return
 
-    channel = discord.utils.get(guild.channels, name=channel_name)
+    # Resolve the target channel ID-first with a duplicate-name guard, mirroring
+    # cmd_delete_channel: Discord allows multiple channels sharing a name, so a
+    # bare first-match could silently mutate the wrong channel's overwrites
+    # (e.g. exposing a private "general" by toggling view_channel on a public one).
+    channel = None
+    if channel_name.isdigit():
+        channel = guild.get_channel(int(channel_name))
+    if channel is None:
+        try:
+            same_name = [
+                c
+                for c in guild.channels
+                if (getattr(c, "name", "") or "").lower() == channel_name.lower()
+            ]
+        except TypeError:
+            same_name = []
+        if len(same_name) > 1:
+            await origin_channel.send(
+                f"⚠️ พบช่องชื่อ **{channel_name}** จำนวน {len(same_name)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
+            )
+            return
+        channel = discord.utils.get(guild.channels, name=channel_name)
     if not channel:
         await origin_channel.send(f"❌ ไม่พบช่อง: **{channel_name}**", allowed_mentions=_NO_MENTIONS)
         return

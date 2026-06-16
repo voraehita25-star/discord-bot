@@ -197,6 +197,10 @@ class CircuitBreaker:
                 # This probe COMPLETED — remove its admission timestamp from
                 # the in-flight set so a later ``can_execute`` can't mistake
                 # it for a stuck probe and forgive away its success credit.
+                # Admission timestamps are interchangeable (the half-open gate
+                # is count-based, not identity-based), so dropping the oldest
+                # in-flight entry via pop(0) is intentional — it keeps the
+                # count accurate without needing to track which probe finished.
                 if self._half_open_call_starts:
                     self._half_open_call_starts.pop(0)
                     self._half_open_calls = len(self._half_open_call_starts)

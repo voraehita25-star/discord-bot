@@ -474,9 +474,21 @@ if WATCHDOG_AVAILABLE:
         def start_bot(self, reason: str = "File change") -> bool:
             """Start or restart the bot process."""
             with self._lock:
-                return self._start_bot_unlocked(reason)
+                started = self._start_bot_unlocked(reason, run_health_check=False)
+            # Run the post-spawn health check OUTSIDE _lock: it sleeps for
+            # health_check_delay, and holding _lock across that window would
+            # block the watchdog observer thread (which also needs _lock) for
+            # the whole restart. Only clear the consecutive-crash counter when
+            # the bot is confirmed alive, so a bot that crashes on every launch
+            # still reaches max_crash_retries instead of resetting to 0 each time.
+            if started and (not self.config.health_check_enabled or self._perform_health_check()):
+                with self._lock:
+                    self.consecutive_crashes = 0
+            return started
 
-        def _start_bot_unlocked(self, reason: str = "File change") -> bool:
+        def _start_bot_unlocked(
+            self, reason: str = "File change", run_health_check: bool = True
+        ) -> bool:
             """Internal start_bot implementation (caller must hold _lock)."""
             # Debounce
             current_time = time.time()
@@ -547,17 +559,19 @@ if WATCHDOG_AVAILABLE:
                 if self.config.sound_on_restart:
                     play_sound()
 
-                # Health check. Only clear the consecutive-crash counter when the
-                # bot is actually confirmed alive. Otherwise a bot that crashes
-                # immediately on every launch would reset the counter to 0 on each
-                # auto-retry and never reach max_crash_retries — an infinite
-                # restart loop instead of the intended give-up-and-wait behavior.
-                healthy = True
-                if self.config.health_check_enabled:
-                    healthy = self._perform_health_check()
-
-                if healthy:
-                    self.consecutive_crashes = 0
+                # Health check is normally run here, but the file-change restart
+                # path (start_bot) passes run_health_check=False and runs it AFTER
+                # releasing _lock so the multi-second health_check_delay sleep
+                # doesn't block the watchdog observer thread. The crash auto-retry
+                # path keeps it inline. Only clear the consecutive-crash counter
+                # when the bot is confirmed alive, so a bot that crashes on every
+                # launch still reaches max_crash_retries instead of resetting to 0.
+                if run_health_check:
+                    healthy = True
+                    if self.config.health_check_enabled:
+                        healthy = self._perform_health_check()
+                    if healthy:
+                        self.consecutive_crashes = 0
                 return True
 
             except Exception as e:

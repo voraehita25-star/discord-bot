@@ -4,13 +4,13 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.10). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.11). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,050+ pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,066 pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
-| Go services | `go_services/` | Go 1.25 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
+| Go services | `go_services/` | Go 1.26 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
 | Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 294 vitest + 72 Playwright |
 
 The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/`.
@@ -23,11 +23,11 @@ The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ 
   $U=$env:USERPROFILE; $env:PATH="$U\.local\node;$U\.local\go\bin;$U\go\bin;$U\.cargo\bin;$env:PATH"
   ```
   Installed toolchain locations:
-  - **Python 3.14.4** — `C:\Users\ME\AppData\Local\Programs\Python\Python314`; use the venv: `.venv\Scripts\python.exe`
-  - **Ruff** — `.venv\Scripts\ruff.exe` (ruff 0.15.12)
+  - **Python 3.14.6** — `C:\Users\ME\AppData\Local\Programs\Python\Python314`; use the venv: `.venv\Scripts\python.exe`
+  - **Ruff** — `.venv\Scripts\ruff.exe` (ruff 0.15.17)
   - **Node v24 / npm** — `C:\Users\ME\.local\node` (also holds npm-global LSP shims)
   - **Go 1.26** — `C:\Users\ME\.local\go\bin` (GOROOT); `go install` tools land in `C:\Users\ME\go\bin`
-  - **Rust** — `C:\Users\ME\.cargo\bin` (cargo/rustc 1.95). ⚠️ Installed *without* MSVC build tools, so `cargo build`/`cargo test` of the `.pyd` extensions needs VS Build Tools (`link.exe`) before it will link.
+  - **Rust** — `C:\Users\ME\.cargo\bin` (cargo/rustc 1.95). MSVC build tools are installed, so `cargo build`/`cargo test`/`cargo check` of the `.pyd` extensions link and run locally.
 - **Never run raw `pytest -v` — it can hang.** Use the wrapper, which clears the `-v` from `pyproject.toml` and avoids the pipe freeze:
   ```powershell
   .\scripts\run_tests.ps1                 # all tests

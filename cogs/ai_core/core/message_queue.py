@@ -173,11 +173,15 @@ class MessageQueue:
                         )
                         return
 
-                    def _evict_key(cid: int) -> tuple[int, float]:
+                    def _evict_key(cid: int) -> tuple[int, float, float]:
                         msgs = self.pending_messages[cid]
                         return (
                             0 if not msgs else 1,  # empty first
                             msgs[0].timestamp if msgs else 0.0,
+                            # tie-breaker: among empty-pending channels (which
+                            # all share timestamp 0.0) evict the genuinely
+                            # least-recently-active one by last lock time.
+                            self._lock_times.get(cid, 0.0),
                         )
 
                     oldest_channel = min(candidates, key=_evict_key)

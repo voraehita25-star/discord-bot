@@ -1107,12 +1107,6 @@ async def call_claude_api(
                 api_attempt += 1
                 continue
 
-            # Record success
-            if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
-                gemini_circuit.record_success()
-            if ERROR_RECOVERY_AVAILABLE and service_monitor:
-                service_monitor.record_success("claude_api")
-            await _failover_record_success()
             # H27: record token usage from this successful response (best-effort).
             await _record_token_usage(
                 getattr(response, "usage", None),
@@ -1130,6 +1124,14 @@ async def call_claude_api(
 
             # Empty/silent response detection
             if temp_text and temp_text.strip():
+                # Record success only after confirming non-empty content — a
+                # 200-but-empty endpoint must NOT be recorded healthy, or the
+                # circuit never trips and failover never kicks in.
+                if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
+                    gemini_circuit.record_success()
+                if ERROR_RECOVERY_AVAILABLE and service_monitor:
+                    service_monitor.record_success("claude_api")
+                await _failover_record_success()
                 model_text = temp_text
                 break
 
@@ -1147,6 +1149,13 @@ async def call_claude_api(
                     "⚠️ Claude content retries exhausted after %d attempts",
                     _CLAUDE_MAX_CONTENT_RETRIES,
                 )
+                # Exhausted with empty content: do NOT record success. Record a
+                # soft failure so a persistently-empty endpoint can trip the
+                # circuit / drive failover instead of looking healthy.
+                if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
+                    gemini_circuit.record_failure()
+                if ERROR_RECOVERY_AVAILABLE and service_monitor:
+                    service_monitor.record_failure("claude_api", "empty_response")
                 break
 
         except anthropic.RateLimitError as e:

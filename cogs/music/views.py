@@ -154,6 +154,7 @@ class MusicControlView(discord.ui.View):
         current_loop = self.cog._gs(self.guild_id).loop
         self.cog._gs(self.guild_id).loop = not current_loop
 
+        previous_style = button.style
         button.style = (
             discord.ButtonStyle.success
             if self.cog._gs(self.guild_id).loop
@@ -167,6 +168,7 @@ class MusicControlView(discord.ui.View):
             await interaction.response.edit_message(view=self)
         except discord.HTTPException:
             self.cog._gs(self.guild_id).loop = current_loop
+            button.style = previous_style
             return
         msg = "🔁 เปิดโหมดวนซ้ำ" if self.cog._gs(self.guild_id).loop else "➡️ ปิดโหมดวนซ้ำ"
         with contextlib.suppress(discord.HTTPException):

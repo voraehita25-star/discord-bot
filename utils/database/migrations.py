@@ -135,26 +135,31 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                 check_lines: list[str] = []
                 local_in_block = False
                 for ln in current:
-                    s = ln
-                    if local_in_block:
-                        e = s.find("*/")
-                        if e == -1:
+                    # Single left-to-right scan that consumes block comments
+                    # first, so a ``--`` *inside* a ``/* */`` block (which is
+                    # not a line comment) cannot truncate the line and corrupt
+                    # block-state / statement chunking.
+                    out: list[str] = []
+                    i = 0
+                    n = len(ln)
+                    while i < n:
+                        if local_in_block:
+                            e = ln.find("*/", i)
+                            if e == -1:
+                                i = n
+                            else:
+                                i = e + 2
+                                local_in_block = False
                             continue
-                        s = s[e + 2 :]
-                        local_in_block = False
-                    cp = s.find("--")
-                    if cp != -1:
-                        s = s[:cp]
-                    bs = s.find("/*")
-                    if bs != -1:
-                        rest_s = s[bs:]
-                        be = rest_s.find("*/")
-                        if be == -1:
+                        if ln.startswith("--", i):
+                            break
+                        if ln.startswith("/*", i):
                             local_in_block = True
-                            s = s[:bs]
-                        else:
-                            s = s[:bs] + s[bs + be + 2 :]
-                    check_lines.append(s)
+                            i += 2
+                            continue
+                        out.append(ln[i])
+                        i += 1
+                    check_lines.append("".join(out))
                 check_candidate = "\n".join(check_lines).strip()
                 if check_candidate and sqlite3.complete_statement(check_candidate):
                     statements.append(candidate)

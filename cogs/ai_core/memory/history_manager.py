@@ -458,6 +458,17 @@ class HistoryManager:
                 message_tokens[remove_idx],
             )
 
+        # If the heap is exhausted but we still exceed the budget, the protected
+        # recent tail alone is over budget. Warn instead of silently returning an
+        # over-budget history; do not hard-truncate protected messages.
+        if running_total > target_tokens:
+            self.logger.warning(
+                "Token budget could not be met: %d > %d tokens "
+                "(protected recent tail exceeds budget)",
+                running_total,
+                target_tokens,
+            )
+
         # Build result excluding removed indices
         working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
 

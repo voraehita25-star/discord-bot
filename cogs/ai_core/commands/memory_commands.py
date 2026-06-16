@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import unicodedata
 from typing import Any
 
 import discord
@@ -20,6 +21,110 @@ from cogs.music.utils import Colors
 # Strip control characters except newline/tab — compiled once at module
 # load so `!remember` doesn't re-parse the pattern on every invocation.
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Prompt-injection screen for `!remember`, mirroring the AI remember tool in
+# ``tools/tool_executor.py``. The user-facing command stores via
+# ``add_explicit_fact`` straight into RAG-retrievable context, so it must reject
+# the same confusable-spelled / forbidden markers the AI-tool path rejects —
+# otherwise a member could persist ``[SYSTEM] ignore previous`` (plain or via
+# Cyrillic/Greek/full-width/math confusables) into their own retrieved context.
+# Plain markers run against the raw lowercased text; the broader set runs against
+# the de-confused + NFKD-normalised form (see ``_screen_injection``).
+_SUSPICIOUS_MARKERS = (
+    "[system]",
+    "[inst]",
+    "ignore previous",
+    "ignore the previous",
+    "<system>",
+    "<inst>",
+    "</system>",
+    "</inst>",
+)
+# Cyrillic/Greek/full-width/math confusables → plain ASCII, so visually-identical
+# spellings (e.g. "иgnore previous") can't slip past the normalised screen.
+_CONFUSABLE_MAP = {
+    "а": "a",
+    "в": "b",
+    "с": "c",
+    "д": "d",
+    "е": "e",
+    "х": "x",
+    "и": "i",
+    "ј": "j",
+    "к": "k",
+    "ӏ": "l",
+    "о": "o",
+    "р": "p",
+    "ѕ": "s",
+    "т": "t",
+    "у": "y",
+    "һ": "h",
+    "А": "A",
+    "В": "B",
+    "С": "C",
+    "Е": "E",
+    "Н": "H",
+    "К": "K",
+    "М": "M",
+    "О": "O",
+    "Р": "P",
+    "Т": "T",
+    "Х": "X",
+    "Ј": "J",
+    "α": "a",
+    "ο": "o",
+    "ρ": "p",
+    "υ": "y",
+    "Α": "A",
+    "Β": "B",
+    "Ε": "E",
+    "Ζ": "Z",
+    "Η": "H",
+    "Ι": "I",
+    "Κ": "K",
+    "Μ": "M",
+    "Ν": "N",
+    "Ο": "O",
+    "Ρ": "P",
+    "Τ": "T",
+    "Υ": "Y",
+    "Χ": "X",
+}
+# Forbidden markers checked against the de-confused + NFKD-normalised form.
+_FORBIDDEN_NORMALIZED = (
+    "[system]",
+    "[inst]",
+    "<system>",
+    "</system>",
+    "<inst>",
+    "</inst>",
+    "ignore previous",
+    "ignore the previous",
+    "pretend",
+    "you are now",
+    "system:",
+    "override",
+    "jailbreak",
+    "disregard",
+)
+
+
+def _screen_injection(content: str) -> bool:
+    """
+    Return True if ``content`` carries a prompt-injection marker.
+
+    Mirrors the screen in ``tools/tool_executor.py``: a plain lowercased pass for
+    the suspicious markers, then a de-confused + NFKD-decomposed + ASCII pass for
+    the broader forbidden set so confusable spellings can't evade detection.
+    """
+    lowered = content.lower()
+    if any(marker in lowered for marker in _SUSPICIOUS_MARKERS):
+        return True
+    de_confused = "".join(_CONFUSABLE_MAP.get(c, c) for c in content)
+    normalized = (
+        unicodedata.normalize("NFKD", de_confused).encode("ascii", "ignore").decode("ascii").lower()
+    )
+    return any(f in normalized for f in _FORBIDDEN_NORMALIZED)
 
 
 class MemoryCommands(commands.Cog):
@@ -58,6 +163,14 @@ class MemoryCommands(commands.Cog):
         fact = _CONTROL_CHARS_RE.sub("", fact).strip()
         if len(fact) < 3:
             await ctx.send("❌ ข้อความสั้นเกินไปหลังทำความสะอาด")
+            return
+
+        # Reject stored prompt-injection markers — same screen the AI remember
+        # tool (`tools/tool_executor.py`) applies — so a member can't persist
+        # ``[SYSTEM] ignore previous`` (plain or confusable-spelled) into their
+        # own RAG-retrievable context.
+        if _screen_injection(fact):
+            await ctx.send("❌ ข้อความมีเครื่องหมายที่ไม่อนุญาต (restricted markers)")
             return
 
         try:

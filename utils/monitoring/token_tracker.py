@@ -19,7 +19,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 _deprecation_warned = False
@@ -126,8 +126,8 @@ class TokenTracker:
         _emit_deprecation_warning()
         with self._lock:
             now = time.time()
-            hour_key = datetime.now().strftime("%Y-%m-%d-%H")
-            day_key = datetime.now().strftime("%Y-%m-%d")
+            hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+            day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
             # Evict old users if we hit the limit (LRU-style based on last_use)
             if user_id not in self._user_stats and len(self._user_stats) >= self.MAX_USERS:
@@ -237,7 +237,7 @@ class TokenTracker:
             summaries = []
 
             for i in range(days):
-                date = datetime.now() - timedelta(days=i)
+                date = datetime.now(timezone.utc) - timedelta(days=i)
                 day_key = date.strftime("%Y-%m-%d")
 
                 daily_total = TokenUsage()
@@ -290,7 +290,7 @@ class TokenTracker:
 
     def cleanup_old_data(self) -> int:
         """Remove usage data older than max_history_days."""
-        cutoff = datetime.now() - timedelta(days=self._max_history_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._max_history_days)
         cutoff_day_key = cutoff.strftime("%Y-%m-%d")
         # Hourly keys use format YYYY-MM-DD-HH, so compare with hourly cutoff
         cutoff_hour_key = cutoff.strftime("%Y-%m-%d-%H")

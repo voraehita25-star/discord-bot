@@ -409,10 +409,22 @@ class SummaryArchiver:
             channels = list(await cursor.fetchall())
 
         consolidated = 0
+        # Drain each channel across multiple capped passes within THIS cycle
+        # instead of one MAX_MESSAGES_PER_CONSOLIDATION (500-row) chunk per 6h
+        # run — a large backlog used to take weeks to clear while ai_history kept
+        # growing. consolidate_channel returns None once a channel has fewer than
+        # MIN_MESSAGES_TO_SUMMARIZE eligible rows left (drained). Bounded by a
+        # per-channel pass budget so one huge channel can't monopolise the cycle,
+        # and yields to the event loop between passes.
+        max_passes_per_channel = 20
         for row in channels:
-            result = await self.consolidate_channel(row["channel_id"])
-            if result:
+            channel_id = row["channel_id"]
+            for _ in range(max_passes_per_channel):
+                result = await self.consolidate_channel(channel_id)
+                if not result:
+                    break
                 consolidated += 1
+                await asyncio.sleep(0)
 
         return consolidated
 

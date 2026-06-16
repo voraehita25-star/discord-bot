@@ -339,7 +339,6 @@ async def fetch_url_content(
         logger.debug(
             "fetch_url_content: ignoring caller-supplied session; using shared SSRF-safe session"
         )
-        session = None
     try:
         # Check URL cache first (under lock to prevent duplicate fetches)
         import time as _time
@@ -365,8 +364,9 @@ async def fetch_url_content(
             logger.warning("Blocked SSRF attempt to private URL: %s", url)
             return url, None
 
-        if session is None:
-            session = await _get_shared_session()
+        # ``session`` arg is deprecated/ignored (see docstring); always use the
+        # shared SSRF-safe session regardless of what the caller passed.
+        session = await _get_shared_session()
 
         headers = {"User-Agent": USER_AGENT}
 

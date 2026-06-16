@@ -383,6 +383,24 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
 def _extract_text(filename: str, data_field: str) -> ExtractedDocument | None:
     """Text files arrive already decoded as UTF-8 strings — just
     normalise + truncate."""
+    # Bound the input BEFORE _normalise. Unlike the PDF/DOCX paths this
+    # string is already decoded, so without a guard a huge text doc forces
+    # full allocation + three re.sub scans across the whole string before
+    # the char cap below ever truncates. Reject when the raw string blows
+    # past the decoded-bytes cap (matching the PDF/DOCX guards), then slice
+    # to a generous prefix proportional to MAX_EXTRACTED_CHARS — _normalise
+    # can only shrink text, so MAX_EXTRACTED_CHARS*4 leaves ample headroom
+    # for whitespace collapse before the final truncation below.
+    if len(data_field) > _MAX_DECODED_DOC_BYTES:
+        logger.warning(
+            "Rejecting oversized text doc %s (%d chars > %d cap)",
+            filename,
+            len(data_field),
+            _MAX_DECODED_DOC_BYTES,
+        )
+        return None
+    if len(data_field) > MAX_EXTRACTED_CHARS * 4:
+        data_field = data_field[: MAX_EXTRACTED_CHARS * 4]
     text = _normalise(data_field)
     if not text:
         return None

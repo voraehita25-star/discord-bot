@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 # Add project root to path for imports
@@ -20,7 +21,10 @@ def main() -> None:
     # doesn't raise FileNotFoundError; matches rollback_migration._ensure_backup_dir)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(str(DB_PATH)) as conn:
+    # closing() guarantees the connection is closed: sqlite3's own context
+    # manager only commits/rolls back the transaction, it does NOT close the
+    # connection. On Windows a leaked handle can block reindex/rollback.
+    with closing(sqlite3.connect(str(DB_PATH))) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
