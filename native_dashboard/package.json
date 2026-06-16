@@ -29,7 +29,7 @@
   "author": "voraehita25-star",
   "license": "ISC",
   "devDependencies": {
-    "@axe-core/playwright": "^4.11.2",
+    "@axe-core/playwright": "^4.11.3",
     "@playwright/test": "^1.59.1",
     "@tauri-apps/api": "^2.10.1",
     "@vitest/coverage-v8": "^4.0.17",
