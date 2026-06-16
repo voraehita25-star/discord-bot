@@ -313,6 +313,12 @@ export function loadSettings() {
                 settings.chartHistory > 600) {
                 settings.chartHistory = 60;
             }
+            if (typeof settings.userName !== 'string')
+                settings.userName = 'You';
+            if (typeof settings.userAvatar !== 'string')
+                settings.userAvatar = '';
+            if (typeof settings.aiAvatar !== 'string')
+                settings.aiAvatar = '';
             // Migration: Only set default Faust avatar if saved aiAvatar is empty/undefined
             // Don't override custom avatars that users have set
             if (!settings.aiAvatar) {

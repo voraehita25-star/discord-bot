@@ -63,23 +63,25 @@ def check_docx() -> bool:
 
     canary = Path(tempfile.gettempdir()) / "xxe_canary_SECRET.txt"
     canary.write_text("XXE-LEAK-CANARY-99", encoding="utf-8")
-    base = io.BytesIO()
-    d2 = Document()
-    d2.add_paragraph("placeholder")
-    d2.save(base)
-    uri = "file:///" + str(canary).replace("\\", "/")
-    xxe = (
-        '<?xml version="1.0"?>'
-        f'<!DOCTYPE w:document [<!ENTITY xxe SYSTEM "{uri}">]>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "<w:body><w:p><w:r><w:t>&xxe;</w:t></w:r></w:p></w:body></w:document>"
-    )
-    out = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(base.getvalue())) as zin, zipfile.ZipFile(out, "w") as zo:
-        for item in zin.namelist():
-            zo.writestr(item, xxe if item == "word/document.xml" else zin.read(item))
-    b64x = base64.b64encode(out.getvalue()).decode()
+    # Open the try IMMEDIATELY after creating the secret-bearing canary so the
+    # in-memory DOCX construction below cannot leave the canary behind on a raise.
     try:
+        base = io.BytesIO()
+        d2 = Document()
+        d2.add_paragraph("placeholder")
+        d2.save(base)
+        uri = "file:///" + str(canary).replace("\\", "/")
+        xxe = (
+            '<?xml version="1.0"?>'
+            f'<!DOCTYPE w:document [<!ENTITY xxe SYSTEM "{uri}">]>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body><w:p><w:r><w:t>&xxe;</w:t></w:r></w:p></w:body></w:document>"
+        )
+        out = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(base.getvalue())) as zin, zipfile.ZipFile(out, "w") as zo:
+            for item in zin.namelist():
+                zo.writestr(item, xxe if item == "word/document.xml" else zin.read(item))
+        b64x = base64.b64encode(out.getvalue()).decode()
         resx = extract_from_payload(
             {"name": "x.docx", "kind": "binary", "data": f"data:{_MIME_DOCX};base64,{b64x}"}
         )

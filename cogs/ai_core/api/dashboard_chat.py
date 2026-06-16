@@ -467,10 +467,13 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         is_thinking = False
         input_tokens = 0
         output_tokens = 0
-        # Running totals across tool rounds. Each round is a separate billed API
-        # call, so per-round usage must be summed rather than overwritten —
-        # otherwise a multi-round (tool-using) turn reports only the final
-        # round's tokens and undercounts the real spend.
+        # Token accounting across tool rounds, framed for context-window display
+        # (stream_end reports input_tokens alongside GEMINI_CONTEXT_WINDOW as
+        # occupancy, not cumulative billing). Each round's prompt is a superset
+        # of all prior rounds, so input_tokens is taken from the final round
+        # (last/superset) rather than summed — summing would over-report context
+        # occupancy and could exceed the window itself. Output (candidates)
+        # tokens are per-round-distinct new generation and are summed.
         total_input_tokens = 0
         total_output_tokens = 0
         # Strip a leading ``[ISO-timestamp]`` that models occasionally echo
@@ -640,8 +643,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
             await asyncio.wait_for(_consume_stream(), timeout=stream_timeout)
 
-            # Fold this round's usage into the running totals (see above).
-            total_input_tokens += input_tokens
+            # Input tokens are cumulative-within-context (each round's prompt is a
+            # superset of all prior rounds), so for context-window display take
+            # only the final round's count. Output (candidates) tokens are
+            # per-round-distinct new generation and must stay summed.
+            total_input_tokens = input_tokens
             total_output_tokens += output_tokens
 
             # If the stream ended while still inside a thinking block (model

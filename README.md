@@ -73,7 +73,7 @@ python bot.py
 | `ANTHROPIC_API_KEY` | ⚠️ | Anthropic API key. Only required when `CLAUDE_BACKEND=api`. The default `cli` mode reads credentials from your Claude Code login instead. |
 | `CLAUDE_BACKEND` | ❌ | Claude backend mode: `cli` (default — spawn `claude -p`, uses your Claude Code Max subscription quota, no per-token charge) or `api` (anthropic SDK + per-token billing). Discord AI replies + dashboard chat work in **both** modes; `api` additionally enables the memory consolidator + history summarizer (both disabled under `cli`). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | Only needed for `CLAUDE_BACKEND=cli` when the bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
-| `GEMINI_API_KEY` | ❌ | Google Gemini API key for embeddings/RAG (only used when `CLAUDE_BACKEND=api`). |
+| `GEMINI_API_KEY` | ❌ | Google Gemini API key for embeddings/RAG. Used on **any** backend (incl. the default `cli`) — semantic RAG embeddings are decoupled from `CLAUDE_BACKEND`. (The dashboard's optional Gemini *chat* provider is the only Gemini surface restricted to `CLAUDE_BACKEND=api`.) |
 | `RAG_ALLOW_LEGACY_PICKLE` | ❌ | Opt-in flag to load pre-v3.3 FAISS `.npy` (pickle) sidecar files. Off by default — pickle deserialization is an RCE sink. Only enable when migrating a trusted old deployment. |
 | `BOT_MEMORY_WARNING_MB` | ❌ | Soft memory threshold in MiB (default: 1024). Tune per-host. |
 | `BOT_MEMORY_CRITICAL_MB` | ❌ | Hard memory threshold in MiB (default: 1536). |
@@ -246,7 +246,7 @@ npm run release      # Build + auto-rename to Korean
 target/release/bot-dashboard.exe
 target/release/Discord Bot Dashboard.exe
 target/release/디스코드 봇 대시보드.exe
-target/release/bundle/nsis/디스코드 봇 대시보드_2.0.0_x64-setup.exe
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.10_x64-setup.exe
 ```
 
 See [native_dashboard/README.md](native_dashboard/README.md) for details.
@@ -310,4 +310,4 @@ This project is private. All rights reserved.
 
 ---
 
-**Version:** 3.4.9 | **Python:** 3.14+ | **Tests:** 5,066 pytest ✅ + 298 vitest ✅ + 72 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + AI history editor + 3D UI polish | **Last Update:** June 15, 2026
+**Version:** 3.4.10 | **Python:** 3.14+ | **Tests:** 5,066 pytest ✅ + 298 vitest ✅ + 72 Playwright ✅ (e2e + axe a11y + visual regression) | **Native Extensions:** Rust + Go | **Dashboard:** document attach + persistent per-conversation doc memory + file editor + AI history editor + 3D UI polish | **Last Update:** June 16, 2026

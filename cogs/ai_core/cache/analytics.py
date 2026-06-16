@@ -498,7 +498,7 @@ class AIAnalytics:
 
     async def get_user_stats(self, user_id: int) -> dict[str, Any]:
         """Get statistics for a specific user."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             return {"error": "Database not available"}
 
         async with db.get_connection() as conn:
@@ -539,7 +539,7 @@ class AIAnalytics:
 
     async def get_hourly_trend(self, hours: int = 24) -> list[tuple[str, int]]:
         """Get interaction counts by hour."""
-        if not DB_AVAILABLE:
+        if not DB_AVAILABLE or db is None:
             # Use in-memory data — UTC to match the bucket keys produced in
             # log_interaction, otherwise the keys would never line up.
             now = datetime.now(timezone.utc)

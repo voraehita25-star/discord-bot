@@ -214,7 +214,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |
 | `ANTHROPIC_PROXY_BASE_URL` | `""` | Proxy API URL |
 | `ANTHROPIC_API_ENDPOINT` | `direct` | Failover *mode* selector (a sentinel, not a URL): `direct` calls the Anthropic API directly; any other value pins the proxy. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
-| `DEFAULT_AI_PROVIDER` | auto | Dashboard default (`gemini`/`claude`) |
+| `DEFAULT_AI_PROVIDER` | `claude` | Dashboard default provider (`gemini`/`claude`); unset resolves to `claude` |
 
 ### Discord IDs
 
@@ -230,7 +230,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | -------- | ------- | ----------- |
 | `WS_DASHBOARD_HOST` | `127.0.0.1` | Dashboard WS host |
 | `WS_DASHBOARD_PORT` | `8765` | Dashboard WS port |
-| `DASHBOARD_WS_TOKEN` | `""` | Bearer auth token (shared secret, compared byte-for-byte by the WS handshake). An empty value rejects all WS connections — set this OR enable `DASHBOARD_ALLOW_UNRESTRICTED=true` (NOT recommended outside localhost). |
+| `DASHBOARD_WS_TOKEN` | `""` | Bearer auth token (shared secret, compared byte-for-byte by the WS handshake). An empty value rejects all WS connections (the handshake returns 401) — you MUST set this for the dashboard to connect. (`DASHBOARD_ALLOW_UNRESTRICTED` is unrelated: it gates the dashboard's unrestricted creative-writing prompt mode, not WS authentication.) |
 | `WS_REQUIRE_TLS` | `false` | Require TLS |
 | `DASHBOARD_CLI_ALLOW_WRITE` | `false` (off) | `CLAUDE_BACKEND=cli` only. When on, the dashboard's embedded `claude -p` may CREATE/EDIT files non-interactively (the chat UI can't answer an interactive "Allow?" prompt). Files-only: Bash, the web tools, NotebookEdit and subagents are denied. A PreToolUse write-guard hook (`cogs/ai_core/api/cli_write_guard.py`) is the authoritative boundary — it fails closed and denies any write whose canonical path is outside the allowed roots, so the repo, `.env`, `~/.claude`, `~/.ssh` and the home root are all rejected. Enable only on a trusted machine — uploaded documents are a prompt-injection surface. |
 | `DASHBOARD_CLI_WRITE_DIRS` | Desktop / Documents / Downloads (+ OneDrive-redirected on Windows) | `os.pathsep`-separated list overriding the auto-approved write roots used by `DASHBOARD_CLI_ALLOW_WRITE`. Only directories that actually exist are honoured. |

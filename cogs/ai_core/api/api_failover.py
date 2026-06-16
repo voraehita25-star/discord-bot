@@ -444,6 +444,20 @@ class APIFailoverManager:
             target = next(iter(other_endpoints), None)
             if target is None:
                 return
+            # Mirror record_failure's guard: don't switch to a target that
+            # also recently failed and is still inside RECOVERY_COOLDOWN —
+            # otherwise probes ping-pong the active endpoint between two
+            # unhealthy targets.
+            other_health = self._health.get(target)
+            if other_health and not other_health.is_healthy:
+                cooldown_elapsed = (
+                    time.monotonic() - other_health.last_failure_time
+                ) > self.RECOVERY_COOLDOWN
+                if not cooldown_elapsed:
+                    logger.warning(
+                        "⚠️ Both API endpoints unhealthy, staying on %s", self._active.value
+                    )
+                    return
             await self._switch_to_locked(target, f"probe-failover: {reason}")
         await self._notify_listeners(target, f"probe-failover: {reason}")
 

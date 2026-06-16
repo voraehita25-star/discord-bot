@@ -1,7 +1,7 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** June 15, 2026
-> **Version:** 3.4.9
+> **Version:** 3.4.10
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
 > **Total Files:** 114 Python test files (5,066 tests) + 11 vitest files (298 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
@@ -218,6 +218,10 @@ BOT/
 │   └── test_webhooks.py
 │
 ├── docs/                     # 📚 Documentation
+│   ├── DEVELOPER_GUIDE.md    # This guide
+│   ├── ARCHITECTURE.md       # Architecture overview
+│   ├── DATABASE_SCHEMA.md / SCHEMA.md  # DB schema reference
+│   ├── INSTALL.md / TESTING.md / TROUBLESHOOTING.md / OWNER_COMMANDS.md / SENTRY.md
 │   └── CODE_AUDIT_GUIDE.md   # Code audit checklist
 │
 ├── native_dashboard/         # 🖥️ Tauri Desktop Dashboard v2.0
@@ -420,7 +424,8 @@ GUILD_ID_RP=123456789
 CLAUDE_BACKEND=cli
 # ANTHROPIC_API_KEY=sk-ant-...   # only when CLAUDE_BACKEND=api
 
-# Gemini (Optional — only used when CLAUDE_BACKEND=api, for RAG embeddings)
+# Gemini (Optional — used for semantic RAG embeddings on ANY backend,
+#  incl. the default cli, whenever GEMINI_API_KEY is set; toggle with RAG_EMBEDDINGS=auto|off)
 # GEMINI_API_KEY=your_api_key
 
 # Spotify (Optional)
@@ -440,7 +445,7 @@ CREATOR_ID=your_discord_id
 - `GUILD_ID_*` - Server IDs
 - `CHANNEL_ID_*` - Channel IDs
 - `ANTHROPIC_API_KEY` / `CLAUDE_BACKEND` - Claude credentials (see env.example)
-- `GEMINI_API_KEY` - Gemini key for RAG embeddings (only used when `CLAUDE_BACKEND=api`)
+- `GEMINI_API_KEY` - Gemini key for RAG embeddings (works on any `CLAUDE_BACKEND` when set; toggle via `RAG_EMBEDDINGS=auto|off`)
 - `GAME_SEARCH_KEYWORDS` - Keywords ที่ force search
 
 **Processing Limits:**
@@ -561,7 +566,7 @@ if is_unrestricted(channel_id):
 
 FAISS-based memory retrieval:
 
-- **Embedding:** Gemini embeddings (`gemini-embedding-2`, 768-dim via `output_dimensionality`, requested with `GEMINI_API_KEY`) — only loaded when `CLAUDE_BACKEND=api`. In the default `cli` mode the RAG add/query path is disabled at the cog level. (The previous `text-embedding-004` model was shut down by Google on 2026-01-14.)
+- **Embedding:** Gemini embeddings (`gemini-embedding-2`, 768-dim via `output_dimensionality`, requested with `GEMINI_API_KEY`) — enabled on any backend when a key + google-genai are present (gate is `RAG_EMBEDDINGS=auto|off`, decoupled from `CLAUDE_BACKEND`). RAG query/search runs regardless of backend; only the LLM-based memory consolidator (fact-extraction writes) no-ops under the default `cli` mode because the Claude SDK client is not initialised. (The previous `text-embedding-004` model was shut down by Google on 2026-01-14.)
 - **Backend:** Optional Rust extension (`rag_engine.pyd`, ~10–25× faster) with Python fallback
 - **Hybrid Search:** Semantic + keyword + time decay
 - **Auto-indexing:** Conversations automatically indexed
@@ -1138,4 +1143,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: June 15, 2026 - Version 3.4.9 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,066 Python tests + 298 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->
+<!-- Documentation last updated: June 15, 2026 - Version 3.4.10 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,066 Python tests + 298 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

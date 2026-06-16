@@ -1,7 +1,7 @@
 # AI Core Module
 
-> Last Updated: June 15, 2026
-> Version: 3.4.9
+> Last Updated: June 16, 2026
+> Version: 3.4.10
 
 ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.8 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
@@ -254,7 +254,7 @@ await chat_manager.process_chat(
   (same trim+force-save as `!auto_summarize`, target 500k tokens, then the
   CLI session resets and chat continues) or ❌ ไม่สรุป (พักแชทนี้ไว้)
   (history kept intact; the channel can't continue until summarized or
-  `!reset_ai`). A 2-minute cooldown posts short auto-deleting reminders
+  `!reset_ai`). A 10-minute cooldown posts short auto-deleting reminders
   instead of stacking button views; the non-streaming path just logs and
   skips the turn. The dashboard path front-truncates its history block
   (newest turns kept) instead.

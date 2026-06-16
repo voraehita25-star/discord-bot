@@ -671,7 +671,9 @@ fn get_ws_endpoint(state: State<AppState>) -> Result<String, String> {
         .unwrap_or_else(|| "127.0.0.1".to_string());
     let ws_port = read_dotenv_value(&env_path, "WS_DASHBOARD_PORT")
         .or_else(|| std::env::var("WS_DASHBOARD_PORT").ok())
-        .filter(|value| !value.trim().is_empty())
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .map(|p| p.to_string())
         .unwrap_or_else(|| "8765".to_string());
     let ws_require_tls = env_flag_is_truthy(
         read_dotenv_value(&env_path, "WS_REQUIRE_TLS")
@@ -683,7 +685,7 @@ fn get_ws_endpoint(state: State<AppState>) -> Result<String, String> {
         "{}://{}:{}/ws",
         ws_scheme,
         normalize_ws_connect_host(&ws_host),
-        ws_port.trim(),
+        ws_port,
     ))
 }
 

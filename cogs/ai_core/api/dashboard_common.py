@@ -244,6 +244,9 @@ _USER_CONTEXT_CACHE: dict[str | None, _UserContextCacheEntry] = {}
 _USER_CONTEXT_CACHE_TTL = 60.0  # seconds
 _USER_CONTEXT_CACHE_MAX_ENTRIES = 64
 _user_context_lock: asyncio.Lock | None = None
+# Bumped on every invalidation so an in-flight build_user_context that read
+# the DB before the invalidation can detect it raced and skip its stale write.
+_user_context_generation = 0
 
 
 def _get_user_context_lock() -> asyncio.Lock:
@@ -263,10 +266,13 @@ def invalidate_user_context_cache(conversation_id: str | None = None) -> None:
     a missing key is silently ignored so callers don't have to care whether
     the cache had been populated yet.
     """
+    global _user_context_generation
     if conversation_id is None:
         _USER_CONTEXT_CACHE.clear()
     else:
         _USER_CONTEXT_CACHE.pop(conversation_id, None)
+    # Signal any build_user_context awaiting DB I/O that its snapshot is now stale.
+    _user_context_generation += 1
 
 
 async def build_user_context(
@@ -294,6 +300,7 @@ async def build_user_context(
 
     cache_key = conversation_id
     now = time.monotonic()
+    gen_at_read = _user_context_generation
     cached = _USER_CONTEXT_CACHE.get(cache_key)
     if cached is not None and cached["expires_at"] > now:
         unrestricted = unrestricted_mode_requested and cached["profile_is_creator"]
@@ -399,10 +406,13 @@ async def build_user_context(
                 key=lambda k: _USER_CONTEXT_CACHE[k]["expires_at"],
             )
             _USER_CONTEXT_CACHE.pop(oldest, None)
-        _USER_CONTEXT_CACHE[cache_key] = {
-            "expires_at": now + _USER_CONTEXT_CACHE_TTL,
-            "user_context": user_context,
-            "profile_is_creator": profile_is_creator,
-        }
+        # If an invalidation ran while we were awaiting DB I/O, our snapshot is
+        # stale — skip the write and let the next turn rebuild (TTL is the backstop).
+        if _user_context_generation == gen_at_read:
+            _USER_CONTEXT_CACHE[cache_key] = {
+                "expires_at": time.monotonic() + _USER_CONTEXT_CACHE_TTL,
+                "user_context": user_context,
+                "profile_is_creator": profile_is_creator,
+            }
 
     return user_context, unrestricted_mode

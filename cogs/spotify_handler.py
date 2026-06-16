@@ -101,16 +101,14 @@ class SpotifyHandler:
         # Recreate-on-retry would otherwise keep the old requests.Session
         # alive, leaking sockets/file descriptors each time.
         if self.sp is not None:
-            old_session = getattr(self.sp, "_session", None) or (
-                getattr(self.sp.auth_manager, "_session", None)
-                if hasattr(self.sp, "auth_manager")
-                else None
-            )
-            if old_session is not None:
-                try:
-                    old_session.close()
-                except Exception:
-                    pass
+            auth_mgr = getattr(self.sp, "auth_manager", None)
+            for old_session in (
+                getattr(self.sp, "_session", None),
+                getattr(auth_mgr, "_session", None),
+            ):
+                if old_session is not None:
+                    with contextlib.suppress(Exception):
+                        old_session.close()
 
         if client_id and client_secret:
             try:

@@ -319,11 +319,20 @@ async def cmd_create_category(
         return
 
     try:
-        await guild.create_category(name)
+        category = await guild.create_category(name)
         logger.info("🛠️ AI Created Category: %s", name)
         await origin_channel.send(
             f"✅ สร้าง Category **{name}** เรียบร้อยแล้ว", allowed_mentions=_NO_MENTIONS
         )
+        # Log to audit trail
+        if AUDIT_AVAILABLE and log_channel_change is not None:
+            await log_channel_change(
+                user_id=guild.me.id,
+                guild_id=guild.id,
+                action="create_category",
+                channel_id=category.id,
+                channel_name=name,
+            )
     except discord.Forbidden:
         await origin_channel.send("❌ บอทไม่มีสิทธิ์สร้าง Category", allowed_mentions=_NO_MENTIONS)
     except discord.HTTPException as e:
@@ -1006,8 +1015,11 @@ async def cmd_list_members(
                 limit = 1
             elif limit > 200:
                 limit = 200  # Max limit to prevent huge responses
-        if len(args) > 1 and args[1].strip():
-            query = args[1].strip().lower()
+            if len(args) > 1 and args[1].strip():
+                query = args[1].strip().lower()
+        elif args[0].strip():
+            # No leading numeric limit: a lone token is the search query.
+            query = args[0].strip().lower()
 
     target_members = guild.members
     if query:

@@ -1614,10 +1614,11 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Use only recent history if too long (constant in data/constants.py)
                     if len(history) > MAX_HISTORY_ITEMS:
+                        pre_trim_len = len(history)
                         history = history[-MAX_HISTORY_ITEMS:]
                         logger.info(
                             "📚 Trimmed history from %d to %d messages for API call",
-                            len(chat_data.get("history", [])),
+                            pre_trim_len,
                             MAX_HISTORY_ITEMS,
                         )
 
@@ -1648,13 +1649,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 if ts_prefix and not ts_applied:
                                     clean_text = ts_prefix + clean_text
                                     ts_applied = True
-                                converted_parts.append({"text": clean_text})
+                                if clean_text.strip():
+                                    converted_parts.append({"text": clean_text})
                             elif isinstance(p, dict) and "text" in p:
                                 clean_text = PATTERN_ID.sub("", p["text"])
                                 if ts_prefix and not ts_applied:
                                     clean_text = ts_prefix + clean_text
                                     ts_applied = True
-                                converted_parts.append({"text": clean_text})
+                                if clean_text.strip():
+                                    converted_parts.append({"text": clean_text})
                             elif isinstance(p, dict) and (
                                 "image_url" in p or "inline_data" in p or "source" in p
                             ):

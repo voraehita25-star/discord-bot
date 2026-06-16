@@ -1249,17 +1249,22 @@ function toggleAutoScroll(): void {
     showToast(`Auto-scroll ${logsAutoScrollEnabled ? 'enabled' : 'disabled'}`, { type: 'info', duration: 1500 });
 }
 
-function clearLogs(): void {
-    const container = document.getElementById('log-content');
-    if (container) container.innerHTML = '';
-    lastLogSignature = null;
-
-    // Also clear the actual log file
-    invoke('clear_logs').then(result => {
+async function clearLogs(): Promise<void> {
+    // Pause the 1s logs poller so an in-flight loadLogs() tick cannot
+    // re-read the not-yet-truncated backend tail and repopulate stale
+    // logs while the backend clear is in flight.
+    stopLogsRefresh();
+    try {
+        const result = await invoke('clear_logs');
+        const container = document.getElementById('log-content');
+        if (container) container.innerHTML = '';
+        lastLogSignature = null;
         showToast(String(result), { type: 'success', duration: 1500 });
-    }).catch(err => {
+    } catch (err) {
         showToast('Failed to clear logs: ' + err, { type: 'error' });
-    });
+    } finally {
+        if (currentPage === 'logs') startLogsRefresh();
+    }
 }
 
 // ============================================================================

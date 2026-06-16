@@ -23,7 +23,7 @@ declare global {
     interface Window {
         __TAURI__?: TauriAPI;
         toggleAutoScroll: () => void;
-        clearLogs: () => void;
+        clearLogs: () => Promise<void>;
         clearHistory: () => Promise<void>;
         openFolder: (folder: string) => Promise<void>;
         loadLogs: () => Promise<void>;
@@ -364,6 +364,9 @@ export function loadSettings(): void {
             ) {
                 settings.chartHistory = 60;
             }
+            if (typeof settings.userName !== 'string') settings.userName = 'You';
+            if (typeof settings.userAvatar !== 'string') settings.userAvatar = '';
+            if (typeof settings.aiAvatar !== 'string') settings.aiAvatar = '';
             // Migration: Only set default Faust avatar if saved aiAvatar is empty/undefined
             // Don't override custom avatars that users have set
             if (!settings.aiAvatar) {

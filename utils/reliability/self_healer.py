@@ -291,14 +291,16 @@ class SelfHealer:
                 # so a heal action could kill the test runner or other unrelated
                 # processes that merely reference the name.
                 is_watcher = False
+                matched_name = ""
                 ignore_list = ["test_", "pytest"]
                 for arg in cmdline:
                     name = PurePosixPath(arg.replace("\\", "/")).name
                     if name.lower() == "dev_watcher.py":
                         is_watcher = True
+                        matched_name = name.lower()
                         break
 
-                if is_watcher and not any(x in cmdline_str for x in ignore_list):
+                if is_watcher and not any(x in matched_name for x in ignore_list):
                     # Wrap the late `psutil.Process(pid)` lookup in the same
                     # NoSuchProcess guard as `find_all_bot_processes`; if
                     # the watcher exits between `process_iter` yielding it

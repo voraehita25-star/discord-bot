@@ -392,6 +392,8 @@ async def fetch_url_content(
                 api_url = _re_parsed._replace(
                     netloc="api.github.com",
                     path="/repos" + (_re_parsed.path or "/"),
+                    query="",
+                    fragment="",
                 ).geturl()
                 api_url = api_url.rstrip("/")
 

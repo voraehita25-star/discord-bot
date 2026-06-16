@@ -3010,6 +3010,17 @@ async def handle_chat_message_claude_cli(
         for _attach in (*image_paths, *(doc_paths or [])):
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(_attach.unlink)
+        # Both helpers above skipped THIS turn's <60s files, so they couldn't
+        # rmdir the per-conversation subdir; we unlinked those files just above,
+        # so the subdir may now be empty. rmdir is best-effort and only succeeds
+        # on an empty dir — a concurrent turn whose fresh files still occupy it
+        # keeps the dir non-empty and this fails harmlessly (suppressed),
+        # preserving the <60s concurrency guard.
+        if conversation_id:
+            _safe_conv = conversation_id[:64]
+            for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread((_root / _safe_conv).rmdir)
         # Close the 💭 panel on any exit path that didn't already close it via
         # on_thinking_block_stop (error/timeout returns before reasoning ended,
         # or a backend that never fires block-stop). Idempotent —

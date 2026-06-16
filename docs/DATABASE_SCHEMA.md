@@ -108,6 +108,9 @@ UNIQUE: `(name, channel_id, guild_id)`
 Indexes:
 
 - `idx_entity_name(name)` — primary lookup by entity name
+- `idx_entity_type(entity_type)`
+- `idx_entity_channel(channel_id)`
+- `idx_entity_guild(guild_id)`
 - `idx_entity_guild_channel(guild_id, channel_id)` — channel-scoped retrieval
 - `idx_entity_updated_at(updated_at DESC)` — recency-ordered listing
 
@@ -326,7 +329,7 @@ Index: `idx_music_queue_guild(guild_id, position)`
 | error            | TEXT     |                           |
 | created_at       | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
-Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_guild(guild_id, created_at DESC)`
+Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_guild(guild_id, created_at DESC)`, `idx_ai_analytics_channel(channel_id, created_at DESC)`
 
 #### token_usage
 

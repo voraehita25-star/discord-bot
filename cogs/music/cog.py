@@ -1011,6 +1011,15 @@ class Music(commands.Cog):
                     except OSError:
                         logger.exception("Loop replay failed (audio/file)")
                         self._gs(guild_id).loop = False  # Disable loop on error
+                else:
+                    # Loop source file is gone (external temp eviction / race).
+                    # Disable loop so the now-playing embed and cleanup
+                    # callbacks stay consistent with the track that actually
+                    # plays — matches the loop=False resets in the except
+                    # handlers above before falling through to queue logic.
+                    self._gs(guild_id).loop = False
+                    with contextlib.suppress(discord.DiscordException):
+                        await ctx.send("⚠️ ไฟล์ลูปหาย — ปิดลูปและเล่นเพลงถัดไป", delete_after=15)
 
             # 2. Normal Queue Logic
             queue = self.get_queue(ctx)
@@ -1095,6 +1104,11 @@ class Music(commands.Cog):
                             "title": player.title,
                             "start_time": time.time(),
                         }
+                        # New track starts fresh — clear any stale pause marker so
+                        # skipping a paused track can't leave pause_start pointing at
+                        # the previous track (which would corrupt resume / nowplaying
+                        # elapsed). Covers both the skip button and the !skip command.
+                        self._gs(guild_id).pause_start = None
 
                         # Snapshot ``player.filename`` into the closure too.
                         # The outer ``player`` binding is reset to None at
@@ -1444,6 +1458,12 @@ class Music(commands.Cog):
             else:
                 # If playing, elapsed is time until now
                 elapsed = time.time() - start_time
+
+        # Lower-clamp: a backward time.time() step (NTP correction / clock
+        # skew) can make elapsed negative, which persists a future start_time
+        # at L1523 and renders garbage at format_duration(elapsed) (L1565).
+        # Mirrors nowplaying (L2502).
+        elapsed = max(0, elapsed)
 
         # 2. Stop and Disconnect (Set fixing flag)
         self._gs(guild_id).fixing = True

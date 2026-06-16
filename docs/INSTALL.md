@@ -112,7 +112,7 @@ nano .env     # Linux
 | `ANTHROPIC_API_KEY` | ⚠️ | API Key จาก Anthropic — ต้องตั้งเฉพาะตอน `CLAUDE_BACKEND=api`. โหมดดีฟอลต์ `cli` อ่าน credentials จาก Claude Code login ในเครื่องแทน |
 | `CLAUDE_BACKEND` | ❌ | (Optional) Mode การคุยกับ Claude: `cli` (default — spawn `claude -p` ใช้โควต้า Claude Code Max subscription, ไม่เสียค่า per-token) หรือ `api` (ใช้ anthropic SDK + per-token billing เป็น backend ตอบ Claude แทน subprocess `claude -p`). ทั้งสองโหมดตอบ Discord AI replies ได้ — ดีฟอลต์ `cli` ก็ตอบใน Discord ผ่าน `discord_chat_claude_cli` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | ❌ | (Optional) ตั้งเฉพาะตอนใช้ `CLAUDE_BACKEND=cli` และ bot รันคนละ OS user กับที่ login Claude Code (เช่น service account / Docker) |
-| `GEMINI_API_KEY` | ❌ | (Optional) API Key จาก Google AI Studio สำหรับ RAG embeddings (โหลดเฉพาะตอน `CLAUDE_BACKEND=api`) |
+| `GEMINI_API_KEY` | ❌ | (Optional) API Key จาก Google AI Studio สำหรับ RAG embeddings (semantic recall) — โหลดเมื่อใดก็ตามที่ตั้งค่าไว้ ไม่ผูกกับ `CLAUDE_BACKEND` (ทำงานได้แม้ใน default `cli` mode); ปิดได้ด้วย `RAG_EMBEDDINGS=off`. แยกต่างหากจาก Gemini chat provider ในแดชบอร์ดซึ่งจะใช้ได้เฉพาะตอน `CLAUDE_BACKEND=api` |
 | `RAG_ALLOW_LEGACY_PICKLE` | ❌ | (Optional) Opt-in อนุญาตให้โหลด FAISS sidecar `.npy` (pickle) แบบเก่า ปิดดีฟอลต์เพื่อกัน RCE จากไฟล์บนดิสก์ ตั้งเฉพาะตอน migrate deployment เก่าที่เชื่อถือได้ |
 | `BOT_MEMORY_WARNING_MB` | ❌ | (Optional) Soft memory threshold เป็น MiB (default: 1024) ปรับตามขนาด container/VM |
 | `BOT_MEMORY_CRITICAL_MB` | ❌ | (Optional) Hard memory threshold เป็น MiB (default: 1536) |
@@ -122,7 +122,7 @@ nano .env     # Linux
 | `SENTRY_DSN` | ❌ | (Optional) Sentry Error Tracking |
 | `DASHBOARD_WS_TOKEN` | ❌ | (Optional) Auth token สำหรับ WebSocket dashboard |
 | `DASHBOARD_ALLOW_UNRESTRICTED` | ❌ | (Optional) เปิด unrestricted mode ใน dashboard (`1`/`true`) |
-| `DASHBOARD_CLI_ALLOW_WRITE` | ❌ | (Optional) เปิดให้ dashboard CLI backend (`CLAUDE_BACKEND=cli`) สร้าง/แก้ไขไฟล์ได้แบบไม่ต้องกด Allow (default: ปิด; `1`/`true`/`yes`/`on`) — จำกัดเฉพาะไฟล์ (Bash/web/Task ถูก deny) และทุก write ถูกตรวจโดย PreToolUse hook (`cli_write_guard.py`) ให้อยู่ในขอบเขต `DASHBOARD_CLI_WRITE_DIRS` เท่านั้น |
+| `DASHBOARD_CLI_ALLOW_WRITE` | ❌ | (Optional) เปิดให้ dashboard CLI backend (`CLAUDE_BACKEND=cli`) สร้าง/แก้ไขไฟล์ได้แบบไม่ต้องกด Allow (default: ปิด; `1`/`true`/`yes`/`on`) — จำกัดเฉพาะไฟล์ (Bash/web/NotebookEdit/Task ถูก deny) และทุก write ถูกตรวจโดย PreToolUse hook (`cli_write_guard.py`) ให้อยู่ในขอบเขต `DASHBOARD_CLI_WRITE_DIRS` เท่านั้น |
 | `DASHBOARD_CLI_WRITE_DIRS` | ❌ | (Optional) รายการ directory (คั่นด้วย `os.pathsep` — `;` บน Windows, `:` บน Linux) ที่ write mode เขียนได้โดยไม่ต้องถาม (default: Desktop / Documents / Downloads ของ user รวม OneDrive-redirected บน Windows) — repo, `.env`, และ dotfiles ถูกกันออกเสมอ |
 | `HEALTH_API_HOST` | ❌ | (Optional) Bind address สำหรับ Health API (default: `127.0.0.1`) |
 | `HEALTH_API_TOKEN` | ❌ | (Optional) Bearer token สำหรับ protected Health API endpoints |
@@ -363,4 +363,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: June 2026 | Version: 3.4.9*
+*Last Updated: June 2026 | Version: 3.4.10*

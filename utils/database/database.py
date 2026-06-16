@@ -120,13 +120,18 @@ class Database:
             # Queue size is half the semaphore cap so most concurrent connections
             # get a reused handle rather than opening a new one each time.
             self._conn_pool: asyncio.Queue | None = None
-            self._pool_initialized = False
             self._checkpoint_task: asyncio.Task | None = None
             self._export_pending_keys: set[str] = set()
             self._dashboard_export_pending: set[str] = set()  # Track pending dashboard exports
             # Write serialization lock — SQLite WAL allows concurrent reads but only
             # one writer at a time. This lock prevents SQLITE_BUSY on concurrent writes.
             self._write_lock: asyncio.Lock | None = None
+            # Schema-init serialization lock — init_schema is re-entrant from
+            # the health_check recovery path (which resets _schema_initialized
+            # then awaits init_schema). Without this, two overlapping recovery
+            # callers can both pass the bool gate and run run_migrations()
+            # concurrently against the same DB file.
+            self._schema_lock: asyncio.Lock | None = None
             # Set the init flag last so a concurrent caller observing the
             # flag is guaranteed to see all the attributes above.
             self._initialized = True
@@ -171,6 +176,16 @@ class Database:
             if self._write_lock is None:
                 self._write_lock = asyncio.Lock()
             return self._write_lock
+
+    def _get_schema_lock(self) -> asyncio.Lock:
+        """Lazily create the schema-init lock to avoid event loop binding issues."""
+        lock = self._schema_lock
+        if lock is not None:
+            return lock
+        with self._instance_lock:
+            if self._schema_lock is None:
+                self._schema_lock = asyncio.Lock()
+            return self._schema_lock
 
     def _schedule_export(self, channel_id: int | None = None) -> None:
         """Schedule a debounced export with retry logic (non-blocking)."""
@@ -377,7 +392,17 @@ class Database:
         """Initialize database schema (call once at startup)."""
         if self._schema_initialized:
             return
+        # Serialize the build body: a second concurrent recovery caller
+        # (health_check resets _schema_initialized then re-awaits init_schema)
+        # waits here and no-ops on the double-check below, instead of running
+        # run_migrations() concurrently against the same DB file.
+        async with self._get_schema_lock():
+            if self._schema_initialized:
+                return
+            await self._init_schema_locked()
 
+    async def _init_schema_locked(self) -> None:
+        """Build the schema; serialized by init_schema via _get_schema_lock()."""
         # Create the on-disk paths the connection below will write to.
         # Moved here from module import time so a read-only filesystem
         # doesn't crash the import; if mkdir genuinely fails the next

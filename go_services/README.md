@@ -97,6 +97,7 @@ go build -o ../bin/health_api.exe ./health_api
 | `HEALTH_API_HOST` | 127.0.0.1 | Legacy fallback for `GO_HEALTH_API_HOST` |
 | `HEALTH_API_PORT` | 8082 | Legacy fallback for `GO_HEALTH_API_PORT`. **Note:** the value `8080` is intentionally ignored (it conflicts with the Python health server) — use a different port if you set this. |
 | `BOT_VERSION` | dev | Version for health endpoint |
+| `HEALTH_API_TOKEN` | (unset) | Bearer token for Health API write endpoints. **Required** — when unset, `/health/service`, `/metrics/push`, and `/metrics/batch` reject every request with 503 (fail-closed). Must match the value the Python client reads from the same env var. |
 
 ## Usage from Python
 
@@ -123,6 +124,8 @@ print(f"Using Go service: {client.is_service_available}")
 ```
 
 ### Health API Client
+
+Note: metric-push endpoints require `HEALTH_API_TOKEN` to be set (same value on the Go service and the Python process); without it the Go service rejects all writes with 503.
 
 ```python
 from utils.monitoring.health_client import (
@@ -222,6 +225,8 @@ Request:
   "labels": {}
 }
 ```
+
+Requires header `Authorization: Bearer <HEALTH_API_TOKEN>`. The `name` field must be one of the allowed metric names (`requests`, `rate_limit`, `cache`, `tokens`, `request_duration`, `ai_response_time`, `active_connections`, `circuit_breaker`); unknown names return 400.
 
 ## Prometheus Metrics
 

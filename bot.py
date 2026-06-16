@@ -479,9 +479,12 @@ class MusicBot(commands.AutoShardedBot):
             msg = await ctx.send("⏳ Syncing commands...")
             try:
                 synced = await self.tree.sync()
-                await msg.edit(content=f"✅ Synced {len(synced)} commands globally.")
             except discord.HTTPException as e:
-                await msg.edit(content=f"❌ Failed to sync: {e}")
+                with contextlib.suppress(discord.HTTPException):
+                    await msg.edit(content=f"❌ Failed to sync: {e}")
+                return
+            with contextlib.suppress(discord.HTTPException):
+                await msg.edit(content=f"✅ Synced {len(synced)} commands globally.")
 
         @self.command(name="health", aliases=["status", "ping"])
         @commands.is_owner()
@@ -705,6 +708,11 @@ class MusicBot(commands.AutoShardedBot):
         logger.error(
             "App command error in %s (Error ID: %s): %s", interaction.command, error_id, error
         )
+
+        # Track error in metrics (interaction.command can be None for
+        # command-not-found / sync-mismatch failures).
+        if METRICS_AVAILABLE and metrics and interaction.command is not None:
+            metrics.increment_commands(str(interaction.command.qualified_name), success=False)
 
         # Determine the response method (followup if already responded/deferred)
         async def respond(content: str) -> None:

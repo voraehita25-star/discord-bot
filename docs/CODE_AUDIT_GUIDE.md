@@ -135,9 +135,9 @@ python -m pytest tests/ --collect-only -q
 | `summarizer.py` | Conversation summarization |
 | `entity_memory.py` | Entity/facts extraction |
 | `long_term_memory.py` | Permanent facts storage |
-| `memory_consolidator.py` | Memory consolidation |
+| `memory_consolidator.py` | Conversation summary archiver (conversation_summaries table) |
 | `state_tracker.py` | Character state tracking |
-| `consolidator.py` | Memory consolidator (alt) |
+| `consolidator.py` | Memory consolidation background task (fact extraction → entity memory) |
 
 ---
 

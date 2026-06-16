@@ -66,6 +66,12 @@ async def join_voice_channel(bot: Bot, channel_id: int) -> tuple[bool, str]:
             await voice_client.move_to(voice_channel)
             return True, f"✅ ย้ายมารอใน **{voice_channel.name}** แล้ว"
 
+        # Stale client: discord.py may keep a non-connected VoiceClient in
+        # _voice_clients, making connect() raise ClientException('Already
+        # connected'). Force-disconnect it first so we can recover.
+        if voice_client:
+            await voice_client.disconnect(force=True)
+
         # Join voice channel (with timeout to prevent indefinite hang on gateway issues)
         await voice_channel.connect(timeout=30.0)
         logger.info("🎤 AI joined voice channel: %s", voice_channel.name)

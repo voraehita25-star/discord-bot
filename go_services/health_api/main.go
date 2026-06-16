@@ -450,6 +450,9 @@ func main() {
 					cacheHits.WithLabelValues(safeLabel("result", payload.Labels["result"])).Add(payload.Value)
 				case "tokens":
 					tokensUsed.WithLabelValues(safeLabel("type", payload.Labels["type"])).Add(payload.Value)
+				default:
+					http.Error(w, "metric name/type mismatch", http.StatusBadRequest)
+					return
 				}
 			case "histogram":
 				// Reject NaN/Infinity values that would corrupt metrics
@@ -462,6 +465,9 @@ func main() {
 					requestDuration.WithLabelValues(safeLabel("endpoint", payload.Labels["endpoint"])).Observe(payload.Value)
 				case "ai_response_time":
 					aiResponseTime.Observe(payload.Value)
+				default:
+					http.Error(w, "metric name/type mismatch", http.StatusBadRequest)
+					return
 				}
 			case "gauge":
 				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
@@ -473,6 +479,9 @@ func main() {
 					activeConnections.Set(payload.Value)
 				case "circuit_breaker":
 					circuitBreakerState.WithLabelValues(safeLabel("service", payload.Labels["service"])).Set(payload.Value)
+				default:
+					http.Error(w, "metric name/type mismatch", http.StatusBadRequest)
+					return
 				}
 			default:
 				http.Error(w, "unknown metric type", http.StatusBadRequest)

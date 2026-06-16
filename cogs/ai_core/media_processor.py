@@ -536,7 +536,12 @@ async def prepare_user_avatar(
         seen_users[context_channel_id].add(user_key)
         logger.info("Sent avatar for %s", user_name)
         return avatar_copy
-    except (discord.HTTPException, OSError) as e:
+    except (
+        discord.HTTPException,
+        OSError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as e:
         logger.warning("Failed to load avatar for %s: %s", user_name, e)
         return None
 

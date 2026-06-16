@@ -1045,6 +1045,14 @@ export class ChatManager {
         const providerSelect = document.getElementById('modal-ai-provider') as HTMLSelectElement | null;
         if (providerSelect) {
             this.aiProvider = providerSelect.value;
+            // Persist the explicit modal choice so the New Chat modal default
+            // (showNewChatModal prefers the localStorage value) stays consistent
+            // with the provider used for the most recent conversation.
+            try {
+                localStorage.setItem('dashboard_ai_provider', this.aiProvider);
+            } catch {
+                // localStorage write failures are non-fatal.
+            }
         }
         this.send({
             type: 'new_conversation',
@@ -1264,6 +1272,13 @@ export class ChatManager {
                     this.autoResizeInput();
                     input.focus();
                 }
+            } else {
+                // Edit sent successfully — consume any attachments so they don't
+                // silently carry into the next normal message, matching the
+                // normal-send path's clear() at the bottom of sendMessage().
+                // (ai_edit_message itself carries no attachments by design.)
+                this.imageAttach.clear();
+                this.docAttach.clear();
             }
             return;
         }
@@ -2889,14 +2904,20 @@ export class ChatManager {
         }
     }
 
-    downloadExport(data: { id: string; format: string; data: string }): void {
-        const filename = `chat_${data.id.slice(0, 8)}_${Date.now()}.${data.format}`;
-        const content = data.data;
+    downloadExport(data: { id?: unknown; format?: unknown; data?: unknown }): void {
+        const id = typeof data.id === 'string' ? data.id : '';
+        const format = typeof data.format === 'string' ? data.format : 'txt';
+        const content = typeof data.data === 'string' ? data.data : '';
+        if (!content) {
+            showToast('Export failed: no content received', { type: 'error' });
+            return;
+        }
+        const filename = `chat_${id.slice(0, 8)}_${Date.now()}.${format}`;
         const mime =
             ({ json: 'application/json', markdown: 'text/markdown', html: 'text/html', txt: 'text/plain' } as Record<
                 string,
                 string
-            >)[data.format] ?? 'text/plain';
+            >)[format] ?? 'text/plain';
         const blob = new Blob([content], { type: mime });
 
         const url = URL.createObjectURL(blob);

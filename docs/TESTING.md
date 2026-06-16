@@ -57,8 +57,8 @@ tests/
 
 ## Frontend Test Structure (11 vitest files, 298 tests)
 
-TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment
-(DOMPurify + KaTeX globals attached via test setup).
+TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment.
+There is no shared setup file; the two suites that need it attach DOMPurify in a per-file `beforeAll` (the real `dompurify` npm build, e.g. `formatter.test.ts`, `chat-manager.test.ts`). KaTeX is intentionally *not* loaded, so the formatter suite exercises the no-KaTeX LaTeX fallback path.
 
 ```text
 native_dashboard/src-ts/

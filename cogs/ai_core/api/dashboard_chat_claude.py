@@ -1006,14 +1006,18 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                         f"\n\n⏳ *Request timed out, retrying (attempt {attempt})...*\n\n"
                     )
 
-                # Send retry notice to frontend (appends to current streaming bubble)
-                await ws.send_json(
-                    {
-                        "type": "chunk",
-                        "content": retry_notice,
-                        "conversation_id": conversation_id,
-                    }
-                )
+                # Send retry notice to frontend (appends to current streaming
+                # bubble) — but only when another attempt actually remains, so the
+                # final failure doesn't show a "retrying" message for a retry that
+                # will never happen.
+                if attempt < _MAX_STREAM_RETRIES:
+                    await ws.send_json(
+                        {
+                            "type": "chunk",
+                            "content": retry_notice,
+                            "conversation_id": conversation_id,
+                        }
+                    )
 
                 # Prefill: inject partial response so Claude continues from where it stopped
                 partial = full_response
@@ -1072,7 +1076,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     api_kwargs.pop("thinking", None)
 
                 attempt += 1
-                await asyncio.sleep(delay)
+                # On the last attempt the loop is about to exit and re-raise; don't
+                # waste up to _RETRY_MAX_DELAY seconds sleeping before surfacing it.
+                if attempt <= _MAX_STREAM_RETRIES:
+                    await asyncio.sleep(delay)
 
             # All retries exhausted — every attempt failed. Surface the failure so
             # the outer except records it against failover health and sends the
@@ -1650,13 +1657,14 @@ async def handle_ai_edit_message_claude(
                         delay,
                         retry_err,
                     )
-                    await ws.send_json(
-                        {
-                            "type": "chunk",
-                            "content": f"\n\n⏳ *Server busy, retrying (attempt {attempt})...*\n\n",
-                            "conversation_id": conversation_id,
-                        }
-                    )
+                    if attempt < _MAX_EDIT_RETRIES:
+                        await ws.send_json(
+                            {
+                                "type": "chunk",
+                                "content": f"\n\n⏳ *Server busy, retrying (attempt {attempt})...*\n\n",
+                                "conversation_id": conversation_id,
+                            }
+                        )
                 except TimeoutError as timeout_err:
                     last_error = timeout_err
                     delay = _retry_delay_seconds(attempt)
@@ -1665,17 +1673,19 @@ async def handle_ai_edit_message_claude(
                         attempt,
                         delay,
                     )
-                    await ws.send_json(
-                        {
-                            "type": "chunk",
-                            "content": f"\n\n⏳ *Request timed out, retrying (attempt {attempt})...*\n\n",
-                            "conversation_id": conversation_id,
-                        }
-                    )
+                    if attempt < _MAX_EDIT_RETRIES:
+                        await ws.send_json(
+                            {
+                                "type": "chunk",
+                                "content": f"\n\n⏳ *Request timed out, retrying (attempt {attempt})...*\n\n",
+                                "conversation_id": conversation_id,
+                            }
+                        )
 
                 _reset_stream_state()
                 attempt += 1
-                await asyncio.sleep(delay)
+                if attempt <= _MAX_EDIT_RETRIES:
+                    await asyncio.sleep(delay)
 
             # All retries exhausted — surface the failure to the outer handler
             # (record_failure + client error frame) instead of falling through to

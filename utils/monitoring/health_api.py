@@ -1025,6 +1025,7 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             checks["checks"]["filesystem"] = {"status": "ok", "writable": True}
         except Exception as e:
             checks["checks"]["filesystem"] = {"status": "error", "error": str(e)[:100]}
+            checks["healthy"] = False
 
         # 5. Memory check. Use the configurable threshold from
         # ``MemoryMonitor`` defaults so this endpoint matches whatever the

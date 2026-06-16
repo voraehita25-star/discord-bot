@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 
 logger = logging.getLogger(__name__)
@@ -157,8 +158,6 @@ class MemoryMetadata:
 
         Returns value between 0.0 and 2.0
         """
-        import math
-
         # Base time decay (half-life of 30 days)
         time_decay = 0.5 ** (age_days / 30.0)
         time_decay = max(0.1, time_decay)  # Minimum 10%
@@ -1255,7 +1254,7 @@ class MemorySystem:
 
             # Exponential decay with half-life
             decay = 0.5 ** (age_days / TIME_DECAY_HALF_LIFE_DAYS)
-            return max(0.1, decay)  # type: ignore[no-any-return]
+            return min(1.0, max(0.1, decay))  # type: ignore[no-any-return]
         except (ValueError, TypeError, AttributeError) as e:
             logger.debug("Time decay calculation failed: %s", e)
             return 1.0  # Default to full weight on error
@@ -1602,9 +1601,7 @@ class MemorySystem:
 
                 # Drop NaN / Inf scores — a corrupted embedding can produce
                 # one and silently torpedo every later sort/threshold check.
-                import math as _math
-
-                if not _math.isfinite(similarity):
+                if not math.isfinite(similarity):
                     continue
 
                 if similarity > LINEAR_SEARCH_MIN_SIMILARITY:

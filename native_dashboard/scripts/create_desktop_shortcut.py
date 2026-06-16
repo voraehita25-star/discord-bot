@@ -1,5 +1,6 @@
 """Create desktop shortcut for 디스코드 봇 대시보드 using IShellLink"""
 
+import sys
 from pathlib import Path
 
 
@@ -7,7 +8,7 @@ def create_shortcut_via_pythoncom():
     """Use pythoncom with IShellLink directly"""
     try:
         import pythoncom  # type: ignore
-        from win32com.shell import shell  # type: ignore
+        from win32com.shell import shell, shellcon  # type: ignore
     except ImportError:
         print("ERROR: pywin32 is required. Install with: pip install pywin32")
         return False
@@ -20,7 +21,10 @@ def create_shortcut_via_pythoncom():
     bot_dir = dashboard_dir.parent  # BOT/
 
     exe_path = dashboard_dir / "target" / "release" / f"{korean_name}.exe"
-    desktop = Path.home() / "Desktop"
+    try:
+        desktop = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, None, 0))
+    except Exception:
+        desktop = Path.home() / "Desktop"
     shortcut_path = desktop / f"{korean_name}.lnk"
     icon_path = dashboard_dir / "icons" / "icon.ico"
     work_dir = bot_dir
@@ -78,4 +82,4 @@ def create_shortcut_via_pythoncom():
 
 
 if __name__ == "__main__":
-    create_shortcut_via_pythoncom()
+    sys.exit(0 if create_shortcut_via_pythoncom() else 1)

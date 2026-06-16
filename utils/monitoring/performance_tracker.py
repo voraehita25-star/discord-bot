@@ -14,7 +14,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -176,7 +176,7 @@ class PerformanceTracker:
         self._stats[operation].record(duration)
 
         # Also track hourly stats
-        hour_key = datetime.now().strftime("%Y-%m-%d-%H")
+        hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
         self._hourly_stats[operation][hour_key].record(duration)
 
         # Auto-prune old hourly stats every 500 records
@@ -232,7 +232,7 @@ class PerformanceTracker:
 
         trends = []
         for i in range(hours - 1, -1, -1):
-            hour = datetime.now() - timedelta(hours=i)
+            hour = datetime.now(timezone.utc) - timedelta(hours=i)
             hour_key = hour.strftime("%Y-%m-%d-%H")
             if hour_key in self._hourly_stats[operation]:
                 stats = self._hourly_stats[operation][hour_key]
@@ -251,7 +251,7 @@ class PerformanceTracker:
 
     def cleanup_old_stats(self) -> int:
         """Remove hourly stats older than max_history_hours."""
-        cutoff = datetime.now() - timedelta(hours=self._max_history_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=self._max_history_hours)
         cutoff_key = cutoff.strftime("%Y-%m-%d-%H")
         removed = 0
 

@@ -233,7 +233,9 @@ class HistoryManager:
             if isinstance(part, str):
                 text_parts.append(part)
             elif isinstance(part, dict) and "text" in part:
-                text_parts.append(part["text"])
+                text = str(part.get("text", ""))
+                if text:
+                    text_parts.append(text)
 
         return " ".join(text_parts)
 

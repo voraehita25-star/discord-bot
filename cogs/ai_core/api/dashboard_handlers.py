@@ -556,13 +556,18 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
             except Exception:
                 logger.exception("Claude CLI session reset failed for %s", conversation_id)
 
+        # Reflect what actually happened: truncation only ran on the
+        # `regenerate and conversation_id` branch above. Echoing the raw
+        # request flag would tell the client to optimistically drop messages
+        # that were never deleted from the DB.
+        did_truncate = bool(regenerate and conversation_id)
         await ws.send_json(
             {
                 "type": "message_edited",
                 "message_id": message_id,
                 "content": content,
                 "conversation_id": conversation_id,
-                "regenerate": regenerate,
+                "regenerate": did_truncate,
                 "deleted_after": deleted_count,
             }
         )
@@ -685,9 +690,14 @@ async def handle_add_conversation_tag(ws: WebSocketResponse, data: dict[str, Any
     raw_tag = data.get("tag")
     tag = str(raw_tag).strip().lower() if raw_tag is not None else ""
 
-    if not DB_AVAILABLE or not _validate_conversation_id(conversation_id):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID"}
+        )
+        return
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {"type": "error", "code": "DB_UNAVAILABLE", "message": "Database not available"}
         )
         return
     if not _VALID_TAG_RE.match(tag):
@@ -726,9 +736,14 @@ async def handle_remove_conversation_tag(ws: WebSocketResponse, data: dict[str, 
     raw_tag = data.get("tag")
     tag = str(raw_tag).strip().lower() if raw_tag is not None else ""
 
-    if not DB_AVAILABLE or not _validate_conversation_id(conversation_id):
+    if not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID"}
+        )
+        return
+    if not DB_AVAILABLE:
+        await ws.send_json(
+            {"type": "error", "code": "DB_UNAVAILABLE", "message": "Database not available"}
         )
         return
     if not tag:

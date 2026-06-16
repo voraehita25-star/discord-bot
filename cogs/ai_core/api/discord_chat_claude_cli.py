@@ -45,6 +45,7 @@ import discord
 from .dashboard_chat_claude_cli import (
     _CLI_WEB_TOOLS_ENABLED,
     _PENDING_SESSION_CLEANUPS,
+    _SESSION_ID_PATTERN,
     _ai_tool_names,
     _ai_tools_env,
     _build_claude_argv,
@@ -201,6 +202,14 @@ def _schedule_session_unlink(session_id: str | None) -> None:
 
 def _record_session(channel_id: int, session_id: str) -> None:
     """LRU-record the session_id for the channel."""
+    # Validate at the source (mirrors the dashboard's _track_session). A
+    # session id that doesn't match the strict pattern (e.g. one starting
+    # with '-') would be dropped every turn by _build_claude_argv anyway —
+    # leaving the channel permanently non-resuming. Refuse to store it so
+    # the channel cleanly falls back to a fresh session instead.
+    if not _SESSION_ID_PATTERN.match(session_id):
+        logger.warning("Refusing to track suspicious Claude session id %r", session_id)
+        return
     # Pop+reinsert puts the entry at the back of the eviction queue
     # (replaces the old move_to_end) AND captures the superseded id.
     old = _CHANNEL_SESSIONS.pop(channel_id, None)
@@ -236,6 +245,7 @@ def reset_channel_session(channel_id: int) -> None:
     conversation readable on disk for the CLI's retention window.
     """
     _schedule_session_unlink(_CHANNEL_SESSIONS.pop(channel_id, None))
+    _OVERLIMIT_LAST_WARN.pop(channel_id, None)
 
 
 def _flatten_contents_to_prompt(
@@ -532,6 +542,10 @@ async def _send_overlimit_warning(
         # succeeds — if the send raises (missing perms, transient Discord
         # error) the channel must NOT be locked into the short-notice path for
         # the next cooldown window without ever having received the buttons.
+        for cid in [
+            c for c, t in _OVERLIMIT_LAST_WARN.items() if now - t >= _OVERLIMIT_WARN_COOLDOWN
+        ]:
+            _OVERLIMIT_LAST_WARN.pop(cid, None)
         _OVERLIMIT_LAST_WARN[key] = now
 
 

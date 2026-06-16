@@ -1,5 +1,13 @@
 # Code Review Findings — 2026-05-15
 
+> **⚠️ STATUS: Resolved historical snapshot — retained for audit history only.**
+> This is a point-in-time list from 2026-05-15. All findings below were triaged and
+> fixed across the v3.4.5–v3.4.9 audit rounds (e.g. the `RAG_ALLOW_LEGACY_PICKLE` gate,
+> the `bot.py` login/`OSError` retry + `graceful_shutdown` resume path, full-content
+> `_content_key` hashing, DOCX zip-traversal rejection, and the `url_safety` SSRF guard
+> are all implemented). **The line numbers and code references are no longer current** —
+> the cited code has since moved or changed. Do not treat the "Fix Plan" below as open work.
+
 156 source files reviewed across 9 parallel agents (excluding tests). Each file read end-to-end.
 
 Severity: **C**=Critical · **H**=High · **M**=Medium · **L**=Low

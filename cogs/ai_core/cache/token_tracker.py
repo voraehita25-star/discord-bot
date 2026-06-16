@@ -285,6 +285,8 @@ class TokenTracker:
                 self._usage_cache[cache_key] = [
                     u for u in self._usage_cache[cache_key] if _ensure_aware(u.timestamp) < cutoff
                 ]
+                if not self._usage_cache[cache_key]:
+                    del self._usage_cache[cache_key]
 
             for row in rows:
                 try:

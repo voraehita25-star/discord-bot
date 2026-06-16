@@ -21,7 +21,7 @@ a `tsc`-only build is not enough for the running app.
    ```
    cmd /c "set PATH=%USERPROFILE%\.local\node;%USERPROFILE%\.cargo\bin;%PATH% && call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && cd /d \"C:\BOT Discord\native_dashboard\" && npm.cmd run build:release"
    ```
-   `build:release` = `tsc` → `cargo build --release` → copies `bot-dashboard.exe` to 5 names (incl. `디스코드 봇 대시보드.exe`) in `target/release/` and the repo root.
+   `build:release` = `tsc` → `cargo build --release` → copies `bot-dashboard.exe` to 5 destinations under 3 names (incl. `디스코드 봇 대시보드.exe`): 2 in `target/release/` and 3 in the repo root.
 
 3. **Verify**: the exes in `native_dashboard/target/release/*.exe` have a fresh timestamp (~16.6 MB).
 

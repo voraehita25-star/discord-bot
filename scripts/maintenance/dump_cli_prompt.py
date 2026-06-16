@@ -16,6 +16,7 @@ import asyncio
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +39,7 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
     # SQLite LIKE treats ``%`` and ``_`` as wildcards. Without escaping,
     # a CLI arg containing ``%`` would match every conversation in the DB.
     _esc_substr = title_substr.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    with sqlite3.connect(db_path) as raw:
+    with closing(sqlite3.connect(db_path)) as raw:
         raw.row_factory = sqlite3.Row
         row = raw.execute(
             "SELECT id, title, role_preset FROM dashboard_conversations "

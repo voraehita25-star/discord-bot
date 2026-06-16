@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.9). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.10). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
@@ -31,7 +31,7 @@ The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ 
 - **Never run raw `pytest -v` — it can hang.** Use the wrapper, which clears the `-v` from `pyproject.toml` and avoids the pipe freeze:
   ```powershell
   .\scripts\run_tests.ps1                 # all tests
-  .\scripts\run_tests.ps1 -Fast           # skip @pytest.mark.slow (~8.5s)
+  .\scripts\run_tests.ps1 -Fast           # skip @pytest.mark.slow (~6s)
   .\scripts\run_tests.ps1 database        # files matching *database*
   .\scripts\run_tests.ps1 -File test_ai_core.py
   .\scripts\run_tests.ps1 -Coverage
@@ -80,6 +80,8 @@ A cross-platform `Makefile` mirrors most of these (`make test`, `make lint-all`,
 
 ## Claude Code tooling installed for this repo
 
-Plugins (project scope, `claude-plugins-official`): `frontend-design`, `security-guidance` (auto-reviews edits for injection/SSRF/XSS/secrets), `pyright-lsp`, `rust-analyzer-lsp`, `gopls-lsp`, `typescript-lsp`, `sentry`, `context7`.
+**Plugins** (all `@claude-plugins-official`). Project scope (`.claude/settings.json`): `frontend-design`, `security-guidance` (auto-reviews edits for injection/SSRF/XSS/secrets), `pyright-lsp`, `rust-analyzer-lsp`, `gopls-lsp`, `typescript-lsp`, `sentry`, `context7`, `pr-review-toolkit`, `feature-dev`, `commit-commands`. User scope (`~/.claude/settings.json`, apply to every project): `claude-md-management`, `hookify`, `skill-creator`, `lumen`.
+
+**MCP servers.** Local, in `~/.claude.json`: `github` (HTTP, GitHub Copilot endpoint) and `playwright` (stdio, `npx @playwright/mcp`). Plugin-bundled: `context7`, `sentry`, `lumen`. claude.ai account connectors (interactive auth — may be absent in headless/cron runs): Canva, Gmail, Google Calendar, Google Drive. Semgrep MCP was evaluated and skipped (needs Docker/WSL, unavailable on this Windows host).
 
 The four LSP server binaries are **installed** and on the User PATH: `pyright-langserver` + `typescript-language-server` (`~\.local\node`), `gopls` (`~\go\bin`), `rust-analyzer` (`~\.cargo\bin`). They activate in Claude Code after a session restart (the host must pick up the new PATH).

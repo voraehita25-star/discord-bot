@@ -104,7 +104,7 @@ code such as `MSG_NOT_FOUND` / `ROW_CONFLICT` / `CONTENT_TOO_LONG` /
 
 | Request | Response |
 |---------|----------|
-| `list_ai_channels` | `ai_channels_list` (the only rate-limit-exempt type) |
+| `list_ai_channels` | `ai_channels_list` (the only AI-history op exempt from the rate limit; `load_ai_history` and the write ops are not) |
 | `load_ai_history` | `ai_history_loaded` |
 | `edit_ai_history_message` | `ai_history_message_edited` |
 | `delete_ai_history_message` | `ai_history_message_deleted` (+ best-effort `total_count`) |
@@ -148,7 +148,7 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.1k lines)
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.2k lines)
 │   ├── chat-manager.ts     # ChatManager orchestrator (~3.1k lines) — chat + file memory modal + editor
 │   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
@@ -300,7 +300,7 @@ python scripts/dev/validate_ipc.py     # drives the built .exe, calls get_base_p
 target/release/bot-dashboard.exe                  # Source binary (Cargo output)
 target/release/Discord Bot Dashboard.exe          # English alias (copy)
 target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
-target/release/bundle/nsis/디스코드 봇 대시보드_3.4.9_x64-setup.exe  # NSIS installer
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.10_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI
@@ -336,10 +336,9 @@ target/release/bundle/nsis/디스코드 봇 대시보드_3.4.9_x64-setup.exe  # 
 Bot base path is **auto-resolved** in `main.rs` (no longer hardcoded). Resolution order:
 
 1. `BOT_BASE_PATH` env var if set
-2. Saved path from a prior successful run (`%APPDATA%\com.botdashboard.desktop\bot_path.txt`)
-3. Dev-mode detection — when the exe lives under `target/debug` or `target/release`, walk up to the `BOT/` folder containing `bot.py`
-4. Common locations: `~/BOT`, `~/bot`, `~/Desktop/BOT`, `~/Documents/BOT`
-5. Fallback: directory of the exe
+2. Dev-mode detection — when the exe lives under `target/debug` or `target/release`, walk up to the `BOT/` folder containing `bot.py` (dev mode stops here)
+3. Production mode otherwise resolves in order: saved path from a prior successful run (`%APPDATA%\com.botdashboard.desktop\bot_path.txt`, validated to live under a trusted root), then the exe's own folder if it contains `bot.py`, then common locations (`~/BOT`, `~/bot`, `~/Desktop/BOT`, `~/Documents/BOT`)
+4. Fallback: directory of the exe
 
 Override at runtime by setting `BOT_BASE_PATH=C:\path\to\bot` before launching the dashboard.
 

@@ -774,7 +774,8 @@ async def send_as_webhook(bot, channel, name, message):
             await _send_plain_fallback(channel, name, message)
             return None
 
-        webhook_name = f"AI: {name}"
+        name = name[:80]
+        webhook_name = f"AI: {name}"[:80]
         channel_id = channel.id
 
         # When a chunked cached-webhook send fails mid-loop, this carries the

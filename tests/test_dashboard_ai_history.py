@@ -2616,6 +2616,7 @@ async def fresh_db():
 
         instance._export_lock = asyncio.Lock()
         instance._write_lock = None
+        instance._schema_lock = None
 
         await instance.init_schema()
         try:

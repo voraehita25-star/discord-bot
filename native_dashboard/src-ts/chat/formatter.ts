@@ -175,11 +175,6 @@ export function formatMessage(content: string): string {
     // chat/formatter.test.ts — code blocks never rendered before this line.)
     html = html.replace(/&#96;/g, '`');
 
-    // Restore LaTeX blocks from placeholders.
-    html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => {
-        return latexBlocks[parseInt(idx)] || '';
-    });
-
     // (Fenced code blocks were already extracted into \x01 placeholders at the
     // very top, before the LaTeX/escape passes, so $ inside code is preserved.
     // The placeholders survive escapeHtml and the markdown passes and are
@@ -270,6 +265,9 @@ export function formatMessage(content: string): string {
     html = html.replace(/\x03LIST_BLOCK_(\d+)\x03/g, (_match, idx) => listBlocks[parseInt(idx)] || '');
     html = html.replace(/\x02TABLE_BLOCK_(\d+)\x02/g, (_match, idx) => tableBlocks[parseInt(idx)] || '');
     html = html.replace(/\x01CODE_BLOCK_(\d+)\x01/g, (_match, idx) => codeBlocks[parseInt(idx)] || '');
+    // Restore LaTeX blocks/spans LAST (after bold/em/heading/list/table passes)
+    // so TeX containing `*` (e.g. $a*b*c$) is not corrupted into <em>/<strong>.
+    html = html.replace(/\x00(?:BLOCK_LATEX_|INLINE_LATEX_)(\d+)\x00/g, (_match, idx) => latexBlocks[parseInt(idx)] || '');
     html = html.replace(
         /\x04ICODE_(\d+)\x04/g,
         (_match, idx) => inlineCodeBlocks[parseInt(idx)] || '',

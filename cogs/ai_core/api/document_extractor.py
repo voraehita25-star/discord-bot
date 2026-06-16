@@ -261,7 +261,7 @@ def _extract_pdf(filename: str, data_field: str) -> ExtractedDocument | None:
         kind="pdf",
         text=combined,
         char_count=len(combined),
-        page_count=len(reader.pages),
+        page_count=page_count or None,
     )
 
 

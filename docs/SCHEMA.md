@@ -108,9 +108,9 @@ Indexes: `idx_error_logs_type(error_type, created_at DESC)`, `idx_error_logs_cre
 Constraint: `UNIQUE(name, channel_id, guild_id)`
 Indexes: `idx_entity_name(name)`, `idx_entity_type(entity_type)`, `idx_entity_channel(channel_id)`, `idx_entity_guild(guild_id)`, `idx_entity_guild_channel(guild_id, channel_id)`, `idx_entity_updated_at(updated_at DESC)`
 
-### conversation_summaries — Lazily-created (memory_consolidator)
+### conversation_summaries — created by migration 002
 
-Created on first write by `cogs/ai_core/memory/memory_consolidator.py`, not at schema-init time.
+Created at schema-init time by migration `002_sync_defaults.sqlite.sql` (which runs inside `init_schema`). `cogs/ai_core/memory/memory_consolidator.py` also re-creates it idempotently (`CREATE TABLE IF NOT EXISTS`) as a fallback for a manual `!consolidate` on a fresh DB.
 
 | Column | Type | Constraints |
 | -------- | ------ | ------------- |
@@ -342,7 +342,7 @@ File extension is `.sqlite.sql` (not `.sql`) — the VS Code mssql extension fla
 | 001_baseline.sqlite.sql | Initial schema (no-op marker) |
 | 002_sync_defaults.sqlite.sql | Rebuild token_usage/conversation_summaries with correct defaults |
 | 003_fix_user_facts.sqlite.sql | Rebuild user_facts with category NOT NULL, importance default 2 |
-| 004_dashboard_columns.sqlite.sql | Verify dashboard thinking/mode/images + is_creator columns |
+| 004_dashboard_columns.sqlite.sql | Verify dashboard thinking/mode + is_creator columns |
 | 005_update_ai_provider_default.sqlite.sql | Documentation-only (no data mutation) |
 | 006_drop_character_profiles.sqlite.sql | Drop unused dashboard_character_profiles table |
 | 007_fix_token_usage_default.sqlite.sql | Rebuild token_usage with model DEFAULT 'claude-opus-4-6' |

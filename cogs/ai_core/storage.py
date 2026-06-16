@@ -1315,7 +1315,13 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             # DB returns 'content' directly, not 'parts'
             content = item.get("content", "")
             message_id = item.get("message_id")
-            timestamp = item.get("timestamp")
+            # A missing/malformed timestamp must not insert NULL — NULL bypasses
+            # the column's CURRENT_TIMESTAMP default (database.py:409) and sorts
+            # inconsistently under ORDER BY timestamp. Same rule as
+            # _replace_history_db / save_ai_messages_batch.
+            timestamp = _normalize_history_timestamp(item.get("timestamp")) or datetime.now(
+                timezone.utc
+            ).isoformat(timespec="seconds")
 
             if content:
                 rows_to_insert.append((role, content, message_id, timestamp))

@@ -373,7 +373,7 @@ class _AiToolsIpc:
             status = await execute_tool_call(self.bot, capture, member, tool_call)
             data = capture.text().strip()
             if data:
-                return data, False
+                return data, data.startswith(("⛔", "❌"))
             # Nothing captured → a permission denial / error came back as the
             # status string; surface that (is_error if it looks like a refusal).
             text = str(status)

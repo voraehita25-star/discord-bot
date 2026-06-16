@@ -14,7 +14,9 @@ Check the latest: `git tag --sort=-v:refname | head` and `gh release list`. If t
 - `version.txt` (whole file)
 - `pyproject.toml` (`version = "X.Y.Z"`)
 - `CLAUDE.md` (`(vX.Y.Z)` on line ~7)
-- Doc headers: `README.md` (`**Version:**`), `docs/DEVELOPER_GUIDE.md`, `cogs/ai_core/README.md`
+- `native_dashboard/tauri.conf.json` (`"version": "X.Y.Z"` — this is the version source-of-truth read by sync_doc_stats.py; bump it or the auto-sync stays stale)
+- `native_dashboard/Cargo.toml` (`version = "X.Y.Z"`) + run a build to refresh `Cargo.lock`
+- Doc headers: `README.md` (`**Version:**`), `docs/DEVELOPER_GUIDE.md`, `cogs/ai_core/README.md` (note: README.md / DEVELOPER_GUIDE.md / INSTALL.md version headers are auto-synced by `scripts/maintenance/sync_doc_stats.py`)
 - Write `docs/release-notes/vX.Y.Z.md` (match the style of the latest existing note: title, Date, sections, a Verification section with current test counts).
 
 ## 3. Commit
@@ -43,4 +45,4 @@ git tag -a vX.Y.Z -m "vX.Y.Z — <summary>" && git push origin vX.Y.Z
 gh release create vX.Y.Z --notes-file docs/release-notes/vX.Y.Z.md --title "vX.Y.Z — <title>" --verify-tag
 gh release view vX.Y.Z            # confirm draft:false, marked Latest
 ```
-Notes-only release (no `.exe` asset) per convention. To attach the installer, run /build-dashboard + `tauri build` first and `gh release upload`.
+Per current convention the release also ships the NSIS installer as an asset (last two releases each attached `Discord-Bot-Dashboard_X.Y.Z_x64-setup.exe`). Build it with `npm run release` (= `cargo tauri build`, output in `native_dashboard/target/release/bundle/nsis/디스코드 봇 대시보드_X.Y.Z_x64-setup.exe`), then `gh release upload vX.Y.Z` the file renamed to the ASCII `Discord-Bot-Dashboard_X.Y.Z_x64-setup.exe`.

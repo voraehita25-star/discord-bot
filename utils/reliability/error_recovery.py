@@ -17,7 +17,7 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TypeVar
@@ -521,7 +521,7 @@ def with_retry(
     if config is None:
         config = RETRY_STANDARD
 
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             return await retry_async(  # type: ignore[no-any-return]
@@ -534,7 +534,7 @@ def with_retry(
                 **kwargs,
             )
 
-        return wrapper  # type: ignore[return-value]
+        return wrapper
 
     return decorator
 

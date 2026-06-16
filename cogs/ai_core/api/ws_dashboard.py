@@ -577,11 +577,16 @@ class DashboardWebSocketServer:
             cutoff_age = self._AUTH_FAIL_WINDOW
             while prior and now - prior[0] >= cutoff_age:
                 prior.popleft()
-        # Periodic dict-cleanup: drop empty fail buckets and expired lockouts so
-        # neither grows unbounded across days/weeks of attacker reconnects.
+        # Periodic dict-cleanup: drop empty or fully-aged-out fail buckets and
+        # expired lockouts so neither grows unbounded across days/weeks of
+        # attacker reconnects.
         if len(self._auth_failures) > 1024:
-            empty_keys = [k for k, v in self._auth_failures.items() if not v]
-            for k in empty_keys:
+            stale_keys = [
+                k
+                for k, v in self._auth_failures.items()
+                if not v or now - v[-1] >= self._AUTH_FAIL_WINDOW
+            ]
+            for k in stale_keys:
                 self._auth_failures.pop(k, None)
         if len(self._auth_lockouts) > 1024:
             for k in [k for k, until in self._auth_lockouts.items() if now >= until]:
@@ -1187,7 +1192,11 @@ class DashboardWebSocketServer:
         preset = DASHBOARD_ROLE_PRESETS[role_preset]
         conversation_id = str(uuid.uuid4())
 
-        # Save to database if available
+        # Save to database if available. Track success so the client knows
+        # whether the conversation is durable: if the DB write fails, the
+        # in-memory conversation still works this session but the FK-bound
+        # dashboard_messages saves will also fail and nothing survives a reload.
+        persisted = True
         if DB_AVAILABLE:
             try:
                 db = Database()
@@ -1199,6 +1208,7 @@ class DashboardWebSocketServer:
                 )
             except Exception:
                 logger.exception("Failed to save conversation to DB")
+                persisted = False
 
         await ws.send_json(
             {
@@ -1211,6 +1221,7 @@ class DashboardWebSocketServer:
                 "thinking_enabled": thinking_enabled,
                 "ai_provider": ai_provider,
                 "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "persisted": persisted,
             }
         )
 
