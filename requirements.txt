@@ -28,7 +28,8 @@ defusedxml>=0.7.1             # No longer imported by our code (python-docx self
 # ==================== Music ====================
 yt-dlp==2026.6.9              # YouTube downloader — IMPORTANT: old versions freeze on changed APIs
 spotipy==2.26.0               # Spotify API wrapper (latest)
-PyNaCl>=1.6.2,<2              # Voice encryption for discord.py voice
+PyNaCl>=1.6.2,<2              # Voice transport encryption for discord.py voice
+davey>=0.1.5                  # DAVE protocol (E2EE) — REQUIRED by discord.py 2.7+ for voice alongside PyNaCl (voice_client raises without it)
 
 # ==================== Database ====================
 aiosqlite==0.22.1             # Async SQLite (latest)
