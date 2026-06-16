@@ -5670,3 +5670,173 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
         scroll-behavior: auto !important;
     }
 }
+
+/* ============================================================================
+   PREMIUM UI v2 — "Sakura Midnight". Distinctive materiality layered on v1:
+   a self-hosted display typeface, a richer animated aurora-mesh + film grain,
+   glass surfaces with gradient hairline borders, hero metrics, and premium
+   controls. Appended last so it wins via source order; light theme keeps its
+   own values. The display font fails gracefully to the Korean-aware stack.
+   ============================================================================ */
+
+@font-face {
+    font-family: 'SakuraDisplay';
+    src: url('vendor/fonts/bricolage-grotesque.woff2') format('woff2-variations');
+    font-weight: 200 800;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    --font-display: 'SakuraDisplay', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    --glass: linear-gradient(160deg, rgba(46, 34, 82, 0.55), rgba(19, 13, 38, 0.68));
+    --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    --hairline: linear-gradient(135deg, rgba(181, 130, 255, 0.55), rgba(255, 124, 185, 0.40) 46%, rgba(91, 214, 236, 0.22));
+}
+
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --glass: linear-gradient(160deg, rgba(255, 255, 255, 0.82), rgba(248, 249, 255, 0.92));
+    --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    --hairline: linear-gradient(135deg, rgba(124, 58, 237, 0.40), rgba(190, 42, 111, 0.28) 50%, rgba(3, 102, 114, 0.16));
+}
+
+/* — Atmosphere: richer animated aurora mesh (enhances the existing drift) — */
+body::before {
+    inset: -15%;
+    opacity: 0.72;
+    background:
+        radial-gradient(40% 50% at 12% 4%, rgba(168, 110, 255, 0.30), transparent 60%),
+        radial-gradient(36% 44% at 88% 8%, rgba(255, 110, 184, 0.22), transparent 60%),
+        radial-gradient(46% 56% at 80% 96%, rgba(120, 86, 240, 0.24), transparent 62%),
+        radial-gradient(34% 40% at 26% 90%, rgba(91, 214, 236, 0.12), transparent 60%);
+}
+
+html[data-theme="light"] body::before {
+    opacity: 0.5;
+    background:
+        radial-gradient(40% 50% at 12% 4%, rgba(124, 58, 237, 0.10), transparent 60%),
+        radial-gradient(36% 44% at 88% 8%, rgba(190, 42, 111, 0.08), transparent 60%),
+        radial-gradient(46% 56% at 80% 96%, rgba(91, 33, 182, 0.08), transparent 62%);
+}
+
+/* — Film grain for premium texture (above atmosphere, below content) — */
+body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+html[data-theme="light"] body::after { opacity: 0.035; mix-blend-mode: multiply; }
+
+/* keep interactive content above the atmosphere layers */
+.app, .sidebar, .content { position: relative; z-index: 1; }
+
+/* — Display typography — */
+h1, h2, .page-header h1, .page-header h2, .stat-value, .empty-state h2, .empty-state h3 {
+    font-family: var(--font-display);
+}
+
+.page-header h1, h1 { font-weight: 800; letter-spacing: -0.025em; font-size: clamp(26px, 2.5vw, 34px); }
+
+/* — Glass surfaces with gradient hairline borders — */
+.stat-card, .control-card, .settings-card, .chart-card {
+    background:
+        var(--glass) padding-box,
+        var(--hairline) border-box;
+    border: 1px solid transparent;
+    backdrop-filter: blur(16px) saturate(1.25);
+    -webkit-backdrop-filter: blur(16px) saturate(1.25);
+    box-shadow: var(--shadow-md), var(--glass-hi);
+}
+
+.stat-card:hover, .control-card:hover {
+    box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
+}
+
+/* — Hero metric cards: gradient icon chip + display numerals — */
+.stat-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    border-radius: 13px;
+    background: var(--brand-soft);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--glass-hi);
+    font-size: 20px;
+    filter: none;
+}
+
+.stat-value {
+    font-family: var(--font-display);
+    font-size: clamp(26px, 2.2vw, 34px);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: #fbf8ff;
+    text-shadow: 0 2px 18px rgba(171, 120, 255, 0.28);
+}
+
+html[data-theme="light"] .stat-value { color: var(--text-primary); text-shadow: none; }
+
+/* — Premium buttons: inner highlight + glow + hover shimmer sweep — */
+.btn { position: relative; overflow: hidden; }
+.btn-primary { box-shadow: 0 8px 22px rgba(160, 98, 240, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+
+.btn-primary::after, .btn-danger::after, .btn-warning::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 32%, rgba(255, 255, 255, 0.35) 50%, transparent 68%);
+    transform: translateX(-130%);
+    transition: transform .6s var(--ease);
+    pointer-events: none;
+}
+
+.btn-primary:hover:not(:disabled)::after,
+.btn-danger:hover:not(:disabled)::after,
+.btn-warning:hover:not(:disabled)::after { transform: translateX(130%); }
+
+/* — Distinctive active nav: glowing gradient accent bar — */
+.nav-item.active::before {
+    background: var(--brand-grad);
+    box-shadow: 0 0 14px var(--glow-purple), 0 0 6px var(--glow-pink);
+    width: 3px;
+}
+
+/* — Glass inputs — */
+.setting-input, .setting-select, .conversation-filter, #log-filter, textarea {
+    background: rgba(20, 14, 40, 0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+html[data-theme="light"] .setting-input, html[data-theme="light"] .setting-select,
+html[data-theme="light"] .conversation-filter, html[data-theme="light"] #log-filter,
+html[data-theme="light"] textarea { background: rgba(255, 255, 255, 0.85); }
+
+/* — Logo: refined glass chip with gradient hairline — */
+.logo {
+    background:
+        linear-gradient(135deg, rgba(181, 130, 255, 0.18), rgba(255, 124, 185, 0.12)) padding-box,
+        var(--hairline) border-box;
+    border: 1px solid transparent;
+    box-shadow: var(--shadow-sm), var(--glass-hi);
+}
+
+/* — Empty states: glowing hero glyph — */
+.empty-state h2, .empty-state h3 { letter-spacing: -0.02em; }
+.empty-state img, .empty-state svg, .empty-icon { filter: drop-shadow(0 8px 26px var(--glow-purple)); }
+
+/* — Scrollbar: brand gradient — */
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(var(--accent-purple), var(--accent-pink));
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { filter: brightness(1.2); }
