@@ -130,5 +130,5 @@ async def main(title_substr: str = "", show_full: bool = False) -> None:
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a != "--full"]
     full_flag = "--full" in sys.argv[1:]
-    arg = args[0] if args else "ไงงงงงง"
+    arg = args[0] if args else ""
     asyncio.run(main(arg, show_full=full_flag))

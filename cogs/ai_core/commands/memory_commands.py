@@ -143,12 +143,15 @@ class MemoryCommands(commands.Cog):
         self.logger = logging.getLogger("MemoryCommands")
 
     @commands.command(name="remember")
-    async def remember_fact(self, ctx: Context, *, fact: str) -> None:
+    async def remember_fact(self, ctx: Context, *, fact: str = "") -> None:
         """
         Save something to permanent memory.
 
         Usage: !remember I am allergic to peanuts
         """
+        # `fact` defaults to "" so a bare `!remember` reaches this body and
+        # shows the tailored usage hint, instead of discord.py raising
+        # MissingRequiredArgument before we get here.
         if not fact or len(fact) < 3:
             await ctx.send("❌ กรุณาระบุสิ่งที่ต้องการจำ เช่น `!remember ผมชื่อ John`")
             return
@@ -200,12 +203,15 @@ class MemoryCommands(commands.Cog):
             await ctx.send("❌ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง")
 
     @commands.command(name="forget")
-    async def forget_fact(self, ctx: Context, *, query: str) -> None:
+    async def forget_fact(self, ctx: Context, *, query: str = "") -> None:
         """
         Forget something from memory.
 
         Usage: !forget allergic to peanuts
         """
+        # `query` defaults to "" so a bare `!forget` reaches this body and
+        # shows the tailored usage hint, instead of discord.py raising
+        # MissingRequiredArgument before we get here.
         if not query:
             await ctx.send("❌ กรุณาระบุสิ่งที่ต้องการลืม เช่น `!forget แพ้ถั่ว`")
             return
@@ -299,7 +305,11 @@ class MemoryCommands(commands.Cog):
                 for fact in cat_facts[:5]:  # Limit 5 per category
                     confidence_icon = "✓" if fact.confidence > 0.7 else "?"
                     mention_info = f"(x{fact.mention_count})" if fact.mention_count > 1 else ""
-                    value_lines.append(f"{confidence_icon} {fact.content[:80]} {mention_info}")
+                    # Escape markdown so self-authored fact content renders as
+                    # literal text (consistent with the backtick guard in
+                    # remember_fact/forget_fact) rather than active markdown.
+                    safe_content = discord.utils.escape_markdown(fact.content[:80])
+                    value_lines.append(f"{confidence_icon} {safe_content} {mention_info}")
 
                 if len(cat_facts) > 5:
                     value_lines.append(f"... และอีก {len(cat_facts) - 5} รายการ")

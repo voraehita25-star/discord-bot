@@ -457,7 +457,13 @@ async def retry_async(
                     service_monitor.record_failure(service_name, str(e)[:100])
 
                 if on_retry:
-                    on_retry(attempt + 1, e)
+                    # Guard the user callback: a raising on_retry must not abort
+                    # the retry loop and bypass the fallback path below — log and
+                    # continue (mirrors the on_evict guard in memory_manager.py).
+                    try:
+                        on_retry(attempt + 1, e)
+                    except Exception:
+                        logger.exception("on_retry callback raised; continuing retry loop")
 
                 if attempt < config.max_retries - 1:
                     # Calculate delay with smart jitter

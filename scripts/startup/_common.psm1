@@ -232,11 +232,22 @@ function Stop-ExistingBot {
         $OldPid = (Get-Content $PidFile -Raw).Trim()
         if ($OldPid -is [string] -and $OldPid -match "^\d+$") {
             $Process = Get-Process -Id $OldPid -ErrorAction SilentlyContinue
+            # The OS can recycle a dead bot's PID onto an unrelated python.exe
+            # (another bot, a Jupyter kernel, the dashboard CLI backend). A bare
+            # ProcessName -match "python" guard would force-kill that innocent
+            # process. bot.pid stores only the PID, so confirm identity via the
+            # recorded command line: a genuine instance is "python ... bot.py".
             if ($Process -and $Process.ProcessName -match "python") {
-                Write-Log "Stopping existing bot (PID: $OldPid)..." -Level WARN
-                Stop-Process -Id $OldPid -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 2
-                Write-Log "Old instance stopped" -Level OK
+                $CmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue).CommandLine
+                if ($CmdLine -and $CmdLine -match "bot\.py") {
+                    Write-Log "Stopping existing bot (PID: $OldPid)..." -Level WARN
+                    Stop-Process -Id $OldPid -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 2
+                    Write-Log "Old instance stopped" -Level OK
+                }
+                else {
+                    Write-Log "PID $OldPid is python but not the bot (recycled PID?) - leaving it alone" -Level WARN
+                }
             }
             Remove-Item $PidFile -ErrorAction SilentlyContinue
         }

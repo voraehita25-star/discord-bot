@@ -291,12 +291,12 @@ async def handle_chat_message(
             if len(hist_msgs) > max_history_messages:
                 hist_msgs = hist_msgs[-max_history_messages:]
             for msg in hist_msgs:
-                role = "user" if msg["role"] == "user" else "model"
+                role = "user" if msg.get("role") == "user" else "model"
                 text = msg.get("content") or ""
                 if msg.get("created_at"):
                     text = f"[{normalize_timestamp_to_bangkok(msg['created_at'])}] {text}"
                 if msg.get("images"):
-                    text += f"\n[User had attached {len(msg['images'])} image(s) in this message, message_id={msg['id']}]"
+                    text += f"\n[User had attached {len(msg['images'])} image(s) in this message, message_id={msg.get('id')}]"
                 contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
             _db_history_loaded = True
         except Exception as e:
@@ -648,9 +648,13 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
             # Input tokens are cumulative-within-context (each round's prompt is a
             # superset of all prior rounds), so for context-window display take
-            # only the final round's count. Output (candidates) tokens are
-            # per-round-distinct new generation and must stay summed.
-            total_input_tokens = input_tokens
+            # the largest round's count rather than blindly overwriting with the
+            # final round — a usage-less final round (no usage_metadata, or
+            # prompt_token_count=0) would otherwise discard a real earlier
+            # measurement and force the char/3 heuristic below. Output
+            # (candidates) tokens are per-round-distinct new generation and must
+            # stay summed.
+            total_input_tokens = max(total_input_tokens, input_tokens)
             total_output_tokens += output_tokens
 
             # If the stream ended while still inside a thinking block (model

@@ -1000,7 +1000,16 @@ async def cmd_list_roles(
     _args: list[str],
     _user: discord.Member | discord.User | None = None,
 ) -> None:
-    """List all roles."""
+    """List all roles.
+
+    Intentionally unguarded by a per-caller check (unlike cmd_list_channels /
+    cmd_list_members): a role's name and ID are non-sensitive and already
+    visible to every member in Discord's own UI, so there's nothing to leak.
+    The live AI-tool path is still administrator-gated upstream
+    (tool_executor). Don't add a Member/manage_guild gate here — the sibling
+    listing commands gate because channel visibility and the full member
+    roster are privacy-relevant; roles are not.
+    """
     roles = [f"{r.name} (ID: {r.id})" for r in reversed(guild.roles) if r.name != "@everyone"]
     await send_long_message(origin_channel, "**🎭 Server Roles:**\n", roles)
 

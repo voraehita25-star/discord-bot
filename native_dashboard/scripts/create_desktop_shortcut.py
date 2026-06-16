@@ -43,8 +43,12 @@ def create_shortcut_via_pythoncom():
 
     # Remove existing
     if shortcut_path.exists():
-        shortcut_path.unlink()
-        print("Removed existing shortcut")
+        try:
+            shortcut_path.unlink()
+            print("Removed existing shortcut")
+        except OSError as e:
+            print(f"ERROR: Could not remove existing shortcut: {e}")
+            return False
 
     # COM must be initialized on this thread before CoCreateInstance (an
     # uninitialized thread raises CO_E_NOTINITIALIZED). Wrap the whole block so

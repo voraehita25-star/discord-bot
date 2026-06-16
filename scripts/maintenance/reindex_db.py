@@ -215,11 +215,24 @@ async def reindex_ai_history():
             "WHERE type='trigger' AND tbl_name='ai_history' AND sql IS NOT NULL"
         )
         trigger_defs = [(r["name"], r["sql"]) for r in await cursor.fetchall()]
+        # ``LIKE '%ai_history%'`` is only a coarse pre-filter — it over-matches
+        # views that merely mention the substring (e.g. ai_history_archive, an
+        # alias ai_history_count, or a comment) without actually referencing the
+        # ai_history table. Recreating such a false-positive view is needless
+        # churn and, if its recreate fails, would force a non-zero exit on an
+        # otherwise-successful reindex. Tighten with a word-boundary check so
+        # only views that reference ai_history as a standalone identifier are
+        # carried over.
         cursor = await conn.execute(
             "SELECT name, sql FROM sqlite_master "
             "WHERE type='view' AND sql IS NOT NULL AND sql LIKE '%ai_history%'"
         )
-        view_defs = [(r["name"], r["sql"]) for r in await cursor.fetchall()]
+        _ai_history_word = re.compile(r"(?<!\w)ai_history(?!\w)", re.IGNORECASE)
+        view_defs = [
+            (r["name"], r["sql"])
+            for r in await cursor.fetchall()
+            if _ai_history_word.search(r["sql"])
+        ]
 
         # Wrap the destructive section in an explicit transaction so an
         # interrupt between DROP TABLE ai_history and the RENAME doesn't
@@ -276,6 +289,13 @@ async def reindex_ai_history():
             print(f"[STEP] Recreating {len(index_defs)} index(es)...")
             for idx_name, idx_sql in index_defs:
                 try:
+                    # DROP first so re-creation is idempotent. A UNIQUE index
+                    # declared inline in the CREATE TABLE is recreated
+                    # automatically with the new table; if the SAME index also
+                    # exists as an explicit CREATE INDEX row, executing idx_sql
+                    # verbatim would raise "index already exists" and force a
+                    # non-zero exit on an otherwise-successful reindex.
+                    await conn.execute(f'DROP INDEX IF EXISTS "{idx_name}"')
                     await conn.execute(idx_sql)
                     print(f"  [OK] Recreated index: {idx_name}")
                 except Exception as e:
@@ -379,10 +399,28 @@ async def reindex_ai_history():
         except Exception as e:
             print(f"  [WARN] wal_checkpoint(TRUNCATE) failed: {e}")
 
-        # Verify new ID range
-        cursor = await conn.execute("SELECT MIN(id) as min_id, MAX(id) as max_id FROM ai_history")
-        row = await cursor.fetchone()
-        print(f"[OK] New ID range: {row['min_id']} - {row['max_id']}")
+        # Verify new ID range. This runs AFTER commit (the rename is already
+        # durable) and AFTER SIGINT was restored, so a Ctrl-C or aiosqlite
+        # error here must NOT propagate out of the function — that would
+        # suppress the [DONE] banner and trick an operator into re-running the
+        # destructive DROP/RENAME or restoring from backup on a migration that
+        # actually succeeded. Best-effort only, mirroring the wal_checkpoint
+        # handling above.
+        try:
+            cursor = await conn.execute(
+                "SELECT MIN(id) as min_id, MAX(id) as max_id FROM ai_history"
+            )
+            row = await cursor.fetchone()
+            print(f"[OK] New ID range: {row['min_id']} - {row['max_id']}")
+        except Exception as e:
+            print(f"  [WARN] Could not read new ID range: {e}")
+
+        # The migration is durable at this point — announce success BEFORE the
+        # optional VACUUM so an interrupt or error during VACUUM (pure
+        # optimization) doesn't hide the fact that the reindex completed.
+        print("\n[DONE] Re-indexing complete!")
+        print(f"[INFO] Backup saved at: {backup_path}")
+        print("[TIP] You can now restart the bot and re-export JSON files")
 
         # VACUUM cannot run inside a transaction. The comment above used
         # to claim we'd disabled autocommit but never actually did — so
@@ -390,18 +428,18 @@ async def reindex_ai_history():
         # on the next execute and VACUUM raised
         # "cannot VACUUM from within a transaction". Switch to
         # ``isolation_level = None`` (autocommit) for the VACUUM call so
-        # SQLite sees no open txn.
+        # SQLite sees no open txn. VACUUM is best-effort optimization — a
+        # failure (or Ctrl-C) here leaves the committed data fully intact, so
+        # log a [WARN] rather than propagating.
         print("[STEP] Running VACUUM to optimize database...")
         prev_isolation = conn.isolation_level
         conn.isolation_level = None
         try:
             await conn.execute("VACUUM")
+        except Exception as e:
+            print(f"  [WARN] VACUUM failed (data is intact, optimization skipped): {e}")
         finally:
             conn.isolation_level = prev_isolation
-
-    print("\n[DONE] Re-indexing complete!")
-    print(f"[INFO] Backup saved at: {backup_path}")
-    print("[TIP] You can now restart the bot and re-export JSON files")
 
     # Surface index-recreation failures as a non-zero exit so a calling
     # shell script or CI job notices. The data itself is intact (the

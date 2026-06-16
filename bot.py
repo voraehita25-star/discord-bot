@@ -905,11 +905,16 @@ async def graceful_shutdown(
     if _health_task is not None and not _health_task.done():
         _health_task.cancel()
         # Awaiting a cancelled task can re-raise non-cancel exceptions
-        # that were stored before the cancel landed. Suppress both so the
-        # shutdown path doesn't crash on a stale exception from a task
-        # that died seconds before signal arrived.
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        # that were stored before the cancel landed. Swallow the expected
+        # CancelledError silently, but log any other exception at warning
+        # level so a real bug in the health loop's teardown stays visible
+        # instead of vanishing — shutdown still continues either way.
+        try:
             await _health_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as health_err:
+            logger.warning("Health loop task ended with: %s", health_err)
         logger.info("🛑 Health loop task cancelled")
 
     # Flush pending database exports before closing

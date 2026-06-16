@@ -11,6 +11,7 @@ import atexit
 import base64
 import io
 import logging
+import re
 import warnings
 from collections import OrderedDict, namedtuple
 from pathlib import Path
@@ -441,7 +442,14 @@ def load_character_image(message: str, guild_id: int | None) -> tuple[str, Image
     message_lower = message.lower()
 
     for char_name, img_path in character_map.items():
-        if char_name.lower() in message_lower:
+        # Word-boundary match (not a naive substring) so a short character
+        # name ("rin", "al", "mai") doesn't match inside unrelated words
+        # ("drinking", "always", "email") and load the wrong reference image.
+        # Lookarounds anchor on \w boundaries, which also tolerates multi-word
+        # and Thai names (their edges are non-\w spaces/punctuation). Mirrors
+        # the anchoring rationale in character_tags.replace_character_names.
+        name_lower = char_name.lower()
+        if name_lower and re.search(rf"(?<!\w){re.escape(name_lower)}(?!\w)", message_lower):
             try:
                 # Resolve path and validate it's within the project directory
                 resolved = (_BASE_DIR / img_path).resolve()

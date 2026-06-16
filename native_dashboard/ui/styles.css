@@ -297,7 +297,7 @@ body {
     top: -48px;
     z-index: 1000;
     padding: 8px 16px;
-    background: var(--accent-primary, #5865f2);
+    background: var(--accent-purple, #a855f7);
     color: #fff;
     border-radius: 8px;
     text-decoration: none;
@@ -2224,7 +2224,7 @@ h2 {
     width: 32px;
     height: 32px;
     border: 3px solid var(--border-color);
-    border-top-color: var(--accent-color, #7c3aed);
+    border-top-color: var(--accent-purple, #a855f7);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
 }
@@ -2252,7 +2252,7 @@ h2 {
 }
 
 .load-more-btn:hover {
-    background: var(--bg-hover, #333350);
+    background: var(--surface-3);
     color: var(--text-primary);
 }
 

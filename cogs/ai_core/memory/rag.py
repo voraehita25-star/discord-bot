@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -698,6 +699,13 @@ class MemorySystem:
             )
         except TimeoutError:
             logger.warning("⏱️ RAG hybrid_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
+            return []
+        except (sqlite3.Error, OSError):
+            # A transient DB error (e.g. "database is locked") must degrade to
+            # empty like the timeout branch above, not bubble up and abort the
+            # whole memory-retrieval step of the message turn. aiosqlite raises
+            # the stdlib sqlite3.* exception types.
+            logger.warning("RAG hybrid_search DB query failed; degrading to keyword-only/empty")
             return []
         rows = list(rows or [])
         # Cache the None (cross-channel) key too — search_memory hits this on
@@ -1532,6 +1540,8 @@ class MemorySystem:
                 decay = self._calculate_time_decay(created_at)
                 final_score *= decay
                 try:
+                    if not isinstance(created_at, str):
+                        raise TypeError("created_at is not a string")
                     created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     # Coerce naive timestamps (legacy rows written before
                     # the tz-aware migration) to UTC so we don't raise
@@ -1539,7 +1549,10 @@ class MemorySystem:
                     if created.tzinfo is None:
                         created = created.replace(tzinfo=timezone.utc)
                     now = datetime.now(created.tzinfo)
-                    age_days = (now - created).days
+                    # Fractional days (not ``.days``, which truncates a <24h
+                    # memory to 0) so the reported MemoryResult.age_days (float)
+                    # matches the fractional age the time-decay math uses.
+                    age_days = (now - created).total_seconds() / 86400
                 except (ValueError, TypeError, AttributeError):
                     pass  # Invalid or missing datetime format
 
@@ -1638,6 +1651,12 @@ class MemorySystem:
             )
         except TimeoutError:
             logger.warning("⏱️ RAG linear_search DB query timed out after %ds", _DB_QUERY_TIMEOUT)
+            return []
+        except (sqlite3.Error, OSError):
+            # Mirror the hybrid-search path: a transient DB error (locked DB)
+            # degrades to empty rather than propagating out of the legacy
+            # fallback and aborting the caller.
+            logger.warning("RAG linear_search DB query failed; degrading to empty")
             return []
 
         if not all_memories:

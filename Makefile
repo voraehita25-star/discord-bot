@@ -27,16 +27,16 @@ dev: ## Run the bot with dev watcher
 # ======================== Testing ========================
 
 test: ## Run all Python tests
-	python -m pytest tests/ -v --tb=short
+	python -m pytest tests/ --tb=short --timeout=30 --override-ini="addopts="
 
 test-quick: ## Run tests without verbose output
-	python -m pytest tests/ --tb=short -q
+	python -m pytest tests/ --tb=short --timeout=30 -q --override-ini="addopts="
 
 test-fast: ## Run tests skipping slow ones (~8.5s)
 	python -m pytest tests/ --tb=short -q -m "not slow" --override-ini="addopts="
 
 test-cov: ## Run tests with coverage report
-	python -m pytest tests/ --cov=cogs --cov=utils --cov-report=term --cov-report=html
+	python -m pytest tests/ --tb=short --timeout=30 --cov=cogs --cov=utils --cov-report=term --cov-report=html --override-ini="addopts="
 
 test-go: ## Run Go tests
 	cd go_services && go test ./... -v -race

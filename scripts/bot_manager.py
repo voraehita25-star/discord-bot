@@ -323,8 +323,16 @@ def find_all_bot_processes():
 
 
 def find_all_dev_watcher_processes():
-    """Find all dev watcher processes"""
-    return _find_processes(["python", "dev_watcher"])
+    """Find all dev watcher processes.
+
+    Match is tightened: cmdline must contain ``python`` AND have an arg
+    whose basename is exactly ``dev_watcher.py``. Pure substring matching on
+    ``dev_watcher`` used to false-positive on any cmdline that merely mentions
+    that path (a log-path argument, an editor/REPL editing dev_watcher.py),
+    and the misclassified PID flows into ``dev_watcher_pids`` which stop_bot
+    and auto_stop_existing_bot terminate.
+    """
+    return _find_processes(["python", "dev_watcher"], exact_basenames=["dev_watcher.py"])
 
 
 def _get_launcher_info(proc):
@@ -333,11 +341,16 @@ def _get_launcher_info(proc):
         cmdline_list = proc.cmdline() or []
         cmdline_str = " ".join(cmdline_list).lower()
         name = proc.name().lower()
+        arg_basenames = {os.path.basename(a).lower() for a in cmdline_list if a}
 
         # Check dev watcher. Real launchers are scripts/startup/dev.bat →
         # start_dev.ps1 (the old start_dev_mode.bat no longer exists).
-        if "dev_watcher" in cmdline_str or "start_dev" in cmdline_str:
-            script = "dev_watcher.py" if "dev_watcher" in cmdline_str else "start_dev.ps1"
+        # Match on the exact arg basename rather than a substring scan of the
+        # joined cmdline, mirroring find_all_bot_processes' exact_basenames
+        # hardening — a log-path argument that merely contains "dev_watcher"
+        # must not be misclassified as Dev Mode and propagated to restart_bot.
+        if "dev_watcher.py" in arg_basenames or "start_dev.ps1" in arg_basenames:
+            script = "dev_watcher.py" if "dev_watcher.py" in arg_basenames else "start_dev.ps1"
             return {
                 "name": "Dev Mode (Hot Reload)",
                 "script": script,
@@ -452,13 +465,27 @@ def get_bot_status():
             proc = psutil.Process(pid)
             status["process_name"] = proc.name()
 
-            # Stats
-            total_mem, total_cpu = 0, 0
+            # Stats. Take ONE shared sampling window for CPU instead of a
+            # blocking ``interval=0.05`` per process: N instances otherwise
+            # stalled the (per-menu-loop) status panel by N*50ms. Prime each
+            # process with a non-blocking ``cpu_percent(interval=None)`` (it
+            # returns 0.0 until psutil has two reference points), sleep once,
+            # then read the delta — a single ~100ms window total.
+            procs = []
+            total_mem = 0.0
             for p in all_bot_pids:
                 try:
                     pr = psutil.Process(p)
                     total_mem += pr.memory_info().rss / 1024 / 1024
-                    total_cpu += pr.cpu_percent(interval=0.05)
+                    pr.cpu_percent(interval=None)  # prime the reference sample
+                    procs.append(pr)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            time.sleep(0.1)
+            total_cpu = 0.0
+            for pr in procs:
+                try:
+                    total_cpu += pr.cpu_percent(interval=None)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             status["memory_mb"] = round(total_mem, 2)

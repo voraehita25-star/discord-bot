@@ -142,8 +142,23 @@ def convert_file(path: Path) -> tuple[bool, str]:
                 tmp_path.unlink()
 
 
+def _clean_stdin_path(line: str) -> str:
+    """Strip whitespace and a single matching pair of surrounding quotes.
+
+    A path shell-quoted to survive spaces (e.g. ``"my dir/file.py"`` or
+    ``'my dir/file.py'``) keeps the quote characters after ``str.strip()``,
+    so ``Path(...).exists()`` returns False and the file is silently reported
+    as ``[MISS]``. Drop one balanced surrounding quote pair so quoted and bare
+    paths behave identically; an unbalanced quote is left untouched.
+    """
+    s = line.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    return s
+
+
 def main() -> int:
-    files = [line.strip() for line in sys.stdin if line.strip()]
+    files = [cleaned for line in sys.stdin if (cleaned := _clean_stdin_path(line))]
     ok = 0
     skipped = 0
     failed = 0

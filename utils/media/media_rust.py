@@ -277,19 +277,39 @@ MediaProcessor = MediaProcessorWrapper
 
 
 # Standalone functions
+#
+# These helpers always use the default wrapper configuration, so they share a
+# single lazily-built module-level instance instead of allocating a fresh
+# wrapper (and, on the Rust path, a fresh native RustMediaProcessor) on every
+# call. Lazy init keeps the native processor from being constructed at import
+# time when the helpers are never used. Guarded by a lock so concurrent first
+# callers can't each build (and one of them discard) a processor.
+_DEFAULT_WRAPPER: MediaProcessorWrapper | None = None
+_DEFAULT_WRAPPER_LOCK = threading.Lock()
+
+
+def _get_default_wrapper() -> MediaProcessorWrapper:
+    global _DEFAULT_WRAPPER
+    wrapper = _DEFAULT_WRAPPER
+    if wrapper is None:
+        with _DEFAULT_WRAPPER_LOCK:
+            wrapper = _DEFAULT_WRAPPER
+            if wrapper is None:
+                wrapper = MediaProcessorWrapper()
+                _DEFAULT_WRAPPER = wrapper
+    return wrapper
+
+
 def resize_image(data: bytes, max_width: int, max_height: int) -> tuple[bytes, int, int]:
     """Resize an image."""
-    processor = MediaProcessorWrapper()
-    return processor.resize(data, max_width, max_height)
+    return _get_default_wrapper().resize(data, max_width, max_height)
 
 
 def is_animated_gif(data: bytes) -> bool:
     """Check if data is an animated GIF."""
-    processor = MediaProcessorWrapper()
-    return processor.is_animated(data)
+    return _get_default_wrapper().is_animated(data)
 
 
 def image_to_base64(data: bytes) -> str:
     """Encode image to base64."""
-    processor = MediaProcessorWrapper()
-    return processor.to_base64(data)
+    return _get_default_wrapper().to_base64(data)

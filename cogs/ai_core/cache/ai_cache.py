@@ -464,7 +464,11 @@ class AICache:
         while True:
             try:
                 await asyncio.sleep(interval)
-                removed = self.cleanup_expired()
+                # Run the O(n) scan + deletes off the event loop: cleanup_expired()
+                # acquires the same threading.Lock that get()/set() hold from
+                # executor/handler threads, so doing it inline would briefly stall
+                # the loop. It's already lock-safe, so to_thread only relocates it.
+                removed = await asyncio.to_thread(self.cleanup_expired)
                 if removed:
                     self.logger.info("🧹 Background cache cleanup: removed %d entries", removed)
             except asyncio.CancelledError:
@@ -802,17 +806,29 @@ async def flush_l2_pending(timeout: float = 5.0) -> int:
     exceptions are logged and swallowed so shutdown can proceed.
     """
     flushed = 0
-    if _l2_pending_futures:
-        pending = list(_l2_pending_futures)
-        try:
-            done, _pending_set = await asyncio.wait(pending, timeout=timeout)
+    seen: set[asyncio.Future[Any]] = set()
+    deadline = time.monotonic() + timeout
+    # Re-snapshot until the set drains or the budget is exhausted: a
+    # _persist_to_l2() call can submit a new future *after* an earlier
+    # snapshot, so a single asyncio.wait would leave it unawaited. Each
+    # future is only awaited once (tracked in ``seen``).
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            pending = [f for f in _l2_pending_futures if f not in seen]
+            if not pending:
+                break
+            seen.update(pending)
+            done, _pending_set = await asyncio.wait(pending, timeout=remaining)
             for fut in done:
                 fut_exc = fut.exception()
                 if fut_exc is not None:
                     logger.warning("L2 persist future raised: %s", fut_exc)
-            flushed = len(done)
-        except Exception as wait_exc:  # pragma: no cover — defensive
-            logger.warning("flush_l2_pending: wait failed: %s", wait_exc)
+            flushed += len(done)
+    except Exception as wait_exc:  # pragma: no cover — defensive
+        logger.warning("flush_l2_pending: wait failed: %s", wait_exc)
     # Checkpoint the WAL so the just-flushed (and any earlier) writes are durable
     # before the loop closes — synchronous=NORMAL can otherwise lose them on a
     # hard crash. Run in a thread since it's a blocking sqlite call.

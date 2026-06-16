@@ -181,12 +181,14 @@ export function formatMessage(content) {
     // Markdown tables — extract into placeholders before \n → <br>.
     const tableBlocks = [];
     const tablePlaceholder = '\x02TABLE_BLOCK_';
-    html = html.replace(/(?:^|\n)(\|.+\|\n\|[\s:|-]+\|\n(?:\|.+\|(?:\n|$))+)/g, (_match, table) => {
-        const rows = table.trim().split('\n');
-        if (rows.length < 2)
-            return _match;
-        const headerCells = rows[0].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+    // A separator row is `|---|`, `|:-:|`, etc. — only pipes, dashes, colons,
+    // spaces. Used both to validate a table head and to detect where a second
+    // table begins (a data-looking row immediately followed by a separator row
+    // is really the header of a NEW table, not a body row of the current one).
+    const isSeparatorRow = (row) => /^\s*\|[\s:|-]+\|\s*$/.test(row);
+    const renderTableRows = (rows) => {
         // rows[1] is the separator — parse alignment markers.
+        const headerCells = rows[0].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
         const alignCells = rows[1].replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
         const aligns = alignCells.map(c => {
             const t = c.trim();
@@ -212,9 +214,45 @@ export function formatMessage(content) {
             tbl += '</tr>';
         }
         tbl += '</tbody></table></div>';
-        const idx = tableBlocks.length;
-        tableBlocks.push(tbl);
-        return `${tablePlaceholder}${idx}\x02`;
+        return tbl;
+    };
+    html = html.replace(/(?:^|\n)(\|.+\|\n\|[\s:|-]+\|\n(?:\|.+\|(?:\n|$))+)/g, (_match, table) => {
+        const rows = table.trim().split('\n');
+        if (rows.length < 2)
+            return _match;
+        // The body-row quantifier above greedily swallows a directly-adjacent
+        // second table (only a single newline between them). Split the matched
+        // block back into individual tables wherever a row is followed by a
+        // separator row — that pair marks the head of a new table.
+        const placeholders = [];
+        let i = 0;
+        while (i < rows.length) {
+            if (i + 1 < rows.length && isSeparatorRow(rows[i + 1]) && !isSeparatorRow(rows[i])) {
+                const seg = [rows[i], rows[i + 1]];
+                let j = i + 2;
+                while (j < rows.length) {
+                    // A new header+separator pair, or a stray separator row, ends this body.
+                    if (isSeparatorRow(rows[j]))
+                        break;
+                    if (j + 1 < rows.length && isSeparatorRow(rows[j + 1]))
+                        break;
+                    seg.push(rows[j]);
+                    j++;
+                }
+                const idx = tableBlocks.length;
+                tableBlocks.push(renderTableRows(seg));
+                placeholders.push(`${tablePlaceholder}${idx}\x02`);
+                i = j;
+            }
+            else {
+                // Not a valid table head — preserve the line as-is.
+                placeholders.push(rows[i]);
+                i++;
+            }
+        }
+        // Emit surrounding newlines (like the list branches) so the later
+        // \n → <br> pass keeps a boundary between the table and adjacent text.
+        return `\n${placeholders.join('\n')}\n`;
     });
     // Unordered lists: consecutive lines starting with - or *.
     const listBlocks = [];

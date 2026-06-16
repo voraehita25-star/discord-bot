@@ -320,7 +320,17 @@ class TokenTracker:
         return removed
 
     def export_stats(self) -> dict[str, Any]:
-        """Export all stats for persistence."""
+        """Export all stats for persistence.
+
+        NOTE: this is an approximate, NON-ATOMIC snapshot. The three sections
+        below come from separate lock acquisitions (get_global_stats,
+        get_daily_summary, get_top_users), so a concurrent record() may
+        interleave between them and the sections can reflect slightly
+        different instants (e.g. global ``total_requests`` need not equal the
+        summed daily/top-user numbers). This is a reporting-consistency
+        caveat, not corruption, and is acceptable for this deprecated,
+        read-mostly module.
+        """
         return {
             "global": self.get_global_stats(),
             "daily_summary": self.get_daily_summary(30),

@@ -172,7 +172,18 @@ class IntentDetector:
             if max_score > 0:
                 intent_scores[intent] = (max_score, best_sub_cat or "", detected)
 
-        # Find highest scoring intent
+        # Find highest scoring intent.
+        #
+        # Tie-break contract (intentional, deterministic):
+        #   - Intra-intent: on equal scores, `best_sub_cat` keeps the FIRST
+        #     matching pattern listed in INTENT_PATTERNS (replaced only on
+        #     strict `score > max_score` above).
+        #   - Inter-intent: on equal top scores, `max(...)` returns the FIRST
+        #     key in INTENT_PATTERNS insertion order, i.e. the precedence
+        #     GREETING > QUESTION > COMMAND > ROLEPLAY > EMOTIONAL.
+        # Because routing depends on this ordering, the order of INTENT_PATTERNS
+        # (both the intent keys and the patterns within each intent) is a
+        # behavioral contract: reordering it can silently change classification.
         if not intent_scores:
             return IntentResult(Intent.CASUAL, 0.5)
 

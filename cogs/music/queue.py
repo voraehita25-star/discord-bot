@@ -97,7 +97,15 @@ class QueueManager:
         return count
 
     def shuffle_queue(self, guild_id: int) -> bool:
-        """Shuffle the queue. Returns True if shuffled."""
+        """Shuffle the queue. Returns True if shuffled.
+
+        Single-writer assumption (see ``toggle_loop``): the clear/extend
+        read-modify-write below is not guarded by ``_get_lock``. Callers
+        are expected to dispatch queue mutations sequentially per guild. A
+        concurrent ``get_next`` popleft interleaved with the clear/extend
+        could drop or duplicate tracks; route through ``_get_lock`` if
+        concurrent per-guild mutation ever becomes possible.
+        """
         import random
 
         queue = self.get_queue(guild_id)
@@ -111,7 +119,14 @@ class QueueManager:
         return True
 
     def remove_track(self, guild_id: int, position: int) -> dict[str, Any] | None:
-        """Remove a track by position (1-indexed). Returns removed track."""
+        """Remove a track by position (1-indexed). Returns removed track.
+
+        Single-writer assumption (see ``toggle_loop``): the index/del
+        read-modify-write below is not guarded by ``_get_lock``. Callers
+        are expected to dispatch queue mutations sequentially per guild;
+        wrap in ``_get_lock`` if concurrent per-guild mutation ever becomes
+        possible.
+        """
         queue = self.get_queue(guild_id)
         if 1 <= position <= len(queue):
             idx = position - 1
@@ -262,10 +277,14 @@ class QueueManager:
 
     async def load_queue(self, guild_id: int) -> bool:
         """Load queue from database. Returns True if loaded."""
-        # Hold the per-guild lock for the entire load so a concurrent
-        # save_queue can't race with us and partially overwrite. Without
-        # this, a save scheduled mid-load could land between the DB fetch
-        # and the deque assignment and torpedo state.
+        # Hold the per-guild lock for the entire load so the in-memory
+        # snapshot/assignment is serialised against save_queue's snapshot
+        # phase. NOTE: this only orders the in-memory state — it does NOT
+        # serialise against save_queue's DB write, which is intentionally
+        # issued AFTER save_queue releases this lock (see save_queue). A
+        # save that already snapshotted+released can therefore run its
+        # db.save_music_queue concurrently with the db.load_music_queue
+        # below; the lock makes no promise at the DB layer.
         async with self._get_lock(guild_id):
             if DB_AVAILABLE and db is not None:
                 queue = await db.load_music_queue(guild_id)
@@ -354,6 +373,15 @@ class QueueManager:
                     # the new state was persisted to DB — a crash between
                     # populating self.queues and deleting the file would
                     # otherwise lose the queue silently.
+                    #
+                    # The DB write and unlink below are intentionally awaited
+                    # while still holding the per-guild lock — unlike
+                    # save_queue, which releases before its slow I/O. This is
+                    # a one-time, per-guild migration on startup; holding the
+                    # lock keeps the populate/persist/delete sequence atomic
+                    # against a concurrent save_queue snapshot and is not on
+                    # the hot playback path, so the brief I/O stall is
+                    # acceptable.
                     if DB_AVAILABLE and db is not None:
                         try:
                             await db.save_music_queue(guild_id, valid_items)

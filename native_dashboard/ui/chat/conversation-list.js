@@ -116,6 +116,15 @@ export class ConversationList {
         const host = document.getElementById('chat-tags');
         if (!host || !conversation)
             return;
+        // Preserve any in-progress "add tag" entry across re-renders: the
+        // innerHTML swap below destroys the old #chat-tag-add element, which
+        // would otherwise drop a partially typed tag (and keyboard focus) if a
+        // re-render fires while the user is mid-typing.
+        const prevInput = document.getElementById('chat-tag-add');
+        const prevValue = prevInput?.value ?? '';
+        const prevHadFocus = prevInput !== null && document.activeElement === prevInput;
+        const prevSelStart = prevInput?.selectionStart ?? null;
+        const prevSelEnd = prevInput?.selectionEnd ?? null;
         const tags = conversation.tags ?? [];
         const chips = tags.map(t => `<span class="tag-chip" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}<button class="tag-remove" data-tag="${escapeHtml(t)}" aria-label="Remove tag ${escapeHtml(t)}">&times;</button></span>`).join('');
         host.innerHTML = chips +
@@ -136,6 +145,17 @@ export class ConversationList {
         // Add input — Enter commits, Esc cancels.
         const input = document.getElementById('chat-tag-add');
         if (input) {
+            // Restore the partially typed tag (and focus/caret) that the
+            // innerHTML swap above destroyed, so a re-render mid-typing is
+            // non-destructive.
+            if (prevValue)
+                input.value = prevValue;
+            if (prevHadFocus) {
+                input.focus();
+                if (prevSelStart !== null && prevSelEnd !== null) {
+                    input.setSelectionRange(prevSelStart, prevSelEnd);
+                }
+            }
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();

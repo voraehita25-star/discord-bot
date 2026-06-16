@@ -146,10 +146,27 @@ export class ImageAttachManager {
         fileInput?.addEventListener('change', () => {
             const files = fileInput.files;
             if (files) {
-                Array.from(files).forEach(file => {
-                    if (file.type.startsWith('image/')) {
-                        this.attach(file);
-                    } else if (documents && isDocumentFile(file)) {
+                // Split the batch up front so selecting more images than the
+                // cap allows emits ONE consolidated toast instead of one
+                // near-identical rejection per overflow file. attach() still
+                // enforces the cap defensively (drop/paste paths), so this is
+                // purely about not spamming the picker flow.
+                const picked = Array.from(files);
+                const imageFiles = picked.filter(f => f.type.startsWith('image/'));
+                const remaining = Math.max(
+                    0,
+                    MAX_ATTACHED_IMAGES - (this.images.length + this.pendingCount),
+                );
+                imageFiles.slice(0, remaining).forEach(file => this.attach(file));
+                if (imageFiles.length > remaining) {
+                    showToast(
+                        `Only ${remaining} more image${remaining === 1 ? '' : 's'} could be `
+                        + `attached (max ${MAX_ATTACHED_IMAGES}).`,
+                        { type: 'warning' },
+                    );
+                }
+                picked.forEach(file => {
+                    if (!file.type.startsWith('image/') && documents && isDocumentFile(file)) {
                         documents.attach(file);
                     }
                 });

@@ -152,13 +152,21 @@ window.addEventListener('beforeunload', () => {
 
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-        // Ctrl+1-6 for page navigation
-        if (e.ctrlKey && e.key >= '1' && e.key <= '6') {
-            const pages = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
-            const index = parseInt(e.key) - 1;
-            if (pages[index]) {
-                e.preventDefault();
-                switchPage(pages[index]);
+        // Ctrl+1-6 for page navigation. Key off e.code ('Digit1'..'Digit6') so
+        // the shortcut is layout-independent — on AZERTY and similar layouts the
+        // unmodified top-row keys emit symbols (&é"'(-) and e.key would not be a
+        // digit, silently breaking navigation. Fall back to e.key for engines
+        // that don't populate e.code.
+        if (e.ctrlKey) {
+            const codeMatch = /^Digit([1-6])$/.exec(e.code);
+            const digit = codeMatch ? codeMatch[1] : (e.key >= '1' && e.key <= '6' ? e.key : null);
+            if (digit) {
+                const pages = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
+                const index = parseInt(digit) - 1;
+                if (pages[index]) {
+                    e.preventDefault();
+                    switchPage(pages[index]);
+                }
             }
         }
 
@@ -834,11 +842,22 @@ async function updateStatus(): Promise<void> {
     const cachedDbStats = dataCache.get<DbStats>('dbStats');
 
     try {
-        // Parallel fetch
-        const [status, dbStats] = await Promise.all([
+        // Parallel fetch, settled independently: a transient rejection on one
+        // endpoint (IPC/Mutex contention) must not stall the other half for a
+        // whole tick. Fall back to the last cached value for a rejected half.
+        const [statusRes, dbStatsRes] = await Promise.allSettled([
             cachedStatus ?? invoke<BotStatus>('get_status'),
             cachedDbStats ?? invoke<DbStats>('get_db_stats')
         ]);
+
+        const status = statusRes.status === 'fulfilled' ? statusRes.value : cachedStatus;
+        const dbStats = dbStatsRes.status === 'fulfilled' ? dbStatsRes.value : cachedDbStats;
+        if (statusRes.status === 'rejected') {
+            console.error('Failed to fetch status:', statusRes.reason);
+        }
+        if (dbStatsRes.status === 'rejected') {
+            console.error('Failed to fetch db stats:', dbStatsRes.reason);
+        }
 
         // Either side can return null when the bot isn't running yet
         // (DB not initialized, status endpoint hasn't responded). Without
@@ -1168,12 +1187,15 @@ async function loadLogs(): Promise<void> {
         const fragment = document.createDocumentFragment();
 
         logs.forEach((line: string) => {
-            let level = 'info';
-            if (line.includes('ERROR')) level = 'error';
-            else if (line.includes('WARNING')) level = 'warning';
-            else if (line.includes('DEBUG')) level = 'debug';
+            // Anchor the level to a standalone token (the structured log-level
+            // column) rather than a whole-line substring match, so message text
+            // that incidentally contains a level word (e.g. an INFO line "no
+            // ERROR found") is neither mis-colored nor wrongly selected by the
+            // level filter. The first token wins, matching the column order.
+            const levelToken = /\b(ERROR|WARNING|DEBUG|INFO)\b/.exec(line)?.[1];
+            const level = levelToken ? levelToken.toLowerCase() : 'info';
 
-            if (filter === 'all' || line.includes(filter)) {
+            if (filter === 'all' || levelToken === filter) {
                 const div = document.createElement('div');
                 div.className = `log-line ${level}`;
                 div.textContent = line;
@@ -1888,7 +1910,17 @@ function closeCropModal(): void {
     const modal = document.getElementById('avatar-crop-modal');
     if (modal) modal.classList.remove('active');
 
-    // Clean up listeners using stored bound functions
+    // Clean up listeners using stored bound functions. Detach ALL five bound
+    // handlers and reset cropListenersAttached so the attach/detach set stays
+    // symmetric — leaving boundStartDrag/boundStartDragTouch non-null while
+    // resetting cropListenersAttached=false would silently skip re-detaching
+    // the crop-area mousedown/touchstart on the next open if that node were
+    // ever replaced. The crop-area handlers are removed via the live node.
+    const cropArea = document.getElementById('crop-area');
+    if (cropArea && boundStartDrag) cropArea.removeEventListener('mousedown', boundStartDrag);
+    if (cropArea && boundStartDragTouch) cropArea.removeEventListener('touchstart', boundStartDragTouch);
+    boundStartDrag = null;
+    boundStartDragTouch = null;
     if (boundOnDrag) {
         document.removeEventListener('mousemove', boundOnDrag);
         boundOnDrag = null;
@@ -1902,6 +1934,7 @@ function closeCropModal(): void {
         document.removeEventListener('touchmove', boundOnDragTouch);
         boundOnDragTouch = null;
     }
+    cropListenersAttached = false;
     // The Escape handler is bound once for the page lifetime (see
     // setupCropEventListeners) and self-guards on ``.active``, so there is
     // nothing to detach here.
@@ -2006,6 +2039,8 @@ function loadAllData(): void {
 // API Failover UI
 // ============================================================================
 
+let apiFailoverReadinessRequested = false;
+
 function initApiFailoverUI(): void {
     // Listen for failover status updates from chat-manager
     window.addEventListener('api-failover-status', ((e: CustomEvent) => {
@@ -2026,10 +2061,11 @@ function initApiFailoverUI(): void {
         }
     });
 
-    // Request initial status when chat connects
-    const origInitChat = (window as unknown as Record<string, unknown>)._apiFailoverRequested;
-    if (!origInitChat) {
-        (window as unknown as Record<string, unknown>)._apiFailoverRequested = true;
+    // Request initial status when chat connects. Module-scoped guard (was a
+    // window property) so a re-run after a WebView2 navigation can re-arm the
+    // readiness poll instead of being permanently suppressed by a stale global.
+    if (!apiFailoverReadinessRequested) {
+        apiFailoverReadinessRequested = true;
         // Poll for chatManager readiness. We extend the give-up window to 60s
         // because slow first connects (cold WS auth, dev tools attached, etc.)
         // can blow past the previous 30s ceiling and leave the failover panel

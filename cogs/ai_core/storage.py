@@ -22,10 +22,15 @@ def json_loads(data):
 
 
 def json_dumps(obj, **kwargs):
-    # orjson returns bytes, decode to str for compatibility
-    # Note: orjson does not support ensure_ascii/indent kwargs;
-    # use standard json if those are needed
-    if kwargs.get("indent") or kwargs.get("ensure_ascii") is False:
+    # orjson returns bytes, decode to str for compatibility.
+    # orjson.dumps() here honors NONE of stdlib json's kwargs (indent,
+    # ensure_ascii, sort_keys, default, separators, ...), so any kwargs at
+    # all must route to stdlib json — otherwise they'd be silently dropped
+    # and the output would diverge from json.dumps semantics. ``indent`` /
+    # ``ensure_ascii=False`` are the cases current callers hit; the broader
+    # ``if kwargs`` guard keeps a future caller passing sort_keys/default/etc.
+    # from being silently ignored.
+    if kwargs:
         return json.dumps(obj, **kwargs)
     return orjson.dumps(obj).decode("utf-8")
 
@@ -312,9 +317,15 @@ _post_replace_min_id: dict[int, int] = {}
 def invalidate_all_cache() -> None:
     """Invalidate all caches."""
     with _cache_lock:
-        # Bump generations for every cached channel so in-flight loads see
-        # the wipe (same staleness rule as the per-channel invalidation).
-        for cid in _history_cache:
+        # Bump generations for every channel so in-flight loads see the wipe
+        # (same staleness rule as the per-channel invalidation). Cover the
+        # UNION of _history_cache, _metadata_cache and _cache_generations
+        # keys — not just _history_cache: a channel that is currently
+        # uncached (never cached, or evicted by _enforce_cache_size_limit
+        # which also pops its generation) can still have a load_history() in
+        # flight that snapshotted its generation. Without bumping it here,
+        # that pre-wipe snapshot would be cached for up to CACHE_TTL.
+        for cid in set(_history_cache) | set(_metadata_cache) | set(_cache_generations):
             _cache_generations[cid] = _cache_generations.get(cid, 0) + 1
         _history_cache.clear()
         _metadata_cache.clear()
@@ -1062,9 +1073,12 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
             elif not isinstance(parts, list):
                 parts = []
 
+            # Keep whatever role string is stored, matching the DB loader path
+            # in load_history (which applies no role filter). Filtering to
+            # only user/model here made the JSON fallback silently shrink
+            # history relative to the DB backend for rows carrying a
+            # 'system'/'assistant'/legacy role.
             role = item.get("role", "user")
-            if role not in ("user", "model"):
-                continue
 
             history_item = {"role": role, "parts": parts}
 

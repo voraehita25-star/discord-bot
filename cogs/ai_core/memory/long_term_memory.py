@@ -287,7 +287,23 @@ class FactExtractor:
                     importance.value,
                 )
 
-        return facts
+        # De-dupe the extractor's own output so a single message can't emit two
+        # Facts with identical content. Overlapping identity/preference patterns
+        # (e.g. the two Thai name patterns above) can capture the same phrase
+        # twice; keep the first occurrence (earlier patterns carry the higher
+        # importance) and drop later identical-content copies. process_message's
+        # running-list dedup masked this for that one caller, but direct callers
+        # of extract_facts relied on the de-dup the docstring promised.
+        seen_contents: set[str] = set()
+        deduped: list[Fact] = []
+        for fact in facts:
+            content_key = fact.content.lower().strip()
+            if content_key in seen_contents:
+                continue
+            seen_contents.add(content_key)
+            deduped.append(fact)
+
+        return deduped
 
 
 class LongTermMemory:

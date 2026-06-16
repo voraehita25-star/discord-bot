@@ -753,8 +753,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     if thinking_enabled:
         mode_info.append("🧠 Thinking")
     # Gate the badge on the SAME composite condition as the actual injection
-    # (line 683) so the UI doesn't show "🔓 Unrestricted" when the env flag is
-    # unset and no unrestricted framing was injected.
+    # above (``if unrestricted_mode and allow_unrestricted:``) so the UI
+    # doesn't show "🔓 Unrestricted" when the env flag is unset and no
+    # unrestricted framing was injected.
     if unrestricted_mode and allow_unrestricted:
         mode_info.append("🔓 Unrestricted")
     if images:
@@ -1342,11 +1343,20 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     logger.error("❌ Retry after failover also failed: %s", retry_err)
         elif _FAILOVER_AVAILABLE:
             await _api_failover.record_failure(e)
+        # The SDK's client-side timeout (anthropic.APITimeoutError) is NOT a
+        # subclass of builtin TimeoutError, so a timeout that exhausts the retry
+        # loop and re-raises here never reaches the dedicated `except TimeoutError`
+        # branch above — surface the same friendly timeout message rather than the
+        # generic "internal error" one.
+        if isinstance(e, anthropic.APITimeoutError):
+            error_message = "Response timed out. Please try again."
+        else:
+            error_message = "An internal error occurred while processing your request."
         try:
             await ws.send_json(
                 {
                     "type": "error",
-                    "message": "An internal error occurred while processing your request.",
+                    "message": error_message,
                     "conversation_id": conversation_id,
                 }
             )
@@ -1790,11 +1800,19 @@ async def handle_ai_edit_message_claude(
             return
         if _FAILOVER_AVAILABLE:
             await _api_failover.record_failure(e)
+        # anthropic.APITimeoutError is not a builtin TimeoutError subclass, so a
+        # timeout re-raised after retry exhaustion lands here rather than in the
+        # dedicated `except TimeoutError` branch above — surface the same friendly
+        # timeout message instead of the generic "Failed to edit message."
+        if isinstance(e, anthropic.APITimeoutError):
+            edit_error_message = "Edit timed out. Please try again."
+        else:
+            edit_error_message = "Failed to edit message."
         try:
             await ws.send_json(
                 {
                     "type": "error",
-                    "message": "Failed to edit message.",
+                    "message": edit_error_message,
                     "conversation_id": conversation_id,
                 }
             )

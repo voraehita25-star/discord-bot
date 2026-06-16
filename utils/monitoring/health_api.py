@@ -753,11 +753,19 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             # traffic. is_healthy() also takes the data lock so we don't
             # race with update_from_bot.
             if health_data.is_healthy():
+                # Snapshot the gauges under the data lock, matching the
+                # discipline in /metrics and to_dict(). is_healthy()'s own
+                # lock only covers the readiness DECISION; these reads were
+                # off-lock and could observe a torn/stale write from
+                # update_from_bot() on the event-loop thread.
+                with health_data._data_lock:
+                    latency_ms = health_data.latency_ms
+                    guild_count = health_data.guild_count
                 self._send_json_response(
                     {
                         "status": "ready",
-                        "latency_ms": round(health_data.latency_ms, 2),
-                        "guilds": health_data.guild_count,
+                        "latency_ms": round(latency_ms, 2),
+                        "guilds": guild_count,
                     }
                 )
             else:
@@ -791,13 +799,19 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 msg_ct = health_data.message_count
                 cmd_ct = health_data.command_count
                 err_ct = health_data.error_count
+            # Snapshot the gauges under the data lock too, matching /metrics
+            # and to_dict() — these were read off-lock while update_from_bot()
+            # writes them on the event-loop thread.
+            with health_data._data_lock:
+                guild_count = health_data.guild_count
+                latency_ms = health_data.latency_ms
             data = {
                 "uptime": health_data.get_uptime_str(),
                 "messages": msg_ct,
                 "commands": cmd_ct,
                 "errors": err_ct,
-                "guilds": health_data.guild_count,
-                "latency_ms": round(health_data.latency_ms, 2),
+                "guilds": guild_count,
+                "latency_ms": round(latency_ms, 2),
             }
             stats_html = self._generate_stats_html(data)
             self._send_html_response(stats_html)
@@ -808,14 +822,17 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                 msg_ct = health_data.message_count
                 cmd_ct = health_data.command_count
                 err_ct = health_data.error_count
+            with health_data._data_lock:
+                guild_count = health_data.guild_count
+                latency_ms = health_data.latency_ms
             self._send_json_response(
                 {
                     "uptime": health_data.get_uptime_str(),
                     "messages": msg_ct,
                     "commands": cmd_ct,
                     "errors": err_ct,
-                    "guilds": health_data.guild_count,
-                    "latency_ms": round(health_data.latency_ms, 2),
+                    "guilds": guild_count,
+                    "latency_ms": round(latency_ms, 2),
                 }
             )
 
@@ -932,13 +949,20 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             "checks": {},
         }
 
-        # 1. Bot status check
+        # 1. Bot status check. Snapshot under the data lock (single read of
+        # each field) so we don't report is_ready=true with a stale latency/
+        # guild value, or tear a multi-byte read while update_from_bot()
+        # writes on the event-loop thread — same discipline as /metrics.
+        with health_data._data_lock:
+            is_ready = health_data.is_ready
+            latency_ms = health_data.latency_ms
+            guild_count = health_data.guild_count
         checks["checks"]["bot"] = {
-            "status": "ok" if health_data.is_ready else "not_ready",
-            "latency_ms": round(health_data.latency_ms, 2),
-            "guilds": health_data.guild_count,
+            "status": "ok" if is_ready else "not_ready",
+            "latency_ms": round(latency_ms, 2),
+            "guilds": guild_count,
         }
-        if not health_data.is_ready:
+        if not is_ready:
             checks["healthy"] = False
 
         # 2. Database check

@@ -503,9 +503,6 @@ class SummaryArchiver:
         if not messages:
             return None
 
-        # Extract key information
-        all_text = " ".join(m["content"] for m in messages if m["content"])
-
         # Simple extractive approach:
         # Take first sentence from user, key points
         user_messages = [m["content"] for m in messages if m["role"] == "user" and m["content"]]
@@ -523,8 +520,17 @@ class SummaryArchiver:
             last_user = user_messages[-1][:150]
             key_sentences.append(f"หัวข้อล่าสุด: {last_user}")
 
-        # Extract topics using simple keyword extraction
-        topics = self._extract_topics(all_text)
+        # Topics reflect the *user's* subject matter, not AI verbiage: on a
+        # Thai-first roleplay bot the assistant replies are far longer than the
+        # user prompts, so joining both roles let high-frequency assistant prose
+        # dominate the keyword counts. Restrict the topic source to user turns.
+        # Cap the joined text before tokenizing: _extract_topics runs pythainlp
+        # word_tokenize, which for up to MAX_MESSAGES_PER_CONSOLIDATION (500)
+        # long turns would otherwise segment hundreds of KB of Thai in one shot.
+        # Offload that synchronous segmentation to a thread so it can't block the
+        # event loop (incl. the Discord heartbeat) while we hold the channel lock.
+        topic_source = " ".join(user_messages)[:20000]
+        topics = await asyncio.to_thread(self._extract_topics, topic_source)
 
         summary_text = " | ".join(key_sentences)
         if len(summary_text) > self.MAX_SUMMARY_LENGTH:

@@ -642,6 +642,34 @@ _load_persisted_sessions()
 _CONVERSATION_LOCKS: dict[str, asyncio.Lock] = {}
 _MAX_TRACKED_LOCKS = 500  # cap parallel to _MAX_TRACKED_SESSIONS
 
+# One-time guard so the _waiters-missing warning below isn't spammed every turn.
+_WARNED_LOCK_WAITERS_MISSING = False
+
+
+def _lock_has_pending_waiters(lock: asyncio.Lock) -> bool:
+    """True if ``lock`` has coroutines queued waiting to acquire it.
+
+    Reads the private ``asyncio.Lock._waiters`` attribute (None when empty, a
+    deque when populated on CPython 3.14). It is private, so a future asyncio
+    rename/removal would make ``getattr(..., None)`` silently report "no
+    waiters" and let the eviction paths pop a lock with pending waiters —
+    reintroducing the parallel-``--resume`` race they exist to prevent. Mirror
+    the stdout._limit fallback (see ``consume_stdout``): if the attribute is
+    gone, log ONCE so that fail-open degradation is observable, and treat the
+    lock as having waiters (fail-safe: never evict when we can't be sure).
+    """
+    if not hasattr(lock, "_waiters"):
+        global _WARNED_LOCK_WAITERS_MISSING
+        if not _WARNED_LOCK_WAITERS_MISSING:
+            _WARNED_LOCK_WAITERS_MISSING = True
+            logger.warning(
+                "asyncio.Lock._waiters attribute is missing; lock eviction can no "
+                "longer detect queued waiters and treats every lock as held to "
+                "avoid reintroducing the parallel --resume race"
+            )
+        return True
+    return bool(getattr(lock, "_waiters", None))
+
 
 def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
     """Return (creating if needed) the per-conversation send lock.
@@ -670,12 +698,12 @@ def _get_conversation_lock(conversation_id: str) -> asyncio.Lock:
             # and two `claude -p --resume` runs race on the same session
             # (exactly what this lock exists to prevent). Treat a lock with
             # queued waiters as held.
-            if old_lock.locked() or getattr(old_lock, "_waiters", None):
+            if old_lock.locked() or _lock_has_pending_waiters(old_lock):
                 continue
             # asyncio is single-threaded and no await happens between the
             # items() snapshot and pop(), so pop() always succeeds here.
             popped = _CONVERSATION_LOCKS.pop(old_id)
-            if popped.locked() or getattr(popped, "_waiters", None):
+            if popped.locked() or _lock_has_pending_waiters(popped):
                 # Defensive: lock state could change if a coroutine
                 # acquired it during dict iteration in the same step.
                 # Put it back and try another.
@@ -888,7 +916,7 @@ def reset_session(conversation_id: str) -> None:
     # reads False while a waiter is still pending), and popping then gives
     # the next caller a fresh Lock — two --resume runs racing the session.
     lock = _CONVERSATION_LOCKS.get(conversation_id)
-    if lock is not None and not lock.locked() and not getattr(lock, "_waiters", None):
+    if lock is not None and not lock.locked() and not _lock_has_pending_waiters(lock):
         _CONVERSATION_LOCKS.pop(conversation_id, None)
 
 
@@ -1053,10 +1081,14 @@ def _save_inline_documents(
         safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)[:80] or f"doc_{idx}{ext}"
         path = target_dir / f"{timestamp}_{rand_suffix}_{idx}_{safe_name}"
 
-        if kind == "binary" or is_binary_ext:
-            # Binary: expect data URL format
-            if "," not in data_field or not data_field.startswith("data:"):
-                continue
+        # Route by the data shape, not solely by kind/extension: a file whose
+        # extension or `kind` says "binary" but whose `data` is a plain UTF-8
+        # string (a frontend mislabel) must NOT be dropped — treat it as text.
+        # Conversely a `data:` URL is always decoded as base64 bytes. Keying the
+        # branch off the actual payload (data URL → bytes, else → text) closes
+        # the silent-drop gap while the extension allowlist still bounds writes.
+        is_data_url = data_field.startswith("data:") and "," in data_field
+        if (kind == "binary" or is_binary_ext) and is_data_url:
             _header, _, payload = data_field.partition(",")
             try:
                 decoded = base64.b64decode(payload, validate=True)

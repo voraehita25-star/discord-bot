@@ -50,12 +50,17 @@ pub fn resize_image(
         .map_err(|e| MediaError::Encode(format!("Failed to detect image format: {}", e)))?;
     match reader.into_dimensions() {
         Ok((w, h)) => {
-            if (w as u64) * (h as u64) > MAX_PIXEL_COUNT {
+            // Mirror the checked_mul style used by lib.rs check_bomb_dimensions and the
+            // Fill intermediate guard below. Both operands are u32 widened to u64 so the
+            // product cannot actually overflow u64 — checked_mul is for stylistic
+            // consistency, not a live overflow risk.
+            let pixels = (w as u64).checked_mul(h as u64);
+            if pixels.is_none_or(|p| p > MAX_PIXEL_COUNT) {
                 return Err(MediaError::Encode(format!(
                     "Image too large: {}x{} ({} MP, max {} MP)",
                     w,
                     h,
-                    (w as u64 * h as u64) / 1_000_000,
+                    pixels.unwrap_or(u64::MAX) / 1_000_000,
                     MAX_PIXEL_COUNT / 1_000_000
                 )));
             }

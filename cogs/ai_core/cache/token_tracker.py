@@ -499,9 +499,17 @@ class TokenTracker:
             # Drop the batch and log — re-queueing risks an infinite loop
             # if the underlying DB problem is sticky (disk full, schema
             # mismatch). Quota lag is preferable to a head-of-line block.
+            # Log the dropped token totals at WARNING so the lost analytics
+            # rows can be reconciled against provider billing later (this is
+            # analytics-only now that quota enforcement was removed).
+            dropped_input = sum(u.input_tokens for u in batch)
+            dropped_output = sum(u.output_tokens for u in batch)
             self.logger.warning(
-                "Failed to persist token usage batch (%d records): %s",
+                "Failed to persist token usage batch (%d records, "
+                "in=%d out=%d tokens dropped): %s",
                 len(batch),
+                dropped_input,
+                dropped_output,
                 e,
             )
 

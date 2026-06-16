@@ -258,7 +258,11 @@ except ImportError:
 # CONSTANTS
 # =============================================================================
 
-PID_FILE = "bot.pid"
+# Anchor to PROJECT_ROOT (like bot_manager.py) so the PID file is read,
+# written and deleted at a stable location regardless of the caller's CWD.
+# main() does os.chdir(PROJECT_ROOT), but is_bot_running()/BotRestarter may
+# be exercised by tests or other tools without that chdir.
+PID_FILE = str(PROJECT_ROOT / "bot.pid")
 CONFIG_FILE = ".devwatcher.json"
 
 
@@ -594,64 +598,76 @@ if WATCHDOG_AVAILABLE:
 
         def check_for_crash(self) -> bool:
             """Check if bot has crashed and handle auto-retry."""
+            # Decide what to do under the lock, but defer any retry sleep +
+            # respawn to OUTSIDE the lock — holding _lock across the
+            # crash_retry_delay sleep would block the watchdog observer thread
+            # (which also needs _lock for hash bookkeeping) for the whole retry
+            # window. This mirrors start_bot()'s sleep-outside-lock design.
+            should_retry = False
             with self._lock:
                 if not self.process:
                     return False
 
                 return_code = self.process.poll()
-                if return_code is not None:
-                    # Bot has exited
-                    if return_code != 0:
-                        self.stats.crash_count += 1
-                        self.consecutive_crashes += 1
-                        self.logger.warning("Bot crashed with code %d", return_code)
+                if return_code is None:
+                    return False
 
-                        print()
+                # Bot has exited.
+                if return_code == 0:
+                    return False
+
+                self.stats.crash_count += 1
+                self.consecutive_crashes += 1
+                self.logger.warning("Bot crashed with code %d", return_code)
+
+                print()
+                print_status(f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]")
+
+                # Auto-retry if enabled
+                if self.config.auto_retry_on_crash:
+                    if self.consecutive_crashes <= self.config.max_crash_retries:
                         print_status(
-                            f"Bot crashed! (exit code: {return_code})", Colors.RED, "[CRASH]"
+                            f"Auto-retry in {self.config.crash_retry_delay}s "
+                            f"({self.consecutive_crashes}/{self.config.max_crash_retries})",
+                            Colors.YELLOW,
+                            "[RETRY]",
                         )
+                        should_retry = True
+                    else:
+                        print_status(
+                            f"Max retries ({self.config.max_crash_retries}) exceeded!",
+                            Colors.RED,
+                            "[STOP]",
+                        )
+                        print_status(
+                            "Fix the error and save a file to restart",
+                            Colors.YELLOW,
+                            "  └─",
+                        )
+                        # Clear the dead process handle so subsequent
+                        # check_for_crash() ticks hit the
+                        # `if not self.process: return False` guard and
+                        # stop re-detecting the same crash every 0.5s
+                        # (which otherwise floods the log and grows
+                        # crash_count without bound). A file-save restart
+                        # reassigns self.process and resets the counter.
+                        self.process = None
+                else:
+                    # Auto-retry disabled: clear the dead handle too, or
+                    # every 0.5s tick re-enters this branch on the same
+                    # dead process — flooding the log with [CRASH] and
+                    # growing crash_count/consecutive_crashes without
+                    # bound. A file-save restart reassigns self.process.
+                    self.process = None
 
-                        # Auto-retry if enabled
-                        if self.config.auto_retry_on_crash:
-                            if self.consecutive_crashes <= self.config.max_crash_retries:
-                                print_status(
-                                    f"Auto-retry in {self.config.crash_retry_delay}s "
-                                    f"({self.consecutive_crashes}/{self.config.max_crash_retries})",
-                                    Colors.YELLOW,
-                                    "[RETRY]",
-                                )
-                                time.sleep(self.config.crash_retry_delay)
-                                self._start_bot_unlocked("Auto-retry after crash")
-                            else:
-                                print_status(
-                                    f"Max retries ({self.config.max_crash_retries}) exceeded!",
-                                    Colors.RED,
-                                    "[STOP]",
-                                )
-                                print_status(
-                                    "Fix the error and save a file to restart",
-                                    Colors.YELLOW,
-                                    "  └─",
-                                )
-                                # Clear the dead process handle so subsequent
-                                # check_for_crash() ticks hit the
-                                # `if not self.process: return False` guard and
-                                # stop re-detecting the same crash every 0.5s
-                                # (which otherwise floods the log and grows
-                                # crash_count without bound). A file-save restart
-                                # reassigns self.process and resets the counter.
-                                self.process = None
-                        else:
-                            # Auto-retry disabled: clear the dead handle too, or
-                            # every 0.5s tick re-enters this branch on the same
-                            # dead process — flooding the log with [CRASH] and
-                            # growing crash_count/consecutive_crashes without
-                            # bound. A file-save restart reassigns self.process.
-                            self.process = None
+            if should_retry:
+                # Sleep OUTSIDE the lock so the observer thread isn't stalled
+                # for crash_retry_delay, then re-acquire to respawn.
+                time.sleep(self.config.crash_retry_delay)
+                with self._lock:
+                    self._start_bot_unlocked("Auto-retry after crash")
 
-                        return True
-
-                return False
+            return True
 
         def on_modified(self, event):
             self._handle_change(event)
@@ -993,7 +1009,13 @@ def main():
             except subprocess.TimeoutExpired:
                 logger.warning("Process did not exit after kill()")
         except Exception as final_stop_err:
-            logger.debug("Error during final shutdown (ignored): %s", final_stop_err)
+            logger.debug("Error during final shutdown (will force kill): %s", final_stop_err)
+            # wait() raised something other than TimeoutExpired (e.g. an
+            # OSError from the process API). Still attempt a force-kill so a
+            # hung child can't survive the watcher exit — mirrors the
+            # defensive force-kill in _start_bot_unlocked's stop block.
+            with contextlib.suppress(Exception):
+                event_handler.process.kill()
 
     observer.join()
 

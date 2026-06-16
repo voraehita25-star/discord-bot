@@ -233,7 +233,11 @@ class LocalizedMessages:
         if key.startswith("_"):
             raise AttributeError(key)
         if key not in MESSAGES:
+            # Honor attribute-protocol semantics: hasattr() should be False and
+            # getattr(obj, key, default) should fall back to its default for
+            # unknown keys. Use get() for explicit placeholder lookups.
             logger.warning("Localization key not found: %s", key)
+            raise AttributeError(key)
         return self.get(key)
 
 

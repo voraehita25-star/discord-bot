@@ -89,24 +89,30 @@ def main() -> int:
                     print(f"  SKIP   symlink dir {entry.name} -> {entry.resolve()}")
                     continue
                 print(f"  DELETE dir {entry.name}/")
-                if apply:
-                    # shutil.rmtree follows symlinks-to-dirs by default on
-                    # POSIX, so a symlinked subdirectory inside `entry`
-                    # could let an attacker (or a stray symlink) delete
-                    # files outside our workdir. Walk bottom-up with
-                    # followlinks=False instead, unlinking only files
-                    # and rmdir'ing only real directories.
-                    for root, dirs, files in os.walk(entry, topdown=False, followlinks=False):
-                        for name in files:
-                            full_file = os.path.join(root, name)
-                            try:
-                                deleted_bytes += Path(full_file).stat().st_size
-                            except OSError:
-                                pass
+                # shutil.rmtree follows symlinks-to-dirs by default on
+                # POSIX, so a symlinked subdirectory inside `entry`
+                # could let an attacker (or a stray symlink) delete
+                # files outside our workdir. Walk bottom-up with
+                # followlinks=False instead, unlinking only files
+                # and rmdir'ing only real directories.
+                #
+                # Sum file sizes regardless of `apply` so the dry-run "freed
+                # MB" estimate includes directory trees, matching the
+                # top-level jsonl and stray-file paths; only the destructive
+                # unlink/rmdir stays behind the `if apply:` guard.
+                for root, dirs, files in os.walk(entry, topdown=False, followlinks=False):
+                    for name in files:
+                        full_file = os.path.join(root, name)
+                        try:
+                            deleted_bytes += Path(full_file).stat().st_size
+                        except OSError:
+                            pass
+                        if apply:
                             try:
                                 os.unlink(full_file)
                             except OSError:
                                 pass
+                    if apply:
                         for name in dirs:
                             full = os.path.join(root, name)
                             try:
@@ -121,6 +127,7 @@ def main() -> int:
                                     os.rmdir(full)
                             except OSError:
                                 pass
+                if apply:
                     try:
                         os.rmdir(entry)
                     except OSError:

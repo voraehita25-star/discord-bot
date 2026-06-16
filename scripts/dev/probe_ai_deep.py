@@ -168,24 +168,33 @@ async def probe_long_term_memory_cycle() -> None:
             mention_count=1,
         )
         # _store_fact in cache mode
+        stored = False
         if hasattr(lt, "_store_fact"):
             await lt._store_fact(f)
+            stored = True
         elif hasattr(lt, "store_fact"):
             await lt.store_fact(f)
+            stored = True
+        check(
+            "a store method (_store_fact/store_fact) is available",
+            stored,
+            "neither _store_fact nor store_fact found",
+        )
+        if not stored:
+            return
 
         facts = await lt.get_user_facts(999)
         check(
             "get_user_facts returns list (cache fallback)",
             isinstance(facts, list),
         )
-        # If the fact was stored, it should appear
-        if facts:
-            contents = [getattr(x, "content", "") for x in facts]
-            check(
-                "stored fact retrievable from cache",
-                "loves pizza" in contents,
-                f"got: {contents}",
-            )
+        # The stored fact must be retrievable from the in-memory cache.
+        contents = [getattr(x, "content", "") for x in facts]
+        check(
+            "stored fact retrievable from cache",
+            "loves pizza" in contents,
+            f"got: {contents}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -300,12 +309,16 @@ async def probe_tool_executor_permission() -> None:
         display_name = "user"
         guild_permissions = type("P", (), {"administrator": False})()
 
-    result = await execute_tool_call(
-        object(),
-        _DummyChannel(),
-        _NonAdmin(),
-        SimpleNamespace(name="create_text_channel", args={"name": "test"}),
-    )
+    try:
+        result = await execute_tool_call(
+            object(),
+            _DummyChannel(),
+            _NonAdmin(),
+            SimpleNamespace(name="create_text_channel", args={"name": "test"}),
+        )
+    except (AttributeError, TypeError) as e:
+        check("non-admin user rejected with permission denied", False, f"raised: {e}")
+        return
     check(
         "non-admin user rejected with permission denied",
         isinstance(result, str) and ("Permission denied" in result or "Admin" in result),

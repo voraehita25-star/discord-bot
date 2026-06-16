@@ -24,6 +24,36 @@ except ImportError:
     logger.warning("⚠️ Sentry SDK not installed - error tracking disabled")
 
 
+# Maximum recursion depth for the deep redactor. Sentry breadcrumb/event
+# payloads are shallow in practice; a small cap bounds work and prevents
+# pathological/cyclic structures from stalling the before_send hook.
+_REDACT_MAX_DEPTH = 6
+
+
+def _deep_redact(value: Any, redact_fn: Callable[[str], str], _depth: int = 0) -> Any:
+    """Apply ``redact_fn`` to every string leaf inside nested dicts/lists.
+
+    Defense-in-depth: the shallow scrubbers only redacted top-level string
+    values, so a secret nested under e.g. ``data={'request': {'headers':
+    {'Authorization': '...'}}}`` would pass through. This walks dict values
+    and list/tuple items up to ``_REDACT_MAX_DEPTH`` and redacts string
+    leaves in place; non-string, non-container leaves are returned unchanged.
+    """
+    if _depth >= _REDACT_MAX_DEPTH:
+        return value
+    if isinstance(value, str):
+        return redact_fn(value)
+    if isinstance(value, dict):
+        for k, v in list(value.items()):
+            value[k] = _deep_redact(v, redact_fn, _depth + 1)
+        return value
+    if isinstance(value, list):
+        return [_deep_redact(item, redact_fn, _depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_deep_redact(item, redact_fn, _depth + 1) for item in value)
+    return value
+
+
 def init_sentry(
     dsn: str | None = None,
     environment: str = "production",
@@ -103,9 +133,7 @@ def init_sentry(
                     crumb["message"] = _redact_sensitive(msg)
                 data = crumb.get("data")
                 if isinstance(data, dict):
-                    for k, v in list(data.items()):
-                        if isinstance(v, str):
-                            data[k] = _redact_sensitive(v)
+                    _deep_redact(data, _redact_sensitive)
             except Exception:
                 # Never let scrubbing crash the client — drop the crumb instead.
                 # Log first (debug, below the WARNING breadcrumb level so it
@@ -146,9 +174,7 @@ def init_sentry(
                             ]
                     extra = event.get("extra")
                     if isinstance(extra, dict):
-                        for k, v in list(extra.items()):
-                            if isinstance(v, str):
-                                extra[k] = _redact_sensitive(v)
+                        _deep_redact(extra, _redact_sensitive)
 
                 def _scrub_stack(stack: dict[str, Any]) -> None:
                     frames = stack.get("frames") or []
@@ -259,8 +285,8 @@ def capture_exception(
                 except Exception:
                     _redact = None
                 for key, value in context.items():
-                    if _redact is not None and isinstance(value, str):
-                        value = _redact(value)
+                    if _redact is not None:
+                        value = _deep_redact(value, _redact)
                     scope.set_extra(key, value)
 
             return sentry_sdk.capture_exception(error)
@@ -298,8 +324,8 @@ def capture_message(
                 except Exception:
                     _redact = None
                 for key, value in context.items():
-                    if _redact is not None and isinstance(value, str):
-                        value = _redact(value)
+                    if _redact is not None:
+                        value = _deep_redact(value, _redact)
                     scope.set_extra(key, value)
 
             return sentry_sdk.capture_message(message, level=level)  # type: ignore[arg-type]

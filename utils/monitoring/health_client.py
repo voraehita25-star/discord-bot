@@ -56,9 +56,19 @@ class HealthAPIClient:
 
     Usage:
         client = HealthAPIClient()
+        await client.connect()  # REQUIRED before any operation
         await client.push_counter("requests", 1, endpoint="/api")
         await client.push_histogram("response_time", 0.5, endpoint="/api")
         status = await client.get_health()
+
+    Note: ``connect()`` must run before get_health/is_ready/push_* — it opens
+    the session and runs the first _check_service(), which sets
+    _service_available. Until then _service_available is None (falsy), so
+    get_health() returns ``{"status": "unknown"}`` and pushed metrics buffer
+    without ever being delivered. The module-level helpers
+    (push_request_metric, get_health_status, ...) obtain the client via
+    get_health_client(), which calls connect() for you; only direct
+    construction needs the explicit connect().
     """
 
     def __init__(self, base_url: str | None = None):

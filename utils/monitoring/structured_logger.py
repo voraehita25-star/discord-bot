@@ -24,6 +24,7 @@ import functools
 import json
 import logging
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -178,8 +179,12 @@ class StructuredFormatter(logging.Formatter):
                 log_entry["data"] = {}
             log_entry["data"].update(extra_attrs)
 
-        # Add exception info if present
-        if record.exc_info:
+        # Add exception info if present. Guard against a non-(type, value, tb)
+        # exc_info — the stdlib pipeline always normalises to a 3-tuple before
+        # a formatter runs, but a manually-built LogRecord could set a bare
+        # exception or True, which would raise on indexing. Mirrors the
+        # defensive coercion used for request_id below.
+        if record.exc_info and isinstance(record.exc_info, tuple) and len(record.exc_info) == 3:
             log_entry["exception"] = {
                 "type": record.exc_info[0].__name__ if record.exc_info[0] else None,
                 "message": str(record.exc_info[1]) if record.exc_info[1] else None,
@@ -436,6 +441,12 @@ class PerformanceTimer:
         self._max_entries = max_entries
         self._current_step: str | None = None
         self._start_time: float = 0
+        # global_timer is a module-level singleton that may be exercised from
+        # multiple OS threads. Guard the _timings dict so a concurrent
+        # check-then-insert can't drop a deque and iteration in
+        # get_all_timings() can't hit "dictionary changed size during
+        # iteration" while measure() inserts a new key.
+        self._lock = threading.Lock()
 
     @contextmanager
     def measure(self, step_name: str):
@@ -445,37 +456,42 @@ class PerformanceTimer:
             yield
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
-            if step_name not in self._timings:
-                self._timings[step_name] = collections.deque(maxlen=self._max_entries)
-            self._timings[step_name].append(duration_ms)
+            with self._lock:
+                if step_name not in self._timings:
+                    self._timings[step_name] = collections.deque(maxlen=self._max_entries)
+                self._timings[step_name].append(duration_ms)
 
     def get_timing(self, step_name: str) -> float | None:
         """Get the last timing for a step."""
-        timings: collections.deque[float] | list[float] = self._timings.get(step_name, [])
-        return timings[-1] if timings else None
+        with self._lock:
+            timings: collections.deque[float] | list[float] = self._timings.get(step_name, [])
+            return timings[-1] if timings else None
 
     def get_average(self, step_name: str) -> float | None:
         """Get average timing for a step."""
-        timings: collections.deque[float] | list[float] = self._timings.get(step_name, [])
-        return sum(timings) / len(timings) if timings else None
+        with self._lock:
+            timings: collections.deque[float] | list[float] = self._timings.get(step_name, [])
+            return sum(timings) / len(timings) if timings else None
 
     def get_all_timings(self) -> dict[str, dict[str, float]]:
         """Get statistics for all recorded timings."""
         stats = {}
-        for name, times in self._timings.items():
-            if times:
-                stats[name] = {
-                    "count": len(times),
-                    "avg_ms": sum(times) / len(times),
-                    "min_ms": min(times),
-                    "max_ms": max(times),
-                    "last_ms": times[-1],
-                }
+        with self._lock:
+            for name, times in self._timings.items():
+                if times:
+                    stats[name] = {
+                        "count": len(times),
+                        "avg_ms": sum(times) / len(times),
+                        "min_ms": min(times),
+                        "max_ms": max(times),
+                        "last_ms": times[-1],
+                    }
         return stats
 
     def clear(self) -> None:
         """Clear all recorded timings."""
-        self._timings.clear()
+        with self._lock:
+            self._timings.clear()
 
 
 def timed(logger: StructuredLogger | None = None):

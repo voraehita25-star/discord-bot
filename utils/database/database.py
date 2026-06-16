@@ -283,6 +283,17 @@ class Database:
                 self._dashboard_export_pending.discard(conversation_id)
 
         try:
+            # Share the same concurrent-task budget as _schedule_export: both
+            # paths add to self._export_tasks, so without this guard a burst of
+            # dashboard exports across many conversation_ids could push the set
+            # past 20 and starve the AI-history path's create-task guard.
+            if len(self._export_tasks) >= 20:
+                logger.warning(
+                    "Too many pending export tasks (%d), skipping dashboard export",
+                    len(self._export_tasks),
+                )
+                self._dashboard_export_pending.discard(conversation_id)
+                return
             task = asyncio.create_task(do_export())
             self._export_tasks.add(task)
             task.add_done_callback(self._export_tasks.discard)
@@ -1332,9 +1343,16 @@ class Database:
         cleanly and prevent the event loop from hanging.
         """
         # Cancel the periodic WAL-checkpoint task so it cannot re-acquire a
-        # connection against the torn-down pool after we close it.
+        # connection against the torn-down pool after we close it. Await it
+        # (suppressing CancelledError) BEFORE draining the pool so a checkpoint
+        # caught mid-write fully unwinds — releasing its semaphore slot and
+        # pooled connection — instead of being abandoned pending, which can
+        # emit "Task was destroyed but it is pending". Mirrors
+        # stop_background_tasks.
         if self._checkpoint_task is not None and not self._checkpoint_task.done():
             self._checkpoint_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._checkpoint_task
         pool = self._conn_pool
         if pool is not None:
             closed = 0
@@ -2853,6 +2871,7 @@ class Database:
                     "UPDATE dashboard_messages SET content = ? WHERE id = ?",
                     (content, message_id),
                 )
+            conv_to_export: str | None = None
             if cursor.rowcount > 0:
                 # Update conversation's updated_at (UTC via CURRENT_TIMESTAMP for consistency)
                 row = await (
@@ -2862,11 +2881,16 @@ class Database:
                     )
                 ).fetchone()
                 if row:
+                    conv_to_export = row[0]
                     await conn.execute(
                         "UPDATE dashboard_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (row[0],),
                     )
-            return bool(cursor.rowcount > 0)
+        # Mirror the AI-history path: refresh the on-disk per-conversation JSON
+        # so dashboard_chats/<id>.json doesn't diverge from the DB after an edit.
+        if conv_to_export is not None:
+            self._schedule_dashboard_export(conv_to_export)
+        return bool(cursor.rowcount > 0)
 
     async def update_dashboard_message_pin(self, message_id: int, pinned: bool) -> bool:
         """Pin or unpin a dashboard message. Returns True if the row was updated."""
@@ -2875,7 +2899,20 @@ class Database:
                 "UPDATE dashboard_messages SET is_pinned = ? WHERE id = ?",
                 (1 if pinned else 0, message_id),
             )
-            return bool(cursor.rowcount > 0)
+            conv_to_export: str | None = None
+            if cursor.rowcount > 0:
+                row = await (
+                    await conn.execute(
+                        "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                        (message_id,),
+                    )
+                ).fetchone()
+                if row:
+                    conv_to_export = row[0]
+        # Refresh the per-conversation JSON so the pin state persists on disk.
+        if conv_to_export is not None:
+            self._schedule_dashboard_export(conv_to_export)
+        return bool(cursor.rowcount > 0)
 
     # ------------------------------------------------------------------
     # Message "liked" flag (#20b — lightweight per-message reaction).
@@ -2889,7 +2926,20 @@ class Database:
                 "UPDATE dashboard_messages SET liked = ? WHERE id = ?",
                 (1 if liked else 0, message_id),
             )
-            return bool(cursor.rowcount > 0)
+            conv_to_export: str | None = None
+            if cursor.rowcount > 0:
+                row = await (
+                    await conn.execute(
+                        "SELECT conversation_id FROM dashboard_messages WHERE id = ?",
+                        (message_id,),
+                    )
+                ).fetchone()
+                if row:
+                    conv_to_export = row[0]
+        # Refresh the per-conversation JSON so the liked state persists on disk.
+        if conv_to_export is not None:
+            self._schedule_dashboard_export(conv_to_export)
+        return bool(cursor.rowcount > 0)
 
     # ------------------------------------------------------------------
     # Per-conversation tags (#22 — many-to-many).
@@ -2975,7 +3025,9 @@ class Database:
                 "UPDATE dashboard_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (conv_id,),
             )
-            return conv_id  # type: ignore[no-any-return]
+        # Refresh the per-conversation JSON so the deletion is mirrored on disk.
+        self._schedule_dashboard_export(conv_id)
+        return conv_id  # type: ignore[no-any-return]
 
     async def delete_dashboard_messages_after(
         self, conversation_id: str, after_message_id: int
@@ -2987,7 +3039,11 @@ class Database:
                 "DELETE FROM dashboard_messages WHERE conversation_id = ? AND id > ?",
                 (conversation_id, after_message_id),
             )
-            return int(cursor.rowcount)
+            deleted = int(cursor.rowcount)
+        # Refresh the per-conversation JSON so the truncation is mirrored on disk.
+        if deleted > 0:
+            self._schedule_dashboard_export(conversation_id)
+        return deleted
 
     async def edit_and_truncate_dashboard_message(
         self, message_id: int, content: str, conversation_id: str
@@ -3015,7 +3071,10 @@ class Database:
                 "UPDATE dashboard_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (conversation_id,),
             )
-            return True, int(del_cursor.rowcount)
+            deleted = int(del_cursor.rowcount)
+        # Refresh the per-conversation JSON so the edit+truncate is mirrored on disk.
+        self._schedule_dashboard_export(conversation_id)
+        return True, deleted
 
     async def export_dashboard_conversation(
         self, conversation_id: str, export_format: str = "json"

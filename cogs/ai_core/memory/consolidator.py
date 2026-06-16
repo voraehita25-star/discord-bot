@@ -38,6 +38,26 @@ from .entity_memory import EntityFacts, entity_memory
 logger = logging.getLogger(__name__)
 
 
+# Canonical relationship tokens the contradiction heuristic recognises. Kept
+# as a single source of truth so the regex alternation and the stored-value
+# comparison can never drift apart.
+_RELATION_TOKENS: tuple[str, ...] = ("พี่", "น้อง", "แฟน", "เพื่อน", "ศัตรู", "แม่", "พ่อ")
+
+
+def _relation_tokens_in(relation: str) -> set[str]:
+    """Return the canonical relation tokens present in a stored relation string.
+
+    Used instead of a raw substring test so the comparison is token-based:
+    a stored ``เพื่อน`` maps to ``{เพื่อน}`` and a mentioned ``พี่`` is then
+    correctly seen as absent (a contradiction). NOTE: this is a coarse,
+    token-presence heuristic — it deliberately treats modifier-bearing forms
+    like ``แฟนเก่า`` (ex-partner) as containing the ``แฟน`` token, so an
+    ex-vs-current nuance is NOT detected here. Absence of a flagged
+    contradiction is therefore not authoritative.
+    """
+    return {tok for tok in _RELATION_TOKENS if tok in relation}
+
+
 @lru_cache(maxsize=512)
 def _compile_relationship_pattern(name: str, related_name: str) -> re.Pattern[str]:
     """Compile the relationship-contradiction regex once per (name, related)
@@ -46,9 +66,10 @@ def _compile_relationship_pattern(name: str, related_name: str) -> re.Pattern[st
     The bounded ``{0,200}`` / ``{0,80}`` spans prevent catastrophic
     backtracking on adversarial input.
     """
+    _alternation = "|".join(_RELATION_TOKENS)
     pattern = (
         rf"{re.escape(name)}.{{0,200}}?{re.escape(related_name)}"
-        r".{0,80}?(พี่|น้อง|แฟน|เพื่อน|ศัตรู|แม่|พ่อ)"
+        rf".{{0,80}}?({_alternation})"
     )
     # DOTALL: relationship mentions can span a newline; the fixed {0,200}/
     # {0,80} bounds keep backtracking safe even with . matching newlines.
@@ -706,7 +727,14 @@ class MemoryConsolidator:
                     rel_match = _compile_relationship_pattern(name, related_name).search(new_text)
                     if rel_match:
                         mentioned_rel = rel_match.group(1)
-                        if mentioned_rel not in relation:
+                        # Token-based comparison rather than raw substring
+                        # containment: normalise the stored relation to the
+                        # same canonical token set and flag when the mentioned
+                        # token isn't one of them. This avoids e.g. a stored
+                        # multi-token phrase swallowing an unrelated mentioned
+                        # token via incidental substring overlap. (Coarse
+                        # heuristic — see _relation_tokens_in for limits.)
+                        if mentioned_rel not in _relation_tokens_in(relation):
                             contradictions.append(
                                 {
                                     "entity": name,

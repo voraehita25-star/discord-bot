@@ -243,6 +243,15 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # we don't have a second copy of the rules drifting out of date.
         # Fall back to the local minimal check if the helper is unavailable
         # for any reason (circular import during early bootstrap, etc.).
+        #
+        # NOTE (best-effort, not airtight): this guard resolves the hostname
+        # once, but yt-dlp/ffmpeg independently re-resolve the same hostname
+        # when they actually fetch — so a DNS-rebinding adversary who answers
+        # the first lookup with a public IP and the second with 127.0.0.1 /
+        # 169.254.169.254 can slip past. We don't pin the validated IP for the
+        # fetch (yt-dlp re-resolves internally and exposes no hook for it), so
+        # the guard reduces but does not eliminate SSRF against a rebinding
+        # attacker. Network-layer egress filtering is the real mitigation.
         host = parsed.hostname if parsed is not None else None
         if not host:
             raise ValueError("URL has no hostname")
@@ -297,7 +306,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 ytdl_obj = ytdl_fallback
             except (TimeoutError, yt_dlp.DownloadError) as e2:
                 logger.error("❌ All download attempts failed: %s", e2)
-                raise e2  # Give up
+                # Chain the original HQ failure (``e``) onto the fallback
+                # failure: the HQ cause (auth/cookies/format) is often the more
+                # informative one and would otherwise be lost from the traceback.
+                raise e2 from e  # Give up
 
         if data is None:
             raise yt_dlp.DownloadError("No data returned from yt-dlp")

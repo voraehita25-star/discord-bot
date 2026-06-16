@@ -850,7 +850,10 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
         # conversation in a single request. ``conv_id`` was returned by the
         # primary delete above so we already have the authoritative scope.
         deleted_pair_id = None
-        if pair_message_id_int is not None:
+        # Require a positive id so int 0 and string "0" are handled
+        # identically (dashboard ids are AUTOINCREMENT from 1 — id 0 never
+        # matches, so a 0 here would only issue a guaranteed-miss delete).
+        if pair_message_id_int is not None and pair_message_id_int > 0:
             pair_conv_id = await db.delete_dashboard_message(
                 pair_message_id_int,
                 expected_conversation_id=conv_id,
@@ -1454,9 +1457,25 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # client may instead send a dict. Both must end up as ``str | None`` —
         # sqlite cannot bind a dict, and (the original bug) the dict-only branch
         # silently dropped the string the real UI actually sends.
+        prefs_present = isinstance(profile_data, dict) and "preferences" in profile_data
         raw_prefs = profile_data.get("preferences")
         sanitized_prefs: str | None = None
         truncated_prefs = False
+        # Reject a preferences key that is present but neither str nor dict
+        # (list/number/bool). Without this, the value silently fell through
+        # both branches, stayed None, and overwrote the user's stored
+        # preferences with None — silent data loss with a success ack. Mirrors
+        # the type guards in handle_update_document_memory. An ABSENT key is
+        # left to flow through as None (same as display_name/bio).
+        if prefs_present and raw_prefs is not None and not isinstance(raw_prefs, str | dict):
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_ARG",
+                    "message": "preferences must be a string or object",
+                }
+            )
+            return
         if isinstance(raw_prefs, str):
             # Main path: funnel through the same sanitizer as display_name/bio
             # (NFKC + control-char strip + prompt-injection filter) so the value

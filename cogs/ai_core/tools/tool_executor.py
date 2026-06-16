@@ -418,7 +418,15 @@ async def execute_tool_call(
                     return "⛔ Permission denied to read that channel."
             except (AttributeError, TypeError):
                 return "⛔ Permission denied to read that channel."
-            cmd_args = [channel_name]
+            # Pass the already-resolved channel ID (not the raw name) so
+            # cmd_read_channel targets the EXACT channel this gate validated.
+            # cmd_read_channel resolves name-first / ID-fallback, the opposite
+            # of the ID-first order above; with duplicate-named channels the
+            # gate and the action could otherwise disagree on which channel is
+            # read. A numeric ID has no matching channel *name* in the normal
+            # case, so cmd_read_channel falls through to its get_channel(int)
+            # branch and lands on the same target_channel.
+            cmd_args = [str(target_channel.id)]
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
             await cmd_read_channel(guild, origin_channel, None, cmd_args, user=user)

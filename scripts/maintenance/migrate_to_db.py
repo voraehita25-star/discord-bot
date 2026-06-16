@@ -27,8 +27,6 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import contextlib
-
 from utils.database import db
 
 JsonFileGroup = list[tuple[int, Path]]
@@ -154,8 +152,37 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
         # added. The authoritative figure is the separate `SELECT COUNT(*) FROM
         # ai_history` printed as Database Statistics; this is a progress tally.
         count = 0
+        skipped_dupes = 0
         async with db.get_write_connection() as conn:
+            # Idempotent re-runs for NULL-message_id rows. Legacy rows rarely
+            # carry a message_id, and the ON CONFLICT target below is PARTIAL
+            # (WHERE message_id IS NOT NULL), so NULL-id rows are absent from the
+            # unique index and would be re-INSERTed on every re-run — silently
+            # doubling a channel's history (re-run after a partial failure is an
+            # explicitly supported recovery path). Pre-load the NULL-id rows
+            # already migrated for this channel as a multiset keyed by
+            # (role, content, timestamp) and skip any candidate already present,
+            # decrementing so legitimate in-file duplicates are preserved.
+            # Residual edge: a row whose source JSON had no timestamp gets a fresh
+            # now() each run and so cannot be matched — but legacy exports almost
+            # always carry a timestamp, so this covers the realistic case.
+            existing_null: dict[tuple[str, str, str], int] = {}
+            cur = await conn.execute(
+                "SELECT role, content, timestamp FROM ai_history "
+                "WHERE channel_id = ? AND message_id IS NULL",
+                (channel_id,),
+            )
+            for er, ec, et in await cur.fetchall():
+                key = (er, ec, et)
+                existing_null[key] = existing_null.get(key, 0) + 1
             for chan_id, role, content, message_id, ts in rows:
+                if message_id is None:
+                    key = (role, content, ts)
+                    remaining = existing_null.get(key, 0)
+                    if remaining > 0:
+                        existing_null[key] = remaining - 1
+                        skipped_dupes += 1
+                        continue
                 # user_id is intentionally left NULL for migrated legacy rows:
                 # the source JSON predates per-user tracking and never stored a
                 # user_id (we read only role/parts/message_id/timestamp). The
@@ -171,6 +198,9 @@ async def migrate_history(channel_id: int, filepath: Path, dry_run: bool = False
                     (chan_id, role, content, message_id, ts, chan_id),
                 )
                 count += 1
+
+        if skipped_dupes:
+            print(f"        ↺ Channel {channel_id}: skipped {skipped_dupes} already-migrated rows")
 
         return count
 
@@ -381,17 +411,27 @@ async def _run_migration(args) -> None:
     if args.delete_json and not args.dry_run and (migrated_files > 0 or metadata_count > 0):
         print("  [CLEANUP] Deleting successfully migrated JSON files...")
         deleted = 0
+        # Files whose migration succeeded but that we could NOT unlink (perms,
+        # Windows file lock, …). These stay on disk and would be re-migrated on
+        # a re-run, so they must be reported distinctly from migration-skips —
+        # otherwise the summary implies cleanup is complete when it isn't.
+        unlink_failed = 0
 
         for filepath in migrated_history_paths:
             try:
                 filepath.unlink()
                 deleted += 1
-            except OSError:
-                pass
+            except OSError as e:
+                unlink_failed += 1
+                print(f"        [WARN] Could not delete {filepath}: {e}")
 
         for filepath in migrated_metadata_paths:
-            with contextlib.suppress(OSError):
+            try:
                 filepath.unlink()
+                deleted += 1
+            except OSError as e:
+                unlink_failed += 1
+                print(f"        [WARN] Could not delete {filepath}: {e}")
 
         skipped = (len(files["history"]) - len(migrated_history_paths)) + (
             len(files["metadata"]) - len(migrated_metadata_paths)
@@ -399,6 +439,11 @@ async def _run_migration(args) -> None:
         print(f"        Deleted {deleted} files")
         if skipped:
             print(f"        Skipped {skipped} files (migration did not succeed)")
+        if unlink_failed:
+            print(
+                f"        [WARN] {unlink_failed} migrated file(s) could not be deleted "
+                "and remain on disk — they will be re-migrated on the next run."
+            )
         print()
 
     # Summary

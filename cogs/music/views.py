@@ -131,9 +131,17 @@ class MusicControlView(discord.ui.View):
 
         if interaction.guild and interaction.guild.voice_client:
             voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
-            voice_client.stop()
+            # Guard stop() consistently with pause_resume_button: a client that
+            # is mid-disconnect can raise, and that must not surface as an
+            # unhandled interaction error after the queue/state were cleared.
+            with contextlib.suppress(discord.ClientException):
+                voice_client.stop()
 
-        await interaction.response.send_message("⏹️ หยุดเล่นและล้างคิวแล้ว", ephemeral=True)
+        # Suppress HTTPException like loop_button — the token may already be
+        # expired/acknowledged, and the button-disable edit below should still
+        # run so the controls reflect the stopped state.
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.response.send_message("⏹️ หยุดเล่นและล้างคิวแล้ว", ephemeral=True)
 
         # Disable all buttons in the view before stopping so the message
         # reflects that the controls are no longer interactive.

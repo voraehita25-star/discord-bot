@@ -92,6 +92,13 @@ class EndpointHealth:
 
     @property
     def failure_rate(self) -> float:
+        # Reflects REAL user-traffic only. ``total_requests`` /
+        # ``total_failures`` are bumped solely by record_success /
+        # record_failure; the health-probe paths in
+        # ``APIFailoverManager.health_check`` deliberately do NOT touch these
+        # counters (probes are synthetic, not user traffic), so this rate —
+        # surfaced in get_status() for the dashboard — excludes probe
+        # outcomes by design.
         if self.total_requests == 0:
             return 0.0
         return self.total_failures / self.total_requests

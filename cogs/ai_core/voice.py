@@ -153,6 +153,26 @@ def parse_voice_command(message: str) -> tuple[str | None, int | None]:
     return None, None
 
 
+def _music_track_title(music_cog: Any, guild_id: int) -> str | None:
+    """Safely resolve the current track title from the Music cog.
+
+    Reaches into the Music cog's private ``_gs`` accessor, which is cross-cog
+    coupling. Guard against a future rename or any exception from ``_gs`` so a
+    missing/changed accessor degrades to a plain "playing" status instead of
+    failing the entire voice-status string.
+    """
+    try:
+        gs_fn = getattr(music_cog, "_gs", None)
+        if not callable(gs_fn):
+            return None
+        gs = gs_fn(guild_id)
+        track_info = getattr(gs, "current_track", None) or {}
+        return track_info.get("title", "Unknown")
+    except Exception:
+        logger.debug("Failed to read current track from Music cog", exc_info=True)
+        return None
+
+
 def get_voice_status(bot: Bot) -> str:
     """Get current voice connection status for all servers."""
     if not bot.voice_clients:
@@ -177,18 +197,16 @@ def get_voice_status(bot: Bot) -> str:
                 status = "กำลังเล่นเพลง"
                 # Get current track info from Music cog
                 if music_cog and guild_id:
-                    gs = music_cog._gs(guild_id)  # type: ignore[attr-defined]
-                    track_info = getattr(gs, "current_track", None) or {}
-                    track_title = track_info.get("title", "Unknown")
-                    status = f"กำลังเล่นเพลง: {track_title}"
+                    track_title = _music_track_title(music_cog, guild_id)
+                    if track_title:
+                        status = f"กำลังเล่นเพลง: {track_title}"
             elif vc.is_paused():  # type: ignore[attr-defined]
                 status = "หยุดชั่วคราว"
                 # Get paused track info
                 if music_cog and guild_id:
-                    gs = music_cog._gs(guild_id)  # type: ignore[attr-defined]
-                    track_info = getattr(gs, "current_track", None) or {}
-                    track_title = track_info.get("title", "Unknown")
-                    status = f"หยุดชั่วคราว: {track_title}"
+                    track_title = _music_track_title(music_cog, guild_id)
+                    if track_title:
+                        status = f"หยุดชั่วคราว: {track_title}"
             else:
                 status = "ว่าง (ไม่ได้เล่นเพลง)"
 

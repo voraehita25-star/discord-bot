@@ -298,6 +298,14 @@ impl RagEngine {
         if a.len() != b.len() {
             return Err(PyValueError::new_err("Vector dimensions must match"));
         }
+        // Match the finite-value guarantee enforced by add()/search()/load() —
+        // an Inf/NaN here would otherwise leak a non-finite/misleading score
+        // (Inf norm -> denom=Inf -> dot/denom = 0.0 or NaN) back to Python.
+        if a.iter().chain(b.iter()).any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "vectors contain non-finite values (NaN/Inf)",
+            ));
+        }
         Ok(cosine_similarity(&a, &b))
     }
 
@@ -489,6 +497,10 @@ impl RagEngine {
                     let imp = importance as f32;
                     if !imp.is_finite() {
                         continue; // Skip entries with NaN/Infinity importance
+                    }
+                    if !timestamp.is_finite() {
+                        continue; // Skip entries with NaN/Infinity timestamp — keep
+                                  // the stored-data invariant consistent with importance/embedding
                     }
                     new_entries.insert(
                         id.to_string(),

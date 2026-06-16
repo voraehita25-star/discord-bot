@@ -283,6 +283,36 @@ class RateLimiter:
         else:
             return f"{config_name}:unknown"
 
+    @staticmethod
+    def _config_name_from_key(key: str) -> str:
+        """Recover the config name from a bucket key.
+
+        Bucket keys are ``{config_name}:{type_tail}`` (see _get_bucket_key),
+        but ``config_name`` itself may contain colons (owner-set per-channel
+        configs are named ``channel_custom:{CID}``). A naive ``split(":")[0]``
+        therefore mis-parses those, so reload_limits/update_all_adaptive_limits
+        would fail to look up the config and silently skip the bucket. Strip
+        the KNOWN type tail instead.
+
+        Tails — the trailing portion (from the matched separator onward)
+        contains a fixed number of colons; checking it avoids matching a
+        ``:channel:`` that happens to sit inside the config name itself:
+          - ``:user_channel:{uid}:{cid}``  → 3 colons
+          - ``:user:{uid}`` / ``:channel:{cid}`` / ``:guild:{gid}`` → 2 colons
+          - ``:global``                                            → 0 (no tail id)
+        Longest token first so ``user_channel`` wins over ``channel``.
+        """
+        for token, tail_colons in (("user_channel", 3), ("user", 2), ("channel", 2), ("guild", 2)):
+            sep = f":{token}:"
+            idx = key.rfind(sep)
+            if idx != -1 and key.count(":", idx) == tail_colons:
+                return key[:idx]
+        if key.endswith(":global"):
+            return key[: -len(":global")]
+        # Unknown shape — fall back to the legacy split (still correct for
+        # built-in colon-free config names).
+        return key.split(":", 1)[0]
+
     def _get_or_create_bucket(self, key: str, config: RateLimitConfig) -> RateLimitBucket | None:
         """Get existing bucket or create a new one.
 
@@ -566,7 +596,7 @@ class RateLimiter:
             # via list() so a concurrent mutation can't raise "dictionary
             # changed size", mirroring update_all_adaptive_limits.
             for key, bucket in list(self._buckets.items()):
-                config_name = key.split(":")[0]
+                config_name = self._config_name_from_key(key)
                 config = self._configs.get(config_name)
                 if config is None:
                     continue
@@ -615,7 +645,7 @@ class RateLimiter:
         # mid-iteration.
         for key, bucket in list(self._buckets.items()):
             # Only update buckets for adaptive configs
-            config_name = key.split(":")[0]
+            config_name = self._config_name_from_key(key)
             if config_name in self._configs:
                 config = self._configs[config_name]
                 if config.adaptive:

@@ -16,7 +16,16 @@ $DownloadDir = "$env:TEMP\bot_setup"
 # Force TLS 1.2+ for every Invoke-WebRequest below. Older PS defaults
 # allow TLS 1.0/1.1 which are deprecated and vulnerable to downgrade
 # attacks. This affects ALL HTTPS downloads in this session.
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+# NOTE: enable Tls13 only when the running .NET supports it. On Windows
+# PowerShell 5.1 backed by .NET Framework < 4.7 (the launch target in the
+# header) the Tls13 enum member does not exist, and referencing it raises a
+# terminating member-resolution error that ErrorActionPreference cannot
+# suppress — which would kill the installer before step 0/9.
+$securityProtocol = [Net.SecurityProtocolType]::Tls12
+if ([enum]::IsDefined([Net.SecurityProtocolType], 'Tls13')) {
+    $securityProtocol = $securityProtocol -bor [Net.SecurityProtocolType]::Tls13
+}
+[Net.ServicePointManager]::SecurityProtocol = $securityProtocol
 
 if (-not (Test-Path $DownloadDir)) {
     New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
@@ -315,7 +324,8 @@ if (Test-CommandExists "node") {
         winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements -h
     } else {
         Write-Info "Downloading Node.js LTS installer..."
-        $nodeUrl = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-x64.msi"
+        # Node 24 LTS (Krypton) to match the winget path (OpenJS.NodeJS.LTS) and CLAUDE.md.
+        $nodeUrl = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-x64.msi"
         $nodeFile = "$DownloadDir\node-installer.msi"
         Invoke-VerifiedDownload -Uri $nodeUrl -OutFile $nodeFile
         Write-Info "Installing Node.js (silent)..."
@@ -376,7 +386,9 @@ if (Test-CommandExists "python") {
 
     # Install dev tools
     Write-Info "Installing development tools..."
-    & ".venv\Scripts\pip.exe" install ruff bandit[toml] pip-audit mypy
+    # Pin ruff to the version the repo's lint config was authored against (see CLAUDE.md)
+    # so a fresh provision does not surface spurious lint diffs from a newer ruff.
+    & ".venv\Scripts\pip.exe" install "ruff==0.15.17" bandit[toml] pip-audit mypy
 
     Pop-Location
     Write-OK "Python environment setup complete"

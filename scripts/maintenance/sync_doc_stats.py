@@ -226,6 +226,9 @@ REPLACEMENTS: list[tuple[str, str, str]] = [
     ("CONTRIBUTING.md", r"`npm test` \(([\d,]+) vitest\)", "vitest_tests"),
     # CLAUDE.md
     ("CLAUDE.md", r"\(ruff ([0-9][0-9.]*)\)", "ruff_version"),
+    ("CLAUDE.md", r"~([\d,]+) pytest", "pytest_tests"),
+    ("CLAUDE.md", r"\| ([\d,]+) vitest \+ [\d,]+ Playwright", "vitest_tests"),
+    ("CLAUDE.md", r"vitest \+ ([\d,]+) Playwright", "playwright_tests"),
     # native_dashboard/README.md
     ("native_dashboard/README.md", r"([\d,]+) tests across 11 vitest files", "vitest_tests"),
     ("native_dashboard/README.md", r"\(([\d,]+) tests total across all 11\)", "vitest_tests"),
@@ -252,6 +255,7 @@ REPLACEMENTS: list[tuple[str, str, str]] = [
     ("docs/DEVELOPER_GUIDE.md", r"tests in ([\d,]+) files\)", "pytest_test_files"),
     ("docs/DEVELOPER_GUIDE.md", r"([\d,]+) Python tests \+ [\d,]+ frontend vitest", "pytest_tests"),
     ("docs/DEVELOPER_GUIDE.md", r"Python tests \+ ([\d,]+) frontend vitest", "vitest_tests"),
+    ("docs/DEVELOPER_GUIDE.md", r"vitest files total \(([\d,]+) tests\)", "vitest_tests"),
     ("docs/DEVELOPER_GUIDE.md", r"Version ([\d.]+) \| Full-project", "version"),
     # docs/INSTALL.md
     ("docs/INSTALL.md", r"Version: ([\d.]+)\*", "version"),
@@ -299,6 +303,9 @@ def apply(check: bool) -> int:
             errors += 1
             continue
         new_text = text
+        # Collect (stat, old, new) for each span actually rewritten so the drift
+        # report reflects the applied diff (not a second scan of the original).
+        changes: list[tuple[str, str, str]] = []
         for pat, stat in rules:
             value = stats.get(stat)
             rx = re.compile(pat)
@@ -312,16 +319,13 @@ def apply(check: bool) -> int:
             repl = render(stat, value)
             # Rebuild right-to-left so earlier spans stay valid.
             for m in reversed(matches):
-                if m.group(1) != repl:
+                old = m.group(1)
+                if old != repl:
                     new_text = new_text[: m.start(1)] + repl + new_text[m.end(1) :]
+                    changes.append((stat, old, repl))
         if new_text != text:
-            for pat, stat in rules:
-                value = stats.get(stat)
-                if value is None:
-                    continue
-                for m in re.finditer(pat, text):
-                    if m.group(1) != render(stat, value):
-                        print(f"  {rel}: {stat}  {m.group(1)} → {render(stat, value)}")
+            for stat, old, new in changes:
+                print(f"  {rel}: {stat}  {old} → {new}")
             drift += 1
             if not check:
                 path.write_text(new_text, encoding="utf-8")
@@ -333,7 +337,13 @@ def apply(check: bool) -> int:
         if drift:
             print(f"\n❌ {drift} file(s) out of sync. Run: make docs-sync")
             return 1
-        print("✅ docs in sync with the live repo.")
+        if skipped:
+            print(
+                "✅ docs in sync with the live repo "
+                f"(but {len(skipped)} stat(s) unchecked — toolchain absent)."
+            )
+        else:
+            print("✅ docs in sync with the live repo.")
         return 0
     print(f"\n✅ docs synced ({drift} file(s) updated).")
     return 0

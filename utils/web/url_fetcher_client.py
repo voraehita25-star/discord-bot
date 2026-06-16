@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 from typing import Any
 
 import aiohttp
@@ -53,6 +54,46 @@ _HOST_FOR_URL = f"[{URL_FETCHER_HOST}]" if ":" in URL_FETCHER_HOST else URL_FETC
 URL_FETCHER_URL = f"http://{_HOST_FOR_URL}:{URL_FETCHER_PORT}"
 
 
+class _ServiceHostResolver(aiohttp.abc.AbstractResolver):
+    """SSRF-safe resolver that exempts the trusted Go-service host by name.
+
+    The client's aiohttp session is dual-use: it dials the trusted internal
+    Go service (default host ``localhost`` → 127.0.0.1) AND, on the aiohttp
+    fallback path, arbitrary user URLs. A plain ``_SSRFSafeResolver`` rejects
+    any host resolving to loopback, and aiohttp only skips the resolver for
+    *literal* IP hosts — so on the default ``localhost`` config the Go
+    backend's health check self-blocked and the service was silently
+    unreachable (only ``URL_FETCHER_HOST=127.0.0.1`` worked).
+
+    We exempt ONLY the exact configured service host(s) by name. This is safe:
+    user-supplied loopback URLs are rejected by the ``_is_private_url``
+    pre-check before any connect, and DNS-rebind attacks on arbitrary domains
+    still hit the SSRF guard (an attacker's hostname is never in the exempt
+    set), so ``_fetch_fallback`` keeps its connect-time protection.
+    """
+
+    def __init__(self, exempt_hosts: frozenset[str]) -> None:
+        from utils.web.url_fetcher import _SSRFSafeResolver
+
+        self._base = aiohttp.ThreadedResolver()
+        self._guard = _SSRFSafeResolver(self._base)
+        self._exempt = exempt_hosts
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[aiohttp.abc.ResolveResult]:
+        if host in self._exempt:
+            return await self._base.resolve(host, port, family)
+        return await self._guard.resolve(host, port, family)
+
+    async def close(self) -> None:
+        # _guard owns the shared base resolver and closes it.
+        await self._guard.close()
+
+
 class URLFetcherClient:
     """
     Client for Go URL Fetcher service with fallback to aiohttp.
@@ -74,23 +115,37 @@ class URLFetcherClient:
         self._service_check_time: float = 0
 
     async def __aenter__(self):
-        # Build the session with the SSRF-safe resolver so _fetch_fallback's
+        # Build the session with an SSRF-safe resolver so _fetch_fallback's
         # plain session.get() can't be DNS-rebound after the _is_private_url
         # pre-check (the pre-check resolves once, then aiohttp re-resolves at
         # connect time — a TTL-0 attacker domain returns public for the check
-        # and private for the connect). Mirrors url_fetcher._get_shared_session.
+        # and private for the connect). The resolver exempts the trusted
+        # Go-service host by name (see _ServiceHostResolver) so the localhost
+        # health check isn't self-blocked by the loopback rule.
         connector = None
         try:
-            from utils.web.url_fetcher import _SSRFSafeResolver
+            from urllib.parse import urlparse
 
-            connector = aiohttp.TCPConnector(resolver=_SSRFSafeResolver(aiohttp.ThreadedResolver()))
+            service_host = urlparse(self.base_url).hostname or ""
+            if service_host:
+                connector = aiohttp.TCPConnector(
+                    resolver=_ServiceHostResolver(frozenset({service_host}))
+                )
         except Exception:
             logger.warning("SSRF-safe resolver unavailable; fallback fetch uses default resolver")
-        self._session = aiohttp.ClientSession(
+            connector = None
+        session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.timeout),
             connector=connector,
         )
-        await self._check_service()
+        # Don't leak the just-created session if startup fails after creation.
+        try:
+            self._session = session
+            await self._check_service()
+        except BaseException:
+            self._session = None
+            await session.close()
+            raise
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

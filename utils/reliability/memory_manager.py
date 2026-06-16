@@ -692,7 +692,12 @@ def cached_with_ttl(
             # Call function
             result = await func(*args, **kwargs)
 
-            # Cache result (including None to prevent stampede)
+            # Cache result (including None, so a subsequent call reuses it
+            # instead of recomputing). NOTE: there is no per-key single-flight
+            # here — N callers that all miss a cold key concurrently will each
+            # run func before the first result is stored; only calls AFTER the
+            # first completion are served from cache. Pass an explicit cache /
+            # external lock if you need concurrent-stampede protection.
             cache.set(key, result)
             return result
 

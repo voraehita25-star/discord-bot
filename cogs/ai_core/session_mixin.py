@@ -18,6 +18,7 @@ from .data import (
     SERVER_LORE,
     UNRESTRICTED_MODE_INSTRUCTION,
 )
+from .imports import is_unrestricted
 from .storage import (
     get_cache_generation,
     last_load_was_db,
@@ -186,29 +187,26 @@ class SessionMixin:
         # which never existed in the real instruction text — so the system
         # prompt grew unbounded on every get_chat_session call and the disable
         # path never ran.
-        try:
-            from .imports import is_unrestricted
-
-            # Re-read AFTER any RP-fix branch above so we don't clobber its update.
-            current_instruction = self.chats[channel_id].get("system_instruction", "")
-            already_injected = bool(
-                UNRESTRICTED_MODE_INSTRUCTION
-                and UNRESTRICTED_MODE_INSTRUCTION in current_instruction
-            )
-            if is_unrestricted(channel_id):
-                if not already_injected and UNRESTRICTED_MODE_INSTRUCTION:
-                    logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
-                    self.chats[channel_id]["system_instruction"] = (
-                        UNRESTRICTED_MODE_INSTRUCTION + current_instruction
-                    )
-            # Remove unrestricted instruction if it was previously injected
-            elif already_injected:
-                logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
-                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
-                    UNRESTRICTED_MODE_INSTRUCTION, ""
+        # ``is_unrestricted`` is imported at module top and always resolves
+        # (real impl or a stub returning False — see imports.py), so no
+        # per-call import / ImportError guard is needed here.
+        # Re-read AFTER any RP-fix branch above so we don't clobber its update.
+        current_instruction = self.chats[channel_id].get("system_instruction", "")
+        already_injected = bool(
+            UNRESTRICTED_MODE_INSTRUCTION and UNRESTRICTED_MODE_INSTRUCTION in current_instruction
+        )
+        if is_unrestricted(channel_id):
+            if not already_injected and UNRESTRICTED_MODE_INSTRUCTION:
+                logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
+                self.chats[channel_id]["system_instruction"] = (
+                    UNRESTRICTED_MODE_INSTRUCTION + current_instruction
                 )
-        except ImportError:
-            pass  # Guardrails not available, skip unrestricted injection
+        # Remove unrestricted instruction if it was previously injected
+        elif already_injected:
+            logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
+            self.chats[channel_id]["system_instruction"] = current_instruction.replace(
+                UNRESTRICTED_MODE_INSTRUCTION, ""
+            )
 
         # Update Last Accessed Time
         self.last_accessed[channel_id] = time.time()

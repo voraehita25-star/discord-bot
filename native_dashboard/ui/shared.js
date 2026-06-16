@@ -210,7 +210,8 @@ export function isSafeAvatarUrl(url) {
             const path = parsed.pathname || '';
             // Reject Windows drive letters, parent-dir traversal, and any
             // host other than localhost. Only allow paths under ``avatars/``.
-            if (parsed.hostname && parsed.hostname.toLowerCase() !== 'localhost')
+            const host = (parsed.hostname || '').toLowerCase();
+            if (host !== '' && host !== 'localhost')
                 return false;
             if (/[a-z]:/i.test(path))
                 return false;
@@ -228,9 +229,12 @@ export function isSafeAvatarUrl(url) {
     // background-image, iframe.src, or a future component that fetches
     // and inlines, the script in the SVG runs. Reject explicitly so the
     // allowlist is unambiguous and future-proof.
-    if (lower.startsWith('data:image/svg+xml') ||
-        lower.startsWith('data:image/svg ') ||
-        lower.startsWith('data:image/svg;')) {
+    // Parse the data: media type generically (up to the first ',') rather than
+    // enumerating delimiters. The comma form ``data:image/svg,%3Csvg...%3E``
+    // (MIME directly followed by ',', no '+xml'/';'/space) would otherwise slip
+    // past a prefix-list and fall through to the broad ``data:image/`` accept.
+    const dataHead = lower.split(',', 1)[0];
+    if (dataHead.startsWith('data:image/svg')) {
         return false;
     }
     // No plain http:// — a tampered/server-pushed avatar string of

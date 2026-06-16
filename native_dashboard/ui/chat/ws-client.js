@@ -221,9 +221,16 @@ export class WebSocketClient {
             socket.onmessage = (event) => {
                 if (this.ws !== socket)
                     return;
+                // The server protocol is text-only (JSON frames). Reject any
+                // non-string frame (Blob/ArrayBuffer) outright so binary frames
+                // can't bypass the size guard and flow into JSON.parse().
+                if (typeof event.data !== 'string') {
+                    console.warn('Ignoring non-string WebSocket frame:', typeof event.data);
+                    return;
+                }
                 // Reject oversized frames to prevent memory exhaustion.
                 // Length is measured in UTF-16 code units, not bytes.
-                if (typeof event.data === 'string' && event.data.length > MAX_MESSAGE_LENGTH) {
+                if (event.data.length > MAX_MESSAGE_LENGTH) {
                     console.warn('Dropped oversized WebSocket message:', event.data.length, 'code units');
                     return;
                 }

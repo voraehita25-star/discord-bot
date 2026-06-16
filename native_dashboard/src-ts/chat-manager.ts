@@ -814,7 +814,7 @@ export class ChatManager {
                 }
                 break;
 
-            case 'error':
+            case 'error': {
                 // History-scoped errors (backend tags them with `scope`) must
                 // not cross-fire into chat streaming state: a rejected history
                 // edit while a chat response streams in the background would
@@ -868,6 +868,7 @@ export class ChatManager {
                 // path above) so permanent rejections drop their undo entry.
                 this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
                 break;
+            }
 
             case 'pong':
                 this.wsClient.notePong();
@@ -927,12 +928,13 @@ export class ChatManager {
                     const docs = (data.documents as Array<{filename: string; file_kind: string; char_count: number}>) || [];
                     if (docs.length === 1) {
                         const d = docs[0];
+                        const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
                         showToast(
-                            `📎 Saved "${d.filename}" to this conversation (${d.char_count.toLocaleString()} chars)`,
+                            `📎 Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`,
                             { type: 'success', duration: 3500 },
                         );
                     } else if (docs.length > 1) {
-                        const totalChars = docs.reduce((s, d) => s + d.char_count, 0);
+                        const totalChars = docs.reduce((s, d) => s + (typeof d.char_count === 'number' ? d.char_count : 0), 0);
                         showToast(
                             `📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`,
                             { type: 'success', duration: 3500 },

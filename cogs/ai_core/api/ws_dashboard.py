@@ -122,6 +122,11 @@ class DashboardWebSocketServer:
 
     # Limits
     MAX_CLIENTS = 20
+    # Max simultaneously-running AI tasks (chat / ai_edit) per client. Enforced
+    # authoritatively by the read-loop gate (which counts not-done tasks in
+    # _client_tasks BEFORE spawning); the inner _client_inflight backstops in
+    # handle_message reuse the same constant so the two caps can never drift.
+    MAX_INFLIGHT_PER_CLIENT = 2
     # Read-only / housekeeping message types that bypass rate limiting.
     # Hoisted to a class-level constant so adding a new lightweight op
     # is a one-line change instead of editing the body of the read loop.
@@ -353,10 +358,19 @@ class DashboardWebSocketServer:
         """
         import socket
 
+        def _probe() -> int:
+            # connect_ex with a 1s timeout can block the full second when the
+            # port is filtered/dropping (not just refused). Run it off the
+            # event loop via run_in_executor so the up-to-1s wait never stalls
+            # the loop the Discord bot shares.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1)
+                return sock.connect_ex((WS_HOST, WS_PORT))
+
+        loop = asyncio.get_running_loop()
+
         # Quick check if port is in use
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            result = sock.connect_ex((WS_HOST, WS_PORT))
+        result = await loop.run_in_executor(None, _probe)
 
         if result == 0:  # Port is in use
             logger.warning("⚠️ Port %s is in use, attempting to free it...", WS_PORT)
@@ -373,9 +387,7 @@ class DashboardWebSocketServer:
                 waited += 0.5
 
                 # Re-check if port is free
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(1)
-                    result = sock.connect_ex((WS_HOST, WS_PORT))
+                result = await loop.run_in_executor(None, _probe)
 
                 if result != 0:  # Port is now free
                     logger.info("✅ Port %s is now available", WS_PORT)
@@ -879,6 +891,7 @@ class DashboardWebSocketServer:
 
                         # Rate limiting per client — exempts the read-only
                         # message types defined at class level.
+                        rate_slot_consumed = False
                         if msg_type not in self.RATE_EXEMPT_MESSAGE_TYPES:
                             now = asyncio.get_running_loop().time()
                             times = self._client_message_times.get(client_id)
@@ -905,6 +918,7 @@ class DashboardWebSocketServer:
                                 )
                                 continue
                             times.append(now)
+                            rate_slot_consumed = True
                         logger.debug(
                             "WS msg client=%s msg=%s type=%s",
                             client_id,
@@ -946,7 +960,7 @@ class DashboardWebSocketServer:
                                 for t, cid in self._client_tasks.items()
                                 if cid == client_id and not t.done()
                             )
-                            if current_inflight >= 2:
+                            if current_inflight >= self.MAX_INFLIGHT_PER_CLIENT:
                                 # Roll back the rate-limit slot consumed at
                                 # ``times.append(now)`` above: this request is
                                 # rejected before any work is spawned, so it must
@@ -955,9 +969,17 @@ class DashboardWebSocketServer:
                                 # would otherwise exhaust its 30/min allowance on
                                 # never-serviced requests and self-lock-out for
                                 # up to a minute.
-                                _times = self._client_message_times.get(client_id)
-                                if _times and _times[-1] == now:
-                                    _times.pop()
+                                #
+                                # Structural rollback: pop the slot we appended
+                                # for THIS frame (tracked by rate_slot_consumed)
+                                # rather than relying on the deque tail being
+                                # bit-identical to ``now`` — no await runs
+                                # between the append and here today, but a flag
+                                # survives a future refactor that adds one.
+                                if rate_slot_consumed:
+                                    _times = self._client_message_times.get(client_id)
+                                    if _times:
+                                        _times.pop()
                                 await ws.send_json(
                                     {
                                         "type": "error",
@@ -972,25 +994,11 @@ class DashboardWebSocketServer:
                             # cancel only this client's in-flight tasks.
                             self._client_tasks[task] = client_id
                             self._background_tasks.add(task)
-
-                            def _on_task_done(t: asyncio.Task[Any]) -> None:
-                                self._background_tasks.discard(t)
-                                self._client_tasks.pop(t, None)
-                                # Surface uncaught exceptions explicitly.
-                                # Without this, a handler error inside
-                                # handle_message disappears with only
-                                # Python's "Task exception was never
-                                # retrieved" warning at GC time, which
-                                # often loses the stack trace entirely.
-                                if not t.cancelled():
-                                    exc = t.exception()
-                                    if exc is not None:
-                                        logger.error(
-                                            "Background WS task failed",
-                                            exc_info=(type(exc), exc, exc.__traceback__),
-                                        )
-
-                            task.add_done_callback(_on_task_done)
+                            # Bound method (not a per-frame closure) — it
+                            # captures nothing message-specific, so reusing one
+                            # callback avoids allocating a fresh function object
+                            # on every inbound chat/ai_edit frame.
+                            task.add_done_callback(self._on_background_task_done)
                         else:
                             await self.handle_message(ws, data, client_id, msg_id=msg_id)
                     except json.JSONDecodeError:
@@ -1033,6 +1041,25 @@ class DashboardWebSocketServer:
 
         return ws
 
+    def _on_background_task_done(self, t: asyncio.Task[Any]) -> None:
+        """Done-callback for dispatched chat/ai_edit tasks.
+
+        Hoisted out of the read loop so it is allocated once instead of per
+        inbound frame. Drops the task from the bookkeeping sets and surfaces
+        uncaught exceptions explicitly — without this, a handler error inside
+        handle_message disappears with only Python's "Task exception was never
+        retrieved" warning at GC time, which often loses the stack trace.
+        """
+        self._background_tasks.discard(t)
+        self._client_tasks.pop(t, None)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "Background WS task failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
     async def handle_message(
         self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = "", msg_id: str = ""
     ) -> None:
@@ -1042,9 +1069,13 @@ class DashboardWebSocketServer:
         if msg_type == "new_conversation":
             await self.handle_new_conversation(ws, data)
         elif msg_type == "message":
-            # Enforce concurrency limit per client
+            # Redundant backstop: the read-loop gate already caps not-done
+            # tasks at MAX_INFLIGHT_PER_CLIENT before spawning, so at most that
+            # many handle_message tasks exist and this branch cannot actually
+            # fire on the create_task path. Kept (tied to the same constant)
+            # so a direct caller of handle_message still gets the guard.
             inflight = self._client_inflight.get(client_id, 0)
-            if inflight >= 2:
+            if inflight >= self.MAX_INFLIGHT_PER_CLIENT:
                 await ws.send_json(
                     {
                         "type": "error",
@@ -1075,9 +1106,12 @@ class DashboardWebSocketServer:
         elif msg_type == "edit_message":
             await handle_edit_message(ws, data)
         elif msg_type == "ai_edit_message":
-            # AI self-edit: AI rewrites its own message based on user instruction
+            # AI self-edit: AI rewrites its own message based on user instruction.
+            # Redundant backstop — see the "message" branch above: the read-loop
+            # gate enforces MAX_INFLIGHT_PER_CLIENT before spawning, so this
+            # cannot fire on the create_task path. Tied to the same constant.
             inflight = self._client_inflight.get(client_id, 0)
-            if inflight >= 2:
+            if inflight >= self.MAX_INFLIGHT_PER_CLIENT:
                 await ws.send_json(
                     {
                         "type": "error",

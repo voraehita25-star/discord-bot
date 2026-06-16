@@ -99,7 +99,13 @@ async def add_local_id_column():
         print("Channel ID           | Min | Max | Count")
         print("-" * 50)
         for row in await cursor.fetchall():
-            print(f"{row['channel_id']} | {row['min_lid']:3} | {row['max_lid']:3} | {row['cnt']}")
+            # A NULL channel_id group (rows whose channel_id IS NULL never
+            # matched `WHERE channel_id = ?`) yields NULL MIN/MAX, which the
+            # `:3` int spec can't format — fall back to a dash so a successful
+            # migration isn't masked by a TypeError.
+            mn = row["min_lid"] if row["min_lid"] is not None else "-"
+            mx = row["max_lid"] if row["max_lid"] is not None else "-"
+            print(f"{row['channel_id']} | {mn:>3} | {mx:>3} | {row['cnt']}")
 
     print("\n[DONE] local_id column added and populated!")
     print(f"[INFO] Backup at: {backup_path}")

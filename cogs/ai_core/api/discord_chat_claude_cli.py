@@ -320,6 +320,12 @@ def _flatten_contents_to_prompt(
     if history and include_history:
         history_parts.append("# Conversation history (oldest first)")
         for item in history:
+            # contents is contractually list[dict] from logic.py, but guard the
+            # shape here so an upstream contract violation (e.g. a bare string
+            # tail item) is skipped rather than raising AttributeError out of
+            # this pre-try helper — which would orphan the placeholder.
+            if not isinstance(item, dict):
+                continue
             role = item.get("role", "user")
             speaker = "Assistant" if role == "model" else "User"
             text_segments: list[str] = []
@@ -342,7 +348,7 @@ def _flatten_contents_to_prompt(
         history_parts.append("")
 
     tail_parts: list[str] = []
-    if current is not None:
+    if isinstance(current, dict):
         speaker = "User"
         text_segments = []
         for part in current.get("parts", []):
@@ -540,22 +546,33 @@ async def _send_overlimit_warning(
                 delete_after=15,
             )
             return
-        view = _OverlimitChoiceView(key)
-        view.message = await send_channel.send(
-            (
-                "⚠️ **ประวัติแชทนี้ยาวเกิน context window ของโมเดลแล้ว** "
-                f"(~{prompt_chars:,} ตัวอักษร > {_DISCORD_PROMPT_MAX_CHARS:,})\n"
-                "เลือกได้ว่าจะทำยังไงต่อ (เฉพาะเจ้าของบอท):\n"
-                "• 📝 **สรุปแชททั้งหมด** — ย่อประวัติเก่าเป็นบทสรุป แล้วคุยต่อได้ทันที\n"
-                "• ❌ **ไม่สรุป** — เก็บประวัติเต็มไว้ แต่แชทนี้จะคุยต่อไม่ได้จนกว่าจะสรุปหรือ reset"
-            ),
-            view=view,
-        )
-        # Record the cooldown timestamp only AFTER the interactive view send
-        # succeeds — if the send raises (missing perms, transient Discord
-        # error) the channel must NOT be locked into the short-notice path for
-        # the next cooldown window without ever having received the buttons.
+        # Reserve the cooldown slot synchronously BEFORE the network await so a
+        # second over-limit turn for the same channel that interleaves at the
+        # send below reads this timestamp and takes the short-notice path,
+        # rather than both passing the check-then-act window and spawning two
+        # live owner-only views. On send failure we roll the slot back (in the
+        # except) so a transient Discord error doesn't lock the channel into the
+        # short-notice path without ever having received the buttons.
         _OVERLIMIT_LAST_WARN[key] = now
+        try:
+            view = _OverlimitChoiceView(key)
+            view.message = await send_channel.send(
+                (
+                    "⚠️ **ประวัติแชทนี้ยาวเกิน context window ของโมเดลแล้ว** "
+                    f"(~{prompt_chars:,} ตัวอักษร > {_DISCORD_PROMPT_MAX_CHARS:,})\n"
+                    "เลือกได้ว่าจะทำยังไงต่อ (เฉพาะเจ้าของบอท):\n"
+                    "• 📝 **สรุปแชททั้งหมด** — ย่อประวัติเก่าเป็นบทสรุป แล้วคุยต่อได้ทันที\n"
+                    "• ❌ **ไม่สรุป** — เก็บประวัติเต็มไว้ แต่แชทนี้จะคุยต่อไม่ได้จนกว่าจะสรุปหรือ reset"
+                ),
+                view=view,
+            )
+        except Exception:
+            # Send failed: undo the reservation so the channel isn't stuck on
+            # the short-notice path having never received the buttons. Only
+            # roll back if no other turn has since claimed the slot.
+            if _OVERLIMIT_LAST_WARN.get(key) == now:
+                _OVERLIMIT_LAST_WARN.pop(key, None)
+            raise
 
 
 async def call_claude_cli_streaming(

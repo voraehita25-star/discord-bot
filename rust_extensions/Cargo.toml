@@ -21,3 +21,7 @@ parking_lot = "0.12"
 memmap2 = "0.9"
 bytemuck = { version = "1.25", features = ["derive"] }
 criterion = { version = "0.8", features = ["html_reports"] }
+
+[profile.release]
+# size/index arithmetic on Python-supplied lengths traps instead of wrapping silently
+overflow-checks = true

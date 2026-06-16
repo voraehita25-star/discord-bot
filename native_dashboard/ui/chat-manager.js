@@ -804,7 +804,7 @@ export class ChatManager {
                     showToast(data.message, { type: 'info' });
                 }
                 break;
-            case 'error':
+            case 'error': {
                 // History-scoped errors (backend tags them with `scope`) must
                 // not cross-fire into chat streaming state: a rejected history
                 // edit while a chat response streams in the background would
@@ -859,6 +859,7 @@ export class ChatManager {
                 // path above) so permanent rejections drop their undo entry.
                 this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
                 break;
+            }
             case 'pong':
                 this.wsClient.notePong();
                 break;
@@ -908,10 +909,11 @@ export class ChatManager {
                     const docs = data.documents || [];
                     if (docs.length === 1) {
                         const d = docs[0];
-                        showToast(`📎 Saved "${d.filename}" to this conversation (${d.char_count.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
+                        const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
+                        showToast(`📎 Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
                     }
                     else if (docs.length > 1) {
-                        const totalChars = docs.reduce((s, d) => s + d.char_count, 0);
+                        const totalChars = docs.reduce((s, d) => s + (typeof d.char_count === 'number' ? d.char_count : 0), 0);
                         showToast(`📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`, { type: 'success', duration: 3500 });
                     }
                     // Refresh the files badge count — pulls the fresh list

@@ -78,7 +78,10 @@ def enable_windows_ansi() -> bool:
     except (AttributeError, OSError, ValueError):
         # Fallback: try colorama init if available
         if colorama:
-            colorama.init()
-            return True
+            try:
+                colorama.init()
+                return True
+            except Exception:
+                return False
 
     return False

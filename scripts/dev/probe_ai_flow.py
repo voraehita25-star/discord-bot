@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -253,9 +254,12 @@ def probe_webhook_cache_ttl() -> None:
     got = wc.get_cached_webhook(99, "Bot")
     check("get_cached_webhook returns the stored hook", got is fake_wh)
 
-    # Force expire
+    # Force expire by pushing the entry just past the real TTL window. Using
+    # the module's actual WEBHOOK_CACHE_TTL (rather than a 1970 timestamp)
+    # exercises the genuine expiry boundary, so a wrong-unit/wrong-sign TTL
+    # comparison would be caught instead of trivially passing.
     with wc._webhook_cache_lock:
-        wc._webhook_cache_time[99] = 0  # very old
+        wc._webhook_cache_time[99] = time.time() - (wc.WEBHOOK_CACHE_TTL + 1)
     expired = wc.get_cached_webhook(99, "Bot")
     check("expired webhook returns None", expired is None)
 

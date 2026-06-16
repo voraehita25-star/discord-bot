@@ -161,6 +161,21 @@ class AI(commands.Cog):
             return channel
         return None
 
+    @staticmethod
+    async def _check_custom_channel_limit(message: discord.Message) -> bool:
+        """Enforce the owner-set per-channel rate limit (!channel_ratelimit).
+
+        Returns True when the request may proceed (no custom limit configured,
+        or within the limit) and False when it should be dropped. ``set_channel_limit``'s
+        contract says enforcement happens here in ai_cog via ``channel_config_name`` —
+        previously this was only wired into the rarely-used webhook command path, so
+        the override silently did nothing on the common @mention/reply and DM paths.
+        Consulted on every invocation path so the documented contract holds everywhere.
+        """
+        if rate_limiter.get_custom_channel_limit(message.channel.id) is None:
+            return True
+        return await check_rate_limit(rate_limiter.channel_config_name(message.channel.id), message)
+
     async def cog_load(self) -> None:
         """Called when the cog is loaded - safe place for async initialization."""
         # Cancel any leftover tasks from a previous load (e.g. hot-reload via !reload)
@@ -532,17 +547,31 @@ class AI(commands.Cog):
         # Wait (bounded) for an in-flight generation to finish so its final
         # save_history / CLI session write lands *before* the wipe instead of
         # silently resurrecting rows right after we delete them.
+        #
+        # Always get-or-create the channel lock (not only when one already
+        # exists). On the channel's very first turn no lock pre-exists, so the
+        # old ``.get()``-only path wiped with NO lock held: between the .get()
+        # returning None and the awaited delete_history below, a queued
+        # on_message could run process_chat (logic.py creates+acquires a fresh
+        # lock) and start generating — its later save_history then re-inserted
+        # rows AFTER we deleted them. Creating+holding the lock here forces
+        # that concurrent turn to see lock.locked() and queue instead, so it
+        # can't resurrect wiped rows. Check-then-set is safe in single-threaded
+        # asyncio (no await between the read and the write), and mirrors the
+        # same pattern in logic.py so both reference the identical lock object.
         lock = self.chat_manager.processing_locks.get(channel_id)
+        if not isinstance(lock, asyncio.Lock):
+            lock = asyncio.Lock()
+            self.chat_manager.processing_locks[channel_id] = lock
         acquired = False
-        if isinstance(lock, asyncio.Lock):
-            try:
-                await asyncio.wait_for(lock.acquire(), timeout=30.0)
-                acquired = True
-            except TimeoutError:
-                logger.warning(
-                    "reset_ai: in-flight turn in channel %s still running after 30s — wiping anyway",
-                    channel_id,
-                )
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=30.0)
+            acquired = True
+        except TimeoutError:
+            logger.warning(
+                "reset_ai: in-flight turn in channel %s still running after 30s — wiping anyway",
+                channel_id,
+            )
 
         # HOLD the lock through the wipe (release in the finally below):
         # releasing before wiping let a queued turn start mid-wipe and its
@@ -911,11 +940,8 @@ class AI(commands.Cog):
             # Owner-set per-channel limit (!channel_ratelimit). This was dead
             # wiring before: set_channel_limit created a bucket that no live
             # path ever consumed, so the command reported success for a no-op.
-            if rate_limiter.get_custom_channel_limit(message.channel.id) is not None:
-                if not await check_rate_limit(
-                    rate_limiter.channel_config_name(message.channel.id), message
-                ):
-                    return
+            if not await self._check_custom_channel_limit(message):
+                return
 
             user_msg = parts[1] if len(parts) > 1 else ""
 
@@ -958,7 +984,11 @@ class AI(commands.Cog):
 
         message_content = message.content or ""
         prefix_tuple = await self._resolve_prefix_tuple(message)
-        if message_content.startswith(prefix_tuple):
+        # Strip leading whitespace before the prefix test so a command typed
+        # with a leading space (e.g. " !chat hi") is still recognised as a
+        # command — matching the guild path's content_without_mention logic
+        # — instead of being forwarded verbatim to process_chat as chat text.
+        if message_content.strip().startswith(prefix_tuple):
             return
 
         # Check for voice channel commands
@@ -992,6 +1022,10 @@ class AI(commands.Cog):
         if not await check_rate_limit("ai_user", message):
             return
         if not await check_rate_limit("ai_guild", message):
+            return
+        # Honor an owner-set per-channel limit here too (DMs can carry one if
+        # set by channel id), matching set_channel_limit's documented contract.
+        if not await self._check_custom_channel_limit(message):
             return
 
         # Generate trace ID for this request
@@ -1071,6 +1105,12 @@ class AI(commands.Cog):
             if not await check_rate_limit("gemini_api", message):
                 return
             if not await check_rate_limit("gemini_global", message):
+                return
+            # Owner-set per-channel limit (!channel_ratelimit) applies on the
+            # common @mention/reply path too — previously only the webhook
+            # command path consumed it, so the override was silently ignored
+            # for the most frequent invocation.
+            if not await self._check_custom_channel_limit(message):
                 return
 
             chat_channel = self._as_chat_channel(message.channel)
@@ -1430,7 +1470,15 @@ class AI(commands.Cog):
 
             async def _send_chunked(text: str) -> None:
                 """Send text to output_channel, chunked to Discord's 2000-char cap."""
+                first = True
                 for i in range(0, len(text), max_len):
+                    # Pace multi-chunk sends so a long stored message split into
+                    # many 2000-char chunks doesn't fire back-to-back and trip
+                    # Discord's per-channel send rate limit — matching the
+                    # webhook {{Name}} path's inter-message delay below.
+                    if not first:
+                        await asyncio.sleep(0.5)
+                    first = False
                     await output_channel.send(text[i : i + max_len])
 
             # If found {{...}} patterns

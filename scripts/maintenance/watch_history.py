@@ -21,6 +21,12 @@ Safety notes (mirrors the rest of scripts/maintenance/):
   - Anchors the DB path to the repo root via __file__, not the CWD.
   - Reconfigures stdout to UTF-8 up front — the Windows console codepage
     (cp1252/cp874) otherwise raises UnicodeEncodeError on Thai/Korean/emoji.
+
+Limitation:
+  - Like ``tail -f``, this shows each row as it was *first written*. Rows can be
+    UPDATEd in place after insertion (back-filled message_id upsert, migration
+    summarization rewriting content); those later edits to already-printed rows
+    never re-appear, since the poll only fetches WHERE id > last_id.
 """
 
 from __future__ import annotations

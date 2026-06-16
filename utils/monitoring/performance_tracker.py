@@ -223,9 +223,16 @@ class PerformanceTracker:
 
     def get_stats(self, operation: str) -> dict[str, Any]:
         """Get statistics for an operation."""
-        if operation not in self._stats:
+        # Capture the per-op stats reference under _container_lock so a
+        # concurrent record() of a new operation name (which resizes the dict)
+        # can't race the membership check + lookup — mirrors get_all_stats().
+        # The lock guards only the cheap container read; to_dict() takes its
+        # own per-op lock and runs outside _container_lock.
+        with self._container_lock:
+            stats = self._stats.get(operation)
+        if stats is None:
             return {"count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}
-        return self._stats[operation].to_dict()
+        return stats.to_dict()
 
     def get_all_stats(self) -> dict[str, dict[str, Any]]:
         """Get statistics for all operations."""

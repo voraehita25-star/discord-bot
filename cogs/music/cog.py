@@ -417,6 +417,21 @@ class Music(commands.Cog):
         """Synchronous settings-sidecar write (atomic via temp + replace)."""
         try:
             filepath = Path(f"data/queue_settings_{guild_id}.json")
+            # All-default settings carry no information beyond the GuildState
+            # constructor defaults (volume 0.5, loop False, mode_247 False),
+            # which _load_queue_settings already falls back to when the sidecar
+            # is absent. Unlink instead of writing so a guild that reverts to
+            # defaults doesn't leave a stale per-guild file behind, mirroring
+            # the empty-queue unlink in _save_queue_json_sync.
+            if (
+                snapshot.get("volume") == 0.5
+                and not snapshot.get("loop")
+                and not snapshot.get("mode_247")
+            ):
+                with contextlib.suppress(OSError):
+                    if filepath.exists():
+                        filepath.unlink()
+                return
             filepath.parent.mkdir(parents=True, exist_ok=True)
             temp_path = filepath.with_suffix(".json.tmp")
             temp_path.write_text(
@@ -1087,9 +1102,15 @@ class Music(commands.Cog):
                     except discord.DiscordException:
                         logger.exception("Loop replay failed (Discord)")
                         self._gs(guild_id).loop = False  # Disable loop on error
+                        # play() never accepted the source, so the after-callback
+                        # that would delete this file never runs; the fall-through
+                        # to queue logic overwrites current_track and drops the only
+                        # reference. Release it now to match the cleanup contract.
+                        self._safe_run_coroutine(self.safe_delete(filename))
                     except OSError:
                         logger.exception("Loop replay failed (audio/file)")
                         self._gs(guild_id).loop = False  # Disable loop on error
+                        self._safe_run_coroutine(self.safe_delete(filename))
                 else:
                     # Loop source file is gone (external temp eviction / race).
                     # Disable loop so the now-playing embed and cleanup
@@ -1594,6 +1615,12 @@ class Music(commands.Cog):
             # a stat on a hung disk would block every guild's playback.
             if not await asyncio.to_thread(Path(filename).exists):
                 self._gs(guild_id).fixing = False
+                # We've already reconnected above, so the finally-block cleanup
+                # guard sees a connected VC and won't run. Clear the stale
+                # current_track explicitly — it points at the now-deleted file
+                # and the bot is left connected+idle; leaving it populated would
+                # let a subsequent !fix/!nowplaying act on a dead reference.
+                self._gs(guild_id).current_track = None
                 embed = discord.Embed(
                     description=f"{Emojis.CROSS} ไฟล์เพลงถูกลบไปแล้ว ลอง !play ใหม่",
                     color=Colors.ERROR,
@@ -2750,8 +2777,18 @@ class Music(commands.Cog):
         ]
 
         def _resolve_in_use(names: list[str]) -> set[str]:
-            # Normalize paths to handle potential differences
-            return {str(Path(n).resolve()) for n in names}
+            # Normalize paths to handle potential differences. Guard each
+            # resolve() per-item: a path with OS-rejected chars / reserved
+            # names would otherwise abort the whole comprehension and let the
+            # exception escape to clearcache / on_ready (mirrors the per-entry
+            # guards in _cleanup below and _periodic_temp_cleanup._cleanup_sync).
+            resolved: set[str] = set()
+            for n in names:
+                try:
+                    resolved.add(str(Path(n).resolve()))
+                except (OSError, ValueError):
+                    continue
+            return resolved
 
         in_use_files = await asyncio.to_thread(_resolve_in_use, raw_in_use)
 

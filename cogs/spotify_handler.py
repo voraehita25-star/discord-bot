@@ -15,6 +15,7 @@ import contextlib
 import functools
 import logging
 import os
+import time
 from collections.abc import Callable
 from http.client import RemoteDisconnected
 from typing import TYPE_CHECKING, Any
@@ -430,8 +431,6 @@ class SpotifyHandler:
             while results and results.get("next") and len(tracks) < self.MAX_PLAYLIST_TRACKS:
                 # Note: sleep is inside executor, which is acceptable
                 # as it doesn't block the main event loop
-                import time
-
                 time.sleep(self.RATE_LIMIT_DELAY)
                 results = sp.next(results)
                 if results and results.get("items"):
@@ -572,8 +571,6 @@ class SpotifyHandler:
             items = results.get("items", []) if results else []
             # album_tracks returns max 50 per page — paginate to MAX_PLAYLIST_TRACKS.
             while results and results.get("next") and len(items) < self.MAX_PLAYLIST_TRACKS:
-                import time
-
                 time.sleep(self.RATE_LIMIT_DELAY)
                 results = sp.next(results)
                 if results and results.get("items"):

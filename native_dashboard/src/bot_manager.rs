@@ -295,11 +295,19 @@ impl BotManager {
             }
             // Accept a process whose canonicalized exe lives under base_path
             // (covers the bundled `.venv` interpreter spawn where base_path
-            // never appears literally in argv).
+            // never appears literally in argv). Use component-aware
+            // `Path::starts_with` rather than a raw string prefix so a
+            // base_path of `...\bot` does NOT prefix-match an unrelated
+            // interpreter living under a sibling `...\bot-other\.venv\...`.
+            // Both sides are lowercased first to keep the case-insensitive
+            // match the surrounding code relies on.
             let exe_under_base = process
                 .exe()
                 .and_then(|exe| std::fs::canonicalize(exe).ok())
-                .map(|c| c.to_string_lossy().to_lowercase().starts_with(base_canon))
+                .map(|c| {
+                    let exe_lower = c.to_string_lossy().to_lowercase();
+                    std::path::Path::new(&exe_lower).starts_with(std::path::Path::new(base_canon))
+                })
                 .unwrap_or(false);
             if exe_under_base {
                 return true;
@@ -788,8 +796,10 @@ impl BotManager {
             .map_err(|e| format!("Failed to start dev watcher: {}", e))?;
 
         // Save dev_watcher PID for later cleanup. If the write fails we can
-        // never kill this watcher again, so log loudly instead of swallowing
-        // the error — that used to leak orphan watchers across restarts.
+        // never reap this watcher after a dashboard restart (no PID file and
+        // no surviving in-memory handle), so it would leak as an orphan that
+        // keeps hot-reloading the bot. Rather than proceed with an untrackable
+        // watcher, kill the just-spawned tree and surface the failure.
         let pid_path = self.dev_watcher_pid_file();
         let pid = child.id();
         // Hold onto the Child handle so stop_dev_watcher() can wait() on it
@@ -799,11 +809,25 @@ impl BotManager {
         self.dev_watcher_child = Some(child);
         if let Err(e) = fs::write(&pid_path, pid.to_string()) {
             eprintln!(
-                "⚠️ Failed to write dev_watcher PID {} to {}: {} — orphan risk on restart",
+                "⚠️ Failed to write dev_watcher PID {} to {}: {} — killing untrackable watcher",
                 pid,
                 pid_path.display(),
                 e,
             );
+            // Tear down the watcher tree we just spawned so it can't linger as
+            // an orphan, then report the failure to the caller.
+            let _ = Command::new(taskkill_path())
+                .args(["/PID", &pid.to_string(), "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            if let Some(mut c) = self.dev_watcher_child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            return Err(format!(
+                "Failed to track dev watcher (PID file write failed): {}",
+                e
+            ));
         }
 
         std::thread::sleep(std::time::Duration::from_secs(3));

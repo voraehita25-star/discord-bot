@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "bot-dashboard"
-version = "3.4.11"
+version = "3.4.12"
 dependencies = [
  "chrono",
  "dirs",

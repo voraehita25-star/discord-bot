@@ -123,6 +123,14 @@ def extract_from_payload(payload: dict[Any, Any]) -> ExtractedDocument | None:
             return _extract_text(name, data_field)
     except Exception as e:
         logger.warning("Document extraction failed for %s: %s", name, e)
+        return None
+    # Unsupported binary type (non-PDF/DOCX ``data:`` blob with a non-text
+    # kind hint, e.g. an .rtf or image-typed attachment). Skipping these is
+    # intended, but log so an unsupported upload is distinguishable from a
+    # corrupt one at this layer.
+    logger.info(
+        "Unsupported document type for %s (ext=%s, kind=%s) — skipped", name, ext, kind_hint
+    )
     return None
 
 
@@ -315,9 +323,11 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
                 # writes any entry to disk would inherit a traversal sink
                 # if we didn't filter at the source.
                 entry_name = info.filename or ""
-                if entry_name.startswith(("/", "\\")) or ".." in entry_name.replace(
-                    "\\", "/"
-                ).split("/"):
+                if (
+                    entry_name.startswith(("/", "\\"))
+                    or ".." in entry_name.replace("\\", "/").split("/")
+                    or re.match(r"^[A-Za-z]:[\\/]", entry_name)
+                ):
                     logger.warning(
                         "DOCX %s rejected: suspicious entry name %r",
                         filename,
@@ -399,13 +409,19 @@ def _extract_text(filename: str, data_field: str) -> ExtractedDocument | None:
             _MAX_DECODED_DOC_BYTES,
         )
         return None
-    if len(data_field) > MAX_EXTRACTED_CHARS * 4:
+    pre_sliced = len(data_field) > MAX_EXTRACTED_CHARS * 4
+    if pre_sliced:
         data_field = data_field[: MAX_EXTRACTED_CHARS * 4]
     text = _normalise(data_field)
     if not text:
         return None
     if len(text) > MAX_EXTRACTED_CHARS:
         text = text[:_TRUNCATION_BUDGET] + _TRUNCATION_MARKER
+    elif pre_sliced:
+        # The early slice dropped tail content but _normalise then shrank the
+        # result back under the cap, so the length check above wouldn't fire.
+        # Append the marker anyway so the truncation isn't silent.
+        text = text + _TRUNCATION_MARKER
     return ExtractedDocument(
         filename=filename,
         kind="text",

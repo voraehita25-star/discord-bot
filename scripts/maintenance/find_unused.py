@@ -95,19 +95,20 @@ def module_to_file(module_name, project_files):
     # call instead of O(N) over all project files. Called once per
     # import edge during scan: the previous O(N²) loop made a 1000-file
     # repo do ~1M comparisons every run.
+    #
+    # Keys are relative-to-PROJECT_ROOT POSIX paths ONLY. A previous
+    # version also indexed backslash-normalized absolute paths, which let
+    # an absolute-path key surface first in the suffix fallback and
+    # attribute an import to the wrong file.
     rel_lookup = getattr(module_to_file, "_rel_lookup", None)
     if rel_lookup is None:
-        rel_lookup = {str(pf).replace("\\", "/").lstrip("/"): pf for pf in project_files}
-        # Also index by relative-to-PROJECT_ROOT path so trailing-segment
-        # matches don't accidentally pick up unrelated files (the
-        # previous ``endswith`` accepted ``xbar.py`` as a match for
-        # ``bar.py``).
+        rel_lookup = {}
         for pf in project_files:
             try:
                 rel = pf.relative_to(PROJECT_ROOT).as_posix()
-                rel_lookup[rel] = pf
             except ValueError:
                 continue
+            rel_lookup[rel] = pf
         module_to_file._rel_lookup = rel_lookup  # type: ignore[attr-defined]
 
     for var in variations:
@@ -115,10 +116,17 @@ def module_to_file(module_name, project_files):
         if var in rel_lookup:
             return rel_lookup[var]
         # Fall back to slow suffix match only when needed — the indexed
-        # lookup catches >99% of imports without scanning.
-        for path_key, pf in rel_lookup.items():
-            if path_key.endswith("/" + var) or path_key == var:
-                return pf
+        # lookup catches >99% of imports without scanning. Collect ALL
+        # suffix matches: if two packages share the same leaf module name
+        # (e.g. cogs/ai_core/cache/store.py vs utils/cache/store.py) the
+        # match is ambiguous, so we must not arbitrarily pick whichever
+        # dict iteration happens to hit first.
+        suffix = "/" + var
+        matches = [pf for path_key, pf in rel_lookup.items() if path_key.endswith(suffix)]
+        if len(matches) == 1:
+            return matches[0]
+        # 0 matches -> try next variation; >1 -> ambiguous, skip suffix
+        # resolution for this variation and let the next one (or None) win.
     return None
 
 

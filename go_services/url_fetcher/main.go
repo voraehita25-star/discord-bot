@@ -374,6 +374,22 @@ func (f *Fetcher) FetchBatch(ctx context.Context, urls []string) FetchResponse {
 		go func(idx int, u string) {
 			defer wg.Done()
 
+			// Recover from any panic on the fetch path (goquery DOM walk /
+			// charset decode runs on attacker-controlled response bodies).
+			// These worker goroutines run OUTSIDE middleware.Recoverer's
+			// coverage — that only guards the handler goroutine — so an
+			// unrecovered panic here would crash the whole process (a DoS
+			// vector via a crafted URL in a batch). Turn it into a per-URL error.
+			defer func() {
+				if rec := recover(); rec != nil {
+					response.Results[idx] = FetchResult{
+						URL:         u,
+						Error:       fmt.Sprintf("panic during fetch: %v", rec),
+						FetchTimeMs: time.Since(start).Milliseconds(),
+					}
+				}
+			}()
+
 			// Check context before acquiring semaphore
 			select {
 			case <-ctx.Done():

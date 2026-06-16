@@ -621,7 +621,14 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Graceful shutdown
+	// Graceful shutdown. server.Shutdown closes the listener, which makes the
+	// blocking ListenAndServe below return http.ErrServerClosed immediately —
+	// but the in-flight connection drain keeps running here. main() must wait
+	// on idleConnsClosed before returning, otherwise the process exits the
+	// instant the listener closes and the drain (up to the 10s timeout) is cut
+	// short, killing in-flight /metrics/batch, /metrics/push and
+	// /health/service responses mid-write.
+	idleConnsClosed := make(chan struct{})
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -636,6 +643,7 @@ func main() {
 		if err := server.Shutdown(ctx); err != nil {
 			log.Printf("Health API server shutdown error: %v", err)
 		}
+		close(idleConnsClosed)
 	}()
 
 	log.Printf("Health API service starting on %s:%s", bindHost, port)
@@ -645,4 +653,9 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server error: %v", err)
 	}
+
+	// ListenAndServe returned ErrServerClosed (clean shutdown path) — wait for
+	// the drain goroutine to finish before exiting so in-flight requests can
+	// complete or hit the 10s timeout.
+	<-idleConnsClosed
 }

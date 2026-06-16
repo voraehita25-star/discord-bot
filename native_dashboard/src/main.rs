@@ -711,7 +711,19 @@ fn read_dotenv_value(env_path: &std::path::Path, key: &str) -> Option<String> {
             line = rest.trim_start();
         }
         if let Some(val) = line.strip_prefix(&prefix) {
-            let val = val.trim().trim_matches('"').trim_matches('\'');
+            // Strip at most ONE matched surrounding quote pair, mirroring a real
+            // dotenv parser. ``trim_matches`` would over-strip repeated boundary
+            // quotes and, worse, peel a mismatched pair like ``"value'`` (removing
+            // both the leading ``"`` and trailing ``'``) — corrupting the value.
+            let t = val.trim();
+            let val = if t.len() >= 2
+                && ((t.starts_with('"') && t.ends_with('"'))
+                    || (t.starts_with('\'') && t.ends_with('\'')))
+            {
+                &t[1..t.len() - 1]
+            } else {
+                t
+            };
             if !val.is_empty() {
                 return Some(val.to_string());
             }
@@ -771,14 +783,14 @@ fn allowed_base_roots(exe_path: &Option<std::path::PathBuf>) -> Vec<std::path::P
         .collect()
 }
 
-fn is_under_allowed_root(
-    candidate: &std::path::Path,
+/// Check whether an already-canonicalized path lives under one of the trusted
+/// install-location roots. Callers must pass a path that has itself been
+/// produced by ``std::fs::canonicalize`` so the prefix comparison is against
+/// the same resolution used for every other decision about this path.
+fn canonical_is_under_allowed_root(
+    canon: &std::path::Path,
     exe_path: &Option<std::path::PathBuf>,
 ) -> bool {
-    let canon = match std::fs::canonicalize(candidate) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
     let roots = allowed_base_roots(exe_path);
     if roots.is_empty() {
         // No trustable root resolved — refuse to trust an attacker-writable
@@ -800,14 +812,23 @@ fn resolve_production_base_path(exe_path: &Option<std::path::PathBuf>) -> std::p
     let config_path = get_config_path();
     if let Ok(saved) = std::fs::read_to_string(&config_path) {
         let saved_path = std::path::PathBuf::from(saved.trim());
-        if saved_path.join("bot.py").exists() {
-            if is_under_allowed_root(&saved_path, exe_path) {
-                return saved_path;
-            } else {
-                eprintln!(
-                    "WARNING: Saved bot_path.txt points outside trusted roots ({}); ignoring.",
-                    saved_path.display(),
-                );
+        // Canonicalize ONCE and bind every subsequent decision — the bot.py
+        // existence check, the allowed-root confinement check, and the value
+        // we return (which BotManager later spawns ``python bot.py`` from) — to
+        // that single resolution. Doing the checks against separate resolutions
+        // of the same string left a TOCTOU window where a same-user attacker
+        // who can write the user-writable marker file could swap the directory
+        // between the existence check and the spawn.
+        if let Ok(canonical) = std::fs::canonicalize(&saved_path) {
+            if canonical.join("bot.py").exists() {
+                if canonical_is_under_allowed_root(&canonical, exe_path) {
+                    return canonical;
+                } else {
+                    eprintln!(
+                        "WARNING: Saved bot_path.txt points outside trusted roots ({}); ignoring.",
+                        canonical.display(),
+                    );
+                }
             }
         }
     }

@@ -126,7 +126,13 @@ def check_cli() -> bool:
         _cli_call("Reply with exactly this token and nothing else: SMOKE_OK_4242", allow_read=False)
     )
     ok = "SMOKE_OK_4242" in reply
-    print(f"[cli] reply={reply[:80]!r} timed_out={timed_out} -> {'PASS' if ok else 'FAIL'}")
+    if ok:
+        verdict = "PASS"
+    elif timed_out:
+        verdict = "TIMEOUT (env)"
+    else:
+        verdict = "FAIL"
+    print(f"[cli] reply={reply[:80]!r} timed_out={timed_out} -> {verdict}")
     return ok
 
 

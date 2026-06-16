@@ -63,7 +63,10 @@ class AIDebug(commands.Cog):
                     from cogs.ai_core.memory.history_manager import history_manager
 
                     token_count = history_manager.estimate_tokens(history)
-                except ImportError:
+                except (ImportError, AttributeError, TypeError, KeyError):
+                    # estimate_tokens อาจล้มตอน runtime ถ้า history entry ผิดรูป
+                    # (TypeError/KeyError) ไม่ใช่แค่ ImportError — degrade ลง rough
+                    # estimate แทนที่จะให้ทั้งคำสั่ง !ai_debug ล้ม (ตาม Cache/RAG panel)
                     token_count = len(history) * 50  # Rough estimate
 
         embed.add_field(

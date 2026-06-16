@@ -101,6 +101,15 @@ export class ChatSearch {
     step(direction) {
         if (this.matches.length === 0)
             return;
+        // The <mark> nodes in this.matches are detached when renderMessages()
+        // replaces container.innerHTML — stepping onto a detached node would
+        // scrollIntoView() a no-op and display a stale count. Re-run the search
+        // against the current DOM before stepping if our matches are stale.
+        if (this.matches.some(m => !m.isConnected)) {
+            const input = document.getElementById('chat-search-input');
+            this.perform(input?.value ?? '');
+            return;
+        }
         this.focus(this.currentIdx + direction);
     }
     focus(idx) {

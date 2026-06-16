@@ -1410,51 +1410,63 @@ class ChatManager(SessionMixin, ResponseMixin):
                         except (TimeoutError, aiohttp.ClientError, ValueError, OSError) as e:
                             logger.debug("URL fetching failed: %s", e)
 
+                    # When the user sent no real text (attachment-only or
+                    # continue-the-conversation), display_message is a synthetic
+                    # placeholder like "[User sent image(s) without text]". Running
+                    # semantic/prefix memory search on that placeholder retrieves
+                    # noise matching the placeholder words and wastes an embedding
+                    # round-trip, so skip RAG + entity search unless real text exists.
+                    has_user_text = bool(message and message.strip())
+
                     # --- RAG: Retrieve Relevant Memories ---
                     rag_context = ""
 
-                    try:
-                        # Search global memories + channel specific
-                        _rag_start = time.time()
-                        memories = await rag_system.search_memory(display_message, limit=RAG_TOP_K)
-                        self.record_timing("rag_search", time.time() - _rag_start)
-                        if memories:
-                            rag_context = "\n\n[Long-term Memory]\n" + "\n".join(
-                                f"- {m}" for m in memories
+                    if has_user_text:
+                        try:
+                            # Search global memories + channel specific
+                            _rag_start = time.time()
+                            memories = await rag_system.search_memory(
+                                display_message, limit=RAG_TOP_K
                             )
-                    except Exception:
-                        # RAG is a non-critical enhancement: a backend
-                        # failure (FAISS RuntimeError, numpy ValueError, DB
-                        # OSError, …) must degrade to "no memory", never
-                        # abort the whole turn via the outer broad handler.
-                        logger.exception("RAG search failed")
+                            self.record_timing("rag_search", time.time() - _rag_start)
+                            if memories:
+                                rag_context = "\n\n[Long-term Memory]\n" + "\n".join(
+                                    f"- {m}" for m in memories
+                                )
+                        except Exception:
+                            # RAG is a non-critical enhancement: a backend
+                            # failure (FAISS RuntimeError, numpy ValueError, DB
+                            # OSError, …) must degrade to "no memory", never
+                            # abort the whole turn via the outer broad handler.
+                            logger.exception("RAG search failed")
 
                     # --- Entity Memory: Retrieve verified character/location facts ---
                     entity_context = ""
-                    try:
-                        # Extract entity names from message (look for {{Name}} patterns)
-                        entity_names = re.findall(r"\{\{([^}]+)\}\}", display_message)
-                        # Also search for known character names in the message
-                        if not entity_names:
-                            # Search entities mentioned in text.
-                            # 100-char slice is intentional: the entity search
-                            # index uses prefix matching, and longer queries
-                            # add latency without improving recall for the
-                            # short character names we're looking for.
-                            entities = await entity_memory.search_entities(
-                                display_message[:100],
-                                channel_id=channel_id,
-                                guild_id=guild_id,
-                                limit=ENTITY_TOP_K,
-                            )
-                            entity_names = [e.name for e in entities]
+                    if has_user_text:
+                        try:
+                            # Extract entity names from message (look for {{Name}} patterns)
+                            entity_names = re.findall(r"\{\{([^}]+)\}\}", display_message)
+                            # Also search for known character names in the message
+                            if not entity_names:
+                                # Search entities mentioned in text.
+                                # 100-char slice is intentional: the entity search
+                                # index uses prefix matching, and longer queries
+                                # add latency without improving recall for the
+                                # short character names we're looking for.
+                                entities = await entity_memory.search_entities(
+                                    display_message[:100],
+                                    channel_id=channel_id,
+                                    guild_id=guild_id,
+                                    limit=ENTITY_TOP_K,
+                                )
+                                entity_names = [e.name for e in entities]
 
-                        if entity_names:
-                            entity_context = await entity_memory.get_entities_for_prompt(
-                                entity_names, channel_id=channel_id, guild_id=guild_id
-                            )
-                    except (KeyError, ValueError, TypeError, AttributeError) as e:
-                        logger.debug("Entity memory lookup failed: %s", e)
+                            if entity_names:
+                                entity_context = await entity_memory.get_entities_for_prompt(
+                                    entity_names, channel_id=channel_id, guild_id=guild_id
+                                )
+                        except (KeyError, ValueError, TypeError, AttributeError) as e:
+                            logger.debug("Entity memory lookup failed: %s", e)
 
                     # --- State Tracker: Get current character states (RP only) ---
                     state_context = ""

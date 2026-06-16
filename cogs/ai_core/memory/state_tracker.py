@@ -113,8 +113,12 @@ class CharacterStateTracker:
         self._states: dict[int, dict[str, CharacterState]] = {}
         self._last_scene: dict[int, str] = {}  # Last scene description per channel
         # Reentrant lock so set_state can call itself / nested helpers without
-        # deadlocking, while still serialising mutations across Discord events
-        # that may execute concurrently on the asyncio loop.
+        # deadlocking. It guards against genuinely concurrent *multi-threaded*
+        # access — the dev probe (scripts/dev/probe_ai_fixes.py) and any future
+        # ``to_thread`` offloading — rather than coroutines on the single
+        # asyncio loop (no locked method awaits inside its critical section, so
+        # loop coroutines can't interleave through these synchronous bodies).
+        # Harmless and defensive otherwise.
         self._lock = threading.RLock()
 
     def get_state(self, character_name: str, channel_id: int) -> CharacterState | None:
