@@ -5338,3 +5338,335 @@ html[data-theme="light"] .toast::before {
     justify-content: center;
     padding-top: 10px;
 }
+
+/* ============================================================================
+   PREMIUM UI UPLIFT — appended; wins via source order over earlier rules.
+   Elevates the dark-violet / sakura anime identity to a premium, layered,
+   high-contrast system WITHOUT replacing the brand. Token-driven so it
+   cascades across every page. The light theme keeps its higher-specificity
+   overrides; new tokens get light values below.
+   ============================================================================ */
+
+:root {
+    /* Layered surfaces — solid & stepped so cards read as elevated, not muddy */
+    --bg-primary: #0c0a18;
+    --surface-1: #16122b;
+    --surface-2: #1e1840;
+    --surface-3: #271f4e;
+    --bg-secondary: #16122b;
+    --bg-tertiary: #1e1840;
+    /* Hairlines */
+    --border-color: rgba(178, 150, 255, 0.10);
+    --border-strong: rgba(178, 150, 255, 0.22);
+    --border-focus: rgba(178, 130, 255, 0.55);
+    /* Text tiers */
+    --text-primary: #f4f0fc;
+    --text-secondary: #c8bce6;
+    --text-tertiary: #9b8dc2;
+    --text-muted: #6f6498;
+    /* Brand + harmonized semantic accents (tamed neon) */
+    --accent-purple: #ab78ff;
+    --accent-pink: #ff7cb9;
+    --accent-violet: #8d6cf2;
+    --accent-green: #3fdca2;
+    --accent-red: #ff6b86;
+    --accent-orange: #ffb259;
+    --accent-cyan: #5bd6ec;
+    --glow-purple: rgba(171, 120, 255, 0.40);
+    --glow-pink: rgba(255, 124, 185, 0.34);
+    --brand-grad: linear-gradient(135deg, #b582ff 0%, #ff7cb9 100%);
+    --brand-soft: linear-gradient(135deg, rgba(181, 130, 255, 0.16), rgba(255, 124, 185, 0.12));
+    /* Big containers */
+    --card-bg: linear-gradient(165deg, #1b1636 0%, #131028 100%);
+    --sidebar-bg: linear-gradient(180deg, #15112c 0%, #0d0a1c 100%);
+    /* Elevation */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 24px rgba(8, 4, 22, 0.45);
+    --shadow-lg: 0 22px 50px rgba(6, 2, 20, 0.55);
+    --shadow-glow: 0 14px 40px rgba(126, 74, 224, 0.22);
+    /* Shape + motion */
+    --radius-sm: 10px;
+    --radius: 16px;
+    --radius-lg: 22px;
+    --r-pill: 999px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --focus-ring: 0 0 0 3px rgba(171, 120, 255, 0.45);
+}
+
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --surface-1: #ffffff;
+    --surface-2: #f3f5fc;
+    --surface-3: #e9edf9;
+    --border-strong: rgba(94, 88, 140, 0.30);
+    --border-focus: rgba(124, 58, 237, 0.55);
+    --text-tertiary: #5a6175;
+    --text-muted: #767d92;
+    --accent-violet: #6d28d9;
+    --brand-grad: linear-gradient(135deg, #7c3aed 0%, #be2a6f 100%);
+    --brand-soft: linear-gradient(135deg, rgba(124, 58, 237, 0.10), rgba(190, 42, 111, 0.07));
+    --shadow-sm: 0 1px 2px rgba(31, 36, 48, 0.06);
+    --shadow-md: 0 8px 24px rgba(31, 36, 48, 0.09);
+    --shadow-lg: 0 22px 50px rgba(31, 36, 48, 0.13);
+    --shadow-glow: 0 14px 36px rgba(124, 58, 237, 0.13);
+    --focus-ring: 0 0 0 3px rgba(124, 58, 237, 0.40);
+}
+
+/* Light theme: unify the primary CTA with the brand gradient too (was a
+   one-off green), so primary actions read as "brand" in both themes. */
+html[data-theme="light"] .btn-primary { background: var(--brand-grad); color: #fff; border: none; }
+html[data-theme="light"] .btn-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: 0 10px 26px rgba(124, 58, 237, 0.30); }
+
+/* ---- App canvas: depth via fixed brand glows ---- */
+body {
+    background:
+        radial-gradient(1200px 760px at 8% -10%, rgba(150, 92, 255, 0.16), transparent 58%),
+        radial-gradient(980px 620px at 102% -4%, rgba(255, 110, 184, 0.10), transparent 54%),
+        var(--bg-primary);
+    background-attachment: fixed;
+    color: var(--text-secondary);
+}
+
+html[data-theme="light"] body {
+    background:
+        radial-gradient(1100px 680px at 8% -12%, rgba(124, 58, 237, 0.07), transparent 60%),
+        radial-gradient(900px 560px at 102% -6%, rgba(190, 42, 111, 0.05), transparent 56%),
+        var(--bg-primary);
+}
+
+/* ---- Typography hierarchy ---- */
+h1 { color: var(--text-primary); font-weight: 800; letter-spacing: -0.02em; }
+h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
+.page-header p, .page-subtitle, .subtitle { color: var(--text-tertiary); }
+
+/* ---- Sidebar ---- */
+.sidebar {
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border-color);
+    box-shadow: var(--shadow-md);
+}
+
+.logo {
+    background: var(--brand-soft);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+}
+
+.logo-text {
+    background: var(--brand-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: 800;
+    letter-spacing: 0.2px;
+}
+
+.nav-item {
+    border-radius: 12px;
+    color: var(--text-secondary);
+    transition: background .2s var(--ease), color .2s var(--ease), transform .15s var(--ease);
+}
+
+.nav-item:hover { background: rgba(178, 150, 255, 0.08); color: var(--text-primary); }
+.nav-item:active { transform: translateX(1px) scale(0.99); }
+
+.nav-item.active {
+    background: var(--brand-soft);
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.nav-item.active::before { background: var(--brand-grad); box-shadow: 0 0 12px var(--glow-purple); }
+
+.shortcut {
+    background: rgba(178, 150, 255, 0.10);
+    border: 1px solid var(--border-color);
+    color: var(--text-tertiary);
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.theme-toggle {
+    background: var(--brand-soft);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 12px;
+    transition: background .2s var(--ease), transform .15s var(--ease), color .2s var(--ease);
+}
+
+.theme-toggle:hover { transform: translateY(-1px); color: var(--text-primary); }
+
+/* ---- Status badge ---- */
+.status-badge {
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--r-pill);
+    color: var(--text-secondary);
+}
+
+.status-badge.online {
+    background: rgba(63, 220, 162, 0.10);
+    border-color: rgba(63, 220, 162, 0.30);
+    color: #8af0cf;
+}
+
+.status-badge.online .status-dot, .status-dot { box-shadow: 0 0 10px currentColor; }
+
+/* ---- Headline metrics (stat cards) ---- */
+.stats-grid { gap: 16px; }
+
+.stat-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    transition: transform .25s var(--ease), box-shadow .25s var(--ease), border-color .25s var(--ease);
+}
+
+.stat-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-lg), var(--shadow-glow);
+}
+
+.stat-card .stat-icon, .stat-icon {
+    font-size: 22px;
+    opacity: 0.95;
+    filter: drop-shadow(0 2px 6px var(--glow-purple));
+}
+
+.stat-card .stat-value, .stat-value {
+    font-size: clamp(22px, 1.9vw, 28px);
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    line-height: 1.12;
+}
+
+.stat-card .stat-label, .stat-label {
+    color: var(--text-tertiary);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+}
+
+/* ---- Cards (control / settings / chart) ---- */
+.control-card, .settings-card, .chart-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+}
+
+.chart-card h3, .control-card h3, .settings-card h3 { color: var(--text-primary); font-weight: 700; }
+.chart-card canvas { border-radius: var(--radius-sm); }
+
+/* ---- Buttons: one cohesive system ---- */
+.btn {
+    border-radius: var(--r-pill);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    transition: transform .15s var(--ease), box-shadow .2s var(--ease), filter .2s var(--ease), background .2s var(--ease);
+}
+
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
+.btn:active:not(:disabled) { transform: translateY(0) scale(0.985); }
+
+.btn-primary {
+    background: var(--brand-grad);
+    color: #fff;
+    border: none;
+    box-shadow: 0 6px 18px rgba(150, 92, 230, 0.30);
+}
+
+.btn-primary:hover:not(:disabled) { box-shadow: 0 10px 26px rgba(150, 92, 230, 0.42); filter: brightness(1.06); }
+
+.btn-danger {
+    background: linear-gradient(135deg, #ff7088, #e2495f);
+    color: #fff;
+    border: none;
+    box-shadow: 0 6px 18px rgba(226, 73, 95, 0.28);
+}
+
+.btn-warning {
+    background: linear-gradient(135deg, #ffbe6b, #f49a31);
+    color: #2a1500;
+    border: none;
+    box-shadow: 0 6px 18px rgba(244, 154, 49, 0.26);
+}
+
+.btn-secondary {
+    background: rgba(178, 150, 255, 0.12);
+    color: var(--text-primary);
+    border: 1px solid var(--border-strong);
+}
+
+.btn-secondary:hover:not(:disabled) { background: rgba(178, 150, 255, 0.18); }
+
+.btn-icon {
+    background: rgba(178, 150, 255, 0.10);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.btn-icon:hover:not(:disabled) { background: rgba(178, 150, 255, 0.18); color: var(--text-primary); }
+
+/* ---- Inputs ---- */
+.setting-input, .setting-select, .conversation-filter, #log-filter,
+input[type="text"], input[type="search"], input[type="number"], textarea, select {
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    transition: border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease);
+}
+
+.setting-input::placeholder, .conversation-filter::placeholder, #log-filter::placeholder,
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+
+.setting-input:focus, .setting-select:focus, .conversation-filter:focus, #log-filter:focus,
+input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: var(--focus-ring);
+    background: var(--surface-3);
+}
+
+/* ---- Empty states ---- */
+.empty-state { color: var(--text-tertiary); }
+.empty-state h2, .empty-state h3 { color: var(--text-primary); }
+
+/* ---- Scrollbars ---- */
+* { scrollbar-width: thin; scrollbar-color: rgba(178, 150, 255, 0.30) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(178, 150, 255, 0.22);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: var(--r-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(178, 150, 255, 0.42); background-clip: padding-box; }
+
+/* ---- Focus-visible (keyboard) ---- */
+.btn:focus-visible, .nav-item:focus-visible, .theme-toggle:focus-visible,
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+/* ---- Selection ---- */
+::selection { background: rgba(255, 124, 185, 0.30); color: #fff; }
+
+/* ---- Respect reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
