@@ -65,6 +65,9 @@ go_services/*.exe
 .coverage
 htmlcov/
 
+# Playwright MCP scratch output (console/page dumps from browser automation)
+.playwright-mcp/
+
 # Logs
 *.log
 logs/
