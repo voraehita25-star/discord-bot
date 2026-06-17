@@ -451,3 +451,106 @@ class TestModuleImports:
         from cogs.ai_core.session_mixin import SessionMixin
 
         assert SessionMixin is not None
+
+
+class TestRoleplayAndUnrestrictedWiring:
+    """FAUST_ROLEPLAY (Discord-guild-only) and FAUST_SANDBOX (Discord !unrestricted) wiring."""
+
+    def _make_instance(self):
+        from cogs.ai_core.session_mixin import SessionMixin
+
+        class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+
+            def __init__(self):
+                self.client = MagicMock()
+                self.bot = MagicMock()
+                self.chats = {}
+                self.last_accessed = {}
+                self.seen_users = {}
+                self.processing_locks = {}
+                self.pending_messages = {}
+                self.cancel_flags = {}
+                self.streaming_enabled = {}
+                self.current_typing_msg = {}
+
+            def _enforce_channel_limit(self):
+                return 0
+
+        return TestClass()
+
+    @pytest.mark.asyncio
+    async def test_guild_channel_appends_faust_roleplay(self):
+        """A non-RP Discord guild channel gets FAUST_ROLEPLAY appended to the persona."""
+        instance = self._make_instance()
+        with (
+            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.GUILD_ID_RP", 1),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch("cogs.ai_core.session_mixin.FAUST_ROLEPLAY", "RP_FORMAT_RULES"),
+        ):
+            result = await instance.get_chat_session(100, guild_id=2)  # non-RP guild
+        assert "FAUST_BASE" in result["system_instruction"]
+        assert "RP_FORMAT_RULES" in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_dm_does_not_append_faust_roleplay(self):
+        """A DM (guild_id None) keeps plain FAUST_INSTRUCTION — no roleplay actions."""
+        instance = self._make_instance()
+        with (
+            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.GUILD_ID_RP", 1),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch("cogs.ai_core.session_mixin.FAUST_ROLEPLAY", "RP_FORMAT_RULES"),
+        ):
+            result = await instance.get_chat_session(101)  # DM: guild_id defaults to None
+        assert "FAUST_BASE" in result["system_instruction"]
+        assert "RP_FORMAT_RULES" not in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_rp_server_uses_roleplay_world_not_faust_roleplay(self):
+        """The RP server still uses ROLEPLAY_ASSISTANT_INSTRUCTION, not FAUST_ROLEPLAY."""
+        instance = self._make_instance()
+        with (
+            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.GUILD_ID_RP", 1),
+            patch("cogs.ai_core.session_mixin.ROLEPLAY_ASSISTANT_INSTRUCTION", "RP_WORLD"),
+            patch("cogs.ai_core.session_mixin.FAUST_ROLEPLAY", "RP_FORMAT_RULES"),
+        ):
+            result = await instance.get_chat_session(102, guild_id=1)  # RP server
+        assert "RP_WORLD" in result["system_instruction"]
+        assert "RP_FORMAT_RULES" not in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_injects_discord_sandbox_text(self):
+        """When a channel is unrestricted, the Discord sandbox text is prepended."""
+        instance = self._make_instance()
+        with (
+            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch("cogs.ai_core.session_mixin._DISCORD_UNRESTRICTED_TEXT", "SANDBOX_TEXT"),
+            patch("cogs.ai_core.session_mixin.is_unrestricted", return_value=True),
+        ):
+            result = await instance.get_chat_session(103)
+        assert result["system_instruction"].startswith("SANDBOX_TEXT")
+        assert "FAUST_BASE" in result["system_instruction"]

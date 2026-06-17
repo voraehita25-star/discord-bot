@@ -44,6 +44,7 @@ import discord
 
 from .dashboard_chat_claude_cli import (
     _CLI_WEB_TOOLS_ENABLED,
+    _IDENTITY_OVERRIDE,
     _PENDING_SESSION_CLEANUPS,
     _SESSION_ID_PATTERN,
     _ai_tool_names,
@@ -288,6 +289,10 @@ def _flatten_contents_to_prompt(
         return ""
 
     if system_instruction:
+        # Drop Claude Code's coding-assistant default identity before the persona
+        # (see _IDENTITY_OVERRIDE) so the bot stays in character on the CLI backend.
+        parts.append(_IDENTITY_OVERRIDE)
+        parts.append("")
         parts.append("# System")
         parts.append(system_instruction.strip())
         parts.append("")

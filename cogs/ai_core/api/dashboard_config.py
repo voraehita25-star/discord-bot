@@ -173,12 +173,18 @@ else:
 # ============================================================================
 
 try:
-    from ..data import ENI_ESCALATION_FRAMING, FAUST_INSTRUCTION, UNRESTRICTED_MODE_INSTRUCTION
+    from ..data import (
+        ENI_ESCALATION_FRAMING,
+        FAUST_INSTRUCTION,
+        FAUST_ROLEPLAY,
+        UNRESTRICTED_MODE_INSTRUCTION,
+    )
 
     FAUST_AVAILABLE = True
 except ImportError:
     FAUST_AVAILABLE = False
     FAUST_INSTRUCTION = "You are Faust, a helpful AI assistant."
+    FAUST_ROLEPLAY = ""
     ENI_ESCALATION_FRAMING = ""
     UNRESTRICTED_MODE_INSTRUCTION = ""
 
@@ -215,6 +221,18 @@ The developer values directness, completeness, and creative authenticity."""
 # Role Presets
 # ============================================================================
 
+# Faust's dashboard persona = base persona + the roleplay-format addendum
+# (FAUST_ROLEPLAY: '>' action narration, don't control other users, {{Character}}
+# multi-char) so the dashboard matches the Discord guild behaviour. The
+# ``!= FAUST_INSTRUCTION`` guard avoids duplicating the persona on a setup where
+# the loader defaulted FAUST_ROLEPLAY back to FAUST_INSTRUCTION.
+if FAUST_AVAILABLE and FAUST_ROLEPLAY and FAUST_ROLEPLAY != FAUST_INSTRUCTION:
+    _FAUST_SYSTEM_INSTRUCTION = FAUST_INSTRUCTION + "\n" + FAUST_ROLEPLAY
+elif FAUST_AVAILABLE:
+    _FAUST_SYSTEM_INSTRUCTION = FAUST_INSTRUCTION
+else:
+    _FAUST_SYSTEM_INSTRUCTION = "You are Faust, a genius AI assistant who speaks in third person."
+
 DASHBOARD_ROLE_PRESETS = {
     "general": {
         "name": "General Assistant",
@@ -232,9 +250,7 @@ For complex topics, provide detailed but well-organized responses.""",
     "faust": {
         "name": "Faust",
         "emoji": "👻",
-        "system_instruction": FAUST_INSTRUCTION
-        if FAUST_AVAILABLE
-        else "You are Faust, a genius AI assistant who speaks in third person.",
+        "system_instruction": _FAUST_SYSTEM_INSTRUCTION,
         "color": "#ffb1b4",  # Cerebral Pink
         "unrestricted_framing": UNRESTRICTED_MODE_INSTRUCTION
         if FAUST_AVAILABLE

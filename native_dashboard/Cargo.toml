@@ -1,6 +1,6 @@
 [package]
 name = "bot-dashboard"
-version = "3.4.13"
+version = "3.4.14"
 description = "디스코드 봇 대시보드"
 authors = ["ME"]
 edition = "2021"

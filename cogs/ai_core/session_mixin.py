@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 from .data import (
     FAUST_INSTRUCTION,
+    FAUST_ROLEPLAY,
+    FAUST_SANDBOX,
     GUILD_ID_RP,
     ROLEPLAY_ASSISTANT_INSTRUCTION,
     SERVER_LORE,
@@ -28,6 +30,14 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The operator's persona file uses the legacy name FAUST_SANDBOX for the
+# unrestricted-mode text and doesn't define UNRESTRICTED_MODE_INSTRUCTION (which
+# then resolves to ""). Fall back to FAUST_SANDBOX so the Discord !unrestricted
+# toggle actually injects the operator's authored text. The dashboard's own
+# unrestricted framing is intentionally left untouched (it keeps its separate
+# GENERAL_UNRESTRICTED_FRAMING fallback) — this Discord-side value is local.
+_DISCORD_UNRESTRICTED_TEXT = UNRESTRICTED_MODE_INSTRUCTION or FAUST_SANDBOX
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -103,6 +113,15 @@ class SessionMixin:
 
             if guild_id == GUILD_ID_RP:  # Roleplay Server
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
+            elif guild_id is not None and FAUST_ROLEPLAY and FAUST_ROLEPLAY != FAUST_INSTRUCTION:
+                # Discord GUILD channel (not a DM, not the RP server): append
+                # Faust's roleplay-format addendum ('>' action narration, don't
+                # control other users, {{Character}} multi-char). DMs (guild_id
+                # is None) keep plain FAUST_INSTRUCTION — no RP actions — matching
+                # FAUST_DM_MODE's intent. The ``!= FAUST_INSTRUCTION`` guard
+                # avoids duplicating the persona on setups where the loader
+                # defaulted FAUST_ROLEPLAY back to FAUST_INSTRUCTION.
+                system_instruction = FAUST_INSTRUCTION + "\n" + FAUST_ROLEPLAY
 
             # Append server-specific lore if available
             if guild_id and guild_id in SERVER_LORE:
@@ -173,6 +192,22 @@ class SessionMixin:
                     system_instruction = system_instruction + "\n\n" + lore
                 self.chats[channel_id]["system_instruction"] = system_instruction
 
+            # Guild Faust session missing the roleplay-format addendum (e.g.
+            # cached before FAUST_ROLEPLAY was wired): append it so existing guild
+            # channels pick it up without a restart. Excludes DMs (guild_id None)
+            # and the RP server — same scope as the cache-miss path above.
+            if (
+                guild_id is not None
+                and guild_id != GUILD_ID_RP
+                and FAUST_ROLEPLAY
+                and FAUST_ROLEPLAY != FAUST_INSTRUCTION
+                and FAUST_ROLEPLAY not in cached_instruction
+            ):
+                logger.info("🎭 Adding Faust roleplay format to guild channel %s", channel_id)
+                self.chats[channel_id]["system_instruction"] = (
+                    cached_instruction + "\n" + FAUST_ROLEPLAY
+                )
+
             # Force enable thinking mode for RP server
             if guild_id == GUILD_ID_RP and not self.chats[channel_id].get("thinking_enabled", True):
                 logger.info("🧠 Force enabling thinking mode for RP channel %s", channel_id)
@@ -193,19 +228,19 @@ class SessionMixin:
         # Re-read AFTER any RP-fix branch above so we don't clobber its update.
         current_instruction = self.chats[channel_id].get("system_instruction", "")
         already_injected = bool(
-            UNRESTRICTED_MODE_INSTRUCTION and UNRESTRICTED_MODE_INSTRUCTION in current_instruction
+            _DISCORD_UNRESTRICTED_TEXT and _DISCORD_UNRESTRICTED_TEXT in current_instruction
         )
         if is_unrestricted(channel_id):
-            if not already_injected and UNRESTRICTED_MODE_INSTRUCTION:
+            if not already_injected and _DISCORD_UNRESTRICTED_TEXT:
                 logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
                 self.chats[channel_id]["system_instruction"] = (
-                    UNRESTRICTED_MODE_INSTRUCTION + current_instruction
+                    _DISCORD_UNRESTRICTED_TEXT + current_instruction
                 )
         # Remove unrestricted instruction if it was previously injected
         elif already_injected:
             logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
             self.chats[channel_id]["system_instruction"] = current_instruction.replace(
-                UNRESTRICTED_MODE_INSTRUCTION, ""
+                _DISCORD_UNRESTRICTED_TEXT, ""
             )
 
         # Update Last Accessed Time

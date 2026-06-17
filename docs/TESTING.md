@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: June 15, 2026 | Python 3.14+ | Python Tests: 5,068 ✅ (114 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 298 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: June 15, 2026 | Python 3.14+ | Python Tests: 5,076 ✅ (114 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 298 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run **`make docs-sync`** to refresh every number in the docs from the live repo in one pass (or `make test` / `npm test` / `npm run test:e2e` for the live numbers directly). CI can guard drift with `make docs-check`.
 
@@ -32,7 +32,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (114 Python files, 5,068 tests)
+## Test Structure (114 Python files, 5,076 tests)
 
 ```text
 tests/

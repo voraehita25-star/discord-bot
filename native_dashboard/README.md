@@ -300,7 +300,7 @@ python scripts/dev/validate_ipc.py     # drives the built .exe, calls get_base_p
 target/release/bot-dashboard.exe                  # Source binary (Cargo output)
 target/release/Discord Bot Dashboard.exe          # English alias (copy)
 target/release/디스코드 봇 대시보드.exe           # Korean alias (copy)
-target/release/bundle/nsis/디스코드 봇 대시보드_3.4.13_x64-setup.exe  # NSIS installer
+target/release/bundle/nsis/디스코드 봇 대시보드_3.4.14_x64-setup.exe  # NSIS installer
 ```
 
 ## 🎨 UI

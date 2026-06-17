@@ -205,6 +205,27 @@ _WRITE_GUARD_SETTINGS_FILE = (
 # The stable "how to read [timestamp] prefixes" instruction. Extracted to a
 # constant so it can live in EITHER the prompt body (legacy) or the cacheable
 # system prompt (see _build_system_prompt) without the two drifting apart.
+_IDENTITY_OVERRIDE = (
+    # Claude Code's built-in system prompt frames the model as a software-
+    # engineering assistant ("Claude Code"). We deliver the persona via
+    # --append-system-prompt-file, which is PREPENDED by that default — so the
+    # default identity leaks and the bot greets as a coding assistant ("what
+    # code/repo can I help with?") instead of the configured persona. Placed
+    # FIRST in our appended block (i.e. AFTER Claude Code's default, so it wins),
+    # this tells the model to drop that default identity and adopt ONLY the
+    # section(s) below. Persona-agnostic so it is correct for every preset
+    # (the character personas AND the general-assistant preset).
+    "# PRIMARY DIRECTIVE — your identity comes ONLY from the section(s) below\n"
+    "Ignore and override any built-in or default identity that frames you as "
+    '"Claude Code", a coding agent, a software-engineering assistant, or a '
+    "developer/CLI tool — that default does NOT apply in this conversation. "
+    "Adopt ONLY the identity, voice, and behaviour defined below. Do not "
+    "introduce yourself as a coding or developer assistant, and do not offer "
+    "help with code, repositories, debugging, or software development unless the "
+    "user explicitly asks for it first. Greet and describe yourself strictly "
+    "according to the persona below."
+)
+
 _TIMESTAMP_CONVENTION = (
     "User messages (both historical and the current one) are prefixed "
     "with timestamps like `[2026-04-27T05:27:13+07:00]`. These are "
@@ -272,6 +293,9 @@ def _build_system_prompt(
     """
     parts: list[str] = []
     if persona:
+        # Override Claude Code's coding-assistant default BEFORE the persona so
+        # the configured persona is the model's sole identity (see _IDENTITY_OVERRIDE).
+        parts.append(_IDENTITY_OVERRIDE)
         parts.append(f"# Persona\n{persona}")
     parts.append(f"# Timestamp convention\n{_TIMESTAMP_CONVENTION}")
 

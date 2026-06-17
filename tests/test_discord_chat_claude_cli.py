@@ -1586,3 +1586,42 @@ class TestLogicIntegration:
         assert data is not None, "CLI mode must produce a chat session even without SDK client"
         assert "system_instruction" in data
         assert "history" in data
+
+
+class TestCliIdentityOverride:
+    """The CLI backend must override Claude Code's coding-assistant default identity
+    so the configured persona (Faust / general) is the model's sole identity."""
+
+    def test_dashboard_system_prompt_prepends_identity_override(self):
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _IDENTITY_OVERRIDE,
+            _build_system_prompt,
+        )
+
+        sp = _build_system_prompt("You are SomeCharacter.")
+        assert _IDENTITY_OVERRIDE in sp
+        # Override must come BEFORE the persona so it frames it (wins over the
+        # Claude Code default which is prepended ahead of our whole block).
+        assert sp.index(_IDENTITY_OVERRIDE) < sp.index("SomeCharacter")
+        # And it must actually disclaim the coding-assistant identity.
+        assert "Claude Code" in _IDENTITY_OVERRIDE
+
+    def test_dashboard_system_prompt_no_override_without_persona(self):
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _IDENTITY_OVERRIDE,
+            _build_system_prompt,
+        )
+
+        # No persona → nothing to protect; don't inject the override.
+        assert _IDENTITY_OVERRIDE not in _build_system_prompt("")
+
+    def test_discord_flatten_prompt_prepends_identity_override(self):
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _IDENTITY_OVERRIDE
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}],
+            "You are SomeCharacter.",
+        )
+        assert _IDENTITY_OVERRIDE in prompt
+        assert prompt.index(_IDENTITY_OVERRIDE) < prompt.index("SomeCharacter")

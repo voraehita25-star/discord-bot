@@ -417,6 +417,18 @@ class TestRolePresets:
         assert m.DASHBOARD_ROLE_PRESETS["general"]["name"] == "General Assistant"
         assert m.DASHBOARD_ROLE_PRESETS["faust"]["name"] == "Faust"
 
+    def test_faust_preset_includes_roleplay_addendum(self):
+        """The dashboard faust preset carries the base persona AND, when the
+        persona file defines a distinct FAUST_ROLEPLAY, its roleplay-format
+        addendum (parity with the Discord guild surface)."""
+        m = _reload({"CLAUDE_BACKEND": "cli"})
+        from cogs.ai_core.data import FAUST_INSTRUCTION, FAUST_ROLEPLAY
+
+        faust_si = m.DASHBOARD_ROLE_PRESETS["faust"]["system_instruction"]
+        assert FAUST_INSTRUCTION in faust_si
+        if FAUST_ROLEPLAY and FAUST_ROLEPLAY != FAUST_INSTRUCTION:
+            assert FAUST_ROLEPLAY in faust_si
+
 
 class TestPersonaFallbacks:
     """FAUST_AVAILABLE and the persona-related fallbacks."""
