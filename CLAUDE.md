@@ -4,11 +4,11 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-A **polyglot monorepo** for a production Discord AI bot (v3.4.12). One repo, four tech stacks:
+A **polyglot monorepo** for a production Discord AI bot (v3.4.13). One repo, four tech stacks:
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,066 pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,068 pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
 | Go services | `go_services/` | Go 1.26 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
 | Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 298 vitest + 72 Playwright |

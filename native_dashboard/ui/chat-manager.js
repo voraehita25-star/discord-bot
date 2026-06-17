@@ -180,6 +180,13 @@ export class ChatManager {
         // If the user switches conversations mid-stream, late chunk/stream_end
         // frames for the OLD conversation must not mutate the NEW one.
         this.streamingConversationId = null;
+        // Set true when the current turn is torn down by an `error` frame. Guards
+        // against a server that emits BOTH error and a late stream_end for the same
+        // turn: the error handler nulls streamingConversationId, so the stream_end
+        // mid-switch guard is skipped and the non-edit branch would otherwise fall
+        // through to finalizeStreamingMessage and push a phantom assistant bubble.
+        // Reset on stream_start (a fresh turn begins).
+        this.streamErrored = false;
         // Buffered partial of the in-progress RESPONSE stream, kept independently of
         // the #streaming-message DOM so it survives a conversation switch. The
         // partial isn't persisted to the DB until stream_end, so without this,
@@ -509,6 +516,9 @@ export class ChatManager {
             }
             case 'stream_start':
                 this.isStreaming = true;
+                // Fresh turn — clear the error teardown guard so this stream's
+                // stream_end is allowed to finalize normally.
+                this.streamErrored = false;
                 // Bind the stream to the SERVER-provided conversation id —
                 // the user can switch conversations between sendMessage()
                 // and stream_start (seconds on the CLI backend while it
@@ -633,6 +643,19 @@ export class ChatManager {
                     // above caught it. Discard it; falling through would push the
                     // edited text as a phantom assistant bubble in the now-open
                     // conversation.
+                    this.clearStreamBuffers();
+                    this.setInputEnabled(true);
+                    break;
+                }
+                if (this.streamErrored) {
+                    // The turn was already torn down by an `error` frame for this
+                    // same turn (the error handler nulled streamingConversationId,
+                    // so the mid-switch guard above was skipped). A late, non-edit
+                    // stream_end here would otherwise fall through and push a
+                    // phantom assistant bubble. Discard it; the error handler
+                    // already cleared buffers, removed #streaming-message, and
+                    // re-enabled the input.
+                    this.streamErrored = false;
                     this.clearStreamBuffers();
                     this.setInputEnabled(true);
                     break;
@@ -833,6 +856,10 @@ export class ChatManager {
                 errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
                 showToast(errorMsg, { type: 'error' });
                 this.isStreaming = false;
+                // Mark the turn as torn down so a late stream_end for THIS turn
+                // (server emits both error + stream_end) bails instead of
+                // pushing a phantom assistant bubble. Cleared on next stream_start.
+                this.streamErrored = true;
                 // Clear the stream-conversation guard so a later stream_end for
                 // a NEW turn isn't evaluated against this stale id.
                 this.streamingConversationId = null;
@@ -1225,6 +1252,16 @@ export class ChatManager {
                 // (ai_edit_message itself carries no attachments by design.)
                 this.imageAttach.clear();
                 this.docAttach.clear();
+                // Clearing the textarea via input.value='' above fires no 'input'
+                // event, so the debounced draft writer never runs to remove the
+                // draft. Cancel any pending save and drop the stored draft now —
+                // otherwise a fired-then-sent '/edit ...' draft survives and is
+                // replayed by restoreDraft() on the next loadConversation().
+                if (this.draftSaveTimer !== null) {
+                    clearTimeout(this.draftSaveTimer);
+                    this.draftSaveTimer = null;
+                }
+                this.clearDraft(this.currentConversation.id);
             }
             return;
         }

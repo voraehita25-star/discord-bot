@@ -1428,6 +1428,18 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
     """Save user profile."""
     profile_data = data.get("profile", {})
 
+    # A non-dict "profile" (client sends a string/list/number) would crash the
+    # .get() calls below into a generic INTERNAL_ERROR. Reject it explicitly.
+    if not isinstance(profile_data, dict):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ARG",
+                "message": "profile must be an object",
+            }
+        )
+        return
+
     if not DB_AVAILABLE:
         await ws.send_json(
             {
@@ -1457,7 +1469,7 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
         # client may instead send a dict. Both must end up as ``str | None`` —
         # sqlite cannot bind a dict, and (the original bug) the dict-only branch
         # silently dropped the string the real UI actually sends.
-        prefs_present = isinstance(profile_data, dict) and "preferences" in profile_data
+        prefs_present = "preferences" in profile_data  # profile_data guaranteed dict above
         raw_prefs = profile_data.get("preferences")
         sanitized_prefs: str | None = None
         truncated_prefs = False

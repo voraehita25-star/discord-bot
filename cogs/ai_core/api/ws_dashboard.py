@@ -290,6 +290,20 @@ class DashboardWebSocketServer:
             return True
 
         try:
+            # Validate TLS configuration BEFORE allocating the AppRunner so the
+            # missing-cert early-return below cannot orphan a set-up runner
+            # (runner.setup() must always be paired with runner.cleanup()).
+            tls_cert_path = ""
+            tls_key_path = ""
+            if WS_REQUIRE_TLS:
+                tls_cert_path = os.getenv("WS_TLS_CERT_PATH", "").strip()
+                tls_key_path = os.getenv("WS_TLS_KEY_PATH", "").strip()
+                if not tls_cert_path or not tls_key_path:
+                    logger.error(
+                        "❌ WS_REQUIRE_TLS is enabled but WS_TLS_CERT_PATH / WS_TLS_KEY_PATH are not set"
+                    )
+                    return False
+
             # Try to free the port if it's in use
             await self._ensure_port_available()
 
@@ -312,14 +326,6 @@ class DashboardWebSocketServer:
 
             scheme = "ws"
             if WS_REQUIRE_TLS:
-                tls_cert_path = os.getenv("WS_TLS_CERT_PATH", "").strip()
-                tls_key_path = os.getenv("WS_TLS_KEY_PATH", "").strip()
-                if not tls_cert_path or not tls_key_path:
-                    logger.error(
-                        "❌ WS_REQUIRE_TLS is enabled but WS_TLS_CERT_PATH / WS_TLS_KEY_PATH are not set"
-                    )
-                    return False
-
                 import ssl
 
                 # ``ssl.create_default_context(Purpose.CLIENT_AUTH)`` is the
@@ -346,7 +352,24 @@ class DashboardWebSocketServer:
 
         except Exception:
             logger.exception("❌ Failed to start Dashboard WebSocket server")
+            # site.start() (bind) or the TLS context build can raise AFTER
+            # runner.setup(); _running is still False so stop() never runs
+            # runner.cleanup(). Tear the half-initialized server down here so the
+            # Application/AppRunner are not orphaned across restart attempts.
+            await self._cleanup_failed_start()
             return False
+
+    async def _cleanup_failed_start(self) -> None:
+        """Best-effort teardown after a failed start() (pairs runner.setup())."""
+        with contextlib.suppress(Exception):
+            if self.site is not None:
+                await self.site.stop()
+        with contextlib.suppress(Exception):
+            if self.runner is not None:
+                await self.runner.cleanup()
+        self.site = None
+        self.runner = None
+        self.app = None
 
     async def _ensure_port_available(self) -> None:
         """Wait (up to 5s) for the port to become free; never kills any process.

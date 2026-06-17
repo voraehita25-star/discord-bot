@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import platform
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1040,12 +1041,22 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             "api_keys_total": total_count,
         }
 
-        # 4. Filesystem check
+        # 4. Filesystem check.
+        # Use a per-request unique temp file rather than a fixed shared
+        # path. The server is ThreadingHTTPServer, so concurrent
+        # /health/deep requests run this probe simultaneously; a shared
+        # ``temp/.health_check`` let one thread's unlink() race another's
+        # and raise FileNotFoundError, falsely flagging the bot unhealthy
+        # (HTTP 503). NamedTemporaryFile(delete=True) gives each probe its
+        # own path and cleans up on close, so the threads never collide.
         try:
-            test_file = Path("temp") / ".health_check"
-            test_file.parent.mkdir(exist_ok=True)
-            test_file.write_text("test")
-            test_file.unlink()
+            temp_dir = Path("temp")
+            temp_dir.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=temp_dir, prefix=".health_check_", delete=True
+            ) as test_file:
+                test_file.write("test")
+                test_file.flush()
             checks["checks"]["filesystem"] = {"status": "ok", "writable": True}
         except Exception as e:
             checks["checks"]["filesystem"] = {"status": "error", "error": str(e)[:100]}

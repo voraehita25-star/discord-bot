@@ -349,44 +349,67 @@ class YTDLSource(discord.PCMVolumeTransformer):
         else:
             filename = ytdl_obj.prepare_filename(data)
 
-        # Validate the path/URL we are about to hand to ffmpeg as its input.
-        # Anything starting with '-' would be parsed as an ffmpeg flag (e.g.
-        # `-i /etc/passwd -y output.wav`), and a non-http(s) URL from a
-        # compromised yt-dlp extractor could request unintended schemes.
-        # Reject those rather than rely on ffmpeg to do the right thing.
-        if not isinstance(filename, str) or not filename:
-            raise ValueError("Invalid filename returned by yt-dlp")
-        if filename.startswith("-"):
-            raise ValueError("yt-dlp returned suspicious filename starting with '-'")
-        if stream and not filename.startswith(("http://", "https://")):
-            raise ValueError(f"yt-dlp returned non-http(s) stream URL ({filename[:32]}...)")
-        # When downloading (stream=False), confirm yt-dlp wrote into the
-        # temp/ dir we configured via outtmpl. A compromised extractor that
-        # forges absolute paths (e.g. C:\Windows\System32\foo.opus) would
-        # otherwise let ffmpeg open arbitrary files for read or get fed
-        # back into Discord upload paths. resolve() canonicalises symlinks
-        # so a sneaky temp/../etc/passwd is collapsed before the check.
-        if not stream:
-            from pathlib import Path as _Path
+        # In download mode (stream=False) yt-dlp has already written the file to
+        # disk by this point. If any post-download validator or the
+        # FFmpegPCMAudio construction below raises, we return without a
+        # YTDLSource, so the caller never gets a player to clean up and the
+        # file would be orphaned (only reclaimed later by the periodic temp
+        # janitor). Best-effort unlink the just-downloaded file on any failure
+        # before re-raising. Streaming mode has nothing on disk to clean up.
+        try:
+            # Validate the path/URL we are about to hand to ffmpeg as its input.
+            # Anything starting with '-' would be parsed as an ffmpeg flag (e.g.
+            # `-i /etc/passwd -y output.wav`), and a non-http(s) URL from a
+            # compromised yt-dlp extractor could request unintended schemes.
+            # Reject those rather than rely on ffmpeg to do the right thing.
+            if not isinstance(filename, str) or not filename:
+                raise ValueError("Invalid filename returned by yt-dlp")
+            if filename.startswith("-"):
+                raise ValueError("yt-dlp returned suspicious filename starting with '-'")
+            if stream and not filename.startswith(("http://", "https://")):
+                raise ValueError(f"yt-dlp returned non-http(s) stream URL ({filename[:32]}...)")
+            # When downloading (stream=False), confirm yt-dlp wrote into the
+            # temp/ dir we configured via outtmpl. A compromised extractor that
+            # forges absolute paths (e.g. C:\Windows\System32\foo.opus) would
+            # otherwise let ffmpeg open arbitrary files for read or get fed
+            # back into Discord upload paths. resolve() canonicalises symlinks
+            # so a sneaky temp/../etc/passwd is collapsed before the check.
+            if not stream:
+                from pathlib import Path as _Path
 
-            try:
-                resolved = _Path(filename).resolve()
-                expected_root = _Path("temp").resolve()
-                # ``relative_to`` raises ValueError if resolved is not under
-                # expected_root — that's the signal we want.
-                resolved.relative_to(expected_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"yt-dlp wrote outside the temp/ download dir: {filename!r}"
-                ) from exc
+                try:
+                    resolved = _Path(filename).resolve()
+                    expected_root = _Path("temp").resolve()
+                    # ``relative_to`` raises ValueError if resolved is not under
+                    # expected_root — that's the signal we want.
+                    resolved.relative_to(expected_root)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"yt-dlp wrote outside the temp/ download dir: {filename!r}"
+                    ) from exc
 
-        current_options = get_ffmpeg_options(stream=stream)
+            current_options = get_ffmpeg_options(stream=stream)
 
-        return cls(
-            discord.FFmpegPCMAudio(filename, **current_options, executable=get_ffmpeg_executable()),
-            data=data,
-            filename=filename,
-        )
+            return cls(
+                discord.FFmpegPCMAudio(
+                    filename, **current_options, executable=get_ffmpeg_executable()
+                ),
+                data=data,
+                filename=filename,
+            )
+        except BaseException:
+            # On the download path, reclaim the orphaned file instead of relying
+            # solely on the periodic janitor. Only attempt this for a plausible
+            # local path (str, not the path-traversal/'-' cases handled above);
+            # unlink is best-effort and must never mask the original error.
+            if not stream and isinstance(filename, str) and filename:
+                try:
+                    Path(filename).unlink(missing_ok=True)
+                except OSError as cleanup_exc:
+                    logger.warning(
+                        "Failed to clean up orphaned download %r: %s", filename, cleanup_exc
+                    )
+            raise
 
     @classmethod
     async def search_source(
@@ -444,13 +467,22 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 timeout=cls.YTDL_TIMEOUT,
             )
         except (TimeoutError, yt_dlp.DownloadError):
-            ytdl_fallback = get_ytdl_fallback()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: ytdl_fallback.extract_info(query, download=False)
-                ),
-                timeout=cls.YTDL_TIMEOUT,
-            )
+            # Guard the fallback attempt too. Without this, a TimeoutError or
+            # yt_dlp.DownloadError raised here would propagate straight out of
+            # search_source, violating its documented `dict | None` return
+            # contract — every other failure path returns None. Mirrors the
+            # try/except around from_url()'s fallback extract_info.
+            try:
+                ytdl_fallback = get_ytdl_fallback()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda: ytdl_fallback.extract_info(query, download=False)
+                    ),
+                    timeout=cls.YTDL_TIMEOUT,
+                )
+            except (TimeoutError, yt_dlp.DownloadError) as exc:
+                logger.warning("Search fallback extraction failed: %s", exc)
+                return None
 
         if data is None:
             logger.warning("No data extracted from search query")

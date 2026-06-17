@@ -135,6 +135,12 @@ class RateLimiter:
     # Max buckets to prevent unbounded memory growth
     MAX_BUCKETS = 10000
 
+    # Default per-channel Gemini requests-per-minute. Single source of truth
+    # for both the "gemini_api" config in _setup_defaults and the default
+    # branch of get_channel_limit, so the documented default can't drift from
+    # the configured value.
+    DEFAULT_GEMINI_RPM = 60
+
     def __init__(self) -> None:
         self._buckets: dict[str, RateLimitBucket] = {}
         self._configs: dict[str, RateLimitConfig] = {}
@@ -159,7 +165,7 @@ class RateLimiter:
         self.add_config(
             "gemini_api",
             RateLimitConfig(
-                requests=60,  # 60 requests (raised for a small trusted group)
+                requests=self.DEFAULT_GEMINI_RPM,  # 60 requests (raised for a small trusted group)
                 window=60,  # per minute
                 limit_type=RateLimitType.USER,
                 cooldown_message="⏳ กรุณารอ {retry:.1f} วินาที ก่อนส่งข้อความถัดไป",
@@ -523,9 +529,11 @@ class RateLimiter:
         custom = self._channel_limits.get(channel_id)
         if custom is not None:
             return custom
-        # Return default
+        # Return default. _setup_defaults always registers "gemini_api" and no
+        # path deletes it, so the config is present; fall back to the shared
+        # DEFAULT_GEMINI_RPM constant (not a stale literal) for total safety.
         gemini_config = self._configs.get("gemini_api")
-        return gemini_config.requests if gemini_config else 15
+        return gemini_config.requests if gemini_config else self.DEFAULT_GEMINI_RPM
 
     async def set_channel_limit(self, channel_id: int, requests_per_minute: int) -> None:
         """Set custom rate limit for a specific channel.

@@ -364,10 +364,17 @@ async def execute_tool_call(
             cmd_args = []
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
-            if args.get("query"):
+            # ``args`` is the model-controlled tool payload with no per-field
+            # type coercion, so ``query`` can be any JSON type. cmd_list_members
+            # calls ``args[1].strip()`` and would raise AttributeError on a
+            # non-string (e.g. {"query": 123}), silently failing the turn.
+            # Guard with isinstance like the get_user_info / read_channel
+            # branches below rather than passing the raw value through.
+            query = args.get("query")
+            if isinstance(query, str) and query.strip():
                 if not cmd_args:
                     cmd_args.append("50")
-                cmd_args.append(args.get("query"))
+                cmd_args.append(query)
             await cmd_list_members(guild, origin_channel, None, cmd_args, _user=user)
             return "Listed members"
 
@@ -727,7 +734,12 @@ async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):
         # Dispatch. Pass the requesting user so each handler can enforce a
         # per-action permission check (e.g. delete_channel requires the
         # user to have manage_channels, not just the bot's admin grant).
-        handler = COMMAND_HANDLERS.get(cmd_type)
+        #
+        # COMMAND_HANDLERS is keyed entirely in UPPER_SNAKE ('CREATE_TEXT',
+        # 'DELETE_CHANNEL', ...). Normalize the lookup so a caller passing a
+        # lowercase cmd_type ('create_text') dispatches instead of silently
+        # falling through to the unknown-command branch.
+        handler = COMMAND_HANDLERS.get(str(cmd_type).upper()) if cmd_type else None
         if handler:
             await handler(guild, origin_channel, name, args, user)
         else:

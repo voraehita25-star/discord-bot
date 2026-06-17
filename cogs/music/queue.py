@@ -215,10 +215,27 @@ class QueueManager:
 
         if not queue_snapshot:
             await db.clear_music_queue(guild_id)
-            return
+        else:
+            await db.save_music_queue(guild_id, queue_snapshot)
+            logger.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue_snapshot))
 
-        await db.save_music_queue(guild_id, queue_snapshot)
-        logger.info("💾 Saved queue for guild %s (%d tracks)", guild_id, len(queue_snapshot))
+        # The DB schema stores only the track LIST, not per-guild
+        # volume/loop/24-7 settings. Refresh the JSON sidecar that load_queue
+        # reads for those settings so they survive a restart in DB mode too —
+        # previously they were persisted only on the DB-unavailable path and
+        # silently reset to defaults otherwise. (_save_queue_json mirrors the
+        # queue as well, but the DB-load path returns before the JSON fallback
+        # whenever the DB holds the queue, so the mirror is only ever consulted
+        # for its settings; it is removed for an empty queue — exactly when
+        # load_queue would not read settings anyway.)
+        await asyncio.to_thread(
+            self._save_queue_json,
+            guild_id,
+            queue_snapshot,
+            volume_snapshot,
+            loop_snapshot,
+            mode_247_snapshot,
+        )
 
     def _save_queue_json(
         self,
@@ -292,6 +309,17 @@ class QueueManager:
                     # Reject malformed entries — a row with no url / falsy url
                     # would be stored unchanged and then crash play_next().
                     valid = [item for item in queue if isinstance(item, dict) and item.get("url")]
+                    if not valid:
+                        # Every stored row was malformed. Mirror the JSON path
+                        # (which returns False on all-invalid): do NOT publish a
+                        # silently-emptied deque or report success — leave the
+                        # rows in the DB so a future fix can recover them.
+                        logger.warning(
+                            "All %d DB queue rows for guild %s were malformed — skipping",
+                            len(queue),
+                            guild_id,
+                        )
+                        return False
                     # Cap to MAX_QUEUE_SIZE like the JSON path and add_to_queue:
                     # an oversized DB row set (written before the cap existed, or
                     # by another writer) would otherwise put more than 500 tracks

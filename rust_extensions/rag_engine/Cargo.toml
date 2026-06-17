@@ -15,9 +15,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
-# fs2 dropped — file locking now uses stdlib ``File::lock_exclusive`` /
-# ``unlock`` (stable since Rust 1.89), which is per-fd on Linux via
-# flock(2) instead of fs2's per-process fcntl locks.
+# fs2 dropped — no advisory file locking is used at all. save() achieves
+# crash safety via a per-process-unique temp file (PID + nanos), atomic
+# rename (with copy+delete fallback on Windows), and fsync; load() reads
+# whatever is on disk. There is NO OS lock, so callers must not assume
+# save()/load() are mutually excluded across processes.
 
 # SIMD optimizations
 simsimd = "6.5"

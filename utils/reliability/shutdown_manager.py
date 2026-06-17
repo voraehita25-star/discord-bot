@@ -502,9 +502,18 @@ class ShutdownManager:
                     except Exception as shutdown_err:
                         logger.debug("Shutdown handler error (ignored): %s", shutdown_err)
 
+                # Compute a single shared deadline so the join loop's worst case
+                # is O(max(timeout)) as the comment above claims. Joining each
+                # worker with its own full `timeout` would degrade to
+                # ~sum(timeouts) when several handlers hang permanently (the
+                # first join blocks for its whole timeout, the next for its own
+                # whole timeout on an already-hung thread, and so on). Workers
+                # were all started at ~t=0 above, so a shared deadline correctly
+                # bounds the total wait by the largest configured timeout.
+                deadline = time.monotonic() + max((to for _, to, _, _ in workers), default=0.0)
                 for name, timeout, worker, _stop in workers:
                     try:
-                        worker.join(timeout=timeout)
+                        worker.join(timeout=max(0.0, deadline - time.monotonic()))
                         if worker.is_alive():
                             _stop.set()  # ask a cooperative handler to bail out
                             # Daemon threads are killed mid-syscall when the

@@ -1,10 +1,10 @@
 # 🤖 Discord AI Bot - Project Documentation
 
 > **Last Updated:** June 15, 2026
-> **Version:** 3.4.12
+> **Version:** 3.4.13
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 114 Python test files (5,066 tests) + 11 vitest files (298 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
+> **Total Files:** 114 Python test files (5,068 tests) + 11 vitest files (298 frontend tests) + 8 Playwright spec files (72 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -187,7 +187,7 @@ BOT/
 │       ├── start.bat         # Batch launcher
 │       └── manager.ps1       # PowerShell manager
 │
-├── tests/                    # 🧪 Python test suite (5,066 tests in 114 files)
+├── tests/                    # 🧪 Python test suite (5,068 tests in 114 files)
 │   ├── __init__.py
 │   ├── conftest.py           # Pytest fixtures
 │   ├── test_boilerplate.py   # Parametrized structural tests
@@ -1143,4 +1143,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: June 15, 2026 - Version 3.4.12 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,066 Python tests + 298 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->
+<!-- Documentation last updated: June 15, 2026 - Version 3.4.13 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,068 Python tests + 298 frontend vitest tests + 72 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

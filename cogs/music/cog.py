@@ -544,16 +544,18 @@ class Music(commands.Cog):
             from utils.database import db
 
             queue = await db.load_music_queue(guild_id)
+            # The DB only stores the track LIST — restore volume/loop/mode_247
+            # from the settings sidecar whether or not the queue has tracks (a
+            # no-op when no sidecar exists). Doing this before the `if queue:`
+            # gate is essential: an idle 24/7 channel has an empty DB queue, and
+            # skipping the restore would drop mode_247 and auto-disconnect it
+            # after a restart. (See _save_queue_settings.)
+            await self._load_queue_settings(guild_id)
             if queue:
                 # Cap on load — the DB may hold a queue persisted before a cap
                 # change (or by another process); mirror the JSON path's limit so
                 # an oversized queue can't slip in through the database branch.
                 self._gs(guild_id).queue = collections.deque(queue[:MAX_QUEUE_SIZE])
-                # The DB only stores the track list — restore volume/loop/
-                # mode_247 from the settings sidecar so they survive a restart
-                # (see _save_queue_settings). Especially mode_247, whose loss
-                # would auto-disconnect a 24/7 channel after a restart.
-                await self._load_queue_settings(guild_id)
                 logger.info(
                     "📂 Loaded queue for guild %s (%d tracks) from database", guild_id, len(queue)
                 )
@@ -1588,6 +1590,9 @@ class Music(commands.Cog):
             )
             with contextlib.suppress(discord.HTTPException):
                 await ctx.send(embed=embed)
+            # The main try/finally below does NOT run on this early return, so
+            # honor any cleanup deferred during the fix here too.
+            await self._drain_pending_cleanup(guild_id, ctx)
             return
 
         try:
@@ -1715,22 +1720,31 @@ class Music(commands.Cog):
         finally:
             # Always reset fixing flag at the end
             self._gs(guild_id).fixing = False
-            # A cleanup may have been deferred (cleanup_pending) while we were
-            # mid-fix. BUT our own stop()/disconnect() above ALSO fires
-            # on_voice_state_update, which arms cleanup_pending — so on a
-            # SUCCESSFUL fix (bot reconnected and playing) honoring it would run
-            # the destructive cleanup_guild_data against the LIVE session,
-            # wiping its queue/current_track and resetting loop/volume
-            # mid-playback. Only run the deferred cleanup when the bot is
-            # genuinely no longer connected (e.g. a real guild-leave during the
-            # fix); otherwise just clear the flag, discarding our own transient
-            # disconnect echo.
-            if guild_id in self._guild_states and self._guild_states[guild_id].cleanup_pending:
-                self._guild_states[guild_id].cleanup_pending = False
-                vc = ctx.voice_client
-                if vc is None or not vc.is_connected():
-                    with contextlib.suppress(Exception):
-                        await self.cleanup_guild_data(guild_id)
+            # Honor any cleanup deferred (cleanup_pending) while we were mid-fix.
+            await self._drain_pending_cleanup(guild_id, ctx)
+
+    async def _drain_pending_cleanup(self, guild_id: int, ctx) -> None:
+        """Run a cleanup deferred during !fix, but only when the VC is truly gone.
+
+        Our own stop()/disconnect() during the fix ALSO fires
+        on_voice_state_update, which arms cleanup_pending — so on a SUCCESSFUL
+        fix (bot reconnected and playing) honoring it would run the destructive
+        cleanup_guild_data against the LIVE session, wiping its
+        queue/current_track and resetting loop/volume mid-playback. Only run the
+        deferred cleanup when the bot is genuinely no longer connected (e.g. a
+        real guild-leave during the fix); otherwise just clear the flag,
+        discarding our own transient disconnect echo. Shared by the finally
+        block and the disconnect-failure early return so neither path leaks a
+        pending cleanup.
+        """
+        state = self._guild_states.get(guild_id)
+        if state is None or not state.cleanup_pending:
+            return
+        state.cleanup_pending = False
+        vc = ctx.voice_client
+        if vc is None or not vc.is_connected():
+            with contextlib.suppress(Exception):
+                await self.cleanup_guild_data(guild_id)
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"])  # type: ignore[arg-type]
     @commands.bot_has_guild_permissions(connect=True, speak=True)

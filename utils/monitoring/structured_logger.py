@@ -191,18 +191,53 @@ class StructuredFormatter(logging.Formatter):
                 "stacktrace": self.formatException(record.exc_info),
             }
 
-        output = json.dumps(log_entry, ensure_ascii=False, default=str)
-        # Run the serialised JSON through the same secret-redactor used
-        # by the plain-text logger. Without this, a Discord token / API
-        # key embedded inside an `extra={...}` dict would land in the
-        # JSON log file unredacted — defeating the SensitiveDataFilter.
+        # Redact secrets in individual string LEAVES before serialising, not
+        # on the finished JSON text. The keyword branch of _SECRET_PATTERNS_CI
+        # consumes the closing quote + ``:``/``=`` delimiter around a value, so
+        # redacting the serialised string (``"token": "CCC…"`` →
+        # ``"token[REDACTED]``) removes the secret but breaks JSON structure,
+        # making the line unparseable for ELK/Loki. Scrubbing each leaf first
+        # lets json.dumps re-quote/re-escape the ``[REDACTED]`` result, so the
+        # emitted line stays valid JSON while the secret is still removed.
         try:
             from utils.monitoring.logger import _redact_sensitive
 
-            output = _redact_sensitive(output)
+            log_entry = self._scrub_leaves(log_entry, _redact_sensitive)
         except Exception:  # pragma: no cover — never let logging crash
             pass
-        return output
+        return json.dumps(log_entry, ensure_ascii=False, default=str)
+
+    @classmethod
+    def _scrub_leaves(cls, value: Any, redact: Callable[[str], str], key: str | None = None) -> Any:
+        """Recursively apply `redact` to every string leaf in nested
+        dict/list/tuple structures, returning a scrubbed copy. Non-string,
+        non-container leaves are returned unchanged.
+
+        `key` carries the enclosing dict key so a value held under a sensitive
+        keyword (e.g. ``{"token": "<40 chars>"}``) is still redacted. The
+        keyword branch of _SECRET_PATTERNS_CI only fires when the keyword
+        immediately precedes the secret; on the old whole-JSON pass that came
+        from the ``"token":`` text, but a leaf value seen in isolation has lost
+        that context. We reconstruct it by redacting ``f"{key}={value}"``. The
+        keyword sits in a zero-width lookbehind, so a match leaves the keyword
+        intact and replaces only the ``=<value>`` tail with ``[REDACTED]`` —
+        i.e. ``token=<secret>`` → ``token[REDACTED]``. If that fired we strip
+        the surviving ``{key}`` prefix back off, yielding the redacted value
+        alone. This preserves the exact original redaction policy while keeping
+        the surrounding JSON structurally valid.
+        """
+        if isinstance(value, str):
+            redacted = redact(value)
+            if redacted == value and key is not None:
+                probe = redact(f"{key}={value}")
+                if probe != f"{key}={value}" and probe.startswith(key):
+                    redacted = probe[len(key) :]
+            return redacted
+        if isinstance(value, dict):
+            return {k: cls._scrub_leaves(v, redact, key=str(k)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._scrub_leaves(v, redact) for v in value]
+        return value
 
 
 class HumanReadableFormatter(logging.Formatter):

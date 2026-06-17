@@ -304,6 +304,10 @@ class TestChatStreaming:
         mock_db = MagicMock()
         mock_db.save_dashboard_message = AsyncMock()
         mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+        # The Gemini backend now validates client-supplied is_regeneration
+        # against the DB (parity with the Claude backend): the last stored
+        # message must be this exact user turn for the flag to be honored.
+        mock_db.get_dashboard_messages = AsyncMock(return_value=[{"role": "user", "content": "x"}])
         fake_extract = AsyncMock(return_value=[{"id": 1}])
         docs = [{"name": "spec.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
 
@@ -328,6 +332,48 @@ class TestChatStreaming:
             )
 
         fake_extract.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spoofed_regeneration_still_persists_documents(self, ws):
+        """A client setting is_regeneration=True that does NOT match the last DB
+        user message must be treated as a new turn — documents are persisted and
+        the user message is saved (security: stops skip-persistence spoofing)."""
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
+        client = self._make_client([FakeChunk(text="Reply")])
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=7)
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+        # Last stored message does NOT match the incoming content → spoof.
+        mock_db.get_dashboard_messages = AsyncMock(
+            return_value=[{"role": "assistant", "content": "unrelated"}]
+        )
+        fake_extract = AsyncMock(return_value=[{"id": 1}])
+        docs = [{"name": "spec.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat.build_user_context",
+                new=AsyncMock(return_value=("ctx", False)),
+            ),
+            patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
+        ):
+            await handle_chat_message(
+                ws,
+                {
+                    "content": "x",
+                    "conversation_id": "conv-doc",
+                    "documents": docs,
+                    "is_regeneration": True,
+                },
+                client,
+            )
+
+        # Validation reset is_regeneration → both persistence paths ran.
+        fake_extract.assert_awaited_once()
+        mock_db.save_dashboard_message.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_stream_auto_title(self, ws):

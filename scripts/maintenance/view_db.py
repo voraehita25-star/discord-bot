@@ -21,10 +21,21 @@ def main() -> None:
     # doesn't raise FileNotFoundError; matches rollback_migration._ensure_backup_dir)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Fail loudly instead of silently exporting an empty database: the default
+    # read-write-create mode would CREATE an empty bot_database.db here, then
+    # "export" zero tables and print success, leaving a stray file behind.
+    if not DB_PATH.exists():
+        print(f"Database not found: {DB_PATH}")
+        print("Run the bot at least once so it creates data/bot_database.db.")
+        raise SystemExit(1)
+
     # closing() guarantees the connection is closed: sqlite3's own context
     # manager only commits/rolls back the transaction, it does NOT close the
     # connection. On Windows a leaked handle can block reindex/rollback.
-    with closing(sqlite3.connect(str(DB_PATH))) as conn:
+    # mode=ro: this is a read-only export tool (SELECT only), so open read-only
+    # to never create/checkpoint the DB or its -wal/-shm sidecars (mirrors
+    # watch_history.py and rollback_migration.py).
+    with closing(sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 

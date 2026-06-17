@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -16,10 +17,14 @@ SIDECAR = ROOT / "data" / "claude_cli_sessions.json"
 
 
 def encode(path: Path) -> str:
-    s = str(path)
-    for ch in (":", "\\", "/", " ", "_"):
-        s = s.replace(ch, "-")
-    return s
+    # Must match the production Claude-CLI encoder exactly, otherwise we scan
+    # the wrong ~/.claude/projects folder and silently clean nothing. The
+    # authoritative encoder is
+    # cogs/ai_core/api/dashboard_chat_claude_cli.py:_encode_claude_project_dirname,
+    # which replaces *every* non-ASCII-alphanumeric char (including '.') with
+    # '-'. The old fixed-subset (':','\\','/',' ','_') omitted '.', so any path
+    # segment with a dot diverged from the real folder name.
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 PROJECTS = Path.home() / ".claude" / "projects" / encode(WORKDIR)

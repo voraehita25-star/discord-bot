@@ -49,6 +49,11 @@ try {
     $DllExt = if ($IsWindows -or $env:OS -match "Windows") { ".dll" } else { ".so" }
     $LibPrefix = if ($IsWindows -or $env:OS -match "Windows") { "" } else { "lib" }
 
+    # cargo สำเร็จแล้ว artifact ทุกตัวต้องมีจริง มิฉะนั้นถือว่า build ล้มเหลว
+    # ติดตามว่าหา .pyd ที่ต้องการได้ครบหรือไม่ เพื่อ exit 1 (ไม่ใช่แค่ WARN)
+    # ป้องกัน build_all.ps1 รายงานสำเร็จทั้งที่ extension ไม่ได้ถูกสร้าง/คัดลอก
+    $MissingArtifacts = @()
+
     # Copy RAG Engine
     $RagSource = Join-Path $SourceDir "${LibPrefix}rag_engine$DllExt"
     $RagDest = Join-Path $PSScriptRoot "..\cogs\ai_core\memory\rag_engine$LibExt"
@@ -56,7 +61,8 @@ try {
         Copy-Item $RagSource $RagDest -Force
         Write-Host "[OK] Copied rag_engine to $RagDest" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] rag_engine not found at $RagSource" -ForegroundColor Yellow
+        Write-Host "[ERROR] rag_engine not found at $RagSource" -ForegroundColor Red
+        $MissingArtifacts += "rag_engine"
     }
 
     # Copy Media Processor
@@ -66,7 +72,15 @@ try {
         Copy-Item $MediaSource $MediaDest -Force
         Write-Host "[OK] Copied media_processor to $MediaDest" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] media_processor not found at $MediaSource" -ForegroundColor Yellow
+        Write-Host "[ERROR] media_processor not found at $MediaSource" -ForegroundColor Red
+        $MissingArtifacts += "media_processor"
+    }
+
+    # ถ้ามี artifact ใดหายไป ให้จบด้วย non-zero เพื่อไม่ให้ caller เข้าใจผิดว่าสำเร็จ
+    if ($MissingArtifacts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "[ERROR] Rust build incomplete: missing $($MissingArtifacts -join ', ')" -ForegroundColor Red
+        exit 1
     }
 
     Write-Host ""

@@ -185,9 +185,33 @@ class SpotifyHandler:
         for attempt in range(self.MAX_RETRIES):
             try:
                 # Use functools.partial to avoid closure capturing mutable variables
-                result = await asyncio.get_running_loop().run_in_executor(
-                    None, functools.partial(func, *captured_args, **captured_kwargs)
-                )
+                try:
+                    result = await asyncio.get_running_loop().run_in_executor(
+                        None, functools.partial(func, *captured_args, **captured_kwargs)
+                    )
+                except (
+                    RequestsConnectionError,
+                    ReadTimeout,
+                    RemoteDisconnected,
+                    ProtocolError,
+                    OSError,
+                ):
+                    # Transient transport errors are handled by the retry
+                    # except tuple below — re-raise untouched so the outcome
+                    # is recorded ONCE (per the success/failure accounting).
+                    raise
+                except Exception:
+                    # ``can_execute()`` above already consumed a HALF_OPEN probe
+                    # slot. The retry except tuple only releases it on transport
+                    # errors; an unexpected type (spotipy.SpotifyException for a
+                    # 404/private playlist, KeyError, TypeError, ...) would
+                    # otherwise propagate WITHOUT recording any outcome, leaking
+                    # the single half-open admission until the 60s forgive timer.
+                    # Record a failure to pair this admission with a completion
+                    # (release the probe slot) before re-raising to the caller.
+                    if CIRCUIT_BREAKER_AVAILABLE and spotify_circuit:
+                        spotify_circuit.record_failure()
+                    raise
                 # Record success ONCE for the whole user request — independent
                 # of how many internal retries happened. This is the inverse
                 # of the failure path below: the circuit breaker tracks
@@ -359,7 +383,11 @@ class SpotifyHandler:
 
         track_name = track.get("name", "Unknown Track")
         artist_name = track["artists"][0]["name"]
-        external_url = track.get("external_urls", {}).get("spotify", query)
+        # ``get(key, {})`` only fills a MISSING key; Spotify can return an
+        # explicit ``external_urls: null``, so ``None.get("spotify")`` would
+        # raise AttributeError. ``or {}`` / ``or query`` coerces null too,
+        # mirroring the duration_ms/name handling below.
+        external_url = (track.get("external_urls") or {}).get("spotify") or query
 
         search_query = f"{artist_name} - {track_name} audio"
         queue.append(
@@ -373,7 +401,10 @@ class SpotifyHandler:
             color=Colors.SPOTIFY,
         )
 
-        album = track.get("album", {})
+        # Coerce an explicit ``album: null`` to {} at the container level;
+        # ``get("album", {})`` only covers a MISSING key, so a null value
+        # would make the album.get(...) calls below raise AttributeError.
+        album = track.get("album") or {}
         if album.get("images") and len(album["images"]) > 0:
             embed.set_thumbnail(url=album["images"][0]["url"])
 

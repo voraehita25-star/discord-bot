@@ -55,7 +55,7 @@ func TestIsPrivateIP_Public(t *testing.T) {
 }
 
 func TestIsPrivateURL_Localhost(t *testing.T) {
-	isPrivate, err := isPrivateURL("http://127.0.0.1/foo")
+	isPrivate, err := isPrivateURL(context.Background(), "http://127.0.0.1/foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

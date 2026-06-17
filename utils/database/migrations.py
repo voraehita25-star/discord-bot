@@ -132,6 +132,14 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
                 # ``/* */`` *inside* a quoted SQL string literal would be wrongly
                 # treated as a comment. No migration SQL may embed comment
                 # markers inside string literals (all current migrations comply).
+                # CAVEAT: completeness is only checked at line boundaries and the
+                # ENTIRE accumulated ``current`` is emitted as one statement, so
+                # each statement must occupy its own line(s) with exactly one
+                # terminating ``;`` per physical line. Two executable statements
+                # on the same line (e.g. ``CREATE TABLE a(...); CREATE TABLE
+                # b(...);``) would be emitted together and then ``conn.execute``
+                # raises "You can only execute one statement at a time". Keep one
+                # terminating semicolon per line (all current migrations comply).
                 check_lines: list[str] = []
                 local_in_block = False
                 for ln in current:

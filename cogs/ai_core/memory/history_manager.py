@@ -426,11 +426,24 @@ class HistoryManager:
             len(working_history) - protected_count if protected_count > 0 else len(working_history)
         )
         if trim_end > 0:
-            # Build heap of (importance, original_index) for trimmable messages
-            importance_heap = [
-                (self._calculate_importance(msg)[0], i)
-                for i, msg in enumerate(working_history[:trim_end])
-            ]
+            # Build heap of (importance, original_index) for trimmable messages.
+            # _calculate_importance does a content-join + 8 compiled-regex
+            # .search() calls per message — real CPU work. On large histories
+            # offload the whole scan to a worker thread (mirroring the
+            # per-message token estimation above) so the regex pass doesn't
+            # block the event loop / heartbeat; heapify is cheap and stays on
+            # the loop. Small histories compute inline to avoid thread overhead.
+            trimmable = working_history[:trim_end]
+            if offload:
+                importance_heap = await asyncio.to_thread(
+                    lambda: [
+                        (self._calculate_importance(msg)[0], i) for i, msg in enumerate(trimmable)
+                    ]
+                )
+            else:
+                importance_heap = [
+                    (self._calculate_importance(msg)[0], i) for i, msg in enumerate(trimmable)
+                ]
             heapq.heapify(importance_heap)
         else:
             importance_heap = []

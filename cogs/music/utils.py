@@ -3,6 +3,8 @@ Music Utilities Module.
 Contains constants and helper functions for the Music cog.
 """
 
+import math
+
 
 # 🎨 PREMIUM UI/UX COLOR SCHEME
 class Colors:
@@ -64,6 +66,11 @@ def format_duration(seconds: int | float | None) -> str:
     # this behaviour; callers that need to distinguish real 0-second
     # content from "unknown" should check before formatting.
     if not seconds:
+        return "00:00"
+    # NaN/±inf are truthy (so they slip past the guard above) and crash the
+    # int() conversion below — int(nan) raises ValueError, int(inf) raises
+    # OverflowError. Treat non-finite input as "unknown duration" like None/0.
+    if isinstance(seconds, float) and not math.isfinite(seconds):
         return "00:00"
     seconds = int(seconds)
     if seconds <= 0:

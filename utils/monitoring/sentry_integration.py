@@ -350,7 +350,11 @@ def set_user_context(user_id: int, username: str | None = None) -> None:
     """
     if not SENTRY_AVAILABLE:
         return
-    payload = {"id": str(user_id), "username": username}
+    # Only include username when provided — matches capture_exception, which
+    # sets just {"id": ...}, instead of sending an explicit username: None.
+    payload: dict[str, str] = {"id": str(user_id)}
+    if username:
+        payload["username"] = username
     # Newer sentry_sdk exposes get_isolation_scope(); fall back gracefully.
     get_iso = getattr(sentry_sdk, "get_isolation_scope", None)
     if callable(get_iso):
@@ -366,7 +370,11 @@ def set_user_global(user_id: int, username: str | None = None) -> None:
     """Set user on the GLOBAL Sentry scope. Use for process-wide tagging only."""
     if not SENTRY_AVAILABLE:
         return
-    sentry_sdk.set_user({"id": str(user_id), "username": username})
+    # Only include username when provided — matches capture_exception.
+    payload: dict[str, str] = {"id": str(user_id)}
+    if username:
+        payload["username"] = username
+    sentry_sdk.set_user(payload)
 
 
 def add_breadcrumb(

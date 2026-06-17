@@ -565,8 +565,19 @@ async def cmd_add_role(
     user_name = args[0].strip()
     role_name = args[1].strip()
 
-    role = discord.utils.get(guild.roles, name=role_name) or next(
-        (r for r in guild.roles if r.name.lower() == role_name.lower()), None
+    # Duplicate-name guard, mirroring cmd_delete_role: Discord allows multiple
+    # roles sharing a name, and a bare first-match could silently grant the
+    # wrong same-named role (the hierarchy check below only blocks roles at/above
+    # the bot, not the wrong one below it). Ask for a role ID to disambiguate.
+    role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+    if len(role_matches) > 1:
+        await origin_channel.send(
+            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+            allowed_mentions=_NO_MENTIONS,
+        )
+        return
+    role = discord.utils.get(guild.roles, name=role_name) or (
+        role_matches[0] if role_matches else None
     )
 
     member = find_member(guild, user_name)
@@ -668,8 +679,18 @@ async def cmd_remove_role(
     user_name = args[0].strip()
     role_name = args[1].strip()
 
-    role = discord.utils.get(guild.roles, name=role_name) or next(
-        (r for r in guild.roles if r.name.lower() == role_name.lower()), None
+    # Duplicate-name guard, mirroring cmd_delete_role / cmd_add_role: when two
+    # roles share a name a bare first-match could silently strip the wrong
+    # same-named role. Ask for a role ID to disambiguate.
+    role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+    if len(role_matches) > 1:
+        await origin_channel.send(
+            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+            allowed_mentions=_NO_MENTIONS,
+        )
+        return
+    role = discord.utils.get(guild.roles, name=role_name) or (
+        role_matches[0] if role_matches else None
     )
 
     member = find_member(guild, user_name)
@@ -764,8 +785,11 @@ async def cmd_set_channel_perm(
         return
     channel_name = args[0]
     target_name = args[1]
-    perm_name = args[2].lower()
-    value_str = args[3].lower()
+    # Strip both fields for parity with cmd_set_role_perm (lines 883-884) —
+    # tool_executor builds the args list without stripping, so a model-supplied
+    # value with surrounding whitespace would otherwise hit a false rejection.
+    perm_name = args[2].lower().strip()
+    value_str = args[3].lower().strip()
     value = {"true": True, "false": False}.get(value_str)
     if value is None:
         await origin_channel.send(
@@ -804,7 +828,17 @@ async def cmd_set_channel_perm(
     if target_name == "@everyone":
         target = guild.default_role
     else:
-        target = discord.utils.get(guild.roles, name=target_name) or find_member(guild, target_name)
+        # Mirror the case-insensitive role fallback used in cmd_set_role_perm /
+        # cmd_add_role / cmd_remove_role: exact-case first, then a folded match,
+        # so e.g. "Admin" still resolves the role literally named "admin"
+        # instead of falling through to find_member and reporting "not found".
+        # Role precedence over member is intentional (a perm overwrite is far
+        # more commonly meant for a role) and matches the prior `or` ordering.
+        target = (
+            discord.utils.get(guild.roles, name=target_name)
+            or next((r for r in guild.roles if r.name.lower() == target_name.lower()), None)
+            or find_member(guild, target_name)
+        )
 
     if channel and target:
         overwrite = channel.overwrites_for(target)

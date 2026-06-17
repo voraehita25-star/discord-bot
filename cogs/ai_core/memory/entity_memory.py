@@ -72,6 +72,15 @@ class EntityFacts:
         custom_data = {k: v for k, v in data.items() if k not in known_fields}
         if custom_data:
             known_data["custom"] = {**known_data.get("custom", {}), **custom_data}
+        # Coerce dict-typed fields so a poisoned/malformed extraction (these
+        # originate from untyped AI-extracted JSON persisted to SQLite) can't
+        # store a non-empty string/list here — a non-dict would survive to
+        # to_prompt_text() truthy and raise AttributeError on ``.items()``.
+        # Mirrors state_tracker.from_dict's list-field coercion.
+        for dict_field in ("relationships", "custom"):
+            v = known_data.get(dict_field)
+            if v is not None and not isinstance(v, dict):
+                known_data[dict_field] = {}
         return cls(**known_data)
 
     def to_prompt_text(self) -> str:
@@ -96,7 +105,12 @@ class EntityFacts:
             lines.append(f"นิสัย: {_cap(self.personality)}")
         if self.appearance:
             lines.append(f"รูปลักษณ์: {_cap(self.appearance)}")
-        if self.relationships:
+        # isinstance guard: `relationships` is typed dict[str, str] but
+        # dataclasses don't enforce hints at runtime, and EntityFacts can be
+        # built directly (bypassing from_dict's coercion) from untyped
+        # AI-extracted JSON. A non-empty non-dict would be truthy here and
+        # raise AttributeError on ``.items()`` — mirrors consolidator.py's guard.
+        if isinstance(self.relationships, dict) and self.relationships:
             rel_str = ", ".join([f"{k}: {v}" for k, v in self.relationships.items()])
             lines.append(f"ความสัมพันธ์: {_cap(rel_str)}")
         if self.location_type:
@@ -105,7 +119,9 @@ class EntityFacts:
             lines.append(f"ที่อยู่: {_cap(self.address)}")
         if self.owner:
             lines.append(f"เจ้าของ: {_cap(self.owner, 120)}")
-        if self.custom:
+        # Same isinstance guard as relationships above — `custom` is also
+        # dict-typed but can carry a non-dict from a direct construction.
+        if isinstance(self.custom, dict) and self.custom:
             # Bound the number of custom rows too — an attacker-influenced
             # extraction could otherwise pack hundreds of keys in here.
             for k, v in list(self.custom.items())[:20]:

@@ -315,6 +315,22 @@ class HealthAPIClient:
                     # previously treated as delivered and the data dropped.
                     if resp.status >= 400:
                         logger.warning("Metrics batch rejected by sidecar: HTTP %s", resp.status)
+                        # Distinguish recoverable failures from permanent ones.
+                        # 401/403 (token rotated after a sidecar restart), 429
+                        # (rate limited) and 5xx (transient sidecar overload) are
+                        # retryable — raise so the except branch re-buffers this
+                        # chunk + the undelivered tail (metrics[failed_offset:],
+                        # with failed_offset still == i) for the next flush.
+                        # Other 4xx (e.g. 400 batch-format rejection) are
+                        # permanent client errors: keep dropping them, since
+                        # re-queuing would just fail the same way every flush.
+                        if resp.status in (401, 403, 429) or resp.status >= 500:
+                            raise aiohttp.ClientResponseError(
+                                resp.request_info,
+                                resp.history,
+                                status=resp.status,
+                                message="retryable metrics batch rejection",
+                            )
         except Exception as e:
             # Re-add to buffer on failure but cap the buffer so a sustained
             # outage can't grow the buffer without bound + cause OOM. Cap is

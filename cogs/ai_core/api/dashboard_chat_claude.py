@@ -458,6 +458,11 @@ async def handle_chat_message_claude(
 
     if not _db_history_loaded:
         for msg in history:
+            if not isinstance(msg, dict):
+                # Frontend history is client-supplied; a non-dict entry would
+                # raise AttributeError on .get() and hang the client UI (mirror
+                # the Gemini twin's per-item guard). Skip it.
+                continue
             history_role: ClaudeMessageRole = "user" if msg.get("role") == "user" else "assistant"
             messages.append(build_claude_message(history_role, str(msg.get("content", ""))))
 

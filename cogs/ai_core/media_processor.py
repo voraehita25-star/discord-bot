@@ -466,7 +466,11 @@ def load_character_image(message: str, guild_id: int | None) -> tuple[str, Image
                         char_copy = char_image.copy()
                     logger.info("🎭 Loaded character image for %s (cached)", char_name)
                     return (char_name, char_copy)
-            except OSError as e:
+            # Also catch Pillow decompression-bomb error/warning (warning is
+            # promoted to an exception at module level) so an oversized character
+            # reference image is skipped instead of aborting the whole AI turn.
+            # Mirrors prepare_user_avatar / process_attachments / convert_gif_to_video.
+            except (OSError, Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
                 logger.warning("Failed to load character image for %s: %s", char_name, e)
     return None
 

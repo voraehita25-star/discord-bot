@@ -505,8 +505,7 @@ class TokenTracker:
             dropped_input = sum(u.input_tokens for u in batch)
             dropped_output = sum(u.output_tokens for u in batch)
             self.logger.warning(
-                "Failed to persist token usage batch (%d records, "
-                "in=%d out=%d tokens dropped): %s",
+                "Failed to persist token usage batch (%d records, in=%d out=%d tokens dropped): %s",
                 len(batch),
                 dropped_input,
                 dropped_output,

@@ -13,11 +13,13 @@ if (Test-Path $ConfigPath) {
     $script:Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 }
 else {
-    # Default config
+    # Default config (mirror the shipped startup.json so the no-config path keeps
+    # the same safe defaults — notably check_dependencies, which start.ps1 gates
+    # the dependency check on; omitting it silently disables that gate).
     $script:Config = @{
-        bot     = @{ max_restarts = 50; restart_delay_seconds = 10 }
+        bot     = @{ max_restarts = 50; restart_delay_seconds = 10; check_dependencies = $true }
         health  = @{ min_disk_space_gb = 1; min_memory_mb = 1024 }
-        display = @{ box_width = 69; colored_output = $true }
+        display = @{ box_width = 69; show_banner = $true; colored_output = $true }
     }
 }
 
@@ -106,8 +108,21 @@ function Get-DisplayWidth {
     param([string]$Text)
     $Clean = $Text -replace '\x1b\[[0-9;]*m', ''
     $Width = 0
-    foreach ($Char in $Clean.ToCharArray()) {
-        $Code = [int]$Char
+    # Iterate by Unicode code point, not UTF-16 code unit: astral-plane chars
+    # (emoji >= 0x10000) are stored as surrogate pairs, so ToCharArray() would
+    # split them and never reach the 0x1F300-0x1F9FF wide-char branch below.
+    # Char.ConvertToUtf32 combines the high/low surrogate into the real code point.
+    $Chars = $Clean.ToCharArray()
+    for ($i = 0; $i -lt $Chars.Length; $i++) {
+        $Char = $Chars[$i]
+        if ([char]::IsHighSurrogate($Char) -and ($i + 1) -lt $Chars.Length -and
+            [char]::IsLowSurrogate($Chars[$i + 1])) {
+            $Code = [char]::ConvertToUtf32($Char, $Chars[$i + 1])
+            $i++  # consumed the low surrogate as well
+        }
+        else {
+            $Code = [int]$Char
+        }
         if ($Code -in @(0x200B, 0x200C, 0x200D) -or
             ($Code -ge 0x0E31 -and $Code -le 0x0E3A) -or
             ($Code -ge 0x0E47 -and $Code -le 0x0E4E)) {
@@ -249,6 +264,13 @@ function Stop-ExistingBot {
                     Write-Log "PID $OldPid is python but not the bot (recycled PID?) - leaving it alone" -Level WARN
                 }
             }
+            Remove-Item $PidFile -ErrorAction SilentlyContinue
+        }
+        else {
+            # Non-numeric / empty / whitespace contents (corrupt or partially
+            # written): the file is unusable, so delete it instead of letting the
+            # garbage pid file persist across every subsequent launch.
+            Write-Log "bot.pid has invalid contents - removing stale pid file" -Level WARN
             Remove-Item $PidFile -ErrorAction SilentlyContinue
         }
     }

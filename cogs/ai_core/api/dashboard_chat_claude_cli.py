@@ -2567,6 +2567,12 @@ async def handle_chat_message_claude_cli(
     # doc_paths empty with no content either. Spawning claude -p on that body
     # burns a turn for nothing, so bail with the same empty/no-usable frame.
     if not content and not image_paths and not doc_paths:
+        # All attachments failed to decode and there is no text — delete the user
+        # row optimistically saved above so the DB doesn't keep a phantom empty
+        # message for a turn that never actually ran.
+        if user_msg_id is not None and DB_AVAILABLE and conversation_id:
+            with contextlib.suppress(Exception):
+                await get_db().delete_dashboard_message(user_msg_id)
         await ws.send_json(
             {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
         )
@@ -3050,16 +3056,21 @@ async def handle_chat_message_claude_cli(
             lock.release()
         # Temp attachments aren't needed once the subprocess has been drained.
         # Run cleanup in a worker thread for the same reason as the writes.
+        # Suppress CancelledError too (it is a BaseException, not Exception): a
+        # cancellation arriving mid-cleanup must not abort the remaining
+        # unlinks/rmdir below and leak this turn's temp attachment files.
         if image_paths and conversation_id:
-            await asyncio.to_thread(_cleanup_image_dir, conversation_id)
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.to_thread(_cleanup_image_dir, conversation_id)
         if doc_paths and conversation_id:
-            await asyncio.to_thread(_cleanup_docs_dir, conversation_id)
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.to_thread(_cleanup_docs_dir, conversation_id)
         # Also delete THIS turn's own attachment files directly. The dir sweeps
         # above skip files <60s old (so a concurrent turn isn't robbed of its
         # inputs), which means a single-turn conversation would never clean up
         # its own just-written attachments. The subprocess is done with them.
         for _attach in (*image_paths, *(doc_paths or [])):
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 await asyncio.to_thread(_attach.unlink)
         # Both helpers above skipped THIS turn's <60s files, so they couldn't
         # rmdir the per-conversation subdir; we unlinked those files just above,
@@ -3070,7 +3081,7 @@ async def handle_chat_message_claude_cli(
         if conversation_id:
             _safe_conv = conversation_id[:64]
             for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(Exception, asyncio.CancelledError):
                     await asyncio.to_thread((_root / _safe_conv).rmdir)
         # Close the 💭 panel on any exit path that didn't already close it via
         # on_thinking_block_stop (error/timeout returns before reasoning ended,

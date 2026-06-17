@@ -491,6 +491,12 @@ async def _summarize_channel_history(channel_id: int) -> tuple[bool, str]:
         if channel_id not in locks:
             locks[channel_id] = asyncio.Lock()
         async with locks[channel_id]:
+            # Re-fetch under the lock: the reference captured before acquiring it
+            # could be replaced/evicted by a concurrent turn (mirror the hardened
+            # !auto_summarize path, which re-reads the live session here).
+            chat_data = cm.chats.get(channel_id)
+            if chat_data is None:
+                return False, "ไม่พบ session ของแชนเนลนี้ในหน่วยความจำ"
             history = chat_data.get("history", [])
             if not history:
                 return False, "ไม่มีประวัติให้สรุป"

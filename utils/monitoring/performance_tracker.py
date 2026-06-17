@@ -311,6 +311,12 @@ class PerformanceTracker:
                     self.cleanup_old_stats()
                 except asyncio.CancelledError:
                     break
+                except Exception:
+                    # Never let a transient cleanup/sleep error kill the loop:
+                    # log and keep iterating so periodic pruning of
+                    # _hourly_stats continues. Cancellation remains the only
+                    # path that stops the task (handled above).
+                    self.logger.exception("Error in periodic cleanup loop")
 
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(_cleanup_loop())

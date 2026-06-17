@@ -36,17 +36,18 @@ from .core.performance import (
 )
 from .data import FAUST_INSTRUCTION, ROLEPLAY_ASSISTANT_INSTRUCTION, SERVER_AVATARS
 from .data.constants import CREATOR_ID, GUILD_ID_MAIN, GUILD_ID_RESTRICTED
+
+# Guardrails removed — ``validate_response`` is the permanent no-op shim defined
+# unconditionally at module level in ``imports`` (it is never None), so import it
+# directly. The previous try/except ImportError fallback was dead code: the symbol
+# always exists. Availability is tracked by ``GUARDRAILS_AVAILABLE`` (always False)
+# in ``imports`` if a guardrails-present check is ever needed.
+from .imports import validate_response
 from .memory.history_manager import HistoryManager
 from .memory.rag import rag_system
 from .memory.summarizer import summarizer
 
 # Optional processing modules — gracefully degrade if dependencies are missing
-try:
-    # Guardrails removed — sourced from the no-op shim in ``imports``.
-    from .imports import validate_response
-except ImportError:
-    validate_response = None  # type: ignore[assignment]
-
 try:
     from .processing.intent_detector import detect_intent
 except ImportError:

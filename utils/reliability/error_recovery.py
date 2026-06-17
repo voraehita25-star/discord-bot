@@ -125,18 +125,28 @@ def _cleanup_old_backoff_states() -> None:
     # 1. Older than TTL with no failures (successful recovery)
     # 2. Older than 2x TTL regardless of failure count (very old)
     # 3. Have very high failure counts but are old (likely abandoned services)
+    #
+    # Never remove a key with an in-flight retry holding a live reference to its
+    # BackoffState — mirror the hard-cap eviction guard below. A freshly pinned
+    # state has last_failure_time == 0.0 (dataclass default) until its first
+    # failure, so without this guard the 2x-TTL clause would consider it "very
+    # old" and drop a just-pinned key before its first failure, half-defeating
+    # the pin's "do not evict this key" invariant.
     keys_to_remove = [
         key
         for key, state in _backoff_states.items()
-        if (
-            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures == 0
+        if key not in _in_flight_backoff_keys
+        and (
+            (
+                current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+                and state.consecutive_failures == 0
+            )
+            or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL * 2)
+            or (
+                current_time - state.last_failure_time > _BACKOFF_STATE_TTL
+                and state.consecutive_failures > 100
+            )  # Likely abandoned
         )
-        or (current_time - state.last_failure_time > _BACKOFF_STATE_TTL * 2)
-        or (
-            current_time - state.last_failure_time > _BACKOFF_STATE_TTL
-            and state.consecutive_failures > 100
-        )  # Likely abandoned
     ]
     for key in keys_to_remove:
         _backoff_states.pop(key, None)
@@ -146,8 +156,18 @@ def _cleanup_old_backoff_states() -> None:
 _backoff_call_counter = 0
 
 
-def _get_backoff_state(key: str) -> BackoffState:
-    """Get or create backoff state for a key (thread-safe with sync lock)."""
+def _get_backoff_state(key: str, *, pin: bool = False) -> BackoffState:
+    """Get or create backoff state for a key (thread-safe with sync lock).
+
+    When ``pin`` is True the key's in-flight refcount is incremented in the SAME
+    locked critical section that creates/returns the state, making get+pin atomic.
+    This closes the eviction/recreate race that exists when a caller fetches the
+    state and then re-acquires the lock to pin it: under genuine multi-thread
+    access another thread could run hard-cap eviction in that gap and drop the
+    not-yet-pinned (and thus oldest, last_failure_time == 0.0) key, after which a
+    later call would recreate a different object under the same key. The caller
+    that pins is then responsible for the matching unpin (see retry_async).
+    """
     global _backoff_call_counter
 
     with _backoff_states_lock:
@@ -179,12 +199,16 @@ def _get_backoff_state(key: str) -> BackoffState:
 
         if key not in _backoff_states:
             _backoff_states[key] = BackoffState()
+        if pin:
+            # Atomically pin the key while we still hold the lock, so the state
+            # we hand back can't be evicted/recreated before the caller marks it.
+            _in_flight_backoff_keys[key] = _in_flight_backoff_keys.get(key, 0) + 1
         return _backoff_states[key]
 
 
-async def _get_backoff_state_async(key: str) -> BackoffState:
+async def _get_backoff_state_async(key: str, *, pin: bool = False) -> BackoffState:
     """Get or create backoff state for a key (async-safe via threading.Lock)."""
-    return _get_backoff_state(key)
+    return _get_backoff_state(key, pin=pin)
 
 
 def _reset_backoff_state(key: str) -> None:
@@ -395,13 +419,14 @@ async def retry_async(
     last_error = None
     logger = logging.getLogger("ErrorRecovery")
 
-    # Get backoff state for this function
+    # Get backoff state for this function and pin it atomically (pin=True), so
+    # the hard-cap eviction in _get_backoff_state can't drop (and a later call
+    # recreate) the BackoffState we hold a reference to. Doing the get+pin in a
+    # single locked critical section closes the gap a separate fetch-then-pin
+    # would leave open under multi-thread access. The matching unpin is in the
+    # finally block below.
     state_key = service_name or func.__name__
-    state = await _get_backoff_state_async(state_key)
-    # Pin this key so the hard-cap eviction in _get_backoff_state can't drop
-    # (and a later call recreate) the BackoffState we hold a reference to.
-    with _backoff_states_lock:
-        _in_flight_backoff_keys[state_key] = _in_flight_backoff_keys.get(state_key, 0) + 1
+    state = await _get_backoff_state_async(state_key, pin=True)
 
     try:
         # Get service health for adaptive delays

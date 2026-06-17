@@ -191,13 +191,40 @@ async def handle_chat_message(
         await ws.send_json({"type": "error", "message": f"Too many images (max {max_images})"})
         return
 
-    if not content and not images:
+    if not content and not images and not documents:
         await ws.send_json({"type": "error", "message": "Empty message"})
         return
 
     if not gemini_client:
         await ws.send_json({"type": "error", "message": "AI not available"})
         return
+
+    # Validate client-supplied is_regeneration against the DB (mirror the Claude
+    # backend): a malicious/buggy client could otherwise set is_regeneration=True
+    # to skip BOTH user-message persistence and document extraction below. Only
+    # honor it when the last stored message really is this exact user turn.
+    if is_regeneration and DB_AVAILABLE and conversation_id:
+        try:
+            _rdb = _get_db()
+            recent_msgs = await _rdb.get_dashboard_messages(conversation_id)
+            last_msg = recent_msgs[-1] if recent_msgs else None
+            last_content = (last_msg or {}).get("content") or ""
+            last_content_stripped = strip_leading_timestamp(last_content) if last_content else ""
+            if not (
+                last_msg
+                and last_msg.get("role") == "user"
+                and (last_content == content or last_content_stripped == content)
+            ):
+                logger.warning(
+                    "is_regeneration=True from client did not match last user msg; treating as new message",
+                )
+                is_regeneration = False
+        except Exception:
+            logger.warning(
+                "Failed to validate is_regeneration; treating as new message",
+                exc_info=True,
+            )
+            is_regeneration = False
 
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
 
@@ -673,6 +700,18 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             # No tool calls → normal completion, exit loop
             if not _tool_calls:
                 break
+
+            # Another tool round will run: flush any text the timestamp-stripper
+            # is still buffering so a partial leading "[2026…" held at this
+            # round's boundary cannot be spliced onto the next round's output.
+            # flush() also marks the stripper done, so the continuation round
+            # (which never carries a leading timestamp) passes through untouched.
+            _ts_residual = ts_stripper.flush()
+            if _ts_residual:
+                full_response += _ts_residual
+                await ws.send_json(
+                    {"type": "chunk", "content": _ts_residual, "conversation_id": conversation_id}
+                )
 
             # Append model's function-call turn to contents
             if _model_parts:

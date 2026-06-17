@@ -33,6 +33,15 @@ export class ChatSearch {
         const bar = document.getElementById('chat-search-bar');
         const input = document.getElementById('chat-search-input') as HTMLInputElement | null;
         if (!bar || !input) return;
+        // Re-entrant open() (repeated Ctrl+F while the bar is already visible)
+        // must NOT recapture previousFocus — document.activeElement would now be
+        // the search input itself, overwriting the real pre-open target and
+        // breaking focus restoration on Escape. Just re-focus and bail.
+        if (!bar.classList.contains('hidden')) {
+            input.focus();
+            input.select();
+            return;
+        }
         // Remember what had focus so close() can restore it — otherwise
         // keyboard focus is left on the now-hidden search bar.
         this.previousFocus = document.activeElement as HTMLElement | null;

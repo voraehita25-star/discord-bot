@@ -8,6 +8,7 @@ flags mismatches (e.g. the encoder bug where `_` is not replaced by `-`).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -17,24 +18,40 @@ PROJECTS = Path.home() / ".claude" / "projects"
 
 
 def encode_bot_style(path: Path) -> str:
-    """Match cogs/ai_core/api/dashboard_chat_claude_cli.py:_encode_claude_project_dirname.
+    """The script's *expectation* of the bot's encoder.
 
-    Must include ``_`` — production replaces ``:``, ``\\``, ``/``, space AND
-    ``_`` with ``-``. Omitting ``_`` made this helper point at a folder the
-    bot no longer uses, inverting the MISMATCH warning below.
+    Must match cogs/ai_core/api/dashboard_chat_claude_cli.py
+    :func:`_encode_claude_project_dirname`, which replaces *every*
+    non-ASCII-alphanumeric char with ``-`` (including ``.`` and ``_``;
+    consecutive specials are NOT collapsed). The old fixed-subset
+    (``:``, ``\\``, ``/``, space, ``_``) omitted ``.`` and every other
+    special, so any path segment containing a dot — a Windows profile like
+    ``me.name`` or a versioned dir — pointed at a folder Claude Code never
+    writes to, breaking every count below.
     """
-    s = str(path)
-    for ch in (":", "\\", "/", " ", "_"):
-        s = s.replace(ch, "-")
-    return s
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def encode_claude_actual(path: Path) -> str:
-    """Claude Code's actual encoding also replaces `_` with `-`."""
-    s = str(path)
-    for ch in (":", "\\", "/", " ", "_"):
-        s = s.replace(ch, "-")
-    return s
+    """Claude Code's actual encoding — delegate to the production encoder.
+
+    Importing the authoritative ``_encode_claude_project_dirname`` (rather
+    than re-implementing it) is what makes the MISMATCH warning below a real
+    regression detector: it compares this script's *expectation*
+    (:func:`encode_bot_style`) against the live production encoder, so the two
+    diverge — and the warning fires — the moment production's encoding
+    changes. If that heavy module can't be imported (this standalone
+    maintenance script may run outside a configured bot env), fall back to the
+    same inline formula so the survey still works.
+    """
+    try:
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _encode_claude_project_dirname,
+        )
+
+        return _encode_claude_project_dirname(path)
+    except Exception:
+        return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def list_jsonl(folder: Path) -> list[Path]:
@@ -74,11 +91,12 @@ def main() -> None:
     # would always see "0 results" in this bucket otherwise.
     repo_root_folder = PROJECTS / encode_claude_actual(ROOT)
 
-    # ``encode_bot_style`` and ``encode_claude_actual`` are intentionally
-    # identical now (Claude Code's real encoder also maps ``_`` → ``-``), so
-    # bot_folder and claude_folder resolve to the SAME directory. Dedupe by
-    # resolved path so one folder isn't surveyed — and its jsonl files
-    # double-counted into ``total`` — twice.
+    # When the script's expectation (``encode_bot_style``) agrees with the
+    # live production encoder (``encode_claude_actual``), bot_folder and
+    # claude_folder resolve to the SAME directory. Dedupe by resolved path so
+    # that folder isn't surveyed — and its jsonl files double-counted into
+    # ``total`` — twice. If the two ever diverge, both are surveyed (and the
+    # MISMATCH warning above will have already fired).
     candidate_surveys = [
         ("Bot/Claude workdir folder", bot_folder),
         ("Claude actual workdir folder", claude_folder),

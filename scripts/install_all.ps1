@@ -142,16 +142,22 @@ if (Test-CommandExists "git") {
         Write-Info "Installing Git via winget..."
         winget install Git.Git --accept-source-agreements --accept-package-agreements -h
     } else {
-        Write-Info "Downloading Git installer..."
-        $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.2/Git-2.47.1.2-64-bit.exe"
-        $gitFile = "$DownloadDir\git-installer.exe"
-        # SHA-256 from the official Git for Windows release notes (v2.47.1.windows.2).
-        # When bumping the pinned version above, refresh this from the release's
-        # checksum table. A mismatch aborts the download (fail-closed).
-        $gitSha = "5F2350757F9781125CD660478B31C37698D9662AED25B4B02E92DA393289564C"
-        Invoke-VerifiedDownload -Uri $gitUrl -OutFile $gitFile -ExpectedHash $gitSha
-        Write-Info "Running Git installer (silent)..."
-        Start-Process -FilePath $gitFile -ArgumentList "/VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading Git installer..."
+            $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.2/Git-2.47.1.2-64-bit.exe"
+            $gitFile = "$DownloadDir\git-installer.exe"
+            # SHA-256 from the official Git for Windows release notes (v2.47.1.windows.2).
+            # When bumping the pinned version above, refresh this from the release's
+            # checksum table. A mismatch aborts the download (fail-closed).
+            $gitSha = "5F2350757F9781125CD660478B31C37698D9662AED25B4B02E92DA393289564C"
+            Invoke-VerifiedDownload -Uri $gitUrl -OutFile $gitFile -ExpectedHash $gitSha
+            Write-Info "Running Git installer (silent)..."
+            Start-Process -FilePath $gitFile -ArgumentList "/VERYSILENT /NORESTART /SP- /SUPPRESSMSGBOXES" -Wait
+        } catch {
+            Write-Fail "Git download/install failed: $_"
+        }
     }
     Update-Path
     if (Test-CommandExists "git") { Write-OK "Git installed: $(git --version)" }
@@ -171,12 +177,18 @@ if ($pythonVer -match "3\.14") {
         Write-Info "Installing Python 3.14 via winget..."
         winget install Python.Python.3.14 --accept-source-agreements --accept-package-agreements -h
     } else {
-        Write-Info "Downloading Python 3.14 installer..."
-        $pythonUrl = "https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe"
-        $pythonFile = "$DownloadDir\python-installer.exe"
-        Invoke-VerifiedDownload -Uri $pythonUrl -OutFile $pythonFile
-        Write-Info "Running Python installer (silent, adding to PATH)..."
-        Start-Process -FilePath $pythonFile -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading Python 3.14 installer..."
+            $pythonUrl = "https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe"
+            $pythonFile = "$DownloadDir\python-installer.exe"
+            Invoke-VerifiedDownload -Uri $pythonUrl -OutFile $pythonFile
+            Write-Info "Running Python installer (silent, adding to PATH)..."
+            Start-Process -FilePath $pythonFile -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
+        } catch {
+            Write-Fail "Python download/install failed: $_"
+        }
     }
     Update-Path
     $pythonVer = try { python --version 2>&1 } catch { "" }
@@ -196,33 +208,39 @@ if (Test-CommandExists "ffmpeg") {
         Write-Info "Installing FFmpeg via winget..."
         winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements -h
     } else {
-        Write-Info "Downloading FFmpeg..."
-        $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-        $ffmpegZip = "$DownloadDir\ffmpeg.zip"
-        $ffmpegInstall = "C:\ffmpeg"
-        Invoke-VerifiedDownload -Uri $ffmpegUrl -OutFile $ffmpegZip
-        Write-Info "Extracting FFmpeg..."
-        Expand-Archive -Path $ffmpegZip -DestinationPath "$DownloadDir\ffmpeg_temp" -Force
-        $ffmpegDir = Get-ChildItem "$DownloadDir\ffmpeg_temp" -Directory | Select-Object -First 1
-        # Guard against an unexpected archive layout: if extraction produced no
-        # top-level dir, $ffmpegDir is $null and Move-Item would fail silently
-        # (ErrorActionPreference=Continue), leaving a broken C:\ffmpeg\bin PATH entry.
-        if (-not $ffmpegDir) {
-            Write-Fail "FFmpeg archive layout unexpected — skipping install and PATH edit"
-        } else {
-            if (Test-Path $ffmpegInstall) { Remove-Item $ffmpegInstall -Recurse -Force }
-            Move-Item $ffmpegDir.FullName $ffmpegInstall
-            # Only modify PATH after confirming ffmpeg.exe actually exists under the install dir.
-            if (Test-Path "$ffmpegInstall\bin\ffmpeg.exe") {
-                # Add to PATH permanently
-                $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
-                if ($currentPath -notlike "*$ffmpegInstall\bin*") {
-                    [System.Environment]::SetEnvironmentVariable("PATH", "$currentPath;$ffmpegInstall\bin", "Machine")
-                    Write-Info "Added $ffmpegInstall\bin to system PATH"
-                }
+        # Wrap the download+extract+install so a transient network error (or SHA
+        # mismatch) degrades to a per-tool failure instead of aborting the installer.
+        try {
+            Write-Info "Downloading FFmpeg..."
+            $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+            $ffmpegZip = "$DownloadDir\ffmpeg.zip"
+            $ffmpegInstall = "C:\ffmpeg"
+            Invoke-VerifiedDownload -Uri $ffmpegUrl -OutFile $ffmpegZip
+            Write-Info "Extracting FFmpeg..."
+            Expand-Archive -Path $ffmpegZip -DestinationPath "$DownloadDir\ffmpeg_temp" -Force
+            $ffmpegDir = Get-ChildItem "$DownloadDir\ffmpeg_temp" -Directory | Select-Object -First 1
+            # Guard against an unexpected archive layout: if extraction produced no
+            # top-level dir, $ffmpegDir is $null and Move-Item would fail silently
+            # (ErrorActionPreference=Continue), leaving a broken C:\ffmpeg\bin PATH entry.
+            if (-not $ffmpegDir) {
+                Write-Fail "FFmpeg archive layout unexpected — skipping install and PATH edit"
             } else {
-                Write-Fail "ffmpeg.exe not found under $ffmpegInstall\bin — skipping PATH edit"
+                if (Test-Path $ffmpegInstall) { Remove-Item $ffmpegInstall -Recurse -Force }
+                Move-Item $ffmpegDir.FullName $ffmpegInstall
+                # Only modify PATH after confirming ffmpeg.exe actually exists under the install dir.
+                if (Test-Path "$ffmpegInstall\bin\ffmpeg.exe") {
+                    # Add to PATH permanently
+                    $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+                    if ($currentPath -notlike "*$ffmpegInstall\bin*") {
+                        [System.Environment]::SetEnvironmentVariable("PATH", "$currentPath;$ffmpegInstall\bin", "Machine")
+                        Write-Info "Added $ffmpegInstall\bin to system PATH"
+                    }
+                } else {
+                    Write-Fail "ffmpeg.exe not found under $ffmpegInstall\bin — skipping PATH edit"
+                }
             }
+        } catch {
+            Write-Fail "FFmpeg download/install failed: $_"
         }
     }
     Update-Path
@@ -249,12 +267,18 @@ if ($hasBuildTools) {
         winget install Microsoft.VisualStudio.2022.BuildTools --accept-source-agreements --accept-package-agreements -h
         Write-Info "NOTE: After install, open VS Installer and add 'Desktop development with C++' workload"
     } else {
-        Write-Info "Downloading VS Build Tools installer..."
-        $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
-        $vsFile = "$DownloadDir\vs_BuildTools.exe"
-        Invoke-VerifiedDownload -Uri $vsUrl -OutFile $vsFile
-        Write-Info "Installing VS Build Tools with C++ workload (this takes a while)..."
-        Start-Process -FilePath $vsFile -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading VS Build Tools installer..."
+            $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+            $vsFile = "$DownloadDir\vs_BuildTools.exe"
+            Invoke-VerifiedDownload -Uri $vsUrl -OutFile $vsFile
+            Write-Info "Installing VS Build Tools with C++ workload (this takes a while)..."
+            Start-Process -FilePath $vsFile -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -Wait
+        } catch {
+            Write-Fail "VS Build Tools download/install failed: $_"
+        }
     }
     Write-Info "VS Build Tools installation initiated."
 }
@@ -275,12 +299,18 @@ if (Test-CommandExists "cargo") {
             rustup default stable
         }
     } else {
-        Write-Info "Downloading rustup-init..."
-        $rustupUrl = "https://win.rustup.rs/x86_64"
-        $rustupFile = "$DownloadDir\rustup-init.exe"
-        Invoke-VerifiedDownload -Uri $rustupUrl -OutFile $rustupFile
-        Write-Info "Installing Rust (stable)..."
-        Start-Process -FilePath $rustupFile -ArgumentList "-y --default-toolchain stable" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading rustup-init..."
+            $rustupUrl = "https://win.rustup.rs/x86_64"
+            $rustupFile = "$DownloadDir\rustup-init.exe"
+            Invoke-VerifiedDownload -Uri $rustupUrl -OutFile $rustupFile
+            Write-Info "Installing Rust (stable)..."
+            Start-Process -FilePath $rustupFile -ArgumentList "-y --default-toolchain stable" -Wait
+        } catch {
+            Write-Fail "Rust download/install failed: $_"
+        }
     }
     Update-Path
     if (Test-CommandExists "cargo") { Write-OK "Rust installed: $(cargo --version)" }
@@ -299,12 +329,18 @@ if (Test-CommandExists "go") {
         Write-Info "Installing Go via winget..."
         winget install GoLang.Go --accept-source-agreements --accept-package-agreements -h
     } else {
-        Write-Info "Downloading Go installer..."
-        $goUrl = "https://go.dev/dl/go1.26.3.windows-amd64.msi"
-        $goFile = "$DownloadDir\go-installer.msi"
-        Invoke-VerifiedDownload -Uri $goUrl -OutFile $goFile
-        Write-Info "Installing Go (silent)..."
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$goFile`" /quiet /norestart" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading Go installer..."
+            $goUrl = "https://go.dev/dl/go1.26.3.windows-amd64.msi"
+            $goFile = "$DownloadDir\go-installer.msi"
+            Invoke-VerifiedDownload -Uri $goUrl -OutFile $goFile
+            Write-Info "Installing Go (silent)..."
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$goFile`" /quiet /norestart" -Wait
+        } catch {
+            Write-Fail "Go download/install failed: $_"
+        }
     }
     Update-Path
     if (Test-CommandExists "go") { Write-OK "Go installed: $(go version)" }
@@ -323,13 +359,19 @@ if (Test-CommandExists "node") {
         Write-Info "Installing Node.js LTS via winget..."
         winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements -h
     } else {
-        Write-Info "Downloading Node.js LTS installer..."
-        # Node 24 LTS (Krypton) to match the winget path (OpenJS.NodeJS.LTS) and CLAUDE.md.
-        $nodeUrl = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-x64.msi"
-        $nodeFile = "$DownloadDir\node-installer.msi"
-        Invoke-VerifiedDownload -Uri $nodeUrl -OutFile $nodeFile
-        Write-Info "Installing Node.js (silent)..."
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeFile`" /quiet /norestart" -Wait
+        # Wrap the download+install so a transient network error (or SHA mismatch)
+        # degrades to a per-tool failure instead of aborting the whole installer.
+        try {
+            Write-Info "Downloading Node.js LTS installer..."
+            # Node 24 LTS (Krypton) to match the winget path (OpenJS.NodeJS.LTS) and CLAUDE.md.
+            $nodeUrl = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-x64.msi"
+            $nodeFile = "$DownloadDir\node-installer.msi"
+            Invoke-VerifiedDownload -Uri $nodeUrl -OutFile $nodeFile
+            Write-Info "Installing Node.js (silent)..."
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$nodeFile`" /quiet /norestart" -Wait
+        } catch {
+            Write-Fail "Node.js download/install failed: $_"
+        }
     }
     Update-Path
     if (Test-CommandExists "node") { Write-OK "Node.js installed: $(node --version)" }
@@ -351,12 +393,18 @@ if ($SkipDocker) {
             Write-Info "Installing Docker Desktop via winget..."
             winget install Docker.DockerDesktop --accept-source-agreements --accept-package-agreements -h
         } else {
-            Write-Info "Downloading Docker Desktop installer..."
-            $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-            $dockerFile = "$DownloadDir\docker-installer.exe"
-            Invoke-VerifiedDownload -Uri $dockerUrl -OutFile $dockerFile
-            Write-Info "Installing Docker Desktop (silent)..."
-            Start-Process -FilePath $dockerFile -ArgumentList "install --quiet --accept-license" -Wait
+            # Wrap the download+install so a transient network error (or SHA mismatch)
+            # degrades to a per-tool failure instead of aborting the whole installer.
+            try {
+                Write-Info "Downloading Docker Desktop installer..."
+                $dockerUrl = "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+                $dockerFile = "$DownloadDir\docker-installer.exe"
+                Invoke-VerifiedDownload -Uri $dockerUrl -OutFile $dockerFile
+                Write-Info "Installing Docker Desktop (silent)..."
+                Start-Process -FilePath $dockerFile -ArgumentList "install --quiet --accept-license" -Wait
+            } catch {
+                Write-Fail "Docker Desktop download/install failed: $_"
+            }
         }
         Write-Info "Docker Desktop installed. Requires restart and WSL2."
     }
@@ -419,17 +467,24 @@ Write-Host "`n"
 Write-Step "INSTALLATION SUMMARY"
 Update-Path
 
+# Each Check must reflect ONLY the tool's exit status. Redirect every stream
+# (*> $null) so the version probe's own stdout/stderr never leaks into the
+# scriptblock's output: previously `<tool> --version 2>$null; $?` emitted a
+# 2-element array [<versionstring>, $bool] for tools that print to stdout, and
+# `if ($ok)` treats a non-empty array as truthy — so an installed-but-broken
+# tool (prints output, exits non-zero) was misreported as [OK]. Using
+# $LASTEXITCODE -eq 0 makes the verdict the genuine exit code.
 $results = @(
-    @{Name="winget";   Check={winget --version 2>$null; $?}},
-    @{Name="Git";      Check={git --version 2>$null; $?}},
-    @{Name="Python";   Check={python --version 2>$null; $?}},
-    @{Name="pip";      Check={pip --version 2>$null; $?}},
-    @{Name="FFmpeg";   Check={ffmpeg -version 2>$null; $?}},
-    @{Name="Rust";     Check={cargo --version 2>$null; $?}},
-    @{Name="Go";       Check={go version 2>$null; $?}},
-    @{Name="Node.js";  Check={node --version 2>$null; $?}},
-    @{Name="npm";      Check={npm --version 2>$null; $?}},
-    @{Name="Docker";   Check={docker --version 2>$null; $?}}
+    @{Name="winget";   Check={winget --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Git";      Check={git --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Python";   Check={python --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="pip";      Check={pip --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="FFmpeg";   Check={ffmpeg -version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Rust";     Check={cargo --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Go";       Check={go version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Node.js";  Check={node --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="npm";      Check={npm --version *> $null; $LASTEXITCODE -eq 0}},
+    @{Name="Docker";   Check={docker --version *> $null; $LASTEXITCODE -eq 0}}
 )
 
 $installed = 0

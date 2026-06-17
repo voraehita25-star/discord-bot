@@ -846,34 +846,58 @@ async def call_claude_api_streaming(
             model_text = current_model_text
             chunks_received = current_chunks_received
 
-            if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
-                gemini_circuit.record_success()
-            await _failover_record_success()
-
-            if placeholder_msg:
-                with contextlib.suppress(Exception):
-                    await placeholder_msg.delete()
-
-            stream_duration = time.time() - stream_start_time
-            logger.info(
-                "🌊 Streaming complete: %d chars, %d chunks, %.1fs",
-                len(model_text),
-                chunks_received,
-                stream_duration,
-            )
-            # H27: record token usage (best-effort). Accumulated usage lives on
-            # the stream's final message; guarded so it never breaks the reply.
-            try:
-                await _record_token_usage(
-                    getattr(_stream_final_message, "usage", None),
-                    user_id=user_id,
-                    channel_id=channel_id,
-                    guild_id=guild_id,
-                    model=target_model,
+            # A 200-but-EMPTY stream must NOT be recorded healthy (mirror the
+            # non-streaming content-retry handling): record a failure so a
+            # persistently-empty endpoint trips the circuit / drives failover,
+            # then fall through to the retry tail below (and ultimately the
+            # non-streaming fallback) instead of returning an empty reply and
+            # reporting the endpoint healthy.
+            if not model_text.strip():
+                logger.warning(
+                    "⚠️ Claude streaming returned empty content on attempt %d", stream_attempt
                 )
-            except Exception:
-                logger.debug("streaming token usage record skipped", exc_info=True)
-            return model_text, search_indicator, function_calls
+                if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
+                    gemini_circuit.record_failure()
+                if await _failover_record_failure(
+                    RuntimeError("Claude streaming returned empty content")
+                ):
+                    client = _failover_current_client(client)
+                if placeholder_msg:
+                    with contextlib.suppress(Exception):
+                        await placeholder_msg.delete()
+                delay = _claude_retry_delay_seconds(stream_attempt)
+                # No return: control falls through to the retry tail (reset +
+                # sleep(delay) + stream_attempt += 1), then re-loops or hits the
+                # post-loop non-streaming fallback once retries are exhausted.
+            else:
+                if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
+                    gemini_circuit.record_success()
+                await _failover_record_success()
+
+                if placeholder_msg:
+                    with contextlib.suppress(Exception):
+                        await placeholder_msg.delete()
+
+                stream_duration = time.time() - stream_start_time
+                logger.info(
+                    "🌊 Streaming complete: %d chars, %d chunks, %.1fs",
+                    len(model_text),
+                    chunks_received,
+                    stream_duration,
+                )
+                # H27: record token usage (best-effort). Accumulated usage lives
+                # on the stream's final message; guarded so it never breaks the reply.
+                try:
+                    await _record_token_usage(
+                        getattr(_stream_final_message, "usage", None),
+                        user_id=user_id,
+                        channel_id=channel_id,
+                        guild_id=guild_id,
+                        model=target_model,
+                    )
+                except Exception:
+                    logger.debug("streaming token usage record skipped", exc_info=True)
+                return model_text, search_indicator, function_calls
 
         except TimeoutError as e:
             if len(current_model_text) > 100:

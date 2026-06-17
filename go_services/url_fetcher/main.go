@@ -95,8 +95,12 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// isPrivateURL checks if a URL resolves to a private/internal IP (SSRF protection)
-func isPrivateURL(rawURL string) (bool, error) {
+// isPrivateURL checks if a URL resolves to a private/internal IP (SSRF protection).
+// Takes ctx so the pre-check DNS lookup honors the request's deadline/cancellation
+// (req.Timeout) — same as the dial-time ssrfSafeDialContext guard. A context-less
+// net.LookupIP here would block the worker for the full OS resolver timeout against
+// a tarpit/hanging DNS server, ignoring the request context.
+func isPrivateURL(ctx context.Context, rawURL string) (bool, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return true, fmt.Errorf("invalid URL: %v", err)
@@ -113,8 +117,9 @@ func isPrivateURL(rawURL string) (bool, error) {
 		}
 	}
 
-	// Resolve hostname to IP and check
-	ips, err := net.LookupIP(hostname)
+	// Resolve hostname to IP and check. Use a context-aware resolver so this
+	// pre-check respects req.Timeout/cancellation, mirroring ssrfSafeDialContext.
+	ipAddrs, err := (&net.Resolver{}).LookupIPAddr(ctx, hostname)
 	if err != nil {
 		// Fail CLOSED on DNS failure (block), matching the Python guard in
 		// utils/web/url_fetcher.py. Relying only on the dial-time check is
@@ -123,8 +128,8 @@ func isPrivateURL(rawURL string) (bool, error) {
 		// can't be fetched anyway, so blocking here loses nothing.
 		return true, fmt.Errorf("DNS resolution failed (blocked): %v", err)
 	}
-	for _, ip := range ips {
-		if isPrivateIP(ip) {
+	for _, ipAddr := range ipAddrs {
+		if isPrivateIP(ipAddr.IP) {
 			return true, nil
 		}
 	}
@@ -263,8 +268,9 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 	start := time.Now()
 	result := FetchResult{URL: rawURL}
 
-	// SSRF Protection: Block private/internal IPs
-	if isPrivate, err := isPrivateURL(rawURL); isPrivate {
+	// SSRF Protection: Block private/internal IPs. Pass ctx so the pre-check
+	// DNS lookup honors the request deadline/cancellation.
+	if isPrivate, err := isPrivateURL(ctx, rawURL); isPrivate {
 		errMsg := "SSRF blocked: URL resolves to private/internal address"
 		if err != nil {
 			errMsg = fmt.Sprintf("SSRF blocked: %v", err)
@@ -336,8 +342,15 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 		// Cap the post-conversion size as well: transcoding from a multi-byte
 		// charset (e.g. UTF-16/GBK) to UTF-8 can expand beyond the input cap,
 		// so limiting only rawBody above is not enough to bound memory.
-		if converted, err := io.ReadAll(io.LimitReader(utf8Reader, maxContentLength)); err == nil {
+		if converted, convErr := io.ReadAll(io.LimitReader(utf8Reader, maxContentLength)); convErr == nil {
 			body = converted
+		} else {
+			// Transcoding read failed: body silently stays the original
+			// source-charset bytes (mojibake risk downstream). charset readers
+			// rarely error after construction, so this is a best-effort degraded
+			// fallback — log it so the garbled path is at least observable.
+			log.Printf("⚠️ charset transcode failed for %s (content-type %q), using raw bytes: %v",
+				rawURL, result.ContentType, convErr)
 		}
 	}
 
@@ -638,10 +651,7 @@ func main() {
 		ctx := r.Context()
 		if req.Timeout > 0 {
 			// Cap user-provided timeout to 120 seconds max
-			timeout := req.Timeout
-			if timeout > 120 {
-				timeout = 120
-			}
+			timeout := min(req.Timeout, 120)
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 			defer cancel()

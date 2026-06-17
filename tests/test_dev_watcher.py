@@ -183,24 +183,57 @@ class TestCheckForCrash:
         assert restarter.stats.crash_count == crash_before
 
     def test_crash_under_cap_triggers_retry_and_increments_counter(self):
-        restarter, _ = _make_restarter(auto_retry_on_crash=True, max_crash_retries=3)
+        # The crash-retry path now defers the health check OUTSIDE the lock and
+        # resets consecutive_crashes only when the retried bot is confirmed
+        # healthy (mirrors start_bot; keeps _lock off the multi-second health
+        # sleep). Here the retried bot is NOT healthy, so the counter must stay
+        # at 1 (VE#21 — the cap can still be reached).
+        restarter, _ = _make_restarter(
+            auto_retry_on_crash=True, max_crash_retries=3, health_check_enabled=True
+        )
         restarter.process = MagicMock()
         restarter.process.poll.return_value = 1  # crashed
         restarter.consecutive_crashes = 0
 
         with (
             patch.object(dev_watcher.time, "sleep"),
-            patch.object(restarter, "_start_bot_unlocked") as restart_mock,
+            patch.object(restarter, "_start_bot_unlocked", return_value=True) as restart_mock,
+            patch.object(restarter, "_perform_health_check", return_value=False) as health_mock,
         ):
             result = restarter.check_for_crash()
 
         assert result is True
         assert restarter.consecutive_crashes == 1
         assert restarter.stats.crash_count == 1
-        # Under the cap -> auto-retry path is taken.
+        # Under the cap -> auto-retry path is taken (with the health check deferred).
         restart_mock.assert_called_once()
+        assert restart_mock.call_args.kwargs.get("run_health_check") is False
+        # Health check ran OUTSIDE the lock and failed, so no reset.
+        health_mock.assert_called_once()
         # Under-cap path must NOT null out the process.
         assert restarter.process is not None
+
+    def test_crash_retry_resets_counter_when_retried_bot_is_healthy(self):
+        # Companion to the above: when the retried bot comes up healthy, the
+        # consecutive-crash counter resets to 0 (so a transient crash doesn't
+        # erode the retry budget).
+        restarter, _ = _make_restarter(
+            auto_retry_on_crash=True, max_crash_retries=3, health_check_enabled=True
+        )
+        restarter.process = MagicMock()
+        restarter.process.poll.return_value = 1  # crashed
+        restarter.consecutive_crashes = 1
+
+        with (
+            patch.object(dev_watcher.time, "sleep"),
+            patch.object(restarter, "_start_bot_unlocked", return_value=True),
+            patch.object(restarter, "_perform_health_check", return_value=True),
+        ):
+            result = restarter.check_for_crash()
+
+        assert result is True
+        # Incremented to 2 by the crash, then reset to 0 once confirmed healthy.
+        assert restarter.consecutive_crashes == 0
 
     def test_max_retries_exceeded_clears_process_handle(self):
         # VE#20: after exceeding the cap, self.process is set to None so the

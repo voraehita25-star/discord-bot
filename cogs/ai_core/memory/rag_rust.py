@@ -87,6 +87,20 @@ class RagEngineWrapper:
             entry = MemoryEntry(entry_id, text, embedding, timestamp, importance)  # type: ignore[misc]
             self._engine.add(entry)
         else:
+            # Mirror the Rust add()'s validation (lib.rs:127-151) so both
+            # backends fail identically: reject wrong-dimension embeddings and
+            # any non-finite importance / embedding value. Without this the
+            # Python fallback stored bad entries silently, then either skipped
+            # them on every search (wrong-dim ValueError swallowed) or produced
+            # NaN scores (NaN/Inf vectors), diverging from the .pyd path.
+            if len(embedding) != self.dimension:
+                raise ValueError(
+                    f"Embedding dimension mismatch: expected {self.dimension}, got {len(embedding)}"
+                )
+            if not math.isfinite(importance):
+                raise ValueError("importance must be a finite number")
+            if any(not math.isfinite(v) for v in embedding):
+                raise ValueError("embedding contains non-finite values (NaN/Inf)")
             with self._entries_lock:
                 self._entries[entry_id] = {
                     "id": entry_id,
@@ -111,11 +125,25 @@ class RagEngineWrapper:
             ]
             return self._engine.add_batch(rust_entries)  # type: ignore[no-any-return]
         else:
+            # Silent-skip contract: mirror Rust add_batch (lib.rs:153-175),
+            # which drops any entry failing validation and returns only the
+            # count actually inserted. Since add() now raises on bad input, we
+            # swallow that ValueError per entry instead of aborting the batch.
+            added = 0
             for e in entries:
-                self.add(
-                    e["id"], e["text"], e["embedding"], e.get("timestamp"), e.get("importance", 1.0)
-                )
-            return len(entries)
+                try:
+                    self.add(
+                        e["id"],
+                        e["text"],
+                        e["embedding"],
+                        e.get("timestamp"),
+                        e.get("importance", 1.0),
+                    )
+                    added += 1
+                except (ValueError, KeyError, TypeError):
+                    logger.debug("Skipping malformed RAG entry in add_batch", exc_info=True)
+                    continue
+            return added
 
     def remove(self, entry_id: str) -> bool:
         """Remove an entry by ID."""
@@ -148,6 +176,13 @@ class RagEngineWrapper:
         time_decay_factor: float,
     ) -> list[dict[str, Any]]:
         """Pure Python fallback for search."""
+        # Reject non-finite query vectors up front to match the Rust search()
+        # contract (lib.rs:204-208). An Inf in the query yields an Inf score
+        # that passes the threshold filter and corrupts rank order; without
+        # this check the fallback would instead return silently-empty results.
+        if any(not math.isfinite(v) for v in query_embedding):
+            raise ValueError("query_embedding contains non-finite values (NaN/Inf)")
+
         current_time = time.time()
         results = []
 

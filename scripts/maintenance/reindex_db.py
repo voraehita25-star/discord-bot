@@ -9,6 +9,7 @@ import asyncio
 import re
 import shutil
 import signal
+import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime
@@ -90,6 +91,12 @@ async def reindex_ai_history():
     """
 
     _abort_if_bot_running()
+
+    # Fail fast with a clear message (not a raw FileNotFoundError traceback from
+    # shutil.copy2 below) when the database file is missing.
+    if not Path(DB_PATH).exists():
+        print(f"[ERROR] Database not found: {DB_PATH}", file=sys.stderr)
+        sys.exit(1)
 
     # Create backup directory (one-shot CLI script — sync path I/O is acceptable)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -422,24 +429,24 @@ async def reindex_ai_history():
         print(f"[INFO] Backup saved at: {backup_path}")
         print("[TIP] You can now restart the bot and re-export JSON files")
 
-        # VACUUM cannot run inside a transaction. The comment above used
-        # to claim we'd disabled autocommit but never actually did — so
-        # aiosqlite's deferred isolation level reopened an implicit txn
-        # on the next execute and VACUUM raised
-        # "cannot VACUUM from within a transaction". Switch to
-        # ``isolation_level = None`` (autocommit) for the VACUUM call so
-        # SQLite sees no open txn. VACUUM is best-effort optimization — a
-        # failure (or Ctrl-C) here leaves the committed data fully intact, so
-        # log a [WARN] rather than propagating.
-        print("[STEP] Running VACUUM to optimize database...")
-        prev_isolation = conn.isolation_level
-        conn.isolation_level = None
+    # VACUUM cannot run inside a transaction, and aiosqlite's ``isolation_level``
+    # setter assigns directly on the CALLER thread (sqlite3's same-thread guard
+    # then raises ``ProgrammingError``) — toggling it on the live aiosqlite
+    # connection crashed the success path right after the durable commit. Run
+    # VACUUM on a dedicated autocommit sqlite3 connection AFTER the aiosqlite
+    # connection above is closed: the bot is stopped and the migration is already
+    # committed, so a short-lived second connection is safe. VACUUM is best-effort
+    # optimization — a failure (or Ctrl-C) leaves committed data fully intact, so
+    # log a [WARN] rather than propagating (and never mask the exit(2) below).
+    print("[STEP] Running VACUUM to optimize database...")
+    try:
+        vacuum_conn = sqlite3.connect(DB_PATH, isolation_level=None)
         try:
-            await conn.execute("VACUUM")
-        except Exception as e:
-            print(f"  [WARN] VACUUM failed (data is intact, optimization skipped): {e}")
+            vacuum_conn.execute("VACUUM")
         finally:
-            conn.isolation_level = prev_isolation
+            vacuum_conn.close()
+    except Exception as e:
+        print(f"  [WARN] VACUUM failed (data is intact, optimization skipped): {e}")
 
     # Surface index-recreation failures as a non-zero exit so a calling
     # shell script or CI job notices. The data itself is intact (the

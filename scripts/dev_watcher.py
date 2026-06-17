@@ -662,10 +662,21 @@ if WATCHDOG_AVAILABLE:
 
             if should_retry:
                 # Sleep OUTSIDE the lock so the observer thread isn't stalled
-                # for crash_retry_delay, then re-acquire to respawn.
+                # for crash_retry_delay, then re-acquire to respawn. Defer the
+                # post-spawn health check exactly like start_bot(): run it AFTER
+                # releasing _lock so the multi-second health_check_delay sleep
+                # does not block the watchdog observer thread either, and clear
+                # consecutive_crashes only when the bot is confirmed alive.
                 time.sleep(self.config.crash_retry_delay)
                 with self._lock:
-                    self._start_bot_unlocked("Auto-retry after crash")
+                    started = self._start_bot_unlocked(
+                        "Auto-retry after crash", run_health_check=False
+                    )
+                if started and (
+                    not self.config.health_check_enabled or self._perform_health_check()
+                ):
+                    with self._lock:
+                        self.consecutive_crashes = 0
 
             return True
 
@@ -680,7 +691,10 @@ if WATCHDOG_AVAILABLE:
             import hashlib
 
             try:
-                return hashlib.md5(Path(filepath).read_bytes()).hexdigest()
+                # md5 here is a fast content-change fingerprint, NOT a security
+                # primitive — usedforsecurity=False documents that and satisfies
+                # bandit B324 (CWE-327).
+                return hashlib.md5(Path(filepath).read_bytes(), usedforsecurity=False).hexdigest()
             except OSError:
                 return None
 
@@ -709,11 +723,15 @@ if WATCHDOG_AVAILABLE:
             stem_lower = p.stem.lower()
 
             for pattern in self.config.ignore_patterns:
-                # rstrip path separators so directory patterns written with a
-                # trailing slash ("assets/", "data\\") collapse to the bare
-                # component name that Path.parts actually exposes — otherwise
-                # they never matched.
-                pat = pattern.lower().strip().rstrip("/\\")
+                # A trailing path separator ("assets/", "data\\") denotes a
+                # repo-ROOT directory dump, not a bare component that may appear
+                # anywhere: collapsing "data/" to "data" and matching it against
+                # every path component also swallows first-party SOURCE such as
+                # cogs/ai_core/data/*.py. Remember the separator so a
+                # single-component dir pattern anchors to rel.parts[0] below.
+                raw = pattern.lower().strip()
+                had_trailing_sep = raw.endswith(("/", "\\"))
+                pat = raw.rstrip("/\\")
                 if not pat:
                     continue
                 # Extension pattern (e.g., ".json", ".log")
@@ -738,6 +756,16 @@ if WATCHDOG_AVAILABLE:
                         path_parts[i : i + span] == pat_parts
                         for i in range(len(path_parts) - span + 1)
                     ):
+                        return True
+                    continue
+                # A single-component pattern written with a trailing separator
+                # is a repo-root directory dump: anchor it to the first path
+                # component so it cannot swallow same-named source dirs deeper in
+                # the tree (e.g. "data/" must ignore ./data/ but NOT
+                # cogs/ai_core/data/).
+                if had_trailing_sep:
+                    path_parts = tuple(part.lower() for part in rel.parts)
+                    if path_parts and path_parts[0] == pat:
                         return True
                     continue
                 # Otherwise treat as a directory/file-name component match.
