@@ -168,6 +168,91 @@ class TestTrackSession:
         cli_mod._track_session("conv-1", "")
         assert cli_mod._CONVERSATION_SESSIONS == {}
 
+    def test_refuses_to_track_suspicious_session_id(self, caplog):
+        # Defense at the source: a session id that would be parsed as a CLI
+        # flag by `claude --resume <id>` (argv injection) must NOT be tracked,
+        # so it can never reach the argv builder via the persisted map.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=cli_mod.logger.name):
+            cli_mod._track_session("conv-evil", "--dangerously-skip-permissions")
+        assert "conv-evil" not in cli_mod._CONVERSATION_SESSIONS
+        assert any("suspicious" in r.message.lower() for r in caplog.records)
+
+
+# ============================================================================
+# _SESSION_ID_PATTERN + _build_claude_argv — argv-injection defense for
+# `claude --resume`. A session id beginning with '-' would otherwise be parsed
+# as a flag (e.g. --dangerously-skip-permissions); the pattern + the builder's
+# drop-and-warn branch are the load-bearing guard.
+# ============================================================================
+
+
+class TestSessionIdPatternArgvGuard:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "-evil",  # leading dash → argv flag injection
+            "--resume",  # another flag
+            "-",  # bare dash
+            "",  # empty
+            "a" * 65,  # > 64 chars (pattern allows 1 + 63)
+            "has space",  # disallowed char
+            "has/slash",  # path-traversal char
+            "has.dot",  # path-traversal char
+            "bad!char",  # punctuation outside [A-Za-z0-9_-]
+        ],
+    )
+    def test_pattern_rejects_bad_ids(self, bad):
+        assert cli_mod._SESSION_ID_PATTERN.match(bad) is None
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "a",  # single alnum (min)
+            "0",  # leading digit is allowed
+            "abc-123_DEF",
+            "f47ac10b-58cc-4372-a567-0e02b2c3d479",  # UUID
+            "A" + "z" * 63,  # exactly 64 chars (max)
+        ],
+    )
+    def test_pattern_accepts_good_ids(self, good):
+        assert cli_mod._SESSION_ID_PATTERN.match(good) is not None
+
+    def _argv(self, monkeypatch, tmp_path, session_id):
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        return cli_mod._build_claude_argv(
+            "claude",
+            session_id=session_id,
+            allow_read_for_images=False,
+        )
+
+    def test_builder_drops_resume_for_leading_dash_id(self, monkeypatch, tmp_path, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=cli_mod.logger.name):
+            argv = self._argv(monkeypatch, tmp_path, "-dangerously-skip-permissions")
+        assert "--resume" not in argv
+        assert "-dangerously-skip-permissions" not in argv
+        assert any("ignoring suspicious" in r.message.lower() for r in caplog.records)
+
+    def test_builder_drops_resume_for_oversized_id(self, monkeypatch, tmp_path, caplog):
+        import logging
+
+        oversized = "a" * 65
+        with caplog.at_level(logging.WARNING, logger=cli_mod.logger.name):
+            argv = self._argv(monkeypatch, tmp_path, oversized)
+        assert "--resume" not in argv
+        assert oversized not in argv
+        assert any("ignoring suspicious" in r.message.lower() for r in caplog.records)
+
+    def test_builder_includes_resume_for_valid_id(self, monkeypatch, tmp_path):
+        argv = self._argv(monkeypatch, tmp_path, "good-session-123")
+        assert "--resume" in argv
+        # --resume must be immediately followed by the validated id.
+        i = argv.index("--resume")
+        assert argv[i + 1] == "good-session-123"
+
 
 # ============================================================================
 # reset_session — drops + persists

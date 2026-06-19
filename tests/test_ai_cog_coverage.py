@@ -42,6 +42,11 @@ def _make_cog():
         cm.get_performance_stats = MagicMock(return_value={})
         cm.chats = {}
         cm.processing_locks = {}
+        # Pin to False so the CLI-only teardown branches (which import and call
+        # the real reset_channel_session) stay off — a bare MagicMock attribute
+        # is truthy and would run the unmocked session reset. Tests that want
+        # the cli_mode path set it explicitly.
+        cm.cli_mode = False
         mock_cm.return_value = cm
         cog = AI(bot)
     return cog
@@ -1390,6 +1395,55 @@ class TestOnGuildChannelDelete:
         assert 1 in cog.chat_manager.chats  # untouched
         assert cid not in cog.chat_manager.seen_users
         cog.chat_manager._message_queue.clear_channel.assert_called_once_with(cid)
+
+    @pytest.mark.asyncio
+    async def test_cli_mode_resets_server_side_session(self):
+        # When cli_mode is on, channel deletion must also evict the server-side
+        # CLI session so a recreated channel id doesn't replay the wiped
+        # conversation (lines 668-673). The default _make_cog() pins cli_mode
+        # False, so this branch only runs when explicitly enabled.
+        cog = _make_cog()
+        cog.chat_manager.cli_mode = True
+        cog.chat_manager.chats = {}
+        cog.chat_manager.seen_users = {}
+        cog.chat_manager.last_accessed = {}
+        cog.chat_manager.streaming_enabled = {}
+        cog.chat_manager._message_queue = MagicMock()
+
+        channel = MagicMock()
+        channel.id = 80808
+        with (
+            patch("cogs.ai_core.ai_cog.invalidate_webhook_cache_on_channel_delete"),
+            patch(
+                "cogs.ai_core.api.discord_chat_claude_cli.reset_channel_session"
+            ) as reset_session,
+        ):
+            await cog.on_guild_channel_delete(channel)
+
+        reset_session.assert_called_once_with(80808)
+
+    @pytest.mark.asyncio
+    async def test_non_cli_mode_skips_server_side_reset(self):
+        # The default cog has cli_mode False, so the CLI session reset import +
+        # call must be skipped entirely.
+        cog = _make_cog()
+        cog.chat_manager.chats = {}
+        cog.chat_manager.seen_users = {}
+        cog.chat_manager.last_accessed = {}
+        cog.chat_manager.streaming_enabled = {}
+        cog.chat_manager._message_queue = MagicMock()
+
+        channel = MagicMock()
+        channel.id = 90909
+        with (
+            patch("cogs.ai_core.ai_cog.invalidate_webhook_cache_on_channel_delete"),
+            patch(
+                "cogs.ai_core.api.discord_chat_claude_cli.reset_channel_session"
+            ) as reset_session,
+        ):
+            await cog.on_guild_channel_delete(channel)
+
+        reset_session.assert_not_called()
 
 
 # ----------------------------------------------------------------------------

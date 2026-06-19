@@ -175,6 +175,16 @@ impl RagEngine {
         if !entry.importance.is_finite() {
             return Err(PyValueError::new_err("importance must be a finite number"));
         }
+        // Importance is a non-negative weight (calculate_importance clamps to
+        // [0.0, 2.0]). A negative importance flips the sign of final_score in
+        // search() (final_score = base_score * decay * importance); since the
+        // cosine base_score is in [-1, 1], a negative weight on an OPPOSITE-meaning
+        // memory (base_score < 0) yields a POSITIVE score that can pass the
+        // threshold and surface a maximally-irrelevant hit. Enforce the invariant
+        // at the trust boundary.
+        if entry.importance < 0.0 {
+            return Err(PyValueError::new_err("importance must be non-negative"));
+        }
         // Embedding values must also be finite — a single NaN/Inf in the
         // vector would later make save() fail (serde_json refuses non-finite
         // floats) and silently degrades cosine similarity at query time.
@@ -203,6 +213,7 @@ impl RagEngine {
         for entry in entries_list {
             if entry.embedding.len() == self.dimension
                 && entry.importance.is_finite()
+                && entry.importance >= 0.0
                 && entry.embedding.iter().all(|v| v.is_finite())
             {
                 // Count only newly inserted ids — HashMap::insert returns
@@ -568,6 +579,11 @@ impl RagEngine {
                     if !imp.is_finite() {
                         continue; // Skip entries with NaN/Infinity importance
                     }
+                    if imp < 0.0 {
+                        continue; // Skip negative importance — a negative weight
+                                  // flips final_score's sign in search() and can
+                                  // rank an opposite-meaning memory above threshold.
+                    }
                     if !timestamp.is_finite() {
                         continue; // Skip entries with NaN/Infinity timestamp — keep
                                   // the stored-data invariant consistent with importance/embedding
@@ -754,6 +770,59 @@ mod tests {
         // Net growth is 2 (a, b); duplicate replaces, malformed dropped.
         assert_eq!(added, 2);
         assert_eq!(engine.len(), 2);
+    }
+
+    #[test]
+    fn add_rejects_negative_importance() {
+        // A negative importance is finite but flips final_score's sign — reject it
+        // at the trust boundary (rust-rag-M2). Distinct from the NaN/Inf check.
+        let engine = RagEngine::new(3, 0.0);
+        let mut neg = sample_entry("neg", 3);
+        neg.importance = -0.5;
+        assert!(engine.add(neg).is_err(), "negative importance must be rejected");
+        // Zero is a valid weight (clamp lower bound) and must still be accepted.
+        let mut zero = sample_entry("zero", 3);
+        zero.importance = 0.0;
+        assert!(engine.add(zero).is_ok(), "zero importance must be accepted");
+        assert_eq!(engine.len(), 1);
+    }
+
+    #[test]
+    fn add_batch_drops_negative_importance() {
+        // Silent-skip contract: a negative-importance entry is dropped, not raised.
+        let engine = RagEngine::new(3, 0.0);
+        let mut neg = sample_entry("neg", 3);
+        neg.importance = -1.0;
+        let added = engine
+            .add_batch(vec![sample_entry("ok", 3), neg])
+            .unwrap();
+        assert_eq!(added, 1, "only the non-negative entry should be inserted");
+        assert_eq!(engine.len(), 1);
+    }
+
+    #[test]
+    fn load_drops_negative_importance_entries() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("negimp");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // Two entries, one with a negative importance which load() must skip.
+            let json = r#"[
+              {"id":"good","text":"g","embedding":[0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":0.5},
+              {"id":"neg","text":"n","embedding":[0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":-0.5}
+            ]"#;
+            std::fs::write("neg.json", json).unwrap();
+
+            let engine = RagEngine::new(4, 0.0);
+            let count = engine.load("neg.json").unwrap();
+            assert_eq!(count, 1, "only the non-negative-importance entry should load");
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
     }
 
     #[test]

@@ -255,6 +255,43 @@ class TestSanitizeMessageContent:
         assert "@everyone" not in result
         assert "@here" not in result
 
+    def test_escapes_role_mention(self):
+        """Role mentions <@&ID> get a ZWSP after the ampersand (no live ping)."""
+        from cogs.ai_core.sanitization import sanitize_message_content
+
+        result = sanitize_message_content("ping <@&123>")
+        assert result == "ping <@&\u200b123>"
+        assert "<@&123>" not in result
+
+    def test_escapes_user_mention(self):
+        """User mentions <@ID> get a ZWSP after the @."""
+        from cogs.ai_core.sanitization import sanitize_message_content
+
+        result = sanitize_message_content("hi <@456>")
+        assert result == "hi <@\u200b456>"
+        assert "<@456>" not in result
+
+    def test_escapes_user_mention_preserves_legacy_bang(self):
+        """Legacy nickname mention <@!ID> must keep the '!' — defang to
+        <@!\u200bID>, NOT <@\u200bID> (the old regex silently dropped the bang)."""
+        from cogs.ai_core.sanitization import sanitize_message_content
+
+        result = sanitize_message_content("yo <@!789>")
+        assert result == "yo <@!\u200b789>"
+        assert result != "yo <@\u200b789>"
+
+    def test_mention_defang_is_idempotent(self):
+        """Re-sanitizing an already-defanged string must NOT stack ZWSPs —
+        the negative-lookahead guard fires the substitution only once."""
+        from cogs.ai_core.sanitization import sanitize_message_content
+
+        original = "@everyone <@&1> <@2> <@!3>"
+        once = sanitize_message_content(original)
+        twice = sanitize_message_content(once)
+        assert twice == once
+        # Exactly one ZWSP per defanged token (4 tokens → 4 ZWSPs), not stacked.
+        assert twice.count("\u200b") == 4
+
 
 class TestModuleExports:
     """Tests for module exports."""

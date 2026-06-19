@@ -68,7 +68,10 @@ jobs:
 
     - name: Run security scan (bandit)
       run: |
-        pip install bandit[toml]
+        # Pin to the same bandit the pre-commit hook runs (1.9.4 in
+        # .pre-commit-config.yaml) so a new release can't add/drop a check
+        # and diverge the local gate from CI.
+        pip install "bandit[toml]==1.9.4"
         bandit -c pyproject.toml -r cogs/ utils/ -ll --quiet
 
     - name: Run dependency audit
@@ -132,11 +135,18 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pytest-asyncio pytest-cov mypy
+        # Pin lint/type tooling so the ruff gate and the mypy baseline ($MYPY_BASELINE)
+        # are deterministic across local / pre-commit / CI. ruff matches the SHA-pinned
+        # ruff-pre-commit rev (v0.15.17 in .pre-commit-config.yaml). mypy is held to the
+        # 2.1 minor (mypy~=2.1.0 == >=2.1.0,<2.2.0) the baseline=78 was calibrated
+        # against: a new MINOR can shift inference and the error count, flaking the gate,
+        # so ~=2.1.0 (not ~=2.0, which would allow any 2.x minor) keeps only patch bumps.
+        # pytest/pytest-asyncio are already pinned via requirements.txt.
+        pip install pytest pytest-asyncio pytest-cov "mypy~=2.1.0"
 
     - name: Run linter (ruff)
       run: |
-        pip install ruff
+        pip install ruff==0.15.17
         ruff check .
 
     - name: Run type checker (mypy)

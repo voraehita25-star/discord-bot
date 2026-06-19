@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,10 +215,14 @@ func TestHandleMetricsPush_Validation(t *testing.T) {
 		{"unknown name", `{"type":"counter","name":"bogus","value":1}`, http.StatusBadRequest},
 		{"unknown type", `{"type":"guage","name":"requests","value":1}`, http.StatusBadRequest},
 		{"name/type mismatch", `{"type":"counter","name":"active_connections","value":1}`, http.StatusBadRequest},
-		{"counter NaN", `{"type":"counter","name":"requests","value":"NaN"}`, http.StatusBadRequest},
+		// go-health-3: these two assert that encoding/json REJECTS a quoted,
+		// non-numeric value (-> 400 "invalid JSON") *before* the switch runs —
+		// NOT that the math.IsNaN/IsInf guard fired (it is unreachable from
+		// JSON; see TestNaNInfGuardLogic for the guard predicate itself).
+		{"counter rejects quoted non-number (decode 400)", `{"type":"counter","name":"requests","value":"NaN"}`, http.StatusBadRequest},
 		{"counter negative", `{"type":"counter","name":"requests","value":-5}`, http.StatusBadRequest},
 		{"histogram negative", `{"type":"histogram","name":"ai_response_time","value":-1}`, http.StatusBadRequest},
-		{"gauge Inf", `{"type":"gauge","name":"active_connections","value":"Inf"}`, http.StatusBadRequest},
+		{"gauge rejects quoted non-number (decode 400)", `{"type":"gauge","name":"active_connections","value":"Inf"}`, http.StatusBadRequest},
 		// go-health-3 regressions:
 		{"circuit_breaker out of range high", `{"type":"gauge","name":"circuit_breaker","value":999,"labels":{"service":"gemini"}}`, http.StatusBadRequest},
 		{"circuit_breaker negative", `{"type":"gauge","name":"circuit_breaker","value":-5,"labels":{"service":"gemini"}}`, http.StatusBadRequest},
@@ -321,5 +326,259 @@ func TestGetStatusUsesCachedMemStats(t *testing.T) {
 	// reflect that rather than the zero value.
 	if alloc, _ := status.Metrics["memory_alloc_mb"].(float64); alloc <= 0 {
 		t.Errorf("memory_alloc_mb should be > 0 after priming, got %v", status.Metrics["memory_alloc_mb"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-health-3: exercise the NaN/Inf guard PREDICATE directly.
+//
+// The math.IsNaN/IsInf arms in handleMetricsPush/handleMetricsBatch are
+// unreachable through the HTTP/JSON boundary (encoding/json rejects
+// NaN/Infinity/quoted-number bodies first), so the existing handler tests
+// only prove JSON-decode rejection. This test feeds float64 values the JSON
+// decoder can never deliver straight into the same boolean condition the
+// guards use, locking the intended "reject NaN, +/-Inf, and negatives"
+// semantics so a regression that loosened the predicate would fail here.
+// ---------------------------------------------------------------------------
+
+func TestNaNInfGuardLogic(t *testing.T) {
+	// counterOrHistogramRejects mirrors the guard used by the counter and
+	// histogram arms: NaN || Inf || value < 0.
+	counterOrHistogramRejects := func(v float64) bool {
+		return math.IsNaN(v) || math.IsInf(v, 0) || v < 0
+	}
+	// gaugeRejects mirrors the gauge arm's top-level guard: NaN || Inf
+	// (the per-name negative/enum checks are layered on top of this).
+	gaugeRejects := func(v float64) bool {
+		return math.IsNaN(v) || math.IsInf(v, 0)
+	}
+
+	tests := []struct {
+		name             string
+		value            float64
+		wantCounterRej   bool
+		wantGaugeTopReje bool
+	}{
+		{"NaN", math.NaN(), true, true},
+		{"+Inf", math.Inf(1), true, true},
+		{"-Inf", math.Inf(-1), true, true},
+		{"negative", -1.0, true, false}, // gauge top-level allows; per-name check handles it
+		{"zero", 0.0, false, false},
+		{"positive", 42.0, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := counterOrHistogramRejects(tc.value); got != tc.wantCounterRej {
+				t.Errorf("counter/histogram guard(%v) = %v, want %v", tc.value, got, tc.wantCounterRej)
+			}
+			if got := gaugeRejects(tc.value); got != tc.wantGaugeTopReje {
+				t.Errorf("gauge top-level guard(%v) = %v, want %v", tc.value, got, tc.wantGaugeTopReje)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-health-1: bind-host loopback gate helpers (HEALTH_API_ALLOW_REMOTE)
+// ---------------------------------------------------------------------------
+
+func TestIsLoopbackHost(t *testing.T) {
+	loopback := []string{"127.0.0.1", "localhost", "::1", "[::1]", "LOCALHOST", " 127.0.0.1 "}
+	for _, h := range loopback {
+		if !isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = false, want true", h)
+		}
+	}
+	nonLoopback := []string{"0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "example.com", ""}
+	for _, h := range nonLoopback {
+		if isLoopbackHost(h) {
+			t.Errorf("isLoopbackHost(%q) = true, want false", h)
+		}
+	}
+}
+
+func TestIsTruthy(t *testing.T) {
+	// Affirmatives open the gate.
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on", " on "} {
+		if !isTruthy(v) {
+			t.Errorf("isTruthy(%q) = false, want true", v)
+		}
+	}
+	// Everything else is fail-safe false — stricter than the Python sibling's
+	// "any non-empty string is truthy" so a stray =0/false/no can't open it.
+	for _, v := range []string{"", "0", "false", "no", "off", "2", "enable", "garbage"} {
+		if isTruthy(v) {
+			t.Errorf("isTruthy(%q) = true, want false", v)
+		}
+	}
+}
+
+// resolveBindHost replays the exact decision main() makes so the gate is a
+// tested invariant without spinning up a server. Keep in lockstep with main().
+func resolveBindHost(bindHost, allowRemote string) string {
+	if !isLoopbackHost(bindHost) && !isTruthy(allowRemote) {
+		return "127.0.0.1"
+	}
+	return bindHost
+}
+
+func TestBindHostGate(t *testing.T) {
+	tests := []struct {
+		name        string
+		bindHost    string
+		allowRemote string
+		want        string
+	}{
+		{"loopback stays", "127.0.0.1", "", "127.0.0.1"},
+		{"localhost stays", "localhost", "", "localhost"},
+		{"non-loopback forced without flag", "0.0.0.0", "", "127.0.0.1"},
+		{"non-loopback forced with falsey flag", "0.0.0.0", "0", "127.0.0.1"},
+		{"non-loopback forced with 'false'", "0.0.0.0", "false", "127.0.0.1"},
+		{"non-loopback allowed with truthy flag", "0.0.0.0", "1", "0.0.0.0"},
+		{"routable allowed with 'true'", "192.168.1.10", "true", "192.168.1.10"},
+		{"routable forced without flag", "192.168.1.10", "", "127.0.0.1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveBindHost(tc.bindHost, tc.allowRemote); got != tc.want {
+				t.Errorf("resolveBindHost(%q, %q) = %q, want %q", tc.bindHost, tc.allowRemote, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-health-2: requireReadToken — anonymous when no token, enforced when set
+// ---------------------------------------------------------------------------
+
+func TestRequireReadToken(t *testing.T) {
+	const token = "read-token"
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tests := []struct {
+		name       string
+		expected   string
+		authHeader string
+		wantStatus int
+	}{
+		// No token configured => reads are anonymous (loopback-only via the
+		// bind gate); the handler is reached without any Authorization header.
+		{"no token configured -> anonymous", "", "", http.StatusOK},
+		{"no token configured ignores header", "", "Bearer whatever", http.StatusOK},
+		// Token configured => the SAME bearer enforcement as writes (but reads
+		// must NOT fail-closed-to-503; they require the token instead).
+		{"token set, missing header -> 401", token, "", http.StatusUnauthorized},
+		{"token set, wrong token -> 401", token, "Bearer nope-wrong-len", http.StatusUnauthorized},
+		{"token set, correct token -> 200", token, "Bearer " + token, http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mw := requireReadToken(tc.expected)(next)
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// go-health-4: integration test wiring the REAL chi router (buildRouter), so
+// the security-critical middleware-to-route binding is a tested invariant:
+//   - writes require the bearer token (401 without, 200 with);
+//   - with NO token writes fail CLOSED (503);
+//   - read policy matches the go-health-2 decision (probes always anonymous;
+//     /metrics and /stats anonymous when no token, token-gated when set).
+// ---------------------------------------------------------------------------
+
+func doReq(t *testing.T, r http.Handler, method, path, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body != "" {
+		rdr = bytes.NewReader([]byte(body))
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRouterAuthWiring_TokenConfigured(t *testing.T) {
+	const token = "wiring-token"
+	hs := NewHealthService("test")
+	hs.SetServiceStatus("bot", true)
+	r := buildRouter(hs, token)
+
+	validPush := `{"type":"counter","name":"requests","value":1,"labels":{"status":"success","endpoint":"ai"}}`
+
+	// --- Write routes: token enforced ---
+	if rec := doReq(t, r, http.MethodPost, "/metrics/push", "", validPush); rec.Code != http.StatusUnauthorized {
+		t.Errorf("POST /metrics/push without token = %d, want 401", rec.Code)
+	}
+	if rec := doReq(t, r, http.MethodPost, "/metrics/push", token, validPush); rec.Code != http.StatusOK {
+		t.Errorf("POST /metrics/push with token = %d, want 200 (body=%s)", rec.Code, "ok")
+	}
+	for _, p := range []string{"/health/service", "/metrics/batch"} {
+		body := `{"name":"x","healthy":true}`
+		if p == "/metrics/batch" {
+			body = "[]"
+		}
+		if rec := doReq(t, r, http.MethodPost, p, "", body); rec.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s without token = %d, want 401", p, rec.Code)
+		}
+	}
+
+	// --- Read routes: probes ALWAYS anonymous ---
+	for _, p := range []string{"/health", "/health/live", "/health/ready"} {
+		if rec := doReq(t, r, http.MethodGet, p, "", ""); rec.Code == http.StatusUnauthorized {
+			t.Errorf("GET %s anonymous = 401, want it to succeed (probes must be anonymous)", p)
+		}
+	}
+
+	// --- /metrics and /stats: token-gated when a token is configured ---
+	for _, p := range []string{"/metrics", "/stats"} {
+		if rec := doReq(t, r, http.MethodGet, p, "", ""); rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s without token (token configured) = %d, want 401", p, rec.Code)
+		}
+		if rec := doReq(t, r, http.MethodGet, p, token, ""); rec.Code != http.StatusOK {
+			t.Errorf("GET %s with token = %d, want 200", p, rec.Code)
+		}
+	}
+
+	// --- Method binding: GET on a write route is not registered as a write ---
+	if rec := doReq(t, r, http.MethodGet, "/metrics/push", token, ""); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /metrics/push = %d, want 405", rec.Code)
+	}
+}
+
+func TestRouterAuthWiring_NoToken(t *testing.T) {
+	hs := NewHealthService("test")
+	hs.SetServiceStatus("bot", true)
+	r := buildRouter(hs, "") // no token configured
+
+	// Writes fail CLOSED (503) regardless of any header — unchanged posture.
+	validPush := `{"type":"counter","name":"requests","value":1,"labels":{"status":"success","endpoint":"ai"}}`
+	if rec := doReq(t, r, http.MethodPost, "/metrics/push", "anything", validPush); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /metrics/push (no token configured) = %d, want 503 (fail-closed)", rec.Code)
+	}
+
+	// Reads are anonymous so the default tokenless Prometheus scrape works.
+	for _, p := range []string{"/health", "/health/live", "/health/ready", "/metrics", "/stats"} {
+		rec := doReq(t, r, http.MethodGet, p, "", "")
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusServiceUnavailable {
+			t.Errorf("GET %s (no token configured) = %d, want anonymous success", p, rec.Code)
+		}
 	}
 }

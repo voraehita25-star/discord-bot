@@ -253,4 +253,117 @@ describe('renderMessagesHtml', () => {
         expect(result.html).toContain('data-img-idx="1"');
         expect(result.html).toContain('message-images');
     });
+
+    // ------------------------------------------------------------------------
+    // SECURITY: <img src> allowlist filter. This is the sole in-JS XSS/privacy
+    // defense for server-controlled image URLs (a compromised WS server could
+    // otherwise smuggle javascript:, http:// tracking pixels, or an
+    // SVG-with-onload). The filter lets through ONLY data:image/* (non-svg).
+    //
+    // NOTE: the https-CDN allowlist (ALLOWED_IMG_HOSTS) was narrowed to EMPTY
+    // (dash-ts-chat-2) to match the packaged CSP `img-src 'self' data: blob:`
+    // (no https host) — CSP is the authoritative, stricter gate, so emitting an
+    // https <img> the runtime can't render would be a "valid but invisible"
+    // broken image. These tests therefore assert NO remote https image survives,
+    // only the png data: URL.
+    // ------------------------------------------------------------------------
+    it('filters out svg, http, javascript, and remote-https image srcs, keeping only png-data', () => {
+        const result = renderMessagesHtml({
+            messages: [mkMsg(0, {
+                images: [
+                    'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',  // SVG → scriptable, REJECT
+                    'http://evil.example/x.png',                    // plaintext http → REJECT
+                    'javascript:alert(1)',                          // scheme abuse → REJECT
+                    'data:image/png;base64,AAA',                    // raster data URL → ALLOW
+                    'https://cdn.discordapp.com/ok.png',            // remote https → REJECT (no CDN in CSP)
+                ],
+            })],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+
+        // Only the png data: URL survives — as a src="..." attribute.
+        expect(result.html).toContain('src="data:image/png;base64,AAA"');
+
+        // None of the rejected URLs appear as an <img src> (escaped or not).
+        // NOTE: match `http://` (not bare `http:`) so a future re-allowed
+        // `https://` host couldn't accidentally satisfy this assertion.
+        expect(result.html).not.toMatch(/data:image\/svg/i);
+        expect(result.html).not.toMatch(/src="http:\/\//i);
+        expect(result.html).not.toMatch(/javascript:/i);
+        expect(result.html).not.toContain('evil.example');
+        // The previously-allowlisted CDN host is now rejected too (CSP-aligned).
+        expect(result.html).not.toContain('cdn.discordapp.com');
+
+        // Exactly one surviving image, re-based to index 0 — the filter runs
+        // before the map, so we never emit a gap.
+        expect((result.html.match(/class="message-image"/g) ?? []).length).toBe(1);
+        expect(result.html).toContain('data-img-idx="0"');
+        expect(result.html).not.toContain('data-img-idx="1"');
+    });
+
+    it('rejects an arbitrary https host (no remote image is emitted)', () => {
+        const result = renderMessagesHtml({
+            messages: [mkMsg(0, { images: ['https://attacker.example/pixel.png'] })],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        expect(result.html).not.toContain('attacker.example');
+        // No surviving images → no <img class="message-image"> at all.
+        expect(result.html).not.toContain('class="message-image"');
+    });
+
+    // ------------------------------------------------------------------------
+    // SECURITY: escapeHtml must run on every user/server-controlled value that
+    // lands in an HTML attribute or text node, INDEPENDENT of formatMessage
+    // (which the real ChatManager sanitizes separately). The fake formatMessage
+    // here is a pass-through, so this test proves the escapeHtml call sites in
+    // renderSingleMessage are present rather than relying on the formatter.
+    // ------------------------------------------------------------------------
+    it('escapes attacker-controlled attribute/text fields (content, mode, role, doc name, displayName)', () => {
+        const XSS = '"><svg onload=alert(1)>';
+        const result = renderMessagesHtml({
+            messages: [mkMsg(0, {
+                role: `assistant${XSS}` as ChatMessage['role'],
+                content: XSS,
+                mode: XSS,
+                // Only `.name` is read by the template; cast keeps the test
+                // independent of DocumentPayload's full shape.
+                documents: [{ name: XSS }] as unknown as ChatMessage['documents'],
+            })],
+            // displayName for an assistant comes from role_name on the conversation.
+            currentConversation: mkConv('c1', { role_name: `Faust${XSS}` }),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+
+        // The `.message-content` body is deliberately the formatter's job
+        // (real ChatManager pipes msg.content through DOMPurify; the fake
+        // formatMessage here is a pass-through). This test is about the
+        // OTHER fields, so strip the body before the global breakout checks.
+        const outsideBody = result.html.replace(
+            /<div class="message-content">[\s\S]*?<\/div>/,
+            '<div class="message-content">[BODY]</div>',
+        );
+
+        // The attacker's scriptable element must never survive as live markup
+        // outside the formatter-owned body. (Legit icon() output is inline
+        // `<svg class="ic" ...>` followed/preceded by buttons, so a bare `<svg`
+        // or `"><svg` check would false-positive; we target the attacker's
+        // specific `<svg ... onload=` injection, which escapeHtml neutralizes.)
+        expect(outsideBody).not.toMatch(/<svg[^>]*onload/i);
+
+        // Each field's dangerous payload is present only in escaped form.
+        // escapeHtml turns < > " into &lt; &gt; &quot;.
+        expect(result.html).toContain('&lt;svg onload=alert(1)&gt;');
+        // data-content (copy button), the role class, the mode badge, the doc
+        // chip name, and the display name all carry the escaped payload.
+        expect(result.html).toMatch(/data-content="[^"]*&lt;svg/i);
+        expect(result.html).toMatch(/class="chat-message assistant&quot;&gt;&lt;svg/i);
+        expect(result.html).toMatch(/class="message-mode">[^<]*&lt;svg/i);
+        expect(result.html).toMatch(/class="message-doc-chip"[^>]*&lt;svg/i);
+        expect(result.html).toMatch(/class="message-name">Faust&quot;&gt;&lt;svg/i);
+    });
 });

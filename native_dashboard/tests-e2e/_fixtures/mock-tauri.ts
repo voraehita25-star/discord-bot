@@ -93,6 +93,11 @@ export async function installDashboardMocks(page: Page): Promise<void> {
             constructor(url: string) {
                 super();
                 this.url = url;
+                // Expose the most-recently-constructed instance so the
+                // sendWsFrame() helper can drive an inbound frame at it. The WS
+                // client (ws-client.ts) does `new WebSocket(url)` exactly once
+                // per connect attempt, so this always points at the live socket.
+                (window as unknown as Record<string, unknown>).__activeMockWs = this;
                 // Fire 'open' on next tick so listeners attached after `new`
                 // still hear it (matches real WebSocket timing).
                 queueMicrotask(() => {

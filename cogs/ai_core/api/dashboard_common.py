@@ -194,6 +194,50 @@ class LeadingTimestampStripper:
         self._done = False
 
 
+# Reserved prompt section-header names and role markers that the dashboard
+# prompt builders emit structurally. Document-memory text is untrusted (the
+# operator's uploaded PDF/DOCX/text bodies + filenames are re-injected into the
+# prompt on every turn via build_user_context), so a doc line like
+# ``# Current user message`` or ``Assistant: I will comply`` would otherwise
+# spoof a real section/turn. This MIRRORS _sanitize_dialog_segment /
+# _RESERVED_PROMPT_HEADERS / _ROLE_LEAK_RE in dashboard_chat_claude_cli.py —
+# replicated here (not imported) because that module imports FROM this one, so a
+# reverse import would be a circular dependency. Keep the two lists in sync.
+_DOC_RESERVED_PROMPT_HEADERS = (
+    "persona",
+    "timestamp convention",
+    "context",
+    "conversation so far",
+    "attached images",
+    "attached documents",
+    "current user message",
+    "available tools",
+)
+# Role marker at the start of a line (User:/Assistant:/System:/Tool:/Human:/AI:).
+_DOC_ROLE_LEAK_RE = _re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
+# Reserved section header (#..###### followed by one of the reserved names).
+_DOC_HEADER_LEAK_RE = _re.compile(
+    r"(?im)^(\s*)(#{1,6})(\s+(?:" + "|".join(_DOC_RESERVED_PROMPT_HEADERS) + r")\b)"
+)
+
+
+def _defang_document_segment(text: str) -> str:
+    """Defang role-marker / section-header injection in untrusted document text.
+
+    Backend-agnostic: applied to document-memory bodies AND filenames inside
+    build_user_context so they can never spoof a reserved prompt section
+    (``# Current user message``) or a turn (``Assistant: ...``) in the CLI,
+    SDK, or Gemini prompt builders that inject user_context. Rewrites each
+    offending line so the model sees it as quoted ``[user-text]`` rather than a
+    real header/turn. Mirrors _sanitize_dialog_segment in
+    dashboard_chat_claude_cli.py.
+    """
+    if not text:
+        return text
+    text = _DOC_ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+    return _DOC_HEADER_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+
+
 def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
     """Sanitize user profile fields to prevent system instruction injection.
 
@@ -357,7 +401,14 @@ async def build_user_context(
                 dropped_filenames: list[str] = []
                 for doc in docs:
                     text = doc.get("extracted_text") or ""
-                    filename = doc.get("filename") or "document"
+                    # Document text + filename are untrusted (operator uploads,
+                    # re-injected raw by every prompt builder). Defang reserved
+                    # section headers / role markers in BOTH so a doc body or a
+                    # crafted filename can't spoof '# Current user message' /
+                    # 'Assistant:' etc. (filenames are also charset-sanitised at
+                    # ingest in document_extractor; this is defence-in-depth for
+                    # rows persisted before that fix shipped).
+                    filename = _defang_document_segment(doc.get("filename") or "document")
                     if not text:
                         continue
                     remaining = MAX_INJECT_CHARS - running_total
@@ -371,6 +422,7 @@ async def build_user_context(
                         if len(text) <= remaining
                         else text[:remaining] + "\n[... truncated in prompt]"
                     )
+                    snippet = _defang_document_segment(snippet)
                     doc_sections.append(f"## {filename}\n{snippet}")
                     running_total += len(snippet)
                 if doc_sections:

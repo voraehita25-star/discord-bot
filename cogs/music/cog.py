@@ -18,7 +18,9 @@ import itertools
 import json
 import logging
 import math
+import os
 import random
+import tempfile
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -56,6 +58,14 @@ class MusicGuildState:
     cleanup_pending: bool = False
     pause_start: float | None = None
     play_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes save_queue() for this guild. Distinct from play_lock on
+    # purpose: save_queue is reachable from play/cleanup paths, so sharing
+    # play_lock would deadlock. mkstemp gives each write a unique SOURCE temp
+    # file, but the DEST (data/queue_{gid}.json, data/queue_settings_{gid}.json)
+    # is shared — two concurrent same-guild os.replace() onto it still collide
+    # on Windows (WinError 5) and the loser's save gets dropped by the OSError
+    # catch. This lock serializes the renames per guild so no save is lost.
+    save_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     volume: float = 0.5
     auto_disconnect_task: asyncio.Task | None = None
     mode_247: bool = False
@@ -361,46 +371,58 @@ class Music(commands.Cog):
 
     async def save_queue(self, guild_id: int) -> None:
         """Save queue to database for persistence across restarts."""
-        queue = self._gs(guild_id).queue
+        gs = self._gs(guild_id)
 
-        # Import database only when needed
-        try:
-            from utils.database import db
-        except ImportError:
-            # Fallback to JSON if database not available. The queue JSON bundles
-            # volume/loop/mode_247, BUT _save_queue_json_sync UNLINKS that file
-            # when the queue is empty — so an idle 24/7 channel (mode_247 on, no
-            # tracks queued) would lose its settings on restart in JSON-only
-            # mode. Mirror the DB path and also write the queue-independent
-            # settings sidecar so those survive an empty-queue save here too.
+        # Serialize this guild's saves. The settings/queue writers below each
+        # os.replace() onto a SHARED per-guild dest path; mkstemp only makes
+        # the temp SOURCE unique, so two concurrent same-guild saves still
+        # collide on the rename (WinError 5 on Windows) and the loser is
+        # silently dropped by the writer's OSError catch. Holding the per-guild
+        # save_lock for the whole body (NOT play_lock — would deadlock) makes
+        # the renames sequential per guild so every save lands. A RuntimeError
+        # raised below on DB failure still releases the lock via async-with.
+        async with gs.save_lock:
+            queue = gs.queue
+
+            # Import database only when needed
+            try:
+                from utils.database import db
+            except ImportError:
+                # Fallback to JSON if database not available. The queue JSON
+                # bundles volume/loop/mode_247, BUT _save_queue_json_sync
+                # UNLINKS that file when the queue is empty — so an idle 24/7
+                # channel (mode_247 on, no tracks queued) would lose its
+                # settings on restart in JSON-only mode. Mirror the DB path and
+                # also write the queue-independent settings sidecar so those
+                # survive an empty-queue save here too.
+                await self._save_queue_settings(guild_id)
+                await self._save_queue_json(guild_id)
+                return
+
+            # The music_queue DB schema only stores the track list, so volume/
+            # loop/mode_247 would otherwise be lost on restart when the DB
+            # backend is active (the JSON path persists all four). Mirror those
+            # settings to a small dedicated sidecar regardless of DB
+            # availability so they survive a restart without a schema migration.
+            # mode_247 in particular must persist — losing it makes a 24/7
+            # channel auto-disconnect after a restart.
             await self._save_queue_settings(guild_id)
-            await self._save_queue_json(guild_id)
-            return
 
-        # The music_queue DB schema only stores the track list, so volume/
-        # loop/mode_247 would otherwise be lost on restart when the DB
-        # backend is active (the JSON path persists all four). Mirror those
-        # settings to a small dedicated sidecar regardless of DB availability
-        # so they survive a restart without a schema migration. mode_247 in
-        # particular must persist — losing it makes a 24/7 channel auto-
-        # disconnect after a restart.
-        await self._save_queue_settings(guild_id)
+            # db.save_music_queue / clear_music_queue never raise — they catch
+            # internally and return False. Raising here on failure is what lets
+            # _periodic_queue_save's per-guild retry re-mark the pending flag;
+            # ignoring the bool made that retry logic unreachable and logged
+            # false success while the queue change was silently lost.
+            if not queue:
+                # Clear queue from database if empty
+                if not await db.clear_music_queue(guild_id):
+                    raise RuntimeError(f"clear_music_queue failed for guild {guild_id}")
+                return
 
-        # db.save_music_queue / clear_music_queue never raise — they catch
-        # internally and return False. Raising here on failure is what lets
-        # _periodic_queue_save's per-guild retry re-mark the pending flag;
-        # ignoring the bool made that retry logic unreachable and logged
-        # false success while the queue change was silently lost.
-        if not queue:
-            # Clear queue from database if empty
-            if not await db.clear_music_queue(guild_id):
-                raise RuntimeError(f"clear_music_queue failed for guild {guild_id}")
-            return
-
-        # Save to database (convert deque to list for serialization)
-        if not await db.save_music_queue(guild_id, list(queue)):
-            raise RuntimeError(f"save_music_queue failed for guild {guild_id}")
-        logger.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
+            # Save to database (convert deque to list for serialization)
+            if not await db.save_music_queue(guild_id, list(queue)):
+                raise RuntimeError(f"save_music_queue failed for guild {guild_id}")
+            logger.info("💾 Saved queue for guild %s (%d tracks) to database", guild_id, len(queue))
 
     async def _save_queue_settings(self, guild_id: int) -> None:
         """Persist volume/loop/mode_247 to a sidecar (DB-path settings safety).
@@ -450,15 +472,32 @@ class Music(commands.Cog):
                         filepath.unlink()
                 return
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = filepath.with_suffix(".json.tmp")
+            # Each write goes to a UNIQUE temp file (mkstemp) in the target dir
+            # instead of a single fixed ``.json.tmp``. This is defense-in-depth:
+            # it removes torn-temp collisions between overlapping writers. It is
+            # NOT sufficient on its own — the DEST (``filepath``) is still shared
+            # per guild, so two concurrent same-guild ``replace`` calls onto it
+            # can still collide (WinError 5 on Windows) and the loser's save is
+            # dropped by the OSError catch below. The actual serialization is
+            # done by the per-guild ``save_lock`` held across ``save_queue``;
+            # this writer assumes it runs under that lock.
+            fd, temp_name = tempfile.mkstemp(
+                dir=filepath.parent, prefix=f".{filepath.name}.", suffix=".tmp"
+            )
+            os.close(fd)  # we reuse the path via write_text, not the raw fd
+            temp_path = Path(temp_name)
             temp_path.write_text(
                 json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             temp_path.replace(filepath)  # Atomic on POSIX; near-atomic on Windows
-        except OSError:
+        except (OSError, TypeError, ValueError):
+            # Catch non-OSError too (e.g. json.dumps choking on a non-
+            # serializable value) so the unique mkstemp temp is still unlinked
+            # instead of being orphaned in data/.
             logger.exception("Failed to save queue settings for guild %s", guild_id)
-            with contextlib.suppress(OSError):
-                temp_path = Path(f"data/queue_settings_{guild_id}.json.tmp")
+            # ``temp_path`` is bound only once mkstemp succeeds; guard NameError
+            # so an earlier failure doesn't mask the original error.
+            with contextlib.suppress(OSError, NameError):
                 if temp_path.exists():
                     temp_path.unlink()
 
@@ -541,14 +580,30 @@ class Music(commands.Cog):
             # Ensure data/ exists — fresh installs may not have it yet,
             # and write_text would raise FileNotFoundError.
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = filepath.with_suffix(".json.tmp")
+            # Unique per-write temp file (see _save_queue_settings_sync):
+            # defense-in-depth against torn-temp collisions, since a fixed
+            # ``.json.tmp`` was shared by every concurrent same-guild save. It
+            # does NOT by itself prevent the dropped-save race: the DEST
+            # (``filepath``) is still shared, so concurrent same-guild
+            # ``replace`` calls can collide (WinError 5 on Windows). Per-guild
+            # serialization comes from ``save_lock`` held across ``save_queue``;
+            # this writer assumes it runs under that lock.
+            fd, temp_name = tempfile.mkstemp(
+                dir=filepath.parent, prefix=f".{filepath.name}.", suffix=".tmp"
+            )
+            os.close(fd)  # we reuse the path via write_text, not the raw fd
+            temp_path = Path(temp_name)
             temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(filepath)  # Atomic on POSIX; near-atomic on Windows
-        except OSError:
+        except (OSError, TypeError, ValueError):
+            # Catch non-OSError too (e.g. json.dumps choking on a non-
+            # serializable value) so the unique mkstemp temp is still unlinked
+            # rather than orphaned in data/.
             logger.exception("Failed to save queue for guild %s", guild_id)
-            # Clean up temp file if rename failed
-            with contextlib.suppress(OSError):
-                temp_path = Path(f"data/queue_{guild_id}.json.tmp")
+            # Clean up temp file if rename failed. ``temp_path`` is bound only
+            # after mkstemp succeeds; guard NameError so an earlier failure
+            # doesn't mask the original error.
+            with contextlib.suppress(OSError, NameError):
                 if temp_path.exists():
                     temp_path.unlink()
 

@@ -439,6 +439,12 @@ async def fetch_url_content(
                         api_url,
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=timeout),
+                        # Match the hardened standard-fetch path: never auto-follow
+                        # redirects. aiohttp short-circuits the _SSRFSafeResolver
+                        # for literal-IP redirect targets, so a followed 3xx is an
+                        # un-revalidated SSRF hop. GitHub's API does not need
+                        # client-followed redirects for these endpoints.
+                        allow_redirects=False,
                     ) as response:
                         if response.status == 200:
                             data = await response.json()
@@ -462,6 +468,9 @@ Default Branch: {data.get("default_branch", "main")}
                                 readme_url,
                                 headers={**headers, "Accept": "application/vnd.github.raw"},
                                 timeout=aiohttp.ClientTimeout(total=timeout),
+                                # Same hardening as the API call above — no
+                                # un-revalidated redirect hops on this path.
+                                allow_redirects=False,
                             ) as readme_resp:
                                 if readme_resp.status == 200:
                                     readme_text = await readme_resp.text()

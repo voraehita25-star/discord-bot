@@ -1246,9 +1246,11 @@ class TestSafeRunCoroutineResidual:
 
 
 class TestSaveQueueJsonSyncResidual:
-    """_save_queue_json_sync OSError on rename cleans up temp file (line 431)."""
+    """_save_queue_json_sync OSError on rename cleans up its temp file."""
 
     def test_write_then_rename_oserror_unlinks_tmp(self, tmp_path):
+        import os as _os
+
         from cogs.music import cog as cogmod
 
         cog = make_cog()
@@ -1258,16 +1260,22 @@ class TestSaveQueueJsonSyncResidual:
         def fake_path(arg, *a, **k):
             return tmp_path / str(arg).replace("/", "_")
 
-        # Pre-create the .tmp file so the cleanup unlink (line 431) executes.
+        # The save path now creates a uniquely-named temp file via
+        # tempfile.mkstemp (so concurrent same-guild saves can't clobber each
+        # other). Pin mkstemp to a known path so the cleanup unlink in the
+        # except block is exercised deterministically. The mkstemp name is
+        # chosen so fake_path maps it back onto tmp_file.
         tmp_file = tmp_path / f"data_queue_{gid}.json.tmp"
-        tmp_file.write_text("partial")
+        fd = _os.open(tmp_file, _os.O_CREAT | _os.O_WRONLY)
 
         with patch.object(cogmod, "Path", side_effect=fake_path):
-            # Patch the real pathlib replace so the write succeeds but the
-            # atomic rename raises OSError -> except block reconstructs the
-            # tmp path and unlinks it (lines 425-431).
-            with patch("pathlib.Path.replace", side_effect=OSError("rename fail")):
-                cog._save_queue_json_sync(gid, snapshot=snap)
+            with patch.object(
+                cogmod.tempfile, "mkstemp", return_value=(fd, f"data/queue_{gid}.json.tmp")
+            ):
+                # write_text succeeds but the atomic rename raises OSError ->
+                # except block reconstructs temp_path and unlinks it.
+                with patch("pathlib.Path.replace", side_effect=OSError("rename fail")):
+                    cog._save_queue_json_sync(gid, snapshot=snap)
 
         # The temp file got cleaned up by the except block.
         assert not tmp_file.exists()

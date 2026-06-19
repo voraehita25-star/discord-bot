@@ -603,11 +603,12 @@ class TestFromUrlSsrfGuard:
 
     @pytest.mark.asyncio
     async def test_importerror_fallback_resolves_public_ip_then_proceeds(self):
-        """If the SSRF helper import fails, the fallback gethostbyname path runs.
+        """If the SSRF helper import fails, the fallback getaddrinfo path runs.
 
         A public IP must pass the fallback check and let extraction proceed.
         """
         import builtins
+        import socket
         from unittest.mock import MagicMock, patch
 
         from utils.media.ytdl_source import YTDLSource
@@ -628,10 +629,13 @@ class TestFromUrlSsrfGuard:
         # Build the audio mock BEFORE patching __import__ (it imports discord).
         audio = _fake_audio_source()
 
+        # getaddrinfo tuple shape: (family, type, proto, canonname, sockaddr)
+        public_info = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 0))]
+
         with (
             patch.object(builtins, "__import__", side_effect=_blocked_import),
             patch("utils.media.ytdl_source.get_ytdl_hq", return_value=fake_ytdl),
-            patch("socket.gethostbyname", return_value="8.8.8.8"),
+            patch("socket.getaddrinfo", return_value=public_info),
             patch("utils.media.ytdl_source.discord.FFmpegPCMAudio", return_value=audio),
         ):
             result = await YTDLSource.from_url("https://example.com/song", stream=True)
@@ -642,6 +646,7 @@ class TestFromUrlSsrfGuard:
     async def test_importerror_fallback_rejects_private_ip(self):
         """Fallback path refuses a host that resolves to a loopback IP."""
         import builtins
+        import socket
         from unittest.mock import patch
 
         from utils.media.ytdl_source import YTDLSource
@@ -653,9 +658,11 @@ class TestFromUrlSsrfGuard:
                 raise ImportError("simulated")
             return real_import(name, *args, **kwargs)
 
+        loopback_info = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
         with (
             patch.object(builtins, "__import__", side_effect=_blocked_import),
-            patch("socket.gethostbyname", return_value="127.0.0.1"),
+            patch("socket.getaddrinfo", return_value=loopback_info),
         ):
             with pytest.raises(ValueError, match="non-public IP"):
                 await YTDLSource.from_url("http://evil.example.com/x")
@@ -678,7 +685,7 @@ class TestFromUrlSsrfGuard:
 
         with (
             patch.object(builtins, "__import__", side_effect=_blocked_import),
-            patch("socket.gethostbyname", side_effect=socket.gaierror("no such host")),
+            patch("socket.getaddrinfo", side_effect=socket.gaierror("no such host")),
         ):
             with pytest.raises(ValueError, match="Could not resolve hostname"):
                 await YTDLSource.from_url("http://nonexistent.invalid/x")

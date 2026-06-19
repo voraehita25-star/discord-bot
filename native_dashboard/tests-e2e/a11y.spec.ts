@@ -159,20 +159,51 @@ test('modal inert regression: an in-.app chat modal does NOT inert the app', asy
 });
 
 test('a11y: every interactive element is keyboard-reachable', async ({ page }) => {
-    // Tab through the page and verify that every focusable interactive
-    // element is actually reached at some point. Catches `tabindex="-1"`
-    // mistakes and elements hidden from keyboard nav by ancestor pointer-events.
-    const allFocusable = await page.evaluate(() => {
-        const sel =
-            'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), ' +
-            'select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    // Tab through the page and verify that the keyboard actually reaches a
+    // non-trivial set of the visible focusable controls. Catches
+    // `tabindex="-1"` mistakes and elements hidden from keyboard nav by
+    // ancestor pointer-events (which COUNTING focusables alone would miss).
+    const FOCUSABLE_SEL =
+        'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), ' +
+        'select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    const allFocusable = await page.evaluate((sel) => {
         return Array.from(document.querySelectorAll(sel))
-            .filter((el) => {
-                const e = el as HTMLElement;
-                return e.offsetParent !== null; // visible
-            })
+            .filter((el) => (el as HTMLElement).offsetParent !== null) // visible
             .map((el) => (el as HTMLElement).id || (el as HTMLElement).className.toString().slice(0, 30));
-    });
+    }, FOCUSABLE_SEL);
+
     // Smoke check: should be more than just a few focusables on a real page.
     expect(allFocusable.length).toBeGreaterThan(5);
+
+    // Start traversal from a known anchor inside the document body so the
+    // first Tab lands on the document's tab order rather than the URL bar.
+    await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        document.body.focus();
+    });
+
+    // Tab through more steps than there are focusables so we wrap at least once
+    // and don't depend on a perfectly linear DOM order. Record every element
+    // the focus ring actually lands on.
+    const maxTabs = Math.min(allFocusable.length * 2 + 5, 120);
+    const visited = new Set<string>();
+    for (let i = 0; i < maxTabs; i++) {
+        await page.keyboard.press('Tab');
+        const id = await page.evaluate((sel) => {
+            const el = document.activeElement as HTMLElement | null;
+            if (!el || el === document.body) return null;
+            // Only count it if it's one of the focusable controls we expect
+            // (ignore the <body> / document fallback).
+            if (!el.matches(sel)) return null;
+            return el.id || el.className.toString().slice(0, 30);
+        }, FOCUSABLE_SEL);
+        if (id) visited.add(id);
+    }
+
+    // Tabbing must actually MOVE focus through real controls, not sit still.
+    // Assert we reached a meaningful share of the visible focusables — a
+    // `tabindex="-1"` regression or a pointer-events trap would collapse this.
+    expect(visited.size, `only reached: ${[...visited].join(', ')}`).toBeGreaterThan(5);
+    expect(visited.size).toBeGreaterThanOrEqual(Math.floor(allFocusable.length / 2));
 });

@@ -214,7 +214,19 @@ class HealthAPIClient:
             return {"status": "error", "error": str(e)}
 
     async def is_ready(self) -> bool:
-        """Check if service is ready."""
+        """Check if service is ready.
+
+        INTENTIONAL fail-OPEN: the Go health sidecar is an OPTIONAL component
+        (it only gates metrics pushing — never a security or data path), so an
+        absent OR currently-unreachable sidecar must NOT block the bot. Both the
+        "never connected / down" branch below and the on-exception branch return
+        True for that reason. This means a configured-but-temporarily-down
+        sidecar also reports "ready" — that is accepted here precisely because
+        no readiness consumer makes a security decision off this value. Do NOT
+        flip this to fail-closed without auditing every is_ready() caller; a
+        readiness gate that hard-fails on a missing optional sidecar would be a
+        regression, not a fix.
+        """
         if not self._service_available or self._session is None:
             return True  # Assume ready if no health service
 

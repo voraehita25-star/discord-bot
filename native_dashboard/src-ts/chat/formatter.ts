@@ -86,11 +86,24 @@ function splitTrailingPunctuation(url: string): [string, string] {
     // (e.g. https://en.wikipedia.org/wiki/Foo_(bar) ) — keep balanced ')',
     // and strip only unmatched parens + the non-paren sentence punctuation, so
     // a legitimate closing paren isn't lopped off into a broken 404 link.
-    let end = url.length - m[0].length;
+    //
+    // Walk the trailing ')' run with RUNNING paren counters instead of
+    // re-`match()`-ing the growing prefix each iteration. The old per-step
+    // .match(/\(/g)/.match(/\)/g) was O(n) inside an O(n) loop -> O(n^2), so a
+    // bare URL ending in a long balanced-paren run (the BARE_URL_RE captures
+    // '(' and ')' as URL chars) froze the render thread for seconds. Counting
+    // once up to the run start, then incrementing as we advance, is O(n) total.
+    const runStart = url.length - m[0].length;
+    // Count parens in the prefix BEFORE the trailing punctuation run, once.
+    let opens = 0;
+    let closes = 0;
+    for (let i = 0; i < runStart; i++) {
+        if (url[i] === '(') opens++;
+        else if (url[i] === ')') closes++;
+    }
+    let end = runStart;
     while (end < url.length && url[end] === ')') {
-        const kept = url.slice(0, end + 1);
-        const opens = (kept.match(/\(/g) || []).length;
-        const closes = (kept.match(/\)/g) || []).length;
+        closes++; // account for the ')' at `end` we're about to test
         if (opens >= closes) end++; // this ')' is balanced — keep it in the URL
         else break;
     }
@@ -165,12 +178,20 @@ export function formatMessage(content: string): string {
         return cached;
     }
     const result = formatMessageUncached(content);
-    formatCache.set(content, result);
-    if (formatCache.size > FORMAT_CACHE_MAX) {
-        // Evict the oldest entry (first key in insertion order).
-        const oldest = formatCache.keys().next().value;
-        if (oldest !== undefined) {
-            formatCache.delete(oldest);
+    // Only memoize the fully-sanitized (happy) output. If DOMPurify was
+    // momentarily unavailable, formatMessageUncached returns degraded output
+    // (escaped plain text or '') — caching that would keep serving the degraded
+    // render for this exact content even after DOMPurify recovers, because the
+    // cache key is the raw string and doesn't incorporate global availability.
+    // Skipping the write on the fail-closed path lets the next call re-render.
+    if (getPurify()) {
+        formatCache.set(content, result);
+        if (formatCache.size > FORMAT_CACHE_MAX) {
+            // Evict the oldest entry (first key in insertion order).
+            const oldest = formatCache.keys().next().value;
+            if (oldest !== undefined) {
+                formatCache.delete(oldest);
+            }
         }
     }
     return result;

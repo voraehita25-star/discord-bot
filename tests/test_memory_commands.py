@@ -550,11 +550,10 @@ class TestMemoryCommandsValidation:
 
     @pytest.mark.asyncio
     async def test_remember_special_characters(self):
-        """Test remember with special characters."""
+        """remember with special characters is stored (untrusted-input path)."""
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
-        mock_bot = MagicMock(spec=commands.Bot)
-        MemoryCommands(mock_bot)
+        cog = MemoryCommands(MagicMock(spec=commands.Bot))
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -563,16 +562,22 @@ class TestMemoryCommandsValidation:
         mock_ctx.channel = MagicMock()
         mock_ctx.channel.id = 456
 
-        # Should handle special characters
-        # Function should process without crashing
+        # Special chars that are NOT injection markers must pass through and
+        # reach the backend with the content intact.
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.remember_fact.callback(cog, mock_ctx, fact="I love C++ & <tags> 100%!")
+
+            ltm.add_explicit_fact.assert_awaited_once()
+            assert ltm.add_explicit_fact.call_args.kwargs["content"] == "I love C++ & <tags> 100%!"
+        # Success embed sent, no plain-string rejection.
+        assert mock_ctx.send.call_args.kwargs.get("embed") is not None
 
     @pytest.mark.asyncio
     async def test_remember_unicode_content(self):
-        """Test remember with unicode content."""
+        """remember with Thai/unicode content is stored verbatim."""
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
-        mock_bot = MagicMock(spec=commands.Bot)
-        MemoryCommands(mock_bot)
+        cog = MemoryCommands(MagicMock(spec=commands.Bot))
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
@@ -581,42 +586,64 @@ class TestMemoryCommandsValidation:
         mock_ctx.channel = MagicMock()
         mock_ctx.channel.id = 456
 
-        # Thai text
-        # Function should process Thai text
+        thai = "ผมชอบกินข้าวผัดกระเพรา 🍳"
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.remember_fact.callback(cog, mock_ctx, fact=thai)
+
+            ltm.add_explicit_fact.assert_awaited_once()
+            assert ltm.add_explicit_fact.call_args.kwargs["content"] == thai
 
     @pytest.mark.asyncio
     async def test_remember_max_length_boundary(self):
-        """Test remember at exactly max length."""
+        """Exactly 500 chars is accepted; 501 is rejected with the length error."""
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
-        mock_bot = MagicMock(spec=commands.Bot)
-        MemoryCommands(mock_bot)
+        cog = MemoryCommands(MagicMock(spec=commands.Bot))
 
-        mock_ctx = MagicMock()
-        mock_ctx.send = AsyncMock()
-        mock_ctx.author = MagicMock()
-        mock_ctx.author.id = 123
-        mock_ctx.channel = MagicMock()
-        mock_ctx.channel.id = 456
+        def _ctx():
+            ctx = MagicMock()
+            ctx.send = AsyncMock()
+            ctx.author = MagicMock()
+            ctx.author.id = 123
+            ctx.channel = MagicMock()
+            ctx.channel.id = 456
+            return ctx
 
-        # Exactly 500 characters should be allowed
-        # Should not trigger length error
+        # 500 chars: under the > 500 cap → stored.
+        at_limit = _ctx()
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.remember_fact.callback(cog, at_limit, fact="x" * 500)
+            ltm.add_explicit_fact.assert_awaited_once()
+
+        # 501 chars: rejected before any backend call.
+        over_limit = _ctx()
+        with _patch_ltm(add_explicit_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.remember_fact.callback(cog, over_limit, fact="x" * 501)
+            ltm.add_explicit_fact.assert_not_awaited()
+        assert "ยาวเกินไป" in over_limit.send.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_forget_special_characters(self):
-        """Test forget with special characters in query."""
+        """forget with special chars in query reaches the backend; backticks in
+        the echoed query are neutralized so they can't break the embed."""
         from cogs.ai_core.commands.memory_commands import MemoryCommands
 
-        mock_bot = MagicMock(spec=commands.Bot)
-        MemoryCommands(mock_bot)
+        cog = MemoryCommands(MagicMock(spec=commands.Bot))
 
         mock_ctx = MagicMock()
         mock_ctx.send = AsyncMock()
         mock_ctx.author = MagicMock()
         mock_ctx.author.id = 123
 
-        # Should handle special characters
-        # Function should process without crashing
+        with _patch_ltm(forget_fact=AsyncMock(return_value=True)) as ltm:
+            await cog.forget_fact.callback(cog, mock_ctx, query="pizza `code` & stuff")
+
+            ltm.forget_fact.assert_awaited_once()
+            assert ltm.forget_fact.call_args.kwargs["content_query"] == "pizza `code` & stuff"
+        # Backticks are neutralized (ʻ) in the rendered embed description.
+        embed = mock_ctx.send.call_args.kwargs.get("embed")
+        assert embed is not None
+        assert "`code`" not in embed.description
 
 
 class TestMemoryCommandsHelpers:

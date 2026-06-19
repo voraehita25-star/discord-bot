@@ -8,7 +8,14 @@
          header). It's safe to omit here because Tauri's WebView is not
          iframe-loadable in the first place — no embedding surface to
          protect. Keeping it would just spam the console with a warning
-         on every page load. -->
+         on every page load.
+         ⚠️ connect-src is INTENTIONALLY pinned to loopback :8765 only (the
+         four ws/wss × 127.0.0.1/localhost origins). This is a security
+         control — do NOT widen it to a wildcard port. It MUST stay in sync
+         with the identical connect-src in tauri.conf.json and with
+         get_ws_endpoint() in src/main.rs: changing WS_DASHBOARD_PORT away
+         from 8765 requires adding the new port here AND in tauri.conf.json,
+         then rebuilding the .exe, or the chat WebSocket will be blocked. -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Y24CGBiNpvAHum+ZoXXPIUxmExgs7YP4BGdo45z8wdI='; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://localhost:8765 ws://127.0.0.1:8765 wss://localhost:8765 wss://127.0.0.1:8765; object-src 'none';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title lang="ko">디스코드 봇 대시보드</title>

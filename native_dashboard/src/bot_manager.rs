@@ -537,6 +537,88 @@ impl BotManager {
         !pids_to_kill.is_empty()
     }
 
+    /// Reap an ORPHANED `dev_watcher.py` that belongs to THIS project tree.
+    ///
+    /// `kill_orphan_bot_processes` deliberately ignores `dev_watcher.py` (it's a
+    /// supervisor, not the bot), and `stop_dev_watcher` can only find a watcher
+    /// it recorded a PID file for. That leaves a gap: if the dashboard dies
+    /// between `start_dev`'s `Command::spawn()` and the `fs::write` of the PID
+    /// file, the watcher survives with NO PID file and nothing reaps it on the
+    /// next launch — it keeps hot-reloading bot.py forever. This scan closes that
+    /// gap conservatively: it kills ONLY python processes whose ENTRY SCRIPT is
+    /// `dev_watcher.py` AND that `process_belongs_to_us` (cmdline references
+    /// base_path, or cwd IS base_path — the dev-watcher spawns with cwd=base_path)
+    /// — never another install's watcher. The currently-tracked watcher (the PID
+    /// in our PID file, if any) is excluded so a live dev session isn't killed.
+    ///
+    /// Like `kill_orphan_bot_processes`, this NEVER sleeps (lock-held callers must
+    /// not block the status/log pollers). Returns `true` if anything was killed.
+    fn reap_orphan_dev_watcher(&mut self) -> bool {
+        Self::refresh_processes_with_cmd(&mut self.sys);
+
+        let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
+        // The watcher we're legitimately tracking — never reap it as an "orphan".
+        let tracked_pid = self.get_dev_watcher_pid();
+        let mut pids_to_kill: Vec<u32> = Vec::new();
+
+        for (pid, process) in self.sys.processes() {
+            let pid_u32 = pid.as_u32();
+            if Some(pid_u32) == tracked_pid {
+                continue;
+            }
+            let name = process.name().to_string_lossy().to_lowercase();
+            if !name.contains("python") {
+                continue;
+            }
+
+            let cmd: Vec<String> = process
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                .collect();
+            let cmdline = cmd.join(" ");
+
+            // Match on the ENTRY SCRIPT basename only (first non-interpreter,
+            // non-flag argv token) so an unrelated process that merely passes a
+            // "dev_watcher.py" string as a later argument isn't swept.
+            let entry_is_dev_watcher = cmd
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .map(|arg| {
+                    std::path::Path::new(arg.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_lowercase() == "dev_watcher.py")
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if !entry_is_dev_watcher {
+                continue;
+            }
+
+            // Only OUR project's watcher — never reach across installs.
+            if Self::process_belongs_to_us(
+                process,
+                &cmdline,
+                &base_path_str,
+                self.base_path_canonical.as_deref(),
+            ) {
+                pids_to_kill.push(pid_u32);
+            }
+        }
+
+        for pid in &pids_to_kill {
+            let _ = Command::new(taskkill_path())
+                .args(["/PID", &pid.to_string(), "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+        // A reaped orphan's PID file (if it somehow had one that no longer maps to
+        // it) is left to stop_dev_watcher/start_dev to overwrite — we only touch
+        // processes here.
+        !pids_to_kill.is_empty()
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.base_path.join("logs").join("bot.log")
     }
@@ -637,34 +719,52 @@ impl BotManager {
             .ok()
     }
 
+    /// Whether `process` is OUR running bot: it must have a `bot.py` argv token
+    /// AND `process_belongs_to_us` (cmdline references base_path, or cwd IS
+    /// base_path). Shared by `is_running` and `get_status` so the two can't drift.
+    ///
+    /// Fail CLOSED: there is intentionally NO `base_path_str.is_empty()` escape
+    /// hatch. `process_belongs_to_us` already returns false on an empty
+    /// base_path, so a degenerate/unset base_path (e.g. `BOT_BASE_PATH=""`)
+    /// correctly reports "not ours" instead of collapsing to "any python with a
+    /// bot.py arg" — which would reopen the cross-install / Windows PID-reuse
+    /// false-positive these checks exist to close.
+    fn is_our_bot_process(
+        process: &sysinfo::Process,
+        base_path_str: &str,
+        base_path_canonical: Option<&str>,
+    ) -> bool {
+        let cmd: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().to_lowercase().to_string())
+            .collect();
+        let has_bot_py = cmd.iter().any(|arg| {
+            std::path::Path::new(arg.as_str())
+                .file_name()
+                .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
+                .unwrap_or(false)
+        });
+        if !has_bot_py {
+            return false;
+        }
+        let cmdline = cmd.join(" ");
+        Self::process_belongs_to_us(process, &cmdline, base_path_str, base_path_canonical)
+    }
+
     pub fn is_running(&mut self) -> bool {
         if let Some(pid) = self.get_pid() {
             Self::refresh_processes_with_cmd(&mut self.sys);
+            // PID alone is not enough — Windows recycles PIDs aggressively.
+            // Verify the cmdline references both bot.py AND our base_path so we
+            // don't report "running" for an unrelated PID-reuse.
+            let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
             if let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid)) {
-                // PID alone is not enough — Windows recycles PIDs aggressively.
-                // Verify the cmdline references both bot.py AND our base_path
-                // so we don't report "running" for an unrelated PID-reuse.
-                let cmd: Vec<String> = process
-                    .cmd()
-                    .iter()
-                    .map(|s| s.to_string_lossy().to_lowercase().to_string())
-                    .collect();
-                let cmdline = cmd.join(" ");
-                let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
-                let has_bot_py = cmd.iter().any(|arg| {
-                    std::path::Path::new(arg.as_str())
-                        .file_name()
-                        .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
-                        .unwrap_or(false)
-                });
-                return has_bot_py
-                    && (base_path_str.is_empty()
-                        || Self::process_belongs_to_us(
-                            process,
-                            &cmdline,
-                            &base_path_str,
-                            self.base_path_canonical.as_deref(),
-                        ));
+                return Self::is_our_bot_process(
+                    process,
+                    &base_path_str,
+                    self.base_path_canonical.as_deref(),
+                );
             }
             false
         } else {
@@ -726,27 +826,12 @@ impl BotManager {
         let base_path_canonical = self.base_path_canonical.clone();
         let is_running = pid
             .and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
+            // Same fail-closed bot.py + ownership check as is_running() (shared
+            // helper) — no is_empty() escape hatch, so an empty/degenerate
+            // base_path reports "not running" rather than matching unrelated
+            // python processes.
             .map(|process| {
-                let cmd: Vec<String> = process
-                    .cmd()
-                    .iter()
-                    .map(|s| s.to_string_lossy().to_lowercase().to_string())
-                    .collect();
-                let cmdline = cmd.join(" ");
-                let has_bot_py = cmd.iter().any(|arg| {
-                    std::path::Path::new(arg.as_str())
-                        .file_name()
-                        .map(|f| f.to_string_lossy().eq_ignore_ascii_case("bot.py"))
-                        .unwrap_or(false)
-                });
-                has_bot_py
-                    && (base_path_str.is_empty()
-                        || Self::process_belongs_to_us(
-                            process,
-                            &cmdline,
-                            &base_path_str,
-                            base_path_canonical.as_deref(),
-                        ))
+                Self::is_our_bot_process(process, &base_path_str, base_path_canonical.as_deref())
             })
             .unwrap_or(false);
 
@@ -785,13 +870,16 @@ impl BotManager {
                         .map(|s| s.to_string_lossy().to_lowercase().to_string())
                         .collect();
                     let cmdline = cmd.join(" ");
-                    base_path_str.is_empty()
-                        || Self::process_belongs_to_us(
-                            proc,
-                            &cmdline,
-                            &base_path_str,
-                            base_path_canonical.as_deref(),
-                        )
+                    // Fail CLOSED, consistent with the main-bot check above and
+                    // process_belongs_to_us' own empty-base_path guard — no
+                    // is_empty() escape hatch that would let any python+base_path
+                    // process masquerade as our dev-watcher under PID reuse.
+                    Self::process_belongs_to_us(
+                        proc,
+                        &cmdline,
+                        &base_path_str,
+                        base_path_canonical.as_deref(),
+                    )
                 })
                 .unwrap_or(false);
             if dev_running {
@@ -866,6 +954,10 @@ impl BotManager {
 
         // Kill any orphan bot.py processes that survived a previous stop
         self.kill_orphan_bot_processes();
+        // Also reap an orphaned dev_watcher (e.g. dashboard died mid-start_dev
+        // before its PID file was written) — a normal-mode start must not have a
+        // stray watcher hot-reloading the bot underneath it.
+        self.reap_orphan_dev_watcher();
 
         // Remove old PID file first
         let _ = fs::remove_file(self.pid_file());
@@ -925,8 +1017,13 @@ impl BotManager {
             return Err("Bot is already running".to_string());
         }
 
-        // Stop any existing dev watcher first
+        // Stop any existing dev watcher first (the one we have a PID file for),
+        // then sweep any ORPHANED watcher with no PID file — e.g. a previous
+        // start_dev whose PID-file write never completed because the dashboard
+        // crashed in between. Without this sweep a second dev session would
+        // spawn a duplicate watcher on top of the orphan.
         self.stop_dev_watcher();
+        self.reap_orphan_dev_watcher();
 
         let dev_watcher = self.base_path.join("scripts").join("dev_watcher.py");
 
@@ -1173,6 +1270,20 @@ mod tests {
         let dir = tempfile::tempdir().expect("create tempdir");
         let bm = BotManager::new(dir.path().to_path_buf());
         (dir, bm)
+    }
+
+    /// Refresh `bm.sys` until `pid` appears in the snapshot (or a short budget
+    /// elapses). A just-`spawn()`ed child can occasionally lag the first process
+    /// refresh; retry a few times so the cmdline-inspection tests aren't flaky.
+    /// Leaves a fresh snapshot loaded for the caller to read.
+    fn wait_until_in_snapshot(bm: &mut BotManager, pid: u32) {
+        for _ in 0..50 {
+            BotManager::refresh_processes_with_cmd(&mut bm.sys);
+            if bm.sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]
@@ -1432,4 +1543,123 @@ mod tests {
             "empty base_path must fail closed and never match a process",
         );
     }
+
+    // ------- is_our_bot_process fail-closed on empty base_path (dash-rust-3) ----
+
+    #[test]
+    fn is_our_bot_process_fails_closed_on_empty_base_path_even_with_bot_py() {
+        // Regression: is_running()/get_status() used to accept a process via
+        // `has_bot_py && (base_path_str.is_empty() || belongs_to_us)`. That
+        // is_empty() disjunct meant a degenerate empty base_path (e.g.
+        // BOT_BASE_PATH="") collapsed the check to "any process with a bot.py
+        // arg", reopening the cross-install / PID-reuse false-positive. The fix
+        // removed the disjunct, so even a process that DOES carry a `bot.py` argv
+        // token must NOT be claimed when base_path is empty.
+        //
+        // Build a real, long-lived process whose argv genuinely contains a
+        // `bot.py` token (so the has_bot_py half is unambiguously true): cmd.exe
+        // stays alive running `ping -n 30` and carries `bot.py` as a clean,
+        // separate argv element after `&& rem` (a no-op comment) so ping doesn't
+        // reject it as a bad parameter and the process keeps running.
+        let (dir, mut bm) = manager_in_temp();
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping", "-n", "30", "127.0.0.1", "&&", "rem", "bot.py"])
+            .current_dir(dir.path())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn cmd carrying a bot.py arg");
+        let pid = child.id();
+        wait_until_in_snapshot(&mut bm, pid);
+
+        // Positive control: with the REAL base_path (the cwd of the child), the
+        // process IS recognised as ours — proving has_bot_py is genuinely true
+        // and the test isn't vacuously passing.
+        let real_base = dir.path().to_string_lossy().to_lowercase();
+        let claimed_with_real_base = bm
+            .sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| {
+                BotManager::is_our_bot_process(p, &real_base, bm.base_path_canonical.as_deref())
+            })
+            .expect("spawned cmd should be in the refreshed snapshot");
+
+        // The fix under test: with an EMPTY base_path (and no canonical
+        // fallback), the same bot.py-carrying process must NOT be claimed.
+        let claimed_with_empty_base = bm
+            .sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| BotManager::is_our_bot_process(p, "", None))
+            .expect("spawned cmd should be in the refreshed snapshot");
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            claimed_with_real_base,
+            "positive control: a bot.py process rooted at base_path must be claimed",
+        );
+        assert!(
+            !claimed_with_empty_base,
+            "empty base_path must fail closed and NOT claim a bot.py process \
+             (the is_empty() escape hatch must stay removed)",
+        );
+    }
+
+    // ------- reap_orphan_dev_watcher scoping (dash-rust-7) ----------------------
+
+    #[test]
+    fn reap_orphan_dev_watcher_ignores_non_python_and_foreign_processes() {
+        // Conservative-scoping guard: the orphan sweep must NEVER kill a process
+        // that isn't a python running OUR dev_watcher.py. A non-python process
+        // (cmd.exe carrying a "dev_watcher.py" arg, even rooted at base_path)
+        // must survive — the name filter requires "python" — and the call must
+        // report it killed nothing.
+        let (dir, mut bm) = manager_in_temp();
+        let mut decoy = Command::new("cmd")
+            .args([
+                "/C",
+                "ping",
+                "-n",
+                "30",
+                "127.0.0.1",
+                "&&",
+                "rem",
+                "dev_watcher.py",
+            ])
+            .current_dir(dir.path())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn cmd decoy carrying a dev_watcher.py arg");
+        let decoy_pid = decoy.id();
+        wait_until_in_snapshot(&mut bm, decoy_pid);
+
+        let killed_any = bm.reap_orphan_dev_watcher();
+
+        // The decoy (non-python) must still be alive.
+        let still_alive = !bm.process_is_gone(decoy_pid);
+
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+
+        assert!(
+            !killed_any,
+            "reap_orphan_dev_watcher must not kill a non-python process",
+        );
+        assert!(
+            still_alive,
+            "a non-python decoy carrying a dev_watcher.py arg must survive the sweep",
+        );
+    }
+
+    #[test]
+    fn reap_orphan_dev_watcher_noop_when_nothing_to_reap() {
+        // On a clean temp-rooted manager there is no python+dev_watcher.py
+        // process under base_path, so the sweep must be a no-op (kills nothing).
+        let (_dir, mut bm) = manager_in_temp();
+        assert!(
+            !bm.reap_orphan_dev_watcher(),
+            "no orphan watcher present -> sweep must report nothing killed",
+        );
+    }
+
 }

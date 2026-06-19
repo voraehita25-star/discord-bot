@@ -659,6 +659,19 @@ class AI(commands.Cog):
         # rationale.
         self.chat_manager._message_queue.clear_channel(channel.id)
 
+        # In CLI mode, also forget the Claude --resume session so the deleted
+        # channel's dangling _CHANNEL_SESSIONS entry is dropped and its
+        # on-disk .jsonl transcript is best-effort unlinked. Channel deletion
+        # is a stronger "forget this conversation" signal than ``!reset_ai``,
+        # so it must perform at least the same teardown (mirrors reset_ai
+        # above). reset_channel_session is idempotent for untracked channels.
+        if getattr(self.chat_manager, "cli_mode", False):
+            from cogs.ai_core.api.discord_chat_claude_cli import (
+                reset_channel_session,
+            )
+
+            reset_channel_session(channel.id)
+
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
         """Mirror a Discord message deletion into the AI's memory.

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import re
-import unicodedata
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,6 +39,7 @@ from ..response.webhook_cache import (
     invalidate_webhook_cache,
     set_cached_webhook,
 )
+from ..sanitization import screen_memory_content
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,58 @@ logger = logging.getLogger(__name__)
 # before bailing out, even if the input is pathologically long. Prevents
 # unbounded loops on adversarial or corrupted text.
 _MAX_CHUNKS = 50
+
+# Prefixes the cmd_* handlers use for a FAILED outcome (no permission, bot
+# Forbidden, role hierarchy, not-found, duplicate-name bail, …). Their success
+# path uses ``✅`` / ``🗑️``; an ambiguity warning uses ``⚠️`` which we treat as
+# non-fatal (the action usually still proceeds). Kept in sync with the Thai
+# status strings in ``commands/server_commands.py``.
+_FAILURE_PREFIXES = ("❌", "⛔")
+
+
+class _TeeChannel:
+    """Wrap a real Discord channel, forwarding ``send`` to it while ALSO
+    recording the text. Used by the mutation branches of ``execute_tool_call``
+    so the model's returned string can reflect what the handler actually did
+    (e.g. a ``❌ บอทไม่มีสิทธิ์`` Forbidden), instead of a blanket
+    "Requested …" success regardless of outcome (audit py-aicore-tools-3).
+
+    The status is STILL posted to the real channel (the user keeps their
+    confirmation/error message); we only additionally capture it. Every other
+    attribute delegates to the real channel, mirroring ``_CaptureChannel`` in
+    ``api/ai_tools_ipc.py``."""
+
+    def __init__(self, real: Any) -> None:
+        self._real = real
+        self._sent: list[str] = []
+
+    async def send(self, content: str = "", **kwargs: Any) -> Any:
+        if content:
+            self._sent.append(str(content))
+        return await self._real.send(content, **kwargs)
+
+    def failure(self) -> str | None:
+        """Return the first captured failure-shaped status line, else None."""
+        for line in self._sent:
+            if line.startswith(_FAILURE_PREFIXES):
+                return line
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for attributes not set on the instance (.guild, .id,
+        # .permissions_for, …) — delegate them to the real channel.
+        return getattr(self._real, name)
+
+
+def _mutation_outcome(tee: _TeeChannel, success_msg: str) -> str:
+    """Pick the string returned to the model for a mutation tool.
+
+    If the handler posted a failure-shaped status (``❌``/``⛔``), surface THAT to
+    the model so it doesn't report a false success; otherwise return the
+    optimistic ``success_msg``. When the handler posts nothing (e.g. it is mocked
+    in unit tests), the optimistic message is returned unchanged."""
+    failed = tee.failure()
+    return failed if failed is not None else success_msg
 
 
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
@@ -176,10 +228,18 @@ async def execute_tool_call(
     # state and gating them behind administrator made the AI unusable for
     # any non-admin user, which is over-restrictive.
     #
-    # ``remember`` writes to the per-channel RAG store and is intentionally
-    # NOT in this set — letting any user invoke it would let one member
-    # poison every member's future AI replies with planted "facts". The
-    # ``remember`` branch below scopes the write to the calling user.
+    # ``remember`` writes to the per-channel RAG store and is intentionally in
+    # NEITHER tier — so on THIS path it fails CLOSED for non-admins: it is absent
+    # from _READ_ONLY_TOOLS and _MANAGE_GUILD_TOOLS, so the gate at line ~209
+    # returns "requires admin privileges" for any non-admin caller. (Gating it
+    # behind admin here stops one member from poisoning every member's future AI
+    # replies with planted "facts" via this executor path.) NOTE: this executor
+    # branch is NOT the primary entry point on the default ``cli`` backend — the
+    # model's ``remember`` call actually flows through
+    # ``api/ai_tools_ipc._dispatch_memory``, which is user-scoped by ``ctx.user_id``
+    # (no admin gate) and runs the SAME shared memory screen (sanitization.py)
+    # before persisting. Both paths share that screen; they differ only in who may
+    # invoke remember.
     #
     # ``list_members`` and ``get_user_info`` are intentionally NOT here either:
     # their handlers (cmd_list_members / cmd_get_user_info) require
@@ -255,37 +315,44 @@ async def execute_tool_call(
         # the cmd_* ``if user is not None and not perm`` guard a no-op and
         # the protection relied entirely on the top-of-function admin/role
         # gating above. Defense-in-depth.
+        # Mutation tools post their own ✅/❌/⚠️ status to the channel and return
+        # None. Run each against a ``_TeeChannel`` so a handler FAILURE (Forbidden,
+        # role hierarchy, not-found, duplicate-name bail) is surfaced to the model
+        # via ``_mutation_outcome`` instead of an unconditional "Requested …"
+        # success (audit py-aicore-tools-3). The status is still posted to chat.
         if fname == "create_text_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_text(
-                guild, origin_channel, result, [result, args.get("category", "")], user=user
-            )
-            return f"Requested creation of text channel '{result}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_create_text(guild, tee, result, [result, args.get("category", "")], user=user)
+            return _mutation_outcome(tee, f"Requested creation of text channel '{result}'")
 
         elif fname == "create_voice_channel":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
+            tee = _TeeChannel(origin_channel)
             await cmd_create_voice(
-                guild, origin_channel, result, [result, args.get("category", "")], user=user
+                guild, tee, result, [result, args.get("category", "")], user=user
             )
-            return f"Requested creation of voice channel '{result}'"
+            return _mutation_outcome(tee, f"Requested creation of voice channel '{result}'")
 
         elif fname == "create_category":
             valid, result = validate_name(args.get("name"))
             if not valid:
                 return result
-            await cmd_create_category(guild, origin_channel, result, [], user=user)
-            return f"Requested creation of category '{result}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_create_category(guild, tee, result, [], user=user)
+            return _mutation_outcome(tee, f"Requested creation of category '{result}'")
 
         elif fname == "delete_channel":
             valid, result = validate_name(args.get("name_or_id"))
             if not valid:
                 return result
-            await cmd_delete_channel(guild, origin_channel, result, [], user=user)
-            return f"Requested deletion of channel '{result}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_delete_channel(guild, tee, result, [], user=user)
+            return _mutation_outcome(tee, f"Requested deletion of channel '{result}'")
 
         elif fname == "create_role":
             valid, result = validate_name(args.get("name"))
@@ -300,31 +367,37 @@ async def execute_tool_call(
             ch = args.get("color_hex")
             if isinstance(ch, str) and ch.strip():
                 cmd_args.append(ch)
-            await cmd_create_role(guild, origin_channel, None, cmd_args, user=user)
-            return f"Requested creation of role '{result}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_create_role(guild, tee, None, cmd_args, user=user)
+            return _mutation_outcome(tee, f"Requested creation of role '{result}'")
 
         elif fname == "delete_role":
             valid, result = validate_name(args.get("name_or_id"))
             if not valid:
                 return result
-            await cmd_delete_role(guild, origin_channel, None, [result], user=user)
-            return f"Requested deletion of role '{result}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_delete_role(guild, tee, None, [result], user=user)
+            return _mutation_outcome(tee, f"Requested deletion of role '{result}'")
 
         elif fname == "add_role":
             user_name = args.get("user_name")
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ add_role requires both user_name and role_name"
-            await cmd_add_role(guild, origin_channel, None, [user_name, role_name], user=user)
-            return f"Requested adding role '{role_name}' to '{user_name}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_add_role(guild, tee, None, [user_name, role_name], user=user)
+            return _mutation_outcome(tee, f"Requested adding role '{role_name}' to '{user_name}'")
 
         elif fname == "remove_role":
             user_name = args.get("user_name")
             role_name = args.get("role_name")
             if not user_name or not role_name:
                 return "❌ remove_role requires both user_name and role_name"
-            await cmd_remove_role(guild, origin_channel, None, [user_name, role_name], user=user)
-            return f"Requested removing role '{role_name}' from '{user_name}'"
+            tee = _TeeChannel(origin_channel)
+            await cmd_remove_role(guild, tee, None, [user_name, role_name], user=user)
+            return _mutation_outcome(
+                tee, f"Requested removing role '{role_name}' from '{user_name}'"
+            )
 
         elif fname == "set_channel_permission":
             channel_name = args.get("channel_name")
@@ -336,14 +409,17 @@ async def execute_tool_call(
                     "Missing required argument for set_channel_permission "
                     "(need channel_name, target_name, permission, value)."
                 )
+            tee = _TeeChannel(origin_channel)
             await cmd_set_channel_perm(
                 guild,
-                origin_channel,
+                tee,
                 None,
                 [channel_name, target_name, permission, str(value)],
                 user=user,
             )
-            return f"Requested setting channel permission for '{channel_name}'"
+            return _mutation_outcome(
+                tee, f"Requested setting channel permission for '{channel_name}'"
+            )
 
         elif fname == "set_role_permission":
             role_name = args.get("role_name")
@@ -354,14 +430,15 @@ async def execute_tool_call(
                     "Missing required argument for set_role_permission "
                     "(need role_name, permission, value)."
                 )
+            tee = _TeeChannel(origin_channel)
             await cmd_set_role_perm(
                 guild,
-                origin_channel,
+                tee,
                 None,
                 [role_name, permission, str(value)],
                 user=user,
             )
-            return f"Requested setting role permission for '{role_name}'"
+            return _mutation_outcome(tee, f"Requested setting role permission for '{role_name}'")
 
         elif fname == "list_channels":
             # Thread the caller through so ``cmd_list_channels`` can filter
@@ -465,12 +542,10 @@ async def execute_tool_call(
                 return "⛔ Permission denied to read that channel."
             # Pass the already-resolved channel ID (not the raw name) so
             # cmd_read_channel targets the EXACT channel this gate validated.
-            # cmd_read_channel resolves name-first / ID-fallback, the opposite
-            # of the ID-first order above; with duplicate-named channels the
-            # gate and the action could otherwise disagree on which channel is
-            # read. A numeric ID has no matching channel *name* in the normal
-            # case, so cmd_read_channel falls through to its get_channel(int)
-            # branch and lands on the same target_channel.
+            # cmd_read_channel now also resolves ID-FIRST (then name fallback),
+            # matching the order here, so it lands on this same target_channel
+            # even if some other channel is literally named with this snowflake
+            # string (audit py-aicore-tools-2 — the two resolvers are aligned).
             cmd_args = [str(target_channel.id)]
             if args.get("limit"):
                 cmd_args.append(str(args.get("limit")))
@@ -478,194 +553,15 @@ async def execute_tool_call(
             return f"Requested reading channel '{channel_name}'"
 
         elif fname == "remember":
-            content = args.get("content")
-            if not isinstance(content, str):
-                return "❌ Failed to save memory: Content must be a string"
-            content = content.strip()
-            # Reject implausibly short payloads — the model occasionally
-            # tries to "remember" a single word, polluting RAG with noise.
-            if len(content) < 8:
-                return "❌ Failed to save memory: Content is too short"
-            # Reject content that looks like a stored prompt-injection
-            # payload — prevents future RAG retrievals from echoing
-            # ``[SYSTEM] ignore previous instructions`` back into prompts.
-            _suspicious = (
-                "[system]",
-                "[inst]",
-                "ignore previous",
-                "ignore the previous",
-                "<system>",
-                "<inst>",
-                "</system>",
-                "</inst>",
-            )
-            _content_lower = content.lower()
-            if any(marker in _content_lower for marker in _suspicious):
-                return "❌ Failed to save memory: Content contains restricted markers"
-            # Defense-in-depth against Unicode-normalisation bypasses:
-            # First translate common Cyrillic/Greek confusables to their
-            # visually-identical Latin letters (е→e, о→o, …). Then
-            # NFKD-decompose and drop non-ASCII. Without the confusable map
-            # an attacker can write "иgnore previous" — Cyrillic 'и' would
-            # be ASCII-stripped, leaving "gnore previous" which evades the
-            # "ignore previous" check while still reading as the original
-            # phrase to a downstream language model.
-            _CONFUSABLE_MAP = {
-                # Cyrillic lowercase → Latin lowercase. Note: ``"х"`` appears
-                # once — the previous map had a duplicate entry that did
-                # nothing (later key/value pair was identical to the first).
-                "а": "a",
-                "в": "b",
-                "с": "c",
-                "д": "d",
-                "е": "e",
-                "х": "x",
-                "и": "i",
-                "ј": "j",
-                "к": "k",
-                "ӏ": "l",
-                "о": "o",
-                "р": "p",
-                "ѕ": "s",
-                "т": "t",
-                "у": "y",
-                "һ": "h",
-                # Cyrillic uppercase → Latin uppercase
-                "А": "A",
-                "В": "B",
-                "С": "C",
-                "Е": "E",
-                "Н": "H",
-                "К": "K",
-                "М": "M",
-                "О": "O",
-                "Р": "P",
-                "Т": "T",
-                "Х": "X",
-                "Ј": "J",
-                # Greek lowercase → Latin lowercase
-                "α": "a",
-                "ο": "o",
-                "ρ": "p",
-                "υ": "y",
-                # Greek uppercase → Latin uppercase
-                "Α": "A",
-                "Β": "B",
-                "Ε": "E",
-                "Ζ": "Z",
-                "Η": "H",
-                "Ι": "I",
-                "Κ": "K",
-                "Μ": "M",
-                "Ν": "N",
-                "Ο": "O",
-                "Ρ": "P",
-                "Τ": "T",
-                "Υ": "Y",
-                "Χ": "X",
-                # Mathematical Alphanumeric Symbols (U+1D400+ block).
-                # Attackers can write "𝗶gnore previous" using these
-                # fonts and bypass the prior map. Cover bold/italic
-                # ASCII Latin letters that look identical to their
-                # plain counterparts.
-                "𝐚": "a",
-                "𝐛": "b",
-                "𝐜": "c",
-                "𝐝": "d",
-                "𝐞": "e",
-                "𝐟": "f",
-                "𝐠": "g",
-                "𝐡": "h",
-                "𝐢": "i",
-                "𝐣": "j",
-                "𝐤": "k",
-                "𝐥": "l",
-                "𝐦": "m",
-                "𝐧": "n",
-                "𝐨": "o",
-                "𝐩": "p",
-                "𝐪": "q",
-                "𝐫": "r",
-                "𝐬": "s",
-                "𝐭": "t",
-                "𝐮": "u",
-                "𝐯": "v",
-                "𝐰": "w",
-                "𝐱": "x",
-                "𝐲": "y",
-                "𝐳": "z",
-                # Full-width ASCII (U+FF21-U+FF5A) used in CJK input
-                # methods — visually identical to ASCII when rendered.
-                "ａ": "a",
-                "ｂ": "b",
-                "ｃ": "c",
-                "ｄ": "d",
-                "ｅ": "e",
-                "ｆ": "f",
-                "ｇ": "g",
-                "ｈ": "h",
-                "ｉ": "i",
-                "ｊ": "j",
-                "ｋ": "k",
-                "ｌ": "l",
-                "ｍ": "m",
-                "ｎ": "n",
-                "ｏ": "o",
-                "ｐ": "p",
-                "ｑ": "q",
-                "ｒ": "r",
-                "ｓ": "s",
-                "ｔ": "t",
-                "ｕ": "u",
-                "ｖ": "v",
-                "ｗ": "w",
-                "ｘ": "x",
-                "ｙ": "y",
-                "ｚ": "z",
-                "Ａ": "A",
-                "Ｅ": "E",
-                "Ｉ": "I",
-                "Ｏ": "O",
-                "Ｕ": "U",
-            }
-            _de_confused = "".join(_CONFUSABLE_MAP.get(c, c) for c in content)
-            _normalized = (
-                unicodedata.normalize("NFKD", _de_confused)
-                .encode("ascii", "ignore")
-                .decode("ascii")
-                .lower()
-            )
-            _forbidden_normalized = (
-                "[system]",
-                # Bracket/tag markers from the first (plain) screen, also run
-                # against the de-confused+NFKD form — otherwise a confusable
-                # spelling (e.g. ``<ѕystem>`` / ``[иnst]`` / ``иgnore the
-                # previous``) slips past BOTH layers: the plain screen on the
-                # confusable char, this screen because the marker was absent.
-                "[inst]",
-                "<system>",
-                "</system>",
-                "<inst>",
-                "</inst>",
-                "ignore previous",
-                "ignore the previous",
-                "pretend",
-                "you are now",
-                "system:",
-                "override",
-                "jailbreak",
-                "disregard",
-            )
-            if any(f in _normalized for f in _forbidden_normalized):
-                return "❌ Failed to save memory: Content contains restricted markers"
-            # Limit memory content size to prevent abuse.
-            # Append an explicit ``[truncated]`` marker so the stored
-            # attribution string carries the signal that the original
-            # was longer — without it, a retrieval-time consumer can't
-            # tell whether the entire intent was captured or only a prefix.
-            max_memory_size = 5000
-            if len(content) > max_memory_size:
-                content = content[:max_memory_size] + " [truncated]"
+            # Funnel through the SHARED memory screen (sanitization.py) so this
+            # path and the live ``cli`` IPC path (ai_tools_ipc._dispatch_memory)
+            # enforce the SAME min-length + prompt-injection denylists + 5000-char
+            # clamp. Previously this screen was inline here and DEAD on the cli
+            # backend (audit py-aicore-tools-1/-M1); the helper is now the single
+            # source of truth. ``content`` returned is stripped + clamped.
+            ok, content = screen_memory_content(args.get("content"))
+            if not ok:
+                return f"❌ Failed to save memory: {content}"
             # Provenance: prefix the calling user so future RAG retrievals
             # carry attribution back into the prompt. Without this, any
             # member could plant unattributed "facts" that later look

@@ -43,6 +43,19 @@ function chatFileIconFor(kind, name) {
     }
     return icon('file');
 }
+/** Coerce an untrusted char_count/page_count from a `conversation_documents`
+ * WS frame to a safe finite number (non-numeric/NaN/Infinity/null -> 0).
+ *
+ * The frame is a TYPE CAST with no runtime validation, so the field can be a
+ * string/object/null. A bare `Number(x) || 0` is NOT safe here: Number() on a
+ * null-prototype object (Object.create(null)) THROWS "Cannot convert object to
+ * primitive value", which would abort renderChatFilesModal's docs.map and blank
+ * the Files modal — the exact bug class the file_kind/filename String() coercion
+ * fixed. typeof + isFinite never throws and matches the guard the other
+ * documents-frame handler already uses. */
+function chatFileCount(value) {
+    return typeof value === 'number' && isFinite(value) ? value : 0;
+}
 /** Conservative PDF reflow: merges only obvious per-glyph orphan lines
  * (1-4 Thai / 1-3 Latin chars sandwiched between longer lines). Mirrors
  * the Python backend's `_rejoin_pdf_lines` which now runs alongside
@@ -2320,15 +2333,41 @@ export class ChatManager {
         }
         empty?.classList.add('hidden');
         if (subtitle) {
-            const totalChars = docs.reduce((s, d) => s + (d.char_count || 0), 0);
+            // Coerce char_count via a numeric-finite guard before arithmetic /
+            // .toLocaleString(): `docs` is an untrusted WS frame (no runtime
+            // validation), so a non-numeric char_count (string/object) would make
+            // `(x || 0)` return the raw value and a later .toLocaleString() throw
+            // a TypeError that blanks the whole Files modal — same bug class as the
+            // file_kind/filename coercion below. We can't use Number(x) || 0 either:
+            // Number(Object.create(null)) itself throws ("Cannot convert object to
+            // primitive value"). The typeof+isFinite guard never throws and matches
+            // the safe pattern the other documents-frame handler already uses.
+            const totalChars = docs.reduce((s, d) => s + chatFileCount(d.char_count), 0);
             subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
         }
         list.innerHTML = docs.map(d => {
-            const fileIcon = chatFileIconFor(d.file_kind, d.filename);
+            // Coerce file_kind/filename before calling string methods: `docs`
+            // is a TYPE CAST of an untrusted WS frame (no runtime validation),
+            // so a compromised/buggy backend could send null/number/object and
+            // a raw .toUpperCase()/.slice() would throw a TypeError that aborts
+            // the whole docs.map — blanking the Files modal. Mirrors the String()
+            // coercion the failover/health-check renderers already do.
+            const kind = String(d.file_kind ?? '');
+            const name = String(d.filename ?? '');
+            const fileIcon = chatFileIconFor(kind, name);
+            // Coerce char_count/page_count via the same numeric-finite guard for
+            // the same reason as kind/name above: a malformed numeric field
+            // (string/object) reaching .toLocaleString() / template interpolation
+            // would throw inside this map and abort it, blanking the modal. The
+            // guard normalises non-numeric/NaN to 0 (and never throws on a
+            // null-prototype object, which Number() would); pageCount stays falsy
+            // (0) so the page(s) chip is omitted when there's no usable page count.
+            const charCount = chatFileCount(d.char_count);
+            const pageCount = chatFileCount(d.page_count);
             const meta = [
-                `${(d.char_count || 0).toLocaleString()} chars`,
-                d.page_count ? `${d.page_count} page(s)` : null,
-                d.file_kind.toUpperCase(),
+                `${charCount.toLocaleString()} chars`,
+                pageCount ? `${pageCount} page(s)` : null,
+                kind.toUpperCase(),
                 formatChatFileDate(d.created_at),
             ].filter(Boolean).join(' · ');
             // Escape the id even though it's typed `number` — values arrive
@@ -2340,7 +2379,7 @@ export class ChatManager {
                 <div class="chat-file-row" data-id="${safeId}">
                     <span class="file-icon" aria-hidden="true">${fileIcon}</span>
                     <div class="file-body">
-                        <div class="file-name">${escapeHtml(d.filename)}</div>
+                        <div class="file-name">${escapeHtml(name)}</div>
                         <div class="file-meta">${escapeHtml(meta)}</div>
                     </div>
                     <button class="file-edit" data-id="${safeId}" title="Edit contents">Edit</button>

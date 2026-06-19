@@ -209,8 +209,12 @@ class TestInitializeBranches:
         m = APIFailoverManager()
         m.initialize()
         assert EndpointType.PROXY in m._endpoints
-        # The label embeds the host portion (after //) of the base URL.
-        assert m._endpoints[EndpointType.PROXY].label == "Proxy (gw.example.net/anthropic)"
+        # The label embeds ONLY the host[:port] portion of the base URL — the
+        # path is intentionally dropped (see _proxy_display_host). This label
+        # flows to dashboard WS clients, so it must never leak userinfo creds
+        # (``user:pass@host``); restricting it to the bare host[:port] keeps the
+        # redaction fail-closed even when the URL carries a path.
+        assert m._endpoints[EndpointType.PROXY].label == "Proxy (gw.example.net)"
 
     def test_preferred_proxy_selected_as_active(self, monkeypatch):
         monkeypatch.setenv("CLAUDE_BACKEND", "api")

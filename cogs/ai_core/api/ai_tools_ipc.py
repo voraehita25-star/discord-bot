@@ -329,9 +329,18 @@ class _AiToolsIpc:
             return "No user context for memory tool.", True
         channel_id = ctx.get("channel_id") if isinstance(ctx.get("channel_id"), int) else None
         if tool == "remember":
-            content = str(args.get("content", "")).strip()
-            if not content:
-                return "Nothing to remember (empty content).", True
+            # This is the LIVE cli-backend memory sink. Run the SAME shared screen
+            # the executor's remember branch uses (min-length + prompt-injection
+            # denylists + 5000-char clamp) BEFORE persisting — otherwise an
+            # injected ``[SYSTEM] ignore previous …`` / confusable / oversized
+            # payload would be stored verbatim and recalled into future prompts
+            # (audit py-aicore-tools-1 / -M1). Do not relax this to only the
+            # old non-empty check.
+            from ..sanitization import screen_memory_content
+
+            ok, content = screen_memory_content(args.get("content"))
+            if not ok:
+                return f"Cannot remember: {content}.", True
             fact = await long_term_memory.add_explicit_fact(user_id, content, channel_id=channel_id)
             # add_explicit_fact returns the EXISTING fact on a duplicate and
             # None ONLY on a store FAILURE — the old `if fact is None` branch

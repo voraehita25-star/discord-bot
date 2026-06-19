@@ -770,29 +770,43 @@ class TestExportMethods:
 
     @pytest.mark.asyncio
     async def test_export_channel_to_json(self):
-        """Test exporting channel to JSON."""
-        from utils.database.database import Database
+        """export_channel_to_json writes a JSON file with the channel's content."""
+        import json
+
+        from utils.database.database import EXPORT_DIR, Database
 
         db = Database()
         await db.init_schema()
 
         test_channel_id = 987654321
+        # The export lands at EXPORT_DIR/ai_history/<channel_id>.json (NOT the
+        # flat ai_history_<id>.json the old test guessed — which is why the
+        # dropped exists() assertion never would have fired).
+        export_file = EXPORT_DIR / "ai_history" / f"{test_channel_id}.json"
 
-        # Add some data
-        await db.save_ai_message(test_channel_id, "user", "Export test")
+        try:
+            # The DB is a shared singleton across the suite and 987654321 is
+            # conftest's TEST_CHANNEL_ID, so a prior test may have left rows for
+            # this channel. Clear first (like the sibling delete/save tests) so
+            # the len(data) == 1 assertion is deterministic under any ordering.
+            await db.delete_ai_history(test_channel_id)
 
-        # Export
-        await db.export_channel_to_json(test_channel_id)
+            await db.save_ai_message(test_channel_id, "user", "Export test")
 
-        # Check file exists
-        from utils.database.database import EXPORT_DIR
+            await db.export_channel_to_json(test_channel_id)
 
-        export_file = EXPORT_DIR / f"ai_history_{test_channel_id}.json"
-
-        # Cleanup
-        await db.delete_ai_history(test_channel_id)
-        if export_file.exists():
-            export_file.unlink()
+            # File must exist and carry the saved message + channel id.
+            assert export_file.exists()
+            data = json.loads(export_file.read_text(encoding="utf-8"))
+            assert isinstance(data, list) and len(data) == 1
+            assert data[0]["content"] == "Export test"
+            assert data[0]["role"] == "user"
+            assert data[0]["channel_id"] == test_channel_id
+            assert "id" in data[0]  # local_id renamed to id in the export
+        finally:
+            await db.delete_ai_history(test_channel_id)
+            if export_file.exists():
+                export_file.unlink()
 
 
 class TestDeleteMethods:

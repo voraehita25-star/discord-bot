@@ -349,3 +349,99 @@ class TestConsoleUnicodeSafe:
         from utils.monitoring.logger import CONSOLE_UNICODE_SAFE
 
         assert isinstance(CONSOLE_UNICODE_SAFE, bool)
+
+
+class TestRedactSensitive:
+    """Tests for _redact_sensitive webhook + URL-userinfo redaction (py-utils-mon-db-1)."""
+
+    # --- existing coverage: must keep passing after the tighten ---
+
+    def test_redact_https_discord_webhook_keeps_shape(self):
+        from utils.monitoring.logger import _redact_sensitive
+
+        token = "ZZZqwerty_-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
+        url = f"https://discord.com/api/webhooks/987654321098765432/{token}"
+        out = _redact_sensitive(url)
+        assert token not in out
+        assert "[REDACTED]" in out
+        # URL shape (host/path prefix) stays visible for debugging.
+        assert "discord.com/api/webhooks/987654321098765432/" in out
+
+    def test_redact_discordapp_and_slack_webhook(self):
+        from utils.monitoring.logger import _redact_sensitive
+
+        for host in ("discordapp.com", "slack.com"):
+            token = "tok_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+            url = f"https://{host}/api/webhooks/111222333444555666/{token}"
+            out = _redact_sensitive(url)
+            assert token not in out, f"{host} token leaked: {out!r}"
+            assert "[REDACTED]" in out
+
+    def test_redact_url_embedded_password_keeps_host(self):
+        from utils.monitoring.logger import _redact_sensitive
+
+        out = _redact_sensitive("postgres://dbuser:p4ssw0rdSecret@db.internal:5432/app")
+        assert "p4ssw0rdSecret" not in out
+        assert "[REDACTED]" in out
+        # Username, scheme and host remain readable.
+        assert "postgres://dbuser:" in out
+        assert "@db.internal:5432/app" in out
+
+    def test_redact_does_not_touch_plain_url(self):
+        from utils.monitoring.logger import _redact_sensitive
+
+        plain = "https://example.com/path?a=b"
+        assert _redact_sensitive(plain) == plain
+
+    # --- new gaps closed by this fix ---
+
+    def test_redact_http_scheme_webhook(self):
+        """http:// (not just https://) webhooks must have the token redacted."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        token = "httpScheme_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"
+        url = f"http://discord.com/api/webhooks/123123123123123123/{token}"
+        out = _redact_sensitive(url)
+        assert token not in out, f"http webhook token leaked: {out!r}"
+        assert "[REDACTED]" in out
+        assert "discord.com/api/webhooks/123123123123123123/" in out
+
+    def test_redact_canary_discord_webhook_subdomain(self):
+        """canary./ptb. discord subdomains must have the token redacted."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        token = "canarySub_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
+        url = f"https://canary.discord.com/api/webhooks/444555666777888999/{token}"
+        out = _redact_sensitive(url)
+        assert token not in out, f"canary webhook token leaked: {out!r}"
+        assert "[REDACTED]" in out
+        assert "canary.discord.com/api/webhooks/444555666777888999/" in out
+
+    def test_redact_password_only_userinfo(self):
+        """redis://:pass@host (empty username) must still have the password redacted."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        out = _redact_sensitive("redis://:p4ssOnlySecret@cache.internal:6379/0")
+        assert "p4ssOnlySecret" not in out, f"password-only userinfo leaked: {out!r}"
+        assert "[REDACTED]" in out
+        # Scheme + empty-user colon prefix and the host stay readable.
+        assert "redis://:" in out
+        assert "@cache.internal:6379/0" in out
+
+    def test_redact_is_linear_time_not_redos(self):
+        """Pathological no-whitespace input must stay LINEAR, not quadratic.
+
+        The webhook subdomain group is bounded ({1,63}); an unbounded ``+``
+        previously caused catastrophic backtracking (~5.4s at 40k chars) on the
+        hot per-log-line redaction path. Guard the linear bound so the ReDoS
+        cannot silently regress.
+        """
+        import time
+
+        from utils.monitoring.logger import _redact_sensitive
+
+        for n in (10000, 40000):
+            start = time.perf_counter()
+            _redact_sensitive("a" * n)
+            elapsed = time.perf_counter() - start
+            assert elapsed < 0.5, f"_redact_sensitive('a'*{n}) took {elapsed * 1000:.0f}ms (ReDoS?)"

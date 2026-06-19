@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -272,5 +273,210 @@ func TestSSRFSafeDialContext_BlocksPrivateLiteral(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "SSRF blocked") {
 		t.Errorf("expected SSRF block error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Content-extraction helpers (audit2 go-urlfetch-1)
+//
+// The Fetch success path is unreachable in tests because httptest.NewServer
+// binds 127.0.0.1 and is (correctly) SSRF-blocked. These tests therefore call
+// extractHTMLContent / cleanWhitespace / truncateString DIRECTLY with literal
+// byte slices — they run on attacker-controlled HTML and feed the AI prompt,
+// so they get explicit assertions instead of being covered only indirectly.
+// ---------------------------------------------------------------------------
+
+func TestExtractHTMLContent(t *testing.T) {
+	tests := []struct {
+		name            string
+		html            string
+		wantTitle       string
+		wantDescription string
+		// wantContent is asserted as an exact match unless wantContentContains
+		// is set (used where the post-whitespace text is awkward to spell out).
+		wantContent         string
+		wantContentContains []string
+	}{
+		{
+			name: "title description and article paragraph-join content",
+			// Paragraphs are long enough (>100 chars total) that the paragraph
+			// builder path is used (NOT the <100 short-content fallback). The
+			// builder joins blocks with "\n\n", then cleanWhitespace collapses
+			// each run of newlines down to a single "\n".
+			html: `<html><head><title>  My Page  </title>` +
+				`<meta name="description" content="A short description"></head>` +
+				`<body><article>` +
+				`<p>` + strings.Repeat("First para sentence. ", 4) + `</p>` +
+				`<p>` + strings.Repeat("Second para sentence. ", 4) + `</p>` +
+				`</article></body></html>`,
+			wantTitle:       "My Page",
+			wantDescription: "A short description",
+			wantContent: strings.TrimSpace(strings.Repeat("First para sentence. ", 4)) +
+				"\n" + strings.TrimSpace(strings.Repeat("Second para sentence. ", 4)),
+		},
+		{
+			name: "og:description fallback when name=description absent",
+			html: `<html><head><title>T</title>` +
+				`<meta property="og:description" content="OG fallback desc"></head>` +
+				`<body><p>` + strings.Repeat("x", 120) + `</p></body></html>`,
+			wantTitle:           "T",
+			wantDescription:     "OG fallback desc",
+			wantContentContains: []string{strings.Repeat("x", 120)},
+		},
+		{
+			name: "main selector fallback when no article",
+			html: `<html><head><title>T</title></head>` +
+				`<body><main><p>` + strings.Repeat("Main body content. ", 10) + `</p></main></body></html>`,
+			wantTitle:           "T",
+			wantDescription:     "",
+			wantContentContains: []string{"Main body content."},
+		},
+		{
+			name: "body fallback when no content selector matches",
+			html: `<html><head><title>T</title></head>` +
+				`<body><div><p>` + strings.Repeat("Plain body paragraph. ", 8) + `</p></div></body></html>`,
+			wantTitle:           "T",
+			wantDescription:     "",
+			wantContentContains: []string{"Plain body paragraph."},
+		},
+		{
+			name: "script style nav footer removed from content",
+			html: `<html><head><title>T</title></head><body><article>` +
+				`<script>alert('xss')</script><style>.x{color:red}</style>` +
+				`<nav>NAVLINK</nav><footer>FOOTERTEXT</footer>` +
+				`<p>` + strings.Repeat("Real visible text. ", 10) + `</p></article></body></html>`,
+			wantTitle:           "T",
+			wantDescription:     "",
+			wantContentContains: []string{"Real visible text."},
+		},
+		{
+			name: "short-content fallback uses full mainContent text",
+			// No <p>/<li>/<hN> tags, so the paragraph builder yields "" (< 100
+			// chars) and the code falls back to mainContent.Text().
+			html:                `<html><head><title>T</title></head><body><div>Bare text with no block tags here.</div></body></html>`,
+			wantTitle:           "T",
+			wantDescription:     "",
+			wantContentContains: []string{"Bare text with no block tags here."},
+		},
+		{
+			// Makes the .Remove() control LOAD-BEARING. The <article> has no
+			// <p>/<li>/<hN>, so the paragraph builder yields "" (< 100 chars)
+			// and the code falls back to mainContent.Text() — the ONLY path
+			// where script/nav/footer text would leak if .Remove() were
+			// disabled. The banned-substring check below asserts the script
+			// payload, NAVLINK and FOOTERTEXT are all absent; that only holds
+			// because doc.Find(...).Remove() stripped them first.
+			name: "removed elements stripped on short-content fallback path",
+			html: `<html><head><title>T</title></head><body><article>` +
+				`<script>alert('xss')</script><style>.x{color:red}</style>` +
+				`<nav>NAVLINK</nav><footer>FOOTERTEXT</footer>` +
+				`<header>HEADTEXT</header><aside>ASIDETEXT</aside>` +
+				`<iframe>IFRAMETEXT</iframe><noscript>NOSCRIPTTEXT</noscript>` +
+				`<div>short</div></article></body></html>`,
+			wantTitle:       "T",
+			wantDescription: "",
+			// Only the non-removed <div> text survives into the fallback content.
+			wantContent: "short",
+		},
+		{
+			name:                "missing title and description yield empty strings",
+			html:                `<html><body><article><p>` + strings.Repeat("content here. ", 10) + `</p></article></body></html>`,
+			wantTitle:           "",
+			wantDescription:     "",
+			wantContentContains: []string{"content here."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			title, description, content := extractHTMLContent([]byte(tt.html))
+			if title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", title, tt.wantTitle)
+			}
+			if description != tt.wantDescription {
+				t.Errorf("description = %q, want %q", description, tt.wantDescription)
+			}
+			if tt.wantContent != "" {
+				if content != tt.wantContent {
+					t.Errorf("content = %q, want %q", content, tt.wantContent)
+				}
+			}
+			for _, sub := range tt.wantContentContains {
+				if !strings.Contains(content, sub) {
+					t.Errorf("content %q should contain %q", content, sub)
+				}
+			}
+			// Removed elements must never leak into extracted content. This
+			// covers the full doc.Find(...).Remove() selector list so the
+			// removal control stays load-bearing on the short-content
+			// fallback path (where mainContent.Text() is used verbatim).
+			for _, banned := range []string{
+				"alert('xss')", "color:red", "NAVLINK", "FOOTERTEXT",
+				"HEADTEXT", "ASIDETEXT", "IFRAMETEXT", "NOSCRIPTTEXT",
+			} {
+				if strings.Contains(content, banned) {
+					t.Errorf("content %q should not contain removed element text %q", content, banned)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanWhitespace(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"collapse spaces", "a    b", "a b"},
+		{"collapse tabs to single space", "a\t\t\tb", "a b"},
+		{"mixed space and tab collapse", "a \t \t b", "a b"},
+		{"collapse newlines", "a\n\n\n\nb", "a\nb"},
+		{"space then newline collapses to one separator", "a  \n  b", "a b"},
+		{"trim leading and trailing whitespace", "   hello   ", "hello"},
+		{"trim leading and trailing newlines", "\n\nhello\n\n", "hello"},
+		{"preserve non-space runes incl multibyte", "héllo wörld", "héllo wörld"},
+		{"thai text preserved", "สวัสดี  ครับ", "สวัสดี ครับ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cleanWhitespace(tt.in); got != tt.want {
+				t.Errorf("cleanWhitespace(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		maxLen int
+		want   string
+	}{
+		{"empty string", "", 5, ""},
+		{"empty string zero max", "", 0, ""},
+		{"under max", "abc", 5, "abc"},
+		{"exactly max (no ellipsis)", "hello", 5, "hello"},
+		{"max plus one truncates with ellipsis", "hello!", 5, "hello..."},
+		{"well over max", "abcdefghij", 3, "abc..."},
+		// Rune-slice truncation must cut on a rune boundary, never mid-codepoint.
+		{"multibyte runes cut on boundary", "héllo", 3, "hél..."},
+		{"thai runes cut on boundary", "สวัสดีครับ", 3, "สวั..."},
+		{"multibyte exactly max unchanged", "héllo", 5, "héllo"},
+		{"emoji cut on boundary", "😀😁😂😃", 2, "😀😁..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateString(tt.in, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncateString(%q, %d) = %q, want %q", tt.in, tt.maxLen, got, tt.want)
+			}
+			// The truncated output must remain valid UTF-8 (no split codepoints).
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateString(%q, %d) = %q is not valid UTF-8", tt.in, tt.maxLen, got)
+			}
+		})
 	}
 }

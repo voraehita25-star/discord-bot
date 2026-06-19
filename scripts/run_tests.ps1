@@ -86,14 +86,24 @@ if ($TestName)   { $args_list += "-k"; $args_list += $TestName }
 if ($Fast)       { $args_list += "-m"; $args_list += "not slow"; $args_list += "-p"; $args_list += "no:warnings"; $args_list += "--tb=no" }
 if ($Coverage)   { $args_list += "--cov=cogs"; $args_list += "--cov=utils"; $args_list += "--cov-report=term" }
 
+# Use the venv interpreter explicitly. A freshly spawned sandbox shell may not
+# inherit the User PATH, so a bare `python` resolves to system Python 3.14 which
+# has no pytest installed and the run fails. CWD is the repo root (Set-Location
+# above), so this relative path is stable.
+$python = ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    Write-Host "ERROR: venv interpreter not found at $python — create it with: python -m venv .venv" -ForegroundColor Red
+    exit 1
+}
+
 # Show command
-$cmd = "python " + ($args_list -join " ")
+$cmd = "$python " + ($args_list -join " ")
 Write-Host "Running: $cmd" -ForegroundColor Yellow
 Write-Host ("=" * 70) -ForegroundColor DarkGray
 
 # Run pytest directly (NO pipe) to prevent hanging
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-& python @args_list
+& $python @args_list
 $exitCode = $LASTEXITCODE
 $sw.Stop()
 

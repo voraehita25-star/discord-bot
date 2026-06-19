@@ -324,8 +324,11 @@ body::after {
 html[data-theme="light"] body::after { opacity: 0; }
 
 /* retire the anime-era decorations */
-.anime-characters,
-#sakura-container { display: none !important; }
+.anime-characters { display: none !important; }
+/* #sakura-container is intentionally NOT force-hidden here: the Sakura Petals
+   toggle (#sakura-toggle) + persisted `sakuraEnabled` setting + initSakuraAnimation()
+   in app.ts are all still wired, so visibility must be controlled by that JS path,
+   not stomped with !important (which left a dead Settings control). */
 
 /* ============================================================================
    TYPOGRAPHY — Chakra Petch display, JetBrains Mono telemetry

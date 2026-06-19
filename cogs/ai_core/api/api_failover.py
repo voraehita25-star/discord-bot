@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
@@ -51,6 +52,24 @@ def _safe_error_summary(err: BaseException, max_len: int = 200) -> str:
         # the exception type name. Better to lose context than leak a
         # bearer token through this surface.
         return type(err).__name__
+
+
+def _proxy_display_host(proxy_base: str) -> str:
+    """Render a proxy base URL as a host[:port] string safe to display.
+
+    The proxy endpoint's label flows out to dashboard WS clients via
+    ``get_status()`` (``display_name``), so it must never echo an embedded
+    basic-auth credential. If an operator sets a base URL with a userinfo
+    component (``https://user:pass@proxy.example.com``), strip everything up
+    to and including the last ``@`` so only the host[:port] survives — the
+    generic ``user:pass@`` form is NOT caught by ``_redact_sensitive``, so we
+    strip it at the source rather than relying on a downstream filter.
+    """
+    netloc = urllib.parse.urlsplit(proxy_base).netloc
+    # urlsplit only populates netloc when a '//' authority is present; fall
+    # back to the raw value (still strip any '@' userinfo) for bare hosts.
+    candidate = netloc or proxy_base
+    return candidate.rsplit("@", 1)[-1]
 
 
 class EndpointType(StrEnum):
@@ -216,7 +235,7 @@ class APIFailoverManager:
                 type=EndpointType.PROXY,
                 api_key=proxy_key,
                 base_url=proxy_base,
-                label=f"Proxy ({proxy_base.split('//')[1] if '//' in proxy_base else proxy_base})",
+                label=f"Proxy ({_proxy_display_host(proxy_base)})",
             )
             self._health[EndpointType.PROXY] = EndpointHealth()
 

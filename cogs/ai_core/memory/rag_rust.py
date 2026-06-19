@@ -99,6 +99,12 @@ class RagEngineWrapper:
                 )
             if not math.isfinite(importance):
                 raise ValueError("importance must be a finite number")
+            # Importance is a non-negative weight: a negative value flips the sign
+            # of the final score in _python_search (score = base * importance) and
+            # can rank an opposite-meaning memory above the threshold. Mirror the
+            # Rust add()'s '< 0' rejection (lib.rs) so both backends stay in lockstep.
+            if importance < 0.0:
+                raise ValueError("importance must be non-negative")
             if any(not math.isfinite(v) for v in embedding):
                 raise ValueError("embedding contains non-finite values (NaN/Inf)")
             with self._entries_lock:
@@ -334,6 +340,37 @@ class RagEngineWrapper:
                             entry.get("id"),
                             len(embedding) if isinstance(embedding, list) else "missing",
                             self.dimension,
+                        )
+                        continue
+                    # Reject negative/non-finite importance on load, matching the
+                    # Rust load() guard (lib.rs:579-586). Without this a hand-edited
+                    # or stale JSON dump could reintroduce the sign-flip bug that
+                    # add()/add_batch() already block: a negative weight flips the
+                    # sign of the final score in _python_search (score = base *
+                    # importance) and can rank an opposite-meaning memory above the
+                    # threshold. Skip (log + continue) rather than store.
+                    imp = entry.get("importance", 1.0)
+                    if not isinstance(imp, (int, float)) or not math.isfinite(imp) or imp < 0.0:
+                        logger.warning(
+                            "Skipping RAG entry %r: importance %r is not a finite non-negative number",
+                            entry.get("id"),
+                            imp,
+                        )
+                        continue
+                    # Backend parity: Rust load() also drops entries whose
+                    # timestamp is non-finite. A NaN/Inf timestamp cannot corrupt
+                    # the score (the decay path uses max(0.0, age)), but it would
+                    # leak into the returned result dict and break any consumer
+                    # that sorts or does arithmetic on timestamp. Skip a present-
+                    # but-non-finite timestamp for full lockstep with the Rust load.
+                    ts = entry.get("timestamp")
+                    if ts is not None and (
+                        not isinstance(ts, (int, float)) or not math.isfinite(ts)
+                    ):
+                        logger.warning(
+                            "Skipping RAG entry %r: timestamp %r is not finite",
+                            entry.get("id"),
+                            ts,
                         )
                         continue
                     new_entries[entry["id"]] = entry

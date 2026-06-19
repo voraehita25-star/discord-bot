@@ -22,6 +22,30 @@ use tauri::{
 // rebuild was ~300ns each call but happens on a hot path.
 static ERROR_LOG_SEPARATOR: LazyLock<String> = LazyLock::new(|| "=".repeat(80));
 
+// Every character a log viewer/editor may render as a HARD LINE BREAK. The
+// frontend error log records are delimited by a "\n"+SEPARATOR run, so any of
+// these slipping through verbatim in attacker-influenced error_type/message/
+// stack text could fake a new log line. Keep this the single source of truth so
+// the three sanitization sites in `log_frontend_error` can't drift apart:
+//   \n \r        ASCII line feed / carriage return
+//   U+000B U+000C vertical tab / form feed
+//   U+0085        NEL ("Next Line")
+//   U+2028 U+2029 Unicode line / paragraph separator
+const LOG_LINEBREAK_CHARS: [char; 7] =
+    ['\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// Sanitize a single-line log field: replace every [`LOG_LINEBREAK_CHARS`] with
+/// a space (so it cannot forge a new log record) and clamp to `max` chars on a
+/// char boundary. Used for the error_type / message fields of the frontend
+/// error log.
+fn sanitize_log_field(input: &str, max: usize) -> String {
+    input
+        .replace(LOG_LINEBREAK_CHARS, " ")
+        .chars()
+        .take(max)
+        .collect()
+}
+
 struct AppState {
     bot_manager: Arc<Mutex<BotManager>>,
     db_service: Arc<Mutex<DatabaseService>>,
@@ -579,17 +603,12 @@ fn log_frontend_error(
         }
     }
 
-    // Sanitize inputs to prevent log injection (strip newlines and Unicode line separators, limit length)
-    let error_type = error_type
-        .replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ")
-        .chars()
-        .take(256)
-        .collect::<String>();
-    let message = message
-        .replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ")
-        .chars()
-        .take(4096)
-        .collect::<String>(); // Limit message size and strip newlines
+    // Sanitize inputs to prevent log injection: strip every newline / Unicode
+    // line-break character (see LOG_LINEBREAK_CHARS) and clamp length so an
+    // attacker-influenced frontend string can't fake a new line in
+    // dashboard_errors.log.
+    let error_type = sanitize_log_field(&error_type, 256);
+    let message = sanitize_log_field(&message, 4096); // Limit message size and strip newlines
 
     let manager = lock_bot_manager!(state)?;
     let log_dir = manager.logs_dir();
@@ -609,9 +628,20 @@ fn log_frontend_error(
     // Stack traces are multi-line by nature so we tab-indent every line
     // instead of stripping (preserves readability) but we still strip the
     // Unicode line separators that could otherwise fake a new log entry.
+    //
+    // Derive the set to neutralize from LOG_LINEBREAK_CHARS (the single source
+    // of truth) minus '\n'/'\r', which we handle specially below, so this can't
+    // drift out of sync if a new line-break char is added there.
+    let stack_other_linebreaks: Vec<char> = LOG_LINEBREAK_CHARS
+        .into_iter()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect();
     let stack_trace = stack
         .unwrap_or_else(|| "No stack trace".to_string())
-        .replace(['\u{2028}', '\u{2029}'], " ")
+        // Replace the Unicode line-break characters that aren't the genuine "\n"
+        // record structure (VT/FF/NEL/U+2028/U+2029) so a crafted stack can't
+        // fake a new log line; \r is dropped and \n is preserved-then-indented.
+        .replace(&stack_other_linebreaks[..], " ")
         .replace('\r', "")
         .replace('\n', "\n  ")
         .chars()
@@ -664,10 +694,18 @@ fn log_frontend_error(
     file.write_all(log_entry.as_bytes())
         .map_err(|e| format!("Failed to write error log: {}", e))?;
 
-    // Forward to Sentry if a DSN was configured at startup
-    if sentry::Hub::current()
-        .client()
-        .is_some_and(|c| c.is_enabled())
+    // Forward to Sentry only if (a) a DSN was configured at startup AND (b) the
+    // user has NOT opted out of telemetry at runtime. The Rust _sentry_guard is
+    // initialized once in main() and never torn down, so checking is_enabled()
+    // alone honors only the startup DSN state — a user who toggles telemetry OFF
+    // mid-session (set_telemetry_enabled writes telemetry_optout.flag) would keep
+    // shipping events until restart. Re-read the opt-out flag on every forward so
+    // the runtime consent toggle takes effect immediately. (`manager` is the same
+    // guard locked above for the log write, so this adds no extra lock.)
+    if !telemetry_flag_path(&manager).exists()
+        && sentry::Hub::current()
+            .client()
+            .is_some_and(|c| c.is_enabled())
     {
         sentry::capture_message(
             &format!("[{}] {}", error_type, message),
@@ -821,6 +859,23 @@ fn env_flag_is_truthy(value: Option<String>) -> bool {
         .unwrap_or(false)
 }
 
+// ⚠️ CSP CONSTRAINT — KEEP THIS ENDPOINT AND THE CSP IN SYNC.
+// This endpoint is configurable via WS_DASHBOARD_HOST / WS_DASHBOARD_PORT /
+// WS_REQUIRE_TLS, but the webview's Content-Security-Policy `connect-src` is
+// HARDCODED to exactly the four loopback :8765 origins:
+//     ws://127.0.0.1:8765  wss://127.0.0.1:8765
+//     ws://localhost:8765  wss://localhost:8765
+// (defined in tauri.conf.json `app.security.csp` and duplicated in the
+// <meta http-equiv="Content-Security-Policy"> in ui/index.html).
+// The CSP is INTENTIONALLY tight (a security control — do NOT widen it to a
+// wildcard port to "fix" a custom config). Consequence: if an operator sets
+// WS_DASHBOARD_PORT to anything other than 8765, this function returns e.g.
+// `ws://127.0.0.1:9000/ws`, the browser blocks it per CSP, and the chat panel
+// fails to connect. A custom port therefore REQUIRES manually editing the CSP
+// in BOTH files above. The loopback wss form and a custom HOST self-heal (the
+// CSP already lists the wss:8765 origins and the TS client falls back to the
+// :8765 host candidates), so the PORT is the one knob the CSP does not follow.
+// See env.example (WS_DASHBOARD_PORT) for the operator-facing note.
 #[tauri::command]
 fn get_ws_endpoint(state: State<AppState>) -> Result<String, String> {
     let manager = lock_bot_manager!(state)?;
@@ -840,6 +895,18 @@ fn get_ws_endpoint(state: State<AppState>) -> Result<String, String> {
             .or_else(|| std::env::var("WS_REQUIRE_TLS").ok()),
     );
     let ws_scheme = if ws_require_tls { "wss" } else { "ws" };
+
+    // Warn (don't fail) when the resolved port diverges from the CSP-permitted
+    // 8765 — the connection will be blocked by the webview CSP and the only
+    // symptom otherwise is an opaque "connection failed" in the chat panel.
+    if ws_port != "8765" {
+        eprintln!(
+            "WARNING: WS_DASHBOARD_PORT resolved to {} but the dashboard CSP only permits \
+             loopback :8765 — the chat WebSocket will be blocked unless you also edit the \
+             connect-src CSP in tauri.conf.json and ui/index.html.",
+            ws_port,
+        );
+    }
 
     Ok(format!(
         "{}://{}:{}/ws",
@@ -1027,6 +1094,103 @@ fn resolve_production_base_path(exe_path: &Option<std::path::PathBuf>) -> std::p
         })
 }
 
+/// Hard cap on the length of any free-text field shipped to Sentry. Frontend
+/// `console.error` payloads (which become the `[type] message` we forward) can
+/// carry large chat bodies or server-error blobs; truncating bounds how much
+/// arbitrary content can leave the machine even after path redaction.
+const SENTRY_TEXT_MAX: usize = 2048;
+
+/// Redact absolute filesystem paths from a free-text string and truncate it.
+///
+/// The Rust dashboard's only Sentry events are the `capture_message` forwards in
+/// `log_frontend_error`, whose `[type] message` body can embed absolute paths
+/// (install dir, user profile, source locations) that deanonymize the
+/// machine/user. This is the single path-normalization point, wired into the
+/// `before_send` hook in `sentry::init`. It scrubs absolute *paths* only; the
+/// dashboard handles no API keys/tokens/PII, so it is intentionally narrower
+/// than the Python bot's before_send (`utils/monitoring/sentry_integration.py`).
+///
+/// Coverage is deliberately limited. `before_send` applies this scrubber to
+/// `event.message` and each `event.exception.values[].value`, and nulls
+/// `event.server_name` separately. It does NOT walk stacktrace frames
+/// (`abs_path` / `filename`): those are not free text we control here, so this
+/// function makes no claim over them.
+///
+/// Dependency-free (no `regex` crate). It scans PER LINE: split `input` on `\n`,
+/// and for each line locate the first span that *looks like* an absolute path:
+///   * a Windows drive path   — `X:\...` or `X:/...`
+///   * a UNC / extended path  — `\\...` or `//...`
+///   * a POSIX absolute path  — a `/` followed by a non-whitespace char
+///
+/// The prefix is matched *anywhere inside* the line, not just at its start, so a
+/// path glued to surrounding punctuation/quotes (`'C:\…'`, `(C:\…)`), carrying a
+/// non-whitespace prefix (`at:C:\…`), or behind a `file://` scheme
+/// (`file:///C:/…`) still gets redacted instead of leaking the user/host segment.
+///
+/// Fail-closed for privacy: once a path prefix is found, EVERYTHING from that
+/// prefix to end-of-line is replaced by a single `<path>`. Windows profile dirs
+/// routinely contain spaces (`Users\First Last`, `Program Files`), so a
+/// token-by-token scrub would leak every segment after the first space. We trade
+/// that trailing diagnostic context for the guarantee that no path segment
+/// survives. Lines with no path-like span are kept verbatim.
+///
+/// Relative tokens, identifiers, and ordinary words are left intact. Conservative
+/// by design: it only ever *removes* information, so a false positive degrades a
+/// line's tail to `<path>` and never leaks more.
+fn scrub_sentry_text(input: &str) -> String {
+    // Return the byte offset within `line` where an absolute-path prefix begins,
+    // scanning every position (not just index 0) so a path glued to a quote,
+    // bracket, or scheme prefix is still found. `None` => no path-like span.
+    fn find_path_start(line: &str) -> Option<usize> {
+        let bytes = line.as_bytes();
+        for i in 0..bytes.len() {
+            let rest = &bytes[i..];
+            // UNC (\\server\share) or POSIX-ish (//...) prefix.
+            if rest.starts_with(b"\\\\") || rest.starts_with(b"//") {
+                return Some(i);
+            }
+            // Windows drive path: letter, ':', then '\' or '/'.
+            if rest.len() >= 3
+                && rest[0].is_ascii_alphabetic()
+                && rest[1] == b':'
+                && (rest[2] == b'\\' || rest[2] == b'/')
+            {
+                return Some(i);
+            }
+            // POSIX absolute path: a '/' immediately followed by a non-whitespace
+            // path char. Requiring the next byte to be non-whitespace keeps a bare
+            // separator like "a / b" (and a trailing "/") from looking like a path.
+            if rest[0] == b'/' && rest.len() > 1 && !rest[1].is_ascii_whitespace() {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    // Scrub PER LINE: once a path prefix is found, collapse it and everything to
+    // end-of-line into a single `<path>`. This over-redacts the line's tail on
+    // purpose so no path segment after a space (Windows `Users\First Last`) can
+    // survive — fail-closed for privacy. Lines without a path are left verbatim.
+    let scrubbed = input
+        .split('\n')
+        .map(|line| match find_path_start(line) {
+            None => line.to_string(),
+            Some(start) => format!("{}<path>", &line[..start]),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Truncate on a char boundary (take(N) over chars) so we never split a
+    // multi-byte UTF-8 sequence, and append an ellipsis marker when clamped.
+    if scrubbed.chars().count() > SENTRY_TEXT_MAX {
+        let mut out: String = scrubbed.chars().take(SENTRY_TEXT_MAX).collect();
+        out.push_str("…[truncated]");
+        out
+    } else {
+        scrubbed
+    }
+}
+
 fn main() {
     // Base path for the bot files - use BOT_BASE_PATH env var or default
     let base_path = std::env::var("BOT_BASE_PATH")
@@ -1100,6 +1264,38 @@ fn main() {
                 dsn,
                 sentry::ClientOptions {
                     release: sentry::release_name!(),
+                    // Never ship absolute paths, the machine hostname, or
+                    // oversized free text to the third-party ingest. Frontend
+                    // error forwards routinely embed the install dir, the user's
+                    // profile path, and large chat/server-error bodies, and the
+                    // SDK auto-populates the hostname into `server_name`.
+                    //
+                    // Coverage: we scrub `event.message` and every
+                    // `event.exception.values[].value` in place, and null
+                    // `event.server_name`. We do NOT walk stacktrace frame
+                    // `abs_path`/`filename` — those are not scrubbed here.
+                    //
+                    // Scope note: the text scrubber only redacts absolute *paths*
+                    // and truncates — it is deliberately NARROWER than the Python
+                    // bot's before_send (utils/monitoring/sentry_integration.py),
+                    // which also strips API keys/tokens/PII. The Rust dashboard
+                    // never handles those secrets, so path redaction + truncation
+                    // is the relevant control here; do not mistake it for a full
+                    // secret scrubber.
+                    before_send: Some(std::sync::Arc::new(|mut event| {
+                        if let Some(msg) = event.message.take() {
+                            event.message = Some(scrub_sentry_text(&msg));
+                        }
+                        for exc in event.exception.values.iter_mut() {
+                            if let Some(val) = exc.value.take() {
+                                exc.value = Some(scrub_sentry_text(&val));
+                            }
+                        }
+                        // Drop the auto-populated machine hostname so it never
+                        // leaves the machine (fail-closed; not free text we scrub).
+                        event.server_name = None;
+                        Some(event)
+                    })),
                     ..Default::default()
                 },
             ))
@@ -1341,5 +1537,214 @@ mod tests {
     fn dotenv_returns_first_match_when_duplicated() {
         let (_tmp, path) = write_env("DUP=first\nDUP=second\n");
         assert_eq!(read_dotenv_value(&path, "DUP"), Some("first".to_string()));
+    }
+
+    // ------- sanitize_log_field (audit dash-rust-5: log-injection completeness) -
+
+    #[test]
+    fn sanitize_strips_all_unicode_line_breaks() {
+        // The regression: U+0085 (NEL) — and the other newline-class chars — must
+        // be replaced with a space so a crafted frontend string can never forge a
+        // new log line. Build a string containing EVERY LOG_LINEBREAK_CHARS char.
+        let raw = "a\nb\rc\u{0B}d\u{0C}e\u{85}f\u{2028}g\u{2029}h";
+        let out = sanitize_log_field(raw, 4096);
+        // No line-break character survives.
+        for ch in LOG_LINEBREAK_CHARS {
+            assert!(
+                !out.contains(ch),
+                "sanitized field still contains line-break char {:?}",
+                ch,
+            );
+        }
+        // Specifically NEL — the char the prior sanitizer missed.
+        assert!(!out.contains('\u{85}'), "U+0085 (NEL) must be stripped");
+        // Each break was replaced 1:1 with a space (length preserved, content
+        // visible), so the visible letters remain in order.
+        assert_eq!(out, "a b c d e f g h");
+    }
+
+    #[test]
+    fn sanitize_nel_cannot_fake_a_record_separator() {
+        // A NEL immediately followed by the '='-run that the log splitter keys on
+        // must not survive as a real line break — after sanitization there is no
+        // '\n' adjacent to the '=' run, so get_dashboard_errors can't be tricked
+        // into splitting one record into two.
+        let attack = format!("evil\u{85}{}", "=".repeat(80));
+        let out = sanitize_log_field(&attack, 4096);
+        assert!(!out.contains('\n'), "no real newline may be introduced");
+        assert!(!out.contains('\u{85}'), "NEL must be neutralized to a space");
+    }
+
+    #[test]
+    fn sanitize_clamps_to_max_chars() {
+        let raw = "x".repeat(1000);
+        assert_eq!(sanitize_log_field(&raw, 256).chars().count(), 256);
+    }
+
+    #[test]
+    fn sanitize_truncates_on_char_boundary_without_panicking() {
+        // Multi-byte chars must not be split mid-sequence by the length clamp.
+        let raw = "✓".repeat(10);
+        let out = sanitize_log_field(&raw, 3);
+        assert_eq!(out, "✓✓✓");
+    }
+
+    // ------- scrub_sentry_text (audit dash-rust-2: privacy / path redaction) ----
+
+    #[test]
+    fn scrub_redacts_windows_drive_paths() {
+        let out = scrub_sentry_text("error at C:\\Users\\alice\\BOT\\bot.py line 5");
+        assert!(
+            !out.contains("alice"),
+            "absolute Windows path (with user name) must be redacted: {out}",
+        );
+        assert!(out.contains("<path>"), "redacted token marker expected: {out}");
+        // The non-path prefix survives; the path tail (incl. "line 5") collapses
+        // to a single <path> through end-of-line (fail-closed).
+        assert_eq!(out, "error at <path>");
+    }
+
+    #[test]
+    fn scrub_redacts_unc_and_posix_paths() {
+        let unc = scrub_sentry_text("opened \\\\server\\share\\secret.db ok");
+        assert!(!unc.contains("server"), "UNC path must be redacted: {unc}");
+        assert!(unc.contains("<path>"));
+
+        let posix = scrub_sentry_text("read /home/bob/.ssh/id_rsa now");
+        assert!(!posix.contains("bob"), "POSIX path must be redacted: {posix}");
+        assert!(posix.contains("<path>"));
+    }
+
+    #[test]
+    fn scrub_redacts_forward_slash_windows_paths() {
+        let out = scrub_sentry_text("at C:/Users/carol/app failed");
+        assert!(!out.contains("carol"), "forward-slash drive path must redact: {out}");
+        assert!(out.contains("<path>"));
+    }
+
+    #[test]
+    fn scrub_preserves_ordinary_text() {
+        let msg = "TypeError cannot read property foo of undefined";
+        assert_eq!(scrub_sentry_text(msg), msg);
+    }
+
+    #[test]
+    fn scrub_truncates_oversized_text() {
+        let raw = "word ".repeat(2000); // ~10k chars, no paths
+        let out = scrub_sentry_text(&raw);
+        assert!(
+            out.chars().count() <= SENTRY_TEXT_MAX + "…[truncated]".chars().count(),
+            "scrubbed text must be clamped near SENTRY_TEXT_MAX, got {}",
+            out.chars().count(),
+        );
+        assert!(out.ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn scrub_does_not_leak_bare_slash_or_protocol_relative() {
+        // A lone "/" is not a path token; protocol-relative "//host" IS redacted
+        // (it matches the UNC/'//' rule) — both behaviors are intentional.
+        assert_eq!(scrub_sentry_text("a / b"), "a / b");
+        let pr = scrub_sentry_text("see //evil.example/x");
+        assert!(pr.contains("<path>"), "protocol-relative token should redact: {pr}");
+    }
+
+    // -- dash-rust-2 completeness: prefix matched ANYWHERE in a token, so a path
+    // glued to punctuation / a scheme can't leak the user/host segment. The
+    // earlier (split-then-first-char) scrubber leaked all of these. --
+
+    #[test]
+    fn scrub_redacts_quote_wrapped_path() {
+        // Single-quoted path: a leading quote glued to the path must not block
+        // detection. The leading run (incl. the opening quote) survives; the path
+        // and the trailing quote collapse to <path> through end-of-line.
+        let out = scrub_sentry_text("open 'C:\\Users\\alice\\secret.txt'");
+        assert!(!out.contains("alice"), "quoted path leaked user: {out}");
+        assert_eq!(out, "open '<path>");
+    }
+
+    #[test]
+    fn scrub_redacts_double_quote_wrapped_path() {
+        // Trailing text after the path ("failed") is intentionally swallowed by
+        // the end-of-line redaction; only the non-path prefix survives.
+        let out = scrub_sentry_text("read \"C:\\Users\\dave\\app.log\" failed");
+        assert!(!out.contains("dave"), "double-quoted path leaked user: {out}");
+        assert_eq!(out, "read \"<path>");
+    }
+
+    #[test]
+    fn scrub_redacts_paren_wrapped_path() {
+        // Parenthesized source location, e.g. "(C:\...\bot.py:5)". The closing
+        // paren and trailing text collapse into the end-of-line <path>.
+        let out = scrub_sentry_text("stack (C:\\Users\\erin\\bot.py) here");
+        assert!(!out.contains("erin"), "paren-wrapped path leaked user: {out}");
+        assert_eq!(out, "stack (<path>");
+    }
+
+    #[test]
+    fn scrub_redacts_scheme_prefixed_path() {
+        // A non-whitespace prefix glued in front (e.g. "at:C:\...") must not
+        // shield the path from detection. Trailing text ("line 3") is swallowed.
+        let out = scrub_sentry_text("at:C:\\Users\\frank\\bot.py line 3");
+        assert!(!out.contains("frank"), "prefixed path leaked user: {out}");
+        assert_eq!(out, "at:<path>");
+    }
+
+    #[test]
+    fn scrub_redacts_file_url() {
+        // file:// URLs embed an absolute path after the scheme. The earliest match
+        // is the drive-style "e:/" inside "file:/" (letter,':','/'), so redaction
+        // starts there and runs to end-of-line, swallowing the trailing "ok".
+        let out = scrub_sentry_text("loaded file:///C:/Users/carol/index.html ok");
+        assert!(!out.contains("carol"), "file:// URL leaked user: {out}");
+        assert_eq!(out, "loaded fil<path>");
+
+        // POSIX-rooted file URL — same "e:/" match point.
+        let posix = scrub_sentry_text("see file:///home/grace/.ssh/config");
+        assert!(!posix.contains("grace"), "posix file:// URL leaked user: {posix}");
+        assert_eq!(posix, "see fil<path>");
+    }
+
+    #[test]
+    fn scrub_redacts_unc_glued_to_punctuation() {
+        // UNC path wrapped in quotes — the leading "\\\\" prefix is mid-token.
+        let out = scrub_sentry_text("opened '\\\\server\\share\\secret.db'");
+        assert!(!out.contains("server"), "quoted UNC path leaked host: {out}");
+        assert_eq!(out, "opened '<path>");
+    }
+
+    // -- FIX 1 (privacy, fail-closed): a path containing a SPACE must not leak any
+    // segment after the first space. The earlier per-token scrubber leaked the
+    // surname in Windows profile dirs ("Users\First Last"); end-of-line redaction
+    // closes that. We assert the username is ABSENT, not merely that <path> shows. --
+
+    #[test]
+    fn scrub_spaced_path_does_not_leak_surname_in_backtrace() {
+        // Classic JS stack frame: "(C:\Users\Jane Doe\app\main.js:10:5)".
+        let out = scrub_sentry_text("at Object.<anonymous> (C:\\Users\\Jane Doe\\app\\main.js:10:5)");
+        assert!(!out.contains("Doe"), "spaced path leaked surname: {out}");
+        assert!(!out.contains("Jane"), "spaced path leaked given name: {out}");
+        assert!(out.contains("<path>"), "redacted marker expected: {out}");
+        // Only the path tail collapses; the non-path lead-in is preserved.
+        assert_eq!(out, "at Object.<anonymous> (<path>");
+    }
+
+    #[test]
+    fn scrub_spaced_path_does_not_leak_surname_bare() {
+        let out = scrub_sentry_text("C:\\Users\\John Smith\\AppData\\creds");
+        assert!(!out.contains("Smith"), "spaced path leaked surname: {out}");
+        assert!(!out.contains("John"), "spaced path leaked given name: {out}");
+        assert_eq!(out, "<path>");
+    }
+
+    #[test]
+    fn scrub_multiline_preserves_clean_line_redacts_path_line() {
+        // A clean line stays verbatim; only the line carrying an absolute path is
+        // redacted, and that line is redacted to end-of-line.
+        let input = "TypeError: boom\n    at C:\\Users\\Mary Jane\\app\\main.js:1:1\nend of trace";
+        let out = scrub_sentry_text(input);
+        assert!(!out.contains("Mary"), "multiline leaked given name: {out}");
+        assert!(!out.contains("Jane"), "multiline leaked surname: {out}");
+        assert_eq!(out, "TypeError: boom\n    at <path>\nend of trace");
     }
 }

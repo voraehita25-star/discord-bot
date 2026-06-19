@@ -122,4 +122,231 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     return content
 
 
-__all__ = ["sanitize_channel_name", "sanitize_message_content", "sanitize_role_name"]
+# ---------------------------------------------------------------------------
+# Long-term-memory write screening (shared sink for ALL ``remember`` writers)
+# ---------------------------------------------------------------------------
+# Historically the prompt-injection screen for ``remember`` lived inline in
+# ``tools/tool_executor.execute_tool_call`` and was DUPLICATED in
+# ``commands/memory_commands._screen_injection``. On the live ``cli`` backend the
+# model's ``remember`` tool call flows through ``api/ai_tools_ipc._dispatch_memory``
+# (NOT execute_tool_call), so the executor's copy never ran on the primary path —
+# letting an injected ``[SYSTEM] ignore previous …`` payload persist verbatim into
+# RAG-retrievable context (audit py-aicore-tools-1). This module is now the single
+# authoritative screen: every writer (executor, IPC, ``!remember``) must funnel
+# content through :func:`screen_memory_content` BEFORE it reaches ``add_explicit_fact``
+# / ``rag_system.add_memory``. Do NOT weaken the denylists — only add to them.
+
+# Minimum plausible length for a stored fact — the model occasionally tries to
+# "remember" a single word, polluting RAG with noise.
+_MEMORY_MIN_LENGTH = 8
+# Hard cap on stored memory content to prevent unbounded DB/cache growth and
+# context-token inflation on recall (audit py-aicore-tools-M1). The executor used
+# 5000 chars; keep that as the shared cap so every writer is bounded.
+_MEMORY_MAX_LENGTH = 5000
+
+# Plain markers checked against the raw lowercased text.
+_MEMORY_SUSPICIOUS_MARKERS = (
+    "[system]",
+    "[inst]",
+    "ignore previous",
+    "ignore the previous",
+    "<system>",
+    "<inst>",
+    "</system>",
+    "</inst>",
+)
+# Cyrillic/Greek/full-width/math confusables -> plain ASCII, so visually-identical
+# spellings (e.g. "иgnore previous", "𝗶gnore previous", "ｉgnore previous") can't
+# slip past the normalised screen. Without the de-confuse step a Cyrillic 'и'
+# would be ASCII-stripped by NFKD, leaving "gnore previous" which evades the
+# "ignore previous" marker while still reading as the original to a downstream LM.
+_MEMORY_CONFUSABLE_MAP = {
+    # Cyrillic lowercase -> Latin lowercase
+    "а": "a",
+    "в": "b",
+    "с": "c",
+    "д": "d",
+    "е": "e",
+    "х": "x",
+    "и": "i",
+    "ј": "j",
+    "к": "k",
+    "ӏ": "l",
+    "о": "o",
+    "р": "p",
+    "ѕ": "s",
+    "т": "t",
+    "у": "y",
+    "һ": "h",
+    # Cyrillic uppercase -> Latin uppercase
+    "А": "A",
+    "В": "B",
+    "С": "C",
+    "Е": "E",
+    "Н": "H",
+    "К": "K",
+    "М": "M",
+    "О": "O",
+    "Р": "P",
+    "Т": "T",
+    "Х": "X",
+    "Ј": "J",
+    # Greek lowercase -> Latin lowercase
+    "α": "a",
+    "ο": "o",
+    "ρ": "p",
+    "υ": "y",
+    # Greek uppercase -> Latin uppercase
+    "Α": "A",
+    "Β": "B",
+    "Ε": "E",
+    "Ζ": "Z",
+    "Η": "H",
+    "Ι": "I",
+    "Κ": "K",
+    "Μ": "M",
+    "Ν": "N",
+    "Ο": "O",
+    "Ρ": "P",
+    "Τ": "T",
+    "Υ": "Y",
+    "Χ": "X",
+    # Mathematical Alphanumeric Symbols (U+1D400+ bold ASCII Latin)
+    "𝐚": "a",
+    "𝐛": "b",
+    "𝐜": "c",
+    "𝐝": "d",
+    "𝐞": "e",
+    "𝐟": "f",
+    "𝐠": "g",
+    "𝐡": "h",
+    "𝐢": "i",
+    "𝐣": "j",
+    "𝐤": "k",
+    "𝐥": "l",
+    "𝐦": "m",
+    "𝐧": "n",
+    "𝐨": "o",
+    "𝐩": "p",
+    "𝐪": "q",
+    "𝐫": "r",
+    "𝐬": "s",
+    "𝐭": "t",
+    "𝐮": "u",
+    "𝐯": "v",
+    "𝐰": "w",
+    "𝐱": "x",
+    "𝐲": "y",
+    "𝐳": "z",
+    # Full-width ASCII (U+FF21-U+FF5A)
+    "ａ": "a",
+    "ｂ": "b",
+    "ｃ": "c",
+    "ｄ": "d",
+    "ｅ": "e",
+    "ｆ": "f",
+    "ｇ": "g",
+    "ｈ": "h",
+    "ｉ": "i",
+    "ｊ": "j",
+    "ｋ": "k",
+    "ｌ": "l",
+    "ｍ": "m",
+    "ｎ": "n",
+    "ｏ": "o",
+    "ｐ": "p",
+    "ｑ": "q",
+    "ｒ": "r",
+    "ｓ": "s",
+    "ｔ": "t",
+    "ｕ": "u",
+    "ｖ": "v",
+    "ｗ": "w",
+    "ｘ": "x",
+    "ｙ": "y",
+    "ｚ": "z",
+    "Ａ": "A",
+    "Ｅ": "E",
+    "Ｉ": "I",
+    "Ｏ": "O",
+    "Ｕ": "U",
+}
+# Broader forbidden set checked against the de-confused + NFKD-decomposed form.
+# Includes the bracket/tag markers too, so a confusable spelling (e.g. ``<ѕystem>``)
+# that slips past the plain pass is still caught here.
+_MEMORY_FORBIDDEN_NORMALIZED = (
+    "[system]",
+    "[inst]",
+    "<system>",
+    "</system>",
+    "<inst>",
+    "</inst>",
+    "ignore previous",
+    "ignore the previous",
+    "pretend",
+    "you are now",
+    "system:",
+    "override",
+    "jailbreak",
+    "disregard",
+)
+
+
+def memory_content_has_injection(content: str) -> bool:
+    """Return True if ``content`` carries a prompt-injection marker.
+
+    Plain lowercased pass for the suspicious markers, then a de-confused +
+    NFKD-decomposed + ASCII pass for the broader forbidden set so confusable
+    spellings can't evade detection. Pure predicate (no clamping/attribution) so
+    callers that only need the boolean (e.g. the ``!remember`` command) can reuse
+    the SAME denylists as the AI-tool/IPC sinks.
+    """
+    lowered = content.lower()
+    if any(marker in lowered for marker in _MEMORY_SUSPICIOUS_MARKERS):
+        return True
+    de_confused = "".join(_MEMORY_CONFUSABLE_MAP.get(c, c) for c in content)
+    normalized = (
+        unicodedata.normalize("NFKD", de_confused).encode("ascii", "ignore").decode("ascii").lower()
+    )
+    return any(f in normalized for f in _MEMORY_FORBIDDEN_NORMALIZED)
+
+
+def screen_memory_content(content: object) -> tuple[bool, str]:
+    """Authoritative screen for a ``remember`` write, shared by every sink.
+
+    Applies, in order: type check, ``strip``, min-length, the plain+normalised
+    prompt-injection denylists, and the 5000-char clamp (with a ``[truncated]``
+    marker). Attribution is intentionally NOT added here — it is path-specific
+    (the executor prefixes ``[user … (id=…)]`` for the shared per-channel RAG
+    store, while the IPC path records ``user_id`` as a structured column), so
+    baking it in would change the IPC storage format. Callers add attribution
+    themselves AFTER this returns.
+
+    Args:
+        content: Raw model/user-supplied memory content (any type — validated).
+
+    Returns:
+        ``(False, reason)`` when the write must be rejected (reason is a short
+        human-readable string suitable to surface to the model/user), or
+        ``(True, screened)`` where ``screened`` is the stripped, denylist-cleared,
+        length-clamped content ready to persist.
+    """
+    if not isinstance(content, str):
+        return False, "Content must be a string"
+    content = content.strip()
+    if len(content) < _MEMORY_MIN_LENGTH:
+        return False, "Content is too short"
+    if memory_content_has_injection(content):
+        return False, "Content contains restricted markers"
+    if len(content) > _MEMORY_MAX_LENGTH:
+        content = content[:_MEMORY_MAX_LENGTH] + " [truncated]"
+    return True, content
+
+
+__all__ = [
+    "memory_content_has_injection",
+    "sanitize_channel_name",
+    "sanitize_message_content",
+    "sanitize_role_name",
+    "screen_memory_content",
+]

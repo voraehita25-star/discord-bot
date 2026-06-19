@@ -349,7 +349,15 @@ impl DatabaseService {
         &self,
         limit: i32,
     ) -> Result<Vec<DashboardConversation>, String> {
-        let guard = self.get_connection().map_err(|e| e.to_string())?;
+        // A not-yet-created DB is an empty state, not an error — match get_stats/
+        // get_recent_channels/get_top_users so a fresh install shows an empty
+        // conversation list instead of a red "Database not found" toast while the
+        // sibling panels render cleanly. Only a real open failure surfaces as Err.
+        let guard = match self.get_connection() {
+            Ok(guard) => guard,
+            Err(ConnectError::Missing) => return Ok(vec![]),
+            Err(e @ ConnectError::Open(_)) => return Err(e.to_string()),
+        };
         let conn = guard.conn();
         let mut conversations = Vec::new();
 
@@ -411,7 +419,15 @@ impl DatabaseService {
         &self,
         conversation_id: &str,
     ) -> Result<Option<DashboardConversationDetail>, String> {
-        let guard = self.get_connection().map_err(|e| e.to_string())?;
+        // A missing DB means "no such conversation", not an error — return Ok(None)
+        // (the same shape a real not-found returns) so a fresh install doesn't
+        // surface "Database not found". Consistent with get_dashboard_conversations
+        // and the get_stats sibling policy; a real open failure still errors.
+        let guard = match self.get_connection() {
+            Ok(guard) => guard,
+            Err(ConnectError::Missing) => return Ok(None),
+            Err(e @ ConnectError::Open(_)) => return Err(e.to_string()),
+        };
         let conn = guard.conn();
 
         let conversation_query = r#"
@@ -571,6 +587,34 @@ mod tests {
         let svc = DatabaseService::new(dir.path().join("does_not_exist.db"));
         assert!(svc.get_recent_channels(10).expect("no error").is_empty());
         assert!(svc.get_top_users(10).expect("no error").is_empty());
+    }
+
+    // Regression (audit dash-rust-4): the dashboard-conversation read paths used
+    // to surface a missing DB as Err("Database not found") while the sibling
+    // panels treated it as empty state. They must now match the siblings: an
+    // empty list and Ok(None), NOT an Err.
+    #[test]
+    fn missing_db_yields_empty_conversations_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = DatabaseService::new(dir.path().join("does_not_exist.db"));
+        assert!(
+            svc.get_dashboard_conversations(50)
+                .expect("missing DB must not error for conversations")
+                .is_empty(),
+            "missing DB should yield an empty conversation list, not an error",
+        );
+    }
+
+    #[test]
+    fn missing_db_yields_none_conversation_detail_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = DatabaseService::new(dir.path().join("does_not_exist.db"));
+        assert!(
+            svc.get_dashboard_conversation_detail("any-id")
+                .expect("missing DB must not error for detail")
+                .is_none(),
+            "missing DB should yield Ok(None) for a conversation detail, not an error",
+        );
     }
 
     // ------- get_stats returns 0 on an empty (but present) ai_history (#2) -----

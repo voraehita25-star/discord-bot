@@ -261,25 +261,43 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if await _is_private_url(url):
                 raise ValueError(f"Refusing to fetch from private/internal IP for {host!r}")
         except ImportError:
-            # Fallback: keep the old behaviour rather than silently disable
-            # SSRF protection.
+            # Fallback: keep SSRF protection rather than silently disabling it.
+            # Resolve via getaddrinfo (NOT gethostbyname) so BOTH A and AAAA
+            # records are checked — gethostbyname returns only the first A record
+            # and never sees AAAA, so a host with a public A but a loopback/ULA
+            # AAAA would slip past and then be dialled over IPv6 by yt-dlp/ffmpeg.
+            # Reject if ANY resolved address is non-public, unwrapping
+            # IPv4-mapped IPv6 (::ffff:127.0.0.1) first — mirroring the shared
+            # resolver in utils.web.url_fetcher.
             import ipaddress
             import socket
 
             try:
-                ip_str = await loop.run_in_executor(None, socket.gethostbyname, host)
-                ip_obj = ipaddress.ip_address(ip_str)
-            except (socket.gaierror, ValueError) as exc:
+                infos = await loop.run_in_executor(
+                    None, lambda: socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+                )
+            except socket.gaierror as exc:
                 raise ValueError(f"Could not resolve hostname {host!r}: {exc}") from exc
-            if (
-                ip_obj.is_private
-                or ip_obj.is_loopback
-                or ip_obj.is_link_local
-                or ip_obj.is_multicast
-                or ip_obj.is_reserved
-                or ip_obj.is_unspecified
-            ):
-                raise ValueError(f"URL host {host!r} resolves to non-public IP {ip_str} — refusing")
+            for info in infos:
+                ip_str = info[4][0]
+                try:
+                    ip_obj = ipaddress.ip_address(ip_str)
+                except ValueError as exc:
+                    raise ValueError(f"Could not parse resolved IP {ip_str!r}: {exc}") from exc
+                # Unwrap IPv4-mapped IPv6 so ::ffff:127.0.0.1 is judged as 127.0.0.1.
+                if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+                    ip_obj = ip_obj.ipv4_mapped
+                if (
+                    ip_obj.is_private
+                    or ip_obj.is_loopback
+                    or ip_obj.is_link_local
+                    or ip_obj.is_multicast
+                    or ip_obj.is_reserved
+                    or ip_obj.is_unspecified
+                ):
+                    raise ValueError(
+                        f"URL host {host!r} resolves to non-public IP {ip_str} — refusing"
+                    )
 
         # Attempt 1: High Quality / Default (with runtime cookie check)
         try:
@@ -483,6 +501,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
             except (TimeoutError, yt_dlp.DownloadError) as exc:
                 logger.warning("Search fallback extraction failed: %s", exc)
                 return None
+        except Exception as exc:
+            # yt-dlp's extract_info can raise YoutubeDLError subclasses that are
+            # NOT DownloadError (ExtractorError, GeoRestrictedError) or a bare
+            # ValueError/KeyError from a hostile/third-party extractor. Those
+            # would otherwise propagate out and violate the documented dict|None
+            # contract — and the music cog's caller only handles
+            # DownloadError/ValueError, so an escapee would freeze the queue.
+            # Normalize to None like every other failure path here.
+            logger.warning("Search extraction failed unexpectedly: %s", exc)
+            return None
 
         if data is None:
             logger.warning("No data extracted from search query")

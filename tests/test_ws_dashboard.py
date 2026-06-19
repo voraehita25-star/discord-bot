@@ -11,6 +11,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import WSMessage, WSMsgType
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,79 @@ class FakeWS:
 
     def find(self, msg_type: str) -> list[dict]:
         return [m for m in self.sent if m.get("type") == msg_type]
+
+
+# ---------------------------------------------------------------------------
+# Helper: drive the REAL websocket_handler read loop
+# ---------------------------------------------------------------------------
+# The production rate-limit gate and the in-band "Authentication required"
+# gate live ONLY inside websocket_handler's `async for msg in ws` loop (and
+# its pre-auth deadline loop), NOT in handle_message. To exercise them without
+# re-implementing the gate, patch `web.WebSocketResponse` with this fake: its
+# ``prepare`` is a no-op, it records every ``send_json``, and it replays a
+# scripted list of frames both via ``__aiter__`` (the post-auth loop) and via
+# ``receive`` (the pre-auth deadline loop).
+class _HandlerWS:
+    """Fake server-side WebSocketResponse that replays scripted frames."""
+
+    def __init__(self, frames: list[WSMessage] | None = None):
+        self._frames = list(frames or [])
+        self.sent: list[dict] = []
+        self.closed = False
+        self.close_code: int | None = None
+
+    async def prepare(self, _request) -> None:
+        return None
+
+    async def send_json(self, data: dict) -> None:
+        self.sent.append(data)
+
+    async def close(self, *, code: int = 1000, message: bytes = b"") -> None:
+        self.closed = True
+        self.close_code = code
+
+    async def receive(self, *_a, **_k):
+        # Pre-auth deadline loop pulls frames one at a time via receive().
+        if self._frames:
+            return self._frames.pop(0)
+        return WSMessage(WSMsgType.CLOSE, None, None)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> WSMessage:
+        if not self._frames:
+            raise StopAsyncIteration
+        return self._frames.pop(0)
+
+    def find(self, msg_type: str) -> list[dict]:
+        return [m for m in self.sent if m.get("type") == msg_type]
+
+    def exception(self):  # pragma: no cover - only hit on ERROR frames
+        return RuntimeError("stub")
+
+
+def _text(payload: str) -> WSMessage:
+    """Build a TEXT frame the handler will json.loads()."""
+    return WSMessage(WSMsgType.TEXT, payload, None)
+
+
+def _localhost_request(*, auth_header: str = "") -> MagicMock:
+    """A mock aiohttp request that passes the origin/host localhost gate.
+
+    Pass ``auth_header`` (e.g. ``"Bearer secret123"``) to authenticate at
+    upgrade time, which skips the in-band auth deadline loop and lands the
+    handler directly in the post-auth ``async for`` read loop.
+    """
+    request = MagicMock()
+    request.headers = {"Origin": "http://localhost:3000", "Host": "localhost:8765"}
+    if auth_header:
+        request.headers["Authorization"] = auth_header
+    request.query = {}
+    transport = MagicMock()
+    transport.get_extra_info.return_value = ("127.0.0.1", 12345)
+    request.transport = transport
+    return request
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +191,61 @@ class TestAuth:
         errors = ws.find("error")
         assert len(errors) == 1
 
+    @pytest.mark.asyncio
+    async def test_privileged_frame_before_auth_refused(self, server):
+        """With a token required, a PRIVILEGED frame sent before any in-band
+        auth message must be refused ('Authentication required') and must NOT
+        reach a handler — exercises websocket_handler's pre-auth gate."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        # delete_conversation is a privileged write; send it with no prior auth.
+        handler_ws = _HandlerWS([_text('{"type": "delete_conversation", "id": "x"}')])
+        server.handle_message = AsyncMock()
+        server.handle_delete_conversation = AsyncMock()
+        server._auth_deadline = 0.5  # keep the deadline loop short
+
+        with (
+            patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}),
+            patch.object(ws_module.web, "WebSocketResponse", return_value=handler_ws),
+        ):
+            await server.websocket_handler(_localhost_request())
+
+        # Refused at the pre-auth gate, connection closed, handler never ran.
+        assert any(
+            "Authentication required" in e.get("message", "") for e in handler_ws.find("error")
+        )
+        assert handler_ws.closed
+        assert handler_ws.close_code == 4001
+        server.handle_message.assert_not_awaited()
+        server.handle_delete_conversation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_privileged_frame_after_valid_auth_succeeds(self, server):
+        """After a valid in-band auth frame, the same privileged frame is
+        dispatched to its handler."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        handler_ws = _HandlerWS(
+            [
+                _text('{"type": "auth", "token": "secret123"}'),
+                _text('{"type": "delete_conversation", "id": "x"}'),
+            ]
+        )
+        server.handle_message = AsyncMock()
+
+        with (
+            patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}),
+            patch.object(ws_module.web, "WebSocketResponse", return_value=handler_ws),
+        ):
+            await server.websocket_handler(_localhost_request())
+
+        # No auth error, and the privileged frame reached the dispatcher.
+        assert not [
+            e for e in handler_ws.find("error") if "Authentication required" in e.get("message", "")
+        ]
+        server.handle_message.assert_awaited_once()
+        assert server.handle_message.await_args.args[1]["type"] == "delete_conversation"
+
 
 # ===================================================================
 # Ping / Pong
@@ -169,7 +298,12 @@ class TestMessageRouting:
 # Rate Limiting
 # ===================================================================
 class TestRateLimiting:
-    """Test per-client rate limiting (30 msg/min)."""
+    """Test per-client rate limiting (RATE_LIMIT_MESSAGES_PER_MINUTE msg/min).
+
+    The live threshold is the production constant (currently 120, asserted in
+    test_limits_constants); tests derive the frame count from it rather than a
+    hard-coded number so the docstring + assertions can't drift from source.
+    """
 
     @pytest.mark.asyncio
     async def test_under_rate_limit(self, server, ws):
@@ -181,17 +315,55 @@ class TestRateLimiting:
 
     @pytest.mark.asyncio
     async def test_rate_limit_enforced_in_handler_loop(self, server):
-        """Simulating rate limit by pre-filling message times."""
-        FakeWS()
-        client_id = "rate-test"
-        # Pre-fill with 30 recent timestamps (simulating burst)
-        now = asyncio.get_event_loop().time()
-        server._client_message_times[client_id] = [now - i for i in range(30)]
-        # The rate limit check is in websocket_handler loop, not handle_message.
-        # But we can test the tracking dict directly.
-        times = server._client_message_times[client_id]
-        recent = [t for t in times if now - t < 60]
-        assert len(recent) == 30  # At limit
+        """Drive the REAL gate in websocket_handler: the (N+1)th non-exempt
+        frame within the window must yield a 'Rate limit' error and must NOT
+        be dispatched to handle_message."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        limit = server.RATE_LIMIT_MESSAGES_PER_MINUTE
+        # "new_conversation" is NOT in RATE_EXEMPT_MESSAGE_TYPES and is
+        # dispatched synchronously via handle_message (not the create_task
+        # path reserved for "message"/"ai_edit_message"), so spying on
+        # handle_message proves what did/didn't reach a handler.
+        frames = [_text('{"type": "new_conversation"}') for _ in range(limit + 1)]
+        handler_ws = _HandlerWS(frames)
+        server.handle_message = AsyncMock()
+
+        # Authenticate at upgrade time so the handler reaches the post-auth
+        # read loop (where the rate-limit gate lives) directly.
+        with (
+            patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}),
+            patch.object(ws_module.web, "WebSocketResponse", return_value=handler_ws),
+        ):
+            await server.websocket_handler(_localhost_request(auth_header="Bearer secret123"))
+
+        # Exactly one Rate-limit error frame (the N+1th), and only N frames
+        # ever reached the handler — the production gate dropped the overflow.
+        errors = [e for e in handler_ws.find("error") if "Rate limit" in e.get("message", "")]
+        assert len(errors) == 1
+        assert errors[0].get("scope") == "new_conversation"
+        assert server.handle_message.await_count == limit
+
+    @pytest.mark.asyncio
+    async def test_exempt_types_not_rate_limited(self, server):
+        """Read-only RATE_EXEMPT types (e.g. ping) bypass the gate even past
+        the limit — confirms the gate's exemption branch is exercised, not a
+        blanket throttle."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        limit = server.RATE_LIMIT_MESSAGES_PER_MINUTE
+        frames = [_text('{"type": "ping"}') for _ in range(limit + 5)]
+        handler_ws = _HandlerWS(frames)
+
+        with (
+            patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}),
+            patch.object(ws_module.web, "WebSocketResponse", return_value=handler_ws),
+        ):
+            await server.websocket_handler(_localhost_request(auth_header="Bearer secret123"))
+
+        # Every ping answered with a pong; no rate-limit error fired.
+        assert len(handler_ws.find("pong")) == limit + 5
+        assert not [e for e in handler_ws.find("error") if "Rate limit" in e.get("message", "")]
 
 
 # ===================================================================

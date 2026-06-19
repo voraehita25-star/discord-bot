@@ -284,6 +284,59 @@ func requireBearerToken(expected string) func(http.Handler) http.Handler {
 	}
 }
 
+// requireReadToken builds middleware for the READ endpoints (/metrics, /stats)
+// that mirrors the Python sibling's posture (utils/monitoring/health_api.py
+// _PROTECTED_ENDPOINTS includes /metrics and /stats). It enforces the bearer
+// token ONLY when one is configured: with a token set, /metrics + /stats are
+// no longer served anonymously (closing the auth-parity gap with Python); with
+// no token set, reads stay anonymous so the default tokenless Prometheus scrape
+// keeps working — go-health-1's bind gate keeps that case loopback-only.
+//
+// This is deliberately NOT requireBearerToken: writes must stay fail-CLOSED
+// (503 when no token), but a tokenless deploy must still be able to scrape
+// /metrics on loopback, so reads degrade to anonymous instead of 503.
+// The /health* probes are intentionally NOT wrapped — the Python health
+// poller fetches GO_HEALTH_API_URL (/health) with no Authorization header,
+// and Kubernetes-style liveness/readiness probes need them unauthenticated.
+func requireReadToken(expected string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if expected == "" {
+			// No token configured: reads are anonymous (loopback-only via the
+			// bind gate). Return next unwrapped so there's zero per-request cost.
+			return next
+		}
+		// A token is configured — require it, reusing the same constant-time
+		// bearer check as the write endpoints.
+		return requireBearerToken(expected)(next)
+	}
+}
+
+// isTruthy reports whether an env value should be treated as "on". Stricter
+// than the Python sibling's "any non-empty string is truthy" (health_api.py
+// :102-104): only an explicit affirmative opens the gate, so a stray
+// HEALTH_API_ALLOW_REMOTE=0 / false / no does NOT accidentally allow a
+// non-loopback bind. Anything unrecognized is treated as false (fail-safe).
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// isLoopbackHost reports whether bindHost is a loopback address that is safe to
+// bind without HEALTH_API_ALLOW_REMOTE. Matches the Python sibling's
+// _LOCALHOST_ADDRESSES set (health_api.py:77) plus the bracketed-IPv6 form.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "127.0.0.1", "localhost", "::1", "[::1]":
+		return true
+	default:
+		return false
+	}
+}
+
 // safeLabel returns value only if it's in the allowed set for that label key,
 // otherwise returns "other".
 func safeLabel(key, value string) string {
@@ -348,6 +401,16 @@ func (h *HealthService) handleMetricsPush(w http.ResponseWriter, r *http.Request
 		// will silently corrupt the metric (any subsequent Add becomes
 		// NaN-poisoned). Reject all three up-front. Note: `value < 0`
 		// is `false` for NaN, so we have to check NaN/Inf explicitly.
+		//
+		// DEFENSE-IN-DEPTH NOTE (go-health-3): the NaN/Inf arms are
+		// currently UNREACHABLE via this HTTP path — encoding/json rejects
+		// NaN/Infinity/overflow/quoted-number bodies before the switch runs,
+		// so every such request already returns 400 "invalid JSON". They are
+		// kept (not deleted) so that if a future non-JSON ingestion path is
+		// ever wired to this validation it stays poison-proof. The predicate
+		// itself is locked by TestNaNInfGuardLogic in main_test.go (which
+		// exercises the guard condition directly, bypassing the decoder). The
+		// `value < 0` arm IS reachable and is the live, tested protection.
 		if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) || payload.Value < 0 {
 			http.Error(w, "counter value must be non-negative finite", http.StatusBadRequest)
 			return
@@ -520,46 +583,12 @@ func (h *HealthService) handleMetricsBatch(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func main() {
-	port := os.Getenv("GO_HEALTH_API_PORT")
-	if port == "" {
-		legacyPort := os.Getenv("HEALTH_API_PORT")
-		if legacyPort != "" && legacyPort != "8080" {
-			port = legacyPort
-		} else {
-			port = defaultPort
-		}
-	}
-
-	// Default to localhost binding for security (prevent unauthenticated external access)
-	bindHost := os.Getenv("GO_HEALTH_API_HOST")
-	if bindHost == "" {
-		bindHost = os.Getenv("HEALTH_API_HOST")
-	}
-	if bindHost == "" {
-		bindHost = "127.0.0.1"
-	}
-
-	version := os.Getenv("BOT_VERSION")
-	if version == "" {
-		version = "dev"
-	}
-
-	// Bearer token for write endpoints. Empty = writes are rejected entirely.
-	// Read once at startup so a later env mutation can't sneak in a weaker
-	// value while the server is running.
-	authToken := os.Getenv("HEALTH_API_TOKEN")
-	if authToken == "" {
-		log.Println("WARNING: HEALTH_API_TOKEN not set — write endpoints (/health/service, /metrics/push, /metrics/batch) will refuse all requests")
-	}
-
-	healthService := NewHealthService(version)
-
-	// Initialize default services
-	healthService.SetServiceStatus("bot", true)
-	healthService.SetServiceStatus("database", true)
-	healthService.SetServiceStatus("gemini_api", true)
-
+// buildRouter wires the chi router: middleware, read endpoints and the
+// token-gated write Group. Extracted from main() so the same wiring (and thus
+// the security-critical middleware-to-route binding) can be exercised by an
+// httptest integration test (TestRouterAuthWiring) instead of being reachable
+// only by running the whole binary.
+func buildRouter(healthService *HealthService, authToken string) chi.Router {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -579,10 +608,18 @@ func main() {
 		})
 	})
 
-	// Prometheus metrics endpoint
-	r.Handle("/metrics", promhttp.Handler())
+	// Prometheus metrics endpoint. Gated by requireReadToken: when
+	// HEALTH_API_TOKEN is set the full Prometheus surface (token counts, cache
+	// ratios, AI latency histograms, circuit-breaker states, ...) requires the
+	// bearer token, matching the Python sibling's _PROTECTED_ENDPOINTS; when no
+	// token is set it stays anonymous so the default loopback scrape works.
+	r.With(requireReadToken(authToken)).Handle("/metrics", promhttp.Handler())
 
-	// Health check endpoints
+	// Health check endpoints. These probes (/health, /health/live,
+	// /health/ready) are intentionally anonymous: the Python health poller
+	// fetches /health with no Authorization header, and liveness/readiness
+	// probes must not require a token. Only /metrics and /stats (which expose
+	// the richer telemetry/version surface) are token-gated above/below.
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
@@ -634,8 +671,10 @@ func main() {
 		r.Post("/metrics/batch", healthService.handleMetricsBatch)
 	}) // end auth-protected Group
 
-	// Stats summary
-	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
+	// Stats summary. Token-gated like /metrics (see requireReadToken): the JSON
+	// body exposes version, uptime, service names and memory/goroutine/GC
+	// figures, which the Python sibling treats as a protected endpoint.
+	r.With(requireReadToken(authToken)).Get("/stats", func(w http.ResponseWriter, r *http.Request) {
 		// GetStatus() does its own fresh runtime.ReadMemStats for the JSON
 		// body, and the background collector already refreshes the Prometheus
 		// gauges every 10s — so calling collectSystemMetrics() here was a
@@ -647,6 +686,71 @@ func main() {
 			log.Printf("Failed to encode stats response: %v", err)
 		}
 	})
+
+	return r
+}
+
+func main() {
+	port := os.Getenv("GO_HEALTH_API_PORT")
+	if port == "" {
+		legacyPort := os.Getenv("HEALTH_API_PORT")
+		if legacyPort != "" && legacyPort != "8080" {
+			port = legacyPort
+		} else {
+			port = defaultPort
+		}
+	}
+
+	// Default to localhost binding for security (prevent unauthenticated external access)
+	bindHost := os.Getenv("GO_HEALTH_API_HOST")
+	if bindHost == "" {
+		bindHost = os.Getenv("HEALTH_API_HOST")
+	}
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
+
+	// Accidental-exposure gate, mirroring the Python sibling
+	// (utils/monitoring/health_api.py:102-112) and the env.example footgun
+	// note: a non-loopback bindHost is forced back to 127.0.0.1 UNLESS
+	// HEALTH_API_ALLOW_REMOTE is explicitly truthy. HEALTH_API_HOST is shared
+	// with the Python service, so without this gate an operator who set
+	// HEALTH_API_HOST=0.0.0.0 (+ALLOW_REMOTE) to expose the Python server would
+	// unknowingly also expose this Go sidecar's anonymous read endpoints to all
+	// interfaces. 127.0.0.1 stays the fail-safe default.
+	if !isLoopbackHost(bindHost) && !isTruthy(os.Getenv("HEALTH_API_ALLOW_REMOTE")) {
+		log.Printf(
+			"WARNING: health host %q is not loopback — forcing bind to 127.0.0.1. "+
+				"Set HEALTH_API_ALLOW_REMOTE=1 to opt into remote binding.",
+			bindHost,
+		)
+		bindHost = "127.0.0.1"
+	}
+
+	version := os.Getenv("BOT_VERSION")
+	if version == "" {
+		version = "dev"
+	}
+
+	// Bearer token for write endpoints. Empty = writes are rejected entirely.
+	// Read once at startup so a later env mutation can't sneak in a weaker
+	// value while the server is running.
+	authToken := os.Getenv("HEALTH_API_TOKEN")
+	if authToken == "" {
+		log.Println("WARNING: HEALTH_API_TOKEN not set — write endpoints (/health/service, /metrics/push, /metrics/batch) will refuse all requests")
+	}
+
+	healthService := NewHealthService(version)
+
+	// Initialize default services
+	healthService.SetServiceStatus("bot", true)
+	healthService.SetServiceStatus("database", true)
+	healthService.SetServiceStatus("gemini_api", true)
+
+	// Build the router. Extracted into buildRouter so main_test.go can wire the
+	// REAL router (same middleware-to-route binding) and assert the auth
+	// boundary as a tested invariant — see TestRouterAuthWiring.
+	r := buildRouter(healthService, authToken)
 
 	// Prime the cached MemStats snapshot so the first /health|/stats request
 	// (which reads the cache, not a live STW read) has real numbers before the

@@ -278,6 +278,31 @@ _SECRET_PATTERNS_CS = re.compile(
 # Backward-compat alias used by callers that import the symbol directly.
 _SECRET_PATTERNS = _SECRET_PATTERNS_CI
 
+# Webhook URLs (Discord/Slack) — the path token grants full send access to the
+# channel, so it is a real secret. These have no key=/sk- style prefix, so the
+# patterns above miss them. Capture everything up to and including the final '/'
+# before the token and redact ONLY the token, keeping the URL shape visible so a
+# log reader can still tell which webhook class leaked.
+_WEBHOOK_TOKEN_PATTERN = re.compile(
+    # Optional scheme (http:// AND https:// both grant send access) and an
+    # optional leading subdomain (canary./ptb./ptb. discord, etc.) so those
+    # variants don't leak the token. The captured group keeps the URL shape.
+    # The subdomain run is bounded to a 63-char DNS label ({1,63}) — an
+    # unbounded ``+`` here caused catastrophic backtracking (quadratic time) on
+    # long no-whitespace tokens, a ReDoS on the hot per-log-line redaction path.
+    r"((?:https?://)?(?:[a-z0-9-]{1,63}\.)?(?:discord(?:app)?|slack)\.com/api/webhooks/[^/\s?#]+/)"
+    r"[^/\s?#]+",
+    re.IGNORECASE,
+)
+
+# URL userinfo credentials (``scheme://user:password@host``) — DB / proxy /
+# connection strings logged at WARNING/ERROR otherwise leak the password.
+# Preserve the ``://user:`` prefix and the ``@`` so the host stays readable;
+# redact only the password component between them.
+# Username is zero-or-more so password-only userinfo (``redis://:pass@host``)
+# still has its password redacted.
+_URL_USERINFO_PATTERN = re.compile(r"(://[^/\s:@]*:)[^/\s@]+(@)")
+
 
 def _redact_sensitive(value: str) -> str:
     """Redact patterns in `value` that look like secrets.
@@ -290,11 +315,17 @@ def _redact_sensitive(value: str) -> str:
     (AWS ``AKIA``/GitHub ``gh[pos]_`` — these have fixed-case prefixes,
     so a case-insensitive match falsely flagged english text containing
     "akia" or lowercase identifiers).
+
+    Also redacts webhook URL path tokens and URL-embedded passwords
+    (``user:pass@host``) — neither carries a keyword/prefix the pattern sets
+    above key on, so they would otherwise leak verbatim.
     """
     if not isinstance(value, str):
         return value
     redacted = _SECRET_PATTERNS_CI.sub("[REDACTED]", value)
     redacted = _SECRET_PATTERNS_CS.sub("[REDACTED]", redacted)
+    redacted = _WEBHOOK_TOKEN_PATTERN.sub(r"\1[REDACTED]", redacted)
+    redacted = _URL_USERINFO_PATTERN.sub(r"\1[REDACTED]\2", redacted)
     return redacted
 
 
@@ -315,6 +346,30 @@ class SensitiveDataFilter(logging.Filter):
                 )
         if isinstance(record.msg, str):
             record.msg = _redact_sensitive(record.msg)
+        # The per-field passes above redact the template (record.msg) and each
+        # arg INDEPENDENTLY, before the logging machinery interpolates msg % args.
+        # The keyword branch of the regex only fires when a keyword sits
+        # immediately before the value in the SAME string, so the dominant idiom
+        # ``logger.info("api_key=%s", secret)`` slips through: the template has no
+        # value and the bare arg has no keyword prefix. Redact the FULLY-RENDERED
+        # message as well so a secret that only becomes keyword-adjacent after
+        # interpolation is still scrubbed; collapse to a plain string and drop
+        # args so downstream formatters emit the redacted text. The per-field
+        # passes stay as defense-in-depth (e.g. if getMessage() ever raises).
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            rendered = None
+        if isinstance(rendered, str):
+            redacted_rendered = _redact_sensitive(rendered)
+            # Only collapse msg+args when the rendered-message pass actually
+            # redacted something the per-field passes missed. When nothing
+            # changed, leave record.args intact so downstream/third-party
+            # handlers that introspect record.args still see the (already
+            # per-field-redacted) values rather than None.
+            if redacted_rendered != rendered:
+                record.msg = redacted_rendered
+                record.args = None
         # Scrub exception tracebacks too — secrets in exception messages would
         # otherwise leak through every handler's formatException(). Render the
         # traceback once into record.exc_text (which standard formatters reuse

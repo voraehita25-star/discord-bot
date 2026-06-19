@@ -138,6 +138,22 @@ def extract_from_payload(payload: dict[Any, Any]) -> ExtractedDocument | None:
         )
         return None
 
+    # Sanitise the PERSISTED filename. It is stored verbatim and later emitted
+    # as a Markdown header line ``## {filename}`` (and ``- {fn}``) by
+    # build_user_context, re-injected into the prompt on every future turn. The
+    # raw payload name is fully attacker-controlled, so an embedded newline + a
+    # line like ``# Current user message`` / ``Assistant: ...`` would spoof a
+    # whole prompt section (a strictly stronger injection than the body text).
+    # Collapse CR/LF + strip C0/DEL controls, then mirror _save_inline_documents'
+    # charset allowlist (dashboard_chat_claude_cli) so '#'/newlines and other
+    # prompt-structure characters cannot survive into the stored name. Done here
+    # so BOTH consumers of the document payload produce an injection-safe name.
+    name = re.sub(r"[\r\n]+", " ", name)
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    name = re.sub(r"[^A-Za-z0-9._\- ]", "_", name).strip()
+    if not name:
+        name = "document"
+
     try:
         if ext == ".pdf":
             return _extract_pdf(name, data_field)

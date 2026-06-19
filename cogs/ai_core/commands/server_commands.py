@@ -400,8 +400,12 @@ async def cmd_delete_channel(
     if channel is None:
         matches = [ch for ch in guild.channels if ch.name.lower() == name.lower()]
         if len(matches) > 1:
+            # ACTION-ABORTING bail: nothing is deleted. Prefix ❌ (in addition to
+            # the ⚠️ warning text) so _TeeChannel.failure() in tool_executor
+            # records it and the model receives the failure — NOT the optimistic
+            # "Requested deletion …" success (audit py-aicore-tools-3).
             await origin_channel.send(
-                f"⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                f"❌ ⚠️ พบช่องชื่อ **{name}** จำนวน {len(matches)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
                 allowed_mentions=_NO_MENTIONS,
             )
             return
@@ -545,8 +549,11 @@ async def cmd_delete_role(
         # Check for duplicate names
         matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
         if len(matches) > 1:
+            # ACTION-ABORTING bail: nothing is deleted. Prefix ❌ so the model
+            # gets the failure instead of an optimistic "Requested deletion …"
+            # (audit py-aicore-tools-3).
             await origin_channel.send(
-                f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
                 allowed_mentions=_NO_MENTIONS,
             )
             return
@@ -598,8 +605,11 @@ async def cmd_add_role(
     # the bot, not the wrong one below it). Ask for a role ID to disambiguate.
     role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
     if len(role_matches) > 1:
+        # ACTION-ABORTING bail: no role is added. Prefix ❌ so the model gets the
+        # failure instead of an optimistic "Requested adding role …" (audit
+        # py-aicore-tools-3).
         await origin_channel.send(
-            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+            f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
             allowed_mentions=_NO_MENTIONS,
         )
         return
@@ -711,8 +721,11 @@ async def cmd_remove_role(
     # same-named role. Ask for a role ID to disambiguate.
     role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
     if len(role_matches) > 1:
+        # ACTION-ABORTING bail: no role is removed. Prefix ❌ so the model gets
+        # the failure instead of an optimistic "Requested removing role …"
+        # (audit py-aicore-tools-3).
         await origin_channel.send(
-            f"⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+            f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
             allowed_mentions=_NO_MENTIONS,
         )
         return
@@ -733,8 +746,11 @@ async def cmd_remove_role(
             # Surface ambiguity instead of silently failing — same UX as
             # cmd_add_role above. Otherwise the AI tool gets a generic
             # "user not found" and may try to create a duplicate operation.
+            # ACTION-ABORTING bail: no role is removed. Prefix ❌ so the model
+            # gets the failure instead of an optimistic "Requested removing
+            # role …" (audit py-aicore-tools-3).
             await origin_channel.send(
-                f"⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน กรุณาระบุให้ชัดเจน",
+                f"❌ ⚠️ พบผู้ใช้ที่ตรงกับ **{user_name}** จำนวน {len(matches)} คน กรุณาระบุให้ชัดเจน",
                 allowed_mentions=_NO_MENTIONS,
             )
             return
@@ -844,8 +860,11 @@ async def cmd_set_channel_perm(
         except TypeError:
             same_name = []
         if len(same_name) > 1:
+            # ACTION-ABORTING bail: no overwrite is set. Prefix ❌ so the model
+            # gets the failure instead of an optimistic "Requested setting
+            # channel permission …" (audit py-aicore-tools-3).
             await origin_channel.send(
-                f"⚠️ พบช่องชื่อ **{channel_name}** จำนวน {len(same_name)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                f"❌ ⚠️ พบช่องชื่อ **{channel_name}** จำนวน {len(same_name)} ห้อง! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
                 allowed_mentions=_NO_MENTIONS,
             )
             return
@@ -1309,13 +1328,22 @@ async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
     if limit < 1 or limit > 100:
         limit = 10  # Default to 10 if invalid
 
-    target_channel = discord.utils.get(guild.text_channels, name=target_name)
+    # Resolve ID-FIRST (then name fallback) to match the executor's read_channel
+    # gate (tools/tool_executor.py), which validates the caller's permission on
+    # the ID-resolved channel and passes that ID through here. Resolving name-first
+    # here diverged from the gate: a channel literally NAMED with another channel's
+    # snowflake string could make this handler read a DIFFERENT channel than the
+    # gate validated (audit py-aicore-tools-2). The in-handler permission re-check
+    # below still fails closed on whatever resolves, but aligning the order removes
+    # the gate/action mismatch entirely. _safe_int (not isdigit()+int()) so a
+    # Unicode-digit name like "²²²" falls through to the name match instead of
+    # raising; max_digits=20 bounds it to the snowflake range like the gate does.
+    target_channel = None
+    _cid = _safe_int(target_name, max_digits=20)
+    if _cid is not None:
+        target_channel = guild.get_channel(_cid)
     if not target_channel:
-        # ID fallback — _safe_int (not isdigit()+int()) so a Unicode-digit name
-        # falls through to the name match instead of raising ValueError here.
-        _cid = _safe_int(target_name)
-        if _cid is not None:
-            target_channel = guild.get_channel(_cid)
+        target_channel = discord.utils.get(guild.text_channels, name=target_name)
 
     if target_channel:
         # Privacy: only let the user read messages from a channel they

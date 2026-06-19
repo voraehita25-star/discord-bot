@@ -21,14 +21,23 @@ export const VIRT_WINDOW_SIZE = 100;
 
 // Hoisted to module scope so the Set + closure are allocated once, not per
 // rendered message (renderSingleMessage runs across the whole virtual window).
-const ALLOWED_IMG_HOSTS = new Set([
-    'cdn.discordapp.com',
-    'media.discordapp.net',
-    'i.imgur.com',
-    'images.unsplash.com',
-]);
+//
+// EMPTY by design: the packaged CSP is `img-src 'self' data: blob:` (no https
+// host) in BOTH tauri.conf.json and ui/index.html, so any remote https image is
+// blocked by the browser at load regardless of what this JS filter allows.
+// Previously this listed four CDN hosts (cdn.discordapp.com, media.discordapp.net,
+// i.imgur.com, images.unsplash.com), which let those URLs pass the filter and be
+// emitted as <img>, then silently fail under CSP — a "valid but invisible" broken
+// image. Narrowed to match the CSP so we never emit an image the runtime can't
+// render. To actually display remote images, widen img-src in BOTH CSP locations
+// first, then re-add the hosts here. CSP remains the authoritative (stricter) gate.
+const ALLOWED_IMG_HOSTS = new Set<string>([]);
 
 function isAllowedExternalImage(url: string): boolean {
+    // Keep the strict scheme rejection: only https is ever a candidate (http:,
+    // data:, javascript: are rejected here — data:image/ non-SVG is accepted by
+    // the caller separately). With ALLOWED_IMG_HOSTS empty this returns false for
+    // every https URL, matching the CSP img-src that has no https host.
     if (!url.startsWith('https://')) return false;
     try {
         return ALLOWED_IMG_HOSTS.has(new URL(url).hostname.toLowerCase());

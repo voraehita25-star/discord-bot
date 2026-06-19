@@ -1319,6 +1319,8 @@ class TestSaveQueueJsonSyncBranches:
         assert not existing.exists()
 
     def test_write_oserror_cleans_temp(self, tmp_path):
+        import os as _os
+
         cog, _ = _make_cog()
         gid = 11
         from cogs.music import cog as cogmod
@@ -1329,16 +1331,21 @@ class TestSaveQueueJsonSyncBranches:
         def boom(self, *a, **k):
             raise OSError("disk full")
 
-        # Pre-create a temp file so the cleanup unlink path runs.
-        tmp_file = tmp_path / f"data_queue_{gid}.json.tmp"
-
         def fake_path(arg, *a, **k):
             return tmp_path / str(arg).replace("/", "_")
 
+        # The save path makes a unique temp file via tempfile.mkstemp; pin it to
+        # a known path so the cleanup unlink runs deterministically. The mkstemp
+        # name is chosen so fake_path maps it back onto tmp_file.
+        tmp_file = tmp_path / f"data_queue_{gid}.json.tmp"
+        fd = _os.open(tmp_file, _os.O_CREAT | _os.O_WRONLY)
+
         with patch.object(cogmod, "Path", side_effect=fake_path):
-            tmp_file.write_text("partial")
-            with patch.object(cogmod.Path, "write_text", boom):
-                cog._save_queue_json_sync(gid, snapshot=snap)
+            with patch.object(
+                cogmod.tempfile, "mkstemp", return_value=(fd, f"data/queue_{gid}.json.tmp")
+            ):
+                with patch.object(cogmod.Path, "write_text", boom):
+                    cog._save_queue_json_sync(gid, snapshot=snap)
         # temp file cleaned up
         assert not tmp_file.exists()
 
