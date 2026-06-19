@@ -86,6 +86,9 @@ test.describe('Dashboard UI deep inspection', () => {
     });
 
     test('every nav page loads without console errors', async ({ page }) => {
+        // Snapshot the count so we only assert on console/runtime entries this
+        // test produced (findings[] is shared across the whole suite).
+        const baseFindingCount = findings.length;
         attachLogging(page, '<bootstrap>');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
@@ -101,6 +104,18 @@ test.describe('Dashboard UI deep inspection', () => {
             }, navPage);
             expect(visible, `${navPage} page should be active after click`).toBe(true);
         }
+
+        // Enforce the "without console errors" half of the test name: any console
+        // error / runtime exception / network failure raised during navigation
+        // must fail CI, not just land in the JSON report. Filter the same
+        // mock-environment noise the other suites tolerate.
+        const consoleNoise = ['Failed to load resource', 'WebSocket', "'frame-ancestors' is ignored"];
+        const newErrors = findings
+            .slice(baseFindingCount)
+            .filter((f) => f.kind === 'console-error' || f.kind === 'js-runtime' || f.kind === 'network-failure')
+            .filter((f) => !consoleNoise.some((n) => f.detail.includes(n)))
+            .map((f) => `[${f.kind}] ${f.page}: ${f.detail}`);
+        expect(newErrors, newErrors.join('\n')).toEqual([]);
     });
 
     test('chat page: input, send, conversation list', async ({ page }) => {
@@ -201,6 +216,7 @@ test.describe('Dashboard UI deep inspection', () => {
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
 
+        const layoutFindings: string[] = [];
         for (const w of [1280, 1024, 800]) {
             await page.setViewportSize({ width: w, height: 800 });
             await page.waitForTimeout(150);
@@ -247,6 +263,8 @@ test.describe('Dashboard UI deep inspection', () => {
                     return { overflow: worst.right - vw, culprit: { ...worst, viewport: vw } };
                 });
                 if (result.overflow > 1) {
+                    const detail = `${navPage}@${w}px overflow ${result.overflow}px — culprit: ${JSON.stringify(result.culprit)}`;
+                    layoutFindings.push(detail);
                     findings.push({
                         page: `${navPage}@${w}px`,
                         kind: 'layout',
@@ -255,6 +273,10 @@ test.describe('Dashboard UI deep inspection', () => {
                 }
             }
         }
+        // Gate CI on the real invariant: no element extends past the viewport at
+        // any supported width. Previously this only recorded findings and always
+        // passed, so a layout-overflow regression slipped through.
+        expect(layoutFindings, layoutFindings.join('\n')).toEqual([]);
     });
 
     test('image elements never have empty src that flashes broken-image', async ({ page }) => {
@@ -262,6 +284,7 @@ test.describe('Dashboard UI deep inspection', () => {
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
 
+        const brokenImages: string[] = [];
         for (const navPage of PAGES) {
             await page.click(`[data-page="${navPage}"]`);
             await page.waitForTimeout(150);
@@ -274,6 +297,7 @@ test.describe('Dashboard UI deep inspection', () => {
                     .map((img) => img.outerHTML.slice(0, 200)),
             );
             for (const b of broken) {
+                brokenImages.push(`${navPage}: ${b}`);
                 findings.push({
                     page: navPage,
                     kind: 'broken-image',
@@ -281,6 +305,9 @@ test.describe('Dashboard UI deep inspection', () => {
                 });
             }
         }
+        // Assert the invariant the test name promises (mirrors dashboard-smoke):
+        // an <img src=""> is the broken-image flash this guards against.
+        expect(brokenImages, brokenImages.join('\n')).toEqual([]);
     });
 
     test('focus-visible ring is rendered on keyboard-focused interactive elements', async ({ page }) => {
@@ -308,6 +335,9 @@ test.describe('Dashboard UI deep inspection', () => {
                 detail: 'No outline / box-shadow on keyboard-focused element after Tab',
             });
         }
+        // A removed focus ring is a real a11y regression — gate CI on it
+        // instead of only recording a finding.
+        expect(ringDetected, 'no focus ring after Tab').toBe(true);
     });
 
     test('every nav button has accessible name', async ({ page }) => {
@@ -332,6 +362,9 @@ test.describe('Dashboard UI deep inspection', () => {
                 detail: `nav button without accessible name: ${n}`,
             });
         }
+        // A nav button without an accessible name is an a11y regression — assert,
+        // don't just record (mirrors the icon-button check in e2e_smoke.test.ts).
+        expect(navIssues, navIssues.join('\n')).toEqual([]);
     });
 
     test('toast container z-index is above all modals', async ({ page }) => {
@@ -356,6 +389,9 @@ test.describe('Dashboard UI deep inspection', () => {
                 detail: 'toast-container z-index is not above modals — toast gets hidden behind dialogs',
             });
         }
+        // Gate CI on the named invariant (mirrors dashboard-smoke): a toast that
+        // drops below modal z-index would otherwise be silently recorded.
+        expect(ok, 'toast z-index not above modals').toBe(true);
     });
 
     test.afterAll(async () => {

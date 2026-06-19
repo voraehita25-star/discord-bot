@@ -67,9 +67,18 @@ func init() {
 		"255.255.255.255/32",     // Broadcast
 		"224.0.0.0/4",            // Multicast (parity with Python blocklist)
 		"240.0.0.0/4",            // Reserved/future (parity with Python blocklist)
+		"::/128",                 // IPv6 unspecified (parity with Python ::/128 + is_unspecified)
 		"::1/128",                // IPv6 loopback
 		"fc00::/7",               // IPv6 unique local
 		"fe80::/10",              // IPv6 link-local
+		"64:ff9b::/96",           // NAT64 well-known prefix (embeds IPv4; e.g. 127.0.0.1/metadata)
+		"64:ff9b:1::/48",         // NAT64 local-use prefix (RFC 8215; also embeds IPv4 — parity with Python is_reserved)
+		"2002::/16",              // 6to4 (embeds IPv4; parity with Python is_private)
+		"100::/64",               // Discard-only address block (RFC 6666; parity with Python is_private)
+		"2001::/23",              // IETF protocol assignments incl. Teredo 2001::/32 (embeds IPv4 endpoint — parity with Python is_private)
+		"2001:db8::/32",          // Documentation (parity with Python is_private)
+		"3fff::/20",              // Documentation, RFC 9637 (parity with Python is_reserved)
+		"5f00::/16",              // Segment Routing SRv6 reserved (parity with Python is_reserved)
 		"::ffff:127.0.0.0/104",   // IPv4-mapped loopback
 		"::ffff:10.0.0.0/104",    // IPv4-mapped private A
 		"::ffff:172.16.0.0/108",  // IPv4-mapped private B
@@ -87,6 +96,12 @@ func init() {
 
 // isPrivateIP checks if an IP address is in a private/internal range (SSRF protection)
 func isPrivateIP(ip net.IP) bool {
+	// Short-circuit on the unspecified address (0.0.0.0 / ::). Belt-and-
+	// suspenders alongside the 0.0.0.0/8 and ::/128 CIDRs above — mirrors the
+	// Python `ip.is_unspecified` guard so both implementations stay at parity.
+	if ip.IsUnspecified() {
+		return true
+	}
 	for _, network := range privateNetworks {
 		if network.Contains(ip) {
 			return true
@@ -115,6 +130,15 @@ func isPrivateURL(ctx context.Context, rawURL string) (bool, error) {
 		if strings.EqualFold(hostname, h) {
 			return true, nil
 		}
+	}
+
+	// If the host is an IP literal, check it directly before resolving.
+	// Non-canonical encodings of metadata IPs (e.g. ::ffff:169.254.169.254)
+	// don't match the string denylist above; running them through isPrivateIP
+	// keeps the string layer no weaker than the dial-time IP guard and mirrors
+	// Python's _ip_is_blocked, which unwraps such forms.
+	if ip := net.ParseIP(hostname); ip != nil && isPrivateIP(ip) {
+		return true, nil
 	}
 
 	// Resolve hostname to IP and check. Use a context-aware resolver so this
@@ -246,6 +270,14 @@ func NewFetcher() *Fetcher {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
+				// Re-enforce the http/https scheme allowlist on every redirect
+				// hop, matching the Python guard (_is_private_url re-checks the
+				// scheme on each hop). Go's transport already rejects non-http(s)
+				// schemes before dialing, but this makes the invariant explicit
+				// instead of relying on that implicit stdlib behavior.
+				if s := strings.ToLower(req.URL.Scheme); s != "http" && s != "https" {
+					return fmt.Errorf("SSRF blocked: redirect to disallowed scheme %q", req.URL.Scheme)
+				}
 				// Redirect target IP is validated by ssrfSafeDialContext, but
 				// the dangerousHosts metadata denylist (isPrivateURL) is only
 				// applied to the initial URL — re-enforce it on every hop so a
@@ -255,6 +287,14 @@ func NewFetcher() *Fetcher {
 					if strings.EqualFold(host, h) {
 						return fmt.Errorf("SSRF blocked: redirect to dangerous host %q", host)
 					}
+				}
+				// Defense-in-depth: if the host is an IP literal (incl. non-
+				// canonical encodings of metadata IPs like ::ffff:169.254.169.254),
+				// run it through isPrivateIP so the string denylist above is no
+				// weaker than the dial-time IP guard. Mirrors Python's
+				// _ip_is_blocked, which unwraps such forms.
+				if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+					return fmt.Errorf("SSRF blocked: redirect to private IP %q", host)
 				}
 				return nil
 			},

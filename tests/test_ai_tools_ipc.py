@@ -66,6 +66,16 @@ class TestAuth:
         req = SimpleNamespace(headers={"X-Token": "secret"})
         assert inst._authed(req) is True
 
+    def test_authed_rejects_non_ascii_token_without_raising(self):
+        # aiohttp decodes request headers as ISO-8859-1, so a header byte in
+        # 0x80-0xFF arrives as a non-ASCII str. hmac.compare_digest raises
+        # TypeError on non-ASCII *str* args — comparing bytes (the fix) must
+        # fail closed with a clean False instead of a 500-causing TypeError.
+        inst = ipc._AiToolsIpc()
+        inst.token = "secret"
+        req = SimpleNamespace(headers={"X-Token": "\x80\x81bad"})
+        assert inst._authed(req) is False
+
 
 class TestMemoryDispatch:
     async def test_recall_no_facts(self, monkeypatch):

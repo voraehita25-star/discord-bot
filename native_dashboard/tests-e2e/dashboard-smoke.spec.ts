@@ -245,17 +245,54 @@ test.describe('Theme + CSS sanity', () => {
 
 test.describe('Send race guard (C3 fix)', () => {
     test('isStreaming flag on chatManager prevents double-send', async ({ page }) => {
-        // The fix sets isStreaming=true synchronously inside sendMessage
-        // (before any await). Confirm the field exists and starts false.
-        const initial = await page.evaluate(() => {
-            const cm = (window as unknown as { chatManager?: { isStreaming: boolean } })
-                .chatManager;
-            return cm ? { exists: true, isStreaming: cm.isStreaming } : { exists: false };
+        // window.chatManager is a documented e2e contract (app.ts ~2447), so do
+        // not guard behind if(exists) — its absence is itself a failure. Drive
+        // the actual race: sendMessage() sets isStreaming=true synchronously
+        // before any await, so two back-to-back calls must emit only ONE
+        // 'message' frame. The old test only read the initial flag and never
+        // double-sent, so it didn't exercise the guard at all.
+
+        // The WS only connects when the chat page is shown (app.ts showPage),
+        // and this.send() returns false (rolling back isStreaming) unless the
+        // socket is OPEN — so open chat + wait for the mock WS to connect first.
+        await page.click('[data-page="chat"]');
+        await page.waitForFunction(() => {
+            const cm = (window as unknown as { chatManager?: { connected: boolean } }).chatManager;
+            return cm?.connected === true;
+        }, undefined, { timeout: 3000 });
+
+        const messageFrames = await page.evaluate(() => {
+            const cm = (window as unknown as {
+                chatManager?: {
+                    isStreaming: boolean;
+                    currentConversation: unknown;
+                    sendMessage: () => void;
+                };
+            }).chatManager;
+            if (!cm) throw new Error('window.chatManager not exposed');
+            // Satisfy sendMessage's guards: an active conversation + not already
+            // streaming + non-empty input.
+            cm.currentConversation = { id: 'race-conv', title: 'Race', role_preset: 'general' };
+            cm.isStreaming = false;
+            const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+            if (input) input.value = 'race message';
+            // Reset the captured-frames buffer so we only count this burst.
+            (window as unknown as { __mockWsLastSent: { frames: string[] } }).__mockWsLastSent.frames = [];
+            // Fire twice with no await in between — the synchronous gate must
+            // block the second call.
+            cm.sendMessage();
+            cm.sendMessage();
+            const frames = (window as unknown as { __mockWsLastSent: { frames: string[] } })
+                .__mockWsLastSent.frames;
+            return frames.filter((f) => {
+                try {
+                    return (JSON.parse(f) as { type?: string }).type === 'message';
+                } catch {
+                    return false;
+                }
+            });
         });
-        // chatManager may not be exposed globally; if so, fall back to accepting
-        // the rest of the suite as the smoke check.
-        if (initial.exists) {
-            expect(initial.isStreaming).toBe(false);
-        }
+        // Exactly one message frame: the guard swallowed the second send.
+        expect(messageFrames.length, `expected one 'message' frame, got ${messageFrames.length}`).toBe(1);
     });
 });

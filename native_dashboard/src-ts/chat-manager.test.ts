@@ -497,6 +497,41 @@ describe('updateProviderSelects — provider labels', () => {
     });
 });
 
+describe('createConversation — provider allowlist gate', () => {
+    it('accepts an in-allowlist modal provider and persists it', () => {
+        const cm = mountDomAndChat();
+        cm.availableProviders = ['gemini', 'claude'];
+        cm.aiProvider = 'gemini';
+        (document.getElementById('modal-ai-provider') as HTMLSelectElement).value = 'claude';
+        cm.createConversation();
+        expect(cm.aiProvider).toBe('claude');
+        expect(localStorage.getItem('dashboard_ai_provider')).toBe('claude');
+        expect(cm.wsClient.send).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'new_conversation', ai_provider: 'claude' }),
+        );
+    });
+
+    it('rejects an out-of-allowlist provider injected into the <select> (keeps current)', () => {
+        const cm = mountDomAndChat();
+        cm.availableProviders = ['gemini', 'claude'];
+        cm.aiProvider = 'gemini';
+        localStorage.setItem('dashboard_ai_provider', 'gemini');
+        // Simulate a stale/tampered/injected option the server never sent.
+        const select = document.getElementById('modal-ai-provider') as HTMLSelectElement;
+        const rogue = document.createElement('option');
+        rogue.value = 'evil';
+        select.appendChild(rogue);
+        select.value = 'evil';
+        cm.createConversation();
+        // The garbage value must NOT propagate to state, localStorage, or the wire.
+        expect(cm.aiProvider).toBe('gemini');
+        expect(localStorage.getItem('dashboard_ai_provider')).toBe('gemini');
+        expect(cm.wsClient.send).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'new_conversation', ai_provider: 'gemini' }),
+        );
+    });
+});
+
 describe('handleMessage — connection signalling', () => {
     it('pong clears the ws-client pongPending flag', () => {
         const cm = mountDomAndChat();

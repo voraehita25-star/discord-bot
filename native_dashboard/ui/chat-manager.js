@@ -1033,15 +1033,24 @@ export class ChatManager {
     createConversation() {
         const providerSelect = document.getElementById('modal-ai-provider');
         if (providerSelect) {
-            this.aiProvider = providerSelect.value;
-            // Persist the explicit modal choice so the New Chat modal default
-            // (showNewChatModal prefers the localStorage value) stays consistent
-            // with the provider used for the most recent conversation.
-            try {
-                localStorage.setItem('dashboard_ai_provider', this.aiProvider);
-            }
-            catch {
-                // localStorage write failures are non-fatal.
+            // Validate against the allowlist before accepting, mirroring the
+            // other provider write-sites (field initializer, ``connected``
+            // handler, showNewChatModal). The <select> normally only holds
+            // server-populated options, but a stale/tampered/injected <option>
+            // could otherwise push an out-of-allowlist string to localStorage
+            // and onto the wire. Ignore garbage and keep the current provider.
+            const picked = providerSelect.value;
+            if (this.availableProviders.includes(picked)) {
+                this.aiProvider = picked;
+                // Persist the explicit modal choice so the New Chat modal default
+                // (showNewChatModal prefers the localStorage value) stays consistent
+                // with the provider used for the most recent conversation.
+                try {
+                    localStorage.setItem('dashboard_ai_provider', this.aiProvider);
+                }
+                catch {
+                    // localStorage write failures are non-fatal.
+                }
             }
         }
         this.send({

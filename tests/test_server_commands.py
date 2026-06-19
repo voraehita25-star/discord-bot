@@ -3042,6 +3042,95 @@ class TestReadChannelFull:
         assert captured["limit"] == 10
 
     @pytest.mark.asyncio
+    async def test_read_channel_huge_digit_limit_defaults_no_valueerror(self):
+        # Regression: the limit arg (args[1]) is model/AI-controlled and not
+        # length-clamped by the dispatchers. Python 3.11+ raises ValueError on
+        # int() of an all-digit string longer than 4300 digits. Such a token
+        # passes .isdigit() but must NOT reach int() — it should default to 10
+        # without raising (cmd_read_channel itself has no try/except here).
+        import datetime
+
+        from cogs.ai_core.commands.server_commands import cmd_read_channel
+
+        target = MagicMock(spec=discord.TextChannel)
+        target.name = "general"
+        captured = {}
+
+        async def fake_history(limit):
+            captured["limit"] = limit
+            msg = MagicMock()
+            msg.content = "x"
+            msg.created_at = datetime.datetime(2022, 1, 1, 10, 0)
+            msg.author = MagicMock()
+            msg.author.display_name = "U"
+            yield msg
+
+        target.history = fake_history
+        guild = MagicMock(spec=discord.Guild)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        huge = "9" * 5000  # all digits, >4300 -> int() would raise ValueError
+        with patch("discord.utils.get", return_value=target):
+            await cmd_read_channel(guild, origin, None, ["general", huge])
+        assert captured["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_read_channel_unicode_digit_limit_defaults_no_valueerror(self):
+        # Regression for the gap the digit-length cap missed: str.isdigit() is
+        # True for non-ASCII "digits" (superscript U+00B2 "²", circled U+2460 "①")
+        # that int() cannot parse. Such a limit token must default to 10 instead
+        # of raising ValueError. _safe_int (not isdigit()+int()) closes this.
+        import datetime
+
+        from cogs.ai_core.commands.server_commands import cmd_read_channel
+
+        target = MagicMock(spec=discord.TextChannel)
+        target.name = "general"
+        captured = {}
+
+        async def fake_history(limit):
+            captured["limit"] = limit
+            msg = MagicMock()
+            msg.content = "x"
+            msg.created_at = datetime.datetime(2022, 1, 1, 10, 0)
+            msg.author = MagicMock()
+            msg.author.display_name = "U"
+            yield msg
+
+        target.history = fake_history
+        guild = MagicMock(spec=discord.Guild)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        for unicode_digit in ("²²²", "①①", "\U00010a40"):
+            assert unicode_digit.isdigit()  # the trap: passes isdigit()
+            captured.clear()
+            with patch("discord.utils.get", return_value=target):
+                await cmd_read_channel(guild, origin, None, ["general", unicode_digit])
+            assert captured["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_read_channel_unicode_digit_name_no_valueerror(self):
+        # The ID-fallback `int(target_name)` shares the class: a Unicode-digit
+        # channel name (no literal match) must fall through to the name lookup,
+        # not raise ValueError. Asserts the command completes with a "not found"
+        # reply rather than blowing up.
+        from cogs.ai_core.commands.server_commands import cmd_read_channel
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.text_channels = []
+        guild.get_channel = MagicMock(return_value=None)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        with patch("discord.utils.get", return_value=None):
+            # Must not raise ValueError from int("²²²")
+            await cmd_read_channel(guild, origin, None, ["²²²"])
+        # get_channel must NOT have been called with an int (we never reached int())
+        origin.send.assert_awaited()  # sent a "not found"/error reply, no crash
+
+    @pytest.mark.asyncio
     async def test_read_channel_forbidden(self):
         from cogs.ai_core.commands.server_commands import cmd_read_channel
 
@@ -3171,3 +3260,88 @@ class TestAuditLogImportFallback:
             assert "✅" in str(origin.send.call_args)
         finally:
             importlib.reload(sc)
+
+
+class TestUnicodeDigitIntRobustness:
+    """Regression: every AI-supplied numeric arg routes through _safe_int, so a
+    Unicode-"digit" token (isdigit()==True but int()-unparseable, e.g. "²²²") or a
+    >4300-digit token can never raise ValueError out of these handlers — it falls
+    through to the name/query path instead. Covers the sibling handlers the
+    original read_channel-only fix missed (delete_role, set_channel_permission,
+    list_members, get_user_info, edit_message)."""
+
+    def test_safe_int_contract(self):
+        from cogs.ai_core.commands.server_commands import _safe_int
+
+        assert _safe_int("123") == 123
+        assert _safe_int("0") == 0
+        # Unicode "digits" that int() rejects -> None (the trap the fix closes).
+        assert "²²²".isdigit() and _safe_int("²²²") is None
+        assert "①①".isdigit() and _safe_int("①①") is None
+        # >4300 ASCII digits would raise on int() -> None.
+        assert _safe_int("9" * 5000) is None
+        # max_digits short-circuits before parsing.
+        assert _safe_int("1234567890", max_digits=9) is None
+        assert _safe_int("123456789", max_digits=9) == 123456789
+        # Non-str / None never raise (len() guarded inside the try).
+        assert _safe_int(None) is None  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_delete_role_unicode_digit_no_valueerror(self):
+        from cogs.ai_core.commands.server_commands import cmd_delete_role
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.roles = []
+        guild.get_role = MagicMock(return_value=None)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+        await cmd_delete_role(guild, origin, "", ["²²²"])  # must not raise int("²²²")
+        origin.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_channel_perm_unicode_digit_no_valueerror(self):
+        from cogs.ai_core.commands.server_commands import cmd_set_channel_perm
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.channels = []
+        guild.get_channel = MagicMock(return_value=None)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+        with patch("discord.utils.get", return_value=None):
+            await cmd_set_channel_perm(guild, origin, "", ["②②", "role", "view_channel", "true"])
+        origin.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_members_unicode_digit_limit_no_valueerror(self):
+        from cogs.ai_core.commands.server_commands import cmd_list_members
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.members = []
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+        # "²²²" as the leading "limit" arg must be treated as a query, not int().
+        await cmd_list_members(guild, origin, "", ["²²²"])
+        origin.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_unicode_digit_no_valueerror(self):
+        from cogs.ai_core.commands.server_commands import cmd_get_user_info
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.members = []
+        guild.get_member = MagicMock(return_value=None)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+        await cmd_get_user_info(guild, origin, "", ["²²²"])
+        origin.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edit_message_unicode_digit_id_no_valueerror(self):
+        from cogs.ai_core.commands.server_commands import cmd_edit_message
+
+        guild = MagicMock(spec=discord.Guild)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+        # "²²²" message id -> _safe_int None -> "must be numeric" reply, no crash.
+        await cmd_edit_message(guild, origin, "", ["²²²", "new content"])
+        origin.send.assert_awaited()

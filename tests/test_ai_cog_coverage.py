@@ -515,6 +515,34 @@ class TestResendLastMessage:
         status_msg.edit.assert_awaited_with(content="✅ ส่งข้อความใหม่สำเร็จ!")
 
     @pytest.mark.asyncio
+    async def test_resend_suppresses_mentions(self):
+        """Regression: !resend of stored model text containing @everyone must
+        send with AllowedMentions.none() so it can't ping — the raw stored
+        content is saved BEFORE logic.py's mention escaping and returned
+        verbatim, so the send is the only mention guard on this path."""
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog.chat_manager.get_chat_session = AsyncMock(return_value={"history": [1]})
+        status_msg = MagicMock()
+        status_msg.edit = AsyncMock()
+        ctx.send = AsyncMock(return_value=status_msg)
+        out = MagicMock(spec=discord.TextChannel)
+        out.send = AsyncMock()
+        cog.bot.get_channel = MagicMock(return_value=out)
+        with patch(
+            "cogs.ai_core.ai_cog.get_last_model_message",
+            AsyncMock(return_value={"parts": ["@everyone hello <@123>"]}),
+        ):
+            await cog.resend_last_message.callback(cog, ctx, None)
+        out.send.assert_awaited_once()
+        am = out.send.await_args.kwargs.get("allowed_mentions")
+        assert isinstance(am, discord.AllowedMentions)
+        # none() disables every mention category — no ping can escape.
+        assert am.everyone is False
+        assert am.roles is False
+        assert am.users is False
+
+    @pytest.mark.asyncio
     async def test_character_tags_webhook(self):
         cog = _make_cog()
         ctx = _make_ctx()
@@ -1269,7 +1297,6 @@ class TestResetAiCliMode:
         cog.chat_manager.last_accessed = {}
         cog.chat_manager.processing_locks = {}
         cog.chat_manager.streaming_enabled = {}
-        cog.chat_manager.current_typing_msg = {}
         cog.chat_manager._message_queue = MagicMock()
         cog.chat_manager.cli_mode = True
 
@@ -1301,7 +1328,6 @@ class TestResetAiCliMode:
         cog.chat_manager.last_accessed = {}
         cog.chat_manager.processing_locks = {}
         cog.chat_manager.streaming_enabled = {}
-        cog.chat_manager.current_typing_msg = {}
         cog.chat_manager._message_queue = MagicMock()
         cog.chat_manager.cli_mode = False
 
@@ -1352,7 +1378,6 @@ class TestOnGuildChannelDelete:
         cog.chat_manager.last_accessed = {cid: 0}
         cog.chat_manager.processing_locks = {cid: object()}
         cog.chat_manager.streaming_enabled = {cid: True}
-        cog.chat_manager.current_typing_msg = {cid: None}
         cog.chat_manager._message_queue = MagicMock()
 
         channel = MagicMock()

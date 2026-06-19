@@ -191,7 +191,11 @@ class AICache:
         entry.ttl_multiplier = min(3.0, 1.0 + (entry.hits // 5) * 0.2)
 
     def find_similar(
-        self, message: str, intent: str | None = None, threshold: float | None = None
+        self,
+        message: str,
+        intent: str | None = None,
+        threshold: float | None = None,
+        context_hash: str | None = None,
     ) -> tuple[str, CacheEntry, float] | None:
         """
         Find similar cached entry using fuzzy matching.
@@ -200,6 +204,8 @@ class AICache:
             message: User message to match
             intent: Detected intent (must match if provided)
             threshold: Minimum similarity threshold
+            context_hash: Conversation context hash; the fuzzy match is scoped
+                to this context exactly as the exact-match key is (see below).
 
         Returns:
             Tuple of (key, entry, similarity) or None
@@ -208,6 +214,9 @@ class AICache:
         # the legitimate 0.0 as falsy and silently substitute the default.
         threshold = self.SIMILARITY_THRESHOLD if threshold is None else threshold
         normalized = self._normalize_message(message)
+        # Normalize to "" the same way set() stores it (``context_hash or ""``),
+        # so a None query matches entries cached with no context.
+        context_hash = context_hash or ""
 
         best_match = None
         best_similarity = 0.0
@@ -219,6 +228,15 @@ class AICache:
         for key, entry in cache_snapshot:
             # Skip expired entries
             if self._is_expired(entry):
+                continue
+
+            # Context must match EXACTLY. The exact-match key folds context_hash
+            # into the hashed key (_generate_key), so the fuzzy fallback has to
+            # be context-scoped too — otherwise a fuzzy hit could return a
+            # response cached under a different conversation/channel/user, i.e.
+            # a cross-context leak. Strict equality (not the permissive intent
+            # filter below) because cross-context reuse is never desired here.
+            if entry.context_hash != context_hash:
                 continue
 
             # Intent must match if specified
@@ -273,7 +291,7 @@ class AICache:
         # Try fuzzy matching as fallback (OUTSIDE lock to avoid nested lock deadlock)
         # Note: find_similar uses difflib.SequenceMatcher (stdlib), does NOT require numpy
         if use_fuzzy:
-            similar = self.find_similar(message, intent)
+            similar = self.find_similar(message, intent, context_hash=context_hash)
             if similar:
                 similar_key, similar_entry, similarity = similar
                 with self._cache_lock:

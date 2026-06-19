@@ -50,14 +50,28 @@ logger = logging.getLogger(__name__)
 # Module-level executor for GIF→MP4 encoding. Previously every call
 # constructed a fresh ``ThreadPoolExecutor(max_workers=1)`` and (on
 # timeout) abandoned it via ``shutdown(wait=False)``, leaking a thread
-# per slow GIF. A shared pool with two workers caps the concurrency
-# regardless of caller burstiness; the timeout path no longer needs to
-# kill the executor — the worker thread is released back to the pool
-# when ffmpeg eventually finishes.
+# per slow GIF. A shared pool caps the concurrency regardless of caller
+# burstiness; the timeout path no longer needs to kill the executor —
+# the worker thread is released back to the pool when ffmpeg eventually
+# finishes.
+#
+# The pool is deliberately WIDER than ``_GIF_CONVERT_SEMAPHORE`` (4 vs 2).
+# ``future.result(timeout=60.0)`` abandons — but cannot cancel — a worker
+# still running an uninterruptible ffmpeg encode, so a slow/adversarial GIF
+# keeps its slot occupied past the timeout. If the pool width equalled the
+# semaphore (the old 2/2), two such hung encodes would occupy BOTH workers
+# while the semaphore still admitted two NEW conversions, which would then
+# queue forever behind the stuck workers — starving GIF conversion
+# process-wide. With 2 admitted conversions but 4 worker slots, up to two
+# abandoned encodes still leave free workers for new conversions to start on
+# instead of queueing unboundedly. Frames are bounded (<=300, <=1.5MP) so a
+# true infinite hang is unlikely; this headroom absorbs the transient, and the
+# in-flight cap below (_GIF_ENCODE_MAX_INFLIGHT) hard-bounds the pathological
+# case where abandoned encodes would otherwise fill every slot.
 import concurrent.futures as _futures
 
 _GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
-    max_workers=2,
+    max_workers=4,
     thread_name_prefix="gif-encode",
 )
 
@@ -69,15 +83,53 @@ _GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
 # an in-flight slow GIF encode.
 atexit.register(lambda: _GIF_ENCODE_EXECUTOR.shutdown(wait=False, cancel_futures=True))
 
-# Gate concurrent GIF→MP4 conversions to the encode-pool width (2). Each
+# Throttle concurrent GIF→MP4 conversions to 2 (BELOW the encode-pool width of
+# 4 — see _GIF_ENCODE_EXECUTOR for why the pool keeps the extra headroom). Each
 # in-flight conversion otherwise parks a default-executor thread for up to 60s
-# (``future.result(timeout=60.0)``) WHILE waiting on one of only two encode-pool
-# slots — under a burst that starves the shared default pool with conversions
-# that can't even start encoding. The semaphore caps in-flight conversions at
-# the encode width so excess callers wait on the (cheap) semaphore instead of
-# holding a default-pool thread hostage. Bound to the running loop lazily on
-# first acquire (Python 3.10+), so construction at import time is safe.
+# (``future.result(timeout=60.0)``) WHILE waiting on an encode-pool slot —
+# under a burst that starves the shared default pool with conversions that
+# can't even start encoding. The semaphore caps in-flight conversions so excess
+# callers wait on the (cheap) semaphore instead of holding a default-pool
+# thread hostage. Bound to the running loop lazily on first acquire
+# (Python 3.10+), so construction at import time is safe.
 _GIF_CONVERT_SEMAPHORE = asyncio.Semaphore(2)
+
+# Hard cap on encodes occupying the pool. The semaphore above bounds CONCURRENT
+# conversions, but a timed-out encode keeps running its uninterruptible ffmpeg
+# in its worker thread after we abandon it (see convert_gif_to_video), so
+# abandoned encodes accumulate INDEPENDENTLY of the semaphore. Without a cap,
+# once enough stuck encodes fill all the pool workers, each new submit would
+# queue behind them and only fail after its own 60s timeout — i.e. GIF
+# conversion stalls process-wide (widening the pool 2->4 only raised the trigger
+# count, it did not bound this). Track in-flight encodes (incremented at submit,
+# decremented when the encode ACTUALLY finishes via add_done_callback — even if
+# we abandoned it after the timeout) and, when every worker slot is taken, skip
+# the encode and fall back to a static image immediately instead of queueing.
+# This bounds the worst case to "instant static fallback" rather than "60s hang
+# per request behind a starved queue".
+import threading as _threading
+
+_GIF_ENCODE_MAX_INFLIGHT = 4  # == _GIF_ENCODE_EXECUTOR max_workers
+_GIF_ENCODE_INFLIGHT = 0
+_GIF_ENCODE_INFLIGHT_LOCK = _threading.Lock()
+
+
+def _try_reserve_gif_encode_slot() -> bool:
+    """Reserve a pool slot for a GIF encode; False if all workers are occupied."""
+    global _GIF_ENCODE_INFLIGHT
+    with _GIF_ENCODE_INFLIGHT_LOCK:
+        if _GIF_ENCODE_INFLIGHT >= _GIF_ENCODE_MAX_INFLIGHT:
+            return False
+        _GIF_ENCODE_INFLIGHT += 1
+        return True
+
+
+def _release_gif_encode_slot(_future: object = None) -> None:
+    """Release a reserved slot (registered as the encode Future's done-callback)."""
+    global _GIF_ENCODE_INFLIGHT
+    with _GIF_ENCODE_INFLIGHT_LOCK:
+        _GIF_ENCODE_INFLIGHT = max(0, _GIF_ENCODE_INFLIGHT - 1)
+
 
 # ==================== Image Caching ====================
 
@@ -389,7 +441,28 @@ def convert_gif_to_video(gif_data: bytes) -> bytes | None:
                 pixelformat="yuv420p",
             )
 
-        future = _GIF_ENCODE_EXECUTOR.submit(_encode)
+        # Refuse to submit when every pool worker is already occupied by an
+        # in-flight/abandoned encode — otherwise this submit queues behind the
+        # stuck workers and only fails after its own 60s timeout. Fall back to a
+        # static image immediately (same as the timeout path: caller treats None
+        # as "send the still frame"). See _GIF_ENCODE_MAX_INFLIGHT.
+        if not _try_reserve_gif_encode_slot():
+            logger.warning(
+                "GIF -> MP4 encode pool saturated (all %d workers occupied by "
+                "in-flight/abandoned encodes); falling back to static image",
+                _GIF_ENCODE_MAX_INFLIGHT,
+            )
+            return None
+        try:
+            future = _GIF_ENCODE_EXECUTOR.submit(_encode)
+        except RuntimeError:
+            # Pool shut down (atexit) between reserve and submit — release the
+            # slot and let the outer handler fall back to a static image.
+            _release_gif_encode_slot()
+            raise
+        # Release the slot when the encode truly completes (even one we abandon
+        # after the timeout below finishes eventually and fires this callback).
+        future.add_done_callback(_release_gif_encode_slot)
         try:
             future.result(timeout=60.0)
         except concurrent.futures.TimeoutError:

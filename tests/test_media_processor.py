@@ -618,6 +618,68 @@ class TestImageioAvailability:
         assert isinstance(IMAGEIO_AVAILABLE, bool)
 
 
+class TestGifEncodePoolHeadroom:
+    """The GIF→MP4 encode pool must stay WIDER than the convert semaphore.
+
+    ``future.result(timeout=60.0)`` abandons but cannot cancel a worker still
+    running an uninterruptible ffmpeg encode. If the pool width equalled the
+    semaphore, two hung encodes would occupy every worker while the semaphore
+    still admitted new conversions, which would then queue forever — starving
+    GIF conversion process-wide. The extra worker slots absorb that transient,
+    so the pool must keep headroom over the semaphore."""
+
+    def test_encode_pool_at_least_double_convert_semaphore(self):
+        from cogs.ai_core import media_processor as mp
+
+        pool_width = mp._GIF_ENCODE_EXECUTOR._max_workers
+        sema_width = mp._GIF_CONVERT_SEMAPHORE._value
+        # The real non-starvation invariant is pool >= 2*semaphore: one wave of
+        # `semaphore` abandoned encodes can occupy that many slots, and the next
+        # admitted wave needs another `semaphore` free slots to start on. The
+        # weaker pool > semaphore would stay green at e.g. 3/2, which reintroduces
+        # a bounded starvation window.
+        assert pool_width >= 2 * sema_width, (
+            f"encode pool ({pool_width}) must be >= 2x the convert semaphore "
+            f"({sema_width}) so a wave of abandoned timed-out encodes still "
+            "leaves room for new conversions to start"
+        )
+
+    def test_inflight_cap_equals_pool_width(self):
+        from cogs.ai_core import media_processor as mp
+
+        # The hard cap that bounds the pathological case must match the pool
+        # width — if it exceeded the pool, saturated submits would still queue.
+        assert mp._GIF_ENCODE_MAX_INFLIGHT == mp._GIF_ENCODE_EXECUTOR._max_workers
+
+    def test_saturated_pool_falls_back_to_static_without_submitting(self, monkeypatch):
+        """When every encode slot is reserved, convert returns None (static
+        fallback) and never touches the executor — bounding the worst case to an
+        instant fallback instead of a 60s hang behind a starved queue."""
+        from cogs.ai_core import media_processor as mp
+
+        # Simulate the pool fully occupied by stuck/abandoned encodes.
+        monkeypatch.setattr(mp, "_GIF_ENCODE_INFLIGHT", mp._GIF_ENCODE_MAX_INFLIGHT)
+
+        # If the guard fails and we reach submit, this makes the test loud.
+        def _boom(*_a, **_k):
+            raise AssertionError("submit() must not be called when the pool is saturated")
+
+        monkeypatch.setattr(mp._GIF_ENCODE_EXECUTOR, "submit", _boom)
+
+        # A minimal real animated GIF (2 frames) so we pass the decode guards and
+        # reach the encode-reservation check.
+        import io as _io
+
+        from PIL import Image as _Image
+
+        buf = _io.BytesIO()
+        frames = [_Image.new("RGB", (8, 8), c) for c in ((255, 0, 0), (0, 255, 0))]
+        frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+        gif_bytes = buf.getvalue()
+
+        assert mp.convert_gif_to_video(gif_bytes) is None
+
+
 class TestServerCharacters:
     """Tests for SERVER_CHARACTERS import."""
 

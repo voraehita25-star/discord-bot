@@ -180,22 +180,43 @@ async def execute_tool_call(
     # NOT in this set — letting any user invoke it would let one member
     # poison every member's future AI replies with planted "facts". The
     # ``remember`` branch below scopes the write to the calling user.
+    #
+    # ``list_members`` and ``get_user_info`` are intentionally NOT here either:
+    # their handlers (cmd_list_members / cmd_get_user_info) require
+    # ``manage_guild`` and fail CLOSED. Leaving them in this set let any
+    # member pass the executor gate, so the executor returned a success-shaped
+    # string ("Listed members" / "Requested info for ...") to the model while
+    # the handler actually denied the request — telling the model the lookup
+    # succeeded. They're gated on ``manage_guild`` below so the executor's
+    # return value matches the handler outcome.
     _READ_ONLY_TOOLS = {
         "list_channels",
         "list_roles",
+        "read_channel",
+    }
+    # Tools whose handlers require ``manage_guild`` and fail CLOSED. Mirror
+    # that tier at the executor so a member without ``manage_guild`` gets a
+    # denial string (not a false success) returned to the model.
+    _MANAGE_GUILD_TOOLS = {
         "list_members",
         "get_user_info",
-        "read_channel",
     }
     if not hasattr(user, "guild_permissions"):
         return f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} has no guild membership."
     is_admin = user.guild_permissions.administrator
     is_read_only = fname in _READ_ONLY_TOOLS
-    if not is_admin and not is_read_only:
+    is_manage_guild_tool = fname in _MANAGE_GUILD_TOOLS
+    if not is_admin and not is_read_only and not is_manage_guild_tool:
         return (
             f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} "
             f"is not an Admin (tool '{fname}' requires admin privileges)."
         )
+    # ``list_members`` / ``get_user_info`` need ``manage_guild`` (their handlers
+    # fail CLOSED on it). Gate here so a member without ``manage_guild`` gets a
+    # denial string instead of the handler's success-shaped return reaching the
+    # model. Admins resolve to Permissions.all(), so they pass this too.
+    if is_manage_guild_tool and not user.guild_permissions.manage_guild:
+        return "⛔ Permission denied: requires manage_guild permission."
 
     # Fine-grained mutation gating: even an Administrator-tagged caller
     # should not invoke channel/role mutation tools without the matching
@@ -411,7 +432,13 @@ async def execute_tool_call(
             # the per-channel permission check below to fail-closed.
             stripped_name = channel_name.strip()
             target_channel: discord.TextChannel | None = None
-            if stripped_name.isdigit():
+            # ID resolution for numeric names. Guard int() with isascii() and a
+            # length cap, NOT a bare isdigit(): str.isdigit() is True for Unicode
+            # digits ("²", circled digits) that int() rejects, and an all-digit
+            # string >4300 chars also raises — both are model-supplied here. A
+            # snowflake is <=20 ASCII digits, so this stays exact while a
+            # non-numeric/Unicode name simply falls through to the name match.
+            if stripped_name.isascii() and stripped_name.isdigit() and len(stripped_name) <= 20:
                 resolved = guild.get_channel(int(stripped_name))
                 if isinstance(resolved, discord.TextChannel):
                     target_channel = resolved

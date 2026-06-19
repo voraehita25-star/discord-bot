@@ -537,6 +537,103 @@ class TestExecuteToolCallMoreFunctions:
         assert "Requested info for" in result
 
     @pytest.mark.asyncio
+    async def test_list_members_denied_without_manage_guild(self):
+        """A caller without manage_guild must get a denial, not a false success.
+
+        Regression: ``list_members`` used to live in ``_READ_ONLY_TOOLS``, so any
+        member passed the executor gate and the executor returned the
+        success-shaped "Listed members" string to the model — even though
+        ``cmd_list_members`` requires manage_guild and fails CLOSED. The executor
+        now mirrors the handler tier and denies up front. ``cmd_list_members`` is
+        deliberately NOT mocked: the denial must happen at the gate, before the
+        handler is ever reached.
+        """
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.display_name = "RegularMember"
+        user.guild_permissions.administrator = False
+        user.guild_permissions.manage_guild = False
+
+        tool_call = MagicMock()
+        tool_call.name = "list_members"
+        tool_call.args = {"limit": 100, "query": "admin"}
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_list_members", new_callable=AsyncMock
+        ) as mock_cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "Permission denied" in result
+        assert "manage_guild" in result
+        assert "Listed members" not in result
+        # Gate fired before the handler: no false success could leak to the model.
+        mock_cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_denied_without_manage_guild(self):
+        """A caller without manage_guild must get a denial, not a false success.
+
+        Regression mirror of ``test_list_members_denied_without_manage_guild`` for
+        ``get_user_info`` (handler ``cmd_get_user_info`` requires manage_guild and
+        fails CLOSED). ``cmd_get_user_info`` is deliberately NOT mocked.
+        """
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.display_name = "RegularMember"
+        user.guild_permissions.administrator = False
+        user.guild_permissions.manage_guild = False
+
+        tool_call = MagicMock()
+        tool_call.name = "get_user_info"
+        tool_call.args = {"target": "SomeUser"}
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_get_user_info", new_callable=AsyncMock
+        ) as mock_cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "Permission denied" in result
+        assert "manage_guild" in result
+        assert "Requested info for" not in result
+        mock_cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_members_allowed_with_manage_guild_non_admin(self):
+        """A non-admin caller WITH manage_guild still succeeds (not over-restricted).
+
+        Guards against the fix tightening the gate to admin-only: manage_guild
+        alone must be sufficient, matching ``cmd_list_members``.
+        """
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.guild_permissions.administrator = False
+        user.guild_permissions.manage_guild = True
+
+        tool_call = MagicMock()
+        tool_call.name = "list_members"
+        tool_call.args = {}
+
+        with patch("cogs.ai_core.tools.tool_executor.cmd_list_members", new_callable=AsyncMock):
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "Listed members" in result
+
+    @pytest.mark.asyncio
     async def test_read_channel(self):
         """Test read_channel function.
 

@@ -691,6 +691,14 @@ class MemorySystem:
         now = time.monotonic()
         cached = self._all_memories_cache.get(channel_id)
         if cached is not None and cached[0] > now:
+            # Rebuild any missing token sets for this still-valid snapshot
+            # before returning. add_memory clears the WHOLE token cache on
+            # every write but only invalidates the written channel's snapshot,
+            # so an unrelated add would otherwise leave THIS channel's snapshot
+            # valid but its token sets gone — _keyword_search would then fall
+            # back to a live re.findall per row until the TTL expired. Lazily
+            # repopulating here keeps the optimization tied to snapshot life.
+            self._ensure_token_sets(cached[1])
             # Return a SHALLOW COPY of the cached list so callers
             # that mutate the result (filter/sort in place) don't
             # corrupt the cache for the next reader. The previous
@@ -723,8 +731,23 @@ class MemorySystem:
         # Precompute the per-row token set once here so _keyword_search can
         # look it up instead of re-running re.findall on every row of every
         # search. Rows are immutable after insert, so a cached entry stays
-        # valid; add_memory drops this alongside the snapshot. ``getattr``
-        # tolerates the no-op-__init__ test construction path.
+        # valid; add_memory drops this alongside the snapshot.
+        self._ensure_token_sets(rows)
+        self._evict_all_memories_cache_if_needed(now)
+        # Same defensive copy on cache-miss return so callers can mutate
+        # freely without aliasing into the cache.
+        return list(rows)
+
+    def _ensure_token_sets(self, rows: list[Any]) -> None:
+        """Populate ``_memory_token_cache`` for any ``rows`` mem_id not yet cached.
+
+        Shared by the cache-MISS path (fresh snapshot) and the cache-HIT path
+        (still-valid snapshot whose tokens were wiped by an unrelated
+        ``add_memory`` clear) so a live snapshot always keeps the keyword-search
+        optimization. Rows are immutable after insert, so an existing entry is
+        never recomputed. ``getattr`` tolerates the no-op-__init__ test
+        construction path.
+        """
         token_cache = getattr(self, "_memory_token_cache", None)
         if token_cache is None:
             token_cache = self._memory_token_cache = {}
@@ -734,10 +757,6 @@ class MemorySystem:
                 continue
             content = (mem.get("content") or "").lower()
             token_cache[mem_id] = frozenset(re.findall(r"\w+", content))
-        self._evict_all_memories_cache_if_needed(now)
-        # Same defensive copy on cache-miss return so callers can mutate
-        # freely without aliasing into the cache.
-        return list(rows)
 
     def invalidate_all_memories_cache(self, channel_id: int | None = None) -> None:
         """Drop the cached `get_all_rag_memories` snapshot.
@@ -772,6 +791,16 @@ class MemorySystem:
         while len(cache) > self._ALL_MEMORIES_MAX_CHANNELS:
             oldest = min(cache, key=lambda c: cache[c][0])
             cache.pop(oldest, None)
+        # Prune the parallel token cache to mirror the snapshots we just
+        # reclaimed: keep only mem_ids still referenced by a retained snapshot.
+        # Without this the token cache (keyed by mem_id, never deleted per-entry)
+        # retains a frozenset for every row of every channel ever searched even
+        # after its snapshot was evicted to bound RAM — defeating this very cap.
+        token_cache = getattr(self, "_memory_token_cache", None)
+        if token_cache:
+            live_ids = {mem.get("id") for _exp, rows in cache.values() for mem in rows}
+            for mem_id in [m for m in token_cache if m not in live_ids]:
+                token_cache.pop(mem_id, None)
 
     async def generate_embedding(self, text: str) -> np.ndarray | None:
         """Generate vector embedding for text using Gemini API."""

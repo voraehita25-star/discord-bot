@@ -95,18 +95,26 @@ class _SSRFSafeResolver(aiohttp.abc.AbstractResolver):
             ip_str = addr.get("host")
             if not ip_str:
                 continue
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-            for network in _BLOCKED_NETWORKS:
-                if ip in network:
-                    logger.warning(
-                        "SSRF blocked at connect time: %s -> private IP %s",
-                        host,
-                        ip_str,
-                    )
-                    raise OSError(f"SSRF blocked: {host} resolves to private IP {ip_str}")
+            # Delegate to ``_ip_is_blocked`` rather than a bare CIDR-membership
+            # loop. The CIDR-only check missed every IPv6 address that carries
+            # a blocked target without sitting in an explicit listed network —
+            # NAT64 local-use ``64:ff9b:1::/48`` (is_reserved, embeds
+            # 169.254.169.254), Teredo ``2001::/32`` (is_private), the discard
+            # prefix, etc. Because this resolver is THE DNS-rebind connect-time
+            # guard (the dialed IP, re-checked after the request-entry pre-check
+            # resolved a benign IP), that gap reopened exactly the rebind SSRF
+            # class the guard exists to defeat. ``_ip_is_blocked`` applies the
+            # is_unspecified/is_reserved/is_private classification + IPv4-mapped
+            # unwrap, so the connect-time path now matches the request-entry
+            # path with no asymmetry. (It also returns True — block — on an
+            # unparseable host, which is fail-closed.)
+            if _ip_is_blocked(ip_str):
+                logger.warning(
+                    "SSRF blocked at connect time: %s -> private IP %s",
+                    host,
+                    ip_str,
+                )
+                raise OSError(f"SSRF blocked: {host} resolves to private IP {ip_str}")
         return addrs
 
     async def close(self) -> None:
@@ -195,14 +203,24 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
     ipaddress.ip_network("224.0.0.0/4"),  # IPv4 multicast
     ipaddress.ip_network("240.0.0.0/4"),  # IPv4 reserved future
+    ipaddress.ip_network("::/128"),  # IPv6 unspecified (the :: twin of 0.0.0.0)
     ipaddress.ip_network("::1/128"),  # IPv6 loopback
     ipaddress.ip_network("fc00::/7"),  # IPv6 unique local
     ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+    # NAT64 well-known prefix and 6to4 both embed an IPv4 address in their
+    # low bits, so ::ffff-style unwrap alone misses them — an attacker can
+    # serve AAAA 64:ff9b::7f00:1 (127.0.0.1) or 2002:7f00:1:: (6to4 of
+    # 127.0.0.1) / metadata 169.254.169.254 and reach internal targets.
+    # Block the whole transition prefixes (the is_reserved/is_private
+    # short-circuit in _ip_is_blocked also covers them as belt-and-suspenders).
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix
+    ipaddress.ip_network("2002::/16"),  # 6to4
     # IPv4-mapped IPv6 covers ::ffff:0:0/96 — closes the bypass where an
     # attacker-controlled DNS returns ::ffff:127.0.0.1 to dodge the IPv4
     # blocks above. We additionally call ip.ipv4_mapped below as belt-and-
     # suspenders in case ipaddress treats the mapped form differently across
-    # Python versions.
+    # Python versions. Keep this net: a mapped *public* address such as
+    # ::ffff:8.8.8.8 is not is_private/is_reserved, so only this CIDR blocks it.
     ipaddress.ip_network("::ffff:0:0/96"),
 ]
 
@@ -219,6 +237,15 @@ def _ip_is_blocked(ip_str: str) -> bool:
     via ``ipv4_mapped`` and re-checked against the IPv4 blocklist so an
     attacker can't bypass loopback/private-network blocks by serving
     AAAA records pointing at the mapped form.
+
+    Also short-circuits on the IPv6 unspecified/reserved/private
+    classification so the bare ``::`` (twin of ``0.0.0.0``), NAT64
+    ``64:ff9b::/96`` (is_reserved) and 6to4 ``2002::/16`` (is_private)
+    transition addresses — which embed loopback/metadata IPv4 in their low
+    bits — are blocked. This mirrors the import-fallback SSRF branch in
+    ``url_fetcher_client.py`` so the primary guard is no longer weaker than
+    its own fallback. ``::ffff:0:0/96`` mapped *public* addresses are not in
+    these classes and stay covered by the explicit CIDR above.
     """
     try:
         ip = ipaddress.ip_address(ip_str)
@@ -227,10 +254,13 @@ def _ip_is_blocked(ip_str: str) -> bool:
     for network in _BLOCKED_NETWORKS:
         if ip in network:
             return True
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        for network in _BLOCKED_NETWORKS:
-            if ip.ipv4_mapped in network:
-                return True
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.is_unspecified or ip.is_reserved or ip.is_private:
+            return True
+        if ip.ipv4_mapped is not None:
+            for network in _BLOCKED_NETWORKS:
+                if ip.ipv4_mapped in network:
+                    return True
     return False
 
 

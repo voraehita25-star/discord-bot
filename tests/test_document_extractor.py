@@ -201,6 +201,56 @@ class TestExtractFromPayloadDispatch:
         result = de.extract_from_payload(payload)
         assert result is not None
         assert len(result.filename) <= 200
+        # The extension must survive truncation: it's derived from the full
+        # name and re-appended, so a long-but-validly-extensioned file still
+        # passes the allowlist guard and routes to text extraction. (Regression
+        # guard: slicing the name to [:200] BEFORE deriving the extension drops
+        # the suffix and wrongly rejects this attachment -> result is None.)
+        assert result.filename.endswith(".txt")
+        assert result.kind == "text"
+
+    def test_rejects_dotenv_attachment(self):
+        # The temp-file path drops .env (secret-exfil guard); the persistence
+        # path must mirror that allowlist so the documented ".env excluded"
+        # guarantee holds on BOTH paths. A .env named attachment with kind
+        # 'text' must NOT be extracted/persisted.
+        payload = {"name": ".env", "kind": "text", "data": "SECRET=hunter2"}
+        assert de.extract_from_payload(payload) is None
+
+    def test_rejects_disallowed_extension_even_with_text_kind(self):
+        # .exe is outside the allowlist; kind:'text' must not smuggle it past
+        # the extension allowlist the temp-file path enforces.
+        payload = {"name": "evil.exe", "kind": "text", "data": "payload"}
+        assert de.extract_from_payload(payload) is None
+
+    def test_rejects_no_extension_attachment(self):
+        # A name with no extension (empty derived ext) is outside the
+        # allowlist — the temp-file path drops it, so this path must too.
+        payload = {"name": "README", "kind": "text", "data": "hello"}
+        assert de.extract_from_payload(payload) is None
+
+    def test_allows_allowlisted_text_extension(self):
+        # Sanity: an allowlisted extension still extracts (the allowlist is a
+        # rejection filter, not a blanket block).
+        payload = {"name": "config.yaml", "kind": "text", "data": "key: value"}
+        result = de.extract_from_payload(payload)
+        assert result is not None
+        assert result.kind == "text"
+
+    def test_allowlist_prefers_canonical_cli_sets(self):
+        # The allowlist must be sourced from the canonical sets in
+        # dashboard_chat_claude_cli (single source of truth) so the two paths
+        # can't drift. Verify the resolver returns those sets when importable.
+        from cogs.ai_core.api import dashboard_chat_claude_cli as cli
+
+        de._RESOLVED_DOC_EXT = None  # force re-resolution
+        try:
+            resolved = de._allowed_doc_extensions()
+        finally:
+            de._RESOLVED_DOC_EXT = None
+        expected = frozenset(cli._SUPPORTED_DOC_BINARY_EXT | cli._SUPPORTED_DOC_TEXT_EXT)
+        assert resolved == expected
+        assert ".env" not in resolved
 
 
 class TestExtractText:

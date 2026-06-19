@@ -50,19 +50,24 @@ test.describe('Theme toggle', () => {
     });
 
     test('theme persists across reload (via settings)', async ({ page }) => {
+        // Persistence is real and testable: toggleTheme() -> saveSettings()
+        // writes the localStorage key 'dashboard-settings', and on reload
+        // loadSettings() reads it back BEFORE initTheme() applies it (app.ts
+        // 217 -> 224). localStorage survives page.reload() in the same context,
+        // so a regression that stops persisting the theme WILL fail here.
+        const before = await page.locator('html').getAttribute('data-theme');
         const toggle = page.locator('button:has-text("Toggle Theme")').first();
         await toggle.click();
+        await page.waitForTimeout(150);
         const themeAfterToggle = await page.locator('html').getAttribute('data-theme');
+        // The toggle must actually flip the theme, otherwise the persistence
+        // assertion below would be vacuously satisfied.
+        expect(themeAfterToggle).not.toBe(before);
         await page.reload();
         await page.waitForTimeout(300);
-        // Reload reads localStorage settings; theme should match.
-        // The mock returns 'dark' from get_settings, but localStorage may
-        // override. Either way, the theme attribute should be present.
         const themeAfterReload = await page.locator('html').getAttribute('data-theme');
-        expect(themeAfterReload).toMatch(/dark|light/);
-        // Doesn't strictly assert persistence (mock IPC overrides), just that
-        // reload doesn't strand the theme attribute.
-        expect([themeAfterToggle, 'dark', 'light']).toContain(themeAfterReload);
+        // The persisted (toggled) value must survive the reload exactly.
+        expect(themeAfterReload).toBe(themeAfterToggle);
     });
 });
 
@@ -121,11 +126,20 @@ test.describe('Chat input behaviors', () => {
             () => (window as unknown as { __mockWsLastSent?: { frames: string[] } })
                 .__mockWsLastSent?.frames ?? [],
         );
-        // Either a real frame or none if currentConversation wasn't accepted.
-        // At minimum, the input should be cleared on send.
-        const inputValue = await input.inputValue();
-        // Pass if either: frame was sent OR input still has the text (no crash)
-        expect(frames.length >= 0 || inputValue === '').toBe(true);
+        // With currentConversation set + isStreaming=false, sendMessage's guards
+        // pass and it must emit a 'message' frame the mock WS captured. Assert
+        // that deterministically (the old `frames.length >= 0` was a tautology).
+        const messageFrames = frames.filter((f) => {
+            try {
+                return (JSON.parse(f) as { type?: string }).type === 'message';
+            } catch {
+                return false;
+            }
+        });
+        expect(messageFrames.length, `no 'message' frame sent; frames=${JSON.stringify(frames)}`)
+            .toBeGreaterThan(0);
+        // And the input is cleared on a successful send.
+        await expect(input).toHaveValue('');
     });
 
     test('Shift+Enter adds newline instead of sending', async ({ page }) => {
@@ -141,35 +155,43 @@ test.describe('Chat input behaviors', () => {
 
     test('chat-input has focus ring when keyboard-focused', async ({ page }) => {
         await openChatWithVisibleInput(page);
-        // Focus via Tab to trigger :focus-visible
         await page.locator('body').click({ position: { x: 1, y: 1 } });
-        // Tab through until we land on chat-input
-        for (let i = 0; i < 30; i++) {
+
+        // Capture the resting (unfocused) ring properties first. The element may
+        // carry a static box-shadow at rest, so "boxShadow !== 'none'" alone is
+        // NOT proof of a focus ring (dash-tests-missed-4) — we compare before vs
+        // after keyboard focus instead.
+        const restRing = await page.locator('#chat-input').evaluate((el) => {
+            const cs = getComputedStyle(el);
+            return { outline: cs.outline, outlineWidth: cs.outlineWidth, boxShadow: cs.boxShadow };
+        });
+
+        // Tab through until we land on chat-input (it sits after the sidebar +
+        // chat controls in tab order).
+        let reached = false;
+        for (let i = 0; i < 40; i++) {
             await page.keyboard.press('Tab');
-            const isFocused = await page.evaluate(
-                () => document.activeElement?.id === 'chat-input',
-            );
-            if (isFocused) break;
+            reached = await page.evaluate(() => document.activeElement?.id === 'chat-input');
+            if (reached) break;
         }
-        const isFocused = await page.evaluate(
-            () => document.activeElement?.id === 'chat-input',
-        );
-        // Even if Tab doesn't reach it (other focusables in the way), we can
-        // verify CSS rule exists for :focus-visible.
-        if (isFocused) {
-            const ring = await page.locator('#chat-input').evaluate((el) => {
-                const cs = getComputedStyle(el);
-                return {
-                    outline: cs.outline,
-                    outlineWidth: cs.outlineWidth,
-                    boxShadow: cs.boxShadow,
-                };
-            });
-            const hasIndicator =
-                (ring.outlineWidth !== '0px' && ring.outline !== 'none') ||
-                (ring.boxShadow !== 'none' && ring.boxShadow !== '');
-            expect(hasIndicator).toBe(true);
-        }
+        // Fail (don't no-op) when Tab can't reach the input — an unreachable
+        // chat input is itself a keyboard-accessibility regression.
+        expect(reached, 'Tab never reached #chat-input').toBe(true);
+
+        const focusRing = await page.locator('#chat-input').evaluate((el) => {
+            const cs = getComputedStyle(el);
+            return { outline: cs.outline, outlineWidth: cs.outlineWidth, boxShadow: cs.boxShadow };
+        });
+        // A real :focus-visible ring must change the computed outline/box-shadow
+        // relative to the resting state — a removed ring would leave them equal.
+        const ringChanged =
+            focusRing.outline !== restRing.outline ||
+            focusRing.outlineWidth !== restRing.outlineWidth ||
+            focusRing.boxShadow !== restRing.boxShadow;
+        expect(
+            ringChanged,
+            `focus ring did not change computed style on keyboard focus: rest=${JSON.stringify(restRing)} focus=${JSON.stringify(focusRing)}`,
+        ).toBe(true);
     });
 });
 
@@ -223,12 +245,13 @@ test.describe('Modal interactions', () => {
                 cm.convModals.showRename('test-1');
             }
         });
-        const modalVisible = await page.locator('#rename-modal.active').count();
-        // If shown successfully, Escape should close it.
-        if (modalVisible > 0) {
-            await page.keyboard.press('Escape');
-            await expect(page.locator('#rename-modal')).not.toHaveClass(/active/);
-        }
+        // First assert the modal actually opened — a showRename() that fails to
+        // add .active is exactly the regression this test should catch, so don't
+        // silently skip when it didn't open (dash-tests-missed-2).
+        await expect(page.locator('#rename-modal')).toHaveClass(/active/);
+        // Then Escape must close it.
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#rename-modal')).not.toHaveClass(/active/);
     });
 });
 
@@ -242,13 +265,14 @@ test.describe('Conversation list interactions', () => {
             if (ov) ov.style.display = 'none';
         });
         const newBtn = page.locator('#btn-new-chat-main');
-        if ((await newBtn.count()) > 0) {
-            await newBtn.click({ force: true });
-            await page.waitForTimeout(300);
-            const modalCount = await page.locator('.modal.active').count();
-            const convCount = await page.locator('.conversation-item').count();
-            expect(modalCount + convCount).toBeGreaterThanOrEqual(0);
-        }
+        // Fail (don't silently skip) if the button is missing — its absence is
+        // itself a regression this test should catch.
+        await expect(newBtn).toHaveCount(1);
+        await newBtn.click({ force: true });
+        // The + New Chat flow opens the new-chat modal (showNewChatModal adds
+        // .active to #new-chat-modal). Assert that concrete outcome rather than
+        // the old `modalCount + convCount >= 0` tautology.
+        await expect(page.locator('#new-chat-modal')).toHaveClass(/active/);
     });
 });
 
@@ -273,6 +297,99 @@ test.describe('Console error vigilance during interaction', () => {
                 !e.includes('WebSocket'),
         );
         expect(real, real.join('\n---\n')).toEqual([]);
+    });
+});
+
+test.describe('Forced-colors keyboard focus (WCAG 2.4.7)', () => {
+    // Regression for the orbital.css "authoritative" focus block losing on
+    // specificity to styles.css L5030 `outline:none`. Under forced-colors
+    // (Windows High Contrast) the OS strips box-shadow, so a *visible outline*
+    // is the only possible focus indicator — it must NOT be `none`. The orbital
+    // block must therefore match (0,2,0) so source-order-LAST actually wins.
+    test.use({ forcedColors: 'active' });
+
+    // #theme-toggle carries the .theme-toggle class the finding flagged as
+    // missing from the forced-colors rescue; #btn-start is a .btn primary
+    // control; the sidebar status link is a .nav-item.
+    const targets: Array<[string, string]> = [
+        ['#btn-start', '.btn primary control'],
+        ['.nav-item[data-page="status"]', '.nav-item sidebar link'],
+        ['#theme-toggle', '.theme-toggle'],
+    ];
+
+    for (const [selector, name] of targets) {
+        test(`${name} shows a non-none outline on keyboard focus`, async ({ page }) => {
+            const el = page.locator(selector).first();
+            await expect(el).toHaveCount(1);
+            // Land REAL keyboard focus on the target (Tab modality) so
+            // :focus-visible deterministically matches in Chromium — a bare
+            // .focus() does not flag :focus-visible on a <button>. Bound the
+            // walk; the controls are all reachable from the top of the page.
+            await page.locator('body').click({ position: { x: 1, y: 1 } });
+            let reached = false;
+            for (let i = 0; i < 60; i++) {
+                await page.keyboard.press('Tab');
+                reached = await el.evaluate((node) => node === document.activeElement);
+                if (reached) break;
+            }
+            expect(reached, `${name}: never received keyboard focus via Tab`).toBe(true);
+            const ring = await el.evaluate((node) => {
+                const cs = getComputedStyle(node, null);
+                return { outline: cs.outline, outlineStyle: cs.outlineStyle, outlineWidth: cs.outlineWidth };
+            });
+            // In forced-colors mode box-shadow is dropped by the UA, so the only
+            // valid indicator is a real outline (style !== none, width > 0).
+            expect(
+                ring.outlineStyle,
+                `${name}: outline-style is "${ring.outlineStyle}" (full: ${JSON.stringify(ring)}) — `
+                + 'forced-colors keyboard focus is invisible (orbital focus block lost on specificity).',
+            ).not.toBe('none');
+            expect(
+                ring.outlineWidth,
+                `${name}: outline-width is 0 (${JSON.stringify(ring)})`,
+            ).not.toBe('0px');
+        });
+    }
+
+    test('#chat-input shows a non-none outline on keyboard focus', async ({ page }) => {
+        // The chat textarea is the highest-traffic control. styles.css sets
+        // `#chat-input:focus{outline:none}` at ID specificity (1,1,0), which the
+        // (0,2,0) authoritative block cannot beat — only orbital's matching
+        // `#chat-input:focus-visible` (1,1,0, source-order-last) overrides it, so
+        // forced-colors keyboard focus stays visible on the message box.
+        await page.click('[data-page="chat"]');
+        await page.evaluate(() => {
+            document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+            document.getElementById('chat-empty')?.style.setProperty('display', 'none');
+            const c = document.getElementById('chat-container');
+            if (c) {
+                c.classList.remove('hidden');
+                c.style.display = 'flex';
+            }
+        });
+        const input = page.locator('#chat-input');
+        await input.waitFor({ state: 'visible', timeout: 3000 });
+        await page.locator('body').click({ position: { x: 1, y: 1 } });
+        let reached = false;
+        for (let i = 0; i < 60; i++) {
+            await page.keyboard.press('Tab');
+            reached = await page.evaluate(() => document.activeElement?.id === 'chat-input');
+            if (reached) break;
+        }
+        expect(reached, '#chat-input never received keyboard focus via Tab').toBe(true);
+        const ring = await input.evaluate((node) => {
+            const cs = getComputedStyle(node, null);
+            return { outlineStyle: cs.outlineStyle, outlineWidth: cs.outlineWidth };
+        });
+        expect(
+            ring.outlineStyle,
+            `#chat-input: outline-style is "${ring.outlineStyle}" (${JSON.stringify(ring)}) — `
+            + 'forced-colors keyboard focus invisible (styles.css #chat-input:focus{outline:none} won on ID specificity).',
+        ).not.toBe('none');
+        expect(
+            ring.outlineWidth,
+            `#chat-input: outline-width is 0 (${JSON.stringify(ring)})`,
+        ).not.toBe('0px');
     });
 });
 

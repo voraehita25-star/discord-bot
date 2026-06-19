@@ -106,7 +106,18 @@ pub fn is_animated_gif(data: &[u8]) -> bool {
     false
 }
 
-/// Get GIF frame count using proper GIF structure parsing
+/// Get GIF frame count using proper GIF structure parsing.
+///
+/// NOT wired to a `#[pyfunction]` on purpose — Python only needs the boolean
+/// `is_animated_gif` (exposed as `py_is_animated`); the exact count has no
+/// Python consumer today. It is kept `pub` (hence `#[allow(dead_code)]`, since
+/// it is dead on the Python/library surface) because `benches/media_bench.rs`
+/// and the `#[cfg(test)]` coverage below exercise it. If Python ever needs the
+/// count, wire a `#[pyfunction]` and drop the allow. PARITY HAZARD: this is a
+/// second hand-rolled GIF walker that must stay bounds-check-consistent with
+/// `is_animated_gif` above — note the two intentionally differ only in how they
+/// terminate on a malformed sub-block (`is_animated_gif` `break`s to keep
+/// scanning; this `return`s the count so far). Apply any bounds fix to BOTH.
 #[allow(dead_code)]
 pub fn get_gif_frame_count(data: &[u8]) -> usize {
     if data.len() < 13 || (&data[0..6] != b"GIF89a" && &data[0..6] != b"GIF87a") {
@@ -216,5 +227,44 @@ mod tests {
     #[test]
     fn test_empty_data() {
         assert!(!is_animated_gif(&[]));
+    }
+
+    /// Minimal valid GIF89a carrying exactly two Image Descriptor frames.
+    /// (Same fixture as benches/media_bench.rs.)
+    fn two_frame_gif() -> Vec<u8> {
+        vec![
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, // GIF89a
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // LSD
+            0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // GCE
+            0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // Image 1
+            0x02, 0x02, 0x44, 0x01, 0x00, 0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // GCE
+            0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // Image 2
+            0x02, 0x02, 0x44, 0x01, 0x00, 0x3B, // Trailer
+        ]
+    }
+
+    #[test]
+    fn test_two_frame_gif_is_animated() {
+        let gif = two_frame_gif();
+        assert!(is_animated_gif(&gif), "2-frame GIF must be detected as animated");
+    }
+
+    #[test]
+    fn test_get_gif_frame_count_counts_two() {
+        let gif = two_frame_gif();
+        assert_eq!(get_gif_frame_count(&gif), 2);
+    }
+
+    #[test]
+    fn test_single_frame_gif_not_animated() {
+        // One Image Descriptor only -> static.
+        let gif = vec![
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, // GIF89a
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // LSD
+            0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // Image 1
+            0x02, 0x02, 0x44, 0x01, 0x00, 0x3B, // Trailer
+        ];
+        assert!(!is_animated_gif(&gif));
+        assert_eq!(get_gif_frame_count(&gif), 1);
     }
 }

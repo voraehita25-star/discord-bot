@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: vi.fn()
 }));
 
-import { escapeHtml, normalizeSqliteUtc } from './shared';
+import { escapeHtml, normalizeSqliteUtc, loadSettings, saveSettings, settings, showToast } from './shared';
 import {
     VALID_PAGES,
     resolvePage,
@@ -18,6 +18,9 @@ import {
     openModal,
     closeModal,
     _resetModalInertState,
+    DataCache,
+    addChartDataPoint,
+    pickTopmostModal,
 } from './app';
 
 // ============================================================================
@@ -35,39 +38,8 @@ const mockLogs = [
 // ============================================================================
 
 describe('DataCache', () => {
-    // Inline DataCache for testing
-    class DataCache {
-        private cache: Map<string, { data: unknown; timestamp: number; ttl: number }> = new Map();
-
-        set<T>(key: string, data: T, ttlMs: number = 5000): void {
-            this.cache.set(key, {
-                data,
-                timestamp: Date.now(),
-                ttl: ttlMs
-            });
-        }
-
-        get<T>(key: string): T | null {
-            const entry = this.cache.get(key);
-            if (!entry) return null;
-            
-            if (Date.now() - entry.timestamp > entry.ttl) {
-                this.cache.delete(key);
-                return null;
-            }
-            
-            return entry.data as T;
-        }
-
-        invalidate(key: string): void {
-            this.cache.delete(key);
-        }
-
-        clear(): void {
-            this.cache.clear();
-        }
-    }
-
+    // Exercises the REAL DataCache exported from app.ts (not an inline copy),
+    // so a regression in the shipped TTL-expiry / capacity-eviction logic fails.
     let cache: DataCache;
 
     beforeEach(() => {
@@ -111,11 +83,22 @@ describe('DataCache', () => {
     it('should clear all data', () => {
         cache.set('key1', 'value1');
         cache.set('key2', 'value2');
-        
+
         cache.clear();
-        
+
         expect(cache.get('key1')).toBeNull();
         expect(cache.get('key2')).toBeNull();
+    });
+
+    it('should evict the oldest entry once at capacity (maxSize=200)', () => {
+        // Shipped behavior the old inline copy never had: at 200 live keys, the
+        // next NEW key evicts the oldest insertion.
+        for (let i = 0; i < 200; i++) cache.set(`k${i}`, i);
+        expect(cache.get('k0')).toBe(0); // still present at capacity
+        cache.set('k200', 200);          // over capacity → evicts oldest (k0)
+        expect(cache.get('k0')).toBeNull();
+        expect(cache.get('k200')).toBe(200);
+        expect(cache.get('k199')).toBe(199);
     });
 });
 
@@ -124,42 +107,36 @@ describe('DataCache', () => {
 // ============================================================================
 
 describe('Chart Data Management', () => {
-    interface ChartDataPoint {
-        timestamp: number;
-        value: number;
-    }
+    // Exercises the REAL addChartDataPoint exported from app.ts. It caps the
+    // history at the live settings.chartHistory (not a per-call maxPoints arg),
+    // so we drive the cap through that setting.
+    type ChartDataPoint = { timestamp: number; value: number };
 
-    function addChartDataPoint(history: ChartDataPoint[], value: number, maxPoints: number = 60): void {
-        history.push({
-            timestamp: Date.now(),
-            value
-        });
-        
-        while (history.length > maxPoints) {
-            history.shift();
-        }
-    }
+    const originalChartHistory = settings.chartHistory;
+    afterEach(() => {
+        settings.chartHistory = originalChartHistory;
+    });
 
     it('should add data points to history', () => {
         const history: ChartDataPoint[] = [];
-        
+
         addChartDataPoint(history, 100);
         addChartDataPoint(history, 200);
-        
+
         expect(history).toHaveLength(2);
         expect(history[0].value).toBe(100);
         expect(history[1].value).toBe(200);
     });
 
-    it('should limit history to max points', () => {
+    it('should limit history to settings.chartHistory points', () => {
+        settings.chartHistory = 5;
         const history: ChartDataPoint[] = [];
-        const maxPoints = 5;
-        
+
         for (let i = 0; i < 10; i++) {
-            addChartDataPoint(history, i, maxPoints);
+            addChartDataPoint(history, i);
         }
-        
-        expect(history).toHaveLength(maxPoints);
+
+        expect(history).toHaveLength(5);
         expect(history[0].value).toBe(5); // First 5 should be removed
         expect(history[4].value).toBe(9);
     });
@@ -167,11 +144,11 @@ describe('Chart Data Management', () => {
     it('should include timestamp with each point', () => {
         const history: ChartDataPoint[] = [];
         const before = Date.now();
-        
+
         addChartDataPoint(history, 100);
-        
+
         const after = Date.now();
-        
+
         expect(history[0].timestamp).toBeGreaterThanOrEqual(before);
         expect(history[0].timestamp).toBeLessThanOrEqual(after);
     });
@@ -182,55 +159,55 @@ describe('Chart Data Management', () => {
 // ============================================================================
 
 describe('Settings Management', () => {
-    interface Settings {
-        theme: 'dark' | 'light';
-        refreshInterval: number;
-        autoScroll: boolean;
-        notifications: boolean;
-        chartHistory: number;
-    }
-
-    const defaultSettings: Settings = {
-        theme: 'dark',
-        refreshInterval: 2000,
-        autoScroll: true,
-        notifications: true,
-        chartHistory: 60
-    };
-
+    // Exercises the REAL loadSettings/saveSettings exported from shared.ts and
+    // the live `settings` singleton — not an inline merge copy. This catches
+    // regressions in the actual persistence + defensive field coercion.
     beforeEach(() => {
         localStorage.clear();
+        // Reset the singleton to a known baseline before each case.
+        settings.theme = 'dark';
+        settings.refreshInterval = 2000;
+        settings.notifications = true;
+        settings.chartHistory = 60;
     });
 
-    it('should load default settings when none saved', () => {
-        const saved = localStorage.getItem('dashboard-settings');
-        expect(saved).toBeNull();
+    it('should round-trip settings through localStorage (save then load)', () => {
+        settings.theme = 'light';
+        settings.refreshInterval = 5000;
+        saveSettings();
+
+        // Flip in-memory, then load must restore the persisted values.
+        settings.theme = 'dark';
+        settings.refreshInterval = 2000;
+        loadSettings();
+
+        expect(settings.theme).toBe('light');
+        expect(settings.refreshInterval).toBe(5000);
     });
 
-    it('should save and load settings from localStorage', () => {
-        const settings: Settings = {
-            ...defaultSettings,
-            theme: 'light',
-            refreshInterval: 5000
-        };
-        
-        localStorage.setItem('dashboard-settings', JSON.stringify(settings));
-        
-        const loaded = JSON.parse(localStorage.getItem('dashboard-settings')!);
-        expect(loaded.theme).toBe('light');
-        expect(loaded.refreshInterval).toBe(5000);
-    });
-
-    it('should merge saved settings with defaults', () => {
-        // Only save partial settings
+    it('should merge partial saved settings over the defaults', () => {
+        // Only persist a partial blob; loadSettings spreads it over the existing
+        // defaults so untouched fields keep their default values.
         localStorage.setItem('dashboard-settings', JSON.stringify({ theme: 'light' }));
-        
-        const saved = JSON.parse(localStorage.getItem('dashboard-settings')!);
-        const merged: Settings = { ...defaultSettings, ...saved };
-        
-        expect(merged.theme).toBe('light');
-        expect(merged.refreshInterval).toBe(2000); // default
-        expect(merged.notifications).toBe(true); // default
+        loadSettings();
+
+        expect(settings.theme).toBe('light');
+        expect(settings.refreshInterval).toBe(2000); // default preserved
+        expect(settings.notifications).toBe(true);    // default preserved
+    });
+
+    it('should coerce a tampered/invalid blob back to safe defaults', () => {
+        // Real defensive logic the inline copy never had: a bad refreshInterval
+        // (would create a runaway setInterval) and an unknown theme are coerced.
+        localStorage.setItem(
+            'dashboard-settings',
+            JSON.stringify({ theme: 'neon', refreshInterval: -1, chartHistory: 99999 }),
+        );
+        loadSettings();
+
+        expect(settings.theme).toBe('dark');         // unknown theme -> default
+        expect(settings.refreshInterval).toBe(2000); // invalid interval -> default
+        expect(settings.chartHistory).toBe(60);      // out-of-range -> default
     });
 });
 
@@ -381,36 +358,47 @@ describe('Debounce Function', () => {
 // ============================================================================
 
 describe('Toast Notifications', () => {
+    // Exercises the REAL showToast exported from shared.ts (DOM injection,
+    // HTML-escaping, and the notifications-mute gate) rather than building a
+    // toast div by hand.
     beforeEach(() => {
         document.body.innerHTML = '<div id="toast-container"></div>';
+        settings.notifications = true;
     });
 
     afterEach(() => {
         document.body.innerHTML = '';
+        settings.notifications = true;
     });
 
-    it('should create toast container if not exists', () => {
-        document.body.innerHTML = '';
-        
-        if (!document.getElementById('toast-container')) {
-            const container = document.createElement('div');
-            container.id = 'toast-container';
-            document.body.appendChild(container);
-        }
-        
-        expect(document.getElementById('toast-container')).not.toBeNull();
-    });
-
-    it('should add toast to container', () => {
+    it('should append a typed toast to the container', () => {
+        showToast('Saved', { type: 'success' });
         const container = document.getElementById('toast-container')!;
-        
-        const toast = document.createElement('div');
-        toast.className = 'toast toast-success';
-        toast.innerHTML = '<span>Test message</span>';
-        container.appendChild(toast);
-        
         expect(container.children).toHaveLength(1);
         expect(container.querySelector('.toast-success')).not.toBeNull();
+        expect(container.querySelector('.toast-message')?.textContent).toBe('Saved');
+    });
+
+    it('should HTML-escape the toast message (XSS-safe)', () => {
+        showToast('<img src=x onerror=alert(1)>', { type: 'info' });
+        const msg = document.querySelector('#toast-container .toast-message');
+        // The payload is rendered as text, not a live <img> element.
+        expect(msg?.querySelector('img')).toBeNull();
+        expect(msg?.textContent).toContain('<img src=x onerror=alert(1)>');
+    });
+
+    it('should suppress info toasts when notifications are muted', () => {
+        settings.notifications = false;
+        showToast('quiet', { type: 'info' });
+        expect(document.getElementById('toast-container')!.children).toHaveLength(0);
+    });
+
+    it('should still surface error toasts even when notifications are muted', () => {
+        settings.notifications = false;
+        showToast('boom', { type: 'error' });
+        const container = document.getElementById('toast-container')!;
+        expect(container.children).toHaveLength(1);
+        expect(container.querySelector('.toast-error')?.getAttribute('role')).toBe('alert');
     });
 });
 
@@ -614,10 +602,11 @@ describe('Modal inert ref-counting (#6)', () => {
 // ============================================================================
 
 describe('Modal focus-trap topmost (#7)', () => {
-    // The Tab focus-trap now selects the LAST .modal.active in DOM order
-    // (topmost overlay) instead of the first. This mirrors the live selector
-    // `querySelectorAll('.modal.active')` then `[length - 1]`; we assert the
-    // selection at the DOM-query level (jsdom can't drive native focus reliably).
+    // The Tab focus-trap selects the LAST .modal.active in DOM order (topmost
+    // overlay) instead of the first. We import the REAL pickTopmostModal from
+    // app.ts (the exact symbol the focus-trap calls), so reverting it to
+    // actives[0] would fail these tests — jsdom can't drive native focus, but
+    // it CAN assert the production selection at the DOM-query level.
     beforeEach(() => {
         _resetModalInertState();
         document.body.innerHTML = '';
@@ -626,12 +615,6 @@ describe('Modal focus-trap topmost (#7)', () => {
     afterEach(() => {
         document.body.innerHTML = '';
     });
-
-    // Mirror of the focus-trap's modal pick in app.ts (last .modal.active).
-    function pickTopmost(): HTMLElement | null {
-        const actives = document.querySelectorAll<HTMLElement>('.modal.active');
-        return actives.length ? actives[actives.length - 1] : null;
-    }
 
     it('should pick the last-in-DOM active modal when two are stacked', () => {
         // chat modal first (inside .app), app-level shortcuts after — the latter
@@ -649,11 +632,11 @@ describe('Modal focus-trap topmost (#7)', () => {
         shortcuts.className = 'modal active';
         document.body.appendChild(shortcuts);
 
-        expect(pickTopmost()).toBe(shortcuts);
-        expect(pickTopmost()?.id).toBe('shortcuts-modal');
+        expect(pickTopmostModal()).toBe(shortcuts);
+        expect(pickTopmostModal()?.id).toBe('shortcuts-modal');
     });
 
-    it('should equal the old querySelector result for a single active modal', () => {
+    it('should equal the lone active modal in the single-modal case', () => {
         // Zero behavior change in the single-modal case: last === first.
         const only = document.createElement('div');
         only.id = 'shortcuts-modal';
@@ -661,14 +644,14 @@ describe('Modal focus-trap topmost (#7)', () => {
         document.body.appendChild(only);
 
         const single = document.querySelector<HTMLElement>('.modal.active');
-        expect(pickTopmost()).toBe(single);
-        expect(pickTopmost()).toBe(only);
+        expect(pickTopmostModal()).toBe(single);
+        expect(pickTopmostModal()).toBe(only);
     });
 
     it('should pick nothing when no modal is active', () => {
         const inactive = document.createElement('div');
         inactive.className = 'modal';
         document.body.appendChild(inactive);
-        expect(pickTopmost()).toBeNull();
+        expect(pickTopmostModal()).toBeNull();
     });
 });

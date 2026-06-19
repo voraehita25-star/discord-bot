@@ -69,11 +69,25 @@ def enable_windows_ansi() -> bool:
         # Enable ANSI escape sequences in Windows Console
         # STD_OUTPUT_HANDLE = -11
         # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        #
+        # INVALID_HANDLE_VALUE is ``(HANDLE)-1`` — ``0xFFFFFFFF`` on Win32 /
+        # ``0xFFFFFFFFFFFFFFFF`` on Win64. A raw ``handle != -1`` compares
+        # against the signed Python int ``-1``, which differs from the
+        # unsigned HANDLE value returned by ctypes, so we'd miss the sentinel
+        # on Win64. ``c_void_p(-1).value`` gives the platform-correct unsigned
+        # bit pattern, and setting restype to c_void_p stops ctypes from
+        # truncating the pointer-width handle to a signed 32-bit int.
+        # (Mirrors utils/monitoring/logger.py.)
+        _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
         handle = kernel32.GetStdHandle(-11)
-        if handle and handle != -1:  # INVALID_HANDLE_VALUE check (e.g. when stdout is piped)
+        if handle and handle != _INVALID_HANDLE_VALUE:
+            # Only OR onto the existing mode when GetConsoleMode succeeds — on a
+            # piped/redirected handle it returns 0 and leaves console_mode at 0,
+            # so an unconditional SetConsoleMode would clobber the real flags.
             console_mode = ctypes.c_ulong()
-            kernel32.GetConsoleMode(handle, ctypes.byref(console_mode))
-            kernel32.SetConsoleMode(handle, console_mode.value | 0x0004)
+            if kernel32.GetConsoleMode(handle, ctypes.byref(console_mode)):
+                kernel32.SetConsoleMode(handle, console_mode.value | 0x0004)
         return True
     except (AttributeError, OSError, ValueError):
         # Fallback: try colorama init if available

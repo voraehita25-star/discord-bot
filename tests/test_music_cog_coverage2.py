@@ -2070,6 +2070,125 @@ class TestCleanupCacheStatUnlinkErrors:
         assert f.exists()
 
 
+class TestSettingTogglesSchedulePersistence:
+    """Regression: loop/volume/247 toggles must schedule a queue save so the
+    new value survives a non-graceful restart.
+
+    Earlier these three commands mutated only in-memory state and never called
+    _schedule_queue_save, so a hard kill before the next clean cog_unload lost
+    the setting (e.g. a 24/7 channel silently reverting to mode_247=False and
+    auto-disconnecting on restart — exactly what the sidecar exists to prevent).
+
+    Unlike the existing toggle tests, this asserts the REAL effect: the guild id
+    landing in the genuine _queue_save_pending set (not a MagicMock call record),
+    so make_cog()'s stubbed _schedule_queue_save is removed first.
+    """
+
+    @staticmethod
+    def _cog_with_real_scheduler():
+        cog = make_cog()
+        # make_cog() replaces _schedule_queue_save with a MagicMock; drop the
+        # instance override so the real method (and real _queue_save_pending) runs.
+        del cog._schedule_queue_save
+        return cog
+
+    @pytest.mark.asyncio
+    async def test_loop_schedules_save(self):
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        assert ctx.guild.id not in cog._queue_save_pending
+        await cog.loop.callback(cog, ctx)
+        assert ctx.guild.id in cog._queue_save_pending
+
+    @pytest.mark.asyncio
+    async def test_volume_schedules_save(self):
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        await cog.volume.callback(cog, ctx, 80)
+        assert ctx.guild.id in cog._queue_save_pending
+
+    @pytest.mark.asyncio
+    async def test_volume_show_current_does_not_schedule(self):
+        # Querying volume (no value) must NOT mark a save — nothing changed.
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        await cog.volume.callback(cog, ctx, None)
+        assert ctx.guild.id not in cog._queue_save_pending
+
+    @pytest.mark.asyncio
+    async def test_mode_247_enable_schedules_save(self):
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        cog._gs(ctx.guild.id).mode_247 = False
+        await cog.mode_247_toggle.callback(cog, ctx)
+        assert cog._gs(ctx.guild.id).mode_247 is True
+        assert ctx.guild.id in cog._queue_save_pending
+
+    @pytest.mark.asyncio
+    async def test_mode_247_disable_schedules_save(self):
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        cog._gs(ctx.guild.id).mode_247 = True
+        await cog.mode_247_toggle.callback(cog, ctx)
+        assert cog._gs(ctx.guild.id).mode_247 is False
+        assert ctx.guild.id in cog._queue_save_pending
+
+    @pytest.mark.asyncio
+    async def test_skip_schedules_save(self):
+        # skip disables loop; that change must be persisted. Skipping the LAST
+        # track empties the queue, so play_next's queue-advance never schedules
+        # a save — without an explicit schedule here, loop silently reverts to
+        # ON after a hard restart.
+        cog = self._cog_with_real_scheduler()
+        ctx = make_ctx()
+        cog._gs(ctx.guild.id).loop = True
+        vc = MagicMock()
+        vc.is_playing.return_value = True
+        vc.is_paused.return_value = False
+        vc.stop = MagicMock()
+        ctx.voice_client = vc
+        assert ctx.guild.id not in cog._queue_save_pending
+        await cog.skip.callback(cog, ctx)
+        assert cog._gs(ctx.guild.id).loop is False
+        assert ctx.guild.id in cog._queue_save_pending
+
+
+class TestJsonFallbackSettingsPersistence:
+    """Regression: in JSON-only mode (utils.database not importable), an idle
+    24/7 channel (mode_247 on, empty queue) must still persist its settings.
+
+    Previously save_queue returned in the ImportError branch BEFORE writing the
+    settings sidecar, and the empty-queue queue JSON is unlinked — so mode_247
+    was lost on restart and the channel auto-disconnected. The sidecar is now
+    written/restored on the JSON path too.
+    """
+
+    @pytest.mark.asyncio
+    async def test_json_fallback_persists_mode_247_with_empty_queue(self, tmp_path, monkeypatch):
+        import sys
+
+        monkeypatch.chdir(tmp_path)
+        gid = 4242
+        # Construct both cogs BEFORE breaking the DB import (so construction is
+        # unaffected); cog2 simulates a fresh process after restart.
+        cog = make_cog()
+        cog2 = make_cog()
+        cog._gs(gid).mode_247 = True
+        cog._gs(gid).queue.clear()  # empty queue == idle 24/7 channel
+
+        # Force `from utils.database import db` (inside save/load) to ImportError.
+        monkeypatch.setitem(sys.modules, "utils.database", None)
+
+        await cog.save_queue(gid)
+        # Settings sidecar persists even though the (empty) queue JSON is unlinked.
+        assert (tmp_path / "data" / f"queue_settings_{gid}.json").exists()
+        assert not (tmp_path / "data" / f"queue_{gid}.json").exists()
+
+        assert cog2._gs(gid).mode_247 is False  # default before load
+        await cog2.load_queue(gid)
+        assert cog2._gs(gid).mode_247 is True  # restored from the sidecar
+
+
 # Keep contextlib referenced (used implicitly by cog under test); silence lint.
 _ = contextlib
 _ = collections

@@ -339,6 +339,53 @@ class TestAICacheFuzzyMatch:
         sim = cache._calculate_similarity("hello", "world")
         assert 0 <= sim <= 1
 
+    def test_find_similar_is_context_scoped(self):
+        """find_similar must NOT return an entry stored under a different
+        context_hash, even when the normalized text matches exactly. The
+        exact-match key is context-scoped, so the fuzzy fallback must be too —
+        otherwise a fuzzy hit leaks a response across conversations."""
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache()
+        cache.set("what is the secret", "context-A-only response", context_hash="ctx-A")
+
+        # Same text, different context -> no cross-context fuzzy leak.
+        assert cache.find_similar("what is the secret", context_hash="ctx-B") is None
+        # No-context query must not see a context-scoped entry either.
+        assert cache.find_similar("what is the secret") is None
+
+    def test_find_similar_same_context_still_matches(self):
+        """The context scoping must not break legitimate same-context fuzzy
+        hits: a near-identical message in the SAME context still matches."""
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache()
+        cache.set("what is the secret", "context-A response", context_hash="ctx-A")
+
+        match = cache.find_similar("what is the secret", context_hash="ctx-A")
+        assert match is not None
+        _key, entry, similarity = match
+        assert entry.response == "context-A response"
+        assert similarity >= cache.SIMILARITY_THRESHOLD
+
+    def test_get_fuzzy_does_not_leak_across_context(self):
+        """End-to-end via get(): an exact-key miss must not be salvaged by a
+        fuzzy hit from a different context_hash."""
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        cache = AICache()
+        cache.set("tell me the answer", "answer for context A", context_hash="ctx-A")
+
+        # Different context -> exact key misses AND fuzzy must be context-scoped.
+        assert cache.get("tell me the answer", context_hash="ctx-B", use_fuzzy=True) is None
+        # Same context -> fuzzy fallback hits. "answers" normalizes differently
+        # from the stored "answer" (so the exact key misses) but is ~0.97
+        # similar, so it must resolve via the context-scoped fuzzy path.
+        assert (
+            cache.get("tell me the answers", context_hash="ctx-A", use_fuzzy=True)
+            == "answer for context A"
+        )
+
 
 class TestAICacheEvictionLRU:
     """Tests for AICache LRU eviction."""

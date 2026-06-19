@@ -431,9 +431,6 @@ class ChatManager(SessionMixin, ResponseMixin):
         # Streaming mode settings
         self.streaming_enabled: dict[int, bool] = {}  # Channel ID -> Streaming enabled
 
-        # Current typing message tracking
-        self.current_typing_msg: dict[int, Any] = {}  # Channel ID -> Current "typing" message
-
         # Use new modular components (v3.3.6)
         self._message_queue = MessageQueue()
         self._performance = PerformanceTracker()
@@ -547,7 +544,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                         _mgr.seen_users.pop(_cid, None)
                         _mgr.processing_locks.pop(_cid, None)
                         _mgr.streaming_enabled.pop(_cid, None)
-                        _mgr.current_typing_msg.pop(_cid, None)
                         _mgr._message_queue.pending_messages.pop(_cid, None)
                         _mgr._message_queue.cancel_flags.pop(_cid, None)
 
@@ -565,7 +561,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                 self.seen_users.pop(channel_id, None)
                 self.processing_locks.pop(channel_id, None)
                 self.streaming_enabled.pop(channel_id, None)
-                self.current_typing_msg.pop(channel_id, None)
                 self._message_queue.pending_messages.pop(channel_id, None)
                 self._message_queue.cancel_flags.pop(channel_id, None)
                 evicted += 1
@@ -1024,6 +1019,11 @@ class ChatManager(SessionMixin, ResponseMixin):
         if index is None:
             return False
         del history[index]
+        # A delete + later insert that nets to the same length would leave the
+        # length-keyed auto-compress cache (process_chat) serving a stale
+        # pre-edit compression. Drop it so the next turn recomputes — mirrors
+        # the edit/patch paths.
+        session.pop("_compress_cache", None)
         return True
 
     def insert_history_content(
@@ -1115,17 +1115,24 @@ class ChatManager(SessionMixin, ResponseMixin):
             # ``history`` may be the ``or []`` fallback list, so inserting
             # into it would be lost.
             session["history"] = [item]
+            # A net-zero length change (this insert paired with a delete) would
+            # leave the length-keyed auto-compress cache (process_chat) serving
+            # a stale pre-edit compression. Drop it on every successful insert
+            # so the next turn recomputes — mirrors the edit/patch paths.
+            session.pop("_compress_cache", None)
             return True
 
         if next_row is not None:
             index = _find_history_item_index(history, next_row, next_occurrence)
             if index is not None:
                 history.insert(index, item)
+                session.pop("_compress_cache", None)
                 return True
         if prev_row is not None:
             index = _find_history_item_index(history, prev_row, prev_occurrence)
             if index is not None:
                 history.insert(index + 1, item)
+                session.pop("_compress_cache", None)
                 return True
         return False
 

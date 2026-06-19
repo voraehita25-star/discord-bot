@@ -103,6 +103,45 @@ fn validate_relative_path(p: &std::path::Path) -> PyResult<()> {
     Ok(())
 }
 
+/// Reject a path whose any *intermediate directory* component is a symlink.
+///
+/// `validate_relative_path` is purely lexical and the leaf-only
+/// `symlink_metadata` check used by save()/load() stats only the final
+/// component, so a relative path like `subdir/x.json` where `subdir` is a
+/// directory symlink pointing outside the project root would slip through
+/// (no `..`, no Prefix/RootDir, and the leaf `x.json` is a regular file).
+/// This walks every ancestor directory of `p` and refuses if any *existing*
+/// component is a symlink. Non-existent components are skipped — for save()
+/// the leaf does not exist yet, and a missing intermediate dir will surface
+/// as the real File::create/open error downstream; we only fail-closed on a
+/// *confirmed* symlink. Callers must still apply the leaf symlink check
+/// separately (load() does; save() does so guarded on existence).
+fn reject_symlinked_components(p: &std::path::Path) -> PyResult<()> {
+    // Walk ancestor prefixes excluding the full path itself (the leaf is
+    // handled by the callers' own symlink_metadata check). `ancestors()`
+    // yields the path then each parent; skip(1) drops the leaf.
+    for ancestor in p.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(PyValueError::new_err(
+                        "Path traversal blocked: symlinked directory component not allowed",
+                    ));
+                }
+            }
+            // A component that does not exist (NotFound) is fine here — the
+            // later open/create will produce the authoritative error. Any
+            // other stat error (e.g. permission) is also non-fatal for this
+            // guard; the real I/O below will surface it.
+            Err(_) => continue,
+        }
+    }
+    Ok(())
+}
+
 /// Main RAG Engine class
 #[pyclass]
 pub struct RagEngine {
@@ -322,6 +361,20 @@ impl RagEngine {
         // letter (e.g. "C:foo") could escape the project root.
         let save_path = std::path::Path::new(path);
         validate_relative_path(save_path)?;
+        // Defense-in-depth: refuse a symlinked intermediate directory (a
+        // lexically-clean relative path can still point outside the project
+        // root through a directory symlink), and refuse to write THROUGH an
+        // existing leaf symlink (File::create follows symlinks). load() has
+        // had the leaf check; save() previously had none, so even a final-
+        // component symlink was followed on write.
+        reject_symlinked_components(save_path)?;
+        if let Ok(meta) = std::fs::symlink_metadata(save_path) {
+            if meta.file_type().is_symlink() {
+                return Err(PyValueError::new_err(
+                    "Path traversal blocked: symlinked save path not allowed",
+                ));
+            }
+        }
 
         let entries = self.entries.read();
         let data: Vec<_> = entries
@@ -343,15 +396,22 @@ impl RagEngine {
         // Atomic write: write to a *unique* temp file, then rename. The
         // previous implementation always used `<path>.tmp`, so two save()
         // calls racing on the same path would clobber each other's temp file
-        // mid-write, producing a corrupt JSON. We append the OS PID and the
-        // process-startup-relative nanos so two concurrent savers — even on
-        // the same process — never share a temp name.
+        // mid-write, producing a corrupt JSON. We append the OS PID, the wall
+        // clock nanos, AND a process-wide atomic counter. The counter is the
+        // load-bearing part: SystemTime::now().as_nanos() does NOT advance on
+        // every read on Windows (coarse clock — consecutive reads can return
+        // identical nanos), so two same-process threads saving the same path
+        // within one clock tick would otherwise get an identical pid+nanos and
+        // thus the SAME temp name. fetch_add guarantees each save() in this
+        // process gets a distinct suffix regardless of clock resolution.
+        static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let temp_path = format!("{}.tmp.{}.{}", path, pid, nanos);
+        let seq = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_path = format!("{}.tmp.{}.{}.{}", path, pid, nanos, seq);
 
         // Write + fsync the temp file before renaming. Without sync_all(),
         // the bytes may live only in the OS page cache; a power loss after
@@ -423,6 +483,11 @@ impl RagEngine {
     fn load(&self, path: &str) -> PyResult<usize> {
         let load_path = std::path::Path::new(path);
         validate_relative_path(load_path)?;
+        // Defense-in-depth: the leaf symlink_metadata check below only stats
+        // the final component, so a symlinked intermediate directory would let
+        // a lexically-clean relative path resolve outside the project root.
+        // Refuse any symlinked ancestor directory before the leaf check.
+        reject_symlinked_components(load_path)?;
 
         // Size limit (256 MiB) to prevent OOM from malicious/corrupt files.
         // RAG dumps are expected to be small (few MB); 256 MiB is a generous cap.
@@ -537,6 +602,319 @@ impl RagEngine {
         *entries = new_entries;
 
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    // ---- Lexical path-traversal guard (interpreter-free) ----------------
+
+    #[test]
+    fn validate_relative_path_accepts_clean_relative() {
+        assert!(validate_relative_path(Path::new("data.json")).is_ok());
+        assert!(validate_relative_path(Path::new("subdir/data.json")).is_ok());
+        assert!(validate_relative_path(Path::new("a/b/c.json")).is_ok());
+    }
+
+    #[test]
+    fn validate_relative_path_rejects_absolute() {
+        // POSIX-style absolute.
+        assert!(validate_relative_path(Path::new("/etc/passwd")).is_err());
+        // Windows absolute drive path.
+        #[cfg(windows)]
+        assert!(validate_relative_path(Path::new("C:\\Windows\\system32")).is_err());
+    }
+
+    #[test]
+    fn validate_relative_path_rejects_parent_dir() {
+        assert!(validate_relative_path(Path::new("../secret")).is_err());
+        assert!(validate_relative_path(Path::new("subdir/../../secret")).is_err());
+    }
+
+    #[test]
+    fn validate_relative_path_rejects_rootdir() {
+        // A rooted-but-driveless path. On Windows Path::is_absolute() reports
+        // these as relative, so the RootDir arm is what actually rejects them.
+        assert!(validate_relative_path(Path::new("/foo")).is_err());
+        #[cfg(windows)]
+        assert!(validate_relative_path(Path::new("\\foo")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_relative_path_rejects_drive_prefix() {
+        // "C:foo" is a drive-relative path that Path::is_absolute() reports as
+        // RELATIVE on Windows — only the Component::Prefix arm catches it. This
+        // arm is unreachable from non-Windows hosts, so it MUST be exercised by
+        // a Windows Rust test (the audit's rs-rag-1 point).
+        assert!(validate_relative_path(Path::new("C:foo")).is_err());
+        assert!(validate_relative_path(Path::new("c:bar\\baz.json")).is_err());
+    }
+
+    // ---- Filesystem-dependent tests ------------------------------------
+    //
+    // RagEngine::save/load/add are plain Rust methods (no Python<'_> arg) so
+    // they are callable from cargo test without a Python interpreter. They use
+    // RELATIVE paths, which validate_relative_path requires, so every test here
+    // chdir's into a throwaway tempdir first. chdir is process-global and cargo
+    // runs tests on parallel threads, so all CWD-mutating tests share one lock
+    // to avoid racing on the working directory.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unique_tempdir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rag_engine_test_{}_{}_{}",
+            tag,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_entry(id: &str, dim: usize) -> MemoryEntry {
+        MemoryEntry {
+            id: id.to_string(),
+            text: format!("text-{id}"),
+            embedding: vec![0.1_f32; dim],
+            timestamp: 1.0,
+            importance: 0.5,
+        }
+    }
+
+    #[test]
+    fn save_load_round_trip_relative_path() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("roundtrip");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            let engine = RagEngine::new(4, 0.0);
+            engine.add(sample_entry("a", 4)).unwrap();
+            engine.add(sample_entry("b", 4)).unwrap();
+            engine.save("dump.json").unwrap();
+
+            let loaded = RagEngine::new(4, 0.0);
+            let count = loaded.load("dump.json").unwrap();
+            assert_eq!(count, 2);
+            assert_eq!(loaded.len(), 2);
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[test]
+    fn add_rejects_non_finite_embedding_and_importance() {
+        // Interpreter-free: add() is a plain method. Finite-value rejection is a
+        // security/robustness guard (a NaN/Inf in storage breaks save()/search).
+        let engine = RagEngine::new(3, 0.0);
+        let mut bad_emb = sample_entry("x", 3);
+        bad_emb.embedding = vec![1.0, f32::NAN, 2.0];
+        assert!(engine.add(bad_emb).is_err());
+
+        let mut bad_inf = sample_entry("y", 3);
+        bad_inf.embedding = vec![1.0, f32::INFINITY, 2.0];
+        assert!(engine.add(bad_inf).is_err());
+
+        let mut bad_imp = sample_entry("z", 3);
+        bad_imp.importance = f32::NAN;
+        assert!(engine.add(bad_imp).is_err());
+
+        // Dimension mismatch is also rejected.
+        assert!(engine.add(sample_entry("w", 2)).is_err());
+
+        assert_eq!(engine.len(), 0);
+    }
+
+    #[test]
+    fn add_batch_dedups_and_counts_net_growth() {
+        let engine = RagEngine::new(3, 0.0);
+        // Two distinct ids + one duplicate id + one malformed (wrong dim) entry.
+        let mut malformed = sample_entry("bad", 2);
+        malformed.text = "wrong-dim".to_string();
+        let added = engine
+            .add_batch(vec![
+                sample_entry("a", 3),
+                sample_entry("b", 3),
+                sample_entry("a", 3), // duplicate id -> replace, not +1
+                malformed,            // dropped silently
+            ])
+            .unwrap();
+        // Net growth is 2 (a, b); duplicate replaces, malformed dropped.
+        assert_eq!(added, 2);
+        assert_eq!(engine.len(), 2);
+    }
+
+    #[test]
+    fn load_rejects_oversized_file_and_toctou() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("oversize");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // 256 MiB is the cap; writing a file just over it must be rejected by
+            // the symlink_metadata().len() check (the up-front size guard).
+            const MAX_LOAD_BYTES: u64 = 256 * 1024 * 1024;
+            use std::io::Write;
+            let mut f = std::fs::File::create("big.json").unwrap();
+            f.set_len(MAX_LOAD_BYTES + 16).unwrap();
+            f.flush().unwrap();
+            drop(f);
+
+            let engine = RagEngine::new(4, 0.0);
+            let err = engine.load("big.json");
+            assert!(err.is_err(), "oversized file must be rejected");
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[test]
+    fn load_refuses_to_replace_when_nothing_matches_dimension() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("nodim");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // File has one entry but with the WRONG embedding dimension (2 vs 4),
+            // so nothing matches and load() must refuse rather than wipe data.
+            let json = r#"[{"id":"a","text":"t","embedding":[0.1,0.2],"timestamp":1.0,"importance":0.5}]"#;
+            std::fs::write("mismatch.json", json).unwrap();
+
+            let engine = RagEngine::new(4, 0.0);
+            engine.add(sample_entry("existing", 4)).unwrap();
+            let res = engine.load("mismatch.json");
+            assert!(res.is_err(), "must refuse to replace when nothing matched");
+            // Existing data must be untouched.
+            assert_eq!(engine.len(), 1);
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[test]
+    fn load_drops_non_finite_embedding_values_from_file() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("nonfinite");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // null is JSON's way to smuggle a non-numeric — as_f64() returns
+            // None and the value is filtered, so the embedding ends up shorter
+            // than `dimension` and the whole entry is dropped (dim mismatch).
+            let json = r#"[
+              {"id":"good","text":"g","embedding":[0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":0.5},
+              {"id":"bad","text":"b","embedding":[0.1,null,0.3,0.4],"timestamp":1.0,"importance":0.5}
+            ]"#;
+            std::fs::write("mixed.json", json).unwrap();
+
+            let engine = RagEngine::new(4, 0.0);
+            let count = engine.load("mixed.json").unwrap();
+            assert_eq!(count, 1, "only the all-finite entry should load");
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    // ---- Symlink refusal (Unix only — needs symlink syscall) -----------
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_leaf_symlink() {
+        use std::os::unix::fs::symlink;
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("leafsym");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            std::fs::write("real.json", "[]").unwrap();
+            symlink("real.json", "link.json").unwrap();
+            let engine = RagEngine::new(4, 0.0);
+            assert!(engine.load("link.json").is_err(), "leaf symlink must be refused");
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_and_load_refuse_symlinked_parent_directory() {
+        use std::os::unix::fs::symlink;
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("parentsym");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // `outside` is a real dir; `link_dir` is a symlink to it. A path
+            // through link_dir is lexically clean and its leaf is a regular
+            // file, so only the intermediate-symlink guard catches it.
+            std::fs::create_dir("outside").unwrap();
+            symlink("outside", "link_dir").unwrap();
+
+            let engine = RagEngine::new(4, 0.0);
+            engine.add(sample_entry("a", 4)).unwrap();
+            // save() must refuse to write THROUGH the symlinked dir.
+            assert!(
+                engine.save("link_dir/dump.json").is_err(),
+                "save through symlinked parent dir must be refused"
+            );
+
+            // And load() must refuse to read through it.
+            std::fs::write("outside/dump.json", "[]").unwrap();
+            let loader = RagEngine::new(4, 0.0);
+            assert!(
+                loader.load("link_dir/dump.json").is_err(),
+                "load through symlinked parent dir must be refused"
+            );
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[test]
+    fn reject_symlinked_components_passes_for_real_dirs() {
+        // A path through only-real directories must pass the intermediate guard.
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("realdirs");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            std::fs::create_dir_all("a/b").unwrap();
+            assert!(reject_symlinked_components(Path::new("a/b/file.json")).is_ok());
+            // Non-existent intermediates are skipped (not an error here).
+            assert!(reject_symlinked_components(Path::new("does/not/exist.json")).is_ok());
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
     }
 }
 

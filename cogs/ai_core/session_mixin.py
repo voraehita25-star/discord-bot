@@ -56,7 +56,6 @@ class SessionMixin:
     - pending_messages: dict[int, list]
     - cancel_flags: dict[int, bool]
     - streaming_enabled: dict[int, bool]
-    - current_typing_msg: dict[int, Any] - channel_id -> typing message
 
     This mixin requires the following methods to be defined on the consuming class:
     - _enforce_channel_limit() -> None: Enforce max active channel limit
@@ -71,7 +70,6 @@ class SessionMixin:
     pending_messages: dict[int, list]
     cancel_flags: dict[int, bool]
     streaming_enabled: dict[int, bool]
-    current_typing_msg: dict[int, Any]
 
     def _enforce_channel_limit(self) -> int:
         """Enforce max active channel limit. Must be implemented by the consuming class."""
@@ -344,7 +342,6 @@ class SessionMixin:
                                 self.pending_messages.pop(channel_id, None)
                                 self.cancel_flags.pop(channel_id, None)
                                 self.streaming_enabled.pop(channel_id, None)
-                                self.current_typing_msg.pop(channel_id, None)
                             else:
                                 # Channel was re-accessed during save, skip cleanup
                                 continue

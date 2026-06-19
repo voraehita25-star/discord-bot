@@ -313,8 +313,12 @@ class MessageQueue:
 
         # Merge all messages
         if len(pending) > 1:
+            # Strip CR/LF from the display name so a crafted name can't forge a
+            # line-based prompt-structure boundary in the merged body — mirrors
+            # the single-message header path in logic.py process_chat
+            # (user.display_name.replace("\n", " ").replace("\r", " ")).
             all_messages = [
-                f"[{getattr(msg.user, 'display_name', None) or getattr(msg.user, 'name', 'Unknown')}]: {msg.message}"
+                f"[{(getattr(msg.user, 'display_name', None) or getattr(msg.user, 'name', 'Unknown')).replace(chr(10), ' ').replace(chr(13), ' ')}]: {msg.message}"
                 for msg in pending
             ]
             combined_message = "\n".join(all_messages)

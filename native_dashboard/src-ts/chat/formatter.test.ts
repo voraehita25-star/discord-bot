@@ -295,3 +295,35 @@ describe('formatMessage — blockquotes', () => {
         expect(html).toContain('<blockquote>');
     });
 });
+
+describe('formatMessage — CRLF normalization', () => {
+    // Regression: every block-level pass matches LF only and `.` excludes \r,
+    // so CRLF-terminated rows used to break tables and drop the first list item
+    // (pasted/Windows-origin content). The up-front \r\n? → \n pass fixes all.
+    it('renders a CRLF-terminated table to <table> (not raw pipes)', () => {
+        const html = formatMessage('|a|b|\r\n|-|-|\r\n|1|2|');
+        expect(html).toContain('md-table');
+        expect(html).toContain('<th');
+        expect(html).toContain('>1<');
+        expect(html).toContain('>2<');
+    });
+
+    it('keeps the first item of a CRLF ordered list', () => {
+        const html = formatMessage('1. one\r\n2. two');
+        expect(html).toContain('<ol>');
+        expect(html).toContain('<li>one</li>');
+        expect(html).toContain('<li>two</li>');
+    });
+
+    it('keeps the first item of a CRLF unordered list', () => {
+        const html = formatMessage('- a\r\n- b');
+        expect(html).toContain('<ul>');
+        expect(html).toContain('<li>a</li>');
+        expect(html).toContain('<li>b</li>');
+    });
+
+    it('does not leave a literal carriage return in the output', () => {
+        const html = formatMessage('line 1\r\nline 2');
+        expect(html).not.toContain('\r');
+    });
+});

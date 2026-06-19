@@ -185,6 +185,13 @@ function formatMessageUncached(content: string): string {
     // XSS — DOMPurify still runs); prevents garbled/relocated rendering.
     content = content.replace(/[\x00-\x04]/g, '');
 
+    // Normalize CRLF/CR to LF once, up front. Every block-level pass below
+    // (tables line ~382, unordered/ordered lists ~422/430) matches LF only and
+    // `.` excludes \r, so a `\r\n`-terminated line would fail to match — tables
+    // emit raw `|` pipes and the first list item is dropped. Mirrors how
+    // CommonMark treats \r\n and \r as line breaks; fixes all three at once.
+    content = content.replace(/\r\n?/g, '\n');
+
     // Fail-closed if DOMPurify isn't available — return escaped plain text
     // rather than risk emitting any of the markdown HTML pipeline output
     // unsanitised. The same check runs again at the bottom as defence-in-

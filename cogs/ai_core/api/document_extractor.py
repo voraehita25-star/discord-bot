@@ -103,13 +103,40 @@ def extract_from_payload(payload: dict[Any, Any]) -> ExtractedDocument | None:
     """
     if not isinstance(payload, dict):
         return None
-    name = str(payload.get("name", "attachment"))[:200]
+    raw_name = str(payload.get("name", "attachment"))
     kind_hint = payload.get("kind")
     data_field = payload.get("data")
     if not isinstance(data_field, str) or not data_field:
         return None
 
-    ext = _extension_of(name)
+    # Derive the extension from the FULL name, then truncate in an
+    # extension-preserving way. Slicing first ([:200]) could chop the
+    # suffix off a long-but-validly-extensioned name, making _extension_of
+    # return '' and the allowlist guard below wrongly reject it.
+    ext = _extension_of(raw_name)
+    if len(raw_name) > 200:
+        # Keep the extension and fill the rest of the 200-char budget from the
+        # stem so the suffix survives. If the extension itself is absurdly long
+        # (pathological input), fall back to a plain slice — correctness of the
+        # <=200 bound wins over preserving an extension that long.
+        keep = 200 - len(ext)
+        name = raw_name[:keep] + ext if keep > 0 else raw_name[:200]
+    else:
+        name = raw_name
+
+    # Mirror the temp-file path's extension allowlist (_save_inline_documents
+    # in dashboard_chat_claude_cli). Both paths consume the same untrusted
+    # `documents` payload, but only the temp-file path enforced the allowlist
+    # — so a frontend could upload an attachment named e.g. `.env` with
+    # kind:'text' and have its text persisted into long-term document memory
+    # (re-injected into every future turn via build_user_context) even though
+    # the temp-file path correctly drops it. Enforcing the same allowlist here
+    # keeps the documented `.env`-excluded guarantee true on both paths.
+    if not _is_allowed_doc_extension(ext):
+        logger.info(
+            "Document %s rejected: extension %r not in upload allowlist — skipped", name, ext
+        )
+        return None
 
     try:
         if ext == ".pdf":
@@ -138,6 +165,113 @@ def _extension_of(filename: str) -> str:
     """Lowercase extension including the leading dot, or empty string."""
     m = re.search(r"\.[A-Za-z0-9]+$", filename)
     return m.group(0).lower() if m else ""
+
+
+# Fallback document-extension allowlist, used only if the canonical sets in
+# ``dashboard_chat_claude_cli`` can't be imported (test fixtures that don't
+# bring up the chat module, or a packaging change). The chat module is the
+# single source of truth — ``_allowed_doc_extensions`` prefers it and only
+# drops to this copy on ImportError. ``.env`` is deliberately excluded here
+# too: uploading a ``.env`` combined with the CLI's Read-tool capability lets
+# a malicious frontend exfiltrate secrets via the AI response.
+_FALLBACK_SUPPORTED_DOC_EXT = frozenset(
+    {
+        # binary
+        ".pdf",
+        ".docx",
+        # text / code / config
+        ".txt",
+        ".md",
+        ".markdown",
+        ".rst",
+        ".json",
+        ".jsonc",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".conf",
+        ".cfg",
+        ".csv",
+        ".tsv",
+        ".xml",
+        ".log",
+        ".py",
+        ".pyi",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".rs",
+        ".go",
+        ".java",
+        ".kt",
+        ".scala",
+        ".swift",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".h",
+        ".hpp",
+        ".hxx",
+        ".cs",
+        ".rb",
+        ".php",
+        ".pl",
+        ".r",
+        ".lua",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".fish",
+        ".ps1",
+        ".bat",
+        ".cmd",
+        ".html",
+        ".htm",
+        ".css",
+        ".scss",
+        ".sass",
+        ".less",
+        ".vue",
+        ".svelte",
+        ".sql",
+        ".graphql",
+        ".gql",
+    }
+)
+
+# Cache of the resolved allowlist so the (heavy) chat module is imported at
+# most once. ``None`` until first resolution.
+_RESOLVED_DOC_EXT: frozenset[str] | None = None
+
+
+def _allowed_doc_extensions() -> frozenset[str]:
+    """Resolve the upload extension allowlist, preferring the canonical sets
+    in ``dashboard_chat_claude_cli`` so both consumers of the document payload
+    stay in lockstep. Falls back to the local copy if that import fails."""
+    global _RESOLVED_DOC_EXT
+    if _RESOLVED_DOC_EXT is not None:
+        return _RESOLVED_DOC_EXT
+    try:
+        from .dashboard_chat_claude_cli import (
+            _SUPPORTED_DOC_BINARY_EXT,
+            _SUPPORTED_DOC_TEXT_EXT,
+        )
+
+        _RESOLVED_DOC_EXT = frozenset(_SUPPORTED_DOC_BINARY_EXT | _SUPPORTED_DOC_TEXT_EXT)
+    except ImportError:
+        _RESOLVED_DOC_EXT = _FALLBACK_SUPPORTED_DOC_EXT
+    return _RESOLVED_DOC_EXT
+
+
+def _is_allowed_doc_extension(ext: str) -> bool:
+    """Is this extension on the upload allowlist? (``.env`` and any extension
+    outside the allowlist — including the empty string — return False.)"""
+    return ext in _allowed_doc_extensions()
 
 
 def _decode_data_url(data_field: str) -> bytes | None:

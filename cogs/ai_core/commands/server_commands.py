@@ -19,6 +19,26 @@ from ..sanitization import sanitize_channel_name, sanitize_role_name
 _NO_MENTIONS = discord.AllowedMentions.none()
 
 
+def _safe_int(value: str, *, max_digits: int | None = None) -> int | None:
+    """Parse ``value`` as a base-10 int, returning None instead of raising.
+
+    Gating an ``int()`` call on ``str.isdigit()`` is NOT crash-safe: ``isdigit()``
+    is True for many non-ASCII digit characters (superscripts ``²``, circled
+    digits ``①``, Kharoshthi, …) that ``int()`` cannot parse — and an
+    all-ASCII-digit string longer than ``sys.get_int_max_str_digits()`` (4300)
+    also raises ``ValueError``. Both forms are model/AI-reachable through the
+    tool dispatch, so every AI-supplied numeric arg must convert through here
+    rather than ``isdigit()`` + ``int()``. ``max_digits`` short-circuits absurd
+    lengths before the parse (used for the unbounded ``limit`` arg).
+    """
+    try:
+        if max_digits is not None and len(value) > max_digits:
+            return None
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def _fmt_http_error(e: discord.HTTPException) -> str:
     """Format a discord.HTTPException for safe display to end users.
 
@@ -369,9 +389,13 @@ async def cmd_delete_channel(
     # names, so a string "12345" could match either a channel literally
     # named "12345" or the channel with that snowflake ID; the user almost
     # always means the latter).
+    # _safe_int (not isdigit()+int()): a Unicode-"digit" name like "²" is
+    # isdigit()==True but int()-unparseable, and would raise here; instead it
+    # returns None and falls through to the name match below.
     channel = None
-    if name.isdigit():
-        channel = guild.get_channel(int(name))
+    _cid = _safe_int(name)
+    if _cid is not None:
+        channel = guild.get_channel(_cid)
 
     if channel is None:
         matches = [ch for ch in guild.channels if ch.name.lower() == name.lower()]
@@ -510,9 +534,12 @@ async def cmd_delete_role(
     # a string "12345" could match either a role literally named "12345" or the
     # role with that snowflake ID; the user almost always means the latter).
     # Mirrors cmd_delete_channel's ID-first resolution.
+    # _safe_int (not isdigit()+int()): a Unicode-"digit" role name falls through
+    # to the name match instead of raising ValueError on int().
     role = None
-    if role_name.isdigit():
-        role = guild.get_role(int(role_name))
+    _rid = _safe_int(role_name)
+    if _rid is not None:
+        role = guild.get_role(_rid)
 
     if role is None:
         # Check for duplicate names
@@ -801,9 +828,12 @@ async def cmd_set_channel_perm(
     # cmd_delete_channel: Discord allows multiple channels sharing a name, so a
     # bare first-match could silently mutate the wrong channel's overwrites
     # (e.g. exposing a private "general" by toggling view_channel on a public one).
+    # _safe_int (not isdigit()+int()): a Unicode-"digit" channel name falls
+    # through to the name match instead of raising ValueError on int().
     channel = None
-    if channel_name.isdigit():
-        channel = guild.get_channel(int(channel_name))
+    _cid = _safe_int(channel_name)
+    if _cid is not None:
+        channel = guild.get_channel(_cid)
     if channel is None:
         try:
             same_name = [
@@ -1073,8 +1103,12 @@ async def cmd_list_members(
     query = None  # Default no query
 
     if args:
-        if args[0].isdigit():
-            limit = int(args[0])
+        # _safe_int (not isdigit()+int()): args[0] is AI-controlled and uncapped,
+        # so a Unicode-"digit" or >4300-digit token would raise on int(). A
+        # non-parseable leading token falls through to the query branch instead.
+        _lim = _safe_int(args[0], max_digits=9)
+        if _lim is not None:
+            limit = _lim
             # Validate limit
             if limit < 1:
                 limit = 1
@@ -1132,16 +1166,19 @@ async def cmd_get_user_info(
     if not target:
         await origin_channel.send("❌ ชื่อผู้ใช้ไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
+    # _safe_int (not isdigit()+int()): a Unicode-"digit" target falls through to
+    # the name lookup instead of raising ValueError on int().
     member = None
-    if target.isdigit():
+    _uid = _safe_int(target)
+    if _uid is not None:
         # Try cached members first; if not cached (members intent off,
         # large guild, or member only fetched on join) fall back to
         # ``fetch_member``. Without the fetch, lookups by ID fail
         # silently for users the bot has never seen send a message.
-        member = guild.get_member(int(target))
+        member = guild.get_member(_uid)
         if member is None:
             try:
-                member = await guild.fetch_member(int(target))
+                member = await guild.fetch_member(_uid)
             except (discord.NotFound, discord.HTTPException, discord.Forbidden):
                 member = None
     if not member:
@@ -1204,7 +1241,9 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
         )
         return
     raw_msg_id = args[0].strip()
-    msg_id = int(raw_msg_id) if raw_msg_id.isdigit() else None
+    # _safe_int (not isdigit()+int()): a Unicode-"digit" id is isdigit()==True but
+    # int()-unparseable; _safe_int yields None so the guard below rejects it.
+    msg_id = _safe_int(raw_msg_id)
     if msg_id is None:
         await origin_channel.send("❌ Message ID ต้องเป็นตัวเลขเท่านั้น", allowed_mentions=_NO_MENTIONS)
         return
@@ -1258,14 +1297,25 @@ async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
     if not target_name:
         await origin_channel.send("❌ ชื่อช่องไม่สามารถว่างได้", allowed_mentions=_NO_MENTIONS)
         return
-    limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 10
+    # `args[1]` (limit) is fully model/AI-controlled and is NOT length-clamped
+    # by the dispatchers (only args[0]=name gets the len>100 check). Parse via
+    # _safe_int so neither a >4300-ASCII-digit token NOR a Unicode-"digit"
+    # token (isdigit()==True but int()-unparseable, e.g. "²²²") can raise — both
+    # fall back to the default. max_digits=9 short-circuits absurd lengths; the
+    # value is clamped to 1..100 just below anyway.
+    _limit = _safe_int(args[1], max_digits=9) if len(args) > 1 else None
+    limit = _limit if _limit is not None else 10
     # Validate limit
     if limit < 1 or limit > 100:
         limit = 10  # Default to 10 if invalid
 
     target_channel = discord.utils.get(guild.text_channels, name=target_name)
-    if not target_channel and target_name.isdigit():
-        target_channel = guild.get_channel(int(target_name))
+    if not target_channel:
+        # ID fallback — _safe_int (not isdigit()+int()) so a Unicode-digit name
+        # falls through to the name match instead of raising ValueError here.
+        _cid = _safe_int(target_name)
+        if _cid is not None:
+            target_channel = guild.get_channel(_cid)
 
     if target_channel:
         # Privacy: only let the user read messages from a channel they

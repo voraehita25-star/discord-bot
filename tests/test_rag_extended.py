@@ -1544,6 +1544,89 @@ class TestAllMemoriesCache:
         assert -1 not in system._all_memories_cache  # expired dropped first
         assert len(system._all_memories_cache) <= cap
 
+    @pytest.mark.asyncio
+    async def test_cache_hit_repopulates_token_cache(self, monkeypatch):
+        """A cache HIT rebuilds token sets wiped by an unrelated add_memory.
+
+        Regression for py-ai-memory-missed-1: add_memory clears the WHOLE
+        _memory_token_cache but only invalidates the written channel's
+        snapshot. A different channel's snapshot stays valid for its TTL, and
+        before the fix the cache-HIT branch returned without rebuilding tokens,
+        so _keyword_search fell back to a live re.findall per row until the TTL
+        expired. The HIT path must lazily repopulate the snapshot's tokens.
+        """
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        rows = [{"id": 11, "content": "hello world"}, {"id": 22, "content": "foo bar"}]
+        # A still-valid snapshot for channel 7 (far-future expiry).
+        system._all_memories_cache = {7: (10**12, rows)}
+        # Simulate an unrelated add_memory having cleared the whole token cache.
+        system._memory_token_cache = {}
+
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=[])
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        result = await system._get_all_memories_cached(7)
+
+        # Served from the live snapshot — no DB round-trip.
+        assert mock_db.get_all_rag_memories.await_count == 0
+        assert result == rows
+        # Tokens for the snapshot's rows were rebuilt on the HIT path.
+        assert system._memory_token_cache[11] == frozenset({"hello", "world"})
+        assert system._memory_token_cache[22] == frozenset({"foo", "bar"})
+
+    def test_evict_prunes_token_cache_for_evicted_snapshots(self):
+        """Token entries for evicted snapshots are dropped; retained ones kept.
+
+        Regression for py-ai-memory-1: _memory_token_cache is keyed by mem_id
+        and was only ever fully .clear()'d on a write, never pruned per-entry,
+        so it retained a frozenset for every row of every channel ever searched
+        even after that channel's snapshot was evicted to bound RAM. Eviction
+        must mirror the reclaimed snapshots in the token cache too.
+        """
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        system = _new_system()
+        cap = MemorySystem._ALL_MEMORIES_MAX_CHANNELS
+        now = 1000.0
+        cache = {}
+        # (cap + 1) live channels, each owning one distinct mem_id == channel id.
+        # The oldest (channel 0) will be evicted to get back under the cap.
+        for i in range(cap + 1):
+            cache[i] = (now + 100 + i, [{"id": i, "content": f"row {i}"}])
+        system._all_memories_cache = cache
+        # Token cache holds an entry for every channel's row PLUS a stale id
+        # (99999) whose snapshot is already gone — both the evicted-channel
+        # entry and the stale entry must be pruned.
+        system._memory_token_cache = {i: frozenset({f"row{i}"}) for i in range(cap + 1)}
+        system._memory_token_cache[99999] = frozenset({"stale"})
+
+        system._evict_all_memories_cache_if_needed(now)
+
+        retained_ids = set(system._all_memories_cache)
+        # The token cache now contains exactly the mem_ids of retained snapshots.
+        assert set(system._memory_token_cache) == retained_ids
+        assert 0 not in system._memory_token_cache  # evicted channel's tokens gone
+        assert 99999 not in system._memory_token_cache  # stale entry reclaimed
+
+    def test_evict_noop_leaves_token_cache_intact(self):
+        """Under the cap, eviction is a no-op and never touches the token cache.
+
+        Guards against the py-ai-memory-1 prune over-reaching: when the snapshot
+        cache is within bounds the function returns early, so token sets for rows
+        not currently in any snapshot (e.g. recently looked up) must survive.
+        """
+        system = _new_system()
+        system._all_memories_cache = {1: (10**12, [{"id": 1, "content": "a"}])}
+        system._memory_token_cache = {1: frozenset({"a"}), 2: frozenset({"b"})}
+
+        system._evict_all_memories_cache_if_needed(now=1000.0)
+
+        # No eviction happened, so the token cache is left exactly as-is.
+        assert system._memory_token_cache == {1: frozenset({"a"}), 2: frozenset({"b"})}
+
 
 class TestGenerateEmbedding:
     """generate_embedding happy path + shape/error guards."""

@@ -94,9 +94,21 @@ fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
         norm_b += b[idx] * b[idx];
     }
 
+    // Floor a non-finite result to 0.0 rather than leaking it. Finite-but-huge
+    // inputs (e.g. components near f32::MAX, which still pass an is_finite()
+    // input check) overflow the dot/norm accumulators to +/-Inf, giving a
+    // denom of Inf (> 1e-10, so the zero-denom guard does NOT catch it) and a
+    // dot of Inf, hence Inf/Inf = NaN. Public callers (compute_similarity)
+    // promise to never return a non-finite score, and search() already maps
+    // non-finite to 0.0; mirror that here so the contract holds uniformly.
     let denom = (norm_a * norm_b).sqrt();
     if denom > 1e-10 {
-        dot / denom
+        let sim = dot / denom;
+        if sim.is_finite() {
+            sim
+        } else {
+            0.0
+        }
     } else {
         0.0
     }
@@ -139,5 +151,39 @@ mod tests {
         let b = vec![-1.0, -2.0, -3.0];
         let sim = cosine_similarity(&a, &b);
         assert!((sim + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_scalar_cosine_finite_but_huge_inputs_floored() {
+        // Regression (rs-rag-missed-1), scalar path specifically: components
+        // near f32::MAX are finite (pass an is_finite() input check) but
+        // overflow the dot/norm accumulators, producing denom=Inf and dot=Inf
+        // -> NaN. scalar_cosine previously returned that raw NaN. It must now
+        // floor any non-finite result to 0.0. Test the scalar fn directly so
+        // the floor is pinned regardless of whether SIMD intercepts the public
+        // entry point. 4 lanes hits the chunk-of-4 loop.
+        let huge = vec![3.0e38_f32; 4];
+        let sim = scalar_cosine(&huge, &huge);
+        assert!(sim.is_finite(), "scalar expected finite, got {sim}");
+        assert_eq!(sim, 0.0);
+
+        // Non-multiple-of-4 length exercises the remainder loop too.
+        let huge3 = vec![3.0e38_f32; 3];
+        let sim3 = scalar_cosine(&huge3, &huge3);
+        assert!(sim3.is_finite(), "scalar expected finite, got {sim3}");
+        assert_eq!(sim3, 0.0);
+    }
+
+    #[test]
+    fn test_public_entry_never_leaks_nonfinite_for_huge_inputs() {
+        // The public cosine_similarity tries SIMD first; simsimd may return a
+        // finite value for these inputs (higher-precision accumulators) or fall
+        // through to scalar_cosine. Either way the contract is: the score is
+        // ALWAYS finite, never NaN/Inf. Assert only finiteness here (the SIMD
+        // value, if any, is implementation-defined).
+        let huge = vec![3.0e38_f32; 4];
+        assert!(cosine_similarity(&huge, &huge).is_finite());
+        let huge3 = vec![3.0e38_f32; 3];
+        assert!(cosine_similarity(&huge3, &huge3).is_finite());
     }
 }

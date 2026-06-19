@@ -1,6 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use media_processor::{from_base64, to_base64};
 use media_processor::{get_gif_frame_count, is_animated_gif};
+use std::hint::black_box;
 
 fn bench_base64_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("base64_encode");

@@ -604,7 +604,6 @@ class AI(commands.Cog):
             self.chat_manager.last_accessed.pop(channel_id, None)
             self.chat_manager.processing_locks.pop(channel_id, None)
             self.chat_manager.streaming_enabled.pop(channel_id, None)
-            self.chat_manager.current_typing_msg.pop(channel_id, None)
             # Use the public ``clear_channel`` API instead of reaching into
             # private ``_message_queue`` state — keeps the encapsulation
             # boundary stable across MessageQueue refactors.
@@ -655,7 +654,6 @@ class AI(commands.Cog):
         self.chat_manager.last_accessed.pop(channel.id, None)
         self.chat_manager.processing_locks.pop(channel.id, None)
         self.chat_manager.streaming_enabled.pop(channel.id, None)
-        self.chat_manager.current_typing_msg.pop(channel.id, None)
         # Use the public ``clear_channel`` API instead of reaching into
         # private ``_message_queue`` state — see ``reset_ai`` for the
         # rationale.
@@ -1489,7 +1487,15 @@ class AI(commands.Cog):
                     if not first:
                         await asyncio.sleep(0.5)
                     first = False
-                    await output_channel.send(text[i : i + max_len])
+                    # Suppress @everyone/@here/<@id>/<@&id> pings on resend: the
+                    # stored model text is saved (logic.py save_history) BEFORE
+                    # the mention escaping at logic.py:2050-2053 and returned
+                    # verbatim by storage, so resending it raw would ping unless
+                    # we mirror the normal/narrator sends' AllowedMentions.none().
+                    await output_channel.send(
+                        text[i : i + max_len],
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
 
             # If found {{...}} patterns
             if len(split_parts) > 1:

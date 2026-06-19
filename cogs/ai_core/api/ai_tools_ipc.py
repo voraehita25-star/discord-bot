@@ -252,8 +252,18 @@ class _AiToolsIpc:
         # Constant-time compare — this is the auth gate for Discord-mutating
         # tool execution; ``==`` on the shared secret leaks length/prefix
         # timing. (ws_dashboard uses hmac.compare_digest for its equivalent.)
+        #
+        # Encode BOTH sides to UTF-8 bytes before comparing: aiohttp decodes
+        # request headers as ISO-8859-1, so an X-Token containing a byte in
+        # 0x80-0xFF becomes a non-ASCII str, and hmac.compare_digest raises
+        # TypeError("comparing strings with non-ASCII characters is not
+        # supported") on str args — surfacing a 500 instead of a clean 401.
+        # Comparing bytes sidesteps that, matching ws_dashboard's auth path
+        # (which encodes both sides for this exact reason).
         token = request.headers.get("X-Token") or ""
-        return bool(self.token) and hmac.compare_digest(token, self.token)
+        return bool(self.token) and hmac.compare_digest(
+            token.encode("utf-8"), self.token.encode("utf-8")
+        )
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
         if not self._authed(request):

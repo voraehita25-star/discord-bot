@@ -223,3 +223,78 @@ fn format_to_string(format: ImageFormat) -> String {
     }
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Encode a real, tiny RGB PNG so the resize decode path gets valid input.
+    fn tiny_png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 64])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn calculate_fit_preserves_aspect_and_never_zero() {
+        // 200x100 into 50x50 -> ratio 0.25 -> 50x25 (aspect preserved).
+        assert_eq!(calculate_fit_dimensions(200, 100, 50, 50), (50, 25));
+        // Already-smaller -> unchanged.
+        assert_eq!(calculate_fit_dimensions(30, 20, 100, 100), (30, 20));
+        // Extreme aspect must still never round down to 0.
+        let (w, h) = calculate_fit_dimensions(10_000, 1, 100, 100);
+        assert!(w >= 1 && h >= 1, "got {w}x{h}");
+        assert_eq!(h, 1);
+    }
+
+    #[test]
+    fn resize_fit_downscales_and_keeps_aspect() {
+        let src = tiny_png(40, 20);
+        let out = resize_image(&src, 10, 10, ResizeMode::Fit, 85).unwrap();
+        // 40x20 fit into 10x10 -> 10x5.
+        assert_eq!((out.width, out.height), (10, 5));
+    }
+
+    #[test]
+    fn resize_fit_skips_when_already_smaller() {
+        let src = tiny_png(8, 8);
+        let out = resize_image(&src, 100, 100, ResizeMode::Fit, 85).unwrap();
+        // Unchanged dimensions; original bytes returned.
+        assert_eq!((out.width, out.height), (8, 8));
+    }
+
+    #[test]
+    fn resize_rejects_zero_target_dimensions() {
+        let src = tiny_png(8, 8);
+        assert!(resize_image(&src, 0, 10, ResizeMode::Fit, 85).is_err());
+        assert!(resize_image(&src, 10, 0, ResizeMode::Fit, 85).is_err());
+    }
+
+    #[test]
+    fn resize_fill_rejects_explosive_intermediate() {
+        // Extreme-aspect input (16384x1) has a tiny INPUT pixel count and sails
+        // past the bomb guard, but Fill upscales the intermediate to a huge
+        // square (after clamping to MAX_ALLOWED_DIMENSION the requested side is
+        // 16384, so scale blows the intermediate well past 100MP). The Fill
+        // intermediate guard must reject it instead of allocating tens of TB.
+        let src = tiny_png(16384, 1);
+        // Match on the Result directly: ImageData has no Debug impl, so
+        // unwrap_err() won't compile — pull the error out via a match instead.
+        match resize_image(&src, 16384, 16384, ResizeMode::Fill, 85) {
+            Ok(_) => panic!("explosive Fill intermediate must be rejected"),
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("Fill intermediate too large"),
+                    "unexpected error: {msg}"
+                );
+            }
+        }
+    }
+}

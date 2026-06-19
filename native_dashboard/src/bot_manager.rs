@@ -39,6 +39,57 @@ fn taskkill_path() -> String {
     }
 }
 
+/// Validate a candidate Python interpreter path the same way the `PYTHON_CMD`
+/// branch in `BotManager::new` does: the file must exist, canonicalize, and have
+/// a `python`/`python3` basename. Returns the canonicalized absolute path on
+/// success, `None` (with a warning) otherwise. Shared so the env-var branch and
+/// the PATH-resolution fallback apply identical checks — and so the interpreter
+/// is always pinned to a validated absolute path, mirroring `taskkill_path()` /
+/// `explorer.exe` pinning, never a bare relative name resolved at spawn time.
+fn validate_python_path(p: &std::path::Path) -> Option<String> {
+    if !p.exists() {
+        return None;
+    }
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let fname = canonical.file_name().unwrap_or_default().to_string_lossy();
+    let fname_lower = fname.to_lowercase();
+    if fname_lower == "python.exe"
+        || fname_lower == "python3.exe"
+        || fname_lower == "python"
+        || fname_lower == "python3"
+    {
+        Some(canonical.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Resolve `python`/`python3` against the `PATH` env var to a validated absolute
+/// path, instead of spawning the bare name and letting Windows' `CreateProcessW`
+/// re-resolve it (which also searches the current/application directory) at every
+/// spawn — the PATH-hijack-to-RCE vector this file already pins `taskkill.exe`
+/// and `explorer.exe` against. We do the lookup ONCE at construction and pin the
+/// result, so a poisoned PATH entry planted later cannot redirect the spawn. A
+/// legitimate install that relies on a `python` on PATH still works: the real
+/// interpreter is found here and recorded as an absolute path. Returns `None` if
+/// no validated interpreter is found on PATH.
+fn resolve_python_on_path() -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    // Try the common interpreter basenames in priority order.
+    let candidates = ["python.exe", "python3.exe"];
+    for dir in std::env::split_paths(&path_var) {
+        for name in &candidates {
+            if let Some(resolved) = validate_python_path(&dir.join(name)) {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BotStatus {
     pub is_running: bool,
@@ -112,52 +163,39 @@ impl BotManager {
     pub fn new(base_path: PathBuf) -> Self {
         let mut sys = System::new();
         Self::refresh_processes_with_cmd(&mut sys);
-        // Use PYTHON_CMD env var, or .venv/Scripts/python.exe if it exists, or "python"
+        // Resolve the interpreter to a VALIDATED ABSOLUTE PATH, pinned once here
+        // (never a bare relative "python" re-resolved by CreateProcessW at spawn
+        // time — that path-search includes the current/application directory and
+        // PATH, the PATH-hijack-to-RCE vector this file pins taskkill.exe and
+        // explorer.exe against). Order: PYTHON_CMD env → bundled .venv → a
+        // `python`/`python3` found on PATH. If none validates, store an empty
+        // sentinel; start()/start_dev() then refuse to spawn and return an
+        // explicit error rather than launching an unpinned name.
         let python_cmd = std::env::var("PYTHON_CMD")
             .ok()
             .and_then(|cmd| {
-                // Validate that PYTHON_CMD points to a real python executable
-                let p = std::path::Path::new(&cmd);
-                // Verify the file actually exists
-                if !p.exists() {
-                    eprintln!("WARNING: PYTHON_CMD '{}' does not exist, ignoring", cmd);
-                    return None;
-                }
-                // Canonicalize to resolve symlinks and verify real path
-                let canonical = match p.canonicalize() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!(
-                            "WARNING: PYTHON_CMD '{}' cannot be resolved: {}, ignoring",
-                            cmd, e
-                        );
-                        return None;
-                    }
-                };
-                let fname = canonical.file_name().unwrap_or_default().to_string_lossy();
-                let fname_lower = fname.to_lowercase();
-                if fname_lower == "python.exe"
-                    || fname_lower == "python3.exe"
-                    || fname_lower == "python"
-                    || fname_lower == "python3"
-                {
-                    Some(canonical.to_string_lossy().to_string())
-                } else {
+                let resolved = validate_python_path(std::path::Path::new(&cmd));
+                if resolved.is_none() {
                     eprintln!(
-                        "WARNING: PYTHON_CMD '{}' does not look like a Python executable, ignoring",
+                        "WARNING: PYTHON_CMD '{}' is not a usable Python interpreter, ignoring",
                         cmd
                     );
-                    None
                 }
+                resolved
             })
-            .unwrap_or_else(|| {
+            .or_else(|| {
                 let venv_python = base_path.join(".venv").join("Scripts").join("python.exe");
-                if venv_python.exists() {
-                    venv_python.to_string_lossy().to_string()
-                } else {
-                    "python".to_string()
-                }
-            });
+                validate_python_path(&venv_python)
+            })
+            .or_else(resolve_python_on_path)
+            .unwrap_or_default();
+        if python_cmd.is_empty() {
+            eprintln!(
+                "WARNING: No trusted Python interpreter found (PYTHON_CMD unset/invalid, no \
+                 .venv under base_path, none on PATH); Start/Start-Dev will report an error \
+                 until PYTHON_CMD is set to an absolute interpreter path."
+            );
+        }
         // Canonicalize base_path once so process_belongs_to_us can match
         // processes that report a Windows 8.3 short path form of the same dir.
         // Fail-closed: if the path can't be canonicalized we keep None and the
@@ -811,6 +849,17 @@ impl BotManager {
     }
 
     pub fn start(&mut self) -> Result<String, String> {
+        // Refuse to spawn without a pinned, validated interpreter. An empty
+        // python_cmd means new() found no trusted python (PYTHON_CMD/.venv/PATH
+        // all failed); spawning a bare "python" here would be the PATH-hijack
+        // vector this file pins taskkill.exe/explorer.exe against.
+        if self.python_cmd.is_empty() {
+            return Err(
+                "No trusted Python interpreter found; set PYTHON_CMD to an absolute interpreter \
+                 path"
+                    .to_string(),
+            );
+        }
         if self.is_running() {
             return Err("Bot is already running".to_string());
         }
@@ -863,6 +912,15 @@ impl BotManager {
     }
 
     pub fn start_dev(&mut self) -> Result<String, String> {
+        // Same pinned-interpreter requirement as start() — never spawn the
+        // dev watcher via an unpinned bare "python".
+        if self.python_cmd.is_empty() {
+            return Err(
+                "No trusted Python interpreter found; set PYTHON_CMD to an absolute interpreter \
+                 path"
+                    .to_string(),
+            );
+        }
         if self.is_running() {
             return Err("Bot is already running".to_string());
         }
@@ -1258,6 +1316,88 @@ mod tests {
         assert!(
             belongs,
             "a process whose cwd == base_path must be recognised as ours",
+        );
+    }
+
+    // ------- interpreter pinning / no-bare-"python" fallback (dash-rust-missed-1) -------
+
+    #[test]
+    fn validate_python_path_rejects_nonexistent_and_non_python() {
+        // A path that doesn't exist → None (can't be pinned).
+        assert!(
+            validate_python_path(std::path::Path::new(
+                "C:\\definitely\\does\\not\\exist\\python.exe"
+            ))
+            .is_none(),
+            "a nonexistent path must not validate as an interpreter",
+        );
+        // An existing file whose basename is NOT python* → None. cmd.exe always
+        // exists on a supported Windows host (the module is Windows-only).
+        let cmd_exe = std::path::Path::new("C:\\Windows\\System32\\cmd.exe");
+        if cmd_exe.exists() {
+            assert!(
+                validate_python_path(cmd_exe).is_none(),
+                "a non-python executable must not validate as an interpreter",
+            );
+        }
+    }
+
+    #[test]
+    fn validate_python_path_accepts_a_real_python_basename() {
+        // Create a real file named python.exe in a temp dir and confirm it
+        // validates to an absolute (canonicalized) path. Content is irrelevant —
+        // validation is existence + canonicalize + basename, matching the
+        // PYTHON_CMD branch (which never executes the file just to validate it).
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let fake = dir.path().join("python.exe");
+        std::fs::write(&fake, b"not really an exe").expect("write fake python.exe");
+        let resolved =
+            validate_python_path(&fake).expect("a file named python.exe should validate");
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "validated interpreter path must be absolute (pinned), got {resolved}",
+        );
+        assert!(
+            resolved.to_lowercase().ends_with("python.exe"),
+            "validated path should keep the python.exe basename, got {resolved}",
+        );
+    }
+
+    #[test]
+    fn start_refuses_to_spawn_without_a_pinned_interpreter() {
+        // Simulate new() having found NO trusted interpreter (PYTHON_CMD unset,
+        // no .venv, none on PATH): python_cmd is the empty sentinel. start()
+        // must fail closed with an explicit error rather than spawning a bare,
+        // PATH-resolved "python" — the hijack-to-RCE vector this file pins
+        // taskkill.exe/explorer.exe against.
+        let (_dir, mut bm) = manager_in_temp();
+        bm.python_cmd = String::new();
+        let err = bm.start().expect_err("start with no interpreter must Err");
+        assert!(
+            err.contains("No trusted Python interpreter"),
+            "start() error should name the missing-interpreter cause, got: {err}",
+        );
+        // And nothing was spawned/tracked.
+        assert!(
+            bm.child.is_none(),
+            "start() must not spawn or track a child when no interpreter is pinned",
+        );
+    }
+
+    #[test]
+    fn start_dev_refuses_to_spawn_without_a_pinned_interpreter() {
+        let (_dir, mut bm) = manager_in_temp();
+        bm.python_cmd = String::new();
+        let err = bm
+            .start_dev()
+            .expect_err("start_dev with no interpreter must Err");
+        assert!(
+            err.contains("No trusted Python interpreter"),
+            "start_dev() error should name the missing-interpreter cause, got: {err}",
+        );
+        assert!(
+            bm.dev_watcher_child.is_none(),
+            "start_dev() must not spawn/track a watcher when no interpreter is pinned",
         );
     }
 

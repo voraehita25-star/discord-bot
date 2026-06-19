@@ -54,7 +54,6 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 """Stub for LRU eviction."""
@@ -102,7 +101,6 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 return 0
@@ -137,7 +135,6 @@ class TestGetChatSession:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 return 0
@@ -209,7 +206,6 @@ class TestToggleThinking:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 return 0
@@ -246,7 +242,6 @@ class TestToggleThinking:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 return 0
@@ -472,7 +467,6 @@ class TestRoleplayAndUnrestrictedWiring:
                 self.pending_messages = {}
                 self.cancel_flags = {}
                 self.streaming_enabled = {}
-                self.current_typing_msg = {}
 
             def _enforce_channel_limit(self):
                 return 0

@@ -836,6 +836,66 @@ class TestIpIsBlocked:
 
         assert _ip_is_blocked("::ffff:8.8.8.8") is True
 
+    def test_ipv6_unspecified_blocked(self):
+        """:: (the IPv6 twin of 0.0.0.0) must be blocked — on Linux/dual-stack
+        a connect to :: routes to loopback, reaching internal listeners."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("::") is True
+
+    def test_nat64_embedded_loopback_blocked(self):
+        """NAT64 64:ff9b::/96 embedding 127.0.0.1 must be blocked."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("64:ff9b::7f00:1") is True
+
+    def test_nat64_embedded_metadata_blocked(self):
+        """NAT64 64:ff9b::/96 embedding 169.254.169.254 (cloud metadata) blocked."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("64:ff9b::a9fe:a9fe") is True
+
+    def test_6to4_embedded_loopback_blocked(self):
+        """6to4 2002::/16 embedding 127.0.0.1 must be blocked."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("2002:7f00:1::") is True
+
+    def test_6to4_embedded_metadata_blocked(self):
+        """6to4 2002::/16 embedding 169.254.169.254 (cloud metadata) blocked."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("2002:a9fe:a9fe::") is True
+
+    def test_nat64_local_use_embedded_metadata_blocked(self):
+        """NAT64 local-use 64:ff9b:1::/48 (RFC 8215, is_reserved) embedding metadata."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("64:ff9b:1::a9fe:a9fe") is True
+
+    def test_teredo_blocked(self):
+        """Teredo 2001::/32 (is_private) must be blocked."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("2001::1") is True
+
+    def test_reserved_documentation_blocked(self):
+        """Reserved/documentation IPv6 (ORCHID 2001:10::, doc 3fff::, 2001:db8::,
+        discard 100::) must be blocked — parity with the Go CIDR list."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("2001:10::1") is True
+        assert _ip_is_blocked("3fff::1") is True
+        assert _ip_is_blocked("2001:db8::1") is True
+        assert _ip_is_blocked("100::1") is True
+
+    def test_public_ipv6_allowed(self):
+        """A genuine public IPv6 (Google DNS) must NOT be blocked — confirms the
+        is_unspecified/is_reserved/is_private short-circuit didn't over-block."""
+        from utils.web.url_fetcher import _ip_is_blocked
+
+        assert _ip_is_blocked("2001:4860:4860::8888") is False
+
 
 class TestSSRFSafeResolver:
     """Tests for _SSRFSafeResolver connect-time DNS-rebind guard."""
@@ -885,19 +945,59 @@ class TestSSRFSafeResolver:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_unparseable_ip_skipped(self):
-        """A malformed IP string hits the ValueError ``continue`` and is not blocked."""
+    async def test_unparseable_ip_blocked_fail_closed(self):
+        """A malformed IP string is now BLOCKED (fail-closed).
+
+        The resolver delegates to ``_ip_is_blocked``, which returns True on a
+        ValueError, so an unparseable host raises instead of being skipped. A
+        real aiohttp resolver only ever yields valid IP strings, so this never
+        rejects legitimate traffic — it only removes a fail-open edge.
+        """
         from unittest.mock import AsyncMock, MagicMock
 
         from utils.web.url_fetcher import _SSRFSafeResolver
 
         base = MagicMock()
-        base.resolve = AsyncMock(return_value=[{"host": "garbage"}, {"host": "9.9.9.9"}])
+        base.resolve = AsyncMock(return_value=[{"host": "garbage"}])
         resolver = _SSRFSafeResolver(base)
 
-        result = await resolver.resolve("x.example", 80)
+        with pytest.raises(OSError, match="SSRF blocked"):
+            await resolver.resolve("x.example", 80)
 
-        assert len(result) == 2
+    @pytest.mark.asyncio
+    async def test_nat64_local_use_blocked_at_connect(self):
+        """NAT64 local-use 64:ff9b:1::/48 embedding metadata is blocked at connect.
+
+        Regression for the DNS-rebind gap: the connect-time resolver used a
+        bare CIDR loop that only listed the NAT64 *well-known* prefix, so a host
+        re-resolving to the NAT64 *local-use* prefix (RFC 8215, is_reserved,
+        embeds 169.254.169.254) slipped through. Now it routes through
+        _ip_is_blocked's is_reserved classification.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.web.url_fetcher import _SSRFSafeResolver
+
+        base = MagicMock()
+        base.resolve = AsyncMock(return_value=[{"host": "64:ff9b:1::a9fe:a9fe"}])
+        resolver = _SSRFSafeResolver(base)
+
+        with pytest.raises(OSError, match="SSRF blocked"):
+            await resolver.resolve("rebind.example", 80)
+
+    @pytest.mark.asyncio
+    async def test_teredo_blocked_at_connect(self):
+        """Teredo 2001::/32 (is_private, embeds an IPv4 endpoint) blocked at connect."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.web.url_fetcher import _SSRFSafeResolver
+
+        base = MagicMock()
+        base.resolve = AsyncMock(return_value=[{"host": "2001::1"}])
+        resolver = _SSRFSafeResolver(base)
+
+        with pytest.raises(OSError, match="SSRF blocked"):
+            await resolver.resolve("rebind.example", 80)
 
     @pytest.mark.asyncio
     async def test_close_delegates_to_base(self):
@@ -959,6 +1059,18 @@ class TestIsPrivateUrl:
         monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: fake)
 
         assert await _is_private_url("http://internal.example/") is True
+
+    @pytest.mark.asyncio
+    async def test_ipv6_unspecified_host_blocked(self, monkeypatch):
+        """http://[::]/ must be blocked end-to-end (IPv6 twin of 0.0.0.0)."""
+        import socket
+
+        from utils.web.url_fetcher import _is_private_url
+
+        fake = [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::", 0, 0, 0))]
+        monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: fake)
+
+        assert await _is_private_url("http://[::]/") is True
 
     @pytest.mark.asyncio
     async def test_dns_failure_blocked(self, monkeypatch):

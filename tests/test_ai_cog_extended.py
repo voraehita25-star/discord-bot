@@ -510,7 +510,6 @@ def _make_cog_r1():
         cm.last_accessed = {}
         cm.processing_locks = {}
         cm.streaming_enabled = {}
-        cm.current_typing_msg = {}
         cm._message_queue = MagicMock()
         cm._message_queue.clear_channel = MagicMock()
         cm.cli_mode = False
@@ -1243,7 +1242,6 @@ class TestResetAiRegion:
         cog.chat_manager.last_accessed = {cid: 1.0}
         cog.chat_manager.processing_locks = {cid: object()}
         cog.chat_manager.streaming_enabled = {cid: True}
-        cog.chat_manager.current_typing_msg = {cid: object()}
         cog.chat_manager.cli_mode = False
 
         with patch("cogs.ai_core.ai_cog.delete_history", new=AsyncMock()) as del_hist:
@@ -1367,7 +1365,6 @@ class TestOnGuildChannelDelete:
         cog.chat_manager.last_accessed = {cid: 1.0}
         cog.chat_manager.processing_locks = {cid: object()}
         cog.chat_manager.streaming_enabled = {cid: True}
-        cog.chat_manager.current_typing_msg = {cid: object()}
         channel = MagicMock()
         channel.id = cid
 
@@ -1376,5 +1373,5 @@ class TestOnGuildChannelDelete:
 
         inval.assert_called_once_with(cid)
         assert cid not in cog.chat_manager.chats
-        assert cid not in cog.chat_manager.current_typing_msg
+        assert cid not in cog.chat_manager.streaming_enabled
         cog.chat_manager._message_queue.clear_channel.assert_called_once_with(cid)

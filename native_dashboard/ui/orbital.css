@@ -1272,15 +1272,37 @@ h1 .ic, h2 .ic, h3 .ic,
    FOCUS / FORCED-COLORS / CONTRAST — ONE authoritative ruleset, kept LAST so
    it wins source-order over every base + orbital focus style. Satisfies
    interactions.spec.ts (accepts outline OR box-shadow).
+   NOTE: explicit class/type selectors (specificity 0,2,0), NOT :where() (0,1,0).
+   styles.css L5030 sets `outline:none` on .btn/.nav-item/.theme-toggle at (0,2,0);
+   source order only breaks ties at EQUAL specificity, so :where() would lose and
+   forced-colors mode (box-shadow stripped by the OS) would leave NO focus
+   indicator (WCAG 2.4.7). Matching (0,2,0) lets source-order-LAST win.
+   #chat-input is special-cased below: styles.css sets `#chat-input:focus{outline:none}`
+   at ID specificity (1,1,0), which a (0,2,0) selector CANNOT beat — so the chat
+   textarea needs its own (1,1,0) `#chat-input:focus-visible` rule (source-order-LAST
+   to win the tie) or it keeps the same forced-colors no-focus defect.
    ============================================================================ */
-:where(a, button, .btn, .nav-item, .theme-toggle, input, select, textarea, [tabindex]):focus-visible {
+a:focus-visible, button:focus-visible, .btn:focus-visible, .nav-item:focus-visible,
+.theme-toggle:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, [tabindex]:focus-visible {
     outline: 2px solid var(--accent-cyan);
     outline-offset: 2px;
     box-shadow: var(--focus-ring);
 }
-:where(a, button, .btn, .nav-item, .theme-toggle):focus:not(:focus-visible) { outline: none; }
+/* ID-specificity (1,1,0) to outrank styles.css `#chat-input:focus{outline:none}`. */
+#chat-input:focus-visible {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
+}
+a:focus:not(:focus-visible), button:focus:not(:focus-visible),
+.btn:focus:not(:focus-visible), .nav-item:focus:not(:focus-visible),
+.theme-toggle:focus:not(:focus-visible) { outline: none; }
 @media (forced-colors: active) {
-    :where(a, button, .btn, .nav-item, [tabindex]):focus-visible { outline: 2px solid; }
+    a:focus-visible, button:focus-visible, .btn:focus-visible, .nav-item:focus-visible,
+    .theme-toggle:focus-visible, [tabindex]:focus-visible { outline: 2px solid; }
+    /* (1,1,0) so it survives the OS box-shadow strip on the chat textarea. */
+    #chat-input:focus-visible { outline: 2px solid; }
 }
 @media (prefers-contrast: more) {
     :root { --border-color: var(--border-strong); }

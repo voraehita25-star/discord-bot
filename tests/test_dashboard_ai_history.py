@@ -2158,6 +2158,37 @@ class TestRemoveHistoryContent:
         assert cm.remove_history_content(50, row=row, occurrence=5) is True
         assert [item["n"] for item in cm.chats[50]["history"]] == [0]
 
+    def test_successful_remove_drops_compress_cache(self):
+        """A net-zero length change (delete paired with a later insert) would
+        otherwise leave the length-keyed auto-compress cache serving a stale
+        pre-edit compression — mirror the edit/patch paths and invalidate it."""
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [{"role": "model", "parts": ["old"], "message_id": 20}],
+                    "_compress_cache": object(),
+                }
+            }
+        )
+        row = {"id": 2, "role": "model", "content": "old", "message_id": 20, "timestamp": None}
+        assert cm.remove_history_content(50, row=row) is True
+        assert "_compress_cache" not in cm.chats[50]
+
+    def test_no_match_remove_keeps_compress_cache(self):
+        """No mutation happened, so the cache is left intact."""
+        sentinel = object()
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [{"role": "user", "parts": ["hi"], "message_id": 10}],
+                    "_compress_cache": sentinel,
+                }
+            }
+        )
+        row = {"id": 2, "role": "user", "content": "hi", "message_id": 999, "timestamp": None}
+        assert cm.remove_history_content(50, row=row) is False
+        assert cm.chats[50]["_compress_cache"] is sentinel
+
 
 # ===================================================================
 # ChatManager.insert_history_content
@@ -2568,6 +2599,68 @@ class TestInsertHistoryContent:
             is True
         )
         assert [item["parts"] for item in cm.chats[50]["history"]] == [["X"], ["X"], ["R"]]
+
+    def test_successful_insert_drops_compress_cache(self):
+        """A restore paired with a prior delete can net to the same history
+        length, leaving the length-keyed auto-compress cache stale — drop it on
+        every successful insert, mirroring the edit/patch/remove paths."""
+        ts = "2024-01-01T00:00:00+00:00"
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [
+                        {"role": "user", "parts": ["a"], "timestamp": ts, "message_id": 10}
+                    ],
+                    "_compress_cache": object(),
+                }
+            }
+        )
+        assert (
+            cm.insert_history_content(
+                50,
+                row=self._row(2, "b", message_id=20),
+                prev_row=self._row(1, "a", message_id=10),
+                next_row=None,
+            )
+            is True
+        )
+        assert "_compress_cache" not in cm.chats[50]
+
+    def test_seed_at_zero_insert_drops_compress_cache(self):
+        """The seed-at-index-0 path (only DB row into empty memory) must also
+        invalidate the cache."""
+        cm = _bare_manager({50: {"history": [], "_compress_cache": object()}})
+        assert (
+            cm.insert_history_content(50, row=self._row(1, "only"), prev_row=None, next_row=None)
+            is True
+        )
+        assert "_compress_cache" not in cm.chats[50]
+
+    def test_idempotent_skip_keeps_compress_cache(self):
+        """An idempotent retry performs NO mutation (the item is already in
+        memory), so the cache is left intact — only real insertions drop it."""
+        ts = "2024-01-01T00:00:00+00:00"
+        sentinel = object()
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [
+                        {"role": "user", "parts": ["b"], "timestamp": ts, "message_id": 20}
+                    ],
+                    "_compress_cache": sentinel,
+                }
+            }
+        )
+        assert (
+            cm.insert_history_content(
+                50,
+                row=self._row(2, "b", message_id=20),
+                prev_row=self._row(1, "a", message_id=10),
+                next_row=None,
+            )
+            is True
+        )
+        assert cm.chats[50]["_compress_cache"] is sentinel
 
 
 # ===================================================================

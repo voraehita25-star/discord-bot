@@ -33,7 +33,9 @@ import { HistoryManager } from './history-manager.js';
 // Performance Cache System
 // ============================================================================
 
-class DataCache {
+// Exported so app.test.ts exercises the SHIPPED cache (TTL expiry + capacity
+// eviction), not a copy. Production still uses the module-level `dataCache`.
+export class DataCache {
     private cache: Map<string, CacheEntry<unknown>> = new Map();
     private readonly maxSize = 200;
 
@@ -270,6 +272,18 @@ window.addEventListener('beforeunload', () => {
 // Keyboard Shortcuts
 // ============================================================================
 
+// Topmost open modal = the LAST `.modal.active` in DOM order. Sibling modals
+// (shortcuts / avatar-crop in ui/index.html) and the dynamically body-appended
+// export-format-modal always come AFTER the in-.app chat modals, so last-in-DOM
+// is the overlay stacked on top. Exported so app.test.ts asserts the SHIPPED
+// selection (returning actives[0] here would reintroduce the first-modal bug
+// and MUST fail the unit test) instead of a mirror re-implementation.
+// NOTE: relies on index.html modal ordering — keep app-level modals last.
+export function pickTopmostModal(): HTMLElement | null {
+    const actives = document.querySelectorAll<HTMLElement>('.modal.active');
+    return actives.length ? actives[actives.length - 1] : null;
+}
+
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
         // Single dispatch per keystroke. Each branch early-returns so a key that
@@ -352,13 +366,8 @@ function initKeyboardShortcuts(): void {
         // focus can't escape behind the overlay. Every modal uses the .active
         // class to show, so this single handler covers all of them.
         if (e.key === 'Tab') {
-            // Topmost open modal = last .modal.active in DOM order. Sibling modals
-            // (shortcuts L1182 / avatar-crop L1208 in ui/index.html) and the dynamically
-            // body-appended export-format-modal always come AFTER the in-.app chat modals
-            // (index.html ~717-799), so last-in-DOM == the overlay stacked on top.
-            // NOTE: this relies on index.html modal ordering — keep app-level modals last.
-            const actives = document.querySelectorAll<HTMLElement>('.modal.active');
-            const modal = actives.length ? actives[actives.length - 1] : null;
+            // Topmost open modal (last .modal.active in DOM order) — see pickTopmostModal.
+            const modal = pickTopmostModal();
             if (modal) {
                 const focusables = Array.from(
                     modal.querySelectorAll<HTMLElement>(
@@ -491,12 +500,14 @@ function initCharts(): void {
     window.addEventListener('resize', debounce(updateCharts, 'resize', 250));
 }
 
-function addChartDataPoint(history: ChartDataPoint[], value: number): void {
+// Exported so app.test.ts exercises the SHIPPED chart-history capping (which
+// caps at the live `settings.chartHistory`), not a re-implementation.
+export function addChartDataPoint(history: ChartDataPoint[], value: number): void {
     history.push({
         timestamp: Date.now(),
         value
     });
-    
+
     while (history.length > settings.chartHistory) {
         history.shift();
     }

@@ -100,6 +100,8 @@ class Music(commands.Cog):
         the playback on next seek (Linux: continues from inode; Windows:
         PermissionError on the next spawn).
         """
+        # CWD-relative on purpose — must match safe_delete's temp_root and
+        # ytdl_source's download outtmpl (see safe_delete for the full rationale).
         temp_dir = Path("temp")
         stale_threshold = 3600  # 1 hour
 
@@ -365,7 +367,13 @@ class Music(commands.Cog):
         try:
             from utils.database import db
         except ImportError:
-            # Fallback to JSON if database not available
+            # Fallback to JSON if database not available. The queue JSON bundles
+            # volume/loop/mode_247, BUT _save_queue_json_sync UNLINKS that file
+            # when the queue is empty — so an idle 24/7 channel (mode_247 on, no
+            # tracks queued) would lose its settings on restart in JSON-only
+            # mode. Mirror the DB path and also write the queue-independent
+            # settings sidecar so those survive an empty-queue save here too.
+            await self._save_queue_settings(guild_id)
             await self._save_queue_json(guild_id)
             return
 
@@ -416,6 +424,15 @@ class Music(commands.Cog):
     def _save_queue_settings_sync(self, guild_id: int, snapshot: dict) -> None:
         """Synchronous settings-sidecar write (atomic via temp + replace)."""
         try:
+            # NOTE: the "data/" queue/settings paths here (and in queue.py) are
+            # CWD-relative rather than settings.data_dir. They are internally
+            # consistent (the same code writes and reads them), so this only
+            # diverges from the project-root anchoring under a non-default
+            # launcher CWD. Anchoring to settings.data_dir was deliberately NOT
+            # applied: settings is a module-level singleton evaluated at import,
+            # immune to the tests' monkeypatch.chdir, so doing so would write
+            # test artifacts into the real project data/ and break the
+            # persistence tests' tmp-dir isolation (test_music_queue_io.py).
             filepath = Path(f"data/queue_settings_{guild_id}.json")
             # All-default settings carry no information beyond the GuildState
             # constructor defaults (volume 0.5, loop False, mode_247 False),
@@ -561,7 +578,14 @@ class Music(commands.Cog):
                 )
                 return True
         except ImportError:
-            pass
+            # No DB layer: line 564's sidecar restore lives inside the DB try,
+            # so it didn't run. Restore volume/loop/mode_247 from the sidecar
+            # here too, BEFORE the queue-JSON read below — otherwise an empty
+            # queue (queue JSON absent/unlinked) drops mode_247 and a 24/7
+            # channel auto-disconnects on restart in JSON-only mode. If a queue
+            # JSON with tracks exists, its bundled settings (written in the same
+            # save) re-apply the identical values below.
+            await self._load_queue_settings(guild_id)
 
         # Fallback to JSON file
         filepath = Path(f"data/queue_{guild_id}.json")
@@ -855,6 +879,15 @@ class Music(commands.Cog):
     async def safe_delete(self, filename):
         """Safely delete a file with exponential backoff (Non-blocking)."""
         filepath = await asyncio.to_thread(lambda: Path(filename).resolve())
+        # NOTE: temp root is intentionally CWD-relative (not settings.temp_dir).
+        # This confinement boundary, the _periodic_temp_cleanup janitor, and the
+        # files yt-dlp actually writes (utils/media/ytdl_source.py outtmpl) all
+        # use the SAME relative "temp" root, so they stay mutually consistent.
+        # Anchoring only this side to settings.temp_dir while ytdl_source keeps
+        # writing CWD-relative would, under a non-default launcher CWD, split the
+        # download dir from this guard — yt-dlp files would land outside temp_root
+        # and never be deletable/cleanable. Fixing this correctly requires also
+        # anchoring ytdl_source's outtmpl (out of scope here); do that together.
         temp_root = await asyncio.to_thread(lambda: Path("temp").resolve())
         if not filepath.is_relative_to(temp_root):
             logger.warning("🛡️ Blocked file deletion outside temp directory: %s", filepath)
@@ -1404,6 +1437,10 @@ class Music(commands.Cog):
         """เปิด/ปิด โหมดวนซ้ำเพลงปัจจุบัน."""
         current = self._gs(ctx.guild.id).loop
         self._gs(ctx.guild.id).loop = not current
+        # Persist so the toggle survives a non-graceful restart. The sidecar
+        # exists precisely for this; without scheduling a save the new value
+        # is only written on a clean cog_unload (lost on OOM/kill -9/crash).
+        self._schedule_queue_save(ctx.guild.id)
 
         if not current:
             embed = discord.Embed(
@@ -2078,6 +2115,12 @@ class Music(commands.Cog):
         if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             # Disable loop when skipping
             self._gs(ctx.guild.id).loop = False
+            # Persist the loop=False change. play_next's queue-advance schedules
+            # a save incidentally when more tracks follow, but skipping the LAST
+            # track leaves an empty queue that falls through play_next's
+            # len(queue)>0 gate without scheduling — so loop would silently
+            # revert to ON after a hard restart. Schedule explicitly here.
+            self._schedule_queue_save(ctx.guild.id)
             ctx.voice_client.stop()
 
             queue = self.get_queue(ctx)
@@ -2254,6 +2297,9 @@ class Music(commands.Cog):
             return await ctx.send(embed=embed)
 
         self._gs(ctx.guild.id).volume = volume / 100.0
+        # Persist so the new volume survives a non-graceful restart (same
+        # sidecar-persistence reason as loop/247).
+        self._schedule_queue_save(ctx.guild.id)
 
         # Apply to current player if playing
         if ctx.voice_client and ctx.voice_client.source:
@@ -2283,6 +2329,10 @@ class Music(commands.Cog):
         # Toggle mode
         self._gs(guild_id).mode_247 = not current
         new_state = self._gs(guild_id).mode_247
+        # Persist immediately: this is the setting whose loss the sidecar was
+        # built to prevent (a hard restart with mode_247 silently reverted to
+        # False makes a 24/7 channel auto-disconnect).
+        self._schedule_queue_save(guild_id)
 
         if new_state:
             # Cancel any pending auto-disconnect

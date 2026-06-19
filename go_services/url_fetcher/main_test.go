@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -130,5 +131,146 @@ func TestFetchPrivateIPBlocked(t *testing.T) {
 func TestPrivateNetworksInitialized(t *testing.T) {
 	if len(privateNetworks) == 0 {
 		t.Error("privateNetworks should be populated by init()")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IPv6 / IPv4-mapped SSRF coverage (parity with Python utils/web/url_fetcher.py)
+// ---------------------------------------------------------------------------
+
+func TestIsPrivateIP_IPv6Blocked(t *testing.T) {
+	blocked := []string{
+		"::1",                    // IPv6 loopback
+		"::",                     // IPv6 unspecified (parity gap fixed)
+		"fe80::1",                // IPv6 link-local
+		"fc00::1",                // IPv6 unique local
+		"fd00:ec2::254",          // AWS IMDSv2 (within fc00::/7)
+		"::ffff:127.0.0.1",       // IPv4-mapped loopback
+		"::ffff:169.254.169.254", // IPv4-mapped link-local metadata
+		"::ffff:10.0.0.1",        // IPv4-mapped private A
+		"64:ff9b::7f00:1",        // NAT64 of 127.0.0.1
+		"64:ff9b::a9fe:a9fe",     // NAT64 of 169.254.169.254 (metadata)
+		"64:ff9b:1::a9fe:a9fe",   // NAT64 local-use (RFC 8215) of metadata — connect-time parity gap fixed
+		"2002:7f00:1::",          // 6to4 of 127.0.0.1
+		"2002:a9fe:a9fe::",       // 6to4 of 169.254.169.254 (metadata)
+		"2001::1",                // Teredo (embeds an IPv4 endpoint) — parity with Python is_private
+		"100::1",                 // Discard-only block (RFC 6666)
+		"2001:db8::1",            // Documentation — parity with Python is_private
+		"2001:10::1",             // ORCHID (within 2001::/23) — parity with Python
+		"3fff::1",                // Documentation, RFC 9637 — parity with Python is_reserved
+	}
+	for _, ip := range blocked {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			t.Errorf("failed to parse IP: %s", ip)
+			continue
+		}
+		if !isPrivateIP(parsed) {
+			t.Errorf("IP %s should be detected as private/internal", ip)
+		}
+	}
+}
+
+func TestIsPrivateIP_IPv6Public(t *testing.T) {
+	public := []string{
+		"2606:4700:4700::1111", // Cloudflare public IPv6
+		"2001:4860:4860::8888", // Google public IPv6
+		"::ffff:8.8.8.8",       // IPv4-mapped PUBLIC (must stay allowed)
+	}
+	for _, ip := range public {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			t.Errorf("failed to parse IP: %s", ip)
+			continue
+		}
+		if isPrivateIP(parsed) {
+			t.Errorf("IP %s should NOT be detected as private", ip)
+		}
+	}
+}
+
+// TestIsPrivateURL_Blocked asserts isPrivateURL blocks metadata hostnames and
+// IP-literal hosts (incl. non-canonical metadata encodings) without resolving.
+func TestIsPrivateURL_Blocked(t *testing.T) {
+	blocked := []string{
+		"http://metadata.google.internal/",
+		"http://169.254.169.254/",
+		"http://100.100.100.200/",
+		"http://[::1]/",
+		"http://[::]/",
+		"http://[::ffff:169.254.169.254]/", // IPv4-mapped metadata (not in string denylist)
+		"http://[64:ff9b::a9fe:a9fe]/",     // NAT64 metadata
+	}
+	for _, u := range blocked {
+		isPrivate, _ := isPrivateURL(context.Background(), u)
+		if !isPrivate {
+			t.Errorf("isPrivateURL(%q) should block", u)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CheckRedirect SSRF re-enforcement (scheme allowlist + dangerousHosts + IP)
+// ---------------------------------------------------------------------------
+
+func newRedirectReq(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	return &http.Request{URL: u}
+}
+
+func TestCheckRedirect_BlocksDisallowedScheme(t *testing.T) {
+	check := NewFetcher().client.CheckRedirect
+	for _, raw := range []string{"file:///etc/passwd", "gopher://x/", "ftp://h/", "dict://h:11/"} {
+		if err := check(newRedirectReq(t, raw), nil); err == nil {
+			t.Errorf("redirect to %q should be blocked (scheme allowlist)", raw)
+		}
+	}
+	// http/https must still be allowed (host not dangerous).
+	if err := check(newRedirectReq(t, "https://example.com/"), nil); err != nil {
+		t.Errorf("redirect to https://example.com/ should be allowed, got: %v", err)
+	}
+}
+
+func TestCheckRedirect_BlocksDangerousHost(t *testing.T) {
+	check := NewFetcher().client.CheckRedirect
+	for _, raw := range []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://metadata.google.internal/",
+		"http://[::ffff:169.254.169.254]/", // non-canonical metadata IP — caught by IP layer
+		"http://[::1]/",                    // loopback literal
+	} {
+		if err := check(newRedirectReq(t, raw), nil); err == nil {
+			t.Errorf("redirect to %q should be blocked", raw)
+		}
+	}
+}
+
+func TestCheckRedirect_TooManyHops(t *testing.T) {
+	check := NewFetcher().client.CheckRedirect
+	via := make([]*http.Request, 5)
+	if err := check(newRedirectReq(t, "https://example.com/"), via); err == nil {
+		t.Error("6th redirect hop should be blocked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DNS-rebind dial-time guard
+// ---------------------------------------------------------------------------
+
+func TestSSRFSafeDialContext_BlocksPrivateLiteral(t *testing.T) {
+	dial := ssrfSafeDialContext(&net.Dialer{})
+	// 127.0.0.1 resolves to itself; the dial-time isPrivateIP guard must fire
+	// before any real connection is attempted.
+	conn, err := dial(context.Background(), "tcp", "127.0.0.1:80")
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("dial to 127.0.0.1 should be blocked, got a connection")
+	}
+	if err == nil || !strings.Contains(err.Error(), "SSRF blocked") {
+		t.Errorf("expected SSRF block error, got: %v", err)
 	}
 }
