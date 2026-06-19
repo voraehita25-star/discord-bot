@@ -214,7 +214,15 @@ _BLOCKED_NETWORKS = [
     # Block the whole transition prefixes (the is_reserved/is_private
     # short-circuit in _ip_is_blocked also covers them as belt-and-suspenders).
     ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix
+    ipaddress.ip_network("64:ff9b:1::/48"),  # NAT64 local-use prefix (RFC 8215)
     ipaddress.ip_network("2002::/16"),  # 6to4
+    # IPv6 parity with the Go url_fetcher blocklist — special-purpose /
+    # reserved prefixes that aren't covered by the is_private/is_reserved
+    # classification on every Python version.
+    ipaddress.ip_network("2001::/23"),  # IETF protocol assignments (Teredo, ORCHID, etc.)
+    ipaddress.ip_network("100::/64"),  # Discard-only address block (RFC 6666)
+    ipaddress.ip_network("3fff::/20"),  # Reserved for documentation (RFC 9637)
+    ipaddress.ip_network("5f00::/16"),  # Segment Routing (SRv6) SIDs (RFC 9602)
     # IPv4-mapped IPv6 covers ::ffff:0:0/96 — closes the bypass where an
     # attacker-controlled DNS returns ::ffff:127.0.0.1 to dodge the IPv4
     # blocks above. We additionally call ip.ipv4_mapped below as belt-and-
@@ -254,13 +262,30 @@ def _ip_is_blocked(ip_str: str) -> bool:
     for network in _BLOCKED_NETWORKS:
         if ip in network:
             return True
-    if isinstance(ip, ipaddress.IPv6Address):
-        if ip.is_unspecified or ip.is_reserved or ip.is_private:
+    # Classification short-circuit — runs for *both* IPv4 and IPv6 so the
+    # primary guard is never weaker than the import-fallback branch in
+    # url_fetcher_client.py. For IPv4 this catches ranges the explicit CIDR
+    # list misses (198.18.0.0/15 benchmarking, TEST-NET 192.0.2/198.51.100/
+    # 203.0.113, 192.0.0.0/24 IETF protocol assignments) via is_reserved/
+    # is_private; for IPv6 it covers bare ``::`` (unspecified), NAT64
+    # (is_reserved) and 6to4 (is_private) transition prefixes.
+    if ip.is_unspecified or ip.is_reserved or ip.is_private or ip.is_link_local or ip.is_loopback:
+        return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        mapped = ip.ipv4_mapped
+        for network in _BLOCKED_NETWORKS:
+            if mapped in network:
+                return True
+        # Re-check the unwrapped IPv4 with the same classification short-circuit
+        # so a mapped TEST-NET / benchmarking address can't dodge the CIDR list.
+        if (
+            mapped.is_unspecified
+            or mapped.is_reserved
+            or mapped.is_private
+            or mapped.is_link_local
+            or mapped.is_loopback
+        ):
             return True
-        if ip.ipv4_mapped is not None:
-            for network in _BLOCKED_NETWORKS:
-                if ip.ipv4_mapped in network:
-                    return True
     return False
 
 
@@ -336,8 +361,15 @@ def extract_urls(text: str) -> list[str]:
         # .../Python_(programming_language)) would lose their closing paren and
         # 404. Handles a stray ')' from "(see https://example.com)" too.
         url = url.rstrip(".,;:!?")
-        while url.endswith(")") and url.count("(") < url.count(")"):
+        # Strip only the *unbalanced* trailing ')' (and any sentence
+        # punctuation revealed behind each one), in a single pass. ``excess``
+        # is the number of extra ')' over '('; balanced parens such as
+        # .../Python_(programming_language) are preserved. This reproduces the
+        # old while-loop's behaviour without its O(n^2) re-counting.
+        excess = url.count(")") - url.count("(")
+        while excess > 0 and url.endswith(")"):
             url = url[:-1].rstrip(".,;:!?")
+            excess -= 1
         if url not in seen:
             seen.add(url)
             unique_urls.append(url)

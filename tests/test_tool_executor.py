@@ -726,6 +726,125 @@ class TestExecuteToolCallMoreFunctions:
         assert "Requested setting role permission" in result
 
     @pytest.mark.asyncio
+    async def test_set_channel_permission_non_string_permission(self):
+        """A non-string ``permission`` must yield a clear help message.
+
+        Regression (audit py-ai-tools-1): the mutation branches did not
+        isinstance-check string args, so a non-string (e.g. permission=123)
+        hit ``.strip()`` downstream and surfaced as an opaque
+        ``Error executing ...: AttributeError`` instead of guidance.
+        """
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.guild_permissions.administrator = True
+
+        tool_call = MagicMock()
+        tool_call.name = "set_channel_permission"
+        tool_call.args = {
+            "channel_name": "general",
+            "target_name": "Member",
+            "permission": 123,
+            "value": True,
+        }
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_set_channel_perm",
+            new_callable=AsyncMock,
+        ) as cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "Missing/invalid argument for set_channel_permission" in result
+        assert "AttributeError" not in result
+        cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_role_permission_non_string_permission(self):
+        """A non-string ``permission`` for set_role_permission must be rejected clearly."""
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.guild_permissions.administrator = True
+
+        tool_call = MagicMock()
+        tool_call.name = "set_role_permission"
+        tool_call.args = {
+            "role_name": "Member",
+            "permission": 123,
+            "value": False,
+        }
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_set_role_perm",
+            new_callable=AsyncMock,
+        ) as cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "Missing/invalid argument for set_role_permission" in result
+        assert "AttributeError" not in result
+        cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_role_non_string_role_name(self):
+        """A non-string ``role_name`` for add_role must give guidance, not AttributeError."""
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.guild_permissions.administrator = True
+
+        tool_call = MagicMock()
+        tool_call.name = "add_role"
+        tool_call.args = {"user_name": "TestUser", "role_name": 123}
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_add_role",
+            new_callable=AsyncMock,
+        ) as cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "add_role requires both user_name and role_name" in result
+        assert "AttributeError" not in result
+        cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remove_role_non_string_user_name(self):
+        """A non-string ``user_name`` for remove_role must give guidance, not AttributeError."""
+        from cogs.ai_core.tools.tool_executor import execute_tool_call
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+
+        user = MagicMock()
+        user.guild_permissions.administrator = True
+
+        tool_call = MagicMock()
+        tool_call.name = "remove_role"
+        tool_call.args = {"user_name": 123, "role_name": "Member"}
+
+        with patch(
+            "cogs.ai_core.tools.tool_executor.cmd_remove_role",
+            new_callable=AsyncMock,
+        ) as cmd:
+            result = await execute_tool_call(bot, channel, user, tool_call)
+
+        assert "remove_role requires both user_name and role_name" in result
+        assert "AttributeError" not in result
+        cmd.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_tool_execution_error_handling(self):
         """Test error handling during tool execution."""
         from cogs.ai_core.tools.tool_executor import execute_tool_call

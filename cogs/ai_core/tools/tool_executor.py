@@ -382,8 +382,16 @@ async def execute_tool_call(
         elif fname == "add_role":
             user_name = args.get("user_name")
             role_name = args.get("role_name")
-            if not user_name or not role_name:
-                return "❌ add_role requires both user_name and role_name"
+            # ``args`` is model-controlled with no per-field coercion, so a
+            # non-string here would later hit ``.strip()`` in the command and
+            # raise an opaque AttributeError. Guard like the read branches.
+            if (
+                not isinstance(user_name, str)
+                or not user_name.strip()
+                or not isinstance(role_name, str)
+                or not role_name.strip()
+            ):
+                return "❌ add_role requires both user_name and role_name as non-empty strings"
             tee = _TeeChannel(origin_channel)
             await cmd_add_role(guild, tee, None, [user_name, role_name], user=user)
             return _mutation_outcome(tee, f"Requested adding role '{role_name}' to '{user_name}'")
@@ -391,8 +399,15 @@ async def execute_tool_call(
         elif fname == "remove_role":
             user_name = args.get("user_name")
             role_name = args.get("role_name")
-            if not user_name or not role_name:
-                return "❌ remove_role requires both user_name and role_name"
+            # Same isinstance guard as add_role: a non-string user_name/role_name
+            # would otherwise surface as an opaque AttributeError downstream.
+            if (
+                not isinstance(user_name, str)
+                or not user_name.strip()
+                or not isinstance(role_name, str)
+                or not role_name.strip()
+            ):
+                return "❌ remove_role requires both user_name and role_name as non-empty strings"
             tee = _TeeChannel(origin_channel)
             await cmd_remove_role(guild, tee, None, [user_name, role_name], user=user)
             return _mutation_outcome(
@@ -404,10 +419,23 @@ async def execute_tool_call(
             target_name = args.get("target_name")
             permission = args.get("permission")
             value = args.get("value")
-            if not channel_name or not target_name or not permission or value is None:
+            # The string fields are passed straight to ``.strip()`` downstream;
+            # isinstance-guard them like the read branches so a non-string gives
+            # a clear message instead of an opaque AttributeError. ``value`` keeps
+            # its str() coercion below and only needs a presence check.
+            if (
+                not isinstance(channel_name, str)
+                or not channel_name.strip()
+                or not isinstance(target_name, str)
+                or not target_name.strip()
+                or not isinstance(permission, str)
+                or not permission.strip()
+                or value is None
+            ):
                 return (
-                    "Missing required argument for set_channel_permission "
-                    "(need channel_name, target_name, permission, value)."
+                    "Missing/invalid argument for set_channel_permission "
+                    "(need channel_name, target_name, permission as non-empty "
+                    "strings and value)."
                 )
             tee = _TeeChannel(origin_channel)
             await cmd_set_channel_perm(
@@ -425,10 +453,18 @@ async def execute_tool_call(
             role_name = args.get("role_name")
             permission = args.get("permission")
             value = args.get("value")
-            if not role_name or not permission or value is None:
+            # isinstance-guard the string fields (passed to ``.strip()`` later);
+            # ``value`` keeps its str() coercion below and only needs presence.
+            if (
+                not isinstance(role_name, str)
+                or not role_name.strip()
+                or not isinstance(permission, str)
+                or not permission.strip()
+                or value is None
+            ):
                 return (
-                    "Missing required argument for set_role_permission "
-                    "(need role_name, permission, value)."
+                    "Missing/invalid argument for set_role_permission "
+                    "(need role_name, permission as non-empty strings and value)."
                 )
             tee = _TeeChannel(origin_channel)
             await cmd_set_role_perm(

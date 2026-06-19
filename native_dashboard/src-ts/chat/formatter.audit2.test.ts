@@ -126,3 +126,70 @@ describe('formatMessage — dash-ts-chat-1 (no caching of fail-closed output)', 
         }
     });
 });
+
+describe('formatMessage — dash-ts-chat-L1 (forged control-byte placeholder tokens)', () => {
+    // formatMessageUncached strips the internal block-placeholder control bytes
+    // (\x00-\x04) from the INCOMING content first, so user/AI text can't forge a
+    // token like "\x01CODE_BLOCK_0\x01" and get it spliced with a real extracted
+    // block during the restore passes. These tests assert that hardening from the
+    // outside: a forged token paired with a REAL fenced block must NOT resolve to
+    // that block (the real block's marker appears exactly once), and no control
+    // byte survives into the rendered HTML.
+
+    // Each entry: [byte, placeholder-name] for the five block channels the
+    // formatter uses internally (code/LaTeX/table/list/inline-code).
+    const forgeTargets: [string, string][] = [
+        ['\x01', 'CODE_BLOCK_0'],
+        ['\x00', 'BLOCK_LATEX_0'],
+        ['\x02', 'TABLE_BLOCK_0'],
+        ['\x03', 'LIST_BLOCK_0'],
+        ['\x04', 'ICODE_0'],
+    ];
+
+    for (const [byte, name] of forgeTargets) {
+        it(`a forged ${name} token does not resolve to the real code block`, () => {
+            // A REAL fenced code block (index 0) plus a UNIQUE sentinel inside it
+            // so we can count exactly how many times the real block renders. The
+            // forged token (control byte + the real placeholder name) is glued in
+            // as plain text; if the byte weren't stripped up front, the restore
+            // pass could splice the real <pre><code> in its place — duplicating
+            // the sentinel.
+            const sentinel = 'uniqMarker' + Math.random().toString(36).slice(2);
+            const forged = byte + name + byte;
+            const realBlock = '```js\n' + sentinel + '\n```';
+            // Baseline: the real block alone (its escaped code appears in both the
+            // data-code-copy attribute and the <pre><code> body, so the sentinel
+            // count is intrinsic to ONE rendered card — capture it, don't assume).
+            const baseCount =
+                formatMessage(realBlock + '\n_b' + Math.random().toString(36).slice(2)).split(
+                    sentinel,
+                ).length - 1;
+
+            const content = realBlock + '\nforgedhere:' + forged;
+            const html = formatMessage(content);
+
+            // The forged token did NOT expand into a second copy of the real
+            // block: the sentinel count is unchanged from the single-card baseline.
+            const occurrences = html.split(sentinel).length - 1;
+            expect(occurrences).toBe(baseCount);
+
+            // The forged token's literal text survives as inert text (the control
+            // bytes around it are stripped, leaving just the placeholder name),
+            // and it never became a real <pre>/<code> card.
+            expect(html).toContain('forgedhere:');
+            expect(html).toContain(name);
+        });
+    }
+
+    it('strips all \\x00-\\x04 control bytes from the rendered output', () => {
+        // Mix every forged token together with a real code block + a normal
+        // markdown paragraph, then assert the final HTML carries no raw control
+        // byte at all (they're internal-only and never meant to reach the DOM).
+        const forged = forgeTargets.map(([b, n]) => b + n + b).join(' ');
+        const content =
+            '**bold**\n```py\nprint(1)\n```\n' + forged + '\n\x00\x01\x02\x03\x04 tail';
+        const html = formatMessage(content);
+        // eslint-disable-next-line no-control-regex
+        expect(/[\x00-\x04]/.test(html)).toBe(false);
+    });
+});

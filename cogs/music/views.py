@@ -112,6 +112,11 @@ class MusicControlView(discord.ui.View):
         # command already accepts both states; this keeps the button in sync.
         if voice_client.is_playing() or voice_client.is_paused():
             self.cog._gs(self.guild_id).loop = False  # Disable loop
+            # Persist loop=False (mirrors text !skip). Skipping the LAST track
+            # leaves an empty queue that play_next never schedules a save for,
+            # so without this the loop flag silently reverts to ON after a hard
+            # restart. Schedule explicitly.
+            self.cog._schedule_queue_save(self.guild_id)
             voice_client.stop()
             await interaction.response.send_message("⏭️ ข้ามเพลง", ephemeral=True)
         else:
@@ -128,6 +133,9 @@ class MusicControlView(discord.ui.View):
         gs.queue.clear()
         gs.loop = False
         gs.current_track = None
+        # Persist the cleared queue/loop state (mirrors text stop) so a
+        # non-graceful restart doesn't resurrect the stopped queue/loop.
+        self.cog._schedule_queue_save(self.guild_id)
 
         if interaction.guild and interaction.guild.voice_client:
             voice_client = cast(discord.VoiceClient, interaction.guild.voice_client)
@@ -178,6 +186,9 @@ class MusicControlView(discord.ui.View):
             self.cog._gs(self.guild_id).loop = current_loop
             button.style = previous_style
             return
+        # Persist the toggle (mirrors text !loop) so it survives a non-graceful
+        # restart — only after the edit succeeded, matching the rollback above.
+        self.cog._schedule_queue_save(self.guild_id)
         msg = "🔁 เปิดโหมดวนซ้ำ" if self.cog._gs(self.guild_id).loop else "➡️ ปิดโหมดวนซ้ำ"
         with contextlib.suppress(discord.HTTPException):
             await interaction.followup.send(msg, ephemeral=True)

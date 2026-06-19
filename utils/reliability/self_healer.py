@@ -203,26 +203,21 @@ class SelfHealer:
                 if "python" not in cmdline_str:
                     continue
 
-                # Check each argument for an exact 'bot.py' script name
-                # This avoids false matches like 'test_bot.py', 'bot.py_backup'.
-                # Use os.path.basename so the check works on both Windows (\) and POSIX (/)
-                # paths regardless of the host platform.
+                # Check each argument for an exact 'bot.py' script name.
+                # The exact basename match already rejects false positives like
+                # 'test_bot.py' or 'bot.py_backup'; a real `python bot.py` whose
+                # path merely contains a token like 'test_' (e.g.
+                # C:\test_env\bot.py) is correctly kept, so duplicate detection
+                # never undercounts. Use PurePosixPath().name so the check works
+                # on both Windows (\) and POSIX (/) paths regardless of host.
                 is_bot = False
-                matched_name = ""
-                ignore_list = ["bot_manager", "dev_watcher", "self_healer", "test_bot", "test_"]
                 for arg in cmdline:
                     name = PurePosixPath(arg.replace("\\", "/")).name
                     if name.lower() == "bot.py":
                         is_bot = True
-                        matched_name = name.lower()
                         break
 
-                # Apply the ignore-list against the matched script's basename
-                # only — NOT the whole cmdline_str. A real `python bot.py` whose
-                # path or args merely contain a token like 'test_' (e.g.
-                # C:\test_env\bot.py) must not be silently dropped, which would
-                # undercount bots and defeat duplicate detection.
-                if is_bot and not any(x in matched_name for x in ignore_list):
+                if is_bot:
                     # ``psutil.Process(pid)`` itself can raise NoSuchProcess
                     # if the process exited between ``process_iter`` yielding
                     # us its info dict and this call.
@@ -285,22 +280,19 @@ class SelfHealer:
                 if "python" not in cmdline_str:
                     continue
 
-                # Exact basename match + ignore-list, mirroring
-                # find_all_bot_processes. A loose "dev_watcher" substring test
-                # also matches e.g. `python -m pytest tests/test_dev_watcher.py`,
-                # so a heal action could kill the test runner or other unrelated
-                # processes that merely reference the name.
+                # Exact basename match, mirroring find_all_bot_processes.
+                # A loose "dev_watcher" substring test would also match e.g.
+                # `python -m pytest tests/test_dev_watcher.py`, so a heal action
+                # could kill the test runner or other unrelated processes that
+                # merely reference the name; the exact basename match avoids that.
                 is_watcher = False
-                matched_name = ""
-                ignore_list = ["test_", "pytest"]
                 for arg in cmdline:
                     name = PurePosixPath(arg.replace("\\", "/")).name
                     if name.lower() == "dev_watcher.py":
                         is_watcher = True
-                        matched_name = name.lower()
                         break
 
-                if is_watcher and not any(x in matched_name for x in ignore_list):
+                if is_watcher:
                     # Wrap the late `psutil.Process(pid)` lookup in the same
                     # NoSuchProcess guard as `find_all_bot_processes`; if
                     # the watcher exits between `process_iter` yielding it

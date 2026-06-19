@@ -237,6 +237,9 @@ class TestSkipButton:
             assert mock_cog._gs(12345).loop is False
             mock_voice_client.stop.assert_called_once()
             mock_interaction.response.send_message.assert_called_once()
+            # Loop=False must be persisted (parity with text !skip) so the
+            # last-track case doesn't silently revert loop after a restart.
+            mock_cog._schedule_queue_save.assert_called_once_with(12345)
 
     @pytest.mark.asyncio
     async def test_skip_button_not_playing(self):
@@ -344,6 +347,8 @@ class TestStopButton:
             assert mock_gs.loop is False
             assert mock_gs.current_track is None
             mock_voice_client.stop.assert_called_once()
+            # Cleared queue/loop state must be persisted (parity with text stop).
+            mock_cog._schedule_queue_save.assert_called_once_with(12345)
 
     @pytest.mark.asyncio
     async def test_stop_button_no_voice_client(self):
@@ -402,6 +407,9 @@ class TestLoopButton:
                 await view.loop_button(mock_interaction, mock_button)
 
                 assert mock_cog._gs(12345).loop is True
+                # Toggle must be persisted on the successful edit path (parity
+                # with text !loop) so it survives a non-graceful restart.
+                mock_cog._schedule_queue_save.assert_called_once_with(12345)
 
     @pytest.mark.asyncio
     async def test_loop_button_disable(self):
@@ -811,6 +819,8 @@ class TestLoopButtonErrorBranch:
             assert gs.loop is False
             # followup.send must NOT be reached after the early return.
             interaction.followup.send.assert_not_called()
+            # No persist on the rollback path — the toggle never took effect.
+            mock_cog._schedule_queue_save.assert_not_called()
 
 
 class TestOnTimeoutMessageBranches:

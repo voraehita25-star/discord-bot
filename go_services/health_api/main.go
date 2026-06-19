@@ -675,11 +675,11 @@ func buildRouter(healthService *HealthService, authToken string) chi.Router {
 	// body exposes version, uptime, service names and memory/goroutine/GC
 	// figures, which the Python sibling treats as a protected endpoint.
 	r.With(requireReadToken(authToken)).Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-		// GetStatus() does its own fresh runtime.ReadMemStats for the JSON
-		// body, and the background collector already refreshes the Prometheus
-		// gauges every 10s — so calling collectSystemMetrics() here was a
-		// redundant second stop-the-world MemStats read per request with no
-		// effect on the response. Dropped.
+		// GetStatus() reads the cached MemStats snapshot (cachedMem* atomics,
+		// refreshed by the background collector every 10s) — it no longer does
+		// an inline stop-the-world runtime.ReadMemStats per request. So the
+		// collectSystemMetrics() call that used to sit here was a redundant
+		// second STW MemStats read with no effect on the response. Dropped.
 		status := healthService.GetStatus()
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(status); err != nil {

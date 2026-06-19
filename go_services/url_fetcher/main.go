@@ -75,7 +75,7 @@ func init() {
 		"64:ff9b:1::/48",         // NAT64 local-use prefix (RFC 8215; also embeds IPv4 — parity with Python is_reserved)
 		"2002::/16",              // 6to4 (embeds IPv4; parity with Python is_private)
 		"100::/64",               // Discard-only address block (RFC 6666; parity with Python is_private)
-		"2001::/23",              // IETF protocol assignments incl. Teredo 2001::/32 (embeds IPv4 endpoint — parity with Python is_private)
+		"2001::/23",              // IETF protocol assignments incl. Teredo 2001::/32 (embeds IPv4 endpoint). Deliberately over-blocks the still-unassigned/protocol portion of 2001::/23 (fail-closed); narrowing this would loosen the SSRF blocklist.
 		"2001:db8::/32",          // Documentation (parity with Python is_private)
 		"3fff::/20",              // Documentation, RFC 9637 (parity with Python is_reserved)
 		"5f00::/16",              // Segment Routing SRv6 reserved (parity with Python is_reserved)
@@ -88,9 +88,13 @@ func init() {
 	}
 	for _, cidr := range ranges {
 		_, network, err := net.ParseCIDR(cidr)
-		if err == nil {
-			privateNetworks = append(privateNetworks, network)
+		if err != nil {
+			// The ranges list is hardcoded; a parse error means a typo in this
+			// source, which silently shrinks the SSRF blocklist. Fail fast at
+			// startup (deploy-blocking) instead of swallowing it.
+			panic(fmt.Sprintf("invalid hardcoded CIDR %q in privateNetworks: %v", cidr, err))
 		}
+		privateNetworks = append(privateNetworks, network)
 	}
 }
 
@@ -106,6 +110,18 @@ func isPrivateIP(ip net.IP) bool {
 		if network.Contains(ip) {
 			return true
 		}
+	}
+	// Stricter IPv6 fallback (defense-in-depth beyond the explicit CIDR list):
+	// blocks any non-global-unicast IPv6 (multicast, link-local-unicast, the
+	// unspecified address, etc.) that slipped past the CIDRs above. Real public
+	// IPv6 (Cloudflare/Google etc.) and IPv4-mapped public addresses ARE global
+	// unicast, so this does not over-block legitimate targets. IPv4 is left to
+	// the CIDR list above (To4() != nil) to avoid touching its existing parity.
+	// Note: still-unallocated upper space (e.g. 4000::/3) is IsGlobalUnicast()==true
+	// in Go and is NOT blocked here — currently IANA-unallocated/unroutable, a known
+	// residual parity gap vs Python is_reserved; accepted because unroutable.
+	if ip.To4() == nil && !ip.IsGlobalUnicast() {
+		return true
 	}
 	return false
 }
@@ -397,14 +413,20 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) FetchResult {
 	// Extract content. Title/description are capped too — a hostile page can
 	// carry a multi-megabyte <title> or meta description (body cap is 10MB),
 	// and uncapped fields would flow into the bot's AI prompt.
-	if strings.Contains(result.ContentType, "text/html") {
+	// Route on the EXACT primary MIME type (the part before any ";" parameters),
+	// not a substring match. strings.Contains let a smuggled type like
+	// "application/x-text/html-evil" route as HTML; comparing the trimmed,
+	// lowercased primary type closes that and matches the Python implementation.
+	primary := strings.ToLower(strings.TrimSpace(strings.SplitN(result.ContentType, ";", 2)[0]))
+	switch primary {
+	case "text/html":
 		title, description, content := extractHTMLContent(body)
 		result.Title = truncateString(title, 500)
 		result.Description = truncateString(description, 2000)
 		result.Content = truncateString(content, maxExtractedLength)
-	} else if strings.Contains(result.ContentType, "text/plain") {
+	case "text/plain":
 		result.Content = truncateString(string(body), maxExtractedLength)
-	} else {
+	default:
 		result.Content = "[Binary content]"
 	}
 

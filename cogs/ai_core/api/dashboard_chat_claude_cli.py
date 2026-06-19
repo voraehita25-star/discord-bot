@@ -3416,7 +3416,19 @@ async def handle_ai_edit_message_claude_cli(
         f"Current Time: {current_time_str} (ICT)\n\n"
         "# Task\n"
         "Edit the following message according to the user's instruction.\n\n"
-        f"[User's Edit Instruction]\n{instruction}\n\n"
+        # Defang ONLY the client instruction (_build_full_prompt /
+        # _build_history_block style): it is client-controlled and can carry a
+        # spoofed "Assistant:" / "# Context" line that would fake a turn or
+        # section boundary in this prompt. It is never fed to the patcher.
+        #
+        # [Original Message] MUST stay raw: the model copies exact substrings of
+        # it into SEARCH blocks, and _apply_search_replace patches the SAME raw
+        # original_content below. Defanging it here would rewrite role/header
+        # lines to a sentinel the model echoes into SEARCH — text that does not
+        # exist in the raw original — so the patch silently fails to match. This
+        # matches the SDK backend (dashboard_chat_claude.py), which uses the raw
+        # original in both the prompt and the patcher.
+        f"[User's Edit Instruction]\n{_sanitize_dialog_segment(instruction)}\n\n"
         f"[Original Message]\n{original_content}\n\n"
         "RESPONSE FORMAT:\n"
         "If the edit is a PARTIAL change, respond with one or more SEARCH/REPLACE blocks:\n"

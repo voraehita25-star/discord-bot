@@ -135,6 +135,41 @@ func TestPrivateNetworksInitialized(t *testing.T) {
 	}
 }
 
+// TestPrivateNetworksCount asserts every hardcoded CIDR parsed (no silent drop).
+// init() now panics on a bad CIDR, so a typo can never shrink the list below the
+// expected count without failing at startup — this pins the count as a tripwire.
+func TestPrivateNetworksCount(t *testing.T) {
+	const want = 28
+	if len(privateNetworks) != want {
+		t.Errorf("len(privateNetworks) = %d, want %d (a CIDR was added/removed/dropped)",
+			len(privateNetworks), want)
+	}
+}
+
+// TestPrivateNetworksRangeRepresentatives blocks a representative address from
+// each range family so a dropped/typo'd CIDR is caught by behavior, not just count.
+func TestPrivateNetworksRangeRepresentatives(t *testing.T) {
+	reps := []string{
+		"127.0.0.1",          // 127.0.0.0/8 loopback
+		"169.254.169.254",    // 169.254.0.0/16 link-local metadata
+		"100.100.100.200",    // 100.64.0.0/10 shared (Alibaba metadata)
+		"100.64.0.1",         // 100.64.0.0/10 shared address space
+		"fd00:ec2::254",      // fc00::/7 unique local (AWS IMDSv2 IPv6)
+		"2002:7f00:1::",      // 2002::/16 6to4 of 127.0.0.1
+		"64:ff9b::a9fe:a9fe", // 64:ff9b::/96 NAT64 of metadata
+	}
+	for _, ip := range reps {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			t.Errorf("failed to parse IP: %s", ip)
+			continue
+		}
+		if !isPrivateIP(parsed) {
+			t.Errorf("representative %s should be blocked by its range", ip)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IPv6 / IPv4-mapped SSRF coverage (parity with Python utils/web/url_fetcher.py)
 // ---------------------------------------------------------------------------
@@ -188,6 +223,26 @@ func TestIsPrivateIP_IPv6Public(t *testing.T) {
 			t.Errorf("IP %s should NOT be detected as private", ip)
 		}
 	}
+}
+
+// TestIsPrivateIP_IPv6FallbackNonGlobalUnicast pins the non-global-unicast IPv6
+// fallback (the To4()==nil && !IsGlobalUnicast() branch) with an address that no
+// explicit CIDR in privateNetworks matches, so only the fallback can block it.
+// ff00::/8 IPv6 multicast is not in any listed CIDR; IsGlobalUnicast() is false
+// for it, so the fallback must catch it. This guards against the fallback being
+// dropped/weakened (it would silently let multicast/link-local through).
+func TestIsPrivateIP_IPv6FallbackNonGlobalUnicast(t *testing.T) {
+	parsed := net.ParseIP("ff00::1") // IPv6 multicast — blocked only by the fallback
+	if parsed == nil {
+		t.Fatal("failed to parse ff00::1")
+	}
+	if !isPrivateIP(parsed) {
+		t.Error("ff00::1 (IPv6 multicast) must be blocked by the non-global-unicast fallback")
+	}
+	// Known residual gap (documented in main.go): still-unallocated upper space
+	// such as 4000::1 is IsGlobalUnicast()==true in Go and is NOT blocked here.
+	// We deliberately do NOT assert on 4000::1 so this test never pins the gap as
+	// intended behavior — it is currently IANA-unallocated/unroutable.
 }
 
 // TestIsPrivateURL_Blocked asserts isPrivateURL blocks metadata hostnames and
@@ -419,6 +474,50 @@ func TestExtractHTMLContent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Content-Type routing (audit3 go-url-3): exact primary-MIME, not substring.
+//
+// The Fetch success path is unreachable in tests (httptest binds 127.0.0.1 and
+// is correctly SSRF-blocked), so this pins the routing PREDICATE that Fetch uses
+// verbatim: primary == "text/html" / == "text/plain". A regression back to
+// strings.Contains would re-admit smuggled types like "application/x-text/html-evil".
+// ---------------------------------------------------------------------------
+
+// primaryMIME mirrors the routing key computed in Fetch.
+func primaryMIME(contentType string) string {
+	return strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+}
+
+func TestContentTypeRouting_ExactPrimaryMIME(t *testing.T) {
+	tests := []struct {
+		contentType string
+		wantHTML    bool
+		wantPlain   bool
+	}{
+		{"text/html", true, false},
+		{"text/html; charset=utf-8", true, false},
+		{"  TEXT/HTML ; charset=utf-8", true, false}, // case + spaces normalized
+		{"text/plain", false, true},
+		{"text/plain; charset=utf-8", false, true},
+		// Smuggling attempts that strings.Contains would have mis-routed:
+		{"application/x-text/html-evil", false, false},
+		{"application/json+text/html", false, false},
+		{"x-text/plain-trap", false, false},
+		{"application/octet-stream", false, false},
+	}
+	for _, tt := range tests {
+		primary := primaryMIME(tt.contentType)
+		gotHTML := primary == "text/html"
+		gotPlain := primary == "text/plain"
+		if gotHTML != tt.wantHTML {
+			t.Errorf("ContentType %q: routed as HTML=%v, want %v", tt.contentType, gotHTML, tt.wantHTML)
+		}
+		if gotPlain != tt.wantPlain {
+			t.Errorf("ContentType %q: routed as plain=%v, want %v", tt.contentType, gotPlain, tt.wantPlain)
+		}
 	}
 }
 

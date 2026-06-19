@@ -282,12 +282,12 @@ test.describe('Console error vigilance during interaction', () => {
         page.on('console', (msg) => {
             if (msg.type() === 'error') errors.push(msg.text());
         });
-        for (const dataPage of ['chat', 'logs', 'connections', 'config', 'about', 'history', 'status']) {
-            const item = page.locator(`[data-page="${dataPage}"]`);
-            if ((await item.count()) > 0) {
-                await item.click();
-                await page.waitForTimeout(200);
-            }
+        // Mirror VALID_PAGES in src-ts/app.ts (the real nav set). The old list had
+        // 'connections'/'config'/'about' (which don't exist) and skipped
+        // 'database'/'settings'. No skip guard: a missing nav item must fail loudly.
+        for (const dataPage of ['status', 'chat', 'logs', 'database', 'settings', 'history']) {
+            await page.click(`[data-page="${dataPage}"]`);
+            await page.waitForTimeout(200);
         }
         const real = errors.filter(
             (e) =>
