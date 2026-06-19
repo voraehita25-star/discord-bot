@@ -162,6 +162,34 @@ describe('handleMessage — connected frame', () => {
         });
         expect(cm.availableProviders).toEqual(['gemini', 'claude']);
     });
+
+    it('re-issues load_conversation for the open conversation on (re)connect', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = {
+            id: 'conv-7', title: 't', role_preset: 'general', thinking_enabled: false,
+            is_starred: false, created_at: '2026-04-01',
+        };
+        cm.handleMessage({ type: 'connected', presets: {} });
+        // After a reconnect, the persisted final assistant message is re-fetched
+        // so a stream-interrupting drop doesn't leave a half-written answer.
+        expect(cm.wsClient.send).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'load_conversation', id: 'conv-7' }),
+        );
+        // And the pending-load guard is armed so the conversation_loaded race
+        // logic treats the reload as the current request.
+        expect((cm as unknown as { pendingConversationLoadId: string | null })
+            .pendingConversationLoadId).toBe('conv-7');
+    });
+
+    it('does NOT re-issue load_conversation when no conversation is open', () => {
+        const cm = mountDomAndChat();
+        cm.handleMessage({ type: 'connected', presets: {} });
+        const sendSpy = cm.wsClient.send as unknown as { mock: { calls: unknown[][] } };
+        const loadCalls = sendSpy.mock.calls.filter(
+            (call) => (call[0] as { type?: string } | undefined)?.type === 'load_conversation',
+        );
+        expect(loadCalls).toHaveLength(0);
+    });
 });
 
 describe('handleMessage — conversations_list', () => {
@@ -315,6 +343,53 @@ describe('handleMessage — streaming lifecycle', () => {
         expect(document.getElementById('streaming-message')).toBeNull();
         expect(cm.messages[cm.messages.length - 1]).toMatchObject({ role: 'assistant', content: 'Partial answer continued. Done.' });
     });
+
+    it('does NOT paint a stream into the open conversation when it is bound to another (switch-then-start)', () => {
+        const cm = mountDomAndChat();
+        const convA = { id: 'A', title: 'A', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: '2026-04-01' };
+        const convB = { id: 'B', title: 'B', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: '2026-04-02' };
+
+        // Open A and queue a user turn (sets the streaming intent for A).
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convA, messages: [{ id: 1, role: 'user', content: 'ask A', created_at: '2026-04-01' }] });
+        cm.isStreaming = true;
+        cm.streamingConversationId = 'A';
+
+        // The user navigates to B BEFORE the server's stream_start lands.
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convB, messages: [] });
+        expect(cm.currentConversation?.id).toBe('B');
+
+        // stream_start arrives bound to A (server-side id), then a chunk. Because
+        // A isn't on screen, no bubble must be drawn into B's #chat-messages —
+        // the chunk only buffers (restoreStreamingBubble replays it on return).
+        cm.handleMessage({ type: 'stream_start', mode: '', conversation_id: 'A' });
+        cm.handleMessage({ type: 'chunk', content: "A's secret answer" });
+
+        const messages = document.getElementById('chat-messages')!;
+        expect(document.getElementById('streaming-message')).toBeNull();
+        const leaked = Array.from(messages.querySelectorAll('.streaming-text'))
+            .some(el => (el.textContent || '').includes("A's secret answer"));
+        expect(leaked).toBe(false);
+
+        // The buffer still holds A's partial, so returning to A replays it.
+        cm.handleMessage({ type: 'conversation_loaded', conversation: convA, messages: [{ id: 1, role: 'user', content: 'ask A', created_at: '2026-04-01' }] });
+        expect(document.querySelector('#streaming-message .streaming-text')?.textContent).toContain("A's secret answer");
+    });
+});
+
+describe('formatTime — invalid input', () => {
+    it('returns the raw string for a malformed timestamp (never "Invalid Date")', () => {
+        const cm = mountDomAndChat();
+        const out = cm.formatTime('not-a-real-date');
+        expect(out).not.toContain('Invalid Date');
+        expect(out).toBe('not-a-real-date');
+    });
+
+    it('returns the raw (empty) string for an empty timestamp', () => {
+        const cm = mountDomAndChat();
+        const out = cm.formatTime('');
+        expect(out).not.toContain('Invalid Date');
+        expect(out).toBe('');
+    });
 });
 
 describe('handleMessage — tag mutations', () => {
@@ -392,6 +467,33 @@ describe('handleMessage — message-level mutations', () => {
         ];
         cm.handleMessage({ type: 'message_deleted', message_id: 1, pair_message_id: 2 });
         expect(cm.messages.length).toBe(0);
+    });
+});
+
+describe('updateProviderSelects — provider labels', () => {
+    it('labels known providers and capitalizes an unknown third provider', () => {
+        const cm = mountDomAndChat();
+        // A third provider beyond gemini/claude must NOT be mislabelled "Claude".
+        cm.availableProviders = ['gemini', 'claude', 'openai'];
+        cm.aiProvider = 'gemini';
+        cm.updateProviderSelects();
+
+        const select = document.getElementById('chat-ai-provider') as HTMLSelectElement;
+        const labels = Array.from(select.options).map(o => o.textContent);
+        expect(labels).toEqual(['Gemini', 'Claude', 'Openai']);
+    });
+
+    it('keeps the option values as the raw provider ids', () => {
+        const cm = mountDomAndChat();
+        cm.availableProviders = ['gemini', 'claude', 'openai'];
+        cm.aiProvider = 'claude';
+        cm.updateProviderSelects();
+
+        const select = document.getElementById('chat-ai-provider') as HTMLSelectElement;
+        const values = Array.from(select.options).map(o => o.value);
+        expect(values).toEqual(['gemini', 'claude', 'openai']);
+        // The current provider stays selected.
+        expect(select.value).toBe('claude');
     });
 });
 
@@ -747,7 +849,8 @@ describe('renderMessages — scroll preservation for a scrolled-up reader', () =
         const container = document.getElementById('chat-messages')!;
         setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 0, clientHeight: 800 });
         cm.isStreaming = true;          // chunks are arriving
-        cm.userScrolledUp = false;      // user is following the stream
+        // userScrolledUp is private; reach it through a typed cast for the test seam.
+        (cm as unknown as { userScrolledUp: boolean }).userScrolledUp = false;  // user is following the stream
 
         const scrollSpy = vi.spyOn(cm, 'scrollToBottom');
         cm.renderMessages();
@@ -763,7 +866,8 @@ describe('renderMessages — scroll preservation for a scrolled-up reader', () =
         setContainerGeometry(container, { scrollHeight: 5000, scrollTop: 100, clientHeight: 800 });
 
         // The guard that protects a user who scrolled up DURING a stream.
-        cm.userScrolledUp = true;
+        // userScrolledUp is private; reach it through a typed cast for the test seam.
+        (cm as unknown as { userScrolledUp: boolean }).userScrolledUp = true;
         cm.scrollToBottom();
         expect(container.scrollTop).toBe(100);        // untouched
         expect(cm.newMessagesWhileScrolledUp).toBe(1); // badge counter ticked instead

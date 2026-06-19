@@ -20,7 +20,9 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const PAGES_TO_AUDIT = ['status', 'chat', 'logs', 'config', 'history'];
+// Mirror VALID_PAGES in src-ts/app.ts (the real nav set). 'config' was a stale
+// alias for 'settings' and there is no page-config section anymore.
+const PAGES_TO_AUDIT = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
 
 for (const pageName of PAGES_TO_AUDIT) {
     test(`a11y: ${pageName} page has no critical/serious violations`, async ({ page }) => {
@@ -96,6 +98,64 @@ test('a11y: rename modal when open', async ({ page }) => {
         (v) => v.impact === 'critical' || v.impact === 'serious',
     );
     expect(blockers.map((v) => v.id), JSON.stringify(blockers, null, 2)).toEqual([]);
+});
+
+test('modal inert: shortcuts modal inerts .app, traps Tab, and restores on Escape', async ({ page }) => {
+    // Open via the real '?' shortcut (document-level handler in app.ts).
+    await page.keyboard.press('?');
+    await page.waitForTimeout(150);
+
+    // The overlay must be the only reachable region: .app is inert + aria-hidden.
+    await expect(page.locator('.app')).toHaveAttribute('inert', '');
+    await expect(page.locator('.app')).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.locator('#shortcuts-modal')).toHaveClass(/active/);
+
+    // Focus landed inside the modal (openModal hands focus to the first control).
+    const focusInModalAfterOpen = await page.evaluate(() =>
+        !!document.getElementById('shortcuts-modal')?.contains(document.activeElement),
+    );
+    expect(focusInModalAfterOpen).toBe(true);
+
+    // Tab a few times — focus must never escape the modal (focus-trap wrap-around).
+    for (let i = 0; i < 6; i++) {
+        await page.keyboard.press('Tab');
+        const stillInModal = await page.evaluate(() =>
+            !!document.getElementById('shortcuts-modal')?.contains(document.activeElement),
+        );
+        expect(stillInModal, `focus escaped the modal after ${i + 1} Tab(s)`).toBe(true);
+    }
+
+    // Escape closes via closeModal: inert/aria-hidden lift and focus is restored.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    await expect(page.locator('#shortcuts-modal')).not.toHaveClass(/active/);
+    await expect(page.locator('.app')).not.toHaveAttribute('inert', '');
+    expect(await page.locator('.app').getAttribute('aria-hidden')).toBeNull();
+});
+
+test('modal inert regression: an in-.app chat modal does NOT inert the app', async ({ page }) => {
+    // Chat modals toggle .active directly (they live INSIDE .app and never go
+    // through openModal). If .app were inerted here the chat modal would trap
+    // itself. This guards FIX #6/#7 against breaking the chat-modal flow.
+    await page.click('[data-page="chat"]');
+    await page.waitForTimeout(100);
+    await page.evaluate(() => {
+        document.getElementById('rename-modal')?.classList.add('active');
+    });
+    await page.waitForTimeout(100);
+
+    // .app must remain reachable — no inert, no aria-hidden.
+    expect(await page.locator('.app').getAttribute('inert')).toBeNull();
+    expect(await page.locator('.app').getAttribute('aria-hidden')).toBeNull();
+
+    // Tab inside the chat modal still works (its own controls stay focusable).
+    await page.evaluate(() => {
+        document.querySelector<HTMLElement>('#rename-modal input, #rename-modal button')?.focus();
+    });
+    const focusInChatModal = await page.evaluate(() =>
+        !!document.getElementById('rename-modal')?.contains(document.activeElement),
+    );
+    expect(focusInChatModal).toBe(true);
 });
 
 test('a11y: every interactive element is keyboard-reachable', async ({ page }) => {

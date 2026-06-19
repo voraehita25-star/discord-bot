@@ -89,7 +89,10 @@ pub struct BotManager {
     /// plain substring/equality check would otherwise fail closed and the bot
     /// would look dead in the UI. `None` if canonicalization failed (the
     /// path doesn't exist yet), in which case we fall back to the literal
-    /// `base_path` check only.
+    /// `base_path` check only. NB: only `base_path` is canonicalized once here;
+    /// each candidate process's cwd/exe is still canonicalized per-iteration in
+    /// `process_belongs_to_us` (intentionally — see the comment at that call
+    /// site for why that one cannot be hoisted or cached).
     base_path_canonical: Option<String>,
     /// Process snapshot used by every is_running / get_status / orphan-kill
     /// path. ⚠️ NEVER call `sys.refresh_processes(...)` directly on this —
@@ -284,6 +287,22 @@ impl BotManager {
         // our long-form base_path. Canonicalize the process cwd / exe and the
         // base_path (precomputed) and compare those. Fail-closed: any
         // canonicalize error simply yields no match here.
+        //
+        // NOTE for future audits: the cwd/exe canonicalize below is per-process
+        // by nature — each Python process has its OWN cwd/exe that resolves
+        // independently, so it CANNOT be hoisted out of the orphan-scan loop the
+        // way `base_path` is (base_path is canonicalized exactly once into the
+        // `base_path_canonical` field). It already runs only on the slow path:
+        // we reach here only after the `cmdline.contains` / `cwd == base_path`
+        // string fast-paths above both miss, and the exe canonicalize is skipped
+        // entirely once the cwd canonicalize matches (early `return true`), so
+        // the syscall cost is already bounded. The only loop caller is
+        // `kill_orphan_bot_processes`, hit on start/stop/restart — never the
+        // frequent status poll — so that cost is acceptable. This is a
+        // fail-closed security check (resolving the 8.3 short path + symlinks is
+        // what defeats path aliasing and thus Windows PID-reuse), so it must NOT
+        // be cached, memoized across iterations, or gated behind a flag — any
+        // such caching would reopen a TOCTOU / PID-reuse hole.
         if let Some(base_canon) = base_path_canonical {
             let cwd_matches = process
                 .cwd()
@@ -337,13 +356,36 @@ impl BotManager {
             // production stop() does the same name check; this path used
             // to skip it.
             Self::refresh_processes_with_cmd(&mut self.sys);
-            let is_python = self
+            let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
+            // Require BOTH a python name AND that the process belongs to our own
+            // project tree (cmdline references base_path OR cwd IS base_path) —
+            // a bare PID match is never trusted because Windows reuses PIDs, so
+            // after reuse the recorded PID could map to an unrelated python
+            // process tree (mirrors kill_orphan_bot_processes).
+            let is_ours = self
                 .sys
                 .process(sysinfo::Pid::from_u32(pid))
-                .map(|p| p.name().to_string_lossy().to_lowercase().contains("python"))
+                .map(|p| {
+                    let name = p.name().to_string_lossy().to_lowercase();
+                    if !name.contains("python") {
+                        return false;
+                    }
+                    let cmd: Vec<String> = p
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                        .collect();
+                    let cmdline = cmd.join(" ");
+                    Self::process_belongs_to_us(
+                        p,
+                        &cmdline,
+                        &base_path_str,
+                        self.base_path_canonical.as_deref(),
+                    )
+                })
                 .unwrap_or(false);
 
-            if is_python {
+            if is_ours {
                 let _ = Command::new(taskkill_path())
                     .args(["/PID", &pid.to_string(), "/F", "/T"])
                     .creation_flags(CREATE_NO_WINDOW)
@@ -363,7 +405,17 @@ impl BotManager {
     /// Uses sysinfo to scan all processes for python running bot.py.
     /// Scoped to THIS dashboard's project tree (self.base_path) so we never
     /// kill someone else's unrelated bot.py running on the same machine.
-    fn kill_orphan_bot_processes(&mut self) {
+    ///
+    /// Returns `true` if at least one orphan was sent a kill. This return value
+    /// is INFORMATIONAL ONLY — every current caller discards it (the kills are
+    /// best-effort and the subsequent `process_is_gone` polling is what the
+    /// orchestration actually waits on); it is kept as a return rather than `()`
+    /// so a future caller can branch on "did we kill anything" without a rework.
+    /// This method NEVER sleeps — the lock-held callers (`start`/`stop`/`restart`
+    /// orchestration in main.rs) must drop the BotManager lock before waiting for
+    /// the killed processes to die, so a multi-second wait can't freeze the
+    /// concurrent status/log polls (which acquire the same lock).
+    fn kill_orphan_bot_processes(&mut self) -> bool {
         Self::refresh_processes_with_cmd(&mut self.sys);
 
         // Ignore script file basenames (not substring-match on joined cmdline —
@@ -440,10 +492,11 @@ impl BotManager {
                 .output();
         }
 
-        if !pids_to_kill.is_empty() {
-            // Wait for processes to fully terminate
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
+        // The previous design slept 2s here to let the killed trees terminate,
+        // but that ran while the BotManager lock was held — freezing every
+        // concurrent status/log poll. The wait now lives in the lock-free
+        // orchestration in main.rs (which drops the guard, sleeps, re-locks).
+        !pids_to_kill.is_empty()
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -581,6 +634,16 @@ impl BotManager {
         }
     }
 
+    /// Whether the OS process with `pid` no longer exists (a fresh refresh
+    /// shows no such PID). Used by the lock-free stop/restart orchestration in
+    /// main.rs to poll for termination WITHOUT holding the BotManager lock
+    /// across the inter-poll sleep. A single quick lock per tick keeps the
+    /// concurrent status/log polls responsive.
+    pub fn process_is_gone(&mut self, pid: u32) -> bool {
+        Self::refresh_processes_with_cmd(&mut self.sys);
+        self.sys.process(sysinfo::Pid::from_u32(pid)).is_none()
+    }
+
     /// Format uptime from PID file modification time.
     fn format_uptime_from_pid_file(&self) -> String {
         let pid_file = self.pid_file();
@@ -663,15 +726,35 @@ impl BotManager {
         };
 
         let mode = {
-            // Verify the dev-watcher PID still maps to a python process, not
-            // just that *some* process holds that PID. Windows recycles PIDs
-            // aggressively (the module invariant every other status/kill path
-            // honors), so a bare is_some() check would falsely report mode="Dev"
-            // if the watcher died and its PID was reused. Mirror stop_dev_watcher.
+            // Verify the dev-watcher PID still maps to a python process that
+            // belongs to OUR project tree, not just that *some* process holds
+            // that PID. Windows recycles PIDs aggressively (the module invariant
+            // every other status/kill path honors), so a bare is_some() / name-
+            // only check would falsely report mode="Dev" if the watcher died and
+            // its PID was reused. Scope with process_belongs_to_us, consistent
+            // with the main-bot is_running check above.
             let dev_running = self
                 .get_dev_watcher_pid()
                 .and_then(|p| self.sys.process(sysinfo::Pid::from_u32(p)))
-                .map(|proc| proc.name().to_string_lossy().to_lowercase().contains("python"))
+                .map(|proc| {
+                    let name = proc.name().to_string_lossy().to_lowercase();
+                    if !name.contains("python") {
+                        return false;
+                    }
+                    let cmd: Vec<String> = proc
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy().to_lowercase().to_string())
+                        .collect();
+                    let cmdline = cmd.join(" ");
+                    base_path_str.is_empty()
+                        || Self::process_belongs_to_us(
+                            proc,
+                            &cmdline,
+                            &base_path_str,
+                            base_path_canonical.as_deref(),
+                        )
+                })
                 .unwrap_or(false);
             if dev_running {
                 "Dev".to_string()
@@ -718,7 +801,9 @@ impl BotManager {
         match self.child.as_mut() {
             Some(child) => match child.try_wait() {
                 Ok(None) => StartProgress::Starting,
-                Ok(Some(status)) => StartProgress::Exited { code: status.code() },
+                Ok(Some(status)) => StartProgress::Exited {
+                    code: status.code(),
+                },
                 Err(_) => StartProgress::Exited { code: None },
             },
             None => StartProgress::Unknown,
@@ -830,22 +915,28 @@ impl BotManager {
             ));
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        if self.is_running() {
-            Ok("Dev Watcher started (hot reload enabled)".to_string())
-        } else {
-            // Dev watcher takes time to start bot, check again
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if self.is_running() {
-                Ok("Dev Watcher started (hot reload enabled)".to_string())
-            } else {
-                Ok("Dev Watcher launched - bot starting...".to_string())
-            }
-        }
+        // Return as soon as the watcher is spawned + its PID recorded. The old
+        // design slept 3s (then another 2s) here while holding the BotManager
+        // lock, just to choose a nicer return message — freezing every
+        // concurrent status/log poll for up to 5s. The dev-watcher boots the bot
+        // asynchronously and the periodic `get_status` poll flips the badge to
+        // "Dev" once it's up, so we don't need to block here at all (mirrors
+        // `start()`'s spawn-and-return pattern).
+        Ok("Dev Watcher launched - bot starting...".to_string())
     }
 
-    pub fn stop(&mut self) -> Result<String, String> {
+    /// First, lock-held phase of a stop. Performs all the quick work — PID
+    /// validation, dev-watcher teardown, and firing the `taskkill` — then hands
+    /// control back so the caller can wait for the process to die WITHOUT
+    /// holding the BotManager lock. Returns a [`StopOutcome`] telling the caller
+    /// whether there is anything left to poll/finish.
+    ///
+    /// Splitting `stop()` this way mirrors the `start()`/`get_start_progress`
+    /// pattern: the old monolithic `stop()` slept up to 3s (exit poll) + 2s
+    /// (orphan kill) while the lock was held, freezing every concurrent
+    /// status/log poll for ~5s. The inter-poll sleeps now live in the lock-free
+    /// orchestration in main.rs.
+    pub fn stop_begin(&mut self) -> Result<StopOutcome, String> {
         let pid = match self.get_pid() {
             Some(pid) => pid,
             None => {
@@ -864,10 +955,13 @@ impl BotManager {
                     let _ = c.kill();
                     let _ = c.wait();
                     self.stop_dev_watcher();
+                    // Orphan sweep is best-effort here; the killed child tree is
+                    // already torn down via `c.kill()`/taskkill above, so we
+                    // don't make the caller wait on a poll for this branch.
                     self.kill_orphan_bot_processes();
-                    return Ok(
-                        "Bot stopped (no PID file; killed tracked startup process)".to_string()
-                    );
+                    return Ok(StopOutcome::Done(
+                        "Bot stopped (no PID file; killed tracked startup process)".to_string(),
+                    ));
                 }
                 return Err("Bot is not running".to_string());
             }
@@ -914,16 +1008,17 @@ impl BotManager {
             .creation_flags(CREATE_NO_WINDOW)
             .output();
 
-        // Wait up to 3 seconds for exit
-        for _ in 0..6 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            Self::refresh_processes_with_cmd(&mut self.sys);
-            if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
-                break;
-            }
-        }
+        // Hand back to the caller to poll `process_is_gone(pid)` (lock dropped
+        // between ticks) and then call `stop_finish()`.
+        Ok(StopOutcome::Polling(pid))
+    }
 
-        // Kill any remaining orphan bot.py processes
+    /// Final, lock-held phase of a stop, run after the caller has waited for the
+    /// bot PID to disappear (or the wait timed out). Sweeps remaining orphans,
+    /// reaps the tracked Child, and deletes the PID file. Kept separate from
+    /// `stop_begin` so the inter-poll sleeps happen with the lock released.
+    pub fn stop_finish(&mut self) -> Result<String, String> {
+        // Kill any remaining orphan bot.py processes (no sleep — see method doc)
         self.kill_orphan_bot_processes();
 
         // Reap our own tracked Child (if any) so its Win32/POSIX process
@@ -939,29 +1034,65 @@ impl BotManager {
         Ok("Bot stopped".to_string())
     }
 
-    pub fn restart(&mut self) -> Result<String, String> {
-        if self.is_running() {
-            let old_pid = self.get_pid();
-            // Don't hard-propagate a benign stop() failure during restart: if
-            // the bot process exits on its own in the window between is_running()
-            // above and here, stop() returns Err("Bot is not running") and the
-            // `?` would abort restart() before start() — leaving the bot stopped
-            // right after the user clicked Restart. Swallow it so we always fall
-            // through to start().
-            let _ = self.stop();
-            // Poll until process is gone (max 5 seconds)
-            if let Some(pid) = old_pid {
-                for _ in 0..10 {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    Self::refresh_processes_with_cmd(&mut self.sys);
-                    if self.sys.process(sysinfo::Pid::from_u32(pid)).is_none() {
-                        break;
-                    }
-                }
-            }
+    /// Begin a restart. If the bot is running, run `stop_begin()` and tell the
+    /// caller how to proceed (see [`RestartBegin`]) so the lock-free
+    /// orchestration in main.rs can drop the guard between termination polls,
+    /// then re-lock to finish + `start()`.
+    ///
+    /// A benign `stop_begin()` failure is swallowed (not propagated): if the bot
+    /// process exits on its own between the `is_running()` check and the stop, we
+    /// still want to fall through to a fresh start rather than abort the restart.
+    pub fn restart_begin(&mut self) -> RestartBegin {
+        if !self.is_running() {
+            return RestartBegin::StartNow;
         }
-        self.start()
+        let old_pid = self.get_pid();
+        match self.stop_begin() {
+            // Process already torn down in the begin phase (no-PID-file /
+            // stale-PID branches) — finish the teardown now; nothing to poll.
+            Ok(StopOutcome::Done(_)) => {
+                let _ = self.stop_finish();
+                RestartBegin::StartNow
+            }
+            // Normal path: a kill was fired. Caller must poll the PID gone (lock
+            // released between ticks), call `stop_finish()`, then `start()`.
+            Ok(StopOutcome::Polling(pid)) => RestartBegin::PollThenFinish(pid),
+            // Benign failure (e.g. the bot exited on its own). The stale-PID
+            // error branches in `stop_begin` already reaped the child + removed
+            // the PID file, so there's nothing to finish; just wait out the old
+            // PID (if any) then start.
+            Err(_) => match old_pid {
+                Some(pid) => RestartBegin::PollThenStart(pid),
+                None => RestartBegin::StartNow,
+            },
+        }
     }
+}
+
+/// Outcome of [`BotManager::stop_begin`]: either the stop is already complete
+/// (an early-return branch handled everything) or there is a bot PID the caller
+/// must wait on — with the lock released between polls — before invoking
+/// [`BotManager::stop_finish`].
+pub enum StopOutcome {
+    /// The stop fully completed in the begin phase; the carried message is the
+    /// final result. Nothing left to poll or finish.
+    Done(String),
+    /// The bot process was sent a kill; poll `process_is_gone(pid)` (lock-free)
+    /// then call `stop_finish()`.
+    Polling(u32),
+}
+
+/// How the lock-free restart orchestration in main.rs should proceed after the
+/// quick `restart_begin()` phase.
+pub enum RestartBegin {
+    /// Nothing to wait on — call `start()` straight away.
+    StartNow,
+    /// A kill was fired; poll `process_is_gone(pid)` (lock-free), then call
+    /// `stop_finish()` and finally `start()`.
+    PollThenFinish(u32),
+    /// `stop_begin()` failed benignly after already cleaning up; just poll
+    /// `process_is_gone(pid)` (lock-free) then call `start()` (no `stop_finish`).
+    PollThenStart(u32),
 }
 
 // Legacy function removed - use BotManager::read_logs() instead
@@ -1032,5 +1163,133 @@ mod tests {
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+
+    // ------- restart_begin (#28) -------
+
+    #[test]
+    fn restart_begin_is_start_now_when_no_pid_file() {
+        // An empty temp dir has no `bot.pid`, so `is_running()` is false and a
+        // restart has nothing to stop — it should jump straight to starting.
+        // Matched (not `==`) so `RestartBegin` need not derive PartialEq.
+        let (_dir, mut bm) = manager_in_temp();
+        assert!(
+            matches!(bm.restart_begin(), RestartBegin::StartNow),
+            "restart with no running bot should be StartNow",
+        );
+    }
+
+    // ------- process_is_gone (#28) -------
+
+    #[test]
+    fn process_is_gone_true_after_spawned_process_exits() {
+        let (_dir, mut bm) = manager_in_temp();
+        // Spawn a process that exits immediately, reap it, then confirm a fresh
+        // refresh no longer lists its PID. (Windows can reuse PIDs, but the
+        // window between wait() and the refresh below is far too small to flake
+        // in practice — the existing start_progress tests rely on the same
+        // spawn-and-reap timing.)
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn cmd /C exit 0");
+        let pid = child.id();
+        let _ = child.wait();
+        assert!(
+            bm.process_is_gone(pid),
+            "exited+reaped process should report gone",
+        );
+    }
+
+    // ------- process_belongs_to_us short-circuit / fail-closed (#27) -------
+
+    #[test]
+    fn process_belongs_to_us_matches_a_process_rooted_at_base_path() {
+        // Lock the cwd-based "belongs to us" recovery the doc comment describes:
+        // a process whose working directory IS base_path is recognised as ours
+        // even though base_path never appears in its argv (here a bare `ping`).
+        // This mirrors the dev-watcher case (bot spawned with a RELATIVE
+        // "bot.py" + cwd=PROJECT_ROOT). `process_belongs_to_us` does NOT filter
+        // on a "python" name — that lives in the orphan loop — so `ping` with
+        // the right cwd is a valid stand-in.
+        //
+        // NB on which branch fires: sysinfo reports a process cwd WITH a
+        // trailing separator (`...\dir\`) whereas `base_path` has none, so the
+        // plain `cwd == base_path` string compare misses by one char and it is
+        // the canonicalize fallback (the block this task documents) that matches
+        // — exactly the path that resolves 8.3 short-path / separator / symlink
+        // differences. So we pass the real `base_path_canonical`; with `None` it
+        // would (correctly) fail to match, which the empty-base_path test covers.
+        let (dir, mut bm) = manager_in_temp();
+        let base_path_str = dir.path().to_string_lossy().to_lowercase();
+        // Sanity: a tempdir exists, so construction canonicalized it.
+        assert!(
+            bm.base_path_canonical.is_some(),
+            "base_path_canonical should be Some for an existing tempdir",
+        );
+
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .current_dir(dir.path())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn ping");
+        let pid = child.id();
+
+        BotManager::refresh_processes_with_cmd(&mut bm.sys);
+        let belongs = bm
+            .sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| {
+                BotManager::process_belongs_to_us(
+                    p,
+                    "",
+                    &base_path_str,
+                    bm.base_path_canonical.as_deref(),
+                )
+            })
+            .expect("spawned ping should be in the refreshed snapshot");
+
+        // Clean up before asserting so a failure never leaks the stand-in.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            belongs,
+            "a process whose cwd == base_path must be recognised as ours",
+        );
+    }
+
+    #[test]
+    fn process_belongs_to_us_false_on_empty_base_path() {
+        // Lock the fail-closed guard: an empty `base_path_str` returns false up
+        // front (before any string or canonicalize compare), and `None` for
+        // `base_path_canonical` means the canonicalize fallback is also skipped.
+        // Together this proves an unknown/unset base_path never matches anything
+        // — the contract the new doc comment leans on.
+        let (_dir, mut bm) = manager_in_temp();
+
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn ping");
+        let pid = child.id();
+
+        BotManager::refresh_processes_with_cmd(&mut bm.sys);
+        let belongs = bm
+            .sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| BotManager::process_belongs_to_us(p, "some unrelated cmdline", "", None))
+            .expect("spawned ping should be in the refreshed snapshot");
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            !belongs,
+            "empty base_path must fail closed and never match a process",
+        );
     }
 }

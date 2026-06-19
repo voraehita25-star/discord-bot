@@ -12,7 +12,7 @@
  *   - Escape closes the bar
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { ChatSearch } from './search.js';
 
 const CHAT_HTML = `
@@ -95,6 +95,65 @@ describe('ChatSearch.perform — match wrapping', () => {
         search.perform('hello');
         const label = document.getElementById('chat-search-count')!;
         expect(label.textContent).toBe('1 / 2');
+    });
+
+    it('caps highlights at MAX_HITS and appends a "+ showing first N" hint', () => {
+        // 1500 occurrences of "aa" in one node — past the 1000 MAX_HITS cap.
+        getContainer()!.innerHTML = `<p>${'aa '.repeat(1500)}</p>`;
+        const search = new ChatSearch(getContainer);
+        search.perform('aa');
+        const marks = document.querySelectorAll('mark.chat-search-hit');
+        // Highlighting stops at the cap.
+        expect(marks.length).toBe(1000);
+        // The count label signals there are more than the highlighted N.
+        const label = document.getElementById('chat-search-count')!;
+        expect(label.textContent).toBe('1 / 1000+ (showing first 1000)');
+    });
+
+    it('does NOT append the "+" hint when the result set is under the cap', () => {
+        const search = new ChatSearch(getContainer);
+        search.perform('hello');
+        const label = document.getElementById('chat-search-count')!;
+        // Plain "current / total" — no "+", no hint.
+        expect(label.textContent).toBe('1 / 2');
+        expect(label.textContent).not.toContain('+');
+    });
+
+    it('exactly MAX_HITS hits with no trailing text is NOT flagged truncated', () => {
+        // 1000 occurrences of "aa", the last ending exactly at the node's end
+        // (no trailing char after the final match) and only ONE candidate node.
+        // Both truncation proofs fail (idx === text.length, no later node), so
+        // the count must read a clean "1 / 1000" — no false "+" at the boundary.
+        getContainer()!.innerHTML = `<p>${'aa '.repeat(999)}aa</p>`;
+        const search = new ChatSearch(getContainer);
+        search.perform('aa');
+        expect(document.querySelectorAll('mark.chat-search-hit').length).toBe(1000);
+        const label = document.getElementById('chat-search-count')!;
+        expect(label.textContent).toBe('1 / 1000');
+        expect(label.textContent).not.toContain('+');
+    });
+
+    it('one hit PAST the cap is flagged truncated (trailing text remains)', () => {
+        // 1001 occurrences: when the 1000th hit is wrapped, unscanned text still
+        // follows in the same node, so truncation IS provable → "+" hint shows.
+        getContainer()!.innerHTML = `<p>${'aa '.repeat(1000)}aa</p>`;
+        const search = new ChatSearch(getContainer);
+        search.perform('aa');
+        expect(document.querySelectorAll('mark.chat-search-hit').length).toBe(1000);
+        const label = document.getElementById('chat-search-count')!;
+        expect(label.textContent).toBe('1 / 1000+ (showing first 1000)');
+    });
+
+    it('5000 single-hit nodes still flags truncated (more nodes follow the cap)', () => {
+        // Each node contributes one hit, so MAX_HITS (1000) is reached long
+        // before the 5000-node scan cap. When the 1000th hit lands on the end of
+        // its node, the "later candidate node exists" proof carries truncation.
+        getContainer()!.innerHTML = '<p>aa</p>'.repeat(5000);
+        const search = new ChatSearch(getContainer);
+        search.perform('aa');
+        expect(document.querySelectorAll('mark.chat-search-hit').length).toBe(1000);
+        const label = document.getElementById('chat-search-count')!;
+        expect(label.textContent).toBe('1 / 1000+ (showing first 1000)');
     });
 
     it('shows "0 / 0" when query has no matches', () => {

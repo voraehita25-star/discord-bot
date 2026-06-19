@@ -44,6 +44,11 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+    // jsdom doesn't implement scrollIntoView — stub it so focusing a find
+    // match (focusFind → scrollIntoView) doesn't throw.
+    if (!Element.prototype.scrollIntoView) {
+        Element.prototype.scrollIntoView = function () { /* no-op */ };
+    }
     document.body.innerHTML = HISTORY_DOM;
 });
 
@@ -202,6 +207,33 @@ describe('handleMessage — ai_history_loaded', () => {
         expect(rows[0].textContent).toContain('<script>alert(1)</script>');
         // has_more=false → Load-all stays hidden.
         expect(document.getElementById('ai-history-load-all-container')!.classList.contains('hidden')).toBe(true);
+    });
+
+    it('neutralizes a hostile string `id` (attribute breakout / no live <img>)', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        // A mis-built / hostile frame can send `id` as a string even though the
+        // wire contract says it's a number. A breakout payload in data-id="…"
+        // would otherwise inject a live <img onerror>. The id-coercion at the
+        // frame door drops the un-numberable row; the valid row still renders.
+        const hostileId = '7"><img src=x onerror=alert(1)>' as unknown as number;
+        expect(() => hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [
+                makeMessage({ id: hostileId, role: 'user', content: 'breakout' }),
+                makeMessage({ id: 8, local_id: 2, role: 'model', content: 'survivor' }),
+            ],
+            total_count: 2,
+            has_more: false,
+        })).not.toThrow();
+        const container = document.getElementById('ai-history-messages')!;
+        // No live node escaped from the data-id breakout attempt…
+        expect(container.querySelector('img')).toBeNull();
+        // …and the well-formed row still renders.
+        const rows = container.querySelectorAll('.history-msg');
+        expect(rows.length).toBe(1);
+        expect(rows[0].textContent).toContain('survivor');
     });
 
     it('drops a stale frame for a channel the user already switched away from', () => {
@@ -1751,5 +1783,418 @@ describe('undo flow', () => {
             id: 50,
             content: 'b original',
         });
+    });
+});
+
+// ============================================================================
+// Keyboard-accessible channel list (role=listbox / role=option, roving
+// tabindex, Enter/Space activation, arrow-key navigation).
+// ============================================================================
+
+function loadChannels(
+    hm: import('./history-manager.js').HistoryManager,
+    n = 3,
+): void {
+    hm.handleMessage({
+        type: 'ai_channels_list',
+        channels: Array.from({ length: n }, (_, i) => ({
+            channel_id: String(100000 + i),
+            name: `channel ${i}`,
+            message_count: i + 1,
+            last_active: null,
+        })),
+    });
+}
+
+describe('channel list — keyboard accessibility', () => {
+    it('renders the list as a listbox with option rows', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        expect(list.getAttribute('role')).toBe('listbox');
+        const options = list.querySelectorAll('[role="option"]');
+        expect(options.length).toBe(3);
+        // Every option is reachable by AT and carries a selection state.
+        options.forEach(o => {
+            expect(o.getAttribute('aria-selected')).toBe('false');
+            expect(o.hasAttribute('tabindex')).toBe(true);
+        });
+    });
+
+    it('uses a roving tabindex — exactly one option is tabbable', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const tabbable = list.querySelectorAll('[role="option"][tabindex="0"]');
+        expect(tabbable.length).toBe(1);
+        // With nothing selected, the FIRST option is the tab stop.
+        expect((tabbable[0] as HTMLElement).dataset.channelId).toBe('100000');
+    });
+
+    it('marks the active channel aria-selected and points aria-activedescendant at it', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        hm.openChannel('100001');
+        const list = document.getElementById('ai-channel-list')!;
+        const active = list.querySelector('[aria-selected="true"]') as HTMLElement;
+        expect(active).not.toBeNull();
+        expect(active.dataset.channelId).toBe('100001');
+        // The active option is the roving tab stop, and activedescendant tracks it.
+        expect(active.getAttribute('tabindex')).toBe('0');
+        expect(list.getAttribute('aria-activedescendant')).toBe(active.id);
+        expect(active.id).toBe('ai-channel-opt-100001');
+    });
+
+    it('Enter on a focused option opens that channel', () => {
+        const { hm, send } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const row = list.querySelectorAll('[role="option"]')[1] as HTMLElement;
+        send.mockClear();
+        row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        expect(hm.currentChannelId).toBe('100001');
+        expect(send).toHaveBeenCalledWith({
+            type: 'load_ai_history',
+            channel_id: '100001',
+            limit: 200,
+        });
+    });
+
+    it('Space on a focused option opens that channel (and is prevented from scrolling)', () => {
+        const { hm, send } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const row = list.querySelectorAll('[role="option"]')[2] as HTMLElement;
+        send.mockClear();
+        const ev = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+        row.dispatchEvent(ev);
+        expect(ev.defaultPrevented).toBe(true);
+        expect(hm.currentChannelId).toBe('100002');
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'load_ai_history', channel_id: '100002',
+        }));
+    });
+
+    it('ArrowDown roves focus to the next option without changing selection', () => {
+        const { hm, send } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const rows = list.querySelectorAll('[role="option"]');
+        const first = rows[0] as HTMLElement;
+        first.focus();
+        send.mockClear();
+        first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        // Focus + the tabindex anchor moved to row 1; NO channel was opened.
+        expect(document.activeElement).toBe(rows[1]);
+        expect((rows[1] as HTMLElement).getAttribute('tabindex')).toBe('0');
+        expect((rows[0] as HTMLElement).getAttribute('tabindex')).toBe('-1');
+        expect(send).not.toHaveBeenCalled();
+        expect(hm.currentChannelId).toBeNull();
+    });
+
+    it('ArrowUp at the top stays put; End jumps to the last option', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const rows = list.querySelectorAll('[role="option"]');
+        (rows[0] as HTMLElement).focus();
+        (rows[0] as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(document.activeElement).toBe(rows[0]);
+        (rows[0] as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        expect(document.activeElement).toBe(rows[2]);
+    });
+});
+
+// ============================================================================
+// Channel filter (debounced) + transcript find box
+// ============================================================================
+
+describe('channel filter', () => {
+    it('builds a filter input and narrows the rendered channels (debounced)', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            hm.handleMessage({
+                type: 'ai_channels_list',
+                channels: [
+                    { channel_id: '1', name: 'general', message_count: 1, last_active: null },
+                    { channel_id: '2', name: 'support', message_count: 1, last_active: null },
+                    { channel_id: '3', name: 'general-2', message_count: 1, last_active: null },
+                ],
+            });
+            const input = document.getElementById('ai-history-channel-filter') as HTMLInputElement;
+            expect(input).not.toBeNull();
+            input.value = 'gener';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120); // flush the debounce
+            const list = document.getElementById('ai-channel-list')!;
+            const rows = list.querySelectorAll('.history-channel-item');
+            expect(rows.length).toBe(2);
+            expect(list.textContent).toContain('general');
+            expect(list.textContent).not.toContain('support');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('shows a no-matches empty state when the filter excludes everything', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            loadChannels(hm, 3);
+            const input = document.getElementById('ai-history-channel-filter') as HTMLInputElement;
+            input.value = 'zzzz-nope';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            const list = document.getElementById('ai-channel-list')!;
+            expect(list.querySelectorAll('.history-channel-item').length).toBe(0);
+            expect(list.textContent).toContain('No matching channels');
+            expect(list.textContent).toContain('zzzz-nope');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
+describe('transcript find', () => {
+    it('openFind reveals the bar; typing wraps matches and reports the count', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            hm.openChannel(CHANNEL_A);
+            hm.handleMessage({
+                type: 'ai_history_loaded',
+                channel_id: CHANNEL_A,
+                messages: [
+                    makeMessage({ id: 1, content: 'alpha needle beta' }),
+                    makeMessage({ id: 2, role: 'model', content: 'gamma needle needle' }),
+                ],
+                total_count: 2,
+                has_more: false,
+            });
+            hm.openFind();
+            const bar = document.getElementById('ai-history-search-bar')!;
+            expect(bar.classList.contains('hidden')).toBe(false);
+            const input = document.getElementById('ai-history-search-input') as HTMLInputElement;
+            input.value = 'needle';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            const marks = document.querySelectorAll('#ai-history-messages mark.chat-search-hit');
+            expect(marks.length).toBe(3); // 1 + 2 occurrences
+            expect(document.getElementById('ai-history-search-count')!.textContent).toBe('1 / 3');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('closeFind hides the bar and strips the highlights', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            hm.openChannel(CHANNEL_A);
+            hm.handleMessage({
+                type: 'ai_history_loaded',
+                channel_id: CHANNEL_A,
+                messages: [makeMessage({ id: 1, content: 'find me here' })],
+                total_count: 1,
+                has_more: false,
+            });
+            hm.openFind();
+            const input = document.getElementById('ai-history-search-input') as HTMLInputElement;
+            input.value = 'find';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            expect(document.querySelectorAll('#ai-history-messages mark.chat-search-hit').length).toBe(1);
+            hm.closeFind();
+            expect(document.getElementById('ai-history-search-bar')!.classList.contains('hidden')).toBe(true);
+            expect(document.querySelectorAll('#ai-history-messages mark.chat-search-hit').length).toBe(0);
+            // The original text survives intact after unwrapping.
+            expect(document.getElementById('ai-history-messages')!.textContent).toContain('find me here');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
+// ============================================================================
+// List semantics + loading / empty states
+// ============================================================================
+
+describe('message viewer semantics + states', () => {
+    it('the viewer is a role=log and rows are role=listitem with a role-conveying aria-label', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [
+                makeMessage({ id: 1, role: 'user', content: 'hi' }),
+                makeMessage({ id: 2, role: 'model', content: 'yo' }),
+            ],
+            total_count: 2,
+            has_more: false,
+        });
+        const container = document.getElementById('ai-history-messages')!;
+        expect(container.getAttribute('role')).toBe('log');
+        const rows = container.querySelectorAll('.history-msg[role="listitem"]');
+        expect(rows.length).toBe(2);
+        expect(rows[0].getAttribute('aria-label')).toBe('User message');
+        expect(rows[1].getAttribute('aria-label')).toBe('Model message');
+    });
+
+    it('shows a spinner/skeleton loading pane while a channel load is in flight', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A); // load now in flight (loaded frame not delivered)
+        const container = document.getElementById('ai-history-messages')!;
+        expect(container.querySelector('.loading-spinner')).not.toBeNull();
+        expect(container.querySelector('[role="status"]')).not.toBeNull();
+        expect(container.textContent).toContain('Loading messages');
+        // The loaded frame clears the loading pane.
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [makeMessage({ id: 1, content: 'done' })],
+            total_count: 1,
+            has_more: false,
+        });
+        expect(container.querySelector('.loading-spinner')).toBeNull();
+        expect(container.textContent).toContain('done');
+    });
+
+    it('shows an iconographic empty state for a channel with no messages', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [],
+            total_count: 0,
+            has_more: false,
+        });
+        const container = document.getElementById('ai-history-messages')!;
+        expect(container.querySelector('.empty-state')).not.toBeNull();
+        expect(container.querySelector('.empty-state svg use')!.getAttribute('href')).toBe('#i-inbox');
+        expect(container.textContent).toContain('No messages');
+    });
+
+    it('the overflow/cap note is a status region', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        const msgs = Array.from({ length: 501 }, (_, i) =>
+            makeMessage({ id: i + 1, content: `m${i}` }));
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: msgs,
+            total_count: 501,
+            has_more: false,
+        });
+        const note = document.querySelector('#ai-history-messages .history-overflow-note')!;
+        expect(note.getAttribute('role')).toBe('status');
+        expect(note.textContent).toContain('newest 500');
+    });
+});
+
+// ============================================================================
+// In-place row updates (no full-list rebuild per single-row mutation)
+// ============================================================================
+
+describe('in-place row updates', () => {
+    /** A capped 4-message channel where each row carries a stable data-id. */
+    function loadFour(hm: import('./history-manager.js').HistoryManager): void {
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [
+                makeMessage({ id: 7, role: 'user', content: 'one' }),
+                makeMessage({ id: 8, role: 'model', content: 'two' }),
+                makeMessage({ id: 9, role: 'user', content: 'three' }),
+                makeMessage({ id: 10, role: 'model', content: 'four' }),
+            ],
+            total_count: 4,
+            has_more: false,
+        });
+    }
+
+    it('an edit ack patches only the affected row node (same node identity)', () => {
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        const rowBefore = container.querySelector('.history-msg[data-id="8"]') as HTMLElement;
+        const otherBefore = container.querySelector('.history-msg[data-id="7"]') as HTMLElement;
+        hm.handleMessage({
+            type: 'ai_history_message_edited',
+            channel_id: CHANNEL_A,
+            id: 8,
+            content: 'two-edited',
+            live_session: 'patched',
+            live_session_patched: true,
+        });
+        const rowAfter = container.querySelector('.history-msg[data-id="8"]') as HTMLElement;
+        const otherAfter = container.querySelector('.history-msg[data-id="7"]') as HTMLElement;
+        // Same DOM nodes survived — no full rebuild.
+        expect(rowAfter).toBe(rowBefore);
+        expect(otherAfter).toBe(otherBefore);
+        expect(rowAfter.querySelector('.history-msg-content')!.textContent).toBe('two-edited');
+        expect(hm.messages.find(m => m.id === 8)!.content).toBe('two-edited');
+    });
+
+    it('a delete ack removes only the affected row and re-indexes the tail', async () => {
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        const survivor = container.querySelector('.history-msg[data-id="7"]') as HTMLElement;
+        await hm.requestDelete(1); // id 8
+        hm.handleMessage({
+            type: 'ai_history_message_deleted',
+            channel_id: CHANNEL_A,
+            id: 8,
+            live_session: 'patched',
+            live_session_patched: true,
+            total_count: 3,
+        });
+        // The id-8 node is gone; the id-7 node is the SAME (no rebuild).
+        expect(container.querySelector('.history-msg[data-id="8"]')).toBeNull();
+        expect(container.querySelector('.history-msg[data-id="7"]')).toBe(survivor);
+        // The rows after the deletion re-indexed down so data-idx stays the
+        // absolute model index — clicking row id 9's edit opens messages[1].
+        const row9 = container.querySelector('.history-msg[data-id="9"]') as HTMLElement;
+        expect(row9.dataset.idx).toBe('1');
+        (row9.querySelector('.history-edit-btn') as HTMLElement).click();
+        expect((document.querySelector('.edit-textarea') as HTMLTextAreaElement).value).toBe('three');
+    });
+
+    it('a restore ack inserts only the affected row at its id-sorted spot', async () => {
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        await hm.requestDelete(1); // id 8 (middle)
+        hm.handleMessage({
+            type: 'ai_history_message_deleted',
+            channel_id: CHANNEL_A,
+            id: 8,
+            live_session: 'patched',
+            live_session_patched: true,
+            total_count: 3,
+        });
+        const survivor7 = container.querySelector('.history-msg[data-id="7"]') as HTMLElement;
+        undoBtn().click(); // restore in flight
+        hm.handleMessage({
+            type: 'ai_history_message_restored',
+            channel_id: CHANNEL_A,
+            id: 8,
+            live_session: 'patched',
+            live_session_patched: true,
+            total_count: 4,
+        });
+        // id 8 came back BETWEEN 7 and 9 (DOM order), and the untouched id-7
+        // node is the same one (single-node insert, not a rebuild).
+        const ids = Array.from(container.querySelectorAll('.history-msg[data-id]'))
+            .map(r => (r as HTMLElement).dataset.id);
+        expect(ids).toEqual(['7', '8', '9', '10']);
+        expect(container.querySelector('.history-msg[data-id="7"]')).toBe(survivor7);
+        // data-idx is re-synced to the absolute model index.
+        expect((container.querySelector('.history-msg[data-id="9"]') as HTMLElement).dataset.idx).toBe('2');
     });
 });

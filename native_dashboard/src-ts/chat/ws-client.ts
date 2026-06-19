@@ -50,6 +50,10 @@ export class WebSocketClient {
 
     private wsToken: string | null = null;
     private isConnecting: boolean = false;
+    // Bumped on every disconnect(). connect()'s async config fetch snapshots it
+    // and bails if it changed by the time the promise resolves — stops an
+    // in-flight connect() from resurrecting a socket the user already tore down.
+    private connectGeneration: number = 0;
     private reconnectTimeout: number | null = null;
     private pingInterval: number | null = null;
     private pongPending: boolean = false;
@@ -91,6 +95,12 @@ export class WebSocketClient {
 
     /** Cleanly close any active socket, stop ping/reconnect timers. */
     disconnect(): void {
+        // Invalidate any in-flight connect(): bumping the generation makes its
+        // pending config-fetch .then()/.catch() bail instead of opening a new
+        // socket after this teardown. Also clear isConnecting so a fresh
+        // connect() isn't wrongly treated as already-in-progress.
+        this.connectGeneration++;
+        this.isConnecting = false;
         // Explicit `!== null` (not truthiness) — a timer id of 0 is valid per
         // spec and would be skipped by a truthy check, leaking the timer.
         if (this.pingInterval !== null) {
@@ -124,6 +134,11 @@ export class WebSocketClient {
 
         try {
             this.isConnecting = true;
+            // Snapshot the generation: if disconnect() (or a teardown) runs while
+            // the config fetch below is in flight, it bumps connectGeneration and
+            // the resolved callbacks bail instead of opening a socket the caller
+            // already abandoned.
+            const generation = this.connectGeneration;
             // Guard against a hung Tauri `invoke` (backend deadlock): if it
             // never resolves, the `.finally` below never runs, `isConnecting`
             // stays true forever, and every future connect() is a silent
@@ -144,16 +159,20 @@ export class WebSocketClient {
                 withTimeout(invoke<string>('get_ws_token').catch(() => ''), ''),
                 withTimeout(invoke<string>('get_ws_endpoint').catch(() => DEFAULT_WS_ENDPOINT), DEFAULT_WS_ENDPOINT),
             ]).then(([token, endpoint]) => {
+                if (generation !== this.connectGeneration) return;  // disconnected mid-fetch
                 this.wsToken = token || null;
                 const candidates = this.buildEndpointCandidates(endpoint || DEFAULT_WS_ENDPOINT);
                 this.connectWithUrl(candidates[0], candidates.slice(1));
             }).catch(() => {
+                if (generation !== this.connectGeneration) return;  // disconnected mid-fetch
                 console.warn('WS config unavailable — falling back to default localhost endpoint');
                 this.wsToken = null;
                 const candidates = this.buildEndpointCandidates(DEFAULT_WS_ENDPOINT);
                 this.connectWithUrl(candidates[0], candidates.slice(1));
             }).finally(() => {
-                this.isConnecting = false;
+                // Don't clobber a newer connect()'s in-progress flag: only clear
+                // it if no disconnect()/reconnect superseded this attempt.
+                if (generation === this.connectGeneration) this.isConnecting = false;
             });
         } catch (e) {
             this.isConnecting = false;
@@ -241,7 +260,7 @@ export class WebSocketClient {
 
                 // Only log first error, not repeated connection failures during reconnect storms.
                 if (this.reconnectAttempts === 0) {
-                    console.warn('🔌 WebSocket connection failed (bot may not be running)');
+                    console.warn('WebSocket connection failed (bot may not be running)');
                 }
                 errorLogger.log('WEBSOCKET_ERROR', `WebSocket connection error (${wsUrl})`, String(error));
                 this.connected = false;
@@ -343,7 +362,7 @@ export class WebSocketClient {
             if (this.pongPending) {
                 this.missedPongs++;
                 if (this.missedPongs >= MISSED_PONG_LIMIT) {
-                    console.warn('🔌 Server unresponsive (missed pongs), forcing reconnect');
+                    console.warn('Server unresponsive (missed pongs), forcing reconnect');
                     errorLogger.log('WEBSOCKET_STALE', `Server missed ${this.missedPongs} pongs, forcing reconnect`);
                     this.missedPongs = 0;
                     this.pongPending = false;

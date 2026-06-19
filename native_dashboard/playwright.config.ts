@@ -44,11 +44,16 @@ export default defineConfig({
         // path (e.g. when the User PATH is not inherited) run the e2e suite.
         command: `${process.env.PYTHON ?? 'python'} -u -m http.server 5173 --directory ui --bind 127.0.0.1`,
         url: 'http://127.0.0.1:5173/index.html',
-        // Reuse a running dev server outside CI for speed. 5173 is the Vite
+        // Never reuse an already-running server by default: 5173 is the Vite
         // default, so a stale http.server / another project's Vite could be
-        // reused and serve stale ui/ assets; set PLAYWRIGHT_NO_REUSE_SERVER=1
-        // to force Playwright to launch its own server.
-        reuseExistingServer: !process.env.CI && !process.env.PLAYWRIGHT_NO_REUSE_SERVER,
+        // reused and serve stale ui/ assets (which the test:e2e `npm run build`
+        // step just regenerated). Opt in to reuse for speed during local dev
+        // by setting PW_REUSE=1 (and not on CI, which always wants a fresh
+        // server). PLAYWRIGHT_NO_REUSE_SERVER is still honored as a kill switch.
+        reuseExistingServer:
+            !process.env.CI &&
+            !!process.env.PW_REUSE &&
+            !process.env.PLAYWRIGHT_NO_REUSE_SERVER,
         timeout: 15_000,
         stdout: 'pipe',
         stderr: 'pipe',

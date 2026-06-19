@@ -67,10 +67,85 @@ describe('formatMessage — security', () => {
         expect(html).not.toMatch(/<[^>]+\sonerror\s*=/i);
     });
 
-    it('blocks javascript: URL in markdown image syntax (escaped as text)', () => {
+    it('blocks javascript: URL in markdown link syntax (not rendered as <a>)', () => {
         const html = formatMessage('click [me](javascript:alert(1))');
-        // We don't render markdown links to <a>, so this stays as text.
+        // Only https:// links are linkified — a javascript: URL never becomes
+        // a live anchor (the markdown-link regex simply doesn't match it).
         expect(html).not.toMatch(/<a\s+href=["']?javascript/i);
+    });
+
+    it('does not linkify an http:// (non-https) markdown link as a live href', () => {
+        const html = formatMessage('see [here](http://insecure.example.com)');
+        // http:// is intentionally not linkified; DOMPurify would strip the
+        // href anyway. No live anchor pointing at an http: URL.
+        expect(html).not.toMatch(/<a\s+href=["']?http:/i);
+    });
+
+    it('strips a data: URL from a markdown link (DOMPurify https-only gate)', () => {
+        const html = formatMessage('[x](data:text/html,<script>alert(1)</script>)');
+        expect(html).not.toMatch(/<a\s+href=["']?data:/i);
+    });
+});
+
+describe('formatMessage — markdown links', () => {
+    it('renders [text](https://url) as an anchor with the right text + href', () => {
+        const html = formatMessage('go to [Anthropic](https://www.anthropic.com)');
+        expect(html).toMatch(/<a [^>]*href="https:\/\/www\.anthropic\.com"[^>]*>Anthropic<\/a>/);
+    });
+
+    it('forces target=_blank and rel=noopener noreferrer on links', () => {
+        const html = formatMessage('[ai](https://example.com/page)');
+        expect(html).toMatch(/target="_blank"/);
+        expect(html).toMatch(/rel="noopener noreferrer"/);
+    });
+
+    it('autolinks a bare https:// URL', () => {
+        const html = formatMessage('visit https://example.com for more');
+        expect(html).toMatch(/<a [^>]*href="https:\/\/example\.com"[^>]*>https:\/\/example\.com<\/a>/);
+    });
+
+    it('does not swallow trailing sentence punctuation into the autolink', () => {
+        const html = formatMessage('see https://example.com.');
+        // The trailing period stays OUTSIDE the anchor.
+        expect(html).toMatch(/href="https:\/\/example\.com"/);
+        expect(html).not.toMatch(/href="https:\/\/example\.com\."/);
+    });
+
+    it('does not double-wrap a URL already inside a markdown link', () => {
+        const html = formatMessage('[click](https://example.com/path)');
+        // Exactly one anchor — the bare-URL pass must not re-wrap the href/text.
+        const anchorCount = (html.match(/<a /g) || []).length;
+        expect(anchorCount).toBe(1);
+    });
+
+    it('keeps a balanced closing paren inside a markdown-link href (Wikipedia case)', () => {
+        const html = formatMessage('[wiki](https://en.wikipedia.org/wiki/Foo_(bar))');
+        // The ')' that closes '(bar' belongs to the URL — it must NOT be stripped.
+        expect(html).toContain('href="https://en.wikipedia.org/wiki/Foo_(bar)"');
+    });
+
+    it('keeps a balanced closing paren inside a bare autolinked URL', () => {
+        const html = formatMessage('see https://en.wikipedia.org/wiki/Foo_(bar) now');
+        expect(html).toMatch(/href="https:\/\/en\.wikipedia\.org\/wiki\/Foo_\(bar\)"/);
+    });
+
+    it('still strips a trailing sentence period after a balanced-paren URL', () => {
+        const html = formatMessage('see https://en.wikipedia.org/wiki/Foo_(bar).');
+        // ')' kept (balanced), '.' dropped (sentence punctuation).
+        expect(html).toContain('href="https://en.wikipedia.org/wiki/Foo_(bar)"');
+        expect(html).not.toMatch(/href="[^"]*\)\."/);
+    });
+
+    it('does not linkify a URL inside a fenced code block', () => {
+        const html = formatMessage('```\ncurl https://example.com\n```');
+        // URLs in code stay literal — no anchor inside the <pre><code>.
+        expect(html).not.toMatch(/<a [^>]*href=/);
+        expect(html).toContain('https://example.com');
+    });
+
+    it('does not linkify a URL inside inline code', () => {
+        const html = formatMessage('run `https://example.com` now');
+        expect(html).not.toMatch(/<a [^>]*href=/);
     });
 });
 
@@ -121,6 +196,16 @@ describe('formatMessage — fenced code blocks', () => {
         expect(html).not.toContain('<script>alert(1)</script>');
         // Escaped form should be present.
         expect(html).toMatch(/&lt;script&gt;|alert\(1\)/);
+    });
+
+    it('keeps the data-code-copy attribute (with the code) through DOMPurify', () => {
+        // Regression: DOMPurify drops data-* unless ALLOW_DATA_ATTR is true.
+        // ADD_ATTR/ALLOWED_ATTR don't whitelist data-*, so if this regresses the
+        // per-block copy button loses data-code-copy and the handler copies ''.
+        const html = formatMessage('```js\nconst answer = 42;\n```');
+        expect(html).toContain('data-code-copy=');
+        // The actual code (escaped) must live inside the attribute.
+        expect(html).toMatch(/data-code-copy="[^"]*const answer = 42;[^"]*"/);
     });
 
     it('does not treat $ inside a code block as LaTeX (shell vars survive)', () => {

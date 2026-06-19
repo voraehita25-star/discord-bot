@@ -81,8 +81,16 @@ Run from `native_dashboard/`:
 ```bash
 npm test                 # Run all vitest suites once
 npm run test:watch       # Watch mode
-npm run test:coverage    # With coverage report
+npm run test:coverage    # With coverage report (enforces coverage floors)
+npm run typecheck        # Type-check the build sources (tsc --noEmit)
+npm run typecheck:test   # Type-check including the *.test.ts specs
 ```
+
+> `test:coverage` enforces minimum coverage floors (see `vitest.config.ts`
+> `thresholds`): it exits non-zero if lines/statements/functions/branches drop
+> below the configured floor. The floors sit just under the suite's current
+> numbers as a regression guard — raise them as coverage grows, don't lower
+> them to make a run pass.
 
 ## Headless E2E Tests (8 Playwright files, 72 tests)
 

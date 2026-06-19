@@ -15,7 +15,9 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const PAGES = ['status', 'chat', 'servers', 'logs', 'connections', 'config', 'about'];
+// Mirror VALID_PAGES in src-ts/app.ts (the real nav set). The old list had
+// speculative pages (servers/connections/config/about) that never existed.
+const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
 
 for (const pageName of PAGES) {
     test(`screenshot: ${pageName} page`, async ({ page }) => {

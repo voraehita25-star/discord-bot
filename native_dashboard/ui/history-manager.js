@@ -37,7 +37,7 @@
  * ONE delegated container-level click handler stored on the element and
  * replaced each render.
  */
-import { escapeHtml, showConfirmDialog, showToast } from './shared.js';
+import { escapeHtml, icon, normalizeSqliteUtc, showConfirmDialog, showToast } from './shared.js';
 /** Channels beyond this count are not rendered (overflow note instead). */
 const CHANNEL_RENDER_CAP = 200;
 /** Message rows beyond this count are not rendered (newest kept). */
@@ -73,9 +73,7 @@ function formatTimestamp(iso) {
     try {
         // SQLite naive timestamps are UTC — append Z so JS doesn't misread
         // them as local time (same normalization as formatChatFileDate).
-        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
-        const normalized = (hasTzInfo ? iso : iso + 'Z').replace(' ', 'T');
-        const d = new Date(normalized);
+        const d = new Date(normalizeSqliteUtc(iso));
         if (Number.isNaN(d.getTime()))
             return iso;
         return d.toLocaleString(undefined, {
@@ -92,9 +90,7 @@ function formatLastActive(iso) {
     if (!iso)
         return 'no activity';
     try {
-        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
-        const normalized = (hasTzInfo ? iso : iso + 'Z').replace(' ', 'T');
-        const d = new Date(normalized);
+        const d = new Date(normalizeSqliteUtc(iso));
         if (Number.isNaN(d.getTime()))
             return iso;
         const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
@@ -115,70 +111,98 @@ function formatLastActive(iso) {
     }
 }
 export class HistoryManager {
+    callbacks;
+    channels = [];
+    currentChannelId = null;
+    messages = [];
+    totalCount = 0;
+    hasMore = false;
+    /**
+     * True when the server clipped the last ai_history_loaded payload by its
+     * content-size budget — a re-request cannot return more rows, so the
+     * Load-all button must not promise otherwise.
+     */
+    truncated = false;
+    /** Absolute index (into this.messages) of the row in edit mode, or null. */
+    editingIdx = null;
+    // Most-recent channel id passed to openChannel()/loadAll(). The
+    // ai_history_loaded handler compares against this to drop stale frames
+    // when the user switches channels rapidly (copies ChatManager's
+    // pendingConversationLoadId pattern).
+    pendingChannelLoadId = null;
+    // Set when a list_ai_channels send failed (socket down) so the request
+    // can be flushed once ChatManager's 'connected' frame arrives.
+    pendingChannelsList = false;
+    // Channel load (openChannel/loadAll) that could not be sent because the
+    // socket was down — flushed by onConnected(), cleared when the matching
+    // ai_history_loaded arrives and when the user switches channels.
+    pendingChannelLoad = null;
+    /**
+     * True while an edit_ai_history_message OR delete_ai_history_message is
+     * awaiting the server ack — one mutation in flight at a time, so edit and
+     * delete can never overlap (the name predates the delete op).
+     */
+    editInFlight = false;
+    // Limit of the most recent channel load (200 default / 2000 after
+    // "Load all") so a Refresh re-requests the same window instead of
+    // collapsing a fully-loaded view back to the newest 200.
+    lastLoadLimit = DEFAULT_LOAD_LIMIT;
+    // Set by refresh() so the next ai_channels_list arrival confirms with a
+    // "Refreshed" toast — page-enter/reconnect listings stay silent.
+    refreshFeedbackPending = false;
+    /**
+     * Ack-confirmed undo history (newest last), capped at UNDO_STACK_MAX.
+     * Entries are pushed ONLY when the matching edited/deleted ack arrives —
+     * a rejected or unsendable mutation never lands here.
+     */
+    undoStack = [];
+    /**
+     * Mutation sent but not yet ack-confirmed — promoted onto undoStack by
+     * the matching edited/deleted ack. Keyed by channel+id (NOT by the
+     * current view): the acks clear editInFlight before the foreign-channel
+     * guard, and the DB mutation happened regardless of which channel is
+     * open when the ack lands, so foreign-channel acks must still push.
+     */
+    pendingUndoCandidate = null;
+    /**
+     * The stack entry whose undo is currently awaiting its success ack
+     * (edited ack for an 'edit' entry, restored ack for a 'delete' entry).
+     * Popped on that ack; a codeless/transient onError or a reconnect
+     * (onConnected) clears this marker but KEEPS the entry so the user can
+     * retry the undo, while an onError carrying a PERMANENT rejection code
+     * (PERMANENT_HISTORY_ERROR_CODES) drops the entry too — retrying could
+     * only fail identically and would shadow older undos in the channel.
+     */
+    pendingUndo = null;
+    notify;
+    confirmDialog;
+    /**
+     * Channel-list filter text (lower-cased on apply). Debounced like
+     * ConversationList's filter so typing across a capped 200-channel list
+     * doesn't re-run the O(n) innerHTML build on every keystroke. The hidden
+     * overflow ("N more channels hidden") is only reachable by narrowing here.
+     */
+    channelFilter = '';
+    channelFilterDebounce = null;
+    /**
+     * In-transcript find state (Ctrl+F over the open channel's messages).
+     * Mirrors the chat/search.ts idea — a TreeWalker over the rendered text
+     * nodes wraps each hit in <mark class="chat-search-hit"> and ↑/↓ steps
+     * through them — but uses its OWN #ai-history-search-* ids so it never
+     * collides with the chat page's #chat-search-* nodes (duplicate ids would
+     * break both). Self-contained here because chat/search.ts hardcodes the
+     * chat ids and exports no reusable helper. Lets the user reach content the
+     * 500-row render cap hides only by index, complementing the cap note.
+     */
+    findMatches = [];
+    findIdx = -1;
+    /** True from openChannel() until the matching ai_history_loaded lands —
+     *  drives the spinner/skeleton loading pane. */
+    loading = false;
+    /** Guards the one-time DOM scaffold + listener wiring in init(). */
+    chromeBuilt = false;
     constructor(callbacks) {
         this.callbacks = callbacks;
-        this.channels = [];
-        this.currentChannelId = null;
-        this.messages = [];
-        this.totalCount = 0;
-        this.hasMore = false;
-        /**
-         * True when the server clipped the last ai_history_loaded payload by its
-         * content-size budget — a re-request cannot return more rows, so the
-         * Load-all button must not promise otherwise.
-         */
-        this.truncated = false;
-        /** Absolute index (into this.messages) of the row in edit mode, or null. */
-        this.editingIdx = null;
-        // Most-recent channel id passed to openChannel()/loadAll(). The
-        // ai_history_loaded handler compares against this to drop stale frames
-        // when the user switches channels rapidly (copies ChatManager's
-        // pendingConversationLoadId pattern).
-        this.pendingChannelLoadId = null;
-        // Set when a list_ai_channels send failed (socket down) so the request
-        // can be flushed once ChatManager's 'connected' frame arrives.
-        this.pendingChannelsList = false;
-        // Channel load (openChannel/loadAll) that could not be sent because the
-        // socket was down — flushed by onConnected(), cleared when the matching
-        // ai_history_loaded arrives and when the user switches channels.
-        this.pendingChannelLoad = null;
-        /**
-         * True while an edit_ai_history_message OR delete_ai_history_message is
-         * awaiting the server ack — one mutation in flight at a time, so edit and
-         * delete can never overlap (the name predates the delete op).
-         */
-        this.editInFlight = false;
-        // Limit of the most recent channel load (200 default / 2000 after
-        // "Load all") so a Refresh re-requests the same window instead of
-        // collapsing a fully-loaded view back to the newest 200.
-        this.lastLoadLimit = DEFAULT_LOAD_LIMIT;
-        // Set by refresh() so the next ai_channels_list arrival confirms with a
-        // "Refreshed" toast — page-enter/reconnect listings stay silent.
-        this.refreshFeedbackPending = false;
-        /**
-         * Ack-confirmed undo history (newest last), capped at UNDO_STACK_MAX.
-         * Entries are pushed ONLY when the matching edited/deleted ack arrives —
-         * a rejected or unsendable mutation never lands here.
-         */
-        this.undoStack = [];
-        /**
-         * Mutation sent but not yet ack-confirmed — promoted onto undoStack by
-         * the matching edited/deleted ack. Keyed by channel+id (NOT by the
-         * current view): the acks clear editInFlight before the foreign-channel
-         * guard, and the DB mutation happened regardless of which channel is
-         * open when the ack lands, so foreign-channel acks must still push.
-         */
-        this.pendingUndoCandidate = null;
-        /**
-         * The stack entry whose undo is currently awaiting its success ack
-         * (edited ack for an 'edit' entry, restored ack for a 'delete' entry).
-         * Popped on that ack; a codeless/transient onError or a reconnect
-         * (onConnected) clears this marker but KEEPS the entry so the user can
-         * retry the undo, while an onError carrying a PERMANENT rejection code
-         * (PERMANENT_HISTORY_ERROR_CODES) drops the entry too — retrying could
-         * only fail identically and would shadow older undos in the channel.
-         */
-        this.pendingUndo = null;
         this.notify = callbacks.notify ?? showToast;
         this.confirmDialog = callbacks.confirmDialog ?? showConfirmDialog;
     }
@@ -199,6 +223,186 @@ export class HistoryManager {
             undoBtn.dataset.historyBound = '1';
             undoBtn.addEventListener('click', () => this.undo());
         }
+        this.buildChrome();
+    }
+    // ------------------------------------------------------------------
+    // Search / filter chrome — built dynamically (the static index.html has
+    // no filter/find nodes for this page). Idempotent: the elements carry
+    // their own ids and we guard with chromeBuilt + an in-DOM existence check
+    // so a re-init (hot reload) or a fresh test DOM rebuilds cleanly.
+    // ------------------------------------------------------------------
+    /**
+     * Inject the channel-filter input (above #ai-channel-list) and the
+     * in-transcript find bar (above #ai-history-messages) once, then bind the
+     * page-scoped Ctrl+F shortcut. No-op once built unless the nodes are gone
+     * (a new DOM, e.g. a test rerun, rebuilds them).
+     */
+    buildChrome() {
+        this.buildChannelFilter();
+        this.buildFindBar();
+        if (!this.chromeBuilt) {
+            // Page-scoped Ctrl+F: only when the History page is the active one
+            // (app.ts toggles `.active` on the .page sections). The chat page
+            // owns its own Ctrl+F, so we gate on visibility to avoid stealing it.
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.key.toLowerCase() === 'f') {
+                    const page = document.getElementById('page-history');
+                    if (page && page.classList.contains('active')) {
+                        e.preventDefault();
+                        this.openFind();
+                    }
+                }
+            });
+            this.chromeBuilt = true;
+        }
+    }
+    /** Create #ai-history-channel-filter above the channel list, once. */
+    buildChannelFilter() {
+        if (document.getElementById('ai-history-channel-filter'))
+            return;
+        const list = document.getElementById('ai-channel-list');
+        const parent = list?.parentElement;
+        if (!list || !parent)
+            return;
+        const wrap = document.createElement('div');
+        wrap.className = 'history-channel-filter';
+        wrap.setAttribute('role', 'search');
+        wrap.innerHTML =
+            `<input type="search" id="ai-history-channel-filter" class="history-filter-input"`
+                + ` placeholder="Filter channels…" aria-label="Filter AI history channels by name">`;
+        parent.insertBefore(wrap, list);
+        const input = wrap.querySelector('#ai-history-channel-filter');
+        input.addEventListener('input', () => {
+            // Debounce — re-filtering a 200-row capped list on every keystroke
+            // is an O(n) innerHTML rebuild (same rationale as ConversationList).
+            if (this.channelFilterDebounce !== null)
+                clearTimeout(this.channelFilterDebounce);
+            this.channelFilterDebounce = window.setTimeout(() => {
+                this.channelFilter = input.value;
+                this.channelFilterDebounce = null;
+                this.renderChannelList();
+            }, 120);
+        });
+    }
+    /** Create the #ai-history-search-bar find strip above the message viewer, once. */
+    buildFindBar() {
+        if (document.getElementById('ai-history-search-bar'))
+            return;
+        const messages = document.getElementById('ai-history-messages');
+        const parent = messages?.parentElement;
+        if (!messages || !parent)
+            return;
+        const bar = document.createElement('div');
+        bar.className = 'history-search-bar hidden';
+        bar.id = 'ai-history-search-bar';
+        bar.setAttribute('role', 'search');
+        bar.innerHTML =
+            `<input type="text" id="ai-history-search-input" placeholder="Find in transcript…" aria-label="Find in transcript">`
+                + `<span class="history-search-count" id="ai-history-search-count" role="status" aria-live="polite">0 / 0</span>`
+                + `<button class="btn btn-icon" id="ai-history-search-prev" type="button" title="Previous match" aria-label="Previous match">${icon('chevron-up')}</button>`
+                + `<button class="btn btn-icon" id="ai-history-search-next" type="button" title="Next match" aria-label="Next match">${icon('chevron-down')}</button>`
+                + `<button class="btn btn-icon" id="ai-history-search-close" type="button" title="Close (Esc)" aria-label="Close find">${icon('x')}</button>`;
+        parent.insertBefore(bar, messages);
+        const input = bar.querySelector('#ai-history-search-input');
+        let debounce = null;
+        input.addEventListener('input', () => {
+            if (debounce !== null)
+                clearTimeout(debounce);
+            debounce = window.setTimeout(() => {
+                this.performFind(input.value);
+                debounce = null;
+            }, 120);
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.stepFind(e.shiftKey ? -1 : 1);
+            }
+            else if (e.key === 'Escape') {
+                e.preventDefault();
+                this.closeFind();
+            }
+        });
+        bar.querySelector('#ai-history-search-next')?.addEventListener('click', () => this.stepFind(1));
+        bar.querySelector('#ai-history-search-prev')?.addEventListener('click', () => this.stepFind(-1));
+        bar.querySelector('#ai-history-search-close')?.addEventListener('click', () => this.closeFind());
+    }
+    /** Reveal the find bar and focus its input (Ctrl+F entry point). */
+    openFind() {
+        const bar = document.getElementById('ai-history-search-bar');
+        const input = document.getElementById('ai-history-search-input');
+        if (!bar || !input)
+            return;
+        bar.classList.remove('hidden');
+        input.focus();
+        input.select();
+        // Re-run against the current DOM in case content changed since the last
+        // open (so the count reflects what's actually rendered now).
+        if (input.value)
+            this.performFind(input.value);
+    }
+    /** Hide the find bar and strip its highlights. */
+    closeFind() {
+        const bar = document.getElementById('ai-history-search-bar');
+        if (bar)
+            bar.classList.add('hidden');
+        this.clearFindHighlights();
+        this.findMatches = [];
+        this.findIdx = -1;
+    }
+    /** Wrap every hit in the rendered transcript and jump to the first. */
+    performFind(query) {
+        this.clearFindHighlights();
+        this.findMatches = [];
+        this.findIdx = -1;
+        const container = document.getElementById('ai-history-messages');
+        const countEl = document.getElementById('ai-history-search-count');
+        if (container && query) {
+            this.findMatches = wrapHistoryMatches(container, query);
+            if (this.findMatches.length > 0)
+                this.focusFind(0);
+        }
+        if (countEl) {
+            countEl.textContent = `${this.findMatches.length ? this.findIdx + 1 : 0} / ${this.findMatches.length}`;
+        }
+    }
+    /** Step ↑/↓ through the matches (re-runs if the DOM was re-rendered). */
+    stepFind(direction) {
+        if (this.findMatches.length === 0)
+            return;
+        // A re-render (renderMessages) detaches the old <mark> nodes — re-run
+        // before stepping if any match is no longer connected.
+        if (this.findMatches.some(m => !m.isConnected)) {
+            const input = document.getElementById('ai-history-search-input');
+            this.performFind(input?.value ?? '');
+            return;
+        }
+        this.focusFind(this.findIdx + direction);
+    }
+    focusFind(idx) {
+        if (this.findMatches.length === 0)
+            return;
+        idx = ((idx % this.findMatches.length) + this.findMatches.length) % this.findMatches.length;
+        this.findMatches.forEach(m => m.classList.remove('active'));
+        const target = this.findMatches[idx];
+        target.classList.add('active');
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        this.findIdx = idx;
+        const countEl = document.getElementById('ai-history-search-count');
+        if (countEl)
+            countEl.textContent = `${idx + 1} / ${this.findMatches.length}`;
+    }
+    clearFindHighlights() {
+        const container = document.getElementById('ai-history-messages');
+        if (!container)
+            return;
+        container.querySelectorAll('mark.chat-search-hit').forEach(mark => {
+            const parent = mark.parentNode;
+            if (!parent)
+                return;
+            parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
+            parent.normalize();
+        });
     }
     /**
      * Page-enter hook (called from app.ts switchPage). Requests the channel
@@ -360,8 +564,27 @@ export class HistoryManager {
                 this.pendingChannelLoadId = null;
                 // The load arrived — drop any queued re-send for it.
                 this.pendingChannelLoad = null;
+                // The wire contract says `id`/`local_id` are JS numbers, but the
+                // frame is untrusted — coerce both at the door so a string `id`
+                // can't (a) break out of the data-id="…" attribute in
+                // messageRowHtml, (b) blow up the .history-msg[data-id="…"]
+                // selectors in patch/remove/insertRowInPlace, or (c) miss the
+                // `m.id === <number>` lookups in the edit/delete/restore acks.
+                // Drop any row whose id won't coerce to a finite number (a bad
+                // row has no safe identity to edit/delete against anyway).
                 this.messages = Array.isArray(data.messages)
                     ? data.messages
+                        .map(m => ({
+                        ...m,
+                        id: Number(m.id),
+                        // local_id is carried verbatim into the restore
+                        // round-trip; coerce when present, leave a missing
+                        // one absent rather than poisoning it with NaN.
+                        ...(m.local_id !== undefined
+                            ? { local_id: Number(m.local_id) }
+                            : {}),
+                    }))
+                        .filter(m => Number.isFinite(m.id))
                     : [];
                 this.totalCount = Number(data.total_count) || this.messages.length;
                 this.hasMore = data.has_more === true;
@@ -370,6 +593,7 @@ export class HistoryManager {
                 this.truncated = data.truncated === true;
                 this.editingIdx = null;
                 this.editInFlight = false;
+                this.loading = false;
                 this.renderMessages();
                 this.updateHeader();
                 this.renderLoadAll();
@@ -403,13 +627,19 @@ export class HistoryManager {
                 if (target)
                     target.content = editedContent;
                 this.editingIdx = null;
-                // Preserve scroll position so the user stays where they are
-                // (same approach as ChatManager's message_edited case).
+                // In-place patch the single edited row instead of rebuilding the
+                // whole list; fall back to a full render (preserving scroll) only
+                // when the row isn't in the rendered cap window. An edit is never
+                // a structural change — the row count and order don't move.
                 const container = document.getElementById('ai-history-messages');
-                const savedPos = container?.scrollTop ?? 0;
-                this.renderMessages();
-                if (container)
-                    container.scrollTop = savedPos;
+                const patched = container !== null
+                    && this.patchRowContent(container, editedId, editedContent);
+                if (!patched) {
+                    const savedPos = container?.scrollTop ?? 0;
+                    this.renderMessages();
+                    if (container)
+                        container.scrollTop = savedPos;
+                }
                 this.notifyMutationOutcome(data, 'edit');
                 break;
             }
@@ -426,6 +656,14 @@ export class HistoryManager {
                     break;
                 }
                 const before = this.messages.length;
+                // Try the in-place row removal BEFORE mutating this.messages —
+                // removeRowInPlace reads the pre-removal length to decide whether
+                // the cap window would shift (in which case it bails to a full
+                // render). Then drop the row from the model regardless.
+                const container = document.getElementById('ai-history-messages');
+                const removedInPlace = container !== null
+                    && this.messages.some(m => m.id === deletedId)
+                    && this.removeRowInPlace(container, deletedId);
                 this.messages = this.messages.filter(m => m.id !== deletedId);
                 const removed = before - this.messages.length;
                 // The ack carries the post-delete per-channel count; fall back
@@ -438,11 +676,12 @@ export class HistoryManager {
                 // in-flight guard + cancel-before-delete enforce it), but a
                 // re-render would orphan one regardless — clear defensively.
                 this.editingIdx = null;
-                const container = document.getElementById('ai-history-messages');
-                const savedPos = container?.scrollTop ?? 0;
-                this.renderMessages();
-                if (container)
-                    container.scrollTop = savedPos;
+                if (!removedInPlace) {
+                    const savedPos = container?.scrollTop ?? 0;
+                    this.renderMessages();
+                    if (container)
+                        container.scrollTop = savedPos;
+                }
                 this.updateHeader();
                 this.renderLoadAll();
                 this.notifyMutationOutcome(data, 'delete');
@@ -478,11 +717,13 @@ export class HistoryManager {
                 // ascending by id and ai_history orders by PK id, so the row
                 // returns to its original spot. Skip when the id is already
                 // present (idempotent already-restored ack).
+                let insertedAt = -1;
                 if (restoredMsg && !this.messages.some(m => m.id === restoredMsg.id)) {
                     let insertAt = this.messages.findIndex(m => m.id > restoredMsg.id);
                     if (insertAt === -1)
                         insertAt = this.messages.length;
                     this.messages.splice(insertAt, 0, restoredMsg);
+                    insertedAt = insertAt;
                 }
                 // The ack carries the post-restore per-channel count; fall
                 // back to a local increment if a (mis-built) frame omits it.
@@ -495,10 +736,19 @@ export class HistoryManager {
                 // one regardless — clear defensively (same as the delete ack).
                 this.editingIdx = null;
                 const container = document.getElementById('ai-history-messages');
-                const savedPos = container?.scrollTop ?? 0;
-                this.renderMessages();
-                if (container)
-                    container.scrollTop = savedPos;
+                // In-place insert the single restored row when it lands inside
+                // the rendered cap window; otherwise (older head, or the model
+                // didn't change) fall back to a full render preserving scroll.
+                const insertedInPlace = container !== null
+                    && restoredMsg !== null
+                    && insertedAt !== -1
+                    && this.insertRowInPlace(container, restoredMsg, insertedAt);
+                if (!insertedInPlace) {
+                    const savedPos = container?.scrollTop ?? 0;
+                    this.renderMessages();
+                    if (container)
+                        container.scrollTop = savedPos;
+                }
                 this.updateHeader();
                 this.renderLoadAll();
                 this.notifyMutationOutcome(data, 'restore');
@@ -572,25 +822,29 @@ export class HistoryManager {
         this.truncated = false;
         this.editingIdx = null;
         this.editInFlight = false;
-        // Loading state + re-render the list so the active row highlights.
-        const container = document.getElementById('ai-history-messages');
-        if (container) {
-            container.innerHTML = '<p class="no-data">Loading messages…</p>';
-        }
+        // A channel switch invalidates any open find (matches point at the
+        // previous transcript's now-detached nodes).
+        this.closeFind();
+        // Loading state (spinner + skeleton) + re-render the list so the active
+        // row highlights.
+        this.loading = true;
+        this.renderMessages();
         this.renderChannelList();
         this.updateHeader();
         this.renderLoadAll();
         this.renderUndo();
         // Per the callbacks contract: roll back the optimistic loading state
         // when the frame cannot be sent, and queue it for onConnected() —
-        // otherwise the pane sits on "Loading messages…" forever.
+        // otherwise the pane sits on the spinner forever.
         const sent = this.callbacks.isConnected() && this.callbacks.send({
             type: 'load_ai_history',
             channel_id: channelId,
             limit,
         });
         if (!sent) {
+            this.loading = false;
             this.pendingChannelLoad = { channelId, limit };
+            const container = document.getElementById('ai-history-messages');
             if (container) {
                 container.innerHTML = '<p class="no-data">Not connected — messages will load when the connection is restored.</p>';
             }
@@ -999,18 +1253,61 @@ export class HistoryManager {
         const container = document.getElementById('ai-channel-list');
         if (!container)
             return;
+        // a11y: the list is a single-select listbox; rows are options. ATs then
+        // announce position-in-set and the active selection, and a roving
+        // tabindex makes the whole list one Tab stop with arrow-key traversal.
+        container.setAttribute('role', 'listbox');
+        container.setAttribute('aria-label', 'AI history channels');
         if (this.channels.length === 0) {
-            container.innerHTML = '<p class="no-data">No channels with AI history yet.</p>';
+            // Iconographic empty state (shared .empty-state recipe — classes
+            // only, no inline style; #i-chat glyph). Heading keeps the literal
+            // "No channels" that the smoke test asserts on.
+            container.removeAttribute('aria-activedescendant');
+            container.innerHTML = `
+                <div class="empty-state">
+                    ${icon('chat')}
+                    <h3>No channels yet</h3>
+                    <p>Channels with saved AI history will appear here.</p>
+                </div>`;
             return;
         }
-        const visible = this.channels.slice(0, CHANNEL_RENDER_CAP);
-        const overflow = this.channels.length - visible.length;
+        // Apply the debounced channel filter (name match, case-insensitive).
+        const filter = this.channelFilter.trim().toLowerCase();
+        const matched = filter
+            ? this.channels.filter(ch => (ch.name || `Channel ${ch.channel_id}`).toLowerCase().includes(filter))
+            : this.channels;
+        if (matched.length === 0) {
+            // Non-empty source but the filter excluded everything — searchable
+            // empty state (keeps the user's filter text visible).
+            container.removeAttribute('aria-activedescendant');
+            container.innerHTML = `
+                <div class="empty-state">
+                    ${icon('search')}
+                    <h3>No matching channels</h3>
+                    <p>No channels match "${escapeHtml(this.channelFilter)}".</p>
+                </div>`;
+            return;
+        }
+        const visible = matched.slice(0, CHANNEL_RENDER_CAP);
+        const overflow = matched.length - visible.length;
+        // The roving-tabindex anchor: the active row if it's visible, else the
+        // first row. Exactly one option carries tabindex=0 at a time.
+        const activeId = this.currentChannelId;
+        const hasActiveVisible = visible.some(ch => ch.channel_id === activeId);
+        const focusId = hasActiveVisible ? activeId : visible[0].channel_id;
         container.innerHTML = visible.map(ch => {
-            const isActive = this.currentChannelId === ch.channel_id;
+            const isActive = activeId === ch.channel_id;
+            const isFocusable = ch.channel_id === focusId;
+            const optId = `ai-channel-opt-${escapeHtml(ch.channel_id)}`;
+            const label = ch.name || `Channel ${ch.channel_id}`;
             return `
                 <div class="history-channel-item ${isActive ? 'active' : ''}"
+                     id="${optId}"
+                     role="option"
+                     aria-selected="${isActive ? 'true' : 'false'}"
+                     tabindex="${isFocusable ? '0' : '-1'}"
                      data-channel-id="${escapeHtml(ch.channel_id)}">
-                    <div class="history-channel-name">${escapeHtml(ch.name || `Channel ${ch.channel_id}`)}</div>
+                    <div class="history-channel-name">${escapeHtml(label)}</div>
                     <div class="history-channel-meta">
                         <span class="history-count-badge">${Number(ch.message_count) || 0}</span>
                         <span class="history-last-active">${escapeHtml(formatLastActive(ch.last_active))}</span>
@@ -1018,15 +1315,22 @@ export class HistoryManager {
                 </div>
             `;
         }).join('') + (overflow > 0
-            ? `<div class="history-overflow-note">${overflow} more channels hidden</div>`
+            ? `<div class="history-overflow-note" role="status">${overflow} more channels hidden — narrow the filter</div>`
             : '');
-        // One delegated handler per container; replace rather than stack
+        // Point aria-activedescendant at the selected option when one is shown.
+        if (hasActiveVisible && activeId) {
+            container.setAttribute('aria-activedescendant', `ai-channel-opt-${activeId}`);
+        }
+        else {
+            container.removeAttribute('aria-activedescendant');
+        }
+        // One delegated CLICK handler per container; replace rather than stack
         // (innerHTML wipes descendants but leaves container listeners).
         const slot = container;
         if (slot._histChannelClickHandler) {
             container.removeEventListener('click', slot._histChannelClickHandler);
         }
-        const handler = (e) => {
+        const clickHandler = (e) => {
             const target = e.target.closest('.history-channel-item[data-channel-id]');
             if (!target)
                 return;
@@ -1034,46 +1338,142 @@ export class HistoryManager {
             if (id)
                 this.openChannel(id);
         };
-        slot._histChannelClickHandler = handler;
-        container.addEventListener('click', handler);
+        slot._histChannelClickHandler = clickHandler;
+        container.addEventListener('click', clickHandler);
+        // One delegated KEYDOWN handler: Enter/Space activate the focused row,
+        // ↑/↓ (and Home/End) rove focus between options without leaving the list.
+        if (slot._histChannelKeyHandler) {
+            container.removeEventListener('keydown', slot._histChannelKeyHandler);
+        }
+        const keyHandler = (e) => {
+            const ev = e;
+            const row = ev.target.closest('.history-channel-item[data-channel-id]');
+            if (!row)
+                return;
+            if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+                ev.preventDefault();
+                const id = row.dataset.channelId;
+                if (id)
+                    this.openChannel(id);
+                return;
+            }
+            if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'
+                || ev.key === 'Home' || ev.key === 'End') {
+                ev.preventDefault();
+                this.roveChannelFocus(container, row, ev.key);
+            }
+        };
+        slot._histChannelKeyHandler = keyHandler;
+        container.addEventListener('keydown', keyHandler);
     }
-    renderMessages() {
-        const container = document.getElementById('ai-history-messages');
-        if (!container)
+    /**
+     * Move keyboard focus (and the tabindex=0 roving anchor) between channel
+     * options. Selection is NOT changed on arrow — only Enter/Space opens a
+     * channel — matching the listbox "selection follows focus only on commit"
+     * pattern used elsewhere in the app.
+     */
+    roveChannelFocus(container, current, key) {
+        const rows = Array.from(container.querySelectorAll('.history-channel-item[data-channel-id]'));
+        if (rows.length === 0)
             return;
-        if (this.currentChannelId === null) {
-            container.innerHTML = '<p class="no-data">Pick a channel on the left to view its AI chat history.</p>';
-            return;
-        }
-        if (this.messages.length === 0) {
-            container.innerHTML = '<p class="no-data">No messages in this channel.</p>';
-            return;
-        }
-        // Cap the render at the newest rows; messages arrive ascending by id
-        // so the slice keeps the most recent ones.
-        const start = Math.max(0, this.messages.length - MESSAGE_RENDER_CAP);
-        const note = start > 0
-            ? `<div class="history-overflow-note">Showing the newest ${MESSAGE_RENDER_CAP} of ${this.messages.length} loaded messages</div>`
-            : '';
-        container.innerHTML = note + this.messages.slice(start).map((m, i) => {
-            const idx = start + i;
-            const isUser = m.role === 'user';
-            return `
-                <div class="history-msg ${isUser ? 'history-msg-user' : 'history-msg-model'}" data-idx="${idx}">
+        const i = rows.indexOf(current);
+        let next;
+        if (key === 'Home')
+            next = 0;
+        else if (key === 'End')
+            next = rows.length - 1;
+        else if (key === 'ArrowDown')
+            next = i < 0 ? 0 : Math.min(rows.length - 1, i + 1);
+        else
+            next = i < 0 ? rows.length - 1 : Math.max(0, i - 1);
+        const target = rows[next];
+        rows.forEach(r => r.setAttribute('tabindex', '-1'));
+        target.setAttribute('tabindex', '0');
+        target.focus();
+    }
+    /** The viewer is the start index (into this.messages) of the rendered cap
+     *  window — the newest MESSAGE_RENDER_CAP rows are kept. */
+    renderStart() {
+        return Math.max(0, this.messages.length - MESSAGE_RENDER_CAP);
+    }
+    /** One message row's markup. Shared by renderMessages() (full build) and
+     *  the in-place insert helper so a re-inserted row is byte-identical. */
+    messageRowHtml(m, idx) {
+        const isUser = m.role === 'user';
+        const roleLabel = isUser ? 'User' : 'Model';
+        return `
+                <div class="history-msg ${isUser ? 'history-msg-user' : 'history-msg-model'}"
+                     role="listitem"
+                     aria-label="${roleLabel} message"
+                     data-idx="${idx}" data-id="${escapeHtml(String(m.id))}">
                     <div class="history-msg-meta">
-                        <span class="history-role-badge ${isUser ? 'role-user' : 'role-model'}">${isUser ? 'User' : 'Model'}</span>
+                        <span class="history-role-badge ${isUser ? 'role-user' : 'role-model'}">${roleLabel}</span>
                         ${m.user_id ? `<span class="history-msg-user-id">${escapeHtml(m.user_id)}</span>` : ''}
                         <span class="history-msg-time">${escapeHtml(formatTimestamp(m.timestamp))}</span>
                         <span class="history-msg-actions">
-                            <button class="history-edit-btn" data-idx="${idx}" title="Edit message" aria-label="Edit message">✏️ Edit</button>
-                            <button class="history-delete-btn" data-idx="${idx}" title="Delete message" aria-label="Delete message">🗑️ Delete</button>
+                            <button class="history-edit-btn" data-idx="${idx}" title="Edit message" aria-label="Edit message">${icon('pencil')} Edit</button>
+                            <button class="history-delete-btn" data-idx="${idx}" title="Delete message" aria-label="Delete message">${icon('trash')} Delete</button>
                         </span>
                     </div>
                     <div class="history-msg-content">${escapeHtml(m.content)}</div>
                 </div>
             `;
-        }).join('');
-        // Delegated edit/delete-button handler — same replace-not-stack pattern.
+    }
+    renderMessages() {
+        const container = document.getElementById('ai-history-messages');
+        if (!container)
+            return;
+        // a11y: the viewer is a live log of list items; ATs announce new rows
+        // and can navigate it as a list. (Set every render so a fresh test DOM
+        // / hot reload still gets the roles.)
+        container.setAttribute('role', 'log');
+        container.setAttribute('aria-live', 'polite');
+        container.setAttribute('aria-relevant', 'additions');
+        if (this.currentChannelId === null) {
+            // Iconographic "pick a channel" empty state.
+            container.innerHTML = `
+                <div class="empty-state">
+                    ${icon('history')}
+                    <h3>No channel selected</h3>
+                    <p>Pick a channel on the left to view its AI chat history.</p>
+                </div>`;
+            return;
+        }
+        if (this.loading) {
+            // Spinner + skeleton rows while the load is in flight.
+            container.innerHTML = `
+                <div class="history-loading" role="status" aria-live="polite">
+                    <div class="loading-spinner" aria-hidden="true"></div>
+                    <p class="no-data">Loading messages…</p>
+                </div>
+                <div class="history-msg is-loading skeleton-row" aria-hidden="true"></div>
+                <div class="history-msg is-loading skeleton-row" aria-hidden="true"></div>
+                <div class="history-msg is-loading skeleton-row" aria-hidden="true"></div>`;
+            return;
+        }
+        if (this.messages.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    ${icon('inbox')}
+                    <h3>No messages</h3>
+                    <p>No messages in this channel yet.</p>
+                </div>`;
+            return;
+        }
+        // Cap the render at the newest rows; messages arrive ascending by id
+        // so the slice keeps the most recent ones. The cap note is a status
+        // region so ATs announce that older rows are hidden.
+        const start = this.renderStart();
+        const note = start > 0
+            ? `<div class="history-overflow-note" role="status">Showing the newest ${MESSAGE_RENDER_CAP} of ${this.messages.length} loaded messages</div>`
+            : '';
+        container.innerHTML = note + this.messages.slice(start)
+            .map((m, i) => this.messageRowHtml(m, start + i))
+            .join('');
+        this.bindMessageHandlers(container);
+    }
+    /** (Re)bind the delegated edit/delete click handler — replace-not-stack. */
+    bindMessageHandlers(container) {
         const slot = container;
         if (slot._histMsgClickHandler) {
             container.removeEventListener('click', slot._histMsgClickHandler);
@@ -1096,6 +1496,112 @@ export class HistoryManager {
         };
         slot._histMsgClickHandler = handler;
         container.addEventListener('click', handler);
+    }
+    // ------------------------------------------------------------------
+    // In-place row mutation — patch/remove/insert ONE row node instead of
+    // rebuilding the whole (up-to-500-row) list per ack. Each returns false
+    // when it can't safely do the surgical update (the row isn't in the
+    // rendered cap window, or the mutation crosses the cap boundary so the
+    // overflow note / visible set changes), signalling the caller to fall
+    // back to a full renderMessages().
+    // ------------------------------------------------------------------
+    /** Patch a single edited row's content text in place. Replaces the inline
+     *  editor (if this row was the one being edited) with the plain content and
+     *  restores the action buttons that startEdit() hid. */
+    patchRowContent(container, id, content) {
+        const row = container.querySelector(`.history-msg[data-id="${id}"]`);
+        if (!row)
+            return false;
+        const contentEl = row.querySelector('.history-msg-content');
+        if (!contentEl)
+            return false;
+        // textContent drops any open <textarea>/edit-actions and writes the new
+        // text inert (no escaping needed).
+        contentEl.textContent = content;
+        // startEdit() hid the actions with inline display:none — clear it so the
+        // edit/delete buttons return (the CSS hover/focus-within rule resumes).
+        const actionsEl = row.querySelector('.history-msg-actions');
+        if (actionsEl)
+            actionsEl.style.removeProperty('display');
+        return true;
+    }
+    /**
+     * Remove a single deleted row in place and re-index the rows AFTER it
+     * (their absolute data-idx shifts down by one). Falls back (returns false)
+     * when removing it would change which rows are visible under the cap, i.e.
+     * a previously-hidden older row must now appear.
+     */
+    removeRowInPlace(container, id) {
+        const row = container.querySelector(`.history-msg[data-id="${id}"]`);
+        if (!row)
+            return false;
+        // Bail to a full render when the removal would change the rendered
+        // shell rather than just one row:
+        //  - over the cap: removing a visible row pulls a previously-hidden
+        //    older row into view (and the overflow note's denominator shifts);
+        //  - last row: the empty-state pane must replace the (now empty) list.
+        // (Pre-removal length is compared to the cap.)
+        if (this.messages.length > MESSAGE_RENDER_CAP)
+            return false;
+        if (this.messages.length <= 1)
+            return false;
+        const removedIdx = Number(row.dataset.idx);
+        row.remove();
+        if (Number.isInteger(removedIdx))
+            this.reindexFrom(container, removedIdx, -1);
+        return true;
+    }
+    /**
+     * Insert a restored row at its id-sorted DOM position and re-index the
+     * rows AFTER it (+1). Falls back when the insert point falls outside the
+     * rendered cap window (the row would belong to the hidden older head).
+     */
+    insertRowInPlace(container, msg, insertAt) {
+        const start = this.renderStart(); // start uses the post-splice length
+        // Over the cap, inserting a row slides the window — the oldest visible
+        // row drops out and the "newest N of M" note appears/changes — so a
+        // full render is simpler and correct. Also bail when the row lands in
+        // the hidden (older) head, outside the rendered window.
+        if (this.messages.length > MESSAGE_RENDER_CAP)
+            return false;
+        if (insertAt < start)
+            return false;
+        // First row back into a previously-empty channel: the container is
+        // showing the empty-state pane (no message rows), so a full render must
+        // replace it rather than appending a lone row beside the placeholder.
+        if (this.messages.length <= 1)
+            return false;
+        // Shift the tail's data-idx up by one BEFORE inserting the new node.
+        this.reindexFrom(container, insertAt, +1);
+        const tmp = document.createElement('div');
+        tmp.innerHTML = this.messageRowHtml(msg, insertAt);
+        const newRow = tmp.firstElementChild;
+        if (!newRow)
+            return false;
+        // Find the existing row currently at the insert position (now bearing
+        // data-idx === insertAt+1 after the shift) to anchor the insert before.
+        const anchor = container.querySelector(`.history-msg[data-idx="${insertAt + 1}"]`);
+        if (anchor) {
+            container.insertBefore(newRow, anchor);
+        }
+        else {
+            container.appendChild(newRow);
+        }
+        return true;
+    }
+    /** Shift every rendered row's absolute data-idx (on the row AND its action
+     *  buttons) by `delta`, for rows whose current idx is >= `fromIdx`. */
+    reindexFrom(container, fromIdx, delta) {
+        container.querySelectorAll('.history-msg[data-idx]').forEach(row => {
+            const cur = Number(row.dataset.idx);
+            if (!Number.isInteger(cur) || cur < fromIdx)
+                return;
+            const next = String(cur + delta);
+            row.dataset.idx = next;
+            row.querySelectorAll('[data-idx]').forEach(btn => {
+                btn.dataset.idx = next;
+            });
+        });
     }
     updateHeader() {
         const header = document.getElementById('ai-history-header');
@@ -1136,5 +1642,85 @@ export class HistoryManager {
                 : `Load all (${this.totalCount})`;
         }
     }
+}
+/** Escape a string so it can be embedded literally in a RegExp. */
+function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
+ * Find all text nodes within `root` that contain `query` (case-insensitive),
+ * wrap each hit in <mark class="chat-search-hit">, and return the marks. A
+ * trimmed-down sibling of chat/search.ts's wrapMatches (same TreeWalker +
+ * matchAll-against-original-text approach so offsets survive toLowerCase length
+ * changes), kept local because that helper isn't exported. Caps both the
+ * candidate text-node count and the total <mark>s so a short query against a
+ * giant transcript can't lock the main thread.
+ */
+function wrapHistoryMatches(root, query) {
+    if (!query)
+        return [];
+    const MAX_HITS = 1000;
+    const hits = [];
+    const needle = query.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+            const parent = node.parentElement;
+            if (!parent)
+                return NodeFilter.FILTER_REJECT;
+            const tag = parent.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK')
+                return NodeFilter.FILTER_REJECT;
+            // Skip the inline editor's textarea + the meta/badge chrome so a
+            // find only highlights actual message content the user reads.
+            if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle))
+                return NodeFilter.FILTER_SKIP;
+            return NodeFilter.FILTER_ACCEPT;
+        },
+    });
+    const candidates = [];
+    let n = walker.nextNode();
+    while (n) {
+        candidates.push(n);
+        if (candidates.length >= MAX_HITS)
+            break;
+        n = walker.nextNode();
+    }
+    outer: for (const textNode of candidates) {
+        const text = textNode.nodeValue || '';
+        const re = new RegExp(escapeRegExp(query), 'gi');
+        let idx = 0;
+        let foundAny = false;
+        const fragment = document.createDocumentFragment();
+        for (const m of text.matchAll(re)) {
+            const start = m.index;
+            const matched = m[0];
+            if (matched.length === 0)
+                continue;
+            foundAny = true;
+            if (start > idx) {
+                fragment.appendChild(document.createTextNode(text.slice(idx, start)));
+            }
+            const mark = document.createElement('mark');
+            mark.className = 'chat-search-hit';
+            mark.textContent = matched; // preserves original case
+            fragment.appendChild(mark);
+            hits.push(mark);
+            idx = start + matched.length;
+            if (hits.length >= MAX_HITS) {
+                if (idx < text.length) {
+                    fragment.appendChild(document.createTextNode(text.slice(idx)));
+                }
+                textNode.replaceWith(fragment);
+                break outer;
+            }
+        }
+        if (!foundAny)
+            continue;
+        if (idx < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(idx)));
+        }
+        textNode.replaceWith(fragment);
+    }
+    return hits;
 }
 //# sourceMappingURL=history-manager.js.map

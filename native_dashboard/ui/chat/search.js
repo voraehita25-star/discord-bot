@@ -16,11 +16,12 @@
  * naturally on every re-render — callers don't need to call clear() first.
  */
 export class ChatSearch {
+    matches = [];
+    currentIdx = -1;
+    bound = false;
+    previousFocus = null;
+    getContainer;
     constructor(getContainer) {
-        this.matches = [];
-        this.currentIdx = -1;
-        this.bound = false;
-        this.previousFocus = null;
         this.getContainer = getContainer;
     }
     open() {
@@ -89,23 +90,40 @@ export class ChatSearch {
         bar.dataset.searchBound = '1';
         this.bound = true;
     }
+    /** True when the last perform() hit MAX_HITS (or the candidate-node cap) and
+     *  stopped early — used to append a "+" to the count so the user knows more
+     *  matches exist beyond the highlighted ones. */
+    truncated = false;
     perform(query) {
         this.clearHighlights();
         this.matches = [];
         this.currentIdx = -1;
+        this.truncated = false;
         const container = this.getContainer();
         const countEl = document.getElementById('chat-search-count');
         if (!container)
             return;
         if (query) {
-            this.matches = wrapMatches(container, query);
+            const result = wrapMatches(container, query);
+            this.matches = result.marks;
+            this.truncated = result.truncated;
             if (this.matches.length > 0) {
                 this.focus(0);
             }
         }
         if (countEl) {
-            countEl.textContent = `${this.matches.length ? this.currentIdx + 1 : 0} / ${this.matches.length}`;
+            countEl.textContent = this.formatCount(this.matches.length ? this.currentIdx + 1 : 0);
         }
+    }
+    /** Build the "current / total" label, appending a "+" + hint when the
+     *  highlight pass was capped so the user knows there are more matches than
+     *  the N shown. */
+    formatCount(current) {
+        const total = this.matches.length;
+        if (this.truncated && total > 0) {
+            return `${current} / ${total}+ (showing first ${total})`;
+        }
+        return `${current} / ${total}`;
     }
     step(direction) {
         if (this.matches.length === 0)
@@ -132,7 +150,7 @@ export class ChatSearch {
         this.currentIdx = idx;
         const countEl = document.getElementById('chat-search-count');
         if (countEl)
-            countEl.textContent = `${idx + 1} / ${this.matches.length}`;
+            countEl.textContent = this.formatCount(idx + 1);
     }
     clearHighlights() {
         const container = this.getContainer();
@@ -148,17 +166,31 @@ export class ChatSearch {
         });
     }
 }
+/** Escape a string so it can be embedded literally in a RegExp. */
+function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 /** Find all text nodes within a root that contain `query` (case-insensitive),
- *  wrap each hit in <mark class="chat-search-hit">, and return the marks. */
+ *  wrap each hit in <mark class="chat-search-hit">, and return the marks +
+ *  whether the pass was capped. */
 function wrapMatches(root, query) {
     if (!query)
-        return [];
-    // Cap the number of candidate TEXT NODES we collect (below) so a short query
-    // against a giant history can't lock the main thread. The per-highlight cap
-    // (total <mark>s) is enforced separately by the hits.length >= MAX_HITS check
-    // further down; both happen to use this same bound.
+        return { marks: [], truncated: false };
+    // Two independent caps, both protecting the main thread on a short query
+    // against a giant history:
+    //   - MAX_CANDIDATE_NODES bounds how many matching TEXT NODES we collect
+    //     (the TreeWalker scan). A node may contain many hits, so this is a
+    //     coarser bound than the hit cap.
+    //   - MAX_HITS bounds the total number of <mark> elements we create (the
+    //     DOM-mutation + scroll-target cost). This is the one the user-facing
+    //     "showing first N" hint is keyed to.
+    // Splitting them (was a single shared 1000) lets us scan more nodes than we
+    // ultimately highlight, so a few hit-dense nodes don't starve the scan of
+    // later sparse-but-present matches.
+    const MAX_CANDIDATE_NODES = 5000;
     const MAX_HITS = 1000;
     const hits = [];
+    let truncated = false;
     const needle = query.toLowerCase();
     // TreeWalker over text nodes, skipping <script>/<style>/<mark> and hidden nodes.
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -169,6 +201,15 @@ function wrapMatches(root, query) {
             const tag = parent.tagName;
             if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK')
                 return NodeFilter.FILTER_REJECT;
+            // Pre-filter to skip nodes that can't possibly hit, so the scan
+            // doesn't compile a regex per text node on a huge history. NOTE:
+            // this uses toLowerCase().includes() while the wrapping pass below
+            // matches with /gi — case-folding parity between the two is
+            // best-effort ASCII. A handful of code points fold differently
+            // under the two paths (e.g. Turkish İ, Kelvin sign), so a node the
+            // regex *would* hit could be skipped here, under-counting. That's a
+            // rare cosmetic miss on exotic input, accepted to keep the scan
+            // cheap; the offsets we DO produce stay correct (the regex owns them).
             if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle))
                 return NodeFilter.FILTER_SKIP;
             return NodeFilter.FILTER_ACCEPT;
@@ -179,46 +220,70 @@ function wrapMatches(root, query) {
     let n = walker.nextNode();
     while (n) {
         candidates.push(n);
-        if (candidates.length >= MAX_HITS)
+        if (candidates.length >= MAX_CANDIDATE_NODES) {
+            // Stopped scanning early. Peek one node further: only flag truncation
+            // if there's genuinely more to scan. At EXACTLY MAX_CANDIDATE_NODES
+            // matching nodes with nothing after, the peek is null and we must
+            // NOT show a false "+N" hint.
+            if (walker.nextNode() !== null)
+                truncated = true;
             break;
+        }
         n = walker.nextNode();
     }
-    outer: for (const textNode of candidates) {
+    outer: for (let ci = 0; ci < candidates.length; ci++) {
+        const textNode = candidates[ci];
         const text = textNode.nodeValue || '';
-        const lower = text.toLowerCase();
+        // Match against the ORIGINAL text with a case-insensitive regex so the
+        // hit's offset AND length come from `text` directly. Deriving offsets
+        // from a lowercased copy (text.toLowerCase().indexOf) breaks whenever
+        // toLowerCase changes length (Turkish dotted İ → i̇, etc.): the offset
+        // refers to the lowercased string but the slice indexes the original,
+        // shifting later highlights.
+        const re = new RegExp(escapeRegExp(query), 'gi');
         let idx = 0;
-        let start = lower.indexOf(needle, idx);
-        if (start < 0)
-            continue;
+        let foundAny = false;
         const fragment = document.createDocumentFragment();
-        while (start >= 0) {
+        for (const m of text.matchAll(re)) {
+            const start = m.index;
+            const matched = m[0];
+            // Zero-length matches can't happen for a non-empty escaped literal,
+            // but guard anyway so matchAll never spins.
+            if (matched.length === 0)
+                continue;
+            foundAny = true;
             if (start > idx) {
                 fragment.appendChild(document.createTextNode(text.slice(idx, start)));
             }
             const mark = document.createElement('mark');
             mark.className = 'chat-search-hit';
-            // `start` is an offset in `lower` (= text.toLowerCase()), so the
-            // matched span has `needle.length` code units. Using query.length
-            // would diverge whenever toLowerCase changes length (Turkish dotted
-            // İ → i̇, etc.) and shift later highlights by one.
-            mark.textContent = text.slice(start, start + needle.length);
+            mark.textContent = matched; // preserves original case
             fragment.appendChild(mark);
             hits.push(mark);
-            idx = start + needle.length;
+            idx = start + matched.length;
             if (hits.length >= MAX_HITS) {
-                if (idx < text.length) {
+                const tail = idx < text.length;
+                if (tail) {
                     fragment.appendChild(document.createTextNode(text.slice(idx)));
                 }
                 textNode.replaceWith(fragment);
+                // Hit the highlight cap. Only claim truncation when more matches
+                // can PROVABLY exist: either this node still has unscanned text
+                // after the last hit (`tail`), or there's at least one more
+                // candidate node to come. At exactly MAX_HITS landing on the last
+                // hit of the last candidate, neither holds → no false "+N".
+                if (tail || ci < candidates.length - 1)
+                    truncated = true;
                 break outer;
             }
-            start = lower.indexOf(needle, idx);
         }
+        if (!foundAny)
+            continue;
         if (idx < text.length) {
             fragment.appendChild(document.createTextNode(text.slice(idx)));
         }
         textNode.replaceWith(fragment);
     }
-    return hits;
+    return { marks: hits, truncated };
 }
 //# sourceMappingURL=search.js.map

@@ -2,7 +2,7 @@
  * AI Chat Manager - WebSocket Client
  * Extracted from app.ts for modularity.
  */
-import { invoke, errorLogger, escapeHtml, isSafeAvatarUrl, safeAvatarUrl, showToast, showConfirmDialog, settings, saveSettings, } from './shared.js';
+import { invoke, errorLogger, escapeHtml, isSafeAvatarUrl, safeAvatarUrl, showToast, showConfirmDialog, settings, saveSettings, icon, normalizeSqliteUtc, } from './shared.js';
 import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
@@ -30,18 +30,18 @@ const HISTORY_ERROR_SCOPES = new Set([
 function chatFileIconFor(kind, name) {
     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
     if (ext === 'pdf')
-        return '📕';
+        return icon('file');
     if (ext === 'docx')
-        return '📘';
+        return icon('file');
     if (kind === 'text') {
         if (['json', 'yaml', 'yml', 'toml'].includes(ext))
-            return '🧩';
+            return icon('chip');
         if (['md', 'markdown'].includes(ext))
-            return '📝';
+            return icon('pencil');
         if (['csv', 'tsv', 'xml'].includes(ext))
-            return '📊';
+            return icon('gauge');
     }
-    return '📄';
+    return icon('file');
 }
 /** Conservative PDF reflow: merges only obvious per-glyph orphan lines
  * (1-4 Thai / 1-3 Latin chars sandwiched between longer lines). Mirrors
@@ -133,9 +133,7 @@ function formatChatFileDate(iso) {
     try {
         // SQLite naive timestamps are UTC — append Z so JS doesn't misread
         // them as local time (would render hours off in non-UTC zones).
-        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
-        const normalized = hasTzInfo ? iso : iso.replace(' ', 'T') + 'Z';
-        const d = new Date(normalized);
+        const d = new Date(normalizeSqliteUtc(iso));
         if (Number.isNaN(d.getTime()))
             return iso;
         // Short absolute format — works in any locale without being verbose.
@@ -149,163 +147,87 @@ function formatChatFileDate(iso) {
         return iso;
     }
 }
+// Human-readable labels for AI providers shown in the provider <select>s. The
+// previous inline `provider === 'gemini' ? 'Gemini' : 'Claude'` mislabelled any
+// third provider as "Claude"; this map + capitalize fallback keeps known
+// providers branded correctly while degrading gracefully for unknown ids.
+const PROVIDER_LABELS = {
+    gemini: 'Gemini',
+    claude: 'Claude',
+};
+/** Display label for a provider id — mapped name, or the id capitalized. */
+function providerLabel(provider) {
+    const mapped = PROVIDER_LABELS[provider];
+    if (mapped)
+        return mapped;
+    if (!provider)
+        return provider;
+    return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
 // ============================================================================
 // Chat Manager
 // ============================================================================
 export class ChatManager {
-    constructor() {
-        this.currentConversation = null;
-        this.conversations = [];
-        this.messages = [];
-        this.selectedRole = 'general';
-        this.isStreaming = false;
-        this.presets = {};
-        this.currentMode = ''; // Store current mode for the streaming message
-        // ``localStorage`` is tampering-trivial via devtools, so validate the
-        // restored value against the allowlist of known providers and fall
-        // back to ``gemini`` on garbage. Before this, a hand-edited entry
-        // like ``{"$": 1}`` would propagate through every WS frame as the
-        // ``ai_provider`` field and confuse the server-side dispatcher.
-        this.aiProvider = (() => {
-            const stored = localStorage.getItem('dashboard_ai_provider');
-            const allowed = new Set(['gemini', 'claude']);
-            return stored && allowed.has(stored) ? stored : 'gemini';
-        })();
-        this.availableProviders = ['gemini']; // Available providers from server
-        this.thinkingEnabled = localStorage.getItem('dashboard_thinking') === 'true'; // Persist thinking preference
-        this.isEditStreaming = false; // True when AI edit streaming is in progress
-        this.editTargetMessageId = null; // DB ID of message being AI-edited
-        this.editStreamContent = ''; // Accumulated edit stream content
-        // Id of the conversation a stream belongs to, captured at stream_start.
-        // If the user switches conversations mid-stream, late chunk/stream_end
-        // frames for the OLD conversation must not mutate the NEW one.
-        this.streamingConversationId = null;
-        // Set true when the current turn is torn down by an `error` frame. Guards
-        // against a server that emits BOTH error and a late stream_end for the same
-        // turn: the error handler nulls streamingConversationId, so the stream_end
-        // mid-switch guard is skipped and the non-edit branch would otherwise fall
-        // through to finalizeStreamingMessage and push a phantom assistant bubble.
-        // Reset on stream_start (a fresh turn begins).
-        this.streamErrored = false;
-        // Buffered partial of the in-progress RESPONSE stream, kept independently of
-        // the #streaming-message DOM so it survives a conversation switch. The
-        // partial isn't persisted to the DB until stream_end, so without this,
-        // navigating away from a streaming chat and back showed an empty view.
-        // ``restoreStreamingBubble`` replays these into a fresh bubble on return.
-        // Stored as arrays + join()'d on demand to keep append O(1) (same rationale
-        // as the appendChunk text-node approach).
-        this.streamPartialChunks = [];
-        this.streamPartialThinkingChunks = [];
-        this.streamThinkingActive = false;
-        // rAF id for pending edit-stream textContent flush. We accumulate chunks
-        // into ``editStreamContent`` and only push to the DOM once per frame to
-        // avoid O(n²) string concatenation costs as the response grows.
-        this.editStreamRafId = null;
-        this.userScrolledUp = false; // True when user manually scrolls up during streaming
-        this.draftSaveTimer = null; // Debounced localStorage draft writer
-        // Most-recent conversation id passed to ``loadConversation``. The
-        // ``conversation_loaded`` WS handler compares against this to drop
-        // stale frames when the user switches conversations rapidly.
-        this.pendingConversationLoadId = null;
-        // AI History page delegate (history-manager.ts), wired by app.ts after
-        // construction. ChatManager owns the single dashboard WebSocket, so the
-        // incoming ai_* frames are forwarded to it instead of being handled here.
-        this.historyManager = null;
-        // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
-        // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
-        // the same method surface (connect, disconnect, send, scheduleReconnect) +
-        // the same read-only fields (ws, connected, reconnectAttempts) so all call
-        // sites in this file keep working without rewrite.
-        this.wsClient = new WebSocketClient({
-            onMessage: (data) => this.handleMessage(data),
-            onConnectStateChange: (connected) => this.updateConnectionStatus(connected),
-            onDisconnect: () => {
-                // Reset streaming state to prevent chat input from being permanently locked.
-                if (this.isStreaming) {
-                    const wasEditStreaming = this.isEditStreaming;
-                    this.isStreaming = false;
-                    this.isEditStreaming = false;
-                    this.editTargetMessageId = null;
-                    this.editStreamContent = '';
-                    // Stream is dead on disconnect — drop the guard + partial buffers
-                    // so a reconnect + switch can't replay a stale half-response.
-                    this.streamingConversationId = null;
-                    this.clearStreamBuffers();
-                    this.setInputEnabled(true);
-                    // Re-enable auto-scroll (only stream_start/end reset this; a
-                    // mid-stream disconnect left it stuck on for the session).
-                    this.userScrolledUp = false;
-                    if (wasEditStreaming) {
-                        // /edit stream uses an in-place .edit-streaming-text on an
-                        // existing message rather than #streaming-message, so the
-                        // generic stuckMsg.remove() below misses it. Restore the
-                        // affected message to its normal display state.
-                        document.querySelectorAll('.chat-message.streaming').forEach(el => {
-                            el.classList.remove('streaming');
-                            const actions = el.querySelector('.message-actions');
-                            if (actions)
-                                actions.style.display = '';
-                        });
-                        // Re-render to drop the typing indicator + restore original
-                        // content from `this.messages`.
-                        this.renderMessages();
-                    }
-                    const stuckMsg = document.getElementById('streaming-message');
-                    if (stuckMsg)
-                        stuckMsg.remove();
-                }
-            },
-        });
-        // Rename + delete-confirm modals (#11) now live in ./chat/conversation-modals.ts.
-        // ChatManager exposes the same method names as before so event bindings keep working.
-        this.convModals = new ConversationModals({
-            sendWsMessage: (payload) => this.send(payload),
-            isStreaming: () => this.isStreaming,
-            findConversation: (id) => this.conversations.find(c => c.id === id),
-        });
-        this.currentThinking = ''; // Store current thinking for the streaming message
-        // Conversation list sidebar (#15 / #22) now lives in ./chat/conversation-list.ts.
-        // ChatManager holds one ConversationList instance; callbacks route back here.
-        this.convList = new ConversationList({
-            onLoadConversation: (id) => this.loadConversation(id),
-            sendWsMessage: (payload) => this.send(payload),
-            onFilterChanged: () => {
-                const container = document.getElementById('conversation-list');
-                const savedScroll = container?.scrollTop ?? 0;
-                this.renderConversationList();
-                if (container)
-                    container.scrollTop = savedScroll;
-            },
-        });
-        // Context-window indicator (#21 header bar) now lives in ./chat/context-window.ts.
-        // Thin forwarders preserve the public method names used by handleMessage +
-        // conversation_loaded / streaming paths.
-        this.contextWindow = new ContextWindowIndicator();
-        /** Count of messages that arrived while the user was scrolled up. */
-        this.newMessagesWhileScrolledUp = 0;
-        // In-conversation search (#14) now lives in ./chat/search.ts.
-        // ChatManager holds a ChatSearch instance + forwarders so keybinding
-        // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
-        this.chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
-        // Virtualization state — thresholds themselves live in ./chat/message-template.ts.
-        this.visibleMessageCount = 0;
-        // Absolute index in `messages` of the first DOM element rendered. With
-        // virtualization (>150 messages) only the tail window is in the DOM, so
-        // querySelectorAll('.chat-message')[absoluteIdx] is wrong — callers must
-        // subtract this offset. Updated on every renderMessages().
-        this.visibleStartIdx = 0;
-        // Image attach manager — file picker, drag-drop, paste. Thin forwarders
-        // keep the public method surface stable for callers (renderMessages uses
-        // `this.attachedImages` inside template strings; sendMessage snapshots it).
-        this.imageAttach = new ImageAttachManager();
-        this.docAttach = new DocumentAttachManager();
-        // ========================================================================
-        // Chat File Editor — filename + extracted_text edit view
-        // ========================================================================
-        /** Currently-editing document id. Stored on the instance so the
-         * `document_memory_content` WS frame knows which row to hydrate. */
-        this.editingDocId = null;
-    }
+    // Cap local message history to bound DOM size in long sessions; rendered
+    // history is also capped server-side at 20 messages per request.
+    static MAX_LOCAL_MESSAGES = 200;
+    currentConversation = null;
+    conversations = [];
+    messages = [];
+    selectedRole = 'general';
+    isStreaming = false;
+    presets = {};
+    currentMode = ''; // Store current mode for the streaming message
+    // ``localStorage`` is tampering-trivial via devtools, so validate the
+    // restored value against the allowlist of known providers and fall
+    // back to ``gemini`` on garbage. Before this, a hand-edited entry
+    // like ``{"$": 1}`` would propagate through every WS frame as the
+    // ``ai_provider`` field and confuse the server-side dispatcher.
+    aiProvider = (() => {
+        const stored = localStorage.getItem('dashboard_ai_provider');
+        const allowed = new Set(['gemini', 'claude']);
+        return stored && allowed.has(stored) ? stored : 'gemini';
+    })();
+    availableProviders = ['gemini']; // Available providers from server
+    thinkingEnabled = localStorage.getItem('dashboard_thinking') === 'true'; // Persist thinking preference
+    isEditStreaming = false; // True when AI edit streaming is in progress
+    editTargetMessageId = null; // DB ID of message being AI-edited
+    editStreamContent = ''; // Accumulated edit stream content
+    // Id of the conversation a stream belongs to, captured at stream_start.
+    // If the user switches conversations mid-stream, late chunk/stream_end
+    // frames for the OLD conversation must not mutate the NEW one.
+    streamingConversationId = null;
+    // Set true when the current turn is torn down by an `error` frame. Guards
+    // against a server that emits BOTH error and a late stream_end for the same
+    // turn: the error handler nulls streamingConversationId, so the stream_end
+    // mid-switch guard is skipped and the non-edit branch would otherwise fall
+    // through to finalizeStreamingMessage and push a phantom assistant bubble.
+    // Reset on stream_start (a fresh turn begins).
+    streamErrored = false;
+    // Buffered partial of the in-progress RESPONSE stream, kept independently of
+    // the #streaming-message DOM so it survives a conversation switch. The
+    // partial isn't persisted to the DB until stream_end, so without this,
+    // navigating away from a streaming chat and back showed an empty view.
+    // ``restoreStreamingBubble`` replays these into a fresh bubble on return.
+    // Stored as arrays + join()'d on demand to keep append O(1) (same rationale
+    // as the appendChunk text-node approach).
+    streamPartialChunks = [];
+    streamPartialThinkingChunks = [];
+    streamThinkingActive = false;
+    // rAF id for pending edit-stream textContent flush. We accumulate chunks
+    // into ``editStreamContent`` and only push to the DOM once per frame to
+    // avoid O(n²) string concatenation costs as the response grows.
+    editStreamRafId = null;
+    userScrolledUp = false; // True when user manually scrolls up during streaming
+    draftSaveTimer = null; // Debounced localStorage draft writer
+    // Most-recent conversation id passed to ``loadConversation``. The
+    // ``conversation_loaded`` WS handler compares against this to drop
+    // stale frames when the user switches conversations rapidly.
+    pendingConversationLoadId = null;
+    // AI History page delegate (history-manager.ts), wired by app.ts after
+    // construction. ChatManager owns the single dashboard WebSocket, so the
+    // incoming ai_* frames are forwarded to it instead of being handled here.
+    historyManager = null;
     enrichConversation(conversation) {
         const preset = this.presets[conversation.role_preset] || {};
         return {
@@ -360,6 +282,51 @@ export class ChatManager {
             showToast('Failed to load conversation history', { type: 'error' });
         }
     }
+    // WebSocket lifecycle (connect/disconnect/send/reconnect/ping) now lives
+    // in ./chat/ws-client.ts. ChatManager holds one WebSocketClient and exposes
+    // the same method surface (connect, disconnect, send, scheduleReconnect) +
+    // the same read-only fields (ws, connected, reconnectAttempts) so all call
+    // sites in this file keep working without rewrite.
+    wsClient = new WebSocketClient({
+        onMessage: (data) => this.handleMessage(data),
+        onConnectStateChange: (connected) => this.updateConnectionStatus(connected),
+        onDisconnect: () => {
+            // Reset streaming state to prevent chat input from being permanently locked.
+            if (this.isStreaming) {
+                const wasEditStreaming = this.isEditStreaming;
+                this.isStreaming = false;
+                this.isEditStreaming = false;
+                this.editTargetMessageId = null;
+                this.editStreamContent = '';
+                // Stream is dead on disconnect — drop the guard + partial buffers
+                // so a reconnect + switch can't replay a stale half-response.
+                this.streamingConversationId = null;
+                this.clearStreamBuffers();
+                this.setInputEnabled(true);
+                // Re-enable auto-scroll (only stream_start/end reset this; a
+                // mid-stream disconnect left it stuck on for the session).
+                this.userScrolledUp = false;
+                if (wasEditStreaming) {
+                    // /edit stream uses an in-place .edit-streaming-text on an
+                    // existing message rather than #streaming-message, so the
+                    // generic stuckMsg.remove() below misses it. Restore the
+                    // affected message to its normal display state.
+                    document.querySelectorAll('.chat-message.streaming').forEach(el => {
+                        el.classList.remove('streaming');
+                        const actions = el.querySelector('.message-actions');
+                        if (actions)
+                            actions.style.display = '';
+                    });
+                    // Re-render to drop the typing indicator + restore original
+                    // content from `this.messages`.
+                    this.renderMessages();
+                }
+                const stuckMsg = document.getElementById('streaming-message');
+                if (stuckMsg)
+                    stuckMsg.remove();
+            }
+        },
+    });
     // Field-style forwarders so existing call sites (this.ws, this.connected, etc.)
     // keep working. TS getters are fine here since the fields were public before.
     get ws() { return this.wsClient.ws; }
@@ -407,6 +374,26 @@ export class ChatManager {
                     this.updateProviderSelects();
                 }
                 this.listConversations();
+                // Re-fetch the OPEN conversation after a (re)connect. A reconnect
+                // that interrupts a response stream drops the in-flight assistant
+                // chunks (the disconnect handler clears the streaming buffers), but
+                // the backend persists the final assistant message once the turn
+                // completes server-side. Re-issuing load_conversation pulls that
+                // persisted final message back so the user isn't left staring at a
+                // half-written / vanished answer. Guard with pendingConversationLoadId
+                // so the conversation_loaded race-drop in its handler treats this as
+                // the current request (and a rapid user switch still wins).
+                {
+                    // Prefer an already-pending switch target over the
+                    // currently-shown conversation: if the user was switching to
+                    // B when the socket dropped, reload B (not the stale current
+                    // A) and don't drop B's pending request.
+                    const reloadId = this.pendingConversationLoadId ?? this.currentConversation?.id ?? null;
+                    if (reloadId !== null) {
+                        this.pendingConversationLoadId = reloadId;
+                        this.send({ type: 'load_conversation', id: reloadId });
+                    }
+                }
                 // Re-request the API-failover endpoint list on every connect,
                 // including reconnects. app.ts only fires get_api_endpoints once
                 // per page load, so after a WS drop/reconnect the failover panel
@@ -565,7 +552,14 @@ export class ChatManager {
                             streamingText.textContent = '';
                         }
                     }
-                    else {
+                    else if (this.streamingConversationId === (this.currentConversation?.id ?? null)) {
+                        // Only draw the bubble when this stream belongs to the
+                        // conversation on screen. If the user already switched
+                        // away (server bound the stream to another id), draw
+                        // nothing — chunks keep buffering and restoreStreamingBubble
+                        // replays them when they return, mirroring the
+                        // conversation_loaded path. Drawing here would paint the
+                        // wrong room's answer into the open conversation.
                         this.appendStreamingMessage(data.mode || '');
                     }
                 }
@@ -605,6 +599,11 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.clearStreamBuffers();
+                    // Sweep up a streaming bubble that may have been drawn into
+                    // the now-current (wrong) conversation before the switch.
+                    const strayBubble = document.getElementById('streaming-message');
+                    if (strayBubble)
+                        strayBubble.remove();
                     this.setInputEnabled(true);
                     break;
                 }
@@ -618,7 +617,7 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
-                    showToast('AI edit complete ✏️', { type: 'success' });
+                    showToast('AI edit complete', { type: 'success' });
                     break;
                 }
                 if (this.isEditStreaming) {
@@ -937,11 +936,11 @@ export class ChatManager {
                     if (docs.length === 1) {
                         const d = docs[0];
                         const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
-                        showToast(`📎 Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
+                        showToast(`Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`, { type: 'success', duration: 3500 });
                     }
                     else if (docs.length > 1) {
                         const totalChars = docs.reduce((s, d) => s + (typeof d.char_count === 'number' ? d.char_count : 0), 0);
-                        showToast(`📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`, { type: 'success', duration: 3500 });
+                        showToast(`Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`, { type: 'success', duration: 3500 });
                     }
                     // Refresh the files badge count — pulls the fresh list
                     // from the server rather than optimistically incrementing
@@ -960,7 +959,7 @@ export class ChatManager {
                 // a full refetch — faster than round-tripping list again.
                 this.removeChatFileRow(data.id);
                 this.refreshChatFilesBadge();
-                showToast('🗑️ Deleted', { type: 'info', duration: 1800 });
+                showToast('Deleted', { type: 'info', duration: 1800 });
                 break;
             case 'document_memory_content':
                 // Full content arrived for the document currently being
@@ -973,7 +972,7 @@ export class ChatManager {
                 // new values), and nudge with a toast.
                 this.closeChatFileEditor();
                 if (!data.noop) {
-                    showToast('✓ Saved', { type: 'success', duration: 1800 });
+                    showToast('Saved', { type: 'success', duration: 1800 });
                     // Refresh the list + badge to pick up new metadata.
                     if (this.currentConversation) {
                         this.send({
@@ -989,7 +988,7 @@ export class ChatManager {
                 break;
             case 'api_endpoint_switched':
                 window.dispatchEvent(new CustomEvent('api-failover-status', { detail: data }));
-                showToast(`🔀 API switched to ${(data.endpoint || '').toUpperCase()}${data.reason ? ` (${data.reason})` : ''}`, { type: 'info', duration: 4000 });
+                showToast(`API switched to ${(data.endpoint || '').toUpperCase()}${data.reason ? ` (${data.reason})` : ''}`, { type: 'info', duration: 4000 });
                 break;
             case 'api_health_result':
                 window.dispatchEvent(new CustomEvent('api-health-result', { detail: data }));
@@ -1013,13 +1012,13 @@ export class ChatManager {
         if (statusEl) {
             statusEl.className = connected ? 'connected' : 'disconnected';
             if (connected) {
-                statusEl.textContent = '\uD83D\uDFE2 Connected';
+                statusEl.textContent = 'Connected';
             }
             else if (this.reconnectAttempts >= this.wsClient.maxReconnectAttempts) {
-                statusEl.textContent = '\uD83D\uDD34 Disconnected';
+                statusEl.textContent = 'Disconnected';
             }
             else {
-                statusEl.textContent = '\uD83D\uDFE0 Connecting...';
+                statusEl.textContent = 'Connecting...';
             }
         }
         // Note: Overlay is now controlled by bot status in updateStatusBadge()
@@ -1146,6 +1145,13 @@ export class ChatManager {
             </div>`;
         container.innerHTML = skeleton() + skeleton() + skeleton();
     }
+    // Rename + delete-confirm modals (#11) now live in ./chat/conversation-modals.ts.
+    // ChatManager exposes the same method names as before so event bindings keep working.
+    convModals = new ConversationModals({
+        sendWsMessage: (payload) => this.send(payload),
+        isStreaming: () => this.isStreaming,
+        findConversation: (id) => this.conversations.find(c => c.id === id),
+    });
     deleteConversation(id) { this.convModals.showDelete(id); }
     confirmDelete() { this.convModals.confirmDelete(); }
     closeDeleteModal() { this.convModals.closeDelete(); }
@@ -1371,7 +1377,7 @@ export class ChatManager {
                 </div>
 
                 <div class="thinking-container">
-                    <div class="thinking-header">💭 Thinking...</div>
+                    <div class="thinking-header">${icon('chat')} Thinking...</div>
                     <div class="thinking-content"></div>
                 </div>
 
@@ -1445,13 +1451,14 @@ export class ChatManager {
             this.followStream();
         }
     }
+    currentThinking = ''; // Store current thinking for the streaming message
     finalizeThinking(fullThinking) {
         // Store for later use in finalizeStreamingMessage
         this.currentThinking = fullThinking;
         const thinkingHeader = document.querySelector('#streaming-message .thinking-header');
         const thinkingContent = document.querySelector('#streaming-message .thinking-content');
         if (thinkingHeader) {
-            thinkingHeader.textContent = '\uD83D\uDCAD Thought Process';
+            thinkingHeader.textContent = 'Thought Process';
             thinkingHeader.classList.add('collapsible', 'collapsed'); // Start collapsed
             // ``addEventListener`` over ``.onclick =``: assignment to
             // ``onclick`` overwrites any prior handler, so re-rendering
@@ -1471,6 +1478,12 @@ export class ChatManager {
         if (thinkingContent) {
             // Render Markdown formatting (bold, italic, code, etc.)
             thinkingContent.innerHTML = this.formatMessage(fullThinking);
+            // Syntax-highlight any fenced code blocks in the thinking text too —
+            // formatMessage only escapes/wraps them; Prism runs as a separate
+            // pass. Without this, code in the thought process stayed plain until
+            // the next full renderMessages() (and never, if it stayed collapsed).
+            // Fire-and-forget to keep finalizeThinking synchronous for callers.
+            void this.highlightCodeBlocks(thinkingContent);
             thinkingContent.classList.add('collapsed'); // Start collapsed
         }
     }
@@ -1527,9 +1540,9 @@ export class ChatManager {
                 actionsDiv.className = 'message-actions';
                 const currentIdx = this.messages.indexOf(newMessage);
                 actionsDiv.innerHTML = `
-                    <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">\uD83D\uDCCB Copy</button>
-                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">\u270F\uFE0F Edit</button>
-                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
+                    <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">${icon('copy')} Copy</button>
+                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">${icon('pencil')} Edit</button>
+                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">${icon('trash')} Delete</button>
                 `;
                 wrapper.appendChild(actionsDiv);
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
@@ -1548,8 +1561,8 @@ export class ChatManager {
                     const contentAttr = btn.getAttribute('data-content') || '';
                     try {
                         await navigator.clipboard.writeText(contentAttr);
-                        btn.textContent = '\u2705 Copied';
-                        setTimeout(() => { btn.textContent = '\uD83D\uDCCB Copy'; }, 1500);
+                        btn.textContent = 'Copied';
+                        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
                     }
                     catch (err) {
                         console.error('Failed to copy:', err);
@@ -1682,6 +1695,19 @@ export class ChatManager {
         if (chatContainer)
             chatContainer.scrollTop = savedScroll;
     }
+    // Conversation list sidebar (#15 / #22) now lives in ./chat/conversation-list.ts.
+    // ChatManager holds one ConversationList instance; callbacks route back here.
+    convList = new ConversationList({
+        onLoadConversation: (id) => this.loadConversation(id),
+        sendWsMessage: (payload) => this.send(payload),
+        onFilterChanged: () => {
+            const container = document.getElementById('conversation-list');
+            const savedScroll = container?.scrollTop ?? 0;
+            this.renderConversationList();
+            if (container)
+                container.scrollTop = savedScroll;
+        },
+    });
     renderConversationList() {
         this.convList.render({
             conversations: this.conversations,
@@ -1809,7 +1835,7 @@ export class ChatManager {
                 try {
                     await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
-                    btn.textContent = '\u2705';
+                    btn.textContent = 'Copied';
                     setTimeout(() => { btn.textContent = originalText; }, 1500);
                 }
                 catch (err) {
@@ -1824,11 +1850,26 @@ export class ChatManager {
                 // Same fix as the message-copy path above: getAttribute
                 // already returns decoded text; the textarea round-trip
                 // re-parses HTML and would execute injected handlers.
-                const content = btn.getAttribute('data-code-copy') || '';
+                let content = btn.getAttribute('data-code-copy') || '';
+                // Resilience: if data-code-copy ever comes back empty (e.g. a
+                // sanitiser dropped the attribute), read the code straight from
+                // the rendered block. formatter.ts emits
+                // .code-block-wrapper > pre > code, so the <pre><code> text is
+                // the same escaped-then-decoded source the attribute held.
+                if (!content) {
+                    content = btn
+                        .closest('.code-block-wrapper')
+                        ?.querySelector('pre code')?.textContent ?? '';
+                }
+                // Still nothing to copy — don't fake a 'Copied' confirmation.
+                if (!content) {
+                    showToast('Nothing to copy', { type: 'error' });
+                    return;
+                }
                 try {
                     await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
-                    btn.textContent = '\u2705';
+                    btn.textContent = 'Copied';
                     setTimeout(() => { btn.textContent = originalText; }, 1200);
                 }
                 catch (err) {
@@ -1985,9 +2026,13 @@ export class ChatManager {
     updateStarButton() {
         const btn = document.getElementById('btn-star-chat');
         if (btn && this.currentConversation) {
-            btn.textContent = this.currentConversation.is_starred ? '\u2B50' : '\u2606';
+            btn.textContent = this.currentConversation.is_starred ? 'Starred' : 'Star';
         }
     }
+    // Context-window indicator (#21 header bar) now lives in ./chat/context-window.ts.
+    // Thin forwarders preserve the public method names used by handleMessage +
+    // conversation_loaded / streaming paths.
+    contextWindow = new ContextWindowIndicator();
     updateContextWindowIndicator(usage) {
         this.contextWindow.update(this.currentConversation?.id ?? null, usage);
     }
@@ -2023,10 +2068,23 @@ export class ChatManager {
     setInputEnabled(enabled) {
         const input = document.getElementById('chat-input');
         const btn = document.getElementById('btn-send');
+        // Also gate the 📎 attach button so files can't be staged mid-stream and
+        // then silently ride into the NEXT turn. The drop/paste paths (in
+        // image-attach.ts) are gated separately via the isStreaming callback
+        // passed to setup(); this just covers the click-to-pick affordance and
+        // dims it so the disabled state is visible.
+        const attachBtn = document.getElementById('btn-attach');
         if (input)
             input.disabled = !enabled;
         if (btn)
             btn.disabled = !enabled;
+        if (attachBtn) {
+            attachBtn.disabled = !enabled;
+            // `#btn-attach` may be a plain <button> or a styled element; toggle a
+            // class for the dim so CSS owns the exact look (no inline style here,
+            // matching the CSP-friendly no-inline-style posture in this file).
+            attachBtn.classList.toggle('disabled', !enabled);
+        }
     }
     scrollToBottom(force = false) {
         if (!force && this.userScrolledUp) {
@@ -2064,6 +2122,8 @@ export class ChatManager {
             container.scrollTop = container.scrollHeight;
         }
     }
+    /** Count of messages that arrived while the user was scrolled up. */
+    newMessagesWhileScrolledUp = 0;
     /** Toggle the floating scroll-to-bottom button + optional new-count badge. */
     updateScrollFab(show) {
         const fab = document.getElementById('scroll-to-bottom-fab');
@@ -2081,6 +2141,10 @@ export class ChatManager {
             }
         }
     }
+    // In-conversation search (#14) now lives in ./chat/search.ts.
+    // ChatManager holds a ChatSearch instance + forwarders so keybinding
+    // shortcuts from app.ts (Ctrl+F) still hit the same public methods.
+    chatSearch = new ChatSearch(() => document.getElementById('chat-messages'));
     openChatSearch() { this.chatSearch.open(); }
     closeChatSearch() { this.chatSearch.close(); }
     performChatSearch(query) { this.chatSearch.perform(query); }
@@ -2135,11 +2199,13 @@ export class ChatManager {
             // Bangkok would render as 11:16. Append "Z" for naive strings so
             // they're parsed as UTC, then toLocaleTimeString below converts
             // to the user's local timezone.
-            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(dateStr);
-            const normalized = hasTzInfo
-                ? dateStr
-                : dateStr.replace(' ', 'T') + 'Z';
-            const date = new Date(normalized);
+            const date = new Date(normalizeSqliteUtc(dateStr));
+            // A malformed/empty timestamp yields an Invalid Date (which doesn't
+            // throw — toLocaleTimeString would render the literal "Invalid Date").
+            // Return the raw input instead, matching formatChatFileDate /
+            // formatTimestamp / formatLastActive.
+            if (Number.isNaN(date.getTime()))
+                return dateStr;
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
             const timeStr = date.toLocaleTimeString('th-TH', {
@@ -2169,6 +2235,18 @@ export class ChatManager {
             input.style.height = Math.min(input.scrollHeight, 150) + 'px';
         }
     }
+    // Virtualization state — thresholds themselves live in ./chat/message-template.ts.
+    visibleMessageCount = 0;
+    // Absolute index in `messages` of the first DOM element rendered. With
+    // virtualization (>150 messages) only the tail window is in the DOM, so
+    // querySelectorAll('.chat-message')[absoluteIdx] is wrong — callers must
+    // subtract this offset. Updated on every renderMessages().
+    visibleStartIdx = 0;
+    // Image attach manager — file picker, drag-drop, paste. Thin forwarders
+    // keep the public method surface stable for callers (renderMessages uses
+    // `this.attachedImages` inside template strings; sendMessage snapshots it).
+    imageAttach = new ImageAttachManager();
+    docAttach = new DocumentAttachManager();
     get attachedImages() { return this.imageAttach.get(); }
     get attachedDocs() { return this.docAttach.get(); }
     attachImage(file) { this.imageAttach.attach(file); }
@@ -2177,7 +2255,7 @@ export class ChatManager {
     /** Bind the shared file picker + drop zone. Document manager is passed
      * to the image manager so non-image files (PDF, text, code) are routed
      * to it automatically rather than rejected. */
-    setupImageUpload() { this.imageAttach.setup(this.docAttach); }
+    setupImageUpload() { this.imageAttach.setup(this.docAttach, () => this.isStreaming); }
     // ========================================================================
     // Chat Files Modal — per-conversation document list (📎 button)
     // ========================================================================
@@ -2237,7 +2315,7 @@ export class ChatManager {
             subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
         }
         list.innerHTML = docs.map(d => {
-            const icon = chatFileIconFor(d.file_kind, d.filename);
+            const fileIcon = chatFileIconFor(d.file_kind, d.filename);
             const meta = [
                 `${(d.char_count || 0).toLocaleString()} chars`,
                 d.page_count ? `${d.page_count} page(s)` : null,
@@ -2251,7 +2329,7 @@ export class ChatManager {
             const safeId = escapeHtml(String(d.id));
             return `
                 <div class="chat-file-row" data-id="${safeId}">
-                    <span class="file-icon" aria-hidden="true">${icon}</span>
+                    <span class="file-icon" aria-hidden="true">${fileIcon}</span>
                     <div class="file-body">
                         <div class="file-name">${escapeHtml(d.filename)}</div>
                         <div class="file-meta">${escapeHtml(meta)}</div>
@@ -2285,6 +2363,12 @@ export class ChatManager {
             });
         });
     }
+    // ========================================================================
+    // Chat File Editor — filename + extracted_text edit view
+    // ========================================================================
+    /** Currently-editing document id. Stored on the instance so the
+     * `document_memory_content` WS frame knows which row to hydrate. */
+    editingDocId = null;
     /** Switch the files modal into editor view and request the full content
      * for the given id. The textarea fills in once `document_memory_content`
      * arrives — avoids shipping the full text in the list frame. Also
@@ -2375,7 +2459,7 @@ export class ChatManager {
         textInput.value = joined;
         this.updateChatFileEditorCounter();
         textInput.focus();
-        showToast(`🔀 Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`, { type: 'success', duration: 3000 });
+        showToast(`Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`, { type: 'success', duration: 3000 });
     }
     /** Submit edit — server patches both fields in one UPDATE, then we pop
      * back to the list view and request a fresh list so the row shows the
@@ -2466,7 +2550,7 @@ export class ChatManager {
         const editBar = document.createElement('div');
         editBar.className = 'ai-edit-bar';
         editBar.innerHTML = `
-            <div class="ai-edit-label">\u2728 Tell AI how to edit this message:</div>
+            <div class="ai-edit-label">${icon('sparkle')} Tell AI how to edit this message:</div>
             <div class="ai-edit-input-row">
                 <textarea class="ai-edit-input" rows="1" placeholder="e.g. Make it shorter, Add examples, Translate to English..."></textarea>
                 <button class="ai-edit-submit-btn">Send</button>
@@ -2776,9 +2860,13 @@ export class ChatManager {
         document.querySelectorAll('.role-card').forEach(card => {
             const isSelected = card.dataset.role === this.selectedRole;
             card.classList.toggle('selected', isSelected);
-            // Reflect selection to assistive tech (role="button" + aria-pressed
-            // makes each card an accessible toggle button).
-            card.setAttribute('aria-pressed', String(isSelected));
+            // Reflect selection to assistive tech: the cards form a
+            // role="radiogroup" of role="radio" items, so aria-checked (not
+            // aria-pressed) is the correct state. Roving tabindex keeps a
+            // single tab stop for the group — only the checked radio is
+            // tabbable; arrow keys move focus within (see the keydown handler).
+            card.setAttribute('aria-checked', String(isSelected));
+            card.tabIndex = isSelected ? 0 : -1;
         });
     }
     updateProviderSelects() {
@@ -2794,7 +2882,12 @@ export class ChatManager {
             for (const provider of this.availableProviders) {
                 const option = document.createElement('option');
                 option.value = provider;
-                option.textContent = provider === 'gemini' ? '✨ Gemini' : '🟣 Claude';
+                // Label via a map with a capitalize fallback. The old ternary
+                // labelled EVERY non-gemini provider "Claude" — so a third
+                // provider (e.g. "openai") would be mislabelled. The fallback
+                // capitalizes the raw id so an unknown provider at least shows a
+                // sensible name instead of the wrong one.
+                option.textContent = providerLabel(provider);
                 select.appendChild(option);
             }
             select.value = this.aiProvider;
@@ -2832,17 +2925,33 @@ export class ChatManager {
         document.getElementById('modal-create')?.addEventListener('click', () => this.createConversation());
         document.getElementById('new-chat-modal')?.querySelector('.modal-overlay')
             ?.addEventListener('click', () => this.closeModal());
-        document.querySelectorAll('.role-card').forEach(card => {
+        const roleCards = Array.from(document.querySelectorAll('.role-card'));
+        roleCards.forEach((card, idx) => {
             const select = () => this.selectRole(card.dataset.role || 'general');
             card.addEventListener('click', select);
-            // role-cards are <div role="button" tabindex="0">; without this
-            // they're focusable but Enter/Space don't activate them.
+            // role-cards form a role="radiogroup"; Enter/Space activate the
+            // focused radio and Arrow keys move selection + focus within the
+            // group (roving tabindex managed by updateRoleSelection()).
             card.addEventListener('keydown', (e) => {
                 const ke = e;
                 if (ke.key === 'Enter' || ke.key === ' ') {
                     ke.preventDefault();
                     select();
+                    return;
                 }
+                let delta = 0;
+                if (ke.key === 'ArrowDown' || ke.key === 'ArrowRight')
+                    delta = 1;
+                else if (ke.key === 'ArrowUp' || ke.key === 'ArrowLeft')
+                    delta = -1;
+                if (delta === 0)
+                    return;
+                ke.preventDefault();
+                const next = roleCards[(idx + delta + roleCards.length) % roleCards.length];
+                if (!next)
+                    return;
+                this.selectRole(next.dataset.role || 'general');
+                next.focus();
             });
         });
         document.getElementById('modal-thinking')?.addEventListener('change', (e) => {
@@ -3007,9 +3116,6 @@ export class ChatManager {
         // loop on every `onopen` and stops on `onclose`. Nothing to do here.
     }
 }
-// Cap local message history to bound DOM size in long sessions; rendered
-// history is also capped server-side at 20 messages per request.
-ChatManager.MAX_LOCAL_MESSAGES = 200;
 // ============================================================================
 // Module-level instances
 // ============================================================================

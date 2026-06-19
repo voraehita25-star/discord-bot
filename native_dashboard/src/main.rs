@@ -3,7 +3,7 @@
 mod bot_manager;
 mod database;
 
-use bot_manager::{BotManager, BotStatus, StartProgress};
+use bot_manager::{BotManager, BotStatus, RestartBegin, StartProgress, StopOutcome};
 use database::{
     ChannelInfo, DashboardConversation, DashboardConversationDetail, DatabaseService, DbStats,
     UserInfo,
@@ -24,7 +24,7 @@ static ERROR_LOG_SEPARATOR: LazyLock<String> = LazyLock::new(|| "=".repeat(80));
 
 struct AppState {
     bot_manager: Arc<Mutex<BotManager>>,
-    db_service: Mutex<DatabaseService>,
+    db_service: Arc<Mutex<DatabaseService>>,
     // Rolling rate-limit window for frontend error logging (per second).
     // Monotonic-clock based: tuple is (window_start_instant, errors_in_window).
     // Using ``Instant`` (monotonic) instead of ``SystemTime`` so an NTP
@@ -37,24 +37,28 @@ struct AppState {
     // second call would overwrite the first rotated archive or fail with
     // an OS error on Windows where the destination already exists.
     error_log_rotation: Mutex<()>,
+    // Serializes bot LIFECYCLE operations (start / stop / restart / start_dev).
+    // The per-op `bot_manager` lock is now released across the multi-second
+    // stop/restart wait (so the high-frequency status/log polls stay
+    // responsive), which opened a window where a concurrent `start_bot` could
+    // spawn a fresh bot that `stop_finish`'s orphan sweep would then kill. This
+    // SEPARATE lock — never taken by the get_status/get_logs pollers — restores
+    // that mutual exclusion without re-freezing the pollers. Held for the whole
+    // duration of each lifecycle command.
+    bot_lifecycle: Arc<Mutex<()>>,
 }
 
-// Helper macro to safely lock mutex and handle poisoned state
+// Helper macro to lock the bot-manager mutex, RECOVERING a poisoned lock rather
+// than failing. A one-off panic elsewhere poisons the mutex; the BotManager
+// guards no invariant that a panic could leave permanently broken (same
+// reasoning `get_status` uses for its `into_inner()` recovery), so reporting
+// "lock poisoned" forever would brick every command that takes this lock. We
+// still yield a `Result` so the existing `lock_bot_manager!(state)?` call sites
+// keep compiling — after the poison recovery there is no error case left, so the
+// `?` is infallible but harmless.
 macro_rules! lock_bot_manager {
     ($state:expr) => {
-        $state
-            .bot_manager
-            .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))
-    };
-}
-
-macro_rules! lock_db_service {
-    ($state:expr) => {
-        $state
-            .db_service
-            .lock()
-            .map_err(|e| format!("Failed to acquire database lock: {}", e))
+        Ok::<_, String>($state.bot_manager.lock().unwrap_or_else(|e| e.into_inner()))
     };
 }
 
@@ -62,11 +66,18 @@ macro_rules! lock_db_service {
 fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
     match state.bot_manager.try_lock() {
         Ok(mut manager) => Ok(manager.get_status()),
-        Err(_) => {
-            // Lock is held by start/stop/restart. Returning a fake "running"
-            // BotStatus would mislead the UI into showing the bot as healthy
-            // even when it might be mid-stop or mid-crash. Return a typed
-            // error so the frontend can render its own busy / loading state.
+        // A one-off panic elsewhere poisons the lock; recover the guard rather
+        // than reporting "busy" forever (which would brick the status panel).
+        Err(std::sync::TryLockError::Poisoned(p)) => {
+            let mut manager = p.into_inner();
+            Ok(manager.get_status())
+        }
+        Err(std::sync::TryLockError::WouldBlock) => {
+            // Lock is genuinely held by start/stop/restart. Returning a fake
+            // "running" BotStatus would mislead the UI into showing the bot as
+            // healthy even when it might be mid-stop or mid-crash. Return a
+            // typed error so the frontend can render its own busy / loading
+            // state.
             Err("busy".to_string())
         }
     }
@@ -75,8 +86,12 @@ fn get_status(state: State<AppState>) -> Result<BotStatus, String> {
 #[tauri::command]
 async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
+    let lifecycle = state.bot_lifecycle.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Serialize against any concurrent stop/restart for the whole op
+        // (recover a poisoned lock — it guards no data).
+        let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut mgr = manager
             .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
@@ -112,12 +127,47 @@ async fn get_start_progress(state: State<'_, AppState>) -> Result<StartProgress,
 #[tauri::command]
 async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
+    let lifecycle = state.bot_lifecycle.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Hold the lifecycle lock across the ENTIRE stop (incl. the lock-free
+        // wait below) so a concurrent start can't spawn a bot into the window
+        // where Phase 3's orphan sweep would kill it. Recover a poisoned lock.
+        let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        // Phase 1 (lock-held, quick): validate + fire the kill.
+        let pid = {
+            let mut mgr = manager
+                .lock()
+                .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            match mgr.stop_begin()? {
+                // Early-return branches already completed the stop — done.
+                StopOutcome::Done(msg) => return Ok(msg),
+                StopOutcome::Polling(pid) => pid,
+            }
+        }; // <- BotManager lock dropped here, BEFORE the wait loop below.
+
+        // Phase 2 (lock-free wait): poll for the killed process to disappear,
+        // re-acquiring the lock only for the quick `process_is_gone` check each
+        // tick and releasing it across the sleep. This keeps concurrent
+        // status/log polls responsive (they need the same lock).
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let gone = {
+                let mut mgr = manager
+                    .lock()
+                    .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                mgr.process_is_gone(pid)
+            };
+            if gone {
+                break;
+            }
+        }
+
+        // Phase 3 (lock-held, quick): orphan sweep + reap + delete PID file.
         let mut mgr = manager
             .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
-        mgr.stop()
+        mgr.stop_finish()
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
@@ -126,12 +176,52 @@ async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
+    let lifecycle = state.bot_lifecycle.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Hold the lifecycle lock across the ENTIRE restart (stop wait + start)
+        // so no concurrent start/stop can interleave. Recover a poisoned lock.
+        let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        // Phase 1 (lock-held, quick): begin the stop side of the restart.
+        let plan = {
+            let mut mgr = manager
+                .lock()
+                .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            mgr.restart_begin()
+        }; // <- lock dropped before any wait below.
+
+        // Phase 2 (lock-free wait, optional): poll the old PID gone, re-locking
+        // only for the quick `process_is_gone` check each tick and releasing the
+        // lock across the sleep so status/log polls stay responsive.
+        let (poll_pid, needs_finish) = match plan {
+            RestartBegin::StartNow => (None, false),
+            RestartBegin::PollThenFinish(pid) => (Some(pid), true),
+            RestartBegin::PollThenStart(pid) => (Some(pid), false),
+        };
+        if let Some(pid) = poll_pid {
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let gone = {
+                    let mut mgr = manager
+                        .lock()
+                        .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                    mgr.process_is_gone(pid)
+                };
+                if gone {
+                    break;
+                }
+            }
+        }
+
+        // Phase 3 (lock-held, quick): finish the stop teardown if the begin
+        // phase fired a kill, then start the bot again.
         let mut mgr = manager
             .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
-        mgr.restart()
+        if needs_finish {
+            let _ = mgr.stop_finish();
+        }
+        mgr.start()
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
@@ -140,8 +230,12 @@ async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn start_dev_bot(state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.bot_manager.clone();
+    let lifecycle = state.bot_lifecycle.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Serialize against any concurrent stop/restart for the whole op
+        // (recover a poisoned lock — it guards no data).
+        let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut mgr = manager
             .lock()
             .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
@@ -156,8 +250,15 @@ fn get_logs(state: State<AppState>, count: usize) -> Result<Vec<String>, String>
     let count = count.min(10_000); // Cap at 10k lines to prevent abuse
     match state.bot_manager.try_lock() {
         Ok(manager) => Ok(manager.read_logs(count)),
-        Err(_) => Ok(vec![
-            "[Dashboard] Bot manager busy — retrying...".to_string()
+        // A one-off panic elsewhere poisons the lock; recover the guard and still
+        // serve logs rather than wedging the log panel on a "busy" placeholder
+        // forever (mirrors get_status's into_inner() recovery — the BotManager
+        // guards no invariant a panic could permanently corrupt).
+        Err(std::sync::TryLockError::Poisoned(p)) => Ok(p.into_inner().read_logs(count)),
+        // Lock is genuinely held by a start/stop/restart op — surface the busy
+        // placeholder so the frontend keeps polling.
+        Err(std::sync::TryLockError::WouldBlock) => Ok(vec![
+            "[Dashboard] Bot manager busy — retrying...".to_string(),
         ]),
     }
 }
@@ -186,54 +287,106 @@ fn get_data_path(state: State<AppState>) -> Result<String, String> {
     Ok(manager.data_dir().to_string_lossy().to_string())
 }
 
+// DB commands run their lock-holding rusqlite work inside
+// `tauri::async_runtime::spawn_blocking` (mirroring `start_bot`) so a slow or
+// SQLITE_BUSY-blocked query can't pin an IPC worker and freeze unrelated
+// invokes (status polls, log refresh, chat). Input validation stays on the
+// async thread — it's cheap and takes no lock — and only the actual DB call
+// moves onto the blocking pool. `db_service` is an `Arc<Mutex<_>>` so the
+// handle can be cloned into the `'static` closure.
 #[tauri::command]
-fn get_db_stats(state: State<AppState>) -> Result<DbStats, String> {
-    let db = lock_db_service!(state)?;
-    Ok(db.get_stats())
+async fn get_db_stats(state: State<'_, AppState>) -> Result<DbStats, String> {
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.get_stats()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn get_recent_channels(state: State<AppState>, limit: i32) -> Result<Vec<ChannelInfo>, String> {
+async fn get_recent_channels(
+    state: State<'_, AppState>,
+    limit: i32,
+) -> Result<Vec<ChannelInfo>, String> {
     let limit = limit.clamp(1, 100); // Cap to prevent abuse
-    let db = lock_db_service!(state)?;
-    Ok(db.get_recent_channels(limit))
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.get_recent_channels(limit)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn get_top_users(state: State<AppState>, limit: i32) -> Result<Vec<UserInfo>, String> {
+async fn get_top_users(state: State<'_, AppState>, limit: i32) -> Result<Vec<UserInfo>, String> {
     let limit = limit.clamp(1, 100); // Cap to prevent abuse
-    let db = lock_db_service!(state)?;
-    Ok(db.get_top_users(limit))
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.get_top_users(limit)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn get_dashboard_conversations_native(
-    state: State<AppState>,
+async fn get_dashboard_conversations_native(
+    state: State<'_, AppState>,
     limit: i32,
 ) -> Result<Vec<DashboardConversation>, String> {
     let limit = limit.clamp(1, 200);
-    let db = lock_db_service!(state)?;
-    db.get_dashboard_conversations(limit)
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.get_dashboard_conversations(limit)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn get_dashboard_conversation_detail_native(
-    state: State<AppState>,
+async fn get_dashboard_conversation_detail_native(
+    state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<DashboardConversationDetail, String> {
     if conversation_id.trim().is_empty() {
         return Err("Missing conversation ID".to_string());
     }
 
-    let db = lock_db_service!(state)?;
-    db.get_dashboard_conversation_detail(&conversation_id)?
-        .ok_or_else(|| "Conversation not found".to_string())
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.get_dashboard_conversation_detail(&conversation_id)?
+            .ok_or_else(|| "Conversation not found".to_string())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
-fn clear_history(state: State<AppState>) -> Result<i32, String> {
-    let db = lock_db_service!(state)?;
-    db.clear_history()
+async fn clear_history(state: State<'_, AppState>) -> Result<i32, String> {
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.clear_history()
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -266,8 +419,8 @@ async fn show_confirm_dialog(app: tauri::AppHandle, message: String) -> Result<b
 }
 
 #[tauri::command]
-fn delete_channels_history(
-    state: State<AppState>,
+async fn delete_channels_history(
+    state: State<'_, AppState>,
     channel_ids: Vec<String>,
 ) -> Result<i32, String> {
     if channel_ids.is_empty() {
@@ -293,8 +446,15 @@ fn delete_channels_history(
             Ok(parsed)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let db = lock_db_service!(state)?;
-    db.delete_channels_history(&parsed_ids)
+    let db = state.db_service.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db
+            .lock()
+            .map_err(|e| format!("Failed to acquire database lock: {}", e))?;
+        db.delete_channels_history(&parsed_ids)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -952,9 +1112,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             bot_manager: Arc::new(Mutex::new(bot_manager)),
-            db_service: Mutex::new(db_service),
+            db_service: Arc::new(Mutex::new(db_service)),
             frontend_error_rate: Mutex::new((Instant::now(), 0)),
             error_log_rotation: Mutex::new(()),
+            bot_lifecycle: Arc::new(Mutex::new(())),
         })
         .setup(|app| {
             // Create tray menu

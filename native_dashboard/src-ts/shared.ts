@@ -10,6 +10,16 @@ import { DEFAULT_AI_AVATAR } from './faust_avatar.js';
 export type { Settings, ToastOptions };
 
 // ============================================================================
+// Icons — reference the inline SVG sprite (#i-…) injected at the top of
+// index.html. Returns markup for HTML-string contexts (innerHTML), styled by
+// the `.ic` rule in orbital.css (stroke inherits currentColor). Replaces emoji.
+// ============================================================================
+export function icon(name: string, cls = ""): string {
+    const extra = cls ? " " + cls : "";
+    return `<svg class="ic${extra}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
+// ============================================================================
 // Tauri API
 // ============================================================================
 
@@ -57,11 +67,31 @@ export const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Pr
     try {
         const tauriCore = await import('@tauri-apps/api/core');
         return tauriCore.invoke<T>(cmd, args);
-    } catch {
-        console.warn('Tauri not available, using mock');
+    } catch (err) {
+        // Bind + log the underlying import failure so a broken vendor bundle /
+        // import-map mismatch is diagnosable, while keeping the literal
+        // 'Tauri not available' substring (matched by e2e fixtures + tests).
+        console.warn('Tauri not available, using mock', err);
         return Promise.reject(new Error('Tauri not available'));
     }
 };
+
+// ============================================================================
+// SQLite timestamp normalization
+// ============================================================================
+
+/**
+ * Normalize a SQLite timestamp string into an ISO form ``new Date`` parses as
+ * UTC. SQLite naive timestamps ("2026-01-22 10:00:00") have no zone, so JS
+ * would read them as local time and render hours off; we append "Z" when no
+ * zone designator is present and swap the space separator for "T". Strings that
+ * already carry a zone (``Z`` or ``±HH:MM``) are left as-is apart from the
+ * separator. Output is unchanged for canonical input.
+ */
+export function normalizeSqliteUtc(iso: string): string {
+    const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
+    return (hasTz ? iso : iso + 'Z').replace(' ', 'T');
+}
 
 // ============================================================================
 // Error Logger - Logs frontend errors to file for debugging

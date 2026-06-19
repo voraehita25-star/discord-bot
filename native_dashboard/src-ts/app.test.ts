@@ -10,35 +10,19 @@ vi.mock('@tauri-apps/api/core', () => ({
     invoke: vi.fn()
 }));
 
-import { invoke } from '@tauri-apps/api/core';
+import { escapeHtml, normalizeSqliteUtc } from './shared';
+import {
+    VALID_PAGES,
+    resolvePage,
+    debounce,
+    openModal,
+    closeModal,
+    _resetModalInertState,
+} from './app';
 
 // ============================================================================
 // Test Data
 // ============================================================================
-
-const mockBotStatus = {
-    is_running: true,
-    uptime: '2h 30m',
-    mode: 'Production',
-    memory_mb: 256.5
-};
-
-const mockDbStats = {
-    total_messages: 15000,
-    active_channels: 25,
-    total_entities: 150,
-    rag_memories: 500
-};
-
-const mockChannels = [
-    { channel_id: '123456789', message_count: 1000 },
-    { channel_id: '987654321', message_count: 500 }
-];
-
-const mockUsers = [
-    { user_id: '111111111', message_count: 200 },
-    { user_id: '222222222', message_count: 150 }
-];
 
 const mockLogs = [
     '[2026-01-22 10:00:00] INFO - Bot started',
@@ -302,11 +286,9 @@ describe('Log Filtering', () => {
 // ============================================================================
 
 describe('HTML Escaping', () => {
-    function escapeHtml(text: string): string {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+    // Exercises the real escapeHtml exported from shared.ts. Unlike a bare
+    // textContent round-trip it ALSO escapes ", ' and ` so the result is safe
+    // inside a double/single-quoted HTML attribute, not just element text.
 
     it('should escape HTML special characters', () => {
         const input = '<script>alert("xss")</script>';
@@ -321,10 +303,17 @@ describe('HTML Escaping', () => {
         expect(result).toBe('Tom &amp; Jerry');
     });
 
-    it('should handle quotes', () => {
-        const input = 'Say "Hello"';
-        const result = escapeHtml(input);
-        expect(result).toContain('"Hello"'); // Quotes are preserved in textContent
+    it('should escape double quotes (attribute-safe)', () => {
+        expect(escapeHtml('a"b')).toBe('a&quot;b');
+        expect(escapeHtml('Say "Hello"')).toBe('Say &quot;Hello&quot;');
+    });
+
+    it('should escape single quotes', () => {
+        expect(escapeHtml("a'b")).toBe('a&#39;b');
+    });
+
+    it('should escape backticks', () => {
+        expect(escapeHtml('a`b')).toBe('a&#96;b');
     });
 
     it('should handle normal text', () => {
@@ -347,34 +336,43 @@ describe('Debounce Function', () => {
         vi.useRealTimers();
     });
 
-    it('should debounce function calls', () => {
-        const debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+    // Exercises the real higher-order debounce exported from app.ts:
+    // debounce(fn, key, delay) returns a trigger function; rapid triggers for
+    // the same key collapse into a single trailing call after `delay`.
+
+    it('should return a callable trigger function', () => {
+        const trigger = debounce(() => {}, 'returns-fn', 100);
+        expect(typeof trigger).toBe('function');
+    });
+
+    it('should debounce rapid calls into a single trailing invocation', () => {
         const fn = vi.fn();
-        
-        function debounce(callback: () => void, key: string, delay: number): void {
-            const existing = debounceTimers.get(key);
-            if (existing) {
-                clearTimeout(existing);
-            }
-            debounceTimers.set(key, setTimeout(() => {
-                callback();
-                debounceTimers.delete(key);
-            }, delay));
-        }
-        
-        // Call multiple times rapidly
-        debounce(fn, 'test', 100);
-        debounce(fn, 'test', 100);
-        debounce(fn, 'test', 100);
-        
-        // Function should not be called yet
+        const trigger = debounce(fn, 'collapse', 100);
+
+        // Trigger multiple times rapidly
+        trigger();
+        trigger();
+        trigger();
+
+        // Not called until the delay elapses
         expect(fn).not.toHaveBeenCalled();
-        
-        // Advance time
+
         vi.advanceTimersByTime(150);
-        
-        // Function should be called only once
+
         expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should debounce independently per key', () => {
+        const fnA = vi.fn();
+        const fnB = vi.fn();
+        // Distinct keys must not clear each other's pending timer.
+        debounce(fnA, 'key-a', 100)();
+        debounce(fnB, 'key-b', 100)();
+
+        vi.advanceTimersByTime(150);
+
+        expect(fnA).toHaveBeenCalledTimes(1);
+        expect(fnB).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -434,5 +432,243 @@ describe('Number Formatting', () => {
     it('should handle zero values', () => {
         expect((0).toLocaleString()).toBe('0');
         expect((0).toFixed(1)).toBe('0.0');
+    });
+});
+
+// ============================================================================
+// Page Navigation — alias resolution + validation (switchPage guard)
+// ============================================================================
+
+describe('Page Navigation', () => {
+    // Exercises the real resolvePage exported from app.ts — the same guard
+    // switchPage runs: stale aliases map through, then anything not in
+    // VALID_PAGES is rejected so a bad id can't blank the UI. Importing the
+    // real symbols means this test fails if the guard logic drifts.
+
+    it('should map the stale "config" alias to "settings"', () => {
+        expect(resolvePage('config')).toBe('settings');
+    });
+
+    it('should pass through every canonical page id unchanged', () => {
+        for (const p of VALID_PAGES) {
+            expect(resolvePage(p)).toBe(p);
+        }
+    });
+
+    it('should reject unknown page ids', () => {
+        expect(resolvePage('does-not-exist')).toBeNull();
+        expect(resolvePage('')).toBeNull();
+        expect(resolvePage('page-settings')).toBeNull();
+    });
+});
+
+// ============================================================================
+// SQLite Timestamp Normalization (normalizeSqliteUtc)
+// ============================================================================
+
+describe('SQLite Timestamp Normalization', () => {
+    // Exercises the real normalizeSqliteUtc exported from shared.ts: append "Z"
+    // to naive timestamps (so JS parses them as UTC, not local) and swap the
+    // space separator for "T". Already-zoned strings keep their zone.
+
+    it('should normalize a naive SQLite timestamp to UTC ISO', () => {
+        expect(normalizeSqliteUtc('2026-01-22 10:00:00')).toBe('2026-01-22T10:00:00Z');
+    });
+
+    it('should leave a string that already ends in Z unchanged apart from the separator', () => {
+        expect(normalizeSqliteUtc('2026-01-22T10:00:00Z')).toBe('2026-01-22T10:00:00Z');
+    });
+
+    it('should not double-append a zone for explicit offsets', () => {
+        expect(normalizeSqliteUtc('2026-01-22 10:00:00+07:00')).toBe('2026-01-22T10:00:00+07:00');
+    });
+
+    it('should parse as UTC so the epoch matches an explicit Z', () => {
+        const naive = new Date(normalizeSqliteUtc('2026-01-22 10:00:00')).getTime();
+        const explicit = new Date('2026-01-22T10:00:00Z').getTime();
+        expect(naive).toBe(explicit);
+    });
+
+    // Adversarial / malformed input — lock the "never throws" contract. The
+    // helper is a pure string transform, so garbage in yields a garbage ISO
+    // string that Date parses to NaN rather than blowing up the caller.
+    it('should not throw on empty / garbage input and yield an unparseable date', () => {
+        expect(() => normalizeSqliteUtc('')).not.toThrow();
+        expect(Number.isNaN(new Date(normalizeSqliteUtc('')).getTime())).toBe(true);
+
+        expect(() => normalizeSqliteUtc('garbage')).not.toThrow();
+        expect(Number.isNaN(new Date(normalizeSqliteUtc('garbage')).getTime())).toBe(true);
+    });
+
+    it('should preserve fractional seconds as a still-parseable UTC ISO', () => {
+        const out = normalizeSqliteUtc('2026-01-22 10:00:00.123');
+        expect(out).toBe('2026-01-22T10:00:00.123Z');
+        expect(Number.isNaN(new Date(out).getTime())).toBe(false);
+    });
+
+    it('should treat a colon-less offset as an existing zone (no extra Z)', () => {
+        // The tz regex makes the ':' optional, so "+0700" counts as zoned and we
+        // must NOT append a second designator — only swap the separator.
+        const out = normalizeSqliteUtc('2026-01-22 10:00:00+0700');
+        expect(() => normalizeSqliteUtc('2026-01-22 10:00:00+0700')).not.toThrow();
+        expect(out).toBe('2026-01-22T10:00:00+0700');
+        expect(out.endsWith('Z')).toBe(false);
+    });
+});
+
+// ============================================================================
+// Modal inert ref-counting (#6)
+// ============================================================================
+
+describe('Modal inert ref-counting (#6)', () => {
+    // openModal/closeModal toggle `inert` + `aria-hidden` on `.app` so the
+    // overlay is the only reachable region. inert is now ref-counted by the
+    // set of openModal-owned modals, not by a global `.modal.active` query —
+    // so a chat modal (which lives INSIDE .app and toggles .active directly,
+    // never owning inert) can no longer pin inert on after an owned modal closes.
+    let app: HTMLElement;
+
+    beforeEach(() => {
+        _resetModalInertState();
+        document.body.innerHTML = '';
+        app = document.createElement('div');
+        app.className = 'app';
+        document.body.appendChild(app);
+    });
+
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    function addModal(id: string, opts: { active?: boolean; insideApp?: boolean } = {}): HTMLElement {
+        const modal = document.createElement('div');
+        modal.id = id;
+        modal.className = opts.active ? 'modal active' : 'modal';
+        // app-level modals are siblings of .app; chat modals live inside it.
+        (opts.insideApp ? app : document.body).appendChild(modal);
+        return modal;
+    }
+
+    it('should set inert + aria-hidden on .app when an owned modal opens', () => {
+        const shortcuts = addModal('shortcuts-modal');
+        openModal(shortcuts);
+        expect(app.hasAttribute('inert')).toBe(true);
+        expect(app.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('should lift inert + aria-hidden when the only owned modal closes', () => {
+        const shortcuts = addModal('shortcuts-modal');
+        openModal(shortcuts);
+        closeModal(shortcuts);
+        expect(app.hasAttribute('inert')).toBe(false);
+        expect(app.hasAttribute('aria-hidden')).toBe(false);
+    });
+
+    it('should lift inert even when a stale .active chat modal remains (the bug)', () => {
+        // A chat modal left .active inside .app (it never goes through openModal,
+        // so it never owns inert). Under the old `querySelector('.modal.active')`
+        // check this stranded inert on and trapped the user. Ref-counting fixes it.
+        addModal('delete-confirm-modal', { active: true, insideApp: true });
+        const shortcuts = addModal('shortcuts-modal');
+
+        openModal(shortcuts);
+        expect(app.hasAttribute('inert')).toBe(true);
+
+        closeModal(shortcuts);
+        // The lingering .active chat modal must NOT keep .app inert.
+        expect(app.hasAttribute('inert')).toBe(false);
+        expect(app.hasAttribute('aria-hidden')).toBe(false);
+    });
+
+    it('should keep inert until the last owned modal closes (ref-count stacking)', () => {
+        const a = addModal('shortcuts-modal');
+        const b = addModal('avatar-crop-modal');
+
+        openModal(a);
+        openModal(b);
+        expect(app.hasAttribute('inert')).toBe(true);
+
+        closeModal(b);
+        // One owned modal still open — inert must stay (size 1).
+        expect(app.hasAttribute('inert')).toBe(true);
+
+        closeModal(a);
+        // All owned modals closed — inert lifts (size 0).
+        expect(app.hasAttribute('inert')).toBe(false);
+    });
+
+    it('should treat a repeated open of the same modal idempotently', () => {
+        const shortcuts = addModal('shortcuts-modal');
+        openModal(shortcuts);
+        openModal(shortcuts); // Set => no duplicate owner
+        expect(app.hasAttribute('inert')).toBe(true);
+
+        // A single close clears the sole owner and lifts inert.
+        closeModal(shortcuts);
+        expect(app.hasAttribute('inert')).toBe(false);
+    });
+});
+
+// ============================================================================
+// Modal focus-trap topmost selection (#7)
+// ============================================================================
+
+describe('Modal focus-trap topmost (#7)', () => {
+    // The Tab focus-trap now selects the LAST .modal.active in DOM order
+    // (topmost overlay) instead of the first. This mirrors the live selector
+    // `querySelectorAll('.modal.active')` then `[length - 1]`; we assert the
+    // selection at the DOM-query level (jsdom can't drive native focus reliably).
+    beforeEach(() => {
+        _resetModalInertState();
+        document.body.innerHTML = '';
+    });
+
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    // Mirror of the focus-trap's modal pick in app.ts (last .modal.active).
+    function pickTopmost(): HTMLElement | null {
+        const actives = document.querySelectorAll<HTMLElement>('.modal.active');
+        return actives.length ? actives[actives.length - 1] : null;
+    }
+
+    it('should pick the last-in-DOM active modal when two are stacked', () => {
+        // chat modal first (inside .app), app-level shortcuts after — the latter
+        // is the overlay stacked on top and must win the focus trap.
+        const app = document.createElement('div');
+        app.className = 'app';
+        const chat = document.createElement('div');
+        chat.id = 'delete-confirm-modal';
+        chat.className = 'modal active';
+        app.appendChild(chat);
+        document.body.appendChild(app);
+
+        const shortcuts = document.createElement('div');
+        shortcuts.id = 'shortcuts-modal';
+        shortcuts.className = 'modal active';
+        document.body.appendChild(shortcuts);
+
+        expect(pickTopmost()).toBe(shortcuts);
+        expect(pickTopmost()?.id).toBe('shortcuts-modal');
+    });
+
+    it('should equal the old querySelector result for a single active modal', () => {
+        // Zero behavior change in the single-modal case: last === first.
+        const only = document.createElement('div');
+        only.id = 'shortcuts-modal';
+        only.className = 'modal active';
+        document.body.appendChild(only);
+
+        const single = document.querySelector<HTMLElement>('.modal.active');
+        expect(pickTopmost()).toBe(single);
+        expect(pickTopmost()).toBe(only);
+    });
+
+    it('should pick nothing when no modal is active', () => {
+        const inactive = document.createElement('div');
+        inactive.className = 'modal';
+        document.body.appendChild(inactive);
+        expect(pickTopmost()).toBeNull();
     });
 });

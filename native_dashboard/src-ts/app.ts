@@ -7,7 +7,7 @@
  * Shared utilities in shared.ts.
  */
 
-import type { BotStatus, StartProgress, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings } from './types.js';
+import type { BotStatus, StartProgress, DbStats, ChannelInfo, UserInfo, ChartDataPoint, CacheEntry, Settings, ApiFailoverStatusDetail, ApiHealthResultDetail } from './types.js';
 import {
     invoke,
     escapeHtml,
@@ -21,6 +21,7 @@ import {
     setSkeleton,
     showToast,
     showConfirmDialog,
+    icon,
 } from './shared.js';
 import {
     chatManager,
@@ -76,6 +77,23 @@ const dataCache = new DataCache();
 // State Management
 // ============================================================================
 
+// Canonical page ids, shared by the keyboard shortcut path and switchPage so
+// the two can't drift. `config` is a stale alias kept for specs/screenshots
+// (there is no `page-config` section — the real id is `page-settings`); map it
+// through PAGE_ALIASES rather than letting it blank the UI.
+export const VALID_PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
+export const PAGE_ALIASES: Record<string, string> = { config: 'settings' };
+
+// Pure resolution of a requested page id to a canonical one: aliases map
+// through, then anything not in VALID_PAGES is rejected (returns null). Shared
+// by switchPage so the guard logic has a single source of truth that unit
+// tests can exercise without driving the DOM.
+export function resolvePage(page: string): string | null {
+    const resolved = PAGE_ALIASES[page] ?? page;
+    if (!VALID_PAGES.includes(resolved)) return null;
+    return resolved;
+}
+
 let currentPage = 'status';
 let historyManager: HistoryManager | null = null;
 let refreshInterval: number | null = null;
@@ -91,6 +109,106 @@ const messagesHistory: ChartDataPoint[] = [];
 
 const debounceTimers: Map<string, number> = new Map();
 
+// Consecutive failed status ticks → "Disconnected" cue. Both invoke('get_status')
+// halves must reject (or the bot must report not-running) before we count a tick
+// as a failure; a single transient IPC blip is swallowed by the cached-fallback
+// path in updateStatus and never reaches the counter.
+let statusFailStreak = 0;
+const STATUS_FAIL_THRESHOLD = 3;
+
+// ============================================================================
+// Shared Modal Focus Management
+// ============================================================================
+//
+// openModal/closeModal centralise the a11y plumbing every modal needs: remember
+// the element that opened it, move focus inside on open, restore it on close,
+// and make the rest of the app inert (with an aria-hidden fallback for engines
+// without `inert`) so AT and Tab can't wander behind the overlay. The existing
+// Tab focus-trap in initKeyboardShortcuts still handles wrap-around; this adds
+// the open/close focus handoff the trap assumed but never performed.
+
+// Per-modal record of the trigger to restore focus to on close.
+const modalReturnFocus = new WeakMap<HTMLElement, HTMLElement | null>();
+
+// Modals that called setAppInert(true) via openModal. inert lifts only when
+// every owned modal has closed — so a chat modal toggling .active directly
+// (it lives INSIDE .app and never owns inert) can't pin inert on.
+const inertModals = new Set<HTMLElement>();
+
+function setAppInert(inert: boolean): void {
+    // Modals are siblings of `.app` (they live after </div> for .app), so
+    // toggling inert/aria-hidden on the app shell never touches the open modal.
+    const app = document.querySelector<HTMLElement>('.app');
+    if (!app) return;
+    if (inert) {
+        // `inert` is the correct primitive (removes from tab order + AT tree).
+        // aria-hidden is a belt-and-suspenders fallback for older WebView2.
+        app.setAttribute('inert', '');
+        app.setAttribute('aria-hidden', 'true');
+    } else {
+        app.removeAttribute('inert');
+        app.removeAttribute('aria-hidden');
+    }
+}
+
+function getFirstFocusable(modal: HTMLElement): HTMLElement | null {
+    const focusables = Array.from(
+        modal.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+    ).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement);
+    return focusables[0] ?? null;
+}
+
+export function openModal(modal: HTMLElement | null): void {
+    if (!modal) return;
+    // Record the trigger so closeModal can restore focus to it. Skip <body>
+    // (the default activeElement) — restoring focus there is a no-op anyway.
+    const active = document.activeElement;
+    modalReturnFocus.set(
+        modal,
+        active instanceof HTMLElement && active !== document.body ? active : null,
+    );
+    modal.classList.add('active');
+    inertModals.add(modal);   // Set => add ซ้ำไม่มีผล (idempotent re-open)
+    setAppInert(true);
+    // Prefer the first interactive control; fall back to the close button, then
+    // the modal element itself (made programmatically focusable) so focus never
+    // stays stranded behind the overlay.
+    const target =
+        getFirstFocusable(modal) ??
+        modal.querySelector<HTMLElement>('.modal-close, [data-close-shortcuts], [data-close-avatar-crop]');
+    if (target) {
+        target.focus();
+    } else if (typeof modal.focus === 'function') {
+        if (!modal.hasAttribute('tabindex')) modal.setAttribute('tabindex', '-1');
+        modal.focus();
+    }
+}
+
+export function closeModal(modal: HTMLElement | null): void {
+    if (!modal) return;
+    modal.classList.remove('active');
+    inertModals.delete(modal);
+    // Lift inert only when every openModal-owned modal has closed. chat modals
+    // live inside .app and never own inert, so a stale .active chat modal no
+    // longer blocks the lift (was: querySelector('.modal.active')).
+    if (inertModals.size === 0) {
+        setAppInert(false);
+    }
+    const trigger = modalReturnFocus.get(modal);
+    modalReturnFocus.delete(modal);
+    // Restore focus to the opener if it's still in the DOM and focusable.
+    if (trigger && document.contains(trigger) && typeof trigger.focus === 'function') {
+        trigger.focus();
+    }
+}
+
+// Test-only: clear inert ownership between cases. Not used in production.
+export function _resetModalInertState(): void {
+    inertModals.clear();
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -100,6 +218,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Restore the persisted logs auto-scroll preference.
     logsAutoScrollEnabled = settings.autoScroll;
     applyAutoScrollButtonState();
+    // Restore the persisted density preference before first paint.
+    applyDensity(settings.densityCompact === true);
     initNavigation();
     initTheme();
     initToastContainer();
@@ -152,71 +272,93 @@ window.addEventListener('beforeunload', () => {
 
 function initKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-        // Ctrl+1-6 for page navigation. Key off e.code ('Digit1'..'Digit6') so
-        // the shortcut is layout-independent — on AZERTY and similar layouts the
-        // unmodified top-row keys emit symbols (&é"'(-) and e.key would not be a
-        // digit, silently breaking navigation. Fall back to e.key for engines
-        // that don't populate e.code.
+        // Single dispatch per keystroke. Each branch early-returns so a key that
+        // matches one shortcut can't fall through into another (e.g. the old
+        // chain re-evaluated `e.ctrlKey && …` for every shortcut, and a future
+        // overlapping binding would double-fire). Ctrl chords switch on the
+        // normalized key; plain keys are handled after.
         if (e.ctrlKey) {
+            // Ctrl+1-6 for page navigation. Key off e.code ('Digit1'..'Digit6')
+            // so the shortcut is layout-independent — on AZERTY and similar
+            // layouts the unmodified top-row keys emit symbols (&é"'(-) and
+            // e.key would not be a digit, silently breaking navigation. Fall
+            // back to e.key for engines that don't populate e.code.
             const codeMatch = /^Digit([1-6])$/.exec(e.code);
             const digit = codeMatch ? codeMatch[1] : (e.key >= '1' && e.key <= '6' ? e.key : null);
             if (digit) {
-                const pages = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
                 const index = parseInt(digit) - 1;
-                if (pages[index]) {
+                if (VALID_PAGES[index]) {
                     e.preventDefault();
-                    switchPage(pages[index]);
+                    switchPage(VALID_PAGES[index]);
                 }
+                return;
+            }
+
+            // Normalize the key once (toLowerCase so chords fire under Caps Lock
+            // / Shift too) and switch — one branch wins, then we're done.
+            switch (e.key.toLowerCase()) {
+                case 'r': // Refresh all data
+                    e.preventDefault();
+                    loadAllData();
+                    showToast('Refreshed!', { type: 'info', duration: 1500 });
+                    return;
+                case 't': // Toggle theme
+                    e.preventDefault();
+                    toggleTheme();
+                    return;
+                case 'enter': // Send message (chat only)
+                    if (currentPage === 'chat') {
+                        e.preventDefault();
+                        chatManager?.sendMessage();
+                    }
+                    return;
+                case 'f': // Open in-chat search (chat only)
+                    if (currentPage === 'chat') {
+                        e.preventDefault();
+                        chatManager?.openChatSearch();
+                    }
+                    return;
+                default:
+                    return; // Unhandled Ctrl chord — let the browser have it.
             }
         }
 
-        // Ctrl+R to refresh (toLowerCase so it fires under Caps Lock / Shift too)
-        if (e.ctrlKey && e.key.toLowerCase() === 'r') {
-            e.preventDefault();
-            loadAllData();
-            showToast('Refreshed!', { type: 'info', duration: 1500 });
-        }
-
-        // Ctrl+T to toggle theme
-        if (e.ctrlKey && e.key.toLowerCase() === 't') {
-            e.preventDefault();
-            toggleTheme();
-        }
-
-        // Ctrl+Enter to send message (in chat)
-        if (e.ctrlKey && e.key === 'Enter' && currentPage === 'chat') {
-            e.preventDefault();
-            chatManager?.sendMessage();
-        }
-
-        // Ctrl+F to open in-chat search
-        if (e.ctrlKey && e.key.toLowerCase() === 'f' && currentPage === 'chat') {
-            e.preventDefault();
-            chatManager?.openChatSearch();
-        }
-
         // "?" to show keyboard shortcut help — but only when not typing
-        if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+        if (e.key === '?' && !e.metaKey) {
             const active = document.activeElement;
             const isTyping = active instanceof HTMLInputElement
                 || active instanceof HTMLTextAreaElement
                 || (active instanceof HTMLElement && active.isContentEditable);
-            if (!isTyping) {
+            // Don't stack the shortcuts modal on top of an already-open modal
+            // (e.g. the avatar-crop dialog) — that would double-inert the app.
+            if (!isTyping && !document.querySelector('.modal.active')) {
                 e.preventDefault();
-                document.getElementById('shortcuts-modal')?.classList.add('active');
+                openModal(document.getElementById('shortcuts-modal'));
             }
+            return;
         }
 
-        // Escape closes the shortcuts modal if open
+        // Escape closes the shortcuts modal if open (routed through closeModal so
+        // focus is restored to the trigger and app inert is lifted).
         if (e.key === 'Escape') {
-            document.getElementById('shortcuts-modal')?.classList.remove('active');
+            const shortcuts = document.getElementById('shortcuts-modal');
+            if (shortcuts?.classList.contains('active')) {
+                closeModal(shortcuts);
+            }
+            return;
         }
 
         // Focus trap: keep Tab within the open modal (.modal.active) so keyboard
         // focus can't escape behind the overlay. Every modal uses the .active
         // class to show, so this single handler covers all of them.
         if (e.key === 'Tab') {
-            const modal = document.querySelector('.modal.active');
+            // Topmost open modal = last .modal.active in DOM order. Sibling modals
+            // (shortcuts L1182 / avatar-crop L1208 in ui/index.html) and the dynamically
+            // body-appended export-format-modal always come AFTER the in-.app chat modals
+            // (index.html ~717-799), so last-in-DOM == the overlay stacked on top.
+            // NOTE: this relies on index.html modal ordering — keep app-level modals last.
+            const actives = document.querySelectorAll<HTMLElement>('.modal.active');
+            const modal = actives.length ? actives[actives.length - 1] : null;
             if (modal) {
                 const focusables = Array.from(
                     modal.querySelectorAll<HTMLElement>(
@@ -239,10 +381,11 @@ function initKeyboardShortcuts(): void {
         }
     });
 
-    // Close buttons inside the shortcuts modal
+    // Close buttons (and overlay) inside the shortcuts modal — routed through
+    // closeModal so focus returns to the opener and the app inert state lifts.
     document.querySelectorAll('[data-close-shortcuts]').forEach(el => {
         el.addEventListener('click', () => {
-            document.getElementById('shortcuts-modal')?.classList.remove('active');
+            closeModal(document.getElementById('shortcuts-modal'));
         });
     });
 }
@@ -263,7 +406,7 @@ function toggleTheme(): void {
     settings.theme = settings.theme === 'dark' ? 'light' : 'dark';
     applyTheme(settings.theme);
     saveSettings();
-    showToast(`Theme: ${settings.theme === 'dark' ? '🌙 Dark' : '☀️ Light'}`, { type: 'info', duration: 1500 });
+    showToast(`Theme: ${settings.theme === 'dark' ? 'Dark' : 'Light'}`, { type: 'info', duration: 1500 });
 }
 
 function applyTheme(theme: 'dark' | 'light'): void {
@@ -271,12 +414,28 @@ function applyTheme(theme: 'dark' | 'light'): void {
     
     const themeIcon = document.getElementById('theme-icon');
     if (themeIcon) {
-        themeIcon.textContent = theme === 'dark' ? '🌙' : '☀️';
+        themeIcon.innerHTML = theme === 'dark' ? icon('moon') : icon('sun');
     }
     // Also update the settings page theme icon
     const themeIconSettings = document.getElementById('theme-icon-settings');
     if (themeIconSettings) {
-        themeIconSettings.textContent = theme === 'dark' ? '🌙' : '☀️';
+        themeIconSettings.innerHTML = theme === 'dark' ? icon('moon') : icon('sun');
+    }
+
+    // Canvas charts read their colors from CSS tokens at draw time and can't
+    // pick up the theme swap on their own — repaint so they re-color now.
+    // Safe before charts have data (drawChart no-ops without a canvas / draws
+    // the placeholder), so this also covers the initial applyTheme() at boot.
+    updateCharts();
+}
+
+// Density mode (CONTRACT): set/remove data-density="compact" on <html>. The CSS
+// recipe [data-density="compact"]{--density:.7} drives the tighter spacing.
+function applyDensity(compact: boolean): void {
+    if (compact) {
+        document.documentElement.setAttribute('data-density', 'compact');
+    } else {
+        document.documentElement.removeAttribute('data-density');
     }
 }
 
@@ -350,6 +509,17 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Read theme colors from CSS tokens at draw time (SHARED CONTRACT #1) so a
+    // light/dark toggle re-colors the canvas — it can't pick up CSS like real
+    // DOM does. Cache the lookups for the duration of this single draw; they're
+    // re-read on the next draw (updateCharts runs on every status tick + the
+    // post-toggle redraw below).
+    const tokens = getComputedStyle(document.documentElement);
+    const gridColor = tokens.getPropertyValue('--chart-grid').trim() || 'rgba(72,196,232,.10)';
+    const fillTop = tokens.getPropertyValue('--chart-fill-top').trim() || 'rgba(61,245,255,.30)';
+    const fillBot = tokens.getPropertyValue('--chart-fill-bot').trim() || 'rgba(61,245,255,.05)';
+    const placeholderColor = tokens.getPropertyValue('--text-tertiary').trim() || 'rgba(255,255,255,0.3)';
+
     // Fade-in entrance on the very first draw (CSS handles the transition;
     // .chart-ready flips opacity from 0→1 and translateY from 16px→0).
     if (!canvas.classList.contains('chart-ready')) {
@@ -358,7 +528,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    
+
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
@@ -370,7 +540,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     ctx.clearRect(0, 0, width, height);
 
     if (data.length < 2) {
-        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fillStyle = placeholderColor;
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText('Collecting data...', width / 2, height / 2);
@@ -391,7 +561,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     if (maxVal === minVal) maxVal = minVal + 1;
 
     // Draw grid
-    ctx.strokeStyle = 'rgba(168, 85, 247, 0.15)';
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
         const y = padding + (height - padding * 2) * (i / 4);
@@ -401,10 +571,11 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
         ctx.stroke();
     }
 
-    // Draw gradient fill
+    // Draw gradient fill from the area-fill tokens (top → bottom) instead of
+    // deriving alphas off the line color, so the fill is theme-driven too.
     const gradient = ctx.createLinearGradient(0, padding, 0, height - padding);
-    gradient.addColorStop(0, color.replace(/,\s*[\d.]+\)$/, ', 0.3)'));
-    gradient.addColorStop(1, color.replace(/,\s*[\d.]+\)$/, ', 0.05)'));
+    gradient.addColorStop(0, fillTop);
+    gradient.addColorStop(1, fillBot);
 
     ctx.beginPath();
     ctx.moveTo(padding, height - padding);
@@ -446,8 +617,9 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     ctx.textAlign = 'right';
     ctx.fillText(`${label}: ${currentValue.toFixed(1)}`, width - padding, 20);
 
-    // Draw min/max labels
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    // Draw min/max labels — also token-driven so they stay legible in light
+    // mode (the old hardcoded white vanished against the light Blueprint bg).
+    ctx.fillStyle = placeholderColor;
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText(rawMax.toFixed(1), 5, padding + 10);
@@ -455,8 +627,33 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 }
 
 function updateCharts(): void {
-    drawChart('memory-chart', memoryHistory, 'rgba(255, 107, 157, 1)', 'Memory MB');
-    drawChart('messages-chart', messagesHistory, 'rgba(34, 211, 238, 1)', 'Messages');
+    // Line colors come from CSS tokens too (SHARED CONTRACT #1: --chart-line),
+    // so both charts re-color on a theme toggle. Memory uses the canonical
+    // chart line; the messages series uses --chart-line-2 (the dedicated second
+    // series token). Fall back through the old --accent-purple, then a hardcoded
+    // blue, so an unstyled build still renders distinguishable lines.
+    const tokens = getComputedStyle(document.documentElement);
+    const lineColor = tokens.getPropertyValue('--chart-line').trim() || '#3df5ff';
+    const messagesColor =
+        tokens.getPropertyValue('--chart-line-2').trim() ||
+        tokens.getPropertyValue('--accent-purple').trim() ||
+        '#6aa6ff';
+    drawChart('memory-chart', memoryHistory, lineColor, 'Memory MB');
+    drawChart('messages-chart', messagesHistory, messagesColor, 'Messages');
+
+    // Fill the in-header readout chips (CONTRACT) with the latest sample so the
+    // current value is legible even before the canvas line is read. Memory keeps
+    // one decimal + unit; message count is an integer with thousands grouping.
+    const memReadout = document.getElementById('chart-memory-readout');
+    if (memReadout) {
+        const latest = memoryHistory[memoryHistory.length - 1]?.value;
+        memReadout.textContent = latest === undefined ? '' : `${latest.toFixed(1)} MB`;
+    }
+    const msgReadout = document.getElementById('chart-messages-readout');
+    if (msgReadout) {
+        const latest = messagesHistory[messagesHistory.length - 1]?.value;
+        msgReadout.textContent = latest === undefined ? '' : latest.toLocaleString();
+    }
 }
 
 // ============================================================================
@@ -654,16 +851,24 @@ function initNavigation(): void {
         setSakuraEnabled(enabled);
     });
 
+    // Density toggle (CONTRACT): compact mode tightens card/section padding via
+    // <html data-density="compact"> (CSS already maps that to --density:.7).
+    document.getElementById('setting-density')?.addEventListener('change', (e) => {
+        const compact = (e.target as HTMLInputElement).checked;
+        updateSetting('densityCompact', compact);
+        applyDensity(compact);
+    });
+
     document.getElementById('sound-toggle')?.addEventListener('change', (e) => {
         const enabled = (e.target as HTMLInputElement).checked;
         updateSetting('soundEnabled', enabled);
-        if (enabled) showToast('🔊 Click sounds enabled', { type: 'info', duration: 2000 });
+        if (enabled) showToast('Click sounds enabled', { type: 'info', duration: 2000 });
     });
 
     document.getElementById('haptic-toggle')?.addEventListener('change', (e) => {
         const enabled = (e.target as HTMLInputElement).checked;
         updateSetting('hapticEnabled', enabled);
-        if (enabled) showToast('📳 Haptic feedback enabled', { type: 'info', duration: 2000 });
+        if (enabled) showToast('Haptic feedback enabled', { type: 'info', duration: 2000 });
     });
 
     document.getElementById('telemetry-toggle')?.addEventListener('change', async (e) => {
@@ -748,6 +953,11 @@ function initHistoryManager(): void {
 }
 
 function switchPage(page: string): void {
+    // Resolve stale aliases (config→settings) then reject anything unknown, so
+    // a bad page id can't blank the UI by deactivating every .page section.
+    const resolved = resolvePage(page);
+    if (resolved === null) return;
+    page = resolved;
     currentPage = page;
 
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -806,9 +1016,25 @@ function switchPage(page: string): void {
 function startRefreshLoop(): void {
     if (refreshInterval) {
         clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
+    // Don't run the status poll while the window is hidden — mirror the logs /
+    // sakura pause pattern. The visibilitychange handler restarts the loop on
+    // the next show event. A one-shot updateStatus() still runs so a manual
+    // startRefreshLoop() (e.g. interval change) refreshes immediately, but only
+    // when visible.
+    if (document.visibilityState === 'hidden') {
+        return;
     }
     refreshInterval = window.setInterval(updateStatus, settings.refreshInterval);
     updateStatus();
+}
+
+function stopRefreshLoop(): void {
+    if (refreshInterval !== null) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
 }
 
 function restartRefreshLoop(): void {
@@ -816,7 +1042,7 @@ function restartRefreshLoop(): void {
 }
 
 // Debounce helper for performance
-function debounce(fn: () => void, key: string, delay: number): () => void {
+export function debounce(fn: () => void, key: string, delay: number): () => void {
     return () => {
         const existing = debounceTimers.get(key);
         if (existing) {
@@ -859,6 +1085,17 @@ async function updateStatus(): Promise<void> {
             console.error('Failed to fetch db stats:', dbStatsRes.reason);
         }
 
+        // Disconnect tracking. The STATUS half is the IPC liveness signal: if it
+        // rejected AND we have no cached value to fall back on, the backend is
+        // unreachable (IPC down / Tauri command hung), NOT merely "bot offline"
+        // — a stopped bot still returns a valid status with is_running:false.
+        // Count those consecutive misses; surface the cue past the threshold.
+        if (statusRes.status === 'rejected' && !status) {
+            noteStatusTick(false);
+        } else if (status) {
+            noteStatusTick(true);
+        }
+
         // Either side can return null when the bot isn't running yet
         // (DB not initialized, status endpoint hasn't responded). Without
         // these guards the .memory_mb / .total_messages accesses below
@@ -898,7 +1135,50 @@ async function updateStatus(): Promise<void> {
         ]);
 
     } catch (error) {
+        // An unexpected throw here (rather than a per-half rejection handled
+        // above) also means the tick produced no fresh status — count it.
         console.error('Failed to update status:', error);
+        noteStatusTick(false);
+    }
+}
+
+// Record the outcome of one status tick and drive the disconnected cue. A
+// success immediately resets the streak + clears the cue (recovery); failures
+// only surface the cue once we've missed STATUS_FAIL_THRESHOLD ticks in a row,
+// so a single transient IPC blip never flashes a scary banner.
+function noteStatusTick(ok: boolean): void {
+    if (ok) {
+        if (statusFailStreak !== 0) {
+            statusFailStreak = 0;
+            setDisconnectedCue(false);
+        }
+        return;
+    }
+    statusFailStreak++;
+    if (statusFailStreak === STATUS_FAIL_THRESHOLD) {
+        setDisconnectedCue(true);
+    }
+}
+
+// Persistent "Disconnected" cue: a sticky status banner that stays up until the
+// status loop recovers. Distinct from the bot Online/Offline badge — this means
+// the dashboard itself can't reach the backend (IPC unreachable), not that the
+// bot is merely stopped. Built from trusted static markup (no user content).
+function setDisconnectedCue(show: boolean): void {
+    const existing = document.getElementById('ipc-disconnected-banner');
+    if (show) {
+        if (existing) return;
+        const banner = document.createElement('div');
+        banner.id = 'ipc-disconnected-banner';
+        banner.className = 'ipc-disconnected-banner';
+        banner.setAttribute('role', 'alert');
+        banner.setAttribute('aria-live', 'assertive');
+        banner.innerHTML =
+            '<svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>' +
+            '<span>Disconnected — can\'t reach the dashboard backend. Retrying…</span>';
+        document.body.appendChild(banner);
+    } else if (existing) {
+        existing.remove();
     }
 }
 
@@ -927,7 +1207,7 @@ function updateStatusBadge(status: BotStatus): void {
 function updateStatusText(status: BotStatus): void {
     const botStatusText = document.getElementById('bot-status-text');
     if (botStatusText) {
-        botStatusText.textContent = status.is_running ? 'Status: 🟢 Online' : 'Status: 🔴 Offline';
+        botStatusText.textContent = status.is_running ? 'Status: Online' : 'Status: Offline';
     }
 }
 
@@ -1207,7 +1487,15 @@ async function loadLogs(): Promise<void> {
         container.appendChild(fragment);
 
         if (!container.firstChild) {
-            container.textContent = 'No logs found.';
+            // Iconographic empty state (SHARED CONTRACT #2): fixed, trusted
+            // markup — no user content, no inline style. Classes only; the
+            // .empty-state / .ic sizing lives in orbital.css.
+            container.innerHTML =
+                '<div class="empty-state">' +
+                '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
+                '<h3>No logs found</h3>' +
+                '<p>Logs will appear here once the bot starts running.</p>' +
+                '</div>';
         }
 
         // Auto-scroll on new logs OR when the filter changes — switching from
@@ -1244,20 +1532,27 @@ function stopLogsRefresh(): void {
     }
 }
 
-// Pause/resume log polling on visibility change so a backgrounded
-// dashboard window stops costing CPU + IPC roundtrips.
+// Pause/resume polling on visibility change so a backgrounded dashboard window
+// stops costing CPU + IPC roundtrips. Covers BOTH the status refresh loop and
+// the logs poll (and mirrors the sakura pause inside initSakuraAnimation).
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+        stopRefreshLoop();
         stopLogsRefresh();
-    } else if (currentPage === 'logs') {
-        startLogsRefresh();
+    } else {
+        // Restart the status loop unconditionally (it drives every page's
+        // header badge), and the logs poll only when the logs page is open.
+        startRefreshLoop();
+        if (currentPage === 'logs') {
+            startLogsRefresh();
+        }
     }
 });
 
 function applyAutoScrollButtonState(): void {
     const btn = document.getElementById('btn-auto-scroll');
     if (btn) {
-        btn.textContent = logsAutoScrollEnabled ? '⏸ Pause' : '▶️ Resume';
+        btn.textContent = logsAutoScrollEnabled ? 'Pause' : 'Resume';
         btn.classList.toggle('paused', !logsAutoScrollEnabled);
     }
 }
@@ -1411,7 +1706,7 @@ async function loadDbStats(): Promise<void> {
 }
 
 async function clearHistory(): Promise<void> {
-    const confirmed = await showConfirmDialog('⚠️ This will permanently delete ALL chat history. Continue?');
+    const confirmed = await showConfirmDialog('This will permanently delete ALL chat history. Continue?');
     if (!confirmed) {
         return;
     }
@@ -1450,7 +1745,7 @@ async function deleteSelectedChannels(): Promise<void> {
         return;
     }
 
-    const confirmed = await showConfirmDialog(`⚠️ Delete history for ${channelIds.length} channel(s)? This cannot be undone.`);
+    const confirmed = await showConfirmDialog(`Delete history for ${channelIds.length} channel(s)? This cannot be undone.`);
     if (!confirmed) {
         return;
     }
@@ -1486,6 +1781,11 @@ function loadSettingsUI(): void {
         sakuraToggleEl.checked = settings.sakuraEnabled !== false;
     }
 
+    const densityToggleEl = document.getElementById('setting-density') as HTMLInputElement | null;
+    if (densityToggleEl) {
+        densityToggleEl.checked = settings.densityCompact === true;
+    }
+
     const soundToggleEl = document.getElementById('sound-toggle') as HTMLInputElement | null;
     if (soundToggleEl) {
         soundToggleEl.checked = settings.soundEnabled === true;
@@ -1511,52 +1811,12 @@ function loadSettingsUI(): void {
         userNameInput.value = settings.userName === 'You' ? '' : settings.userName;
     }
     
-    // Load AI avatar preview
-    const aiAvatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement | null;
-    const aiAvatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement | null;
-    const aiRemoveBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement | null;
-    
-    if (isSafeAvatarUrl(settings.aiAvatar)) {
-        if (aiAvatarImage) {
-            aiAvatarImage.src = settings.aiAvatar;
-            aiAvatarImage.classList.add('visible');
-        }
-        if (aiAvatarPlaceholder) aiAvatarPlaceholder.classList.add('hidden');
-        if (aiRemoveBtn) aiRemoveBtn.classList.remove('hidden');
-    } else {
-        if (aiAvatarImage) {
-            aiAvatarImage.src = '';
-            aiAvatarImage.classList.remove('visible');
-        }
-        if (aiAvatarPlaceholder) aiAvatarPlaceholder.classList.remove('hidden');
-        if (aiRemoveBtn) aiRemoveBtn.classList.add('hidden');
-    }
-    
-    // Load user avatar preview
-    const avatarImage = document.getElementById('avatar-image') as HTMLImageElement | null;
-    const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement | null;
-    const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement | null;
-    
-    if (isSafeAvatarUrl(settings.userAvatar)) {
-        if (avatarImage) {
-            avatarImage.src = settings.userAvatar;
-            avatarImage.classList.add('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.add('hidden');
-        if (removeBtn) removeBtn.classList.remove('hidden');
-    } else {
-        if (avatarImage) {
-            // Use a 1x1 transparent gif rather than '' — empty src triggers
-            // the browser's broken-image fallback even when the element
-            // itself is hidden via class, leaving a momentary glyph that
-            // bleeds through during page transitions.
-            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
-            avatarImage.classList.remove('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
-        if (removeBtn) removeBtn.classList.add('hidden');
-    }
-    
+    // Load AI + user avatar previews via the shared tri-state helper. It uses
+    // the transparent-gif placeholder internally so a missing avatar never
+    // flashes the browser's broken-image glyph.
+    setAvatarPreview('ai', settings.aiAvatar);
+    setAvatarPreview('user', settings.userAvatar);
+
     // Load creator checkbox
     const creatorCheckbox = document.getElementById('creator-toggle') as HTMLInputElement | null;
     if (creatorCheckbox) {
@@ -1571,6 +1831,34 @@ function loadSettingsUI(): void {
 
 // Track which avatar we're editing
 let currentAvatarTarget: 'user' | 'ai' = 'user';
+
+// 1x1 transparent gif — used instead of an empty src so the browser doesn't
+// flash its broken-image glyph even while the <img> is hidden by class.
+const BLANK_AVATAR_GIF =
+    'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+
+// Single source of truth for the user/AI avatar preview tri-state (image,
+// placeholder, remove button). Replaces the three near-identical inline blocks
+// that lived in loadSettingsUI / saveCroppedAvatar / removeAvatar. Pass a data
+// URL (or http(s) avatar URL) to show it; pass '' to clear back to placeholder.
+function setAvatarPreview(target: 'user' | 'ai', dataUrl: string): void {
+    const ids =
+        target === 'ai'
+            ? { img: 'ai-avatar-image', preview: '#ai-avatar-preview', remove: 'btn-remove-ai-avatar' }
+            : { img: 'avatar-image', preview: '#avatar-preview', remove: 'btn-remove-avatar' };
+
+    const avatarImage = document.getElementById(ids.img) as HTMLImageElement | null;
+    const placeholder = document.querySelector(`${ids.preview} .avatar-placeholder`) as HTMLElement | null;
+    const removeBtn = document.getElementById(ids.remove) as HTMLElement | null;
+
+    const hasAvatar = isSafeAvatarUrl(dataUrl);
+    if (avatarImage) {
+        avatarImage.src = hasAvatar ? dataUrl : BLANK_AVATAR_GIF;
+        avatarImage.classList.toggle('visible', hasAvatar);
+    }
+    if (placeholder) placeholder.classList.toggle('hidden', hasAvatar);
+    if (removeBtn) removeBtn.classList.toggle('hidden', !hasAvatar);
+}
 
 function handleAvatarUpload(file: File, target: 'user' | 'ai' = 'user'): void {
     if (!file.type.startsWith('image/')) {
@@ -1671,8 +1959,10 @@ function openAvatarCropModal(imageUrl: string): void {
     };
     cropImage.src = imageUrl;
     zoomSlider.value = '100';
-    modal.classList.add('active');
-    
+    // Route through the shared modal helper: records the trigger (the avatar
+    // "Change" button), focuses the first control, and makes the app inert.
+    openModal(modal);
+
     // Setup event listeners
     setupCropEventListeners();
 }
@@ -1863,43 +2153,20 @@ function saveCroppedAvatar(): void {
     // Get data URL
     const croppedDataUrl = canvas.toDataURL('image/png');
     
-    // Save to appropriate setting based on target
+    // Save to appropriate setting based on target, then refresh the preview via
+    // the shared helper.
     if (currentAvatarTarget === 'ai') {
         settings.aiAvatar = croppedDataUrl;
         saveSettings();
-        
-        // Update AI avatar preview
-        const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
-        const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
-        const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
-        
-        if (avatarImage) {
-            avatarImage.src = croppedDataUrl;
-            avatarImage.classList.add('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.add('hidden');
-        if (removeBtn) removeBtn.classList.remove('hidden');
-        
-        showToast('AI Avatar updated! 🤖', { type: 'success' });
+        setAvatarPreview('ai', croppedDataUrl);
+        showToast('AI Avatar updated!', { type: 'success' });
     } else {
         settings.userAvatar = croppedDataUrl;
         saveSettings();
-        
-        // Update user avatar preview
-        const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
-        const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
-        const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
-        
-        if (avatarImage) {
-            avatarImage.src = croppedDataUrl;
-            avatarImage.classList.add('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.add('hidden');
-        if (removeBtn) removeBtn.classList.remove('hidden');
-        
-        showToast('Avatar updated! 🎉', { type: 'success' });
+        setAvatarPreview('user', croppedDataUrl);
+        showToast('Avatar updated!', { type: 'success' });
     }
-    
+
     // Refresh chat to show new avatar
     if (chatManager) {
         chatManager.renderMessages();
@@ -1908,7 +2175,9 @@ function saveCroppedAvatar(): void {
 
 function closeCropModal(): void {
     const modal = document.getElementById('avatar-crop-modal');
-    if (modal) modal.classList.remove('active');
+    // Route through the shared modal helper: restores focus to the trigger and
+    // lifts the app inert state. (closeModal no-ops on a null/closed modal.)
+    closeModal(modal);
 
     // Clean up listeners using stored bound functions. Detach ALL five bound
     // handlers and reset cropListenersAttached so the attach/detach set stays
@@ -1944,41 +2213,15 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
     if (target === 'ai') {
         settings.aiAvatar = '';
         saveSettings();
-        
-        const avatarImage = document.getElementById('ai-avatar-image') as HTMLImageElement;
-        const avatarPlaceholder = document.querySelector('#ai-avatar-preview .avatar-placeholder') as HTMLElement;
-        const removeBtn = document.getElementById('btn-remove-ai-avatar') as HTMLElement;
-        
-        if (avatarImage) {
-            // 1x1 transparent gif instead of empty src — empty triggers
-            // the browser's broken-image fallback even when hidden by class.
-            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
-            avatarImage.classList.remove('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
-        if (removeBtn) removeBtn.classList.add('hidden');
-        
+        setAvatarPreview('ai', '');
         showToast('AI Avatar removed', { type: 'info' });
     } else {
         settings.userAvatar = '';
         saveSettings();
-        
-        const avatarImage = document.getElementById('avatar-image') as HTMLImageElement;
-        const avatarPlaceholder = document.querySelector('#avatar-preview .avatar-placeholder') as HTMLElement;
-        const removeBtn = document.getElementById('btn-remove-avatar') as HTMLElement;
-        
-        if (avatarImage) {
-            // 1x1 transparent gif instead of empty src — empty triggers
-            // the browser's broken-image fallback even when hidden by class.
-            avatarImage.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
-            avatarImage.classList.remove('visible');
-        }
-        if (avatarPlaceholder) avatarPlaceholder.classList.remove('hidden');
-        if (removeBtn) removeBtn.classList.add('hidden');
-        
+        setAvatarPreview('user', '');
         showToast('Avatar removed', { type: 'info' });
     }
-    
+
     // Refresh chat
     if (chatManager) {
         chatManager.renderMessages();
@@ -2042,20 +2285,27 @@ function loadAllData(): void {
 let apiFailoverReadinessRequested = false;
 
 function initApiFailoverUI(): void {
-    // Listen for failover status updates from chat-manager
-    window.addEventListener('api-failover-status', ((e: CustomEvent) => {
-        renderApiFailoverUI(e.detail);
+    // Listen for failover status updates from chat-manager. The detail payloads
+    // are typed (ApiFailoverStatusDetail / ApiHealthResultDetail) and shape-
+    // checked before use, so a malformed/empty frame can't throw on a bad
+    // destructure — it's simply ignored.
+    window.addEventListener('api-failover-status', ((e: CustomEvent<ApiFailoverStatusDetail>) => {
+        const detail = e.detail;
+        if (!detail || typeof detail !== 'object') return;
+        renderApiFailoverUI(detail);
     }) as EventListener);
 
-    window.addEventListener('api-health-result', ((e: CustomEvent) => {
-        renderHealthCheckResults(e.detail.results);
+    window.addEventListener('api-health-result', ((e: CustomEvent<ApiHealthResultDetail>) => {
+        const detail = e.detail;
+        if (!detail || typeof detail !== 'object' || !Array.isArray(detail.results)) return;
+        renderHealthCheckResults(detail.results);
     }) as EventListener);
 
     // Health check button
     document.getElementById('btn-health-check')?.addEventListener('click', () => {
         if (chatManager?.connected) {
             chatManager.send({ type: 'health_check_endpoint' });
-            showToast('🏥 Running health check...', { type: 'info', duration: 2000 });
+            showToast('Running health check...', { type: 'info', duration: 2000 });
         } else {
             showToast('Bot not connected', { type: 'error' });
         }
@@ -2074,9 +2324,18 @@ function initApiFailoverUI(): void {
             if (chatManager?.connected) {
                 chatManager.send({ type: 'get_api_endpoints' });
                 clearInterval(checkInterval);
+                // Stay latched on success so we don't re-poll an already-served
+                // panel.
             }
         }, 2000);
-        setTimeout(() => clearInterval(checkInterval), 60000);
+        // Give-up timeout: stop the poll AND re-arm the guard so a late connect
+        // (slower than the 60s ceiling) can start a fresh readiness poll the
+        // next time initApiFailoverUI runs, instead of being permanently
+        // suppressed by a latched flag after we gave up.
+        setTimeout(() => {
+            clearInterval(checkInterval);
+            apiFailoverReadinessRequested = false;
+        }, 60000);
     }
 }
 
@@ -2121,8 +2380,8 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
         const epLabel = String(ep.label ?? '') || epType;
         const lastError = ep.last_error == null ? '' : String(ep.last_error).substring(0, 80);
         item.innerHTML = `
-            <div class="ep-label">${ep.active ? '✅ ' : ''}${escapeHtml(epLabel)}</div>
-            <div class="ep-status">${ep.healthy ? '🟢 Healthy' : '🔴 Unhealthy'}${lastError ? ` — ${escapeHtml(lastError)}` : ''}</div>
+            <div class="ep-label">${ep.active ? icon('check') + ' ' : ''}${escapeHtml(epLabel)}</div>
+            <div class="ep-status">${ep.healthy ? icon('pulse') + ' Healthy' : icon('pulse') + ' Unhealthy'}${lastError ? ` — ${escapeHtml(lastError)}` : ''}</div>
             <span class="ep-badge ${ep.active ? '' : (ep.healthy ? 'healthy' : 'unhealthy-badge')}">${ep.active ? 'ACTIVE' : (ep.healthy ? 'standby' : 'down')}</span>
             <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate.toFixed(1)}%</div>
         `;
@@ -2134,7 +2393,7 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
             item.addEventListener('click', () => {
                 if (chatManager?.connected) {
                     chatManager.send({ type: 'switch_api_endpoint', endpoint: ep.type });
-                    showToast(`🔀 Switching to ${epType}...`, { type: 'info', duration: 2000 });
+                    showToast(`Switching to ${epType}...`, { type: 'info', duration: 2000 });
                 }
             });
         }
@@ -2163,8 +2422,8 @@ function renderHealthCheckResults(results: Array<Record<string, unknown>>): void
         const errorText = String(r.error ?? 'Failed').substring(0, 100);
         return `<div><strong>${escapeHtml(labelOrEndpoint)}</strong>: ` +
         (r.healthy
-            ? `<span class="healthy">✅ Healthy (${latencyMs}ms)</span>`
-            : `<span class="unhealthy">❌ ${escapeHtml(errorText)}</span>`) +
+            ? `<span class="healthy">${icon('check')} Healthy (${latencyMs}ms)</span>`
+            : `<span class="unhealthy">${icon('x')} ${escapeHtml(errorText)}</span>`) +
         '</div>';
     }).join('');
     section.appendChild(div);
@@ -2173,16 +2432,20 @@ function renderHealthCheckResults(results: Array<Record<string, unknown>>): void
     setTimeout(() => div.remove(), 15000);
 }
 // ============================================================================
-// Export for global access (Tauri needs these on window)
+// Export for global access
 // ============================================================================
-
-window.toggleAutoScroll = toggleAutoScroll;
-window.clearLogs = clearLogs;
-window.clearHistory = clearHistory;
-window.openFolder = openFolder;
-window.loadLogs = loadLogs;
-window.toggleTheme = toggleTheme;
-window.showToast = showToast;
+//
+// Only the two globals that something OUTSIDE this module actually reads are
+// kept. index.html has NO inline on*-handlers (CSP-compliant — every control is
+// wired via addEventListener), so the old toggleAutoScroll / clearLogs /
+// clearHistory / openFolder / loadLogs / toggleTheme / showToast / startBot
+// window exports had zero callers and were removed (dead surface).
+//
+//   - window.showPage    — driven by the Playwright e2e fixtures (a11y,
+//                          visual-regression, dashboard-smoke, h7-csp,
+//                          screenshots) to navigate without clicking the nav.
+//   - window.chatManager — read by the e2e suites to assert isStreaming etc.;
+//                          (re)assigned with the real instance in
+//                          initChatManager().
 window.chatManager = null; // Updated in initChatManager()
-window.showPage = switchPage; // Alias for HTML onclick handlers
-window.startBot = startBot;
+window.showPage = switchPage; // Used by e2e fixtures to drive navigation

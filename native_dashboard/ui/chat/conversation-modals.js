@@ -15,11 +15,12 @@
  * mutate a conversation mid-response.
  */
 export class ConversationModals {
+    cb;
+    pendingDeleteId = null;
+    pendingRenameId = null;
+    escapeHandler = null;
     constructor(cb) {
         this.cb = cb;
-        this.pendingDeleteId = null;
-        this.pendingRenameId = null;
-        this.escapeHandler = null;
     }
     /** Install an Escape-to-close handler on document, scoped to whichever modal
      * is open. We attach lazily on show and detach on close so the listener

@@ -17,9 +17,7 @@
 const LS_KEY = 'dashboard_token_usage';
 const MAX_CACHE_SIZE = 200; // LRU cap so localStorage doesn't grow unbounded
 export class ContextWindowIndicator {
-    constructor() {
-        this.cache = new Map();
-    }
+    cache = new Map();
     /** Load persisted cache. Call once at startup (ChatManager.connect() does this). */
     load() {
         try {

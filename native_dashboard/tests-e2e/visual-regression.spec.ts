@@ -45,7 +45,9 @@ test.beforeEach(async ({ page }) => {
     await page.waitForTimeout(300);
 });
 
-const BASELINE_PAGES = ['status', 'chat', 'logs', 'config', 'history'] as const;
+// Mirror VALID_PAGES in src-ts/app.ts (the real nav set). 'config' was a stale
+// alias for 'settings' and there is no page-config section anymore.
+const BASELINE_PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'] as const;
 
 for (const pageName of BASELINE_PAGES) {
     test(`visual: ${pageName} page baseline`, async ({ page }) => {

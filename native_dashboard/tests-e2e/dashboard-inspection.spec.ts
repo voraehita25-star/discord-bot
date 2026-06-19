@@ -363,10 +363,8 @@ test.describe('Dashboard UI deep inspection', () => {
         const out = path.join(process.cwd(), 'test-results', 'inspection-findings.json');
         fs.mkdirSync(path.dirname(out), { recursive: true });
         fs.writeFileSync(out, JSON.stringify(findings, null, 2), 'utf-8');
-        // eslint-disable-next-line no-console
         console.log(`\n[inspection] wrote ${findings.length} findings to ${out}`);
         for (const f of findings.slice(0, 30)) {
-            // eslint-disable-next-line no-console
             console.log(`  [${f.kind}] ${f.page}: ${f.detail}`);
         }
     });

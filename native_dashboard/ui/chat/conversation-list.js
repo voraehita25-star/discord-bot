@@ -20,14 +20,15 @@
  *
  * That read model is a snapshot so we don't couple to the caller's object identity.
  */
-import { escapeHtml, safeAvatarUrl, settings } from '../shared.js';
+import { escapeHtml, icon, safeAvatarUrl, settings } from '../shared.js';
 /** Conversations beyond this count are not rendered until the user narrows the filter. */
 const RENDER_CAP = 200;
 export class ConversationList {
+    callbacks;
+    filter = '';
+    filterDebounce = null;
     constructor(callbacks) {
         this.callbacks = callbacks;
-        this.filter = '';
-        this.filterDebounce = null;
     }
     /** Paint the conversation list sidebar. Idempotent — safe to call as often as you like. */
     render(ctx) {
@@ -70,7 +71,7 @@ export class ConversationList {
             const starClass = conv.is_starred ? 'starred' : '';
             const avatarHtml = safeAi
                 ? `<img class="conv-avatar" src="${safeAi}" alt="AI">`
-                : `<span class="conv-emoji">${escapeHtml(preset.emoji || '💬')}</span>`;
+                : `<span class="conv-emoji">${preset.emoji ? escapeHtml(preset.emoji) : icon('chat')}</span>`;
             return `
                 <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}"
                      data-id="${escapeHtml(conv.id)}">
@@ -79,7 +80,7 @@ export class ConversationList {
                         <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
                         <span class="conv-meta">${Number(conv.message_count) || 0} messages</span>
                     </div>
-                    ${conv.is_starred ? '<span class="conv-star">⭐</span>' : ''}
+                    ${conv.is_starred ? `<span class="conv-star">${icon('star')}</span>` : ''}
                 </div>
             `;
         }).join('') + (overflow > 0

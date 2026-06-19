@@ -81,4 +81,27 @@ export interface Settings {
     soundEnabled?: boolean;
     hapticEnabled?: boolean;
     lastConversationId?: string | null;
+    // Compact density mode (CONTRACT): when true, <html data-density="compact">
+    // is set so the CSS [data-density="compact"]{--density:.7} recipe tightens
+    // card/section paddings. Defaults OFF (comfortable spacing).
+    densityCompact?: boolean;
+}
+
+// ----------------------------------------------------------------------------
+// CustomEvent detail shapes for the API-failover bridge (chat-manager.ts emits,
+// app.ts listens). Typing the detail lets the listener shape-check before
+// destructuring instead of trusting an untyped CustomEvent payload — a stray /
+// malformed frame can't blow up the handler with a "cannot read property of
+// undefined" the way `e.detail.results` on an `any` would.
+// ----------------------------------------------------------------------------
+
+/** ``api-failover-status`` — endpoint roster + availability snapshot. */
+export interface ApiFailoverStatusDetail extends Record<string, unknown> {
+    available?: boolean;
+    endpoints?: Array<Record<string, unknown>>;
+}
+
+/** ``api-health-result`` — results of an on-demand endpoint health probe. */
+export interface ApiHealthResultDetail {
+    results?: Array<Record<string, unknown>>;
 }

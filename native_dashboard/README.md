@@ -264,7 +264,8 @@ python scripts/create_desktop_shortcut.py
 # Unit tests (vitest, ~5s)
 npm test                       # Run all 298 vitest tests
 npm run test:watch             # Watch mode
-npm run test:coverage          # With coverage report
+npm run test:coverage          # With coverage report (enforces coverage floors → exits 1 if below)
+npm run typecheck:test         # Type-check including the *.test.ts specs
 
 # Headless e2e (Playwright + Chromium, ~30s)
 npm run test:e2e               # Run all 72 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)

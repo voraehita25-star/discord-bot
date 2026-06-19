@@ -30,6 +30,10 @@ interface KatexGlobal {
 
 interface DOMPurifyGlobal {
     sanitize: (html: string, config: object) => string;
+    addHook?: (
+        entryPoint: string,
+        hookFunction: (node: Element) => void,
+    ) => void;
 }
 
 function getKatex(): KatexGlobal | undefined {
@@ -45,7 +49,134 @@ export function stripThinkTags(content: string): string {
     return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
+// Markdown-link + bare-autolink pass. Operates on ALREADY-escaped HTML (so the
+// captured URL/text are entity-safe) and emits raw <a> tags whose href is the
+// (escaped) URL. The emitted markup is still run through DOMPurify, which is the
+// authoritative gate: ALLOWED_URI_REGEXP=/^https:/i drops any non-https href,
+// and the afterSanitizeAttributes hook forces target/rel. Only https:// URLs
+// are recognised here — markdown like `[x](javascript:alert(1))` simply doesn't
+// match and stays as literal text.
+//
+// The `href` is restricted to https://. We deliberately do NOT linkify http://
+// (DOMPurify would strip the href anyway, leaving a dead <a>) — mirroring the
+// image host-allowlist / https-only posture used elsewhere in this file.
+const HTTPS_URL = 'https:\\/\\/[^\\s<>"\']+';
+// [text](https://url) — text may not contain ] or a newline; URL is https-only.
+const MD_LINK_RE = new RegExp('\\[([^\\]\\n]+)\\]\\((' + HTTPS_URL + ')\\)', 'g');
+// Bare https:// autolink. Run on text OUTSIDE existing anchors only (see the
+// split in applyLinks), so it never re-wraps a URL we already turned into a
+// link. A URL must start at the string start or after whitespace/`(` so a URL
+// glued to `="` (an attribute value) is left alone. Trailing sentence
+// punctuation is excluded from the match by splitTrailingPunctuation.
+const BARE_URL_RE = new RegExp('(^|[\\s(])(' + HTTPS_URL + ')', 'g');
+// Carves the string into protected vs. linkable segments so applyLinks only
+// autolinks plain text. Protected = anchors we just emitted (so we don't
+// double-wrap) AND any <code>…</code> span (the inline-code fallback at line
+// ~297 restores single-line `code` content here, BEFORE the autolink pass; the
+// primary \x04ICODE_ path is still a placeholder, but this also covers that
+// fallback so a URL inside inline code is never linkified).
+const PROTECTED_SPLIT_RE = /(<a href="[^"]*">[^<]*<\/a>|<code>[^<]*<\/code>)/g;
+
+/** Strip a trailing run of sentence punctuation from an autolinked URL so
+ *  "see https://x.com." doesn't linkify the dot. Returns [url, trailing]. */
+function splitTrailingPunctuation(url: string): [string, string] {
+    const m = url.match(/[).,!?;:]+$/);
+    if (!m) return [url, ''];
+    // A trailing ')' that closes a '(' earlier in the URL is PART of the URL
+    // (e.g. https://en.wikipedia.org/wiki/Foo_(bar) ) — keep balanced ')',
+    // and strip only unmatched parens + the non-paren sentence punctuation, so
+    // a legitimate closing paren isn't lopped off into a broken 404 link.
+    let end = url.length - m[0].length;
+    while (end < url.length && url[end] === ')') {
+        const kept = url.slice(0, end + 1);
+        const opens = (kept.match(/\(/g) || []).length;
+        const closes = (kept.match(/\)/g) || []).length;
+        if (opens >= closes) end++; // this ')' is balanced — keep it in the URL
+        else break;
+    }
+    return [url.slice(0, end), url.slice(end)];
+}
+
+function applyLinks(html: string): string {
+    // First: explicit [text](url) markdown links.
+    const withMdLinks = html.replace(MD_LINK_RE, (_match, text: string, url: string) => {
+        const [cleanUrl, trail] = splitTrailingPunctuation(url);
+        // href is already escapeHtml'd (so `"`/`<`/`>` are entities); text is too.
+        return `<a href="${cleanUrl}">${text}</a>${trail}`;
+    });
+    // Second: bare https:// URLs in the segments BETWEEN the protected spans
+    // (anchors we emitted above + inline <code>). Splitting on the capturing
+    // group keeps those spans in the array; we autolink only the odd (= text)
+    // segments so an already-linked URL — both its href and its visible text —
+    // and any URL inside inline code are never (re-)wrapped.
+    const segments = withMdLinks.split(PROTECTED_SPLIT_RE);
+    for (let i = 0; i < segments.length; i++) {
+        // Even indices are plain text; odd indices are the protected spans.
+        if (i % 2 === 1) continue;
+        segments[i] = segments[i].replace(BARE_URL_RE, (_m, pre: string, url: string) => {
+            const [cleanUrl, trail] = splitTrailingPunctuation(url);
+            return `${pre}<a href="${cleanUrl}">${cleanUrl}</a>${trail}`;
+        });
+    }
+    return segments.join('');
+}
+
+// Register the target/rel-forcing hook exactly once. formatMessage runs the
+// sanitizer on every call (and may be called hundreds of times per render), so
+// re-adding the hook each time would stack identical callbacks. The flag is
+// keyed to the DOMPurify instance the formatter is currently using.
+let linkHookInstalled: DOMPurifyGlobal | null = null;
+function ensureLinkHook(purify: DOMPurifyGlobal): void {
+    if (linkHookInstalled === purify) return;
+    if (typeof purify.addHook !== 'function') {
+        // Older/stub DOMPurify without addHook: links still get sanitized
+        // (https-only) but won't carry forced target/rel. Don't retry every call.
+        linkHookInstalled = purify;
+        return;
+    }
+    purify.addHook('afterSanitizeAttributes', (node: Element) => {
+        if (node.tagName === 'A' && node.hasAttribute('href')) {
+            // Open external links in a new context and sever the back-reference
+            // so window.opener can't be abused (reverse tabnabbing).
+            node.setAttribute('target', '_blank');
+            node.setAttribute('rel', 'noopener noreferrer');
+        }
+    });
+    linkHookInstalled = purify;
+}
+
+// Bounded content-keyed LRU memo for formatMessage. The function is a pure
+// function of `content` (its only argument) and its output is already
+// DOMPurify-sanitized, so caching by the exact input string is safe. The chat
+// re-renders the whole window (up to ~100 messages) on every pin/like/edit,
+// and each formatMessage call runs ~20 regex passes + per-block KaTeX +
+// DOMPurify.sanitize — so memoizing avoids redoing that work for unchanged
+// messages. Map preserves insertion order, so the oldest key is the first one
+// iterated; we evict it on overflow (max ~300 entries).
+const FORMAT_CACHE_MAX = 300;
+const formatCache = new Map<string, string>();
+
 export function formatMessage(content: string): string {
+    const cached = formatCache.get(content);
+    if (cached !== undefined) {
+        // Refresh recency: re-insert so this key moves to the newest position.
+        formatCache.delete(content);
+        formatCache.set(content, cached);
+        return cached;
+    }
+    const result = formatMessageUncached(content);
+    formatCache.set(content, result);
+    if (formatCache.size > FORMAT_CACHE_MAX) {
+        // Evict the oldest entry (first key in insertion order).
+        const oldest = formatCache.keys().next().value;
+        if (oldest !== undefined) {
+            formatCache.delete(oldest);
+        }
+    }
+    return result;
+}
+
+function formatMessageUncached(content: string): string {
     // Strip the control bytes (\x00-\x04) used as internal block placeholders
     // from the incoming content FIRST, so user-supplied text can't forge a
     // placeholder token (e.g. "\x01CODE_BLOCK_0\x01") and get spliced with a
@@ -103,7 +234,7 @@ export function formatMessage(content: string): string {
             `<div class="code-block-wrapper">` +
             `<div class="code-block-header">` +
             `<span class="code-lang">${langLabel}</span>` +
-            `<button class="code-copy-btn" data-code-copy="${escapedCode}" title="Copy code">📋</button>` +
+            `<button class="code-copy-btn" data-code-copy="${escapedCode}" title="Copy code" aria-label="Copy code"></button>` +
             `</div>` +
             `<pre><code class="language-${langLabel}">${escapedCode}</code></pre>` +
             `</div>`
@@ -186,6 +317,17 @@ export function formatMessage(content: string): string {
     // with the * starting the NEXT line and italicized the whole list before
     // the list extraction below ever saw it (Gemini emits * bullets).
     html = html.replace(/\*(?!\s)([^*\n]+?)(?<!\s)\*/g, '<em>$1</em>');
+
+    // Markdown links [text](url) + bare https:// autolinks. Run here, while the
+    // fenced/inline code (\x01/\x04) and LaTeX (\x00) blocks are still opaque
+    // placeholders, so URLs INSIDE code are never turned into anchors. Only
+    // https URLs are linkified — the scheme is also re-validated by DOMPurify's
+    // ALLOWED_URI_REGEXP below, and target/rel are forced by the
+    // afterSanitizeAttributes hook, so a `javascript:`/`http:` URL never
+    // becomes a live <a href>. The href value here is post-escapeHtml, so any
+    // `"`/`<`/`>` in the URL is already an entity and can't break the attribute.
+    html = applyLinks(html);
+
     // Headings (# to ######) — must be at start of line.
     html = html.replace(/^#{6}\s+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
     html = html.replace(/^#{5}\s+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
@@ -316,11 +458,18 @@ export function formatMessage(content: string): string {
         errorLogger.log('DOMPURIFY_MISSING', 'DOMPurify failed to load — rendering aborted to prevent XSS');
         return '';
     }
+    // Install the target/rel-forcing hook before sanitizing the (possibly)
+    // linkified HTML. Idempotent — only registers once per DOMPurify instance.
+    ensureLinkHook(purify);
     return purify.sanitize(html, {
         ALLOWED_TAGS: [
             'br', 'hr', 'p', 'div', 'span',
             'strong', 'b', 'em', 'i', 'u', 's', 'del',
             'code', 'pre', 'blockquote',
+            // <a> for markdown links + bare autolinks. href is gated https-only
+            // by ALLOWED_URI_REGEXP below; target/rel are forced by the
+            // afterSanitizeAttributes hook (ensureLinkHook).
+            'a',
             'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
             'ul', 'ol', 'li',
             'table', 'thead', 'tbody', 'tr', 'th', 'td',
@@ -348,6 +497,10 @@ export function formatMessage(content: string): string {
             // injection surface from raw AI markdown (e.g. style="background:url(...)").
             'class', 'alt',
             'title', 'colspan', 'rowspan',
+            // <a> link attributes. href is constrained to https by
+            // ALLOWED_URI_REGEXP; target/rel are (re)written by the hook so even
+            // an AI-supplied target/rel is normalised to _blank/noopener.
+            'href', 'target', 'rel',
             // KaTeX attributes
             'mathvariant', 'encoding', 'xmlns', 'display',
             'aria-hidden', 'focusable', 'role',
@@ -355,7 +508,15 @@ export function formatMessage(content: string): string {
             'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'd',
         ],
         ADD_ATTR: ['data-img-idx', 'data-code-copy'],
-        ALLOW_DATA_ATTR: false,
+        // Must stay true: it is the ONLY setting that lets our own data-*
+        // attributes survive DOMPurify. ADD_ATTR / ALLOWED_ATTR alone do NOT
+        // whitelist data-* (proven), so without this the per-block copy button
+        // loses data-code-copy and the copy-code handler reads ''. The other
+        // guards still apply — on* handlers are stripped, hrefs are pinned to
+        // ALLOWED_URI_REGEXP (/^https:/i), and only ALLOWED_TAGS/ALLOWED_ATTR
+        // survive — and data-* are inert (can't run script), so this widens the
+        // surface negligibly while keeping the code-copy / image-index hooks.
+        ALLOW_DATA_ATTR: true,
         // Only HTTPS — downgrade to http: would let injected markdown phone
         // home over plaintext or hit private hosts.
         ALLOWED_URI_REGEXP: /^https:/i,

@@ -1,0 +1,13 @@
+{
+  // Type-check the test files too. The main tsconfig.json excludes *.test.ts
+  // (they must never land in the ui/ build output), so tsc never sees them on a
+  // normal `npm run build`. This config extends it, re-includes the test files,
+  // and emits nothing — `npm run typecheck:test` catches type errors in the
+  // vitest specs that the build would otherwise miss.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src-ts/**/*"],
+  "exclude": ["node_modules", "target"]
+}

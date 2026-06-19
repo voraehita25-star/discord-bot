@@ -94,7 +94,7 @@ export class ImageAttachManager {
         container.innerHTML = visible.map(({ img, idx }, displayIdx) => `
             <div class="attached-image-preview">
                 <img src="${escapeHtml(img)}" alt="Attached ${displayIdx + 1}">
-                <button class="remove-image" data-idx="${idx}">&times;</button>
+                <button class="remove-image" data-idx="${idx}" aria-label="Remove image ${displayIdx + 1}">&times;</button>
             </div>
         `).join('');
 
@@ -117,8 +117,15 @@ export class ImageAttachManager {
      * are routed there instead of being rejected. Images continue to land
      * here. Paste is still images-only — pasting a PDF via Ctrl+V is an
      * unusual flow and adding it now would complicate the event path.
+     *
+     * `isStreaming`, when supplied, is consulted on every drop/paste/pick so
+     * files can't be STAGED while a response is streaming (they'd otherwise sit
+     * in the preview strip and silently ride into the next turn). The 📎 button
+     * is also disabled by ChatManager.setInputEnabled() during a stream; this
+     * callback covers the drop/paste paths that bypass the button.
      */
-    setup(documents?: DocumentAttachManager): void {
+    setup(documents?: DocumentAttachManager, isStreaming?: () => boolean): void {
+        const streamingNow = (): boolean => (isStreaming ? isStreaming() : false);
         const attachBtn = document.getElementById('btn-attach');
         const fileInput = document.getElementById('image-input') as HTMLInputElement | null;
 
@@ -144,6 +151,15 @@ export class ImageAttachManager {
         attachBtn?.addEventListener('click', () => fileInput?.click());
 
         fileInput?.addEventListener('change', () => {
+            // Reject a pick that resolves while a response is streaming (e.g. the
+            // OS dialog was open before send and the user picks after). The 📎
+            // button is disabled during a stream, but a slow dialog can still
+            // fire change after isStreaming flips on.
+            if (streamingNow()) {
+                fileInput.value = '';
+                showToast('Wait for the current response to finish before attaching files', { type: 'warning' });
+                return;
+            }
             const files = fileInput.files;
             if (files) {
                 // Split the batch up front so selecting more images than the
@@ -219,6 +235,12 @@ export class ImageAttachManager {
                 if (!e.dataTransfer) return;
                 e.preventDefault();
                 showDropState(false);
+                // Ignore drops while streaming so files aren't staged for the
+                // next turn behind the user's back.
+                if (streamingNow()) {
+                    showToast('Wait for the current response to finish before attaching files', { type: 'warning' });
+                    return;
+                }
                 const dropped = Array.from(e.dataTransfer.files);
                 let accepted = 0;
                 for (const f of dropped) {
@@ -243,6 +265,10 @@ export class ImageAttachManager {
 
         // Paste — Ctrl+V an image from clipboard into the chat input.
         document.getElementById('chat-input')?.addEventListener('paste', (e) => {
+            // Ignore pasted images while streaming (the input is disabled during a
+            // stream anyway, but guard the paste path explicitly so a staged image
+            // can't carry into the next turn).
+            if (streamingNow()) return;
             const items = (e as ClipboardEvent).clipboardData?.items;
             if (!items) return;
             for (const item of Array.from(items)) {

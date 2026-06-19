@@ -13,6 +13,8 @@ import {
     showConfirmDialog,
     settings,
     saveSettings,
+    icon,
+    normalizeSqliteUtc,
 } from './shared.js';
 
 // ============================================================================
@@ -79,14 +81,14 @@ interface ChatFileEntry {
 
 function chatFileIconFor(kind: string, name: string): string {
     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
-    if (ext === 'pdf') return '📕';
-    if (ext === 'docx') return '📘';
+    if (ext === 'pdf') return icon('file');
+    if (ext === 'docx') return icon('file');
     if (kind === 'text') {
-        if (['json', 'yaml', 'yml', 'toml'].includes(ext)) return '🧩';
-        if (['md', 'markdown'].includes(ext)) return '📝';
-        if (['csv', 'tsv', 'xml'].includes(ext)) return '📊';
+        if (['json', 'yaml', 'yml', 'toml'].includes(ext)) return icon('chip');
+        if (['md', 'markdown'].includes(ext)) return icon('pencil');
+        if (['csv', 'tsv', 'xml'].includes(ext)) return icon('gauge');
     }
-    return '📄';
+    return icon('file');
 }
 
 /** Conservative PDF reflow: merges only obvious per-glyph orphan lines
@@ -175,9 +177,7 @@ function formatChatFileDate(iso: string): string {
     try {
         // SQLite naive timestamps are UTC — append Z so JS doesn't misread
         // them as local time (would render hours off in non-UTC zones).
-        const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
-        const normalized = hasTzInfo ? iso : iso.replace(' ', 'T') + 'Z';
-        const d = new Date(normalized);
+        const d = new Date(normalizeSqliteUtc(iso));
         if (Number.isNaN(d.getTime())) return iso;
         // Short absolute format — works in any locale without being verbose.
         // e.g. "Apr 24, 15:32". Users mainly care about "was this today".
@@ -188,6 +188,23 @@ function formatChatFileDate(iso: string): string {
     } catch {
         return iso;
     }
+}
+
+// Human-readable labels for AI providers shown in the provider <select>s. The
+// previous inline `provider === 'gemini' ? 'Gemini' : 'Claude'` mislabelled any
+// third provider as "Claude"; this map + capitalize fallback keeps known
+// providers branded correctly while degrading gracefully for unknown ids.
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+    gemini: 'Gemini',
+    claude: 'Claude',
+};
+
+/** Display label for a provider id — mapped name, or the id capitalized. */
+function providerLabel(provider: string): string {
+    const mapped = PROVIDER_LABELS[provider];
+    if (mapped) return mapped;
+    if (!provider) return provider;
+    return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 // ============================================================================
@@ -403,6 +420,26 @@ export class ChatManager {
                     this.updateProviderSelects();
                 }
                 this.listConversations();
+                // Re-fetch the OPEN conversation after a (re)connect. A reconnect
+                // that interrupts a response stream drops the in-flight assistant
+                // chunks (the disconnect handler clears the streaming buffers), but
+                // the backend persists the final assistant message once the turn
+                // completes server-side. Re-issuing load_conversation pulls that
+                // persisted final message back so the user isn't left staring at a
+                // half-written / vanished answer. Guard with pendingConversationLoadId
+                // so the conversation_loaded race-drop in its handler treats this as
+                // the current request (and a rapid user switch still wins).
+                {
+                    // Prefer an already-pending switch target over the
+                    // currently-shown conversation: if the user was switching to
+                    // B when the socket dropped, reload B (not the stale current
+                    // A) and don't drop B's pending request.
+                    const reloadId = this.pendingConversationLoadId ?? this.currentConversation?.id ?? null;
+                    if (reloadId !== null) {
+                        this.pendingConversationLoadId = reloadId;
+                        this.send({ type: 'load_conversation', id: reloadId });
+                    }
+                }
                 // Re-request the API-failover endpoint list on every connect,
                 // including reconnects. app.ts only fires get_api_endpoints once
                 // per page load, so after a WS drop/reconnect the failover panel
@@ -554,7 +591,14 @@ export class ChatManager {
                         if (thinkingContainer) { thinkingContainer.style.display = 'none'; }
                         if (thinkingContent) { thinkingContent.textContent = ''; }
                         if (streamingText) { streamingText.textContent = ''; }
-                    } else {
+                    } else if (this.streamingConversationId === (this.currentConversation?.id ?? null)) {
+                        // Only draw the bubble when this stream belongs to the
+                        // conversation on screen. If the user already switched
+                        // away (server bound the stream to another id), draw
+                        // nothing — chunks keep buffering and restoreStreamingBubble
+                        // replays them when they return, mirroring the
+                        // conversation_loaded path. Drawing here would paint the
+                        // wrong room's answer into the open conversation.
                         this.appendStreamingMessage(data.mode as string || '');
                     }
                 }
@@ -600,6 +644,10 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.clearStreamBuffers();
+                    // Sweep up a streaming bubble that may have been drawn into
+                    // the now-current (wrong) conversation before the switch.
+                    const strayBubble = document.getElementById('streaming-message');
+                    if (strayBubble) strayBubble.remove();
                     this.setInputEnabled(true);
                     break;
                 }
@@ -614,7 +662,7 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
-                    showToast('AI edit complete ✏️', { type: 'success' });
+                    showToast('AI edit complete', { type: 'success' });
                     break;
                 }
                 if (this.isEditStreaming) {
@@ -957,13 +1005,13 @@ export class ChatManager {
                         const d = docs[0];
                         const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
                         showToast(
-                            `📎 Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`,
+                            `Saved "${d.filename}" to this conversation (${charCount.toLocaleString()} chars)`,
                             { type: 'success', duration: 3500 },
                         );
                     } else if (docs.length > 1) {
                         const totalChars = docs.reduce((s, d) => s + (typeof d.char_count === 'number' ? d.char_count : 0), 0);
                         showToast(
-                            `📎 Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`,
+                            `Saved ${docs.length} documents (${totalChars.toLocaleString()} chars) to this conversation`,
                             { type: 'success', duration: 3500 },
                         );
                     }
@@ -989,7 +1037,7 @@ export class ChatManager {
                 // a full refetch — faster than round-tripping list again.
                 this.removeChatFileRow(data.id as number);
                 this.refreshChatFilesBadge();
-                showToast('🗑️ Deleted', { type: 'info', duration: 1800 });
+                showToast('Deleted', { type: 'info', duration: 1800 });
                 break;
 
             case 'document_memory_content':
@@ -1006,7 +1054,7 @@ export class ChatManager {
                 // new values), and nudge with a toast.
                 this.closeChatFileEditor();
                 if (!data.noop) {
-                    showToast('✓ Saved', { type: 'success', duration: 1800 });
+                    showToast('Saved', { type: 'success', duration: 1800 });
                     // Refresh the list + badge to pick up new metadata.
                     if (this.currentConversation) {
                         this.send({
@@ -1024,7 +1072,7 @@ export class ChatManager {
 
             case 'api_endpoint_switched':
                 window.dispatchEvent(new CustomEvent('api-failover-status', { detail: data }));
-                showToast(`🔀 API switched to ${(data.endpoint as string || '').toUpperCase()}${data.reason ? ` (${data.reason})` : ''}`, { type: 'info', duration: 4000 });
+                showToast(`API switched to ${(data.endpoint as string || '').toUpperCase()}${data.reason ? ` (${data.reason})` : ''}`, { type: 'info', duration: 4000 });
                 break;
 
             case 'api_health_result':
@@ -1052,11 +1100,11 @@ export class ChatManager {
         if (statusEl) {
             statusEl.className = connected ? 'connected' : 'disconnected';
             if (connected) {
-                statusEl.textContent = '\uD83D\uDFE2 Connected';
+                statusEl.textContent = 'Connected';
             } else if (this.reconnectAttempts >= this.wsClient.maxReconnectAttempts) {
-                statusEl.textContent = '\uD83D\uDD34 Disconnected';
+                statusEl.textContent = 'Disconnected';
             } else {
-                statusEl.textContent = '\uD83D\uDFE0 Connecting...';
+                statusEl.textContent = 'Connecting...';
             }
         }
         // Note: Overlay is now controlled by bot status in updateStatusBadge()
@@ -1438,7 +1486,7 @@ export class ChatManager {
                 </div>
 
                 <div class="thinking-container">
-                    <div class="thinking-header">💭 Thinking...</div>
+                    <div class="thinking-header">${icon('chat')} Thinking...</div>
                     <div class="thinking-content"></div>
                 </div>
 
@@ -1524,7 +1572,7 @@ export class ChatManager {
         const thinkingContent = document.querySelector('#streaming-message .thinking-content') as HTMLElement;
         
         if (thinkingHeader) {
-            thinkingHeader.textContent = '\uD83D\uDCAD Thought Process';
+            thinkingHeader.textContent = 'Thought Process';
             thinkingHeader.classList.add('collapsible', 'collapsed');  // Start collapsed
             // ``addEventListener`` over ``.onclick =``: assignment to
             // ``onclick`` overwrites any prior handler, so re-rendering
@@ -1544,6 +1592,12 @@ export class ChatManager {
         if (thinkingContent) {
             // Render Markdown formatting (bold, italic, code, etc.)
             thinkingContent.innerHTML = this.formatMessage(fullThinking);
+            // Syntax-highlight any fenced code blocks in the thinking text too —
+            // formatMessage only escapes/wraps them; Prism runs as a separate
+            // pass. Without this, code in the thought process stayed plain until
+            // the next full renderMessages() (and never, if it stayed collapsed).
+            // Fire-and-forget to keep finalizeThinking synchronous for callers.
+            void this.highlightCodeBlocks(thinkingContent);
             thinkingContent.classList.add('collapsed');  // Start collapsed
         }
     }
@@ -1605,9 +1659,9 @@ export class ChatManager {
                 actionsDiv.className = 'message-actions';
                 const currentIdx = this.messages.indexOf(newMessage);
                 actionsDiv.innerHTML = `
-                    <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">\uD83D\uDCCB Copy</button>
-                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">\u270F\uFE0F Edit</button>
-                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">\uD83D\uDDD1\uFE0F Delete</button>
+                    <button class="copy-message-btn" data-content="${escapeHtml(fullResponse)}" title="Copy">${icon('copy')} Copy</button>
+                    <button class="edit-message-btn" data-msg-idx="${currentIdx}" title="Edit">${icon('pencil')} Edit</button>
+                    <button class="delete-message-btn" data-msg-idx="${currentIdx}" data-role="assistant" title="Delete">${icon('trash')} Delete</button>
                 `;
                 wrapper.appendChild(actionsDiv);
 
@@ -1627,8 +1681,8 @@ export class ChatManager {
                     const contentAttr = btn.getAttribute('data-content') || '';
                     try {
                         await navigator.clipboard.writeText(contentAttr);
-                        btn.textContent = '\u2705 Copied';
-                        setTimeout(() => { btn.textContent = '\uD83D\uDCCB Copy'; }, 1500);
+                        btn.textContent = 'Copied';
+                        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
                     } catch (err) {
                         console.error('Failed to copy:', err);
                     }
@@ -1908,7 +1962,7 @@ export class ChatManager {
                 try {
                     await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
-                    btn.textContent = '\u2705';
+                    btn.textContent = 'Copied';
                     setTimeout(() => { btn.textContent = originalText; }, 1500);
                 } catch (err) {
                     console.error('Failed to copy:', err);
@@ -1923,11 +1977,26 @@ export class ChatManager {
                 // Same fix as the message-copy path above: getAttribute
                 // already returns decoded text; the textarea round-trip
                 // re-parses HTML and would execute injected handlers.
-                const content = (btn as HTMLElement).getAttribute('data-code-copy') || '';
+                let content = (btn as HTMLElement).getAttribute('data-code-copy') || '';
+                // Resilience: if data-code-copy ever comes back empty (e.g. a
+                // sanitiser dropped the attribute), read the code straight from
+                // the rendered block. formatter.ts emits
+                // .code-block-wrapper > pre > code, so the <pre><code> text is
+                // the same escaped-then-decoded source the attribute held.
+                if (!content) {
+                    content = (btn as HTMLElement)
+                        .closest('.code-block-wrapper')
+                        ?.querySelector('pre code')?.textContent ?? '';
+                }
+                // Still nothing to copy — don't fake a 'Copied' confirmation.
+                if (!content) {
+                    showToast('Nothing to copy', { type: 'error' });
+                    return;
+                }
                 try {
                     await navigator.clipboard.writeText(content);
                     const originalText = btn.textContent;
-                    btn.textContent = '\u2705';
+                    btn.textContent = 'Copied';
                     setTimeout(() => { btn.textContent = originalText; }, 1200);
                 } catch (err) {
                     console.error('Failed to copy code:', err);
@@ -2084,7 +2153,7 @@ export class ChatManager {
     updateStarButton(): void {
         const btn = document.getElementById('btn-star-chat');
         if (btn && this.currentConversation) {
-            btn.textContent = this.currentConversation.is_starred ? '\u2B50' : '\u2606';
+            btn.textContent = this.currentConversation.is_starred ? 'Starred' : 'Star';
         }
     }
 
@@ -2131,9 +2200,22 @@ export class ChatManager {
     setInputEnabled(enabled: boolean): void {
         const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
         const btn = document.getElementById('btn-send') as HTMLButtonElement | null;
+        // Also gate the 📎 attach button so files can't be staged mid-stream and
+        // then silently ride into the NEXT turn. The drop/paste paths (in
+        // image-attach.ts) are gated separately via the isStreaming callback
+        // passed to setup(); this just covers the click-to-pick affordance and
+        // dims it so the disabled state is visible.
+        const attachBtn = document.getElementById('btn-attach') as HTMLButtonElement | null;
 
         if (input) input.disabled = !enabled;
         if (btn) btn.disabled = !enabled;
+        if (attachBtn) {
+            attachBtn.disabled = !enabled;
+            // `#btn-attach` may be a plain <button> or a styled element; toggle a
+            // class for the dim so CSS owns the exact look (no inline style here,
+            // matching the CSP-friendly no-inline-style posture in this file).
+            attachBtn.classList.toggle('disabled', !enabled);
+        }
     }
 
     scrollToBottom(force: boolean = false): void {
@@ -2259,11 +2341,12 @@ export class ChatManager {
             // Bangkok would render as 11:16. Append "Z" for naive strings so
             // they're parsed as UTC, then toLocaleTimeString below converts
             // to the user's local timezone.
-            const hasTzInfo = /Z$|[+-]\d{2}:?\d{2}$/.test(dateStr);
-            const normalized = hasTzInfo
-                ? dateStr
-                : dateStr.replace(' ', 'T') + 'Z';
-            const date = new Date(normalized);
+            const date = new Date(normalizeSqliteUtc(dateStr));
+            // A malformed/empty timestamp yields an Invalid Date (which doesn't
+            // throw — toLocaleTimeString would render the literal "Invalid Date").
+            // Return the raw input instead, matching formatChatFileDate /
+            // formatTimestamp / formatLastActive.
+            if (Number.isNaN(date.getTime())) return dateStr;
 
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
@@ -2317,7 +2400,7 @@ export class ChatManager {
     /** Bind the shared file picker + drop zone. Document manager is passed
      * to the image manager so non-image files (PDF, text, code) are routed
      * to it automatically rather than rejected. */
-    setupImageUpload(): void { this.imageAttach.setup(this.docAttach); }
+    setupImageUpload(): void { this.imageAttach.setup(this.docAttach, () => this.isStreaming); }
 
     // ========================================================================
     // Chat Files Modal — per-conversation document list (📎 button)
@@ -2380,7 +2463,7 @@ export class ChatManager {
         }
 
         list.innerHTML = docs.map(d => {
-            const icon = chatFileIconFor(d.file_kind, d.filename);
+            const fileIcon = chatFileIconFor(d.file_kind, d.filename);
             const meta = [
                 `${(d.char_count || 0).toLocaleString()} chars`,
                 d.page_count ? `${d.page_count} page(s)` : null,
@@ -2394,7 +2477,7 @@ export class ChatManager {
             const safeId = escapeHtml(String(d.id));
             return `
                 <div class="chat-file-row" data-id="${safeId}">
-                    <span class="file-icon" aria-hidden="true">${icon}</span>
+                    <span class="file-icon" aria-hidden="true">${fileIcon}</span>
                     <div class="file-body">
                         <div class="file-name">${escapeHtml(d.filename)}</div>
                         <div class="file-meta">${escapeHtml(meta)}</div>
@@ -2524,7 +2607,7 @@ export class ChatManager {
         this.updateChatFileEditorCounter();
         textInput.focus();
         showToast(
-            `🔀 Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`,
+            `Reflowed (${original.length.toLocaleString()} → ${joined.length.toLocaleString()} chars). Click Save to persist.`,
             { type: 'success', duration: 3000 },
         );
     }
@@ -2617,7 +2700,7 @@ export class ChatManager {
         const editBar = document.createElement('div');
         editBar.className = 'ai-edit-bar';
         editBar.innerHTML = `
-            <div class="ai-edit-label">\u2728 Tell AI how to edit this message:</div>
+            <div class="ai-edit-label">${icon('sparkle')} Tell AI how to edit this message:</div>
             <div class="ai-edit-input-row">
                 <textarea class="ai-edit-input" rows="1" placeholder="e.g. Make it shorter, Add examples, Translate to English..."></textarea>
                 <button class="ai-edit-submit-btn">Send</button>
@@ -2938,9 +3021,13 @@ export class ChatManager {
         document.querySelectorAll('.role-card').forEach(card => {
             const isSelected = (card as HTMLElement).dataset.role === this.selectedRole;
             card.classList.toggle('selected', isSelected);
-            // Reflect selection to assistive tech (role="button" + aria-pressed
-            // makes each card an accessible toggle button).
-            card.setAttribute('aria-pressed', String(isSelected));
+            // Reflect selection to assistive tech: the cards form a
+            // role="radiogroup" of role="radio" items, so aria-checked (not
+            // aria-pressed) is the correct state. Roving tabindex keeps a
+            // single tab stop for the group — only the checked radio is
+            // tabbable; arrow keys move focus within (see the keydown handler).
+            card.setAttribute('aria-checked', String(isSelected));
+            (card as HTMLElement).tabIndex = isSelected ? 0 : -1;
         });
     }
 
@@ -2956,7 +3043,12 @@ export class ChatManager {
             for (const provider of this.availableProviders) {
                 const option = document.createElement('option');
                 option.value = provider;
-                option.textContent = provider === 'gemini' ? '✨ Gemini' : '🟣 Claude';
+                // Label via a map with a capitalize fallback. The old ternary
+                // labelled EVERY non-gemini provider "Claude" — so a third
+                // provider (e.g. "openai") would be mislabelled. The fallback
+                // capitalizes the raw id so an unknown provider at least shows a
+                // sensible name instead of the wrong one.
+                option.textContent = providerLabel(provider);
                 select.appendChild(option);
             }
             select.value = this.aiProvider;
@@ -3005,17 +3097,29 @@ export class ChatManager {
         document.getElementById('new-chat-modal')?.querySelector('.modal-overlay')
             ?.addEventListener('click', () => this.closeModal());
 
-        document.querySelectorAll('.role-card').forEach(card => {
-            const select = () => this.selectRole((card as HTMLElement).dataset.role || 'general');
+        const roleCards = Array.from(document.querySelectorAll('.role-card')) as HTMLElement[];
+        roleCards.forEach((card, idx) => {
+            const select = () => this.selectRole(card.dataset.role || 'general');
             card.addEventListener('click', select);
-            // role-cards are <div role="button" tabindex="0">; without this
-            // they're focusable but Enter/Space don't activate them.
+            // role-cards form a role="radiogroup"; Enter/Space activate the
+            // focused radio and Arrow keys move selection + focus within the
+            // group (roving tabindex managed by updateRoleSelection()).
             card.addEventListener('keydown', (e) => {
                 const ke = e as KeyboardEvent;
                 if (ke.key === 'Enter' || ke.key === ' ') {
                     ke.preventDefault();
                     select();
+                    return;
                 }
+                let delta = 0;
+                if (ke.key === 'ArrowDown' || ke.key === 'ArrowRight') delta = 1;
+                else if (ke.key === 'ArrowUp' || ke.key === 'ArrowLeft') delta = -1;
+                if (delta === 0) return;
+                ke.preventDefault();
+                const next = roleCards[(idx + delta + roleCards.length) % roleCards.length];
+                if (!next) return;
+                this.selectRole(next.dataset.role || 'general');
+                next.focus();
             });
         });
 

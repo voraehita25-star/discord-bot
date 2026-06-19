@@ -19,11 +19,23 @@
  * Long file names are ellipsised by CSS in the preview strip; the full name
  * is preserved in the payload and the `title` tooltip (no content truncation).
  */
-import { escapeHtml, showToast } from '../shared.js';
+import { escapeHtml, icon, showToast } from '../shared.js';
 // Mirrors backend constants — keep in sync with dashboard_chat_claude_cli.py
 // / dashboard_chat_claude.py. Claude's API caps at 32 MB per document block.
 const MAX_DOC_SIZE = 32 * 1024 * 1024; // 32 MB
 const MAX_ATTACHED_DOCS = 5;
+// Approximates the backend's MAX_EXTRACTED_CHARS — document_extractor caps a
+// single text document's extracted/inlined content at 500,000 chars (see
+// dashboard_chat_claude_cli.py / dashboard_chat_claude.py — same limit the
+// editor's char counter shows: "… / 500,000 chars"). The backend counts Python
+// str length (Unicode code POINTS); we count JS str.length (UTF-16 code UNITS),
+// so the two diverge slightly on astral chars (one code point = two units), and
+// this client-side clamp is an approximation, not an exact mirror. The 32 MB
+// byte cap above is a separate, coarser layer (raw bytes, pre-read). We still
+// re-check the DECODED length here so a multi-byte (UTF-8) file that slips under
+// 32 MB of bytes yet decodes past ~500k chars is truncated client-side instead
+// of being silently dropped by the backend.
+const MAX_TEXT_CHARS = 500_000;
 // Extensions recognised as "text-like" regardless of browser-provided MIME
 // (browsers often report empty or generic mime for niche extensions). The
 // corresponding content is read as UTF-8 and inlined into the prompt on the
@@ -52,6 +64,26 @@ const BINARY_MIMES = new Set([
 const BINARY_EXTENSIONS = new Set([
     'pdf', 'docx',
 ]);
+/** Clamp decoded text to the backend's MAX_TEXT_CHARS cap. Pure + exported so
+ *  it can be unit-tested without a FileReader. When over the cap, the content is
+ *  hard-truncated to MAX_TEXT_CHARS chars (the backend would otherwise drop the
+ *  overflow silently — truncating client-side keeps what we send in sync with
+ *  what the user is told). */
+export function clampTextToCap(text) {
+    const originalLength = text.length;
+    if (originalLength <= MAX_TEXT_CHARS) {
+        return { data: text, truncated: false, originalLength };
+    }
+    let cap = MAX_TEXT_CHARS;
+    // If the cut lands between the two halves of a surrogate pair, the kept
+    // slice would end in a lone high surrogate (0xD800–0xDBFF) — an unpaired
+    // code unit that serialises to U+FFFD and corrupts the trailing emoji /
+    // astral char. Drop that dangling half so we never send a broken pair.
+    const last = text.charCodeAt(cap - 1);
+    if (last >= 0xd800 && last <= 0xdbff)
+        cap -= 1;
+    return { data: text.slice(0, cap), truncated: true, originalLength };
+}
 /** File extension in lowercase without the leading dot, or empty string. */
 function extensionOf(filename) {
     const idx = filename.lastIndexOf('.');
@@ -89,24 +121,22 @@ function formatBytes(n) {
 function iconFor(kind, name) {
     const ext = extensionOf(name);
     if (ext === 'pdf')
-        return '📕';
+        return icon('file');
     if (ext === 'docx')
-        return '📘';
+        return icon('file');
     if (ext === 'json' || ext === 'yaml' || ext === 'yml' || ext === 'toml')
-        return '🧩';
+        return icon('chip');
     if (ext === 'md' || ext === 'markdown')
-        return '📝';
+        return icon('pencil');
     if (ext === 'csv' || ext === 'tsv' || ext === 'xml')
-        return '📊';
+        return icon('gauge');
     if (TEXT_EXTENSIONS.has(ext))
-        return '📄';
-    return kind === 'binary' ? '📎' : '📄';
+        return icon('file');
+    return kind === 'binary' ? icon('paperclip') : icon('file');
 }
 export class DocumentAttachManager {
-    constructor() {
-        this.docs = [];
-        this.pendingCount = 0;
-    }
+    docs = [];
+    pendingCount = 0;
     /** Snapshot for the send payload. */
     get() {
         return this.docs.slice();
@@ -143,11 +173,27 @@ export class DocumentAttachManager {
                 showToast(`Skipped empty file: ${file.name}`, { type: 'warning' });
                 return;
             }
+            // Post-decode size cap for TEXT files only. The byte-size check at the
+            // top of attach() can pass for a multi-byte file that still decodes to
+            // more than the backend's ~500k-char extractor limit; clamp it here
+            // (an approximate UTF-16-units mirror of the Python code-point cap —
+            // see MAX_TEXT_CHARS) and tell the user, so what we send roughly
+            // matches what they're told instead of being silently dropped.
+            // Binary (data-URL) docs aren't subject to the char cap.
+            let data = result;
+            if (kind === 'text') {
+                const checked = clampTextToCap(result);
+                if (checked.truncated) {
+                    showToast(`"${file.name}" is ${checked.originalLength.toLocaleString()} chars — `
+                        + `truncated to the ${MAX_TEXT_CHARS.toLocaleString()}-char limit.`, { type: 'warning', duration: 4000 });
+                }
+                data = checked.data;
+            }
             this.docs.push({
                 name: file.name,
                 mime: file.type || (kind === 'binary' ? 'application/octet-stream' : 'text/plain'),
                 kind,
-                data: result,
+                data,
                 size_bytes: file.size,
             });
             this.renderPreview();

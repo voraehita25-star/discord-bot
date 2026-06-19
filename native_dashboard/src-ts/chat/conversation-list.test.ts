@@ -41,10 +41,13 @@ function mkCallbacks(): ConversationListCallbacks & {
     sendWsMessage: ReturnType<typeof vi.fn>;
     onFilterChanged: ReturnType<typeof vi.fn>;
 } {
+    // Type each mock to its callback signature so the strict ConversationListCallbacks
+    // fields are satisfied (a bare vi.fn() widens to Mock<Procedure>, which isn't
+    // assignable to the typed callbacks).
     return {
-        onLoadConversation: vi.fn(),
-        sendWsMessage: vi.fn(),
-        onFilterChanged: vi.fn(),
+        onLoadConversation: vi.fn<(id: string) => void>(),
+        sendWsMessage: vi.fn<(payload: { type: string; [k: string]: unknown }) => void>(),
+        onFilterChanged: vi.fn<() => void>(),
     };
 }
 

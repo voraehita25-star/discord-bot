@@ -13,7 +13,7 @@
  * index, show-earlier button) a testable pure function.
  */
 
-import { escapeHtml, safeAvatarUrl, settings } from '../shared.js';
+import { escapeHtml, icon, safeAvatarUrl, settings } from '../shared.js';
 import type { ChatConversation, ChatMessage } from './types.js';
 
 export const VIRT_THRESHOLD = 150;
@@ -74,12 +74,14 @@ export function renderWelcomeCard(conversation: ChatConversation | null): string
     // role_emoji and role_name come from the WS server's `connected` /
     // `conversation_loaded` frames. A compromised server could send HTML
     // here, so escape both before interpolating into innerHTML.
-    const emoji = escapeHtml(conversation?.role_emoji || '🤖');
+    const emojiFallback = conversation?.role_emoji
+        ? escapeHtml(conversation.role_emoji)
+        : icon('bot');
     const name = conversation?.role_name || 'AI';
     const safeAi = safeAvatarUrl(settings.aiAvatar);
     const welcomeAvatarHtml = safeAi
         ? `<img src="${safeAi}" alt="AI" class="welcome-avatar">`
-        : `<div class="welcome-emoji">${emoji}</div>`;
+        : `<div class="welcome-emoji">${emojiFallback}</div>`;
     return `
         <div class="chat-welcome">
             ${welcomeAvatarHtml}
@@ -125,14 +127,16 @@ export function renderMessagesHtml(ctx: RenderContext): RenderResult {
     // Escape role_emoji — a compromised WS server could otherwise inject HTML
     // into the avatar fallback (this value flows directly into innerHTML via
     // `renderSingleMessage`'s avatarHtml). aiName is escaped at use site.
-    const aiEmoji = escapeHtml(ctx.currentConversation?.role_emoji || '🤖');
+    const aiEmoji = ctx.currentConversation?.role_emoji
+        ? escapeHtml(ctx.currentConversation.role_emoji)
+        : icon('bot');
     const aiName = ctx.currentConversation?.role_name || 'AI';
     const userName = settings.userName || 'You';
     const safeUserAvatar = safeAvatarUrl(settings.userAvatar);
     const safeAiAvatar = safeAvatarUrl(settings.aiAvatar);
 
     const showEarlierBtn = win.hiddenBefore > 0
-        ? `<button class="show-earlier-btn" id="chat-show-earlier">↑ Show ${Math.min(win.hiddenBefore, VIRT_WINDOW_SIZE)} earlier (${win.hiddenBefore} hidden)</button>`
+        ? `<button class="show-earlier-btn" id="chat-show-earlier">${icon('chevron-up')} Show ${Math.min(win.hiddenBefore, VIRT_WINDOW_SIZE)} earlier (${win.hiddenBefore} hidden)</button>`
         : '';
 
     const html = showEarlierBtn + ctx.messages.slice(win.startIdx).map((msg, sliceIdx) => {
@@ -179,7 +183,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     if (isUser) {
         avatarHtml = safeUserAvatar
             ? `<img src="${safeUserAvatar}" alt="avatar" class="user-avatar-img">`
-            : '👤';
+            : icon('user');
     } else {
         avatarHtml = safeAiAvatar
             ? `<img src="${safeAiAvatar}" alt="ai" class="user-avatar-img">`
@@ -217,7 +221,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
         docsHtml = `<div class="message-docs">${msg.documents
             .map((d) => {
                 const name = (d && typeof d.name === 'string') ? d.name : 'document';
-                return `<span class="message-doc-chip" title="${escapeHtml(name)}">📎 ${escapeHtml(name)}</span>`;
+                return `<span class="message-doc-chip" title="${escapeHtml(name)}">${icon('paperclip')} ${escapeHtml(name)}</span>`;
             })
             .join('')}</div>`;
     }
@@ -228,7 +232,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
         thinkingHtml = `
             <div class="thinking-container">
                 <div class="thinking-header collapsible collapsed">
-                    💭 Thought Process
+                    Thought Process
                 </div>
                 <div class="thinking-content collapsed">${deps.formatMessage(msg.thinking)}</div>
             </div>
@@ -250,18 +254,18 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
     const _idNum = typeof _rawId === 'number' ? _rawId : Number(_rawId);
     const msgId: string = Number.isFinite(_idNum) && _idNum >= 0 ? String(Math.trunc(_idNum)) : '';
     const msgIdxSafe: string = String(Math.trunc(Number(msgIdx) || 0));
-    const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">📋 Copy</button>`;
-    const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="Edit">✏️ Edit</button>`;
+    const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">${icon('copy')} Copy</button>`;
+    const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="Edit">${icon('pencil')} Edit</button>`;
     const aiEditBtn = (!isUser && msgId)
-        ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="AI Edit">✨ AI Edit</button>`
+        ? `<button class="ai-edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="AI Edit">${icon('sparkle')} AI Edit</button>`
         : '';
-    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" data-role="${escapeHtml(msg.role)}" title="Delete">🗑️ Delete</button>`;
+    const deleteBtn = `<button class="delete-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" data-role="${escapeHtml(msg.role)}" title="Delete">${icon('trash')} Delete</button>`;
     const pinLabel = msg.is_pinned ? 'Unpin' : 'Pin';
     const pinBtn = msgId
-        ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">📌 ${pinLabel}</button>`
+        ? `<button class="pin-message-btn${msg.is_pinned ? ' pinned' : ''}" data-msg-id="${msgId}" data-pinned="${msg.is_pinned ? '1' : '0'}" title="${pinLabel}" aria-label="${pinLabel} message">${icon('pin')} ${pinLabel}</button>`
         : '';
     const likeBtn = msgId
-        ? `<button class="like-message-btn${msg.liked ? ' liked' : ''}" data-msg-id="${msgId}" data-liked="${msg.liked ? '1' : '0'}" title="${msg.liked ? 'Unlike' : 'Like'}" aria-label="${msg.liked ? 'Unlike' : 'Like'} message">${msg.liked ? '❤️' : '🤍'}</button>`
+        ? `<button class="like-message-btn${msg.liked ? ' liked' : ''}" data-msg-id="${msgId}" data-liked="${msg.liked ? '1' : '0'}" title="${msg.liked ? 'Unlike' : 'Like'}" aria-label="${msg.liked ? 'Unlike' : 'Like'} message">${icon('heart')}</button>`
         : '';
     const actionsHtml = `<div class="message-actions">${copyBtn}${likeBtn}${pinBtn}${editBtn}${aiEditBtn}${deleteBtn}</div>`;
 

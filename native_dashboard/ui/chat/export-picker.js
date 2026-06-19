@@ -8,6 +8,7 @@
  * "Export All" with format options can import it directly without routing
  * through ChatManager).
  */
+import { icon } from '../shared.js';
 const MODAL_ID = 'export-format-modal';
 // Re-entry guard: the modal is a process-wide singleton, so a second
 // promptExportFormat() call before the first resolves would bind a second set
@@ -28,29 +29,29 @@ function ensureModal() {
         <div class="modal-overlay" data-close-export></div>
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h2>📥 Export Format</h2>
+                <h2>${icon('download')} Export Format</h2>
                 <button class="modal-close" data-close-export aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <p>Choose an export format:</p>
                 <div class="export-format-grid">
                     <button class="btn export-format-btn" data-format="json">
-                        <span class="format-icon">📋</span>
+                        <span class="format-icon">${icon('copy')}</span>
                         <span class="format-name">JSON</span>
                         <span class="format-desc">Structured data, re-importable</span>
                     </button>
                     <button class="btn export-format-btn" data-format="markdown">
-                        <span class="format-icon">📝</span>
+                        <span class="format-icon">${icon('pencil')}</span>
                         <span class="format-name">Markdown</span>
                         <span class="format-desc">Human-readable, great for sharing</span>
                     </button>
                     <button class="btn export-format-btn" data-format="html">
-                        <span class="format-icon">🌐</span>
+                        <span class="format-icon">${icon('network')}</span>
                         <span class="format-name">HTML</span>
                         <span class="format-desc">Standalone web page</span>
                     </button>
                     <button class="btn export-format-btn" data-format="txt">
-                        <span class="format-icon">📄</span>
+                        <span class="format-icon">${icon('file')}</span>
                         <span class="format-name">Plain Text</span>
                         <span class="format-desc">Minimal, just the messages</span>
                     </button>

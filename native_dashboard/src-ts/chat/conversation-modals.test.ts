@@ -43,12 +43,17 @@ function mkModals(overrides: Partial<ConversationModalsCallbacks> = {}): {
         findConversation: ReturnType<typeof vi.fn>;
     };
 } {
+    // Mocks typed to their callback signatures so the object satisfies
+    // ConversationModalsCallbacks. Overrides are applied via Object.assign rather
+    // than a spread: spreading a Partial<ConversationModalsCallbacks> (plain
+    // function types) would widen the fields off the Mock<...> brand the helper
+    // advertises on its return type.
     const cb = {
-        sendWsMessage: vi.fn(),
-        isStreaming: vi.fn(() => false),
+        sendWsMessage: vi.fn<(payload: { type: string; [k: string]: unknown }) => void>(),
+        isStreaming: vi.fn<() => boolean>(() => false),
         findConversation: vi.fn((id: string) => mkConv(id, { title: 'original title' })),
-        ...overrides,
     };
+    Object.assign(cb, overrides);
     return { modals: new ConversationModals(cb as ConversationModalsCallbacks), cb };
 }
 

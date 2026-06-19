@@ -13,6 +13,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title lang="ko">디스코드 봇 대시보드</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- ORBITAL v3 re-skin — layered after styles.css so it wins by source order. -->
+    <link rel="stylesheet" href="orbital.css">
     <!-- KaTeX for LaTeX math rendering (bundled locally for security).
          SRI hashes detect tampering with the vendor bundle. Regenerate if you upgrade:
            python -c "import hashlib,base64; print('sha384-'+base64.b64encode(hashlib.sha384(open(p,'rb').read()).digest()).decode())" -->
@@ -44,6 +46,369 @@
 </head>
 
 <body>
+<!-- ORBITAL tactical command deck — custom monoline SVG icon sprite.
+     Inline once near the top of <body>. Reference an icon with:
+       <svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg>
+     The page CSS controls stroke via:
+       .ic{width:20px;height:20px;fill:none;stroke:currentColor;
+           stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+     Inner shapes carry NO stroke/stroke-width/fill so the page owns them.
+     Exceptions: i-play and i-stop are filled with currentColor. -->
+<svg id="orbital-sprite" width="0" height="0" aria-hidden="true"><defs>
+
+  <!-- i-bot — robot/bot head emblem: rounded-hex head, two dot eyes, short antenna -->
+  <symbol id="i-bot" viewBox="0 0 24 24">
+    <path d="M12 3v3"/>
+    <path d="M7 6h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/>
+    <path d="M9.5 11.5h.01"/>
+    <path d="M14.5 11.5h.01"/>
+  </symbol>
+
+  <!-- i-gauge — dashboard gauge / speedometer needle (Status) -->
+  <symbol id="i-gauge" viewBox="0 0 24 24">
+    <path d="M4 18a8 8 0 0 1 16 0"/>
+    <path d="M12 18 16 11"/>
+    <path d="M12 18h.01"/>
+  </symbol>
+
+  <!-- i-chat — rounded speech bubble (AI Chat / messages) -->
+  <symbol id="i-chat" viewBox="0 0 24 24">
+    <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4v-4a2 2 0 0 1-1-2V6Z"/>
+  </symbol>
+
+  <!-- i-logs — document with 3-4 horizontal text lines (Logs) -->
+  <symbol id="i-logs" viewBox="0 0 24 24">
+    <path d="M6 3h9l3 3v15a0 0 0 0 1 0 0H6a0 0 0 0 1 0 0V3Z"/>
+    <path d="M9 8h4"/>
+    <path d="M9 12h6"/>
+    <path d="M9 16h6"/>
+  </symbol>
+
+  <!-- i-database — database cylinder with 2 ellipse bands -->
+  <symbol id="i-database" viewBox="0 0 24 24">
+    <path d="M5 6c0-1.7 3.1-3 7-3s7 1.3 7 3-3.1 3-7 3-7-1.3-7-3Z"/>
+    <path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/>
+    <path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>
+  </symbol>
+
+  <!-- i-history — clock face with a counter-clockwise arrow (AI History) -->
+  <symbol id="i-history" viewBox="0 0 24 24">
+    <path d="M3.5 7.5V4"/>
+    <path d="M3.5 7.5H7"/>
+    <path d="M3.8 8A8 8 0 1 1 4 14.5"/>
+    <path d="M12 8v4l3 2"/>
+  </symbol>
+
+  <!-- i-settings — gear / cog with center hole -->
+  <symbol id="i-settings" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M12 2.5v2.2M12 19.3v2.2M4.2 12H2M22 12h-2.2M6.5 6.5 4.9 4.9M19.1 19.1l-1.6-1.6M17.5 6.5l1.6-1.6M4.9 19.1l1.6-1.6"/>
+  </symbol>
+
+  <!-- i-play — solid-feel play triangle (Start) [FILLED] -->
+  <symbol id="i-play" viewBox="0 0 24 24">
+    <path d="M7 5.5 19 12 7 18.5Z" fill="currentColor" stroke="none"/>
+  </symbol>
+
+  <!-- i-flask — lab erlenmeyer flask with liquid line (Dev) -->
+  <symbol id="i-flask" viewBox="0 0 24 24">
+    <path d="M9 3h6"/>
+    <path d="M10 3v6l-4.5 8a1.5 1.5 0 0 0 1.3 2.3h10.4a1.5 1.5 0 0 0 1.3-2.3L14 9V3"/>
+    <path d="M7.7 14h8.6"/>
+  </symbol>
+
+  <!-- i-stop — rounded square (Stop) [FILLED] -->
+  <symbol id="i-stop" viewBox="0 0 24 24">
+    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>
+  </symbol>
+
+  <!-- i-restart — single circular arrow loop (Restart) -->
+  <symbol id="i-restart" viewBox="0 0 24 24">
+    <path d="M19 5v4h-4"/>
+    <path d="M19 9A8 8 0 1 0 20 14"/>
+  </symbol>
+
+  <!-- i-timer — stopwatch: circle + top stem + hand (Uptime) -->
+  <symbol id="i-timer" viewBox="0 0 24 24">
+    <path d="M9 3h6"/>
+    <path d="M12 3v3"/>
+    <circle cx="12" cy="14" r="7"/>
+    <path d="M12 14V10"/>
+  </symbol>
+
+  <!-- i-chip — CPU chip: square with pins on the sides (Mode) -->
+  <symbol id="i-chip" viewBox="0 0 24 24">
+    <rect x="7" y="7" width="10" height="10" rx="1.5"/>
+    <path d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3"/>
+  </symbol>
+
+  <!-- i-memory — RAM module: rectangle with notch + vertical pins (Memory) -->
+  <symbol id="i-memory" viewBox="0 0 24 24">
+    <path d="M3 7h18v8H3z"/>
+    <path d="M10 15v2M14 15v2M7 15v2M17 15v2"/>
+    <path d="M9 7v8M15 7v8"/>
+  </symbol>
+
+  <!-- i-hash — hash # symbol (Channels) -->
+  <symbol id="i-hash" viewBox="0 0 24 24">
+    <path d="M9 4 7 20M17 4l-2 16"/>
+    <path d="M5 9h15M4 15h15"/>
+  </symbol>
+
+  <!-- i-graph — line chart trending up with axis (Performance) -->
+  <symbol id="i-graph" viewBox="0 0 24 24">
+    <path d="M5 4v15h15"/>
+    <path d="M8 14l3-3 3 2 4-5"/>
+  </symbol>
+
+  <!-- i-network — three connected nodes (API endpoints) -->
+  <symbol id="i-network" viewBox="0 0 24 24">
+    <circle cx="6" cy="17" r="2.5"/>
+    <circle cx="18" cy="17" r="2.5"/>
+    <circle cx="12" cy="5" r="2.5"/>
+    <path d="M10.7 7l-3.4 8M13.3 7l3.4 8M8.5 17h7"/>
+  </symbol>
+
+  <!-- i-pulse — ECG heartbeat line across (Health / live) -->
+  <symbol id="i-pulse" viewBox="0 0 24 24">
+    <path d="M3 12h4l2-6 4 12 2-6h6"/>
+  </symbol>
+
+  <!-- i-folder — folder with tab -->
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path d="M4 7a2 2 0 0 1 2-2h3.2l2 2H18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"/>
+  </symbol>
+
+  <!-- i-sparkle — four-point sparkle/twinkle (New / appearance flourish) -->
+  <symbol id="i-sparkle" viewBox="0 0 24 24">
+    <path d="M12 3c.5 4.5 1.5 5.5 6 6-4.5.5-5.5 1.5-6 6-.5-4.5-1.5-5.5-6-6 4.5-.5 5.5-1.5 6-6Z"/>
+  </symbol>
+
+  <!-- i-trash — trash can with lid + handle -->
+  <symbol id="i-trash" viewBox="0 0 24 24">
+    <path d="M4 6h16"/>
+    <path d="M9 6V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V6"/>
+    <path d="M6 6v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6"/>
+    <path d="M10 10v7M14 10v7"/>
+  </symbol>
+
+  <!-- i-pencil — pencil at 45deg (Rename / edit) -->
+  <symbol id="i-pencil" viewBox="0 0 24 24">
+    <path d="M15.5 4.5l4 4L9 19l-5 1 1-5L15.5 4.5Z"/>
+    <path d="M14 6l4 4"/>
+  </symbol>
+
+  <!-- i-paperclip — paperclip (Attach / files) -->
+  <symbol id="i-paperclip" viewBox="0 0 24 24">
+    <path d="M19 11.5 11.5 19a4 4 0 0 1-5.7-5.7l8-8a2.7 2.7 0 0 1 3.8 3.8l-8 8a1.3 1.3 0 0 1-1.9-1.9l7-7"/>
+  </symbol>
+
+  <!-- i-inbox — open inbox tray (empty state) -->
+  <symbol id="i-inbox" viewBox="0 0 24 24">
+    <path d="M4 13l3-8h10l3 8v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-5Z"/>
+    <path d="M4 13h5a3 3 0 0 0 6 0h5"/>
+  </symbol>
+
+  <!-- i-save — floppy-disk save -->
+  <symbol id="i-save" viewBox="0 0 24 24">
+    <path d="M5 5a1 1 0 0 1 1-1h11l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5Z"/>
+    <path d="M8 4v5h7V4"/>
+    <rect x="8" y="13" width="8" height="6"/>
+  </symbol>
+
+  <!-- i-reflow — two horizontal arrows merging lines (Reflow) -->
+  <symbol id="i-reflow" viewBox="0 0 24 24">
+    <path d="M4 8h12"/>
+    <path d="M13 5l3 3-3 3"/>
+    <path d="M20 16H8"/>
+    <path d="M11 13l-3 3 3 3"/>
+  </symbol>
+
+  <!-- i-crop — crop marks (two overlapping right-angles) -->
+  <symbol id="i-crop" viewBox="0 0 24 24">
+    <path d="M7 3v13a1 1 0 0 0 1 1h13"/>
+    <path d="M3 7h13a1 1 0 0 1 1 1v13"/>
+  </symbol>
+
+  <!-- i-keyboard — keyboard outline with key dots -->
+  <symbol id="i-keyboard" viewBox="0 0 24 24">
+    <rect x="3" y="6" width="18" height="12" rx="2"/>
+    <path d="M7 10h.01M11 10h.01M15 10h.01M17 10h.01M7 14h10"/>
+  </symbol>
+
+  <!-- i-info — circle with lowercase i -->
+  <symbol id="i-info" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 11v5"/>
+    <path d="M12 8h.01"/>
+  </symbol>
+
+  <!-- i-alert — warning triangle with exclamation -->
+  <symbol id="i-alert" viewBox="0 0 24 24">
+    <path d="M10.3 4 3 17a2 2 0 0 0 1.7 3h14.6A2 2 0 0 0 21 17L13.7 4a2 2 0 0 0-3.4 0Z"/>
+    <path d="M12 9v4"/>
+    <path d="M12 16.5h.01"/>
+  </symbol>
+
+  <!-- i-user — person: head circle + shoulders (Profile) -->
+  <symbol id="i-user" viewBox="0 0 24 24">
+    <circle cx="12" cy="8" r="4"/>
+    <path d="M5 20a7 7 0 0 1 14 0"/>
+  </symbol>
+
+  <!-- i-palette — artist palette with thumb hole + dots (Appearance) -->
+  <symbol id="i-palette" viewBox="0 0 24 24">
+    <path d="M12 3a9 9 0 0 0 0 18c1.7 0 2-1.3 1.2-2.2-.8-1 0-2.3 1.3-2.3H16a5 5 0 0 0 5-5c0-4.7-4-8.5-9-8.5Z"/>
+    <path d="M8 10h.01M12 7.5h.01M16 9.5h.01"/>
+  </symbol>
+
+  <!-- i-refresh — two circular arrows (Refresh) -->
+  <symbol id="i-refresh" viewBox="0 0 24 24">
+    <path d="M20 6v4h-4"/>
+    <path d="M4 18v-4h4"/>
+    <path d="M19 10a7 7 0 0 0-13-2M5 14a7 7 0 0 0 13 2"/>
+  </symbol>
+
+  <!-- i-volume — speaker with two sound waves -->
+  <symbol id="i-volume" viewBox="0 0 24 24">
+    <path d="M4 9v6h3l5 4V5L7 9H4Z"/>
+    <path d="M16 9a4 4 0 0 1 0 6"/>
+    <path d="M18.5 6.5a8 8 0 0 1 0 11"/>
+  </symbol>
+
+  <!-- i-waves — three concentric arcs (Haptic / vibration) -->
+  <symbol id="i-waves" viewBox="0 0 24 24">
+    <path d="M12 12h.01"/>
+    <path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7"/>
+    <path d="M5.5 5.5a9 9 0 0 0 0 13M18.5 5.5a9 9 0 0 1 0 13"/>
+  </symbol>
+
+  <!-- i-shield — shield outline (Telemetry / privacy) -->
+  <symbol id="i-shield" viewBox="0 0 24 24">
+    <path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/>
+  </symbol>
+
+  <!-- i-camera — camera body + lens circle (Change avatar) -->
+  <symbol id="i-camera" viewBox="0 0 24 24">
+    <path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L19 6h0a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/>
+    <circle cx="12" cy="13" r="3.5"/>
+  </symbol>
+
+  <!-- i-x — X close cross -->
+  <symbol id="i-x" viewBox="0 0 24 24">
+    <path d="M6 6l12 12M18 6 6 18"/>
+  </symbol>
+
+  <!-- i-moon — crescent moon (theme toggle) -->
+  <symbol id="i-moon" viewBox="0 0 24 24">
+    <path d="M20 14a8 8 0 0 1-10-10 8 8 0 1 0 10 10Z"/>
+  </symbol>
+
+  <!-- i-sun — sun: circle + rays (light) -->
+  <symbol id="i-sun" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4"/>
+    <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19"/>
+  </symbol>
+
+  <!-- i-star — five-point star outline (favorite) -->
+  <symbol id="i-star" viewBox="0 0 24 24">
+    <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 17l-5.2 2.6 1-5.8L3.5 9.7l5.9-.9L12 3.5Z"/>
+  </symbol>
+
+  <!-- i-bolt — lightning bolt (Thinking) -->
+  <symbol id="i-bolt" viewBox="0 0 24 24">
+    <path d="M13 3 5 13h5l-1 8 8-10h-5l1-8Z"/>
+  </symbol>
+
+  <!-- i-search — magnifier: circle + handle -->
+  <symbol id="i-search" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="6.5"/>
+    <path d="M16 16l4.5 4.5"/>
+  </symbol>
+
+  <!-- i-unlock — open padlock (Unrestricted) -->
+  <symbol id="i-unlock" viewBox="0 0 24 24">
+    <rect x="5" y="11" width="14" height="9" rx="2"/>
+    <path d="M8 11V7a4 4 0 0 1 7.5-2"/>
+    <path d="M12 15v2"/>
+  </symbol>
+
+  <!-- i-send — paper-plane send -->
+  <symbol id="i-send" viewBox="0 0 24 24">
+    <path d="M21 4 3 11l7 3 3 7 8-17Z"/>
+    <path d="M10 14 21 4"/>
+  </symbol>
+
+  <!-- i-ghost — ghost with wavy bottom + two eyes (Faust persona) -->
+  <symbol id="i-ghost" viewBox="0 0 24 24">
+    <path d="M5 19v-7a7 7 0 0 1 14 0v7l-2.3-1.8L14.3 19 12 17.2 9.7 19l-2.4-1.8L5 19Z"/>
+    <path d="M9.5 10.5h.01M14.5 10.5h.01"/>
+  </symbol>
+
+  <!-- i-undo — curved arrow pointing left (Undo) -->
+  <symbol id="i-undo" viewBox="0 0 24 24">
+    <path d="M8 8 4 12l4 4"/>
+    <path d="M4 12h10a5 5 0 0 1 0 10H9"/>
+  </symbol>
+
+  <!-- i-plus — plus sign (New) -->
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <path d="M12 5v14M5 12h14"/>
+  </symbol>
+
+  <!-- i-download — down arrow into a tray (Export) -->
+  <symbol id="i-download" viewBox="0 0 24 24">
+    <path d="M12 3v11"/>
+    <path d="M8 10l4 4 4-4"/>
+    <path d="M5 18v1a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1"/>
+  </symbol>
+
+  <!-- i-check — checkmark -->
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M5 12.5 10 17.5 19.5 7"/>
+  </symbol>
+
+  <!-- i-heart — heart outline (Like) -->
+  <symbol id="i-heart" viewBox="0 0 24 24">
+    <path d="M12 20S4 14.5 4 9a4 4 0 0 1 8-1 4 4 0 0 1 8 1c0 5.5-8 11-8 11Z"/>
+  </symbol>
+
+  <!-- i-copy — two overlapping rounded squares (Copy) -->
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <rect x="9" y="9" width="11" height="11" rx="2"/>
+    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+  </symbol>
+
+  <!-- i-pin — pushpin (Pinned) -->
+  <symbol id="i-pin" viewBox="0 0 24 24">
+    <path d="M9 3h6l-1 2 3 5-3 1v3l-2 2-2-2v-3l-3-1 3-5-1-2Z"/>
+    <path d="M12 16v5"/>
+  </symbol>
+
+  <!-- i-file — generic document with folded corner -->
+  <symbol id="i-file" viewBox="0 0 24 24">
+    <path d="M6 3h8l4 4v14H6V3Z"/>
+    <path d="M14 3v4h4"/>
+  </symbol>
+
+  <!-- i-chevron-up — chevron pointing up -->
+  <symbol id="i-chevron-up" viewBox="0 0 24 24">
+    <path d="M5 15 12 8l7 7"/>
+  </symbol>
+
+  <!-- i-chevron-down — chevron pointing down -->
+  <symbol id="i-chevron-down" viewBox="0 0 24 24">
+    <path d="M5 9 12 16l7-7"/>
+  </symbol>
+
+  <!-- i-broadcast — megaphone (announcements/channels alt) -->
+  <symbol id="i-broadcast" viewBox="0 0 24 24">
+    <path d="M4 10v4a1 1 0 0 0 1 1h3l8 4V5L8 9H5a1 1 0 0 0-1 1Z"/>
+    <path d="M8 15v4a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-3"/>
+    <path d="M19 9a4 4 0 0 1 0 6"/>
+  </symbol>
+
+</defs></svg>
     <!-- Toast Container — a persistent polite live region (must exist at load
          to reliably announce dynamically-added toasts to screen readers). -->
     <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
@@ -57,45 +422,45 @@
         <!-- Sidebar -->
         <nav class="sidebar" aria-label="주 메뉴">
             <div class="logo">
-                <span class="logo-icon">🤖</span>
+                <span class="logo-icon"><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg></span>
                 <span class="logo-text" lang="ko">봇 대시보드</span>
             </div>
 
             <div class="nav-items">
                 <button class="nav-item active" data-page="status">
-                    <span class="nav-icon">📊</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
                     <span>Status</span>
                     <kbd class="shortcut">Ctrl+1</kbd>
                 </button>
                 <button class="nav-item" data-page="chat">
-                    <span class="nav-icon">💬</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg></span>
                     <span>AI Chat</span>
                     <kbd class="shortcut">Ctrl+2</kbd>
                 </button>
                 <button class="nav-item" data-page="logs">
-                    <span class="nav-icon">📜</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg></span>
                     <span>Logs</span>
                     <kbd class="shortcut">Ctrl+3</kbd>
                 </button>
                 <button class="nav-item" data-page="database">
-                    <span class="nav-icon">💾</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg></span>
                     <span>Database</span>
                     <kbd class="shortcut">Ctrl+4</kbd>
                 </button>
                 <button class="nav-item" data-page="history">
-                    <span class="nav-icon">🗨️</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg></span>
                     <span>AI History</span>
                     <kbd class="shortcut">Ctrl+6</kbd>
                 </button>
                 <button class="nav-item" data-page="settings">
-                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg></span>
                     <span>Settings</span>
                     <kbd class="shortcut">Ctrl+5</kbd>
                 </button>
             </div>
 
             <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
-                <span id="theme-icon" aria-hidden="true">🌙</span>
+                <span id="theme-icon" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg></span>
                 <span>Toggle Theme</span>
             </button>
 
@@ -109,7 +474,7 @@
         <main class="content" id="main-content">
             <!-- Status Page -->
             <section id="page-status" class="page active">
-                <h1>Bot Control</h1>
+                <div class="page-title-bar"><span class="page-eyebrow">SYS // STATUS</span><h1>Bot Control</h1></div>
 
                 <div class="control-card">
                     <div class="control-info">
@@ -117,36 +482,36 @@
                         <p id="bot-status-text">Status: Checking...</p>
                     </div>
                     <div class="control-buttons">
-                        <button id="btn-start" class="btn btn-primary">▶ Start</button>
-                        <button id="btn-dev" class="btn btn-warning">🧪 Dev</button>
-                        <button id="btn-stop" class="btn btn-danger">■ Stop</button>
-                        <button id="btn-restart" class="btn btn-secondary">↻ Restart</button>
+                        <button id="btn-start" class="btn btn-primary"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg> Start</button>
+                        <button id="btn-dev" class="btn btn-warning"><svg class="ic" aria-hidden="true"><use href="#i-flask"/></svg> Dev</button>
+                        <button id="btn-stop" class="btn btn-danger"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg> Stop</button>
+                        <button id="btn-restart" class="btn btn-secondary"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Restart</button>
                     </div>
                 </div>
 
                 <div class="stats-grid">
                     <div class="stat-card">
-                        <div class="stat-icon">⏱️</div>
+                        <div class="stat-icon"><svg class="ic" aria-hidden="true"><use href="#i-timer"/></svg></div>
                         <div class="stat-value" id="stat-uptime">-</div>
                         <div class="stat-label">Uptime</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-icon">🔧</div>
+                        <div class="stat-icon"><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg></div>
                         <div class="stat-value" id="stat-mode">-</div>
                         <div class="stat-label">Mode</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-icon">💾</div>
+                        <div class="stat-icon"><svg class="ic" aria-hidden="true"><use href="#i-memory"/></svg></div>
                         <div class="stat-value" id="stat-memory">0 MB</div>
                         <div class="stat-label">Memory</div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">💬</div>
+                    <div class="stat-card stat-card--hero">
+                        <div class="stat-icon"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg></div>
                         <div class="stat-value" id="stat-messages">0</div>
                         <div class="stat-label">Messages</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-icon">📢</div>
+                        <div class="stat-icon"><svg class="ic" aria-hidden="true"><use href="#i-hash"/></svg></div>
                         <div class="stat-value" id="stat-channels">0</div>
                         <div class="stat-label">Channels</div>
                     </div>
@@ -154,14 +519,14 @@
 
                 <!-- Performance Charts -->
                 <div class="charts-section">
-                    <h2>📈 Performance Graphs</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-graph"/></svg> Performance Graphs</h2>
                     <div class="charts-grid">
                         <div class="chart-card">
-                            <h3>Memory Usage</h3>
+                            <h3>Memory Usage <span class="chart-readout" id="chart-memory-readout"></span></h3>
                             <canvas id="memory-chart"></canvas>
                         </div>
                         <div class="chart-card">
-                            <h3>Message Count</h3>
+                            <h3>Message Count <span class="chart-readout" id="chart-messages-readout"></span></h3>
                             <canvas id="messages-chart"></canvas>
                         </div>
                     </div>
@@ -170,33 +535,34 @@
                 <div class="quick-actions">
                     <h2>Quick Actions</h2>
                     <div class="action-buttons">
-                        <button class="btn" id="btn-open-logs">📁 Open Logs</button>
-                        <button class="btn" id="btn-open-data">📁 Open Data</button>
+                        <button class="btn" id="btn-open-logs"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg> Open Logs</button>
+                        <button class="btn" id="btn-open-data"><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg> Open Data</button>
                     </div>
                 </div>
 
                 <!-- API Endpoint Failover -->
                 <div class="api-failover-card hidden" id="api-failover-section">
-                    <h2>🔀 API Endpoint</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-network"/></svg> API Endpoint</h2>
                     <div class="api-endpoints" id="api-endpoints">
                         <!-- Filled by JS -->
                     </div>
                     <div class="api-failover-actions">
-                        <button class="btn btn-secondary" id="btn-health-check" title="Check API status" aria-label="Check API health status">🏥 Health Check</button>
+                        <button class="btn btn-secondary" id="btn-health-check" title="Check API status" aria-label="Check API health status"><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg> Health Check</button>
                     </div>
                 </div>
             </section>
 
             <!-- AI Chat Page -->
             <section id="page-chat" class="page">
+                <div class="page-title-bar"><span class="page-eyebrow">COMMS // AI CHAT</span><h1>AI Chat</h1></div>
                 <!-- Overlay when bot is not running -->
                 <div class="chat-not-running-overlay" id="chat-not-running-overlay">
-                    <div class="overlay-content">
-                        <span class="overlay-icon">🤖</span>
-                        <h2>Bot Not Running</h2>
+                    <div class="overlay-content empty-state">
+                        <svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg>
+                        <h3>Bot Not Running</h3>
                         <p>Start the Discord bot to use AI Chat</p>
                         <button class="btn btn-primary btn-large" id="btn-overlay-start">
-                            ▶️ Start Bot
+                            <svg class="ic" aria-hidden="true"><use href="#i-play"/></svg> Start Bot
                         </button>
                     </div>
                 </div>
@@ -205,9 +571,9 @@
                     <!-- Conversations Sidebar -->
                     <aside class="chat-sidebar">
                         <div class="chat-sidebar-header">
-                            <h2>💬 Conversations</h2>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg> Conversations</h2>
                             <button class="btn btn-primary btn-new-chat" id="btn-new-chat">
-                                <span>+ New</span>
+                                <span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> New</span>
                             </button>
                         </div>
                         <div class="conversation-filter">
@@ -220,7 +586,7 @@
                         </div>
                         <div class="chat-sidebar-footer">
                             <button class="btn" id="btn-export-all" title="Export All Conversations">
-                                📥 Export All
+                                <svg class="ic" aria-hidden="true"><use href="#i-download"/></svg> Export All
                             </button>
                         </div>
                     </aside>
@@ -233,7 +599,7 @@
                                 <h2><img class="ai-avatar-icon hidden" id="chat-empty-avatar" alt="AI"> AI Chat</h2>
                                 <p>Start a new conversation or select an existing one</p>
                                 <button class="btn btn-primary btn-large" id="btn-new-chat-main">
-                                    + New Conversation
+                                    <svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> New Conversation
                                 </button>
                             </div>
                         </div>
@@ -263,22 +629,22 @@
                                     </select>
                                     <label class="thinking-toggle" title="Enable Thinking Mode">
                                         <input type="checkbox" id="thinking-toggle">
-                                        <span class="thinking-label">⚡ Thinking</span>
+                                        <span class="thinking-label"><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg> Thinking</span>
                                     </label>
                                     <button class="btn btn-icon" id="btn-chat-files" title="View attached files in this conversation" aria-label="View attached files">
-                                        📎<span class="chat-files-badge hidden" id="chat-files-badge">0</span>
+                                        <svg class="ic" aria-hidden="true"><use href="#i-paperclip"/></svg><span class="chat-files-badge hidden" id="chat-files-badge">0</span>
                                     </button>
                                     <button class="btn btn-icon" id="btn-rename-chat" title="Rename Conversation" aria-label="Rename Conversation">
-                                        ✏️
+                                        <svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg>
                                     </button>
                                     <button class="btn btn-icon" id="btn-star-chat" title="Star Conversation" aria-label="Star Conversation">
-                                        ☆
+                                        <svg class="ic" aria-hidden="true"><use href="#i-star"/></svg>
                                     </button>
                                     <button class="btn btn-icon" id="btn-export-chat" title="Export Conversation" aria-label="Export Conversation">
-                                        📥
+                                        <svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>
                                     </button>
                                     <button class="btn btn-icon btn-danger" id="btn-delete-chat" title="Delete Conversation" aria-label="Delete Conversation">
-                                        🗑️
+                                        <svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>
                                     </button>
                                 </div>
                             </div>
@@ -291,15 +657,15 @@
                                 <div class="chat-search-bar hidden" id="chat-search-bar" role="search">
                                     <input type="text" id="chat-search-input" placeholder="Search in conversation…" aria-label="Search in conversation">
                                     <span class="chat-search-count" id="chat-search-count">0 / 0</span>
-                                    <button class="btn btn-icon" id="chat-search-prev" title="Previous match" aria-label="Previous match">↑</button>
-                                    <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match">↓</button>
+                                    <button class="btn btn-icon" id="chat-search-prev" title="Previous match" aria-label="Previous match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
+                                    <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
                                     <button class="btn btn-icon" id="chat-search-close" title="Close (Esc)" aria-label="Close search">&times;</button>
                                 </div>
                                 <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat conversation">
                                     <!-- Messages will be rendered here -->
                                 </div>
                                 <button class="scroll-to-bottom-fab hidden" id="scroll-to-bottom-fab" aria-label="Scroll to bottom" title="Scroll to latest">
-                                    <span class="fab-arrow">↓</span>
+                                    <span class="fab-arrow"><svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg></span>
                                     <span class="fab-badge hidden" id="scroll-new-count">0</span>
                                 </button>
                             </div>
@@ -309,16 +675,16 @@
                                 <div class="chat-input-options">
                                     <label class="checkbox-label" title="Enable Google Search">
                                         <input type="checkbox" id="chat-use-search">
-                                        <span class="checkbox-icon">🔍</span>
+                                        <span class="checkbox-icon"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg></span>
                                         <span class="checkbox-text">Search</span>
                                     </label>
                                     <label class="checkbox-label unrestricted-toggle" title="Unrestricted Mode - Bypass AI restrictions">
                                         <input type="checkbox" id="chat-unrestricted">
-                                        <span class="checkbox-icon">🔓</span>
+                                        <span class="checkbox-icon"><svg class="ic" aria-hidden="true"><use href="#i-unlock"/></svg></span>
                                         <span class="checkbox-text">Unrestricted</span>
                                     </label>
                                     <button class="btn btn-icon btn-attach" id="btn-attach" title="Attach Image" aria-label="Attach Image">
-                                        📎
+                                        <svg class="ic" aria-hidden="true"><use href="#i-paperclip"/></svg>
                                     </button>
                                     <input type="file" id="image-input" accept="image/*" multiple hidden>
                                     <div class="attached-images" id="attached-images">
@@ -336,7 +702,7 @@
                                         aria-label="Type your message"
                                     ></textarea>
                                     <button class="btn btn-send" id="btn-send" title="Send Message (Enter)" aria-label="Send Message">
-                                        <span class="send-icon">➤</span>
+                                        <span class="send-icon"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></span>
                                     </button>
                                 </div>
                                 <div class="chat-input-hint">
@@ -352,26 +718,26 @@
                     <div class="modal-overlay"></div>
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h2>🎭 New Conversation</h2>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg> New Conversation</h2>
                             <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
                         </div>
                         <div class="modal-body">
-                            <p>Select an AI role:</p>
-                            <div class="role-cards">
-                                <div class="role-card selected" data-role="general" role="button" tabindex="0" aria-pressed="true" aria-label="General Assistant">
-                                    <div class="role-card-emoji">🤖</div>
+                            <p id="role-select-label">Select an AI role:</p>
+                            <div class="role-cards" role="radiogroup" aria-labelledby="role-select-label">
+                                <div class="role-card selected" data-role="general" role="radio" tabindex="0" aria-checked="true" aria-label="General Assistant">
+                                    <div class="role-card-emoji"><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg></div>
                                     <div class="role-card-name">General Assistant</div>
                                     <div class="role-card-desc">Helpful AI for general tasks</div>
                                 </div>
-                                <div class="role-card" data-role="faust" role="button" tabindex="0" aria-pressed="false" aria-label="Faust">
-                                    <div class="role-card-emoji">👻</div>
+                                <div class="role-card" data-role="faust" role="radio" tabindex="0" aria-checked="false" aria-label="Faust">
+                                    <div class="role-card-emoji"><svg class="ic" aria-hidden="true"><use href="#i-ghost"/></svg></div>
                                     <div class="role-card-name">Faust</div>
                                     <div class="role-card-desc">Sinner #2 from Limbus Company</div>
                                 </div>
                             </div>
                             <div class="modal-options">
                                 <label class="option-row">
-                                    <span>🤖 AI Provider</span>
+                                    <span><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg> AI Provider</span>
                                     <select id="modal-ai-provider" class="select-provider">
                                         <option value="gemini">Gemini</option>
                                         <option value="claude">Claude</option>
@@ -379,7 +745,7 @@
                                 </label>
                                 <label class="option-row">
                                     <input type="checkbox" id="modal-thinking">
-                                    <span>⚡ Enable Thinking Mode</span>
+                                    <span><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg> Enable Thinking Mode</span>
                                 </label>
                             </div>
                         </div>
@@ -395,7 +761,7 @@
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
-                            <h2>🗑️ Delete Conversation?</h2>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete Conversation?</h2>
                         </div>
                         <div class="modal-body">
                             <p>This action cannot be undone. All messages will be permanently deleted.</p>
@@ -412,7 +778,7 @@
                     <div class="modal-overlay"></div>
                     <div class="modal-content modal-small">
                         <div class="modal-header">
-                            <h2>✏️ Rename Conversation</h2>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg> Rename Conversation</h2>
                         </div>
                         <div class="modal-body">
                             <div class="form-group">
@@ -436,7 +802,7 @@
                         <!-- LIST VIEW -->
                         <div class="chat-files-view" id="chat-files-list-view">
                             <div class="modal-header">
-                                <h2>📎 Attached Files</h2>
+                                <h2><svg class="ic" aria-hidden="true"><use href="#i-paperclip"/></svg> Attached Files</h2>
                                 <button class="modal-close" id="chat-files-close" data-close-files aria-label="Close">&times;</button>
                             </div>
                             <div class="modal-body">
@@ -445,7 +811,7 @@
                                     <!-- Populated by JS -->
                                 </div>
                                 <div class="chat-files-empty hidden" id="chat-files-empty">
-                                    <span class="chat-files-empty-icon">📭</span>
+                                    <span class="chat-files-empty-icon"><svg class="ic" aria-hidden="true"><use href="#i-inbox"/></svg></span>
                                     <p>No files attached in this conversation yet.</p>
                                     <p class="hint">Drop a PDF / text / code file onto the chat to add one.</p>
                                 </div>
@@ -455,7 +821,7 @@
                         <div class="chat-files-view hidden" id="chat-files-edit-view">
                             <div class="modal-header">
                                 <button class="btn btn-icon chat-files-back" id="chat-files-edit-back" aria-label="Back to list">← Back</button>
-                                <h2>✏️ Edit File</h2>
+                                <h2><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg> Edit File</h2>
                                 <button class="modal-close" data-close-files aria-label="Close">&times;</button>
                             </div>
                             <div class="modal-body">
@@ -484,9 +850,9 @@
                                 </p>
                             </div>
                             <div class="modal-footer">
-                                <button class="btn btn-secondary" id="chat-files-edit-reflow" title="Join per-glyph newlines into paragraphs (useful for old PDFs extracted before the fix)">🔀 Reflow</button>
+                                <button class="btn btn-secondary" id="chat-files-edit-reflow" title="Join per-glyph newlines into paragraphs (useful for old PDFs extracted before the fix)"><svg class="ic" aria-hidden="true"><use href="#i-reflow"/></svg> Reflow</button>
                                 <button class="btn" id="chat-files-edit-cancel">Cancel</button>
-                                <button class="btn btn-primary" id="chat-files-edit-save">💾 Save</button>
+                                <button class="btn btn-primary" id="chat-files-edit-save"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg> Save</button>
                             </div>
                         </div>
                     </div>
@@ -496,7 +862,7 @@
             <!-- Logs Page -->
             <section id="page-logs" class="page">
                 <div class="page-header">
-                    <h1>Log Viewer <span id="live-indicator" class="live-indicator">🔴 LIVE</span></h1>
+                    <div class="page-title-bar"><span class="page-eyebrow">LOG // STREAM</span><h1>Log Viewer <span id="live-indicator" class="live-indicator"><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg> LIVE</span></h1></div>
                     <div class="log-controls">
                         <select id="log-filter" aria-label="Filter log level">
                             <option value="all">All Levels</option>
@@ -504,19 +870,19 @@
                             <option value="WARNING">WARNING</option>
                             <option value="ERROR">ERROR</option>
                         </select>
-                        <button id="btn-auto-scroll" class="btn">⏸ Pause</button>
-                        <button class="btn" id="btn-clear-logs">🗑️ Clear</button>
-                        <button class="btn" id="btn-refresh-logs">↻ Refresh</button>
+                        <button id="btn-auto-scroll" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg> Pause</button>
+                        <button class="btn" id="btn-clear-logs"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Clear</button>
+                        <button class="btn" id="btn-refresh-logs"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Refresh</button>
                     </div>
                 </div>
                 <div class="log-container" id="log-container">
-                    <pre id="log-content">Loading logs...</pre>
+                    <pre id="log-content" role="log" aria-live="polite" aria-relevant="additions" aria-label="Bot logs">Loading logs...</pre>
                 </div>
             </section>
 
             <!-- Database Page -->
             <section id="page-database" class="page">
-                <h1>Database Statistics</h1>
+                <div class="page-title-bar"><span class="page-eyebrow">DATA // STORE</span><h1>Database Statistics</h1></div>
 
                 <div class="stats-grid">
                     <div class="stat-card">
@@ -542,7 +908,7 @@
                         <h2>Recent Channels</h2>
                         <div class="selection-controls hidden" id="channel-selection-controls">
                             <span class="selection-count" id="channel-selection-count">0 selected</span>
-                            <button class="btn btn-sm btn-danger" id="btn-delete-selected">🗑️ Delete Selected</button>
+                            <button class="btn btn-sm btn-danger" id="btn-delete-selected"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete Selected</button>
                         </div>
                     </div>
                     <div class="data-list" id="channels-list"></div>
@@ -554,23 +920,28 @@
                 </div>
 
                 <div class="danger-zone">
-                    <h2>⚠️ Danger Zone</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg> Danger Zone</h2>
                     <p>These actions are irreversible.</p>
-                    <button class="btn btn-danger" id="btn-clear-history">🗑️ Clear All History</button>
+                    <button class="btn btn-danger" id="btn-clear-history"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Clear All History</button>
                 </div>
             </section>
 
             <!-- AI History Page -->
             <section id="page-history" class="page">
+                <div class="page-title-bar"><span class="page-eyebrow">ARCHIVE // AI HISTORY</span><h1>AI History</h1></div>
                 <div class="history-layout">
                     <!-- Channel List Sidebar -->
                     <aside class="history-sidebar">
                         <div class="history-sidebar-header">
-                            <h2>🗨️ AI History</h2>
-                            <button class="btn btn-sm" id="ai-history-refresh" title="Refresh channel list" aria-label="Refresh AI history channel list">↻ Refresh</button>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg> AI History</h2>
+                            <button class="btn btn-sm" id="ai-history-refresh" title="Refresh channel list" aria-label="Refresh AI history channel list"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Refresh</button>
                         </div>
                         <div class="history-channel-list" id="ai-channel-list">
-                            <p class="no-data">No channels loaded yet.</p>
+                            <div class="empty-state">
+                                <svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>
+                                <h3>No channels loaded</h3>
+                                <p>Refresh to pull the list of channels with saved AI chat history.</p>
+                            </div>
                         </div>
                     </aside>
 
@@ -580,7 +951,11 @@
                             <h2>Select a channel</h2>
                         </div>
                         <div class="history-messages" id="ai-history-messages" aria-label="AI chat history messages">
-                            <p class="no-data">Pick a channel on the left to view its AI chat history.</p>
+                            <div class="empty-state">
+                                <svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>
+                                <h3>Select a channel</h3>
+                                <p>Pick a channel on the left to view its AI chat history.</p>
+                            </div>
                         </div>
                         <div class="history-load-all hidden" id="ai-history-load-all-container">
                             <button class="btn" id="ai-history-load-all">Load all</button>
@@ -589,7 +964,7 @@
                              #ai-history-header, whose innerHTML is rewritten by
                              updateHeader() (that would drop the bound listener). -->
                         <div class="history-undo">
-                            <button id="ai-history-undo" class="btn btn-sm" title="Undo last edit/delete in this channel" aria-label="Undo last edit or delete" disabled>↶ Undo</button>
+                            <button id="ai-history-undo" class="btn btn-sm" title="Undo last edit/delete in this channel" aria-label="Undo last edit or delete" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg> Undo</button>
                         </div>
                     </div>
                 </div>
@@ -597,10 +972,10 @@
 
             <!-- Settings Page -->
             <section id="page-settings" class="page">
-                <h1>⚙️ Settings</h1>
+                <div class="page-title-bar"><span class="page-eyebrow">CFG // SETTINGS</span><h1>Settings</h1></div>
 
                 <div class="settings-card">
-                    <h2>🤖 AI Appearance</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg> AI Appearance</h2>
                     <p class="settings-hint">Customize how the AI looks in chat.</p>
                     <div class="setting-row">
                         <label>AI Avatar</label>
@@ -609,27 +984,37 @@
                                 <!-- 1x1 transparent dataURI prevents the browser's broken-image
                                      icon from flashing before JS sets the real src. -->
                                 <img id="ai-avatar-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="AI Avatar">
-                                <span class="avatar-placeholder">🤖</span>
+                                <span class="avatar-placeholder"><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg></span>
                             </div>
-                            <button class="btn btn-secondary" id="btn-change-ai-avatar">📷 Change</button>
-                            <button class="btn btn-danger btn-small hidden" id="btn-remove-ai-avatar">✕</button>
+                            <button class="btn btn-secondary" id="btn-change-ai-avatar"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg> Change</button>
+                            <button class="btn btn-danger btn-small hidden" id="btn-remove-ai-avatar" aria-label="AI 아바타 제거"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                             <input type="file" id="ai-avatar-input" accept="image/*" hidden>
                         </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="setting-density">
+                            <svg class="ic" aria-hidden="true"><use href="#i-reflow"/></svg> Compact Density
+                            <span class="setting-hint-inline">(tighter spacing across cards and panels)</span>
+                        </label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="setting-density">
+                            <span class="toggle-slider"></span>
+                        </label>
                     </div>
                 </div>
 
                 <div class="settings-card">
-                    <h2>👤 Profile</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg> Profile</h2>
                     <p class="settings-hint">This information helps AI understand and remember you better.</p>
                     <div class="setting-row">
                         <label>Profile Picture</label>
                         <div class="setting-control avatar-control">
                             <div class="avatar-preview" id="avatar-preview">
                                 <img id="avatar-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Avatar">
-                                <span class="avatar-placeholder">👤</span>
+                                <span class="avatar-placeholder"><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg></span>
                             </div>
-                            <button class="btn btn-secondary" id="btn-change-avatar">📷 Change</button>
-                            <button class="btn btn-danger btn-small hidden" id="btn-remove-avatar">✕</button>
+                            <button class="btn btn-secondary" id="btn-change-avatar"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg> Change</button>
+                            <button class="btn btn-danger btn-small hidden" id="btn-remove-avatar" aria-label="프로필 사진 제거"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                             <input type="file" id="avatar-input" accept="image/*" hidden>
                         </div>
                     </div>
@@ -659,24 +1044,24 @@
                         </label>
                     </div>
                     <div class="setting-row">
-                        <button class="btn btn-primary" id="btn-save-profile">💾 Save Profile to AI</button>
+                        <button class="btn btn-primary" id="btn-save-profile"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg> Save Profile to AI</button>
                     </div>
                 </div>
 
                 <div class="settings-card">
-                    <h2>🎨 Appearance</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-palette"/></svg> Appearance</h2>
                     <div class="setting-row">
                         <span class="setting-label">Theme</span>
                         <div class="setting-control">
                             <button class="btn" id="theme-toggle-settings" aria-label="Toggle theme">
-                                <span id="theme-icon-settings">🌙</span> Toggle Theme (Ctrl+T)
+                                <span id="theme-icon-settings"><svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg></span> Toggle Theme (Ctrl+T)
                             </button>
                         </div>
                     </div>
                 </div>
 
                 <div class="settings-card">
-                    <h2>🔄 Refresh Settings</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg> Refresh Settings</h2>
                     <div class="setting-row">
                         <label for="refresh-interval">Auto-refresh Interval</label>
                         <select id="refresh-interval" class="setting-select">
@@ -694,7 +1079,7 @@
                         </label>
                     </div>
                     <div class="setting-row">
-                        <label for="sakura-toggle">🌸 Sakura Petals Animation</label>
+                        <label for="sakura-toggle"><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg> Sakura Petals Animation</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="sakura-toggle" checked>
                             <span class="toggle-slider"></span>
@@ -702,7 +1087,7 @@
                     </div>
                     <div class="setting-row">
                         <label for="sound-toggle">
-                            🔊 Click Sounds
+                            <svg class="ic" aria-hidden="true"><use href="#i-volume"/></svg> Click Sounds
                             <span class="setting-hint-inline">(subtle synth clicks on buttons)</span>
                         </label>
                         <label class="toggle-switch">
@@ -712,7 +1097,7 @@
                     </div>
                     <div class="setting-row">
                         <label for="haptic-toggle">
-                            📳 Haptic Feedback
+                            <svg class="ic" aria-hidden="true"><use href="#i-waves"/></svg> Haptic Feedback
                             <span class="setting-hint-inline">(vibration on supported devices)</span>
                         </label>
                         <label class="toggle-switch">
@@ -722,7 +1107,7 @@
                     </div>
                     <div class="setting-row">
                         <label for="telemetry-toggle">
-                            🛡️ Send Anonymous Crash Reports
+                            <svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg> Send Anonymous Crash Reports
                             <span class="setting-hint-inline">(restart required; writes data/telemetry_optout.flag)</span>
                         </label>
                         <label class="toggle-switch">
@@ -733,7 +1118,7 @@
                 </div>
 
                 <div class="settings-card">
-                    <h2>⌨️ Keyboard Shortcuts</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg> Keyboard Shortcuts</h2>
                     <div class="shortcuts-list">
                         <div class="shortcut-item">
                             <kbd>Ctrl + 1</kbd> <span>Go to Status</span>
@@ -766,25 +1151,25 @@
                 </div>
 
                 <div class="settings-card">
-                    <h2>ℹ️ About</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg> About</h2>
                     <p><strong lang="ko">디스코드 봇 대시보드</strong></p>
                     <p>Version 3.4.14 - Enhanced Edition</p>
                     <p>Built with Tauri + Rust + TypeScript</p>
                     <div class="features-list">
                         <h4>Features:</h4>
                         <ul>
-                            <li>✅ Toast Notifications</li>
-                            <li>✅ Real-time Charts</li>
-                            <li>✅ Dark/Light Theme</li>
-                            <li>✅ Keyboard Shortcuts</li>
-                            <li>✅ Performance Caching</li>
-                            <li>✅ Live Log Streaming</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Toast Notifications</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Real-time Charts</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Dark/Light Theme</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Keyboard Shortcuts</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Performance Caching</li>
+                            <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Live Log Streaming</li>
                         </ul>
                     </div>
                 </div>
 
                 <div class="settings-card">
-                    <h2>📁 Paths</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-folder"/></svg> Paths</h2>
                     <p><strong>Bot Script:</strong> <span id="info-bot-script">bot.py</span></p>
                     <p><strong>Log File:</strong> <span id="info-log-file">logs/bot.log</span></p>
                     <p><strong>Database:</strong> <span id="info-database">data/bot_database.db</span></p>
@@ -798,7 +1183,7 @@
         <div class="modal-overlay" data-close-shortcuts></div>
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h2>⌨️ Keyboard Shortcuts</h2>
+                <h2><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg> Keyboard Shortcuts</h2>
                 <button class="modal-close" data-close-shortcuts aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
@@ -824,7 +1209,7 @@
         <div class="modal-overlay" data-close-avatar-crop></div>
         <div class="modal-content avatar-crop-content">
             <div class="modal-header">
-                <h2>✂️ Crop Avatar</h2>
+                <h2><svg class="ic" aria-hidden="true"><use href="#i-crop"/></svg> Crop Avatar</h2>
                 <button class="modal-close" id="avatar-crop-close" aria-label="Close">&times;</button>
             </div>
             <div class="crop-container">
@@ -840,7 +1225,7 @@
             </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" id="btn-crop-cancel">Cancel</button>
-                <button class="btn btn-primary" id="btn-crop-save">✅ Save Avatar</button>
+                <button class="btn btn-primary" id="btn-crop-save"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Save Avatar</button>
             </div>
         </div>
     </div>

@@ -21,7 +21,7 @@
  * That read model is a snapshot so we don't couple to the caller's object identity.
  */
 
-import { escapeHtml, safeAvatarUrl, settings } from '../shared.js';
+import { escapeHtml, icon, safeAvatarUrl, settings } from '../shared.js';
 import type { ChatConversation, RolePreset } from './types.js';
 
 /** Conversations beyond this count are not rendered until the user narrows the filter. */
@@ -94,7 +94,7 @@ export class ConversationList {
             const starClass = conv.is_starred ? 'starred' : '';
             const avatarHtml = safeAi
                 ? `<img class="conv-avatar" src="${safeAi}" alt="AI">`
-                : `<span class="conv-emoji">${escapeHtml(preset.emoji || '💬')}</span>`;
+                : `<span class="conv-emoji">${preset.emoji ? escapeHtml(preset.emoji) : icon('chat')}</span>`;
 
             return `
                 <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}"
@@ -104,7 +104,7 @@ export class ConversationList {
                         <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
                         <span class="conv-meta">${Number(conv.message_count) || 0} messages</span>
                     </div>
-                    ${conv.is_starred ? '<span class="conv-star">⭐</span>' : ''}
+                    ${conv.is_starred ? `<span class="conv-star">${icon('star')}</span>` : ''}
                 </div>
             `;
         }).join('') + (overflow > 0
