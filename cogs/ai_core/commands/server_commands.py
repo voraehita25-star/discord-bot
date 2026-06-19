@@ -1273,7 +1273,11 @@ async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
         # echo private channel contents back into a public channel.
         if user is not None:
             try:
-                if not target_channel.permissions_for(user).read_messages:
+                # Require BOTH view (.read_messages) AND scrollback
+                # (.read_message_history): a user denied history but granted
+                # view could otherwise have the bot echo denied backlog.
+                _perms = target_channel.permissions_for(user)
+                if not (_perms.read_messages and _perms.read_message_history):
                     await origin_channel.send("❌ คุณไม่มีสิทธิ์อ่านห้องนั้น", allowed_mentions=_NO_MENTIONS)
                     return
             except (AttributeError, TypeError):

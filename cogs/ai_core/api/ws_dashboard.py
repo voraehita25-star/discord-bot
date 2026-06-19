@@ -851,6 +851,8 @@ class DashboardWebSocketServer:
                         auth_data = json.loads(deadline_msg.data)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(auth_data, dict):
+                        continue
                     msg_type = auth_data.get("type")
                     if msg_type == "ping":
                         # Allow ping before auth — just keep waiting.
@@ -909,6 +911,11 @@ class DashboardWebSocketServer:
                 if msg.type == WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
+                        if not isinstance(data, dict):
+                            await ws.send_json(
+                                {"type": "error", "message": "Invalid message format"}
+                            )
+                            continue
                         msg_id = str(uuid.uuid4())[:8]
                         msg_type = data.get("type")
 

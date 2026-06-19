@@ -843,56 +843,63 @@ class LongTermMemory:
         Returns:
             Number of duplicates removed
         """
-        facts = await self.get_user_facts(user_id)
-        if len(facts) < 2:
-            return 0
+        # Serialize the whole read-modify-write on the per-user lock (outermost)
+        # so it can't interleave with process_message/add_explicit_fact/forget_fact
+        # for this user — the schema has no UNIQUE(user_id, content), so a
+        # concurrent insert could re-create a duplicate we just removed (or be
+        # wrongly counted/dropped). Mirrors forget_fact. The inner storage helpers
+        # use self._lock (a different, non-reentrant lock), so no self-deadlock.
+        async with self._get_user_lock(user_id):
+            facts = await self.get_user_facts(user_id)
+            if len(facts) < 2:
+                return 0
 
-        removed = 0
-        seen_contents: dict[str, int | None] = {}
-        removed_ids: list[int] = []
+            removed = 0
+            seen_contents: dict[str, int | None] = {}
+            removed_ids: list[int] = []
 
-        for fact in facts:
-            content_key = fact.content.lower().strip()
+            for fact in facts:
+                content_key = fact.content.lower().strip()
 
-            if content_key in seen_contents:
-                if fact.id:
-                    removed_ids.append(fact.id)
-                    removed += 1
-            else:
-                seen_contents[content_key] = fact.id
+                if content_key in seen_contents:
+                    if fact.id:
+                        removed_ids.append(fact.id)
+                        removed += 1
+                else:
+                    seen_contents[content_key] = fact.id
 
-        # Mark all duplicates inactive in ONE batched write transaction
-        # instead of opening a fresh write connection (and acquiring the
-        # global writer lock) per duplicate. Chunk into batches of 900 to
-        # stay under the SQLite variable limit (default 999), mirroring
-        # memory_consolidator._delete_consolidated_messages. Explicit commit
-        # so the `is_active = 0` writes are durable.
-        if removed_ids and DB_AVAILABLE and db is not None:
-            batch_size = 900
-            async with db.get_write_connection() as conn:
-                for i in range(0, len(removed_ids), batch_size):
-                    batch = removed_ids[i : i + batch_size]
-                    placeholders = ",".join("?" * len(batch))
-                    await conn.execute(
-                        f"UPDATE user_facts SET is_active = 0 WHERE id IN ({placeholders})",  # nosec B608  # placeholders is '?,?,...'; values via batch
-                        batch,
-                    )
-                await conn.commit()
+            # Mark all duplicates inactive in ONE batched write transaction
+            # instead of opening a fresh write connection (and acquiring the
+            # global writer lock) per duplicate. Chunk into batches of 900 to
+            # stay under the SQLite variable limit (default 999), mirroring
+            # memory_consolidator._delete_consolidated_messages. Explicit commit
+            # so the `is_active = 0` writes are durable.
+            if removed_ids and DB_AVAILABLE and db is not None:
+                batch_size = 900
+                async with db.get_write_connection() as conn:
+                    for i in range(0, len(removed_ids), batch_size):
+                        batch = removed_ids[i : i + batch_size]
+                        placeholders = ",".join("?" * len(batch))
+                        await conn.execute(
+                            f"UPDATE user_facts SET is_active = 0 WHERE id IN ({placeholders})",  # nosec B608  # placeholders is '?,?,...'; values via batch
+                            batch,
+                        )
+                    await conn.commit()
 
-        # Prune the in-memory cache too, so get_user_facts stops returning the
-        # duplicates. This is required in cache-only mode (DB unavailable), where
-        # the is_active=0 write above never runs, and is harmless otherwise.
-        # Mirrors forget_fact's lock-guarded cache mutation.
-        if removed_ids:
-            drop = set(removed_ids)
-            async with self._lock:
-                if user_id in self._cache:
-                    self._cache[user_id] = [f for f in self._cache[user_id] if f.id not in drop]
+            # Prune the in-memory cache too, so get_user_facts stops returning the
+            # duplicates. This is required in cache-only mode (DB unavailable), where
+            # the is_active=0 write above never runs, and is harmless otherwise.
+            # Mirrors forget_fact's lock-guarded cache mutation.
+            if removed_ids:
+                drop = set(removed_ids)
+                async with self._lock:
+                    if user_id in self._cache:
+                        self._cache[user_id] = [f for f in self._cache[user_id] if f.id not in drop]
 
-        if removed:
-            self.logger.info("Removed %d duplicate facts for user %d", removed, user_id)
+            if removed:
+                self.logger.info("Removed %d duplicate facts for user %d", removed, user_id)
 
-        return removed
+            return removed
 
 
 # Global instance

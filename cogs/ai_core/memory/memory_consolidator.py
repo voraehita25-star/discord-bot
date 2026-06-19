@@ -117,6 +117,12 @@ class SummaryArchiver:
         # summary rows (the summarized_at filter only prevents double-
         # MARKING, not double-summarizing).
         self._channel_locks: dict[int, asyncio.Lock] = {}
+        # init_schema is idempotent DDL (CREATE … IF NOT EXISTS) but is called
+        # lazily on every consolidate/query path; consolidate_all_channels can
+        # invoke it ~20×/channel/cycle, each re-acquiring the global writer
+        # lock for a no-op. Gate it behind a one-shot flag so the DDL+commit
+        # runs once per process and later calls early-return.
+        self._schema_ready = False
 
     def _get_channel_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self._channel_locks.get(channel_id)
@@ -135,6 +141,11 @@ class SummaryArchiver:
     async def init_schema(self) -> None:
         """Initialize database schema for summaries."""
         if not DB_AVAILABLE or db is None:
+            return
+
+        # Idempotent: the schema only needs creating once per process. Skip the
+        # writer-lock acquisition + commit on every subsequent lazy call.
+        if self._schema_ready:
             return
 
         # DDL must route through the single-writer connection and commit
@@ -163,6 +174,7 @@ class SummaryArchiver:
             """)
             await conn.commit()
 
+        self._schema_ready = True
         self.logger.info("📚 Memory consolidator schema initialized")
 
     def start_background_task(self, interval_hours: float = 6.0) -> None:

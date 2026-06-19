@@ -898,8 +898,9 @@ class TestCleanupPendingRequestsLoop:
         st.cleanup_old_states.return_value = 2
         consol = MagicMock()
         consol.cleanup_old_channels.return_value = 1
-        mq = MagicMock()
-        mq.cleanup_unused_locks.return_value = 4
+        # Lock cleanup now runs on the LIVE handler's queue
+        # (cog.chat_manager._message_queue), not the module-level singleton.
+        cog.chat_manager._message_queue.cleanup_unused_locks.return_value = 4
 
         with (
             patch("cogs.ai_core.ai_cog.asyncio.sleep", side_effect=_fake_sleep),
@@ -909,7 +910,6 @@ class TestCleanupPendingRequestsLoop:
                 {
                     "cogs.ai_core.memory.state_tracker": MagicMock(state_tracker=st),
                     "cogs.ai_core.memory.consolidator": MagicMock(memory_consolidator=consol),
-                    "cogs.ai_core.core.message_queue": MagicMock(message_queue=mq),
                 },
             ),
         ):
@@ -918,7 +918,7 @@ class TestCleanupPendingRequestsLoop:
         assert cog.chat_manager.cleanup_pending_requests.call_count >= 30
         st.cleanup_old_states.assert_called()
         consol.cleanup_old_channels.assert_called()
-        mq.cleanup_unused_locks.assert_called()
+        cog.chat_manager._message_queue.cleanup_unused_locks.assert_called()
 
     @pytest.mark.asyncio
     async def test_loop_memory_cleanup_exception_swallowed(self):

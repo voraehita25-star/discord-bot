@@ -940,6 +940,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                 if item.get("message_id") == message_id:
                     item["parts"] = [new_content]
                     updated_in_memory = True
+            if updated_in_memory:
+                # In-place edit keeps history length unchanged, so the
+                # length-keyed auto-compress cache (process_chat) would still
+                # serve the stale pre-edit compression. Drop it so the next
+                # turn recomputes.
+                session.pop("_compress_cache", None)
 
         updated_rows = await edit_message_by_id(channel_id, message_id, new_content)
         return updated_in_memory or updated_rows > 0
@@ -983,6 +989,10 @@ class ChatManager(SessionMixin, ResponseMixin):
         if index is None:
             return False
         history[index]["parts"] = [new_content]
+        # In-place edit keeps history length unchanged, so the length-keyed
+        # auto-compress cache (process_chat) would still serve the stale
+        # pre-edit compression. Drop it so the next turn recomputes.
+        session.pop("_compress_cache", None)
         return True
 
     def remove_history_content(

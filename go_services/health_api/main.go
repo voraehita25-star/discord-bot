@@ -455,8 +455,10 @@ func main() {
 					return
 				}
 			case "histogram":
-				// Reject NaN/Infinity values that would corrupt metrics
-				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) {
+				// Reject NaN/Infinity values that would corrupt metrics.
+				// Histogram metrics are durations (non-negative); a negative
+				// observation poisons the histogram _sum, so reject those too.
+				if math.IsNaN(payload.Value) || math.IsInf(payload.Value, 0) || payload.Value < 0 {
 					http.Error(w, "metric value must be finite", http.StatusBadRequest)
 					return
 				}
@@ -538,8 +540,10 @@ func main() {
 						processed++
 					}
 				case "histogram":
-					// Skip NaN/Infinity values to prevent Prometheus histogram corruption
-					if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+					// Skip NaN/Infinity values to prevent Prometheus histogram corruption.
+					// Histogram metrics are durations (non-negative); a negative
+					// observation poisons the histogram _sum, so skip those too.
+					if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
 						continue
 					}
 					switch p.Name {

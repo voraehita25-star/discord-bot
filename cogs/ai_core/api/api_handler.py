@@ -862,9 +862,13 @@ async def call_claude_api_streaming(
                     RuntimeError("Claude streaming returned empty content")
                 ):
                     client = _failover_current_client(client)
-                if placeholder_msg:
-                    with contextlib.suppress(Exception):
-                        await placeholder_msg.delete()
+                # Keep placeholder_msg alive: this branch falls through to the
+                # retry tail (which edits it) and re-loops (progress edits at
+                # ~835 also target it). Deleting here left those later edits
+                # hitting a dead message. Cleanup is deferred to whichever exit
+                # path terminates the loop — the success/error returns each
+                # delete it once, and the post-loop fallback deletes it once
+                # when retries are exhausted.
                 delay = _claude_retry_delay_seconds(stream_attempt)
                 # No return: control falls through to the retry tail (reset +
                 # sleep(delay) + stream_attempt += 1), then re-loops or hits the
@@ -925,6 +929,11 @@ async def call_claude_api_streaming(
                 if placeholder_msg:
                     with contextlib.suppress(Exception):
                         await placeholder_msg.delete()
+                # No token usage recorded here on purpose: asyncio.wait_for
+                # cancelled the stream mid-flight, so the SDK never produced a
+                # final message and there is no accumulated usage object to read.
+                # Partial-timeout turns are intentionally left unaccounted rather
+                # than fabricating an estimate.
                 return partial_with_marker, search_indicator, function_calls
 
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:

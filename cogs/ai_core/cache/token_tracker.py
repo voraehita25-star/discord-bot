@@ -269,6 +269,22 @@ class TokenTracker:
         if not rows:
             return 0
 
+        # Newest ``created_at`` among the rows we're about to replay. Records
+        # added by ``record_usage`` after this DB read but still sitting in
+        # ``_persist_queue`` (not yet flushed) carry timestamps strictly newer
+        # than anything the DB returned; the pruning below keeps those so the
+        # replay doesn't transiently drop unpersisted in-window records. Parse
+        # the raw ISO strings here (cheap, before the lock); fall back to None
+        # if none are parseable so the guard simply doesn't fire.
+        max_db_ts: datetime | None = None
+        for row in rows:
+            ts_raw = row[7]
+            if isinstance(ts_raw, str):
+                with contextlib.suppress(ValueError):
+                    parsed = _ensure_aware(datetime.fromisoformat(ts_raw))
+                    if max_db_ts is None or parsed > max_db_ts:
+                        max_db_ts = parsed
+
         loaded = 0
         async with self._lock:
             # Idempotency: clear existing entries within the replay window so
@@ -282,8 +298,19 @@ class TokenTracker:
                 # silently drop the entire cache slice. Other comparison
                 # sites in this file already route through ``_ensure_aware``;
                 # this one was the outlier.
+                #
+                # Keep two classes of record: (1) anything older than the
+                # window (rebuilt below from the DB), and (2) in-window records
+                # newer than the newest replayed DB row — these are the
+                # unpersisted entries still queued in ``_persist_queue`` that
+                # the DB replay would otherwise lose. Using a strict ``>``
+                # against ``max_db_ts`` avoids re-adding records that ARE in
+                # the DB replay (those share the replayed timestamps).
                 self._usage_cache[cache_key] = [
-                    u for u in self._usage_cache[cache_key] if _ensure_aware(u.timestamp) < cutoff
+                    u
+                    for u in self._usage_cache[cache_key]
+                    if _ensure_aware(u.timestamp) < cutoff
+                    or (max_db_ts is not None and _ensure_aware(u.timestamp) > max_db_ts)
                 ]
                 if not self._usage_cache[cache_key]:
                     del self._usage_cache[cache_key]

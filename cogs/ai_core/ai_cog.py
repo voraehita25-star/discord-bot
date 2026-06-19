@@ -438,14 +438,24 @@ class AI(commands.Cog):
                                 "🧹 Consolidator cleanup: removed %d channels", consol_removed
                             )
 
-                        # Cleanup unused message queue locks to prevent memory growth
-                        from .core.message_queue import message_queue
-
-                        locks_removed = message_queue.cleanup_unused_locks()
-                        if locks_removed > 0:
-                            logger.debug(
-                                "🧹 Message queue lock cleanup: removed %d locks", locks_removed
-                            )
+                        # Cleanup unused message queue locks to prevent memory growth.
+                        # Target the LIVE handler's MessageQueue
+                        # (self.chat_manager._message_queue, created in logic.py) rather than
+                        # the module-level singleton — the live handler uses its own instance,
+                        # so cleaning the singleton would run on an empty object while the live
+                        # instance's processing_locks/_lock_times keep growing. Guard with
+                        # getattr so a not-yet-initialised chat_manager during startup can't
+                        # raise AttributeError. Mirrors how reset_ai / on_guild_channel_delete
+                        # reach self.chat_manager._message_queue.
+                        live_queue = getattr(
+                            getattr(self, "chat_manager", None), "_message_queue", None
+                        )
+                        if live_queue is not None:
+                            locks_removed = live_queue.cleanup_unused_locks()
+                            if locks_removed > 0:
+                                logger.debug(
+                                    "🧹 Message queue lock cleanup: removed %d locks", locks_removed
+                                )
                     except Exception as e:
                         logger.debug("Memory cleanup error (non-critical): %s", e)
 

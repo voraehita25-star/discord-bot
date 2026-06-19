@@ -271,8 +271,14 @@ async def execute_tool_call(
             if not valid:
                 return result
             cmd_args = [result]
-            if args.get("color_hex"):
-                cmd_args.append(args.get("color_hex"))
+            # ``color_hex`` is model-controlled with no type coercion; a
+            # non-string value would later hit ``color_hex.startswith("#")``
+            # in cmd_create_role and raise AttributeError, aborting creation.
+            # Guard with isinstance like the sibling branches so a non-string
+            # falls through to the default color instead.
+            ch = args.get("color_hex")
+            if isinstance(ch, str) and ch.strip():
+                cmd_args.append(ch)
             await cmd_create_role(guild, origin_channel, None, cmd_args, user=user)
             return f"Requested creation of role '{result}'"
 
@@ -421,7 +427,12 @@ async def execute_tool_call(
                 # the top of this function, but discord.py's typeshed types
                 # permissions_for as Member|Role only — cast through Any to
                 # avoid an unhelpful arg-type error here.
-                if not target_channel.permissions_for(cast(Any, user)).read_messages:
+                # Require BOTH view (.read_messages) AND scrollback
+                # (.read_message_history): a user denied history but granted
+                # view could otherwise have the bot fetch & echo denied
+                # backlog back into a channel they can see.
+                perms = target_channel.permissions_for(cast(Any, user))
+                if not (perms.read_messages and perms.read_message_history):
                     return "⛔ Permission denied to read that channel."
             except (AttributeError, TypeError):
                 return "⛔ Permission denied to read that channel."

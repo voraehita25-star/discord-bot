@@ -271,6 +271,10 @@ async def handle_chat_message_claude(
     raw = data.get("content")
     content = (raw if isinstance(raw, str) else "").strip()
     role_preset = data.get("role_preset", "general")
+    # role_preset feeds a dict lookup below; an unhashable value (list/dict)
+    # would raise TypeError inside .get(). Coerce non-str to the default.
+    if not isinstance(role_preset, str):
+        role_preset = "general"
     thinking_enabled = data.get("thinking_enabled", False)
     unrestricted_mode_requested = data.get("unrestricted_mode", False)
     history = data.get("history", [])
@@ -1389,6 +1393,10 @@ async def handle_ai_edit_message_claude(
     _raw_instruction = data.get("instruction", "")
     instruction = str(_raw_instruction).strip() if _raw_instruction is not None else ""
     role_preset = data.get("role_preset", "general")
+    # role_preset feeds a dict lookup below; an unhashable value (list/dict)
+    # would raise TypeError inside .get(). Coerce non-str to the default.
+    if not isinstance(role_preset, str):
+        role_preset = "general"
     thinking_enabled = data.get("thinking_enabled", False)
     user_name = data.get("user_name", "User")
 

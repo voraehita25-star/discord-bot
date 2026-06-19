@@ -604,6 +604,12 @@ class MemorySystem:
         # written/read/popped as a literal None throughout, so the annotation
         # must admit None or mypy/pyright flags the real call sites.
         self._all_memories_cache: dict[int | None, tuple[float, list[Any]]] = {}
+        # Parallel {mem_id: frozenset(tokens)} computed once per cached
+        # all-memories snapshot so _keyword_search doesn't re-run
+        # re.findall on every row of every search. Rows are immutable
+        # after insert, so the tokenization is stable. Dropped on the
+        # same invalidation as the snapshot above.
+        self._memory_token_cache: dict[int, frozenset[str]] = {}
 
         # Debounced save state
         self._save_task: asyncio.Task | None = None
@@ -714,6 +720,20 @@ class MemorySystem:
         # docstring says was fixed. add_memory invalidates both the channel
         # and the None snapshot so new rows still surface within the TTL.
         self._all_memories_cache[channel_id] = (now + self._ALL_MEMORIES_TTL_SECONDS, rows)
+        # Precompute the per-row token set once here so _keyword_search can
+        # look it up instead of re-running re.findall on every row of every
+        # search. Rows are immutable after insert, so a cached entry stays
+        # valid; add_memory drops this alongside the snapshot. ``getattr``
+        # tolerates the no-op-__init__ test construction path.
+        token_cache = getattr(self, "_memory_token_cache", None)
+        if token_cache is None:
+            token_cache = self._memory_token_cache = {}
+        for mem in rows:
+            mem_id = mem.get("id")
+            if mem_id is None or mem_id in token_cache:
+                continue
+            content = (mem.get("content") or "").lower()
+            token_cache[mem_id] = frozenset(re.findall(r"\w+", content))
         self._evict_all_memories_cache_if_needed(now)
         # Same defensive copy on cache-miss return so callers can mutate
         # freely without aliasing into the cache.
@@ -729,6 +749,12 @@ class MemorySystem:
             self._all_memories_cache.clear()
         else:
             self._all_memories_cache.pop(channel_id, None)
+        # Drop the precomputed token sets on the same invalidation; they are
+        # rebuilt lazily when the next snapshot is built. ``getattr`` tolerates
+        # the no-op-__init__ test construction path.
+        token_cache = getattr(self, "_memory_token_cache", None)
+        if token_cache is not None:
+            token_cache.clear()
 
     def _evict_all_memories_cache_if_needed(self, now: float) -> None:
         """Bound the per-channel snapshot cache.
@@ -953,7 +979,15 @@ class MemorySystem:
                             # hold instead of N per-row holds.
                             orphan_vecs: list[np.ndarray] = []
                             orphan_ids: list[int] = []
-                            for mem in all_memories:
+                            # Apply the same MAX_RAG_REBUILD ceiling as the
+                            # full-rebuild path below — the reconcile loop
+                            # previously iterated the ENTIRE table uncapped,
+                            # which on a multi-million-row DB could pin a worker
+                            # thread building a huge orphan list. Slicing keeps
+                            # reconcile bounded; any rows beyond the cap stay
+                            # keyword-searchable via the DB and reconcile next
+                            # restart.
+                            for mem in all_memories[:MAX_RAG_REBUILD]:
                                 mem_id = mem.get("id")
                                 if mem_id is None or mem_id in existing_ids:
                                     continue
@@ -1243,6 +1277,12 @@ class MemorySystem:
         # stale all-memories list for up to the full TTL.
         self._all_memories_cache.pop(channel_id, None)
         self._all_memories_cache.pop(None, None)
+        # Drop the precomputed token sets too — a new row means the next
+        # snapshot must re-tokenize so the new content is keyword-searchable.
+        # ``getattr`` tolerates the no-op-__init__ test construction path.
+        _token_cache = getattr(self, "_memory_token_cache", None)
+        if _token_cache is not None:
+            _token_cache.clear()
 
         logger.info("🧠 Saved RAG memory: %s...", content[:30])
         return True
@@ -1321,9 +1361,22 @@ class MemorySystem:
             return []
 
         scored = []
+        # ``getattr`` default keeps callers that build the system via a no-op
+        # __init__ (test helpers) working — the cache is a pure optimization,
+        # so an empty mapping just falls back to live tokenization per row.
+        token_cache = getattr(self, "_memory_token_cache", None) or {}
         for mem in memories:
+            # ``content`` is still needed for the exact-phrase boost below, but
+            # the expensive part — re.findall over the content — is looked up
+            # from the token set precomputed when the all-memories snapshot was
+            # built (rows are immutable after insert). Fall back to a live
+            # re.findall only for rows that never passed through the snapshot
+            # cache (e.g. a directly-supplied list), preserving old behavior.
             content = (mem.get("content") or "").lower()
-            content_tokens = set(re.findall(r"\w+", content))
+            mem_id = mem.get("id")
+            content_tokens = token_cache.get(mem_id) if mem_id is not None else None
+            if content_tokens is None:
+                content_tokens = frozenset(re.findall(r"\w+", content))
 
             if not content_tokens:
                 continue
@@ -1518,10 +1571,19 @@ class MemorySystem:
         else:
             return []
 
-        # Build final results
+        # Build final results.
+        #
+        # Build over a HEADROOM of merged candidates (not just the first
+        # `limit`) so time decay — applied per-candidate below — can promote a
+        # slightly-lower-ranked-but-fresher memory above a stale top hit. The
+        # previous code broke at `len(results) >= limit` BEFORE decay, so decay
+        # only reshuffled the first `limit` rows and any fresher candidate
+        # sitting just past the cutoff was lost. We slice back to `limit` AFTER
+        # the final-score sort, so the returned count stays == limit.
+        candidate_cap = limit * 3
         results: list[MemoryResult] = []
         for mem_id, score in merged:
-            if len(results) >= limit:
+            if len(results) >= candidate_cap:
                 break
 
             # Resolve from the global LRU cache first, then fall back to the
@@ -1570,8 +1632,11 @@ class MemorySystem:
                 )
             )
 
-        # Sort by final score
+        # Sort by final (decay-adjusted) score, THEN truncate to the requested
+        # limit. Sorting before slicing is what lets decay reorder candidates
+        # across the original cutoff; the final count stays == limit.
         results.sort(key=lambda x: x.score, reverse=True)
+        results = results[:limit]
 
         if results:
             logger.info("🧠 Hybrid search found %d memories (source: %s)", len(results), source)
@@ -1597,6 +1662,11 @@ class MemorySystem:
         """Linear scan search returning (id, similarity) pairs (sync, runs in thread)."""
         scored = []
 
+        # query_vec is invariant across the loop, so compute its norm once
+        # rather than per row. The norm_a == 0 -> similarity 0.0 semantics are
+        # preserved below.
+        norm_a = float(np.linalg.norm(query_vec))
+
         for mem in memories:
             try:
                 mem_vec = np.frombuffer(mem["embedding"], dtype=np.float32)
@@ -1607,7 +1677,6 @@ class MemorySystem:
                     continue
 
                 dot_product = float(np.dot(query_vec, mem_vec))
-                norm_a = float(np.linalg.norm(query_vec))
                 norm_b = float(np.linalg.norm(mem_vec))
 
                 similarity = 0.0 if norm_a == 0 or norm_b == 0 else dot_product / (norm_a * norm_b)

@@ -495,6 +495,11 @@ class MessageQueue:
                 self.processing_locks.pop(channel_id, None)
                 self._lock_times.pop(channel_id, None)
                 self.cancel_flags.pop(channel_id, None)
+                # Also drop the residual empty pending_messages entry. The
+                # ``self.pending_messages.get(channel_id)`` skip above means only
+                # empty/absent lists reach here, so nothing queued is lost — this
+                # just stops the empty-list entry from lingering forever.
+                self.pending_messages.pop(channel_id, None)
                 cleaned += 1
 
         if cleaned > 0:

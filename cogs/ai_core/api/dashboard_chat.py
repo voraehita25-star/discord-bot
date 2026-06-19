@@ -70,7 +70,8 @@ async def _validate_and_decode_images(
         try:
             if "," in img_data:
                 header, b64_data = img_data.split(",", 1)
-                mime_type = header.split(";")[0].split(":")[1] if ":" in header else "image/png"
+                first = header.split(";")[0]
+                mime_type = first.split(":", 1)[1] if ":" in first else "image/png"
             else:
                 b64_data = img_data
                 mime_type = "image/png"

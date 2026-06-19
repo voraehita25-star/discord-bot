@@ -245,10 +245,13 @@ class MediaProcessorWrapper:
     def from_base64(self, encoded: str) -> bytes:
         """Decode base64 string to bytes.
 
-        Normalize the URL-safe variant (``-``/``_`` for ``+``/``/``) so
-        the Python fallback decodes inputs the Rust path accepts —
-        otherwise a URL-safe payload from a caller that exercised the
-        Rust path crashes when falling back here.
+        Normalize the URL-safe variant (``-``/``_`` for ``+``/``/``) before
+        decoding, which makes the Python fallback intentionally *more*
+        permissive than the Rust path: ``decode_base64`` uses the base64
+        STANDARD engine, which rejects the URL-safe alphabet, whereas this
+        fallback additionally accepts it. (This is the opposite of parity —
+        a URL-safe payload that the Rust path would reject decodes fine
+        here.)
         """
         if self._use_rust:
             return self._processor.decode_base64(encoded)  # type: ignore[no-any-return]

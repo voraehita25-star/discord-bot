@@ -288,9 +288,19 @@ class HumanReadableFormatter(logging.Formatter):
 
         base = f"{timestamp} | {level_str} | {record.name}{ctx_str} | {message}"
 
-        # Add exception if present
+        # Add exception if present. Redact secrets in the rendered traceback —
+        # otherwise a secret in an exception message would leak to the console.
+        # Mirrors StructuredFormatter, which leaf-scrubs its 'stacktrace' field
+        # through the same _redact_sensitive helper via _scrub_leaves.
         if record.exc_info:
-            base += "\n" + self.formatException(record.exc_info)
+            exc_text = self.formatException(record.exc_info)
+            try:
+                from utils.monitoring.logger import _redact_sensitive
+
+                exc_text = StructuredFormatter._scrub_leaves(exc_text, _redact_sensitive)
+            except Exception:  # pragma: no cover — never let logging crash
+                pass
+            base += "\n" + exc_text
 
         return base
 

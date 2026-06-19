@@ -166,8 +166,13 @@ impl RagEngine {
                 && entry.importance.is_finite()
                 && entry.embedding.iter().all(|v| v.is_finite())
             {
-                entries.insert(entry.id.clone(), entry);
-                added += 1;
+                // Count only newly inserted ids — HashMap::insert returns
+                // Some(old) when the id already existed (de-dupe replace), so a
+                // batch with duplicate ids must not over-report. Keeps the
+                // returned count == net growth in engine size (parity with load()).
+                if entries.insert(entry.id.clone(), entry).is_none() {
+                    added += 1;
+                }
             }
         }
 

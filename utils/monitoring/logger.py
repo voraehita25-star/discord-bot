@@ -181,7 +181,7 @@ class JSONLogFormatter(logging.Formatter):
 
         # Add exception info if present
         if record.exc_info:
-            log_entry["exception"] = self.formatException(record.exc_info)
+            log_entry["exception"] = _redact_sensitive(self.formatException(record.exc_info))
 
         # ensure_ascii=False so multibyte characters land verbatim instead
         # of being \u-escaped — matches the policy in health_api.py.
@@ -315,6 +315,17 @@ class SensitiveDataFilter(logging.Filter):
                 )
         if isinstance(record.msg, str):
             record.msg = _redact_sensitive(record.msg)
+        # Scrub exception tracebacks too — secrets in exception messages would
+        # otherwise leak through every handler's formatException(). Render the
+        # traceback once into record.exc_text (which standard formatters reuse
+        # verbatim instead of re-rendering when it's already set) so the cleaned
+        # text is shared by console/file/JSONL handlers.
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            record.exc_text = _redact_sensitive(record.exc_text)
+        elif record.exc_text:
+            record.exc_text = _redact_sensitive(record.exc_text)
         return True
 
 

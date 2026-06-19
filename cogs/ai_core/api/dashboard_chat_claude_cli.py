@@ -2280,6 +2280,20 @@ async def _run_claude_subprocess(
                 "claude -p stdout frame exceeded reader limit; ending stream early: %s",
                 _overflow,
             )
+            # Mark the turn degraded: the terminal `result` event (usage /
+            # is_error) lives AFTER the oversized frame we just failed to read,
+            # so final_usage stays None and the caller would otherwise emit
+            # *estimated* tokens as a confident success. Set final_error_* (only
+            # if no earlier real error was already captured) so the rc!=0 path
+            # below surfaces this as a genuine failure instead. Note: if the
+            # child still happens to exit 0 here (rc==0), the success path emits
+            # estimated — not exact — usage, which is unavoidable without
+            # unbounded draining of the oversized frame.
+            if not final_error_text:
+                final_error_text = (
+                    "stdout frame exceeded reader limit; terminal result event "
+                    "(usage) was not received"
+                )
         finally:
             # Always wait for the stderr drain to finish so we don't leak
             # the task. If consume_stdout raised, give stderr a brief
@@ -2428,6 +2442,11 @@ async def handle_chat_message_claude_cli(
     raw_content = data.get("content", "")
     content = (raw_content if isinstance(raw_content, str) else "").strip()
     role_preset = data.get("role_preset", "general")
+    # A non-string role_preset (e.g. a JSON null/number from a malformed client)
+    # would later be used as a dict key into DASHBOARD_ROLE_PRESETS; coerce it to
+    # the safe default so the lookup falls back to "general" instead of crashing.
+    if not isinstance(role_preset, str):
+        role_preset = "general"
     history = data.get("history") or []
     user_name = data.get("user_name", "User")
     # Honor DASHBOARD_ALLOW_UNRESTRICTED so the CLI backend matches the SDK +
@@ -3286,6 +3305,11 @@ async def handle_ai_edit_message_claude_cli(
     target_message_id = data.get("target_message_id")
     instruction = (data.get("instruction") or "").strip()
     role_preset = data.get("role_preset", "general")
+    # A non-string role_preset (e.g. a JSON null/number from a malformed client)
+    # would later be used as a dict key into DASHBOARD_ROLE_PRESETS; coerce it to
+    # the safe default so the lookup falls back to "general" instead of crashing.
+    if not isinstance(role_preset, str):
+        role_preset = "general"
     user_name = data.get("user_name", "User")
     thinking_enabled = bool(data.get("thinking_enabled"))
 

@@ -132,6 +132,12 @@ class RagEngineWrapper:
             added = 0
             for e in entries:
                 try:
+                    # Count only net-new ids: add() overwrites an existing id via
+                    # dict assignment (no signal), so a duplicate id must not
+                    # inflate the count. Compare stored size across the add() to
+                    # match the Rust backend, which reports actual stored count.
+                    with self._entries_lock:
+                        before = len(self._entries)
                     self.add(
                         e["id"],
                         e["text"],
@@ -139,7 +145,9 @@ class RagEngineWrapper:
                         e.get("timestamp"),
                         e.get("importance", 1.0),
                     )
-                    added += 1
+                    with self._entries_lock:
+                        if len(self._entries) > before:
+                            added += 1
                 except (ValueError, KeyError, TypeError):
                     logger.debug("Skipping malformed RAG entry in add_batch", exc_info=True)
                     continue

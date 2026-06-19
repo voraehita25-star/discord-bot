@@ -69,6 +69,16 @@ _GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
 # an in-flight slow GIF encode.
 atexit.register(lambda: _GIF_ENCODE_EXECUTOR.shutdown(wait=False, cancel_futures=True))
 
+# Gate concurrent GIF→MP4 conversions to the encode-pool width (2). Each
+# in-flight conversion otherwise parks a default-executor thread for up to 60s
+# (``future.result(timeout=60.0)``) WHILE waiting on one of only two encode-pool
+# slots — under a burst that starves the shared default pool with conversions
+# that can't even start encoding. The semaphore caps in-flight conversions at
+# the encode width so excess callers wait on the (cheap) semaphore instead of
+# holding a default-pool thread hostage. Bound to the running loop lazily on
+# first acquire (Python 3.10+), so construction at import time is safe.
+_GIF_CONVERT_SEMAPHORE = asyncio.Semaphore(2)
+
 # ==================== Image Caching ====================
 
 # Cache configuration - limit memory usage for image bytes
@@ -758,7 +768,14 @@ async def process_attachments(
                     # whole helper in a worker thread to keep the loop
                     # responsive across all channels while encode runs.
                     loop = asyncio.get_running_loop()
-                    video_bytes = await loop.run_in_executor(None, convert_gif_to_video, image_data)
+                    # Hold the encode-width semaphore for the duration so the
+                    # default-pool thread we're about to park isn't waiting on a
+                    # busy encode slot — excess concurrent GIFs queue on the
+                    # semaphore instead of starving the shared default executor.
+                    async with _GIF_CONVERT_SEMAPHORE:
+                        video_bytes = await loop.run_in_executor(
+                            None, convert_gif_to_video, image_data
+                        )
                     if video_bytes:
                         video_parts.append({"data": video_bytes, "mime_type": "video/mp4"})
                         logger.info("Converted animated GIF to video from %s", user_name)

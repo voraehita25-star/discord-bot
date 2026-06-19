@@ -600,9 +600,19 @@ class MusicBot(commands.AutoShardedBot):
                         os.getenv("PROMETHEUS_PORT"),
                     )
                     metrics_port = 9090
+                if not 1 <= metrics_port <= 65535:
+                    logger.warning(
+                        "PROMETHEUS_PORT=%r out of range (1-65535) — falling back to 9090",
+                        metrics_port,
+                    )
+                    metrics_port = 9090
                 if metrics.start_server(port=metrics_port):
                     logger.info(
                         "📊 Prometheus metrics available at http://localhost:%d", metrics_port
+                    )
+                else:
+                    logger.warning(
+                        "Prometheus metrics server failed to bind on port %d", metrics_port
                     )
                 self._metrics_started = True
 
