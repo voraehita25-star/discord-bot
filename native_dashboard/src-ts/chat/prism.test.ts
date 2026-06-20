@@ -9,8 +9,8 @@
  * fallback language marker.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { canonicalPrismLang, highlightCodeBlocks } from './prism.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { canonicalPrismLang, highlightCodeBlocks, loadPrismLanguage } from './prism.js';
 
 interface PrismLike {
     highlightElement: (el: Element) => void;
@@ -155,5 +155,62 @@ describe('highlightCodeBlocks — with stub', () => {
         expect(highlighted.length).toBe(2);
         expect(highlighted[0].textContent).toBe('a');
         expect(highlighted[1].textContent).toBe('b');
+    });
+});
+
+describe('loadPrismLanguage — SRI on lazily injected <script> (B8/OPP-06)', () => {
+    let appendSpy: ReturnType<typeof vi.spyOn> | null;
+
+    beforeEach(() => {
+        // Prism present but the target grammar not yet loaded, so the loader
+        // injects a <script>. Intercept appendChild to capture it and fire
+        // onload synchronously (jsdom never resolves the real network load).
+        const langMap: Record<string, unknown> = {};
+        (window as unknown as { Prism: PrismLike }).Prism = {
+            highlightElement: () => {},
+            languages: langMap,
+        };
+        appendSpy = vi.spyOn(document.head, 'appendChild').mockImplementation(
+            ((node: Node) => {
+                const el = node as HTMLScriptElement;
+                // Mark the grammar as registered so onload doesn't evict the cache.
+                langMap[el.src.match(/prism-([^.]+)\.min\.js/)?.[1] ?? ''] = {};
+                queueMicrotask(() => el.onload?.(new Event('load')));
+                return node;
+            }) as typeof document.head.appendChild,
+        );
+    });
+
+    afterEach(() => {
+        appendSpy?.mockRestore();
+        appendSpy = null;
+        removePrism();
+    });
+
+    it('sets integrity (sha384) + crossOrigin on the injected script', async () => {
+        await loadPrismLanguage('python');
+        expect(appendSpy).toHaveBeenCalled();
+        const script = appendSpy!.mock.calls[appendSpy!.mock.calls.length - 1][0] as HTMLScriptElement;
+        expect(script.src).toContain('vendor/prism/prism-python.min.js');
+        expect(script.integrity).toMatch(/^sha384-/);
+        expect(script.crossOrigin).toBe('anonymous');
+    });
+
+    it('resolves aliases before picking the SRI hash (rs → rust)', async () => {
+        await loadPrismLanguage('rs');
+        const script = appendSpy!.mock.calls[appendSpy!.mock.calls.length - 1][0] as HTMLScriptElement;
+        expect(script.src).toContain('prism-rust.min.js');
+        expect(script.integrity).toMatch(/^sha384-/);
+    });
+
+    it('sets integrity on every injected dependency script too', async () => {
+        // typescript → javascript → clike: each injected bundle must be pinned.
+        await loadPrismLanguage('typescript');
+        const scripts = appendSpy!.mock.calls.map(c => c[0] as HTMLScriptElement);
+        expect(scripts.length).toBeGreaterThanOrEqual(2);
+        for (const s of scripts) {
+            expect(s.integrity).toMatch(/^sha384-/);
+            expect(s.crossOrigin).toBe('anonymous');
+        }
     });
 });

@@ -912,3 +912,132 @@ describe('renderMessages — scroll preservation for a scrolled-up reader', () =
         expect(container.scrollTop).toBe(5000);        // == scrollHeight
     });
 });
+
+// ============================================================================
+// updateScrollFab — a11y label + live region (INT-05)
+// ============================================================================
+
+describe('updateScrollFab — a11y (INT-05)', () => {
+    it('keeps the base aria-label + hidden badge when no new messages', () => {
+        const cm = mountDomAndChat();
+        cm.newMessagesWhileScrolledUp = 0;
+        cm.updateScrollFab(true);
+        const fab = document.getElementById('scroll-to-bottom-fab')!;
+        const badge = document.getElementById('scroll-new-count')!;
+        expect(fab.getAttribute('aria-label')).toBe('Scroll to bottom');
+        expect(badge.classList.contains('hidden')).toBe(true);
+        // The badge is a polite live region so AT announces count changes.
+        expect(badge.getAttribute('aria-live')).toBe('polite');
+    });
+
+    it('sets a count-aware aria-label + reveals the live badge when n>0', () => {
+        const cm = mountDomAndChat();
+        cm.newMessagesWhileScrolledUp = 3;
+        cm.updateScrollFab(true);
+        const fab = document.getElementById('scroll-to-bottom-fab')!;
+        const badge = document.getElementById('scroll-new-count')!;
+        expect(fab.getAttribute('aria-label')).toBe('Scroll to latest, 3 new messages');
+        expect(badge.textContent).toBe('3');
+        expect(badge.classList.contains('hidden')).toBe(false);
+        expect(badge.getAttribute('aria-live')).toBe('polite');
+    });
+
+    it('uses the singular form for exactly one new message', () => {
+        const cm = mountDomAndChat();
+        cm.newMessagesWhileScrolledUp = 1;
+        cm.updateScrollFab(true);
+        const fab = document.getElementById('scroll-to-bottom-fab')!;
+        expect(fab.getAttribute('aria-label')).toBe('Scroll to latest, 1 new message');
+    });
+});
+
+// ============================================================================
+// failed-send — keep bubble + inline Retry (INT-04)
+// ============================================================================
+
+describe('sendMessage — failed send keeps the bubble (INT-04)', () => {
+    function withConversation(): import('./chat-manager.js').ChatManager {
+        const cm = mountDomAndChat();
+        cm.currentConversation = {
+            id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+            is_starred: false, created_at: '2026-04-01',
+        };
+        return cm;
+    }
+
+    it('keeps the user message, marks it failed, and restores the draft text', () => {
+        const cm = withConversation();
+        (cm.wsClient.send as ReturnType<typeof vi.fn>).mockReturnValue(false); // send fails
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement;
+        input.value = 'will fail';
+        cm.sendMessage();
+        // Bubble is NOT popped — it stays in the list flagged failed.
+        expect(cm.messages.length).toBe(1);
+        expect(cm.messages[0].role).toBe('user');
+        expect(cm.messages[0].failed).toBe(true);
+        // Streaming gate released so the user isn't locked out.
+        expect(cm.isStreaming).toBe(false);
+        // Draft text restored into the composer.
+        expect(input.value).toBe('will fail');
+    });
+
+    it('drops an abandoned failed message from the next send history (no phantom turn)', () => {
+        const cm = withConversation();
+        const sendMock = cm.wsClient.send as ReturnType<typeof vi.fn>;
+        sendMock.mockReturnValue(false);  // first send fails -> bubble kept, flagged failed
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'phantom';
+        cm.sendMessage();
+        expect(cm.messages[0].failed).toBe(true);
+
+        // User abandons the failed bubble (no retry) and sends a different message.
+        sendMock.mockReturnValue(true);
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'real message';
+        cm.sendMessage();
+
+        // The successful send's history payload must NOT replay the never-delivered
+        // failed turn (historyToSend filters out failed messages).
+        const lastCall = sendMock.mock.calls.at(-1)?.[0] as { history?: { content: string }[] };
+        const contents = (lastCall.history ?? []).map((h) => h.content);
+        expect(contents, 'abandoned failed turn must not appear in outgoing history').not.toContain('phantom');
+    });
+
+    it('renders the .send-failed rail + role=alert + a Retry button', () => {
+        const cm = withConversation();
+        (cm.wsClient.send as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'oops';
+        cm.sendMessage();
+        const failed = document.querySelector('.chat-message.send-failed');
+        expect(failed).not.toBeNull();
+        expect(failed!.getAttribute('role')).toBe('alert');
+        expect(failed!.querySelector('.retry-send')).not.toBeNull();
+    });
+
+    it('Retry re-runs the send path and clears the failed flag on success', () => {
+        const cm = withConversation();
+        const sendMock = cm.wsClient.send as ReturnType<typeof vi.fn>;
+        sendMock.mockReturnValue(false);  // first send fails
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'retry me';
+        cm.sendMessage();
+        expect(cm.messages[0].failed).toBe(true);
+
+        sendMock.mockReturnValue(true);   // reconnected — retry succeeds
+        const retryBtn = document.querySelector('.retry-send') as HTMLButtonElement;
+        retryBtn.click();
+        // A single non-failed user message remains (the retried send re-pushed it).
+        expect(cm.messages.length).toBe(1);
+        expect(cm.messages[0].role).toBe('user');
+        expect(cm.messages[0].content).toBe('retry me');
+        expect(cm.messages[0].failed).toBeFalsy();
+    });
+
+    it('Retry re-marks the bubble failed when the resend also fails', () => {
+        const cm = withConversation();
+        (cm.wsClient.send as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'still down';
+        cm.sendMessage();
+        const retryBtn = document.querySelector('.retry-send') as HTMLButtonElement;
+        retryBtn.click();
+        expect(cm.messages.length).toBe(1);
+        expect(cm.messages[0].failed).toBe(true);
+    });
+});

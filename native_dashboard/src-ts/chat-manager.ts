@@ -1398,7 +1398,11 @@ export class ChatManager {
         // but keep `created_at` so the backend can prefix each message with its
         // send timestamp — without it the AI can't tell hours-long gaps from
         // back-to-back replies.
-        const historyToSend = this.messages.slice(-20).map(m => ({
+        // Drop any abandoned failed-send bubble (kept in this.messages with
+        // failed:true so its inline Retry can re-run) from the outgoing history —
+        // otherwise a never-delivered user turn would be replayed to the backend
+        // as a real turn with no assistant reply (phantom-turn desync).
+        const historyToSend = this.messages.slice(-20).filter(m => !m.failed).map(m => ({
             role: m.role,
             content: m.content,
             created_at: m.created_at,
@@ -1460,15 +1464,22 @@ export class ChatManager {
 
         if (!sendOk) {
             // Roll back the streaming gate so the user isn't locked out
-            // of sending further messages until the WS reconnects, and
-            // drop the user-message that was already pushed locally so
-            // it doesn't linger in the rendered list as a phantom turn.
+            // of sending further messages until the WS reconnects.
             this.isStreaming = false;
-            this.messages.pop();
+            // INT-04: KEEP the optimistic user bubble in place instead of
+            // popping it — mark it failed so the template renders the
+            // ``.send-failed`` rail + inline Retry + role="alert". The retry
+            // handler (bound in renderMessages) re-runs the send path.
+            const lastMsg = this.messages[this.messages.length - 1];
+            if (lastMsg && lastMsg.role === 'user') {
+                lastMsg.failed = true;
+            }
             this.renderMessages();
             // Restore the typed text + draft — both were cleared above on
             // the optimistic path, so a failed send used to destroy the
-            // user's message entirely (only a toast remained).
+            // user's message entirely (only a toast remained). Keeping the
+            // draft lets the user resend after a reconnect even if they
+            // navigate away from the failed bubble.
             if (input) {
                 input.value = content;
                 this.autoResizeInput();
@@ -1483,6 +1494,37 @@ export class ChatManager {
         // Clear attached images + documents after sending
         this.imageAttach.clear();
         this.docAttach.clear();
+    }
+
+    /**
+     * Retry a failed optimistic user message (INT-04). Drops the failed bubble
+     * from the list, restores its text into the composer, and re-runs the
+     * normal send path so the same message is re-attempted.
+     *
+     * Deferral (documented): attachments (images/documents) that rode on the
+     * original send are NOT re-attached here — they were cleared from the
+     * composer on the optimistic path and the retry resends text only. A user
+     * who needs to resend files re-attaches them. This keeps the retry path
+     * simple and avoids re-serialising stale base64 payloads.
+     */
+    retryFailedSend(idx: number): void {
+        const msg = this.messages[idx];
+        if (!msg || msg.role !== 'user' || !msg.failed) return;
+        if (this.isStreaming) {
+            showToast('Wait for the current response to finish', { type: 'warning' });
+            return;
+        }
+        const content = msg.content;
+        // Remove the failed bubble so sendMessage() re-pushes a fresh one
+        // (re-marking it failed if the resend also fails).
+        this.messages.splice(idx, 1);
+        this.renderMessages();
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        if (input) {
+            input.value = content;
+            this.autoResizeInput();
+        }
+        this.sendMessage();
     }
 
     appendStreamingMessage(mode: string = ''): void {
@@ -2028,6 +2070,14 @@ export class ChatManager {
             });
         });
 
+        // Setup retry-send clicks for failed optimistic user messages (INT-04).
+        container.querySelectorAll('.retry-send').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt((btn as HTMLElement).dataset.msgIdx || '-1', 10);
+                if (idx >= 0) this.retryFailedSend(idx);
+            });
+        });
+
         // Setup edit button clicks. Always pass radix 10 to ``parseInt``
         // — without it, JS engines may interpret leading-zero strings as
         // octal in non-strict mode, silently corrupting message IDs.
@@ -2282,19 +2332,39 @@ export class ChatManager {
     /** Count of messages that arrived while the user was scrolled up. */
     newMessagesWhileScrolledUp: number = 0;
 
+    /** Base aria-label for the scroll FAB (matches index.html's static value). */
+    private static readonly SCROLL_FAB_BASE_LABEL = 'Scroll to bottom';
+
     /** Toggle the floating scroll-to-bottom button + optional new-count badge. */
     updateScrollFab(show: boolean): void {
         const fab = document.getElementById('scroll-to-bottom-fab');
         const badge = document.getElementById('scroll-new-count');
         if (!fab) return;
         fab.classList.toggle('hidden', !show);
+        const n = this.newMessagesWhileScrolledUp;
         if (badge) {
-            if (this.newMessagesWhileScrolledUp > 0) {
-                badge.textContent = String(this.newMessagesWhileScrolledUp);
+            // Announce off-screen new-message arrivals to AT users (INT-05).
+            // The badge text is the live region content; making it polite means
+            // a screen reader speaks "3" etc. when the count changes.
+            badge.setAttribute('aria-live', 'polite');
+            if (n > 0) {
+                badge.textContent = String(n);
                 badge.classList.remove('hidden');
             } else {
+                badge.textContent = '0';
                 badge.classList.add('hidden');
             }
+        }
+        // Give the FAB itself a descriptive label that reflects the unread count
+        // so AT users hear "Scroll to latest, N new message(s)" instead of a
+        // bare "Scroll to bottom" with no hint that messages are waiting.
+        if (n > 0) {
+            fab.setAttribute(
+                'aria-label',
+                `Scroll to latest, ${n} new message${n === 1 ? '' : 's'}`,
+            );
+        } else {
+            fab.setAttribute('aria-label', ChatManager.SCROLL_FAB_BASE_LABEL);
         }
     }
 

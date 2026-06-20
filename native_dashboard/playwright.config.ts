@@ -26,6 +26,12 @@ export default defineConfig({
         screenshot: 'only-on-failure',
         trace: 'retain-on-failure',
         video: 'off',
+        // Pin the OS color-scheme to dark for the whole suite. The app now
+        // honors prefers-color-scheme on first run (A11Y-05), so without this
+        // pin the suite would inherit Playwright's default 'light' and render
+        // every "dark" baseline as light. Dark is this Midnight app's canonical
+        // surface; the OS-light first-run branch is covered by app.test.ts.
+        colorScheme: 'dark',
     },
 
     projects: [

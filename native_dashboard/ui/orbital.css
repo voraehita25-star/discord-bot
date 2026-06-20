@@ -39,6 +39,26 @@
 }
 
 /* ============================================================================
+   TOKEN MAP — canonical surface/elevation vocabulary (VIS-05, documentation
+   only; NO tokens deleted — legacy styles.css rules still reference the aliases).
+   ----------------------------------------------------------------------------
+   PAGE CANVAS      --bg-primary / --bg-secondary / --bg-tertiary
+                      → the full-window background field (body + page washes).
+   CHIPS / FILLS    --surface-1 / --surface-2 / --surface-3
+                      → inputs, badges, small tinted fills, list rows.
+   PANELS           --card-bg / --sidebar-bg / --glass
+                      → opaque cards, sidebar, glass chrome (content sits here).
+   ELEVATION        --shadow-sm / --shadow-md / --shadow-lg / --shadow-glow
+                      → flat HUD depth ramp.
+                    --shadow-*-3d  → DEPRECATED-ALIAS of the flat ramp above,
+                      kept only so surviving styles.css refs resolve. Do NOT
+                      author new rules against the *-3d names.
+   EMPHASIS/ATMOS   --accent-sakura* / --glow-sakura / --aurora / --grain
+                      → decorative emphasis + atmosphere ONLY (never load-bearing
+                      text contrast). The cyan ramp stays the DATA/HUD layer.
+   ============================================================================ */
+
+/* ============================================================================
    TOKENS — DARK (default). Redefines both the v1 and v2 token sets to ORBITAL.
    ============================================================================ */
 :root {
@@ -78,6 +98,18 @@
     --glow-pink: rgba(61, 245, 255, 0.42);
     --glow-purple: rgba(106, 166, 255, 0.38);
     --glow-amber: rgba(255, 176, 0, 0.40);
+
+    /* sakura — emphasis + atmosphere ONLY (cyan stays the data/HUD layer). */
+    --accent-sakura: #ff5a8a;
+    --accent-sakura-soft: rgba(255, 90, 138, .14);
+    --glow-sakura: rgba(255, 90, 138, .40);
+    /* deep-red danger fill: white text 4.92–6.45:1 (AA) over either stop. */
+    --danger-grad: linear-gradient(135deg, #d62a40 0%, #b71f33 100%);
+    /* aurora: soft rose + azure corner washes, painted UNDER the body washes. */
+    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(255, 90, 138, .10), transparent 58%),
+              radial-gradient(820px 520px at 102% 0%, rgba(106, 166, 255, .08), transparent 56%);
+    /* grain: static fractal-noise tile (theme-agnostic; no animation). */
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 
     /* brand / surfaces */
     --brand-grad: linear-gradient(135deg, #2fe6ff 0%, #5b8cff 100%);
@@ -124,11 +156,13 @@
     --space-5: 24px; --space-6: 32px; --space-8: 48px;
     --r-pill: 999px;
 
-    /* easing — one curve, three legacy aliases collapse onto it */
-    --ease: cubic-bezier(.22, 1, .36, 1);
-    --ease-smooth: var(--ease);
-    --ease-bounce: var(--ease);
-    --ease-out-expo: var(--ease);
+    /* easing — now four DISTINCT curves (were all aliased onto --ease). */
+    --ease: cubic-bezier(.22, 1, .36, 1);            /* base, unchanged */
+    --ease-smooth: cubic-bezier(.4, 0, .2, 1);       /* hover/color transitions */
+    --ease-out-expo: cubic-bezier(.16, 1, .3, 1);    /* reveal/fill animations */
+    --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);  /* single gentle overshoot (entrances) */
+    /* duration ramp (theme-agnostic) */
+    --dur-fast: .14s; --dur-base: .22s; --dur-slow: .45s;
 
     /* fluid type scale */
     --step--1: clamp(11px, .72rem + .1vw, 12.5px);
@@ -194,9 +228,13 @@ html[data-theme="light"],
     --surface-2: #eef5fa;
     --surface-3: #e0ecf4;
 
-    --accent-cyan: #097c96;
+    /* Deepened from #097c96: as accent TEXT (logo, kbd shortcuts, message-name)
+       #097c96 was ~3.7:1 on the light wash (sub-AA). #075f73 clears AA (~5.8:1)
+       for small text; everything else that reads --accent-cyan (icons, corner
+       brackets, focus outline, nav rail, kbd background) only gains contrast. */
+    --accent-cyan: #075f73;
     --accent-azure: #1656c2;
-    --accent-pink: #097c96;
+    --accent-pink: #075f73;
     --accent-purple: #1656c2;
     --accent-green: #0a8a55;
     --accent-red: #c41f2f;
@@ -206,6 +244,16 @@ html[data-theme="light"],
     --glow-pink: rgba(9, 124, 150, 0.20);
     --glow-purple: rgba(22, 86, 194, 0.16);
     --glow-amber: rgba(171, 88, 7, 0.18);
+
+    /* sakura (light) — deeper rose so emphasis stays legible on paper. */
+    --accent-sakura: #c2185b;
+    --accent-sakura-soft: rgba(194, 24, 91, .10);
+    --glow-sakura: rgba(194, 24, 91, .22);
+    /* same deep-red danger fill; white text still AA. */
+    --danger-grad: linear-gradient(135deg, #d62a40 0%, #b71f33 100%);
+    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(194, 24, 91, .06), transparent 58%),
+              radial-gradient(820px 520px at 102% 0%, rgba(22, 86, 194, .05), transparent 56%);
+    /* --grain + eases + dur inherit from :root (theme-agnostic). */
 
     --brand-grad: linear-gradient(135deg, #097c96 0%, #1656c2 100%);
     --brand-soft: linear-gradient(135deg, rgba(9, 124, 150, 0.10), rgba(22, 86, 194, 0.06));
@@ -261,17 +309,21 @@ html[data-theme="light"],
    ============================================================================ */
 body {
     font-family: var(--font-ui);
+    /* cyan/amber washes stay on top; --aurora (sakura+azure) paints UNDER them
+       (later layers render behind earlier ones), and --bg-primary is the floor. */
     background:
         radial-gradient(1200px 760px at 6% -12%, rgba(45, 200, 255, 0.10), transparent 58%),
         radial-gradient(980px 620px at 104% -6%, rgba(255, 176, 0, 0.06), transparent 54%),
+        var(--aurora),
         var(--bg-primary);
     background-attachment: fixed;
     letter-spacing: 0.01em;
 }
 html[data-theme="light"] body {
-    /* clean paper with a faint cyan corner wash — no muddy grey gradient */
+    /* clean paper with a faint cyan corner wash + the rose/azure aurora under it */
     background:
         radial-gradient(1100px 600px at 0% -10%, rgba(9, 124, 150, 0.06), transparent 60%),
+        var(--aurora),
         linear-gradient(180deg, #f5f9fc 0%, #e7eff7 100%);
     background-attachment: fixed;
 }
@@ -322,6 +374,22 @@ body::after {
     background-size: auto;
 }
 html[data-theme="light"] body::after { opacity: 0; }
+
+/* film grain — a static (NON-animated) fractal-noise tile at very low opacity,
+   soft-light blended so it textures the canvas without touching card/content
+   contrast (washes + grain sit behind the opaque cards). reduced-motion safe
+   because nothing here animates. Painted on html::after (both body pseudos are
+   already in use) to keep it a single decorative, pointer-transparent layer. */
+html::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: var(--grain);
+    opacity: .03;
+    mix-blend-mode: soft-light;
+}
 
 /* retire the anime-era decorations */
 .anime-characters { display: none !important; }
@@ -505,7 +573,7 @@ html[data-theme="light"] .quick-actions:hover {
     .control-card,
     .chart-card,
     .data-section {
-        transition: transform .22s var(--ease), box-shadow .22s var(--ease), border-color .22s var(--ease);
+        transition: transform var(--dur-base) var(--ease-smooth), box-shadow var(--dur-base) var(--ease-smooth), border-color var(--dur-base) var(--ease-smooth);
     }
     .control-card:hover,
     .chart-card:hover,
@@ -575,7 +643,9 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
    (#stat-messages etc.) are untouched. */
 .stat-card--hero {
     grid-column: span 2;
+    /* cyan data wash + a sakura emphasis bloom over it (sakura = emphasis only) */
     background:
+        radial-gradient(120% 140% at 100% 0%, var(--accent-sakura-soft), transparent 60%),
         radial-gradient(120% 140% at 100% 0%, var(--cyan-100), transparent 60%),
         var(--card-bg);
     border-top-color: var(--border-focus);
@@ -611,7 +681,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.14em;
-    font-size: 13px;
+    font-size: var(--step--1);
     color: var(--text-secondary);
 }
 
@@ -659,7 +729,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 .control-card h2 { font-family: var(--font-display); letter-spacing: 0.04em; }
 #bot-status-text {
     font-family: var(--font-mono);
-    font-size: 12.5px;
+    font-size: 12.5px; /* deliberate off-scale exception: a fixed live-telemetry readout */
     letter-spacing: 0.04em;
     color: var(--text-tertiary);
 }
@@ -669,13 +739,19 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
    ============================================================================ */
 .sidebar { border-right: 1px solid var(--border-strong); }
 .logo-text { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.10em; font-weight: 700; }
+/* Hangul has no Latin tracking — drop the letter-spacing on the one genuinely
+   Korean label, the sidebar logo "봇 대시보드", so it tightens naturally.
+   Scoped to .logo-text ONLY: the nav labels are Latin ("Status", "AI Chat", …)
+   but inherit lang=ko from <html lang="ko">, so a .nav-item:lang(ko) rule would
+   wrongly strip the intended 0.045em tactical tracking from every nav label. */
+.logo-text:lang(ko) { letter-spacing: normal; }
 .nav-item {
     font-family: var(--font-display);
     text-transform: uppercase;
     /* tightened tracking + gap/padding so the longest label ("AI HISTORY")
        fits on one line next to its CTRL+n chip without tripping the ellipsis. */
     letter-spacing: 0.045em;
-    font-size: 12.5px;
+    font-size: var(--step--1);
     gap: 11px;
     padding: 13px 14px;
     border-radius: var(--radius-sm);
@@ -700,7 +776,9 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     background: var(--brand-soft);
     box-shadow: inset 0 0 0 1px var(--border-strong), inset 0 0 22px rgba(61, 245, 255, 0.08);
 }
-.nav-item.active::before { width: 3px; background: var(--brand-grad); box-shadow: 0 0 14px var(--glow-pink); }
+/* active-nav rail glow uses the sakura EMPHASIS color (the rail fill stays the
+   cyan brand-grad; only the bloom is sakura). */
+.nav-item.active::before { width: 3px; background: var(--brand-grad); box-shadow: 0 0 14px var(--glow-sakura); }
 @media (prefers-reduced-motion: no-preference) {
     .nav-item:active { transform: scale(.98); }
 }
@@ -711,7 +789,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     color: var(--text-tertiary);
     border-radius: 4px;
 }
-.status-badge { border-radius: var(--radius-sm); font-family: var(--font-mono); letter-spacing: 0.06em; font-size: 12px; }
+.status-badge { border-radius: var(--radius-sm); font-family: var(--font-mono); letter-spacing: 0.06em; font-size: var(--step--1); }
 .status-badge.online { background: rgba(46, 230, 166, 0.10); border-color: rgba(46, 230, 166, 0.34); color: #7df5cf; }
 .status-dot { box-shadow: 0 0 10px currentColor; }
 
@@ -755,9 +833,9 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     left: 50%;
     transform: translateX(-50%);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 9px; /* deliberate micro-eyebrow exception to the type scale */
     letter-spacing: 0.22em;
-    color: var(--text-muted);
+    color: var(--text-tertiary);
     pointer-events: none;
 }
 .sidebar .status-badge {
@@ -802,7 +880,25 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 .btn-primary { background: var(--brand-grad); color: #03121a; box-shadow: 0 6px 18px rgba(45, 200, 255, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
 .btn-primary:hover:not(:disabled) { box-shadow: 0 10px 26px rgba(45, 200, 255, 0.44); filter: brightness(1.06); }
 .btn-warning { background: linear-gradient(135deg, #ffc24d, #ff9e00); color: #2a1600; }
-.btn-danger { background: linear-gradient(135deg, #ff5e70, #e23048); color: #fff; }
+.btn-danger { background: var(--danger-grad); color: #fff; }
+/* Deepen the danger red on hover (+ a red glow) for affordance. Both stops keep
+   white text ≥4.5:1 AA: #c8243a ≈ 5.6:1, #9e1a2b ≈ 7.4:1. (The previous hover
+   lighter stop #e23347 was 4.38:1 — just under AA.) */
+.btn-danger:hover:not(:disabled) {
+    background: linear-gradient(135deg, #c8243a, #9e1a2b);
+    box-shadow: 0 6px 20px rgba(214, 42, 64, 0.42);
+}
+/* ghost-danger: icon / small destructive buttons read as a tinted outline, not a
+   heavy red block. Full-width Delete/Clear-All keep the solid --danger-grad above.
+   --accent-red (#ff4d61) on the dark surface stays legible. */
+.btn-icon.btn-danger, .btn-small.btn-danger {
+    background: rgba(255, 77, 97, .10);
+    border: 1px solid rgba(255, 77, 97, .34);
+    color: var(--accent-red);
+}
+.btn-icon.btn-danger:hover:not(:disabled), .btn-small.btn-danger:hover:not(:disabled) {
+    background: rgba(255, 77, 97, .18);
+}
 .btn-secondary { background: rgba(61, 245, 255, 0.08); border: 1px solid var(--border-strong); color: var(--text-primary); }
 .btn-secondary:hover:not(:disabled) { background: rgba(61, 245, 255, 0.14); }
 .btn-icon { background: rgba(61, 245, 255, 0.07); border: 1px solid var(--border-color); }
@@ -825,6 +921,25 @@ input:focus, textarea:focus, select:focus,
 }
 input:checked + .toggle-slider { background: var(--accent-cyan); }
 
+/* History channel filter (B3) — TS injects .history-channel-filter > .history-filter-input
+   above #ai-channel-list with zero CSS (rendered ~17px). Mirror .conversation-filter
+   so the search target clears the WCAG 2.5.8 min (≥24px, here 32px). */
+.history-channel-filter {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border-color);
+}
+.history-filter-input {
+    width: 100%;
+    padding: 6px 10px;
+    min-height: 32px;
+    font-size: var(--step-0);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-primary);
+}
+.history-filter-input::placeholder { color: var(--text-tertiary); }
+
 /* ============================================================================
    LOG VIEWER — green-phosphor terminal
    ============================================================================ */
@@ -840,7 +955,7 @@ input:checked + .toggle-slider { background: var(--accent-cyan); }
     box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(46, 230, 166, 0.06);
 }
 #log-content, .log-container pre { font-family: var(--font-mono); }
-.live-indicator { font-family: var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; }
+.live-indicator { font-family: var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--step--1); }
 
 /* Height fix: the base sheet pins .log-container to calc(100vh - 220px), which
    over/underflows in the Tauri window. Make the logs page a flex column and let
@@ -964,6 +1079,13 @@ html[data-theme="light"] .log-container {
         center;
 }
 .data-item:hover { border-color: var(--border-strong); --hud-tick: var(--accent-cyan); }
+/* press feedback on tappable list rows (not the already-selected/active one) */
+.conversation-item:active:not(.active),
+.data-item:active:not(.selected),
+.role-card:active:not(.selected) {
+    transform: scale(.985);
+    transition: transform var(--dur-fast) var(--ease);
+}
 .danger-zone {
     border: 1px solid rgba(255, 77, 97, 0.32);
     border-radius: var(--radius);
@@ -1010,6 +1132,21 @@ html[data-theme="light"] .chat-message.user .message-content {
 }
 .send-icon { filter: drop-shadow(0 0 6px var(--glow-pink)); }
 
+/* Failed-send (INT-04): the TS coder keeps the optimistic user bubble, tags it
+   .send-failed and appends a .retry-send control. An error-severity left rail
+   marks the failure; the retry reads as a quiet outline button. */
+.chat-message.send-failed { box-shadow: inset 3px 0 0 var(--sev-error); }
+.chat-message.send-failed .retry-send {
+    color: var(--accent-red);
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: var(--step--1);
+    padding: 2px 8px;
+    margin-top: var(--space-1);
+}
+.retry-send:hover { background: rgba(255, 77, 97, .12); }
+
 /* ============================================================================
    MODALS — HUD frame on the content shell
    ============================================================================ */
@@ -1039,14 +1176,14 @@ html[data-theme="light"] .chat-message.user .message-content {
         center;
 }
 .role-card:hover { --hud-tick: var(--accent-cyan); }
-.role-card.selected { border-color: var(--border-focus); --hud-tick: var(--accent-cyan); box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px rgba(61, 245, 255, 0.14); }
+.role-card.selected { border-color: var(--border-focus); --hud-tick: var(--accent-cyan); box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura); }
 
 /* Retire the 3D pop/tilt for a flat scan-in. In the real DOM .active lands on
    the .modal wrapper (.modal-overlay is a full-bleed sibling scrim, not a
    parent), so this is the selector that actually fires + overrides the base
    modalIn / modal-pop-3d animations. */
 @media (prefers-reduced-motion: no-preference) {
-    .modal.active .modal-content { animation: orbital-modal .22s var(--ease) both; }
+    .modal.active .modal-content { animation: orbital-modal var(--dur-base) var(--ease-bounce) both; }
 }
 @keyframes orbital-modal {
     from { opacity: 0; transform: translateY(8px) scale(.98); }
@@ -1072,8 +1209,8 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
 .toast-visible { transform: translateX(0); opacity: 1; }
 .toast-hiding  { transform: translateX(110%); opacity: 0; }
 @media (prefers-reduced-motion: no-preference) {
-    .toast { transition: transform .3s var(--ease), opacity .3s var(--ease); }
-    .toast-visible { animation: orbital-toast-in .3s var(--ease) both; }
+    .toast { transition: transform .3s var(--ease-bounce), opacity .3s var(--ease); }
+    .toast-visible { animation: orbital-toast-in .3s var(--ease-bounce) both; }
 }
 @keyframes orbital-toast-in {
     from { opacity: 0; transform: translateX(110%); }
@@ -1097,7 +1234,7 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
 @media (prefers-reduced-motion: no-preference) {
     /* stat cards: just the rise (no brackets — kept clean per the HUD spec) */
     #page-status.active .stat-card {
-        animation: orbital-rise 0.5s var(--ease, cubic-bezier(.22,1,.36,1)) both;
+        animation: orbital-rise 0.5s var(--ease-out-expo) both;
     }
     /* bracketed panels: rise + a one-time corner-bracket draw-in (the HUD ticks
        grow from their corners as the panel rises). animation-delay (the stagger)
@@ -1106,8 +1243,8 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
     #page-status.active .charts-section,
     #page-status.active .quick-actions {
         animation:
-            orbital-rise 0.5s var(--ease) both,
-            orbital-brackets 0.55s var(--ease) both;
+            orbital-rise 0.5s var(--ease-out-expo) both,
+            orbital-brackets 0.55s var(--ease-out-expo) both;
     }
     #page-status.active .stat-card:nth-child(1) { animation-delay: 0.04s; }
     #page-status.active .stat-card:nth-child(2) { animation-delay: 0.08s; }
@@ -1134,7 +1271,7 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
         background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
         opacity: 0;
         pointer-events: none;
-        animation: orbital-scan 0.7s var(--ease) both;
+        animation: orbital-scan 0.7s var(--ease-out-expo) both;
         z-index: 1;
     }
     .page { position: relative; }

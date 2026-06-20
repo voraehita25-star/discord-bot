@@ -213,8 +213,17 @@ function renderSingleMessage(msg, msgIdx, mctx) {
         ? `<button class="like-message-btn${msg.liked ? ' liked' : ''}" data-msg-id="${msgId}" data-liked="${msg.liked ? '1' : '0'}" title="${msg.liked ? 'Unlike' : 'Like'}" aria-label="${msg.liked ? 'Unlike' : 'Like'} message">${icon('heart')}</button>`
         : '';
     const actionsHtml = `<div class="message-actions">${copyBtn}${likeBtn}${pinBtn}${editBtn}${aiEditBtn}${deleteBtn}</div>`;
+    // Failed optimistic user message (INT-04): keep the bubble, mark it
+    // ``.send-failed`` (Coder 1 styles the rail), set ``role="alert"`` so AT
+    // users hear that the send failed, and offer an inline Retry that re-runs
+    // the send path for this message (handler bound in ChatManager).
+    const failedClass = msg.failed ? ' send-failed' : '';
+    const failedAttrs = msg.failed ? ' role="alert"' : '';
+    const retryBtn = msg.failed
+        ? `<button class="retry-send" data-msg-idx="${msgIdxSafe}" title="Retry send">${icon('refresh')} Retry</button>`
+        : '';
     return `
-        <div class="chat-message ${escapeHtml(msg.role)}">
+        <div class="chat-message ${escapeHtml(msg.role)}${failedClass}"${failedAttrs}>
             <div class="message-avatar">${avatarHtml}</div>
             <div class="message-wrapper">
                 <div class="message-header">
@@ -226,6 +235,7 @@ function renderSingleMessage(msg, msgIdx, mctx) {
                 ${imagesHtml}
                 ${docsHtml}
                 <div class="message-content">${deps.formatMessage(deps.stripThinkTags(msg.content))}</div>
+                ${retryBtn}
                 ${actionsHtml}
             </div>
         </div>

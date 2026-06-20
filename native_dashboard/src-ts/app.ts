@@ -403,9 +403,37 @@ function initKeyboardShortcuts(): void {
 // Theme System
 // ============================================================================
 
-function initTheme(): void {
+/**
+ * Did the user ever persist an explicit theme choice? loadSettings() only
+ * applies stored values when `dashboard-settings` exists AND parses, so a
+ * missing/corrupt blob or one without a `theme` key means "never chosen" —
+ * in which case we honour the OS `prefers-color-scheme` on first run (A11Y-05).
+ */
+function hasStoredTheme(): boolean {
+    try {
+        const saved = localStorage.getItem('dashboard-settings');
+        if (!saved) return false;
+        const parsed = JSON.parse(saved) as { theme?: unknown };
+        return parsed.theme === 'dark' || parsed.theme === 'light';
+    } catch {
+        return false;
+    }
+}
+
+// Exported as a test seam (like _resetModalInertState) so the first-run
+// prefers-color-scheme default (A11Y-05) can be asserted in app.test.ts.
+export function initTheme(): void {
+    // First run (no stored theme): follow the OS preference instead of always
+    // forcing dark. matchMedia is feature-detected so a non-browser/test host
+    // without it falls back to the existing `settings.theme` default. Once the
+    // user toggles, toggleTheme() persists the choice and this branch stops
+    // applying. data-theme stays the single source of truth (no CSS @media).
+    if (!hasStoredTheme() && typeof window.matchMedia === 'function') {
+        const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+        settings.theme = prefersLight ? 'light' : 'dark';
+    }
     applyTheme(settings.theme);
-    
+
     // Add theme toggle button listeners (sidebar + settings page)
     document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
     document.getElementById('theme-toggle-settings')?.addEventListener('click', toggleTheme);

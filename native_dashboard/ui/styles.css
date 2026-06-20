@@ -21,14 +21,22 @@ html[data-theme="light"] .nav-item {
 }
 
 html[data-theme="light"] .nav-item:hover {
-    background: rgba(124, 58, 237, 0.1);
-    color: #7c3aed;
+    /* [B2] was anime-purple (rgba(124,58,237)/#7c3aed) — neutralized to the
+       light "ORBITAL Blueprint" teal so the daylight brand stays cohesive.
+       [B2-AA] teal-on-cyan-wash text was 4.16:1 (FAIL for ~12.5px nav text);
+       use near-black ink for high contrast, keep the teal wash background. */
+    background: var(--cyan-100);
+    color: var(--text-primary);
 }
 
 html[data-theme="light"] .nav-item.active {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(214, 51, 132, 0.1));
-    color: #7c3aed;
-    border-left-color: #7c3aed;
+    /* [B2] background gradient was purple→pink; repointed to the teal brand
+       wash so the active rail matches its (already teal) border.
+       [B2-AA] teal-on-wash text was 3.88–4.43:1 (FAIL); use near-black ink.
+       The teal accent still reads via the left rail + wash, like dark theme. */
+    background: var(--brand-soft);
+    color: var(--text-primary);
+    border-left-color: var(--accent-cyan);
 }
 
 html[data-theme="light"] .stat-card,
@@ -41,14 +49,18 @@ html[data-theme="light"] .chart-card {
 }
 
 html[data-theme="light"] .btn {
-    background: linear-gradient(135deg, #7c3aed, #9333ea);
-    color: white;
-    border: none;
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
 }
 
 html[data-theme="light"] .btn:hover {
-    background: linear-gradient(135deg, #6d28d9, #7c3aed);
-    box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+    /* [B2] was anime-purple gradient (#6d28d9→#7c3aed); the resting btn now uses
+       near-black ink, so purple here failed AA (~2.6:1). Neutral teal-tinted
+       surface keeps --text-primary ink readable (AA pass). */
+    background: var(--surface-3);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
 }
 
 html[data-theme="light"] .btn-primary {
@@ -76,12 +88,16 @@ html[data-theme="light"] .btn-warning:hover {
 }
 
 html[data-theme="light"] .btn-secondary {
-    background: linear-gradient(135deg, #6366f1, #818cf8);
+    /* [B2] was indigo (#6366f1→#818cf8); repointed to the Blueprint brand wash
+       with near-black ink so the label clears AA. */
+    background: var(--brand-soft);
+    color: var(--text-primary);
 }
 
 html[data-theme="light"] .status-badge {
-    background: rgba(100, 60, 180, 0.1);
-    border: 1px solid rgba(100, 60, 180, 0.2);
+    /* [B2] was a muted-purple tint/border; repointed to the teal Blueprint. */
+    background: rgba(9, 124, 150, 0.1);
+    border: 1px solid rgba(9, 124, 150, 0.2);
 }
 
 html[data-theme="light"] .status-badge.online {
@@ -97,21 +113,24 @@ html[data-theme="light"] .log-container {
 }
 
 html[data-theme="light"] .theme-toggle {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(214, 51, 132, 0.1));
+    /* [B2] was anime purple→pink wash; repointed to the teal Blueprint wash. */
+    background: var(--cyan-100);
     color: #4a4a6a;
 }
 
 html[data-theme="light"] .theme-toggle:hover {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.2), rgba(214, 51, 132, 0.15));
+    background: var(--brand-soft);
 }
 
 html[data-theme="light"] .logo {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(214, 51, 132, 0.1));
-    border: 1px solid rgba(124, 58, 237, 0.2);
+    /* [B2] was anime purple→pink wash + purple border; repointed to teal. */
+    background: var(--cyan-100);
+    border: 1px solid var(--accent-cyan);
 }
 
 html[data-theme="light"] .logo-text {
-    color: #7c3aed;
+    /* [B2] was purple wordmark; repointed to the Blueprint teal accent. */
+    color: var(--accent-cyan);
 }
 
 html[data-theme="light"] h1, 
@@ -121,16 +140,18 @@ html[data-theme="light"] h3 {
 }
 
 html[data-theme="light"] .shortcut {
-    background: rgba(124, 58, 237, 0.1);
-    color: #7c3aed;
-    border: 1px solid rgba(124, 58, 237, 0.2);
+    /* [B2] was purple CTRL+n chip; repointed to the teal Blueprint system. */
+    background: var(--cyan-100);
+    color: var(--accent-cyan);
+    border: 1px solid var(--accent-cyan);
 }
 
 html[data-theme="light"] .setting-select,
 html[data-theme="light"] .setting-input,
 html[data-theme="light"] #log-filter {
     background: #ffffff;
-    border: 1px solid rgba(100, 60, 180, 0.25);
+    /* [B2] input border was muted-purple; repointed to a teal Blueprint tint. */
+    border: 1px solid rgba(9, 124, 150, 0.25);
     color: #1a1a2e;
 }
 
@@ -139,12 +160,14 @@ html[data-theme="light"] .toggle-slider {
 }
 
 html[data-theme="light"] input:checked + .toggle-slider {
-    background: #7c3aed;
+    /* [B2] toggle "on" was purple; repointed to the teal Blueprint accent. */
+    background: var(--accent-cyan);
 }
 
 html[data-theme="light"] .data-item {
-    background: rgba(124, 58, 237, 0.05);
-    border: 1px solid rgba(124, 58, 237, 0.1);
+    /* [B2] was a purple wash + border; repointed to the teal Blueprint wash. */
+    background: var(--cyan-100);
+    border: 1px solid var(--accent-cyan);
 }
 
 html[data-theme="light"] .danger-zone {
@@ -153,10 +176,12 @@ html[data-theme="light"] .danger-zone {
 }
 
 html[data-theme="light"] kbd {
-    background: linear-gradient(135deg, #7c3aed, #9333ea);
+    /* [B2] was a purple gradient; repointed to the teal Blueprint accent so the
+       white label stays AA-readable. */
+    background: var(--accent-cyan);
     color: white;
     border: none;
-    box-shadow: 0 2px 4px rgba(124, 58, 237, 0.3);
+    box-shadow: var(--shadow-glow);
 }
 
 /* Toast Notification System */
@@ -242,7 +267,8 @@ html[data-theme="light"] kbd {
 }
 
 body {
-    font-family: 'Segoe UI', 'Malgun Gothic', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+    /* I18N-02: single source of truth — orbital.css's --font-ui wins anyway; pure hygiene. */
+    font-family: var(--font-ui);
     background: var(--bg-primary);
     color: var(--text-primary);
     height: 100vh;
@@ -1539,7 +1565,7 @@ h2 {
 
 @media (max-width: 1200px) {
     .stats-grid {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
     
     .charts-grid {
@@ -1851,6 +1877,8 @@ h2 {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;
+    flex: 1;
 }
 
 .chat-role-avatar {
@@ -1946,6 +1974,8 @@ h2 {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
 }
 
 .select-provider-inline,
@@ -2190,8 +2220,8 @@ h2 {
 
 .message-time {
     font-size: 11px;
-    color: var(--text-secondary);
-    opacity: 0.7;
+    color: var(--text-tertiary);
+    opacity: 1;
 }
 
 .message-actions {
@@ -2905,7 +2935,7 @@ mark.chat-search-hit.active {
     height: 44px;
     border-radius: 50%;
     border: 1px solid var(--border-color);
-    background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+    background: var(--brand-grad);
     color: white;
     font-size: 20px;
     cursor: pointer;
@@ -2913,12 +2943,19 @@ mark.chat-search-hit.active {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.15s ease, opacity 0.2s ease;
+    /* INT-06: partial duration/ease token migration — only transitions we already touch
+       use tokens (with literal fallbacks); a full literal sweep is intentionally deferred. */
+    transition: transform var(--dur-base, .22s) var(--ease-bounce, cubic-bezier(.34, 1.56, .64, 1)),
+        opacity var(--dur-base, .22s) var(--ease, cubic-bezier(.22, 1, .36, 1));
     z-index: 10;
 }
 
 .scroll-to-bottom-fab:hover {
     transform: translateY(-2px);
+}
+
+.scroll-to-bottom-fab:active {
+    transform: translateY(0) scale(.94);
 }
 
 .scroll-to-bottom-fab .fab-arrow {
@@ -3326,11 +3363,13 @@ html[data-theme="light"] .chat-sidebar {
 }
 
 html[data-theme="light"] .conversation-item:hover {
-    background: rgba(124, 58, 237, 0.08);
+    /* [B2] was a purple wash; repointed to the teal Blueprint wash. */
+    background: var(--cyan-100);
 }
 
 html[data-theme="light"] .conversation-item.active {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.12), rgba(214, 51, 132, 0.08));
+    /* [B2] was a purple→pink gradient; repointed to the teal brand wash. */
+    background: var(--brand-soft);
 }
 
 html[data-theme="light"] .message-content {
@@ -3344,8 +3383,10 @@ html[data-theme="light"] .chat-message.user .message-content {
 }
 
 html[data-theme="light"] .chat-message.assistant .message-content {
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.08), rgba(214, 51, 132, 0.05));
-    border-color: rgba(124, 58, 237, 0.15);
+    /* [B2] was a purple→pink gradient + purple border; repointed to the teal
+       Blueprint wash so assistant bubbles stay in the daylight brand family. */
+    background: var(--brand-soft);
+    border-color: var(--accent-cyan);
 }
 
 html[data-theme="light"] #chat-input {
@@ -3362,7 +3403,8 @@ html[data-theme="light"] .role-card {
 }
 
 html[data-theme="light"] .role-card:hover {
-    background: rgba(124, 58, 237, 0.05);
+    /* [B2] was a purple wash; repointed to the teal Blueprint wash. */
+    background: var(--cyan-100);
 }
 /* ========================================
    Chat Input Options (Search, Attach)
@@ -4391,10 +4433,12 @@ html[data-theme="light"] h3 {
 }
 
 html[data-theme="light"] .is-loading {
+    /* [B2] shimmer's bright middle stop was anime-violet; repointed to teal
+       Blueprint so the loading sweep matches the daylight brand. */
     background: linear-gradient(
         90deg,
         rgba(94, 88, 140, 0.1) 0%,
-        rgba(91, 33, 182, 0.16) 50%,
+        rgba(9, 124, 150, 0.16) 50%,
         rgba(94, 88, 140, 0.1) 100%) !important;
     background-size: 200% 100% !important;
 }
@@ -4793,7 +4837,7 @@ html[data-theme="light"] .toast::before {
 /* Light theme: unify the primary CTA with the brand gradient too (was a
    one-off green), so primary actions read as "brand" in both themes. */
 html[data-theme="light"] .btn-primary { background: var(--brand-grad); color: #fff; border: none; }
-html[data-theme="light"] .btn-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: 0 10px 26px rgba(124, 58, 237, 0.30); }
+html[data-theme="light"] .btn-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: var(--shadow-glow); /* [B2] was a purple glow; teal Blueprint glow */ }
 
 /* ---- App canvas: depth via fixed brand glows ---- */
 body {
@@ -4806,9 +4850,11 @@ body {
 }
 
 html[data-theme="light"] body {
+    /* [B2] canvas glows were anime purple/pink; repointed to teal/azure
+       Blueprint stops (same teal rgba family used by --hairline below). */
     background:
-        radial-gradient(1100px 680px at 8% -12%, rgba(124, 58, 237, 0.07), transparent 60%),
-        radial-gradient(900px 560px at 102% -6%, rgba(190, 42, 111, 0.05), transparent 56%),
+        radial-gradient(1100px 680px at 8% -12%, rgba(3, 102, 114, 0.07), transparent 60%),
+        radial-gradient(900px 560px at 102% -6%, rgba(91, 214, 236, 0.05), transparent 56%),
         var(--bg-primary);
 }
 
@@ -5000,7 +5046,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 }
 
 .setting-input::placeholder, .conversation-filter::placeholder, #log-filter::placeholder,
-input::placeholder, textarea::placeholder { color: var(--text-muted); }
+input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
 
 .setting-input:focus, .setting-select:focus, .conversation-filter:focus, #log-filter:focus,
 input:focus, textarea:focus, select:focus {
@@ -5054,17 +5100,12 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
    own values. The display font fails gracefully to the Korean-aware stack.
    ============================================================================ */
 
-@font-face {
-    font-family: 'SakuraDisplay';
-    src: url('vendor/fonts/bricolage-grotesque.woff2') format('woff2-variations');
-    font-weight: 200 800;
-    font-style: normal;
-    font-display: swap;
-}
-
+/* PERF-01: removed dead `@font-face SakuraDisplay` (bricolage-grotesque.woff2 was never
+   referenced — orbital.css's Chakra Petch is the canonical display font) and the dead
+   `--font-display` declaration below, so the canonical font is unambiguous. The woff2 file
+   stays on disk. The remaining --glass/--hairline tokens are out of font scope; left intact. */
 /* DEAD: overridden by orbital.css :root. Edit orbital.css, not here. */
 :root {
-    --font-display: 'SakuraDisplay', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif;
     --glass: linear-gradient(160deg, rgba(46, 34, 82, 0.55), rgba(19, 13, 38, 0.68));
     --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
     --hairline: linear-gradient(135deg, rgba(181, 130, 255, 0.55), rgba(255, 124, 185, 0.40) 46%, rgba(91, 214, 236, 0.22));
@@ -5075,7 +5116,9 @@ html[data-theme="light"],
 :root[data-theme="light"] {
     --glass: linear-gradient(160deg, rgba(255, 255, 255, 0.82), rgba(248, 249, 255, 0.92));
     --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-    --hairline: linear-gradient(135deg, rgba(124, 58, 237, 0.40), rgba(190, 42, 111, 0.28) 50%, rgba(3, 102, 114, 0.16));
+    /* [B2] hairline ramp was purple→pink→teal; repointed to an all-teal/azure
+       Blueprint ramp (was already partly teal). */
+    --hairline: linear-gradient(135deg, rgba(9, 124, 150, 0.40), rgba(91, 214, 236, 0.28) 50%, rgba(3, 102, 114, 0.16));
 }
 
 /* — Atmosphere: richer animated aurora mesh (enhances the existing drift) — */
@@ -5090,11 +5133,13 @@ body::before {
 }
 
 html[data-theme="light"] body::before {
+    /* [B2] aurora mesh stops were anime purple/pink/violet; repointed to the
+       teal/azure Blueprint family. */
     opacity: 0.5;
     background:
-        radial-gradient(40% 50% at 12% 4%, rgba(124, 58, 237, 0.10), transparent 60%),
-        radial-gradient(36% 44% at 88% 8%, rgba(190, 42, 111, 0.08), transparent 60%),
-        radial-gradient(46% 56% at 80% 96%, rgba(91, 33, 182, 0.08), transparent 62%);
+        radial-gradient(40% 50% at 12% 4%, rgba(9, 124, 150, 0.10), transparent 60%),
+        radial-gradient(36% 44% at 88% 8%, rgba(91, 214, 236, 0.08), transparent 60%),
+        radial-gradient(46% 56% at 80% 96%, rgba(3, 102, 114, 0.08), transparent 62%);
 }
 
 /* — Film grain for premium texture (above atmosphere, below content) — */

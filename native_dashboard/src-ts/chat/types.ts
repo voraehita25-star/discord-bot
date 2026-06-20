@@ -36,6 +36,9 @@ export interface ChatMessage {
     mode?: string;       // Mode used (Thinking, Unrestricted, etc.)
     is_pinned?: boolean; // Marked important by user (#20)
     liked?: boolean;     // User hit ❤️ on this message (#20b)
+    failed?: boolean;    // Optimistic user message whose send() failed — kept in
+                         // place with an inline Retry control (INT-04) instead of
+                         // being silently popped from the list.
 }
 
 export interface RolePreset {

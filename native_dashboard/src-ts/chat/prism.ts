@@ -60,6 +60,42 @@ const PRISM_DEPS: Readonly<Record<string, string[]>> = {
     css: ['markup'],
 };
 
+/**
+ * Subresource-Integrity (sha384) hashes for each lazily-injected Prism language
+ * bundle, keyed by canonical lang id. Computed from the actual bytes in
+ * native_dashboard/ui/vendor/prism/prism-<id>.min.js (openssl dgst -sha384).
+ * prism-core / prism-tomorrow are loaded eagerly from index.html and not here.
+ * If a regenerated bundle isn't in this map the script is skipped (we never
+ * inject an unverified <script>); regenerate hashes if you re-vendor Prism.
+ */
+const PRISM_SRI: Readonly<Record<string, string>> = {
+    bash: 'sha384-9WmlN8ABpoFSSHvBGGjhvB3E/D8UkNB9HpLJjBQFC2VSQsM1odiQDv4NbEo+7l15',
+    c: 'sha384-gaD4ncierlmWk42Z3BmTp37/z+Dqt8V4Wf74UjTvFeo+M+SgnEI6Ysd98pWhksQv',
+    clike: 'sha384-7LHwxHIDSHTBleLmgDWZbC/IMJsfYfFVOihKhvsrxYW4j47YQcRwZja4ToFE3bA8',
+    cpp: 'sha384-NiOrAquf32LSG3Vuig99LKS03EZPUuM8a51NOp+XXsqx08hUVo3wbNWALY7K/2J8',
+    csharp: 'sha384-nMKYzg6yfy0qgpaRpVhHvZp0gT5sgvmZYlFC0XAKZSp+zFUB9rE6zsdmIEiou4bV',
+    css: 'sha384-0mV13Neu0xhJFylI+HV43C+XiR13bGSeL7D0/7e6hK7sJgvyvK6HVjeQwmvXTstY',
+    diff: 'sha384-5MjMyjeLq48jKCQkz3wbIdVG8+jWbG3Dlh9oy9LkluQL7zDQghWEa+UYZiYi5qRJ',
+    go: 'sha384-YxCco6ByOY5rJ3jD18514fa8w5so07zigIyV6tZa3CWSE5vYrbDSuFkZ5zOknnZ6',
+    ini: 'sha384-IzgZExoq7muPnVEjP/MVubbALJ4d+D++YULBQxvKKWLSoXut91gFAg36n+5WAFf6',
+    java: 'sha384-DioAMZB4yk91W6LuFit5wJDh8c5Ov09f/MBvja94y0PodMqTpTZeBeejqpRUru7D',
+    javascript: 'sha384-D44bgYYKvaiDh4cOGlj1dbSDpSctn2FSUj118HZGmZEShZcO2v//Q5vvhNy206pp',
+    json: 'sha384-RhrmFFMb0ZCHImjFMpR/UE3VEtIVTCtNrtKQqXCzqXZNJala02N3UbVhi+qzw3CY',
+    kotlin: 'sha384-zz49ukKZF8e3sr9aiW45Ju61sb9hptYyPOufuu9eutOrjwnOK3D1CGRU+eb12fGy',
+    lua: 'sha384-qnsmaXmSxuN1DguKvNsGsQFG1LyCwf1UaKmFgeac2/ssP3m7kDxtKmWTmOIkuOtE',
+    markdown: 'sha384-s888ApkYHxfPsp8n81g77Unl/0XYnYltLvWbwqKHcheRE8/dZPlT4IjW3mRGv/Hd',
+    markup: 'sha384-HkMr0bZB9kBW4iVtXn6nd35kO/L/dQtkkUBkL9swzTEDMdIe5ExJChVDSnC79aNA',
+    powershell: 'sha384-xbI9krqyYp4npK9Cn94XyNoSR+TYZKddrk0NUVZ44zZ+OVpKz/LL0U1PB0MjR7Vx',
+    python: 'sha384-WJdEkJKrbsqw0evQ4GB6mlsKe5cGTxBOw4KAEIa52ZLB7DDpliGkwdme/HMa5n1m',
+    ruby: 'sha384-xVcnao4LK2LGPWtbEMXzbqrmtM8Ycfrz6nH7gthLCLwCrQGhNFScUV7UGjDotjVu',
+    rust: 'sha384-JyDgFjMbyrE/TGiEUSXW3CLjQOySrsoiUNAlXTFdIsr/XUfaB7E+eYlR+tGQ9bCO',
+    sql: 'sha384-/MKWdycCDliku23mP5sYXbZNuXrzgmQO/jsVxwPFn99dVOaXRyKsqDjarqpueGAp',
+    swift: 'sha384-4RYbFVFN0J24/jfNL9Olk5/pS71bzqjKebX+ZvzzMQ+uDl2T4k/DOuGY6Znxqj8N',
+    toml: 'sha384-Uh6n44GRSQeQSMIIfAjlbqojWR7F5KALTHNsspuLDrNCsXpDPRdZbJ5A42AP/cA4',
+    typescript: 'sha384-PeOqKNW/piETaCg8rqKFy+Pm6KEk7e36/5YZE5XO/OaFdO+/Aw3O8qZ9qDPKVUgx',
+    yaml: 'sha384-AKAiycghK0jDCjD+aavMHzDkLzRR7Yzcwh3+xL/295cvyVMe+cxQfyQC8xxGGcI8',
+};
+
 /** Module-level cache — one promise per language so concurrent highlights de-dupe. */
 const loadPromises: Map<string, Promise<void>> = new Map();
 
@@ -96,9 +132,22 @@ export async function loadPrismLanguage(lang: string): Promise<void> {
                 await loadPrismLanguage(dep);
             }
         }
+        const integrity = PRISM_SRI[canon];
+        if (!integrity) {
+            // No pinned SRI hash for this bundle — never inject an unverified
+            // <script>. (Should only happen if a lang was added to PRISM_LANGS
+            // without regenerating PRISM_SRI.) Fall back to plain-text code.
+            errorLogger.log('PRISM_LANG_NO_SRI', `No SRI hash for Prism language: ${canon}`);
+            loadPromises.delete(canon);
+            return;
+        }
         await new Promise<void>((resolve) => {
             const script = document.createElement('script');
             script.src = `vendor/prism/prism-${canon}.min.js`;
+            // SRI: verify the lazily-loaded bundle against its pinned sha384 so a
+            // tampered vendor file is rejected by the browser before eval.
+            script.integrity = integrity;
+            script.crossOrigin = 'anonymous';
             // Preserve load order — e.g. `markup` depends on `clike` being loaded first.
             script.async = false;
             script.onload = () => {

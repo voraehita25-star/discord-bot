@@ -315,6 +315,13 @@ describe('WebSocketClient — reconnect backoff', () => {
         // Budget spent: now pinned at the cap and the one-time toast fired.
         expect(client.reconnectAttempts).toBe(5);
         expect(mockShowToast).toHaveBeenCalledTimes(1);
+        // This socket OPENED before dropping → the "connection lost / restart"
+        // WARNING (not the gentle never-connected message).
+        {
+            const [msg, opts] = mockShowToast.mock.calls[0] as [string, { type: string }];
+            expect(msg).toMatch(/lost/i);
+            expect(opts.type).toBe('warning');
+        }
 
         // The capped path retries on a flat 30s timer (no further attempt-count bump).
         const before = FakeWebSocket.instances.length;
@@ -322,6 +329,39 @@ describe('WebSocketClient — reconnect backoff', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(FakeWebSocket.instances.length).toBe(before + 1);
         expect(client.reconnectAttempts).toBe(5);
+
+        randomSpy.mockRestore();
+    });
+
+    it('never-opened (bot offline): caps retries then shows a GENTLE info message, not "lost / restart"', async () => {
+        vi.useFakeTimers();
+        const { callbacks } = makeCallbacks();
+        const client = new WebSocketClient(callbacks);
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);  // no jitter
+
+        // First connect: socket NEVER opens (bot not running). Close the primary
+        // then the fallback candidate (both unopened) to schedule attempt #1.
+        client.connect();
+        await vi.advanceTimersByTimeAsync(0);  // flush config-fetch microtasks
+        FakeWebSocket.instances.at(-1)!.fireClose();  // primary, unopened → fallback
+        FakeWebSocket.instances.at(-1)!.fireClose();  // fallback, unopened → schedule
+
+        const expectedDelays = [1000, 2000, 4000, 8000, 16000];
+        for (let i = 0; i < expectedDelays.length; i++) {
+            expect(client.reconnectAttempts).toBe(i + 1);
+            await vi.advanceTimersByTimeAsync(expectedDelays[i]);
+            await vi.advanceTimersByTimeAsync(0);
+            FakeWebSocket.instances.at(-1)!.fireClose();  // primary
+            FakeWebSocket.instances.at(-1)!.fireClose();  // fallback
+        }
+
+        // Budget spent, but the socket never opened → the gentle "server offline,
+        // press Start" INFO message, NOT the misleading "lost / restart" warning.
+        expect(client.reconnectAttempts).toBe(5);
+        expect(mockShowToast).toHaveBeenCalledTimes(1);
+        const [msg, opts] = mockShowToast.mock.calls[0] as [string, { type: string }];
+        expect(msg, 'never-connected message must not say lost/restart').not.toMatch(/lost|restart/i);
+        expect(opts.type).toBe('info');
 
         randomSpy.mockRestore();
     });

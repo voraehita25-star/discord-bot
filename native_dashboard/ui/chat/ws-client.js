@@ -38,6 +38,11 @@ export class WebSocketClient {
     maxReconnectAttempts = 5;
     wsToken = null;
     isConnecting = false;
+    // True once a socket has successfully OPENED at least once. Lets
+    // scheduleReconnect() tell a real mid-session drop ("connection lost — restart
+    // the bot") apart from a bot that was simply never started ("server offline —
+    // press Start"), so the warning isn't misleading on first launch.
+    everConnected = false;
     // Bumped on every disconnect(). connect()'s async config fetch snapshots it
     // and bails if it changed by the time the promise resolves — stops an
     // in-flight connect() from resurrecting a socket the user already tore down.
@@ -189,6 +194,7 @@ export class WebSocketClient {
                     return;
                 }
                 opened = true;
+                this.everConnected = true;
                 // Send token as first message for authentication (not in URL).
                 if (this.wsToken) {
                     try {
@@ -297,7 +303,16 @@ export class WebSocketClient {
                 // that reaches the cap via repeated socket failures) already
                 // emitted false for this close, so the callback fires exactly
                 // once per close (avoids a spurious duplicate transition).
-                showToast('Connection to AI server lost — retrying in the background. Restart the bot if it stays offline.', { type: 'warning', duration: 8000 });
+                if (this.everConnected) {
+                    // Genuine mid-session drop: the socket was open and went away.
+                    showToast('Connection to AI server lost — retrying in the background. Restart the bot if it stays offline.', { type: 'warning', duration: 8000 });
+                }
+                else {
+                    // Never connected — the bot just isn't running yet. Keep it
+                    // gentle (info, not a "lost / restart" warning); the chat page's
+                    // "Bot Not Running" overlay already communicates this state.
+                    showToast("AI server isn't running yet — press Start to launch the bot.", { type: 'info', duration: 6000 });
+                }
             }
             this.reconnectTimeout = window.setTimeout(() => {
                 this.reconnectTimeout = null;

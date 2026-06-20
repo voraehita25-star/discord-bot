@@ -21,6 +21,7 @@ import {
     DataCache,
     addChartDataPoint,
     pickTopmostModal,
+    initTheme,
 } from './app';
 
 // ============================================================================
@@ -208,6 +209,69 @@ describe('Settings Management', () => {
         expect(settings.theme).toBe('dark');         // unknown theme -> default
         expect(settings.refreshInterval).toBe(2000); // invalid interval -> default
         expect(settings.chartHistory).toBe(60);      // out-of-range -> default
+    });
+});
+
+// ============================================================================
+// Theme init — first-run prefers-color-scheme default (A11Y-05)
+// ============================================================================
+
+describe('initTheme — first-run prefers-color-scheme (A11Y-05)', () => {
+    let matchMediaMock: ReturnType<typeof vi.fn>;
+
+    function setPrefersLight(prefersLight: boolean): void {
+        matchMediaMock = vi.fn().mockImplementation((query: string) => ({
+            matches: query.includes('light') ? prefersLight : !prefersLight,
+            media: query,
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+            onchange: null,
+        }));
+        (window as unknown as { matchMedia: unknown }).matchMedia = matchMediaMock;
+    }
+
+    beforeEach(() => {
+        localStorage.clear();
+        settings.theme = 'dark';
+        // Minimal DOM the theme wiring touches.
+        document.body.innerHTML = `
+            <button id="theme-toggle"></button>
+            <button id="theme-toggle-settings"></button>
+            <span id="theme-icon"></span>
+            <span id="theme-icon-settings"></span>
+            <div id="toast-container"></div>
+        `;
+    });
+
+    afterEach(() => {
+        document.documentElement.removeAttribute('data-theme');
+    });
+
+    it('defaults to light when the OS prefers light and no theme is stored', () => {
+        setPrefersLight(true);
+        initTheme();
+        expect(settings.theme).toBe('light');
+        expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    });
+
+    it('defaults to dark when the OS prefers dark and no theme is stored', () => {
+        setPrefersLight(false);
+        initTheme();
+        expect(settings.theme).toBe('dark');
+        expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    });
+
+    it('honours a stored theme over the OS preference', () => {
+        // User previously chose light; OS prefers dark — the stored choice wins.
+        localStorage.setItem('dashboard-settings', JSON.stringify({ theme: 'light' }));
+        settings.theme = 'light';  // loadSettings would have applied this
+        setPrefersLight(false);    // OS prefers dark
+        initTheme();
+        expect(settings.theme).toBe('light');
+        expect(document.documentElement.getAttribute('data-theme')).toBe('light');
     });
 });
 
