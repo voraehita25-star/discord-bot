@@ -728,7 +728,7 @@ class TestErrorBranches:
 
     @pytest.mark.asyncio
     async def test_unrestricted_mode(self, ws):
-        """Test unrestricted mode injection uses per-preset framing."""
+        """Gemini unrestricted mode overlays GEMINI_UNRESTRICTED_FRAMING over the preset persona."""
         try:
             import cogs.ai_core.data.roleplay_data
         except ImportError:
@@ -749,6 +749,10 @@ class TestErrorBranches:
             patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
             patch("cogs.ai_core.api.dashboard_chat._get_db") as mock_db,
             patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
+            patch(
+                "cogs.ai_core.api.dashboard_chat.GEMINI_UNRESTRICTED_FRAMING",
+                "GEMINI_SENTINEL_FRAMING",
+            ),
         ):
             db_instance = MagicMock()
             mock_db.return_value = db_instance
@@ -764,10 +768,12 @@ class TestErrorBranches:
                 client,
             )
 
-        # Check that unrestricted injection was included in system instruction
+        # Unrestricted mode injects the Gemini-specific framing ON TOP of the
+        # role-preset persona (not CLAUDE2.md, not the legacy [Session Mode] text).
         config = captured.get("config")
         assert config is not None
-        assert "Session Mode" in config.system_instruction
+        assert "GEMINI_SENTINEL_FRAMING" in config.system_instruction
+        assert "helpful AI assistant" in config.system_instruction
         # Temperature should be boosted in unrestricted mode
         # assert config.temperature == 1.0  # Temperature is set via global config, not dynamically in handle_chat_message
 

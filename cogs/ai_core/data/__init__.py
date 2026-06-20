@@ -56,10 +56,8 @@ def _faust_attr(*names: str, default: object = "") -> object:
 
 FAUST_INSTRUCTION = _faust_attr("FAUST_INSTRUCTION", "FAUST_PERSONA")
 FAUST_DM_INSTRUCTION = _faust_attr("FAUST_DM_INSTRUCTION", "FAUST_DM_MODE")
-FAUST_SANDBOX = _faust_attr("FAUST_SANDBOX")
 ENI_ESCALATION_FRAMING = _faust_attr("ENI_ESCALATION_FRAMING")
 FAUST_CODE_OVERRIDE = _faust_attr("FAUST_CODE_OVERRIDE")
-UNRESTRICTED_MODE_INSTRUCTION = _faust_attr("UNRESTRICTED_MODE_INSTRUCTION")
 ESCALATION_FRAMINGS = getattr(_faust_mod, "ESCALATION_FRAMINGS", []) or []
 
 # Backward-compat aliases used elsewhere in the codebase.
@@ -111,7 +109,6 @@ __all__ = [
     "FAUST_INSTRUCTION",
     "FAUST_PERSONA",
     "FAUST_ROLEPLAY",
-    "FAUST_SANDBOX",
     "GAME_SEARCH_KEYWORDS",
     "GEMINI_API_KEY",
     "GUILD_ID_COMMAND_ONLY",
@@ -124,6 +121,5 @@ __all__ = [
     "SERVER_CHARACTERS",
     "SERVER_CHARACTER_NAMES",
     "SERVER_LORE",
-    "UNRESTRICTED_MODE_INSTRUCTION",
     "WORLD_LORE",
 ]

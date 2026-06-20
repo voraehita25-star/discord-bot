@@ -32,12 +32,6 @@ You are in a private conversation. You can be more casual and personal here.
 Remember previous conversations and build rapport with the user.
 """
 
-# Sandbox mode instruction (optional - for unrestricted channels)
-FAUST_SANDBOX = """
-You are in sandbox mode. You have more creative freedom here.
-Focus on being helpful while maintaining a fun, engaging personality.
-"""
-
 # Code mode instruction (optional - for code-focused conversations)
 FAUST_CODE_OVERRIDE = """
 You are now in code mode. Focus on:

@@ -2012,8 +2012,8 @@ class AI(commands.Cog):
         """
         Toggle UNRESTRICTED MODE for this channel (Owner only).
 
-        When enabled, the channel gets the UNRESTRICTED_MODE_INSTRUCTION persona
-        injected into its system prompt (the "no limits" framing). Guardrails were
+        When enabled, the channel gets LO's CLAUDE2.md persona override injected
+        into its system prompt (the "no limits" framing). Guardrails were
         removed from the bot, so this no longer bypasses any content validation —
         it only controls persona injection. State persists across restarts.
 
@@ -2105,7 +2105,7 @@ class AI(commands.Cog):
                     f"**Channel:** <#{channel_id}>\n\n"
                     "🔓 **โหมด unrestricted เปิดแล้ว**\n\n"
                     "• Unrestricted persona: **ACTIVE** "
-                    "(ฉีด UNRESTRICTED_MODE_INSTRUCTION เข้า system prompt)\n"
+                    "(ฉีด CLAUDE2.md เข้า system prompt)\n"
                     f"• {persist_line}\n\n"
                     "หมายเหตุ: guardrails ถูกถอดออกจากบอทแล้ว โหมดนี้ควบคุมเฉพาะ persona เท่านั้น"
                 ),

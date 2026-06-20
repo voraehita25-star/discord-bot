@@ -212,7 +212,9 @@ class TestClaudeConfig:
 
     def test_defaults(self):
         m = _reload({"CLAUDE_BACKEND": "cli"})
-        assert m.CLAUDE_MODEL == "claude-opus-4-8"
+        # Default tracks Opus 4.8's 1M-token variant (the [1m] suffix selects
+        # the 1,000,000-token context window matched by CLAUDE_CONTEXT_WINDOW).
+        assert m.CLAUDE_MODEL == "claude-opus-4-8[1m]"
         assert m.CLAUDE_MAX_TOKENS == 128000
         assert m.CLAUDE_CONTEXT_WINDOW == 1000000
 
@@ -369,23 +371,60 @@ class TestDefaultProvider:
         assert m.DEFAULT_AI_PROVIDER == "gemini"
 
 
-class TestUnrestrictedFraming:
-    """The general-purpose unrestricted framing string."""
+class TestResolveUnrestrictedSystemText:
+    """Unrestricted mode sources CLAUDE2.md (fallback CLAUDE.md) instead of the
+    old per-preset framing constants."""
+
+    def test_returns_str(self):
+        m = _reload({"CLAUDE_BACKEND": "cli"})
+        assert isinstance(m.resolve_unrestricted_system_text(), str)
+
+    def test_prefers_claude2(self, tmp_path, monkeypatch):
+        m = _reload({"CLAUDE_BACKEND": "cli"})
+        primary = tmp_path / "CLAUDE2.md"
+        fallback = tmp_path / "CLAUDE.md"
+        primary.write_text("ENI_OVERRIDE", encoding="utf-8")
+        fallback.write_text("DEFAULT", encoding="utf-8")
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", primary)
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert m.resolve_unrestricted_system_text() == "ENI_OVERRIDE"
+
+    def test_falls_back_to_claude_md(self, tmp_path, monkeypatch):
+        m = _reload({"CLAUDE_BACKEND": "cli"})
+        fallback = tmp_path / "CLAUDE.md"
+        fallback.write_text("DEFAULT", encoding="utf-8")
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", tmp_path / "CLAUDE2.md")
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert m.resolve_unrestricted_system_text() == "DEFAULT"
+
+    def test_empty_when_neither_exists(self, tmp_path, monkeypatch):
+        m = _reload({"CLAUDE_BACKEND": "cli"})
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", tmp_path / "CLAUDE2.md")
+        monkeypatch.setattr(m, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", tmp_path / "CLAUDE.md")
+        assert m.resolve_unrestricted_system_text() == ""
+
+
+class TestGeminiUnrestrictedFraming:
+    """Gemini's own unrestricted overlay (separate from CLAUDE2.md)."""
 
     def test_is_non_empty_string(self):
         m = _reload({"CLAUDE_BACKEND": "cli"})
-        assert isinstance(m.GENERAL_UNRESTRICTED_FRAMING, str)
-        assert m.GENERAL_UNRESTRICTED_FRAMING.strip()
+        assert isinstance(m.GEMINI_UNRESTRICTED_FRAMING, str)
+        assert m.GEMINI_UNRESTRICTED_FRAMING.strip()
 
-    def test_contains_creative_workspace_marker(self):
+    def test_default_marker_present(self):
         m = _reload({"CLAUDE_BACKEND": "cli"})
-        assert "Private Creative Workspace" in m.GENERAL_UNRESTRICTED_FRAMING
+        assert "Fiction Studio" in m.GEMINI_UNRESTRICTED_FRAMING
+
+    def test_env_override(self):
+        m = _reload({"CLAUDE_BACKEND": "cli", "GEMINI_UNRESTRICTED_FRAMING": "MY_CUSTOM_FRAMING"})
+        assert m.GEMINI_UNRESTRICTED_FRAMING == "MY_CUSTOM_FRAMING"
 
 
 class TestRolePresets:
     """Shape and required keys of DASHBOARD_ROLE_PRESETS."""
 
-    REQUIRED_KEYS = {"name", "emoji", "system_instruction", "color", "unrestricted_framing"}
+    REQUIRED_KEYS = {"name", "emoji", "system_instruction", "color"}
 
     def test_has_expected_presets(self):
         m = _reload({"CLAUDE_BACKEND": "cli"})

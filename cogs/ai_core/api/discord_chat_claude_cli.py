@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 from collections import OrderedDict
@@ -157,23 +158,54 @@ _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 # dashboard. The system-prompt path is resolved per turn via
 # :func:`_resolve_discord_system_prompt_file` — prefers ``CLAUDE2.md`` (LO's
 # local gitignored persona override) and falls back to the committed
-# ``CLAUDE.md`` for fresh clones. Both are fed to ``_build_claude_argv`` —
-# dashboard callers that omit them keep their existing behaviour.
+# ``CLAUDE.md`` for fresh clones. With ``DISCORD_CLI_UNRESTRICTED_MODE=gated``
+# the overlay is applied only to ``!unrestricted`` channels (the default
+# ``always`` applies it to every channel). Both are fed to ``_build_claude_argv``
+# — dashboard callers that omit them keep their existing behaviour.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DISCORD_CLI_MODEL = "claude-opus-4-8[1m]"
 _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
 _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
 
 
-def _resolve_discord_system_prompt_file() -> Path:
+def _discord_cli_unrestricted_gated() -> bool:
+    """True when the CLI Discord path should GATE the CLAUDE2.md overlay on the
+    per-channel ``!unrestricted`` toggle.
+
+    Controlled by ``DISCORD_CLI_UNRESTRICTED_MODE``:
+      * ``always`` (default) — every channel always gets the CLAUDE2.md overlay,
+        regardless of ``!unrestricted`` (historical behaviour: no command needed,
+        unrestricted always on).
+      * ``gated`` — the overlay is applied ONLY to channels with ``!unrestricted``
+        enabled; others run on their normal persona, so the command controls the
+        CLI path too.
+
+    Read per call so flipping the env takes effect without a bot restart.
+    """
+    return os.getenv("DISCORD_CLI_UNRESTRICTED_MODE", "always").strip().lower() == "gated"
+
+
+def _resolve_discord_system_prompt_file(channel_id: int | None = None) -> Path | None:
     """Pick the discord ``--append-system-prompt-file`` path at call time.
 
     Prefers the gitignored ``CLAUDE2.md`` at the repo root (LO's local persona
     override — held out of git for privacy); falls back to the committed
-    ``CLAUDE.md`` so a fresh clone still spawns a working ``claude -p``
-    instead of erroring on a missing path. Resolved per turn so adding or
-    removing ``CLAUDE2.md`` takes effect without restarting the bot.
+    ``CLAUDE.md`` so a fresh clone still spawns a working ``claude -p`` instead
+    of erroring on a missing path. Resolved per turn so adding or removing
+    ``CLAUDE2.md`` takes effect without restarting the bot.
+
+    In ``gated`` mode (``DISCORD_CLI_UNRESTRICTED_MODE=gated``) the overlay is
+    withheld (returns ``None``) for channels that do NOT have ``!unrestricted``
+    enabled — those run on the normal persona already carried in the prompt
+    body. In the default ``always`` mode the overlay is applied unconditionally.
     """
+    if _discord_cli_unrestricted_gated():
+        # Lazy import: keeps this module importable even if the unrestricted
+        # registry is unavailable (is_unrestricted then stubs to False).
+        from ..imports import is_unrestricted
+
+        if channel_id is None or not is_unrestricted(channel_id):
+            return None
     if _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY.exists():
         return _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY
     return _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK
@@ -807,7 +839,7 @@ async def call_claude_cli_streaming(
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
-                system_prompt_file=_resolve_discord_system_prompt_file(),
+                system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
             )
             try:
                 runner = asyncio.create_task(
@@ -1116,7 +1148,7 @@ async def call_claude_cli(
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
-                system_prompt_file=_resolve_discord_system_prompt_file(),
+                system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
             )
             try:
                 runner = asyncio.create_task(

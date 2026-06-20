@@ -17,15 +17,11 @@ class TestFaustDataExample:
             FAUST_CODE_OVERRIDE,
             FAUST_DM_INSTRUCTION,
             FAUST_INSTRUCTION,
-            FAUST_SANDBOX,
-            UNRESTRICTED_MODE_INSTRUCTION,
         )
 
         assert isinstance(FAUST_INSTRUCTION, str)
         assert isinstance(FAUST_DM_INSTRUCTION, str)
-        assert isinstance(FAUST_SANDBOX, str)
         assert isinstance(FAUST_CODE_OVERRIDE, str)
-        assert isinstance(UNRESTRICTED_MODE_INSTRUCTION, str)
 
     def test_escalations_are_lists(self):
         from cogs.ai_core.data.faust_data_example import (

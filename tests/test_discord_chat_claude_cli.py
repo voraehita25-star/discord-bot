@@ -1625,3 +1625,38 @@ class TestCliIdentityOverride:
         )
         assert _IDENTITY_OVERRIDE in prompt
         assert prompt.index(_IDENTITY_OVERRIDE) < prompt.index("SomeCharacter")
+
+
+class TestResolveDiscordSystemPromptFile:
+    """CLAUDE2.md overlay resolution + the DISCORD_CLI_UNRESTRICTED_MODE gate."""
+
+    def test_gated_flag_reads_env(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
+        assert cli_mod._discord_cli_unrestricted_gated() is True
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "ALWAYS")
+        assert cli_mod._discord_cli_unrestricted_gated() is False
+        monkeypatch.delenv("DISCORD_CLI_UNRESTRICTED_MODE", raising=False)
+        assert cli_mod._discord_cli_unrestricted_gated() is False  # default = always
+
+    def test_always_mode_applies_overlay_regardless_of_channel(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "always")
+        # No channel — overlay still applied.
+        assert cli_mod._resolve_discord_system_prompt_file(None) is not None
+        # Even a non-unrestricted channel still gets the overlay in always mode.
+        with patch("cogs.ai_core.imports.is_unrestricted", return_value=False):
+            assert cli_mod._resolve_discord_system_prompt_file(999) is not None
+
+    def test_gated_mode_unrestricted_channel_gets_overlay(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
+        with patch("cogs.ai_core.imports.is_unrestricted", return_value=True):
+            assert cli_mod._resolve_discord_system_prompt_file(123) is not None
+
+    def test_gated_mode_normal_channel_gets_no_overlay(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
+        with patch("cogs.ai_core.imports.is_unrestricted", return_value=False):
+            assert cli_mod._resolve_discord_system_prompt_file(123) is None
+
+    def test_gated_mode_no_channel_gets_no_overlay(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
+        # No channel id → cannot be unrestricted → no overlay.
+        assert cli_mod._resolve_discord_system_prompt_file(None) is None

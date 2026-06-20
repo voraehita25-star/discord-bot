@@ -171,6 +171,14 @@ _PERSIST_TASKS: set[asyncio.Task[None]] = set()
 # Downloads (where it would otherwise sit inside a default --add-dir root).
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
+# Dashboard "unrestricted mode" no longer prepends a creative-workspace framing
+# to the role-preset persona. Instead it swaps the whole
+# --append-system-prompt-file for LO's local gitignored CLAUDE2.md at the repo
+# root (the same override the Discord CLI path uses), falling back to the
+# committed CLAUDE.md so a fresh clone still spawns a working ``claude -p``.
+_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
+_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
+
 # Dedicated working directory for every `claude -p` invocation. Claude Code
 # logs each session as a .jsonl under `~/.claude/projects/<encoded-cwd>/`, so
 # spawning from a bot-specific directory isolates Dashboard-spawned sessions
@@ -353,6 +361,22 @@ def _ensure_system_prompt_file(content: str) -> Path:
             if not path.exists():
                 raise
     return path
+
+
+def _resolve_unrestricted_system_prompt_file() -> Path | None:
+    """System-prompt file for dashboard *unrestricted mode*.
+
+    Prefers LO's local gitignored ``CLAUDE2.md`` at the repo root (held out of
+    git for privacy); falls back to the committed ``CLAUDE.md`` so a fresh clone
+    still spawns a working ``claude -p``. Returns ``None`` when neither exists so
+    the caller cleanly drops back to the role-preset persona. Resolved per turn
+    so adding/removing ``CLAUDE2.md`` takes effect without restarting the bot.
+    """
+    if _UNRESTRICTED_SYSTEM_PROMPT_PRIMARY.exists():
+        return _UNRESTRICTED_SYSTEM_PROMPT_PRIMARY
+    if _UNRESTRICTED_SYSTEM_PROMPT_FALLBACK.exists():
+        return _UNRESTRICTED_SYSTEM_PROMPT_FALLBACK
+    return None
 
 
 def _ensure_empty_mcp_config() -> Path:
@@ -2653,37 +2677,42 @@ async def handle_chat_message_claude_cli(
 
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
     persona = str(preset.get("system_instruction", ""))
-    if unrestricted_requested:
-        framing = preset.get("unrestricted_framing", "")
-        if framing:
-            persona = f"{framing}\n\n{persona}"
 
     # Deliver persona (+ timestamp convention) as a cacheable system prefix via
     # --append-system-prompt-file rather than re-sending it in every user turn.
     # Content-hashed so a stable persona reuses one file and keeps the prompt
     # cache warm. Best-effort: if the file can't be written we fall back to
     # persona-in-body (system_prompt_file=None, persona_in_system=False).
+    #
+    # Unrestricted mode no longer prepends a creative-workspace framing to the
+    # persona. Instead it swaps the whole system prompt for LO's local
+    # CLAUDE2.md (fallback CLAUDE.md) — the same override the Discord CLI path
+    # uses — and the role-preset persona is skipped entirely in that case.
     system_prompt_file: Path | None = None
-    try:
-        # Advertise web tools only when the argv actually allows them: write
-        # mode appends --disallowedTools "… WebFetch WebSearch …", and telling
-        # the model a denied tool is "available right now — call it directly"
-        # produces confident tool calls that hard-fail every time. WebFetch is
-        # ALSO withheld on attachment (Read) turns for exfil-safety, so gate
-        # its advertising on has_attachments too; WebSearch stays under web.
-        system_prompt_file = _ensure_system_prompt_file(
-            _build_system_prompt(
-                persona,
-                web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled,
-                webfetch_enabled=(
-                    _CLI_WEB_TOOLS_ENABLED and not write_enabled and not has_attachments
-                ),
+    if unrestricted_requested:
+        system_prompt_file = _resolve_unrestricted_system_prompt_file()
+    if system_prompt_file is None:
+        try:
+            # Advertise web tools only when the argv actually allows them: write
+            # mode appends --disallowedTools "… WebFetch WebSearch …", and telling
+            # the model a denied tool is "available right now — call it directly"
+            # produces confident tool calls that hard-fail every time. WebFetch is
+            # ALSO withheld on attachment (Read) turns for exfil-safety, so gate
+            # its advertising on has_attachments too; WebSearch stays under web.
+            system_prompt_file = _ensure_system_prompt_file(
+                _build_system_prompt(
+                    persona,
+                    web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled,
+                    webfetch_enabled=(
+                        _CLI_WEB_TOOLS_ENABLED and not write_enabled and not has_attachments
+                    ),
+                )
             )
-        )
-    except OSError:
-        logger.warning(
-            "Could not materialise system-prompt file; using persona-in-body", exc_info=True
-        )
+        except OSError:
+            logger.warning(
+                "Could not materialise system-prompt file; using persona-in-body",
+                exc_info=True,
+            )
     persona_in_system = system_prompt_file is not None
 
     session_id = _CONVERSATION_SESSIONS.get(conversation_id or "") if conversation_id else None

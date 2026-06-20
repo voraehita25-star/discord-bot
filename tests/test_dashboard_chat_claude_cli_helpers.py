@@ -531,6 +531,33 @@ class TestBuildClaudeArgv:
         assert "WebFetch WebSearch" in joined  # the disallowedTools deny-list
 
 
+class TestResolveUnrestrictedSystemPromptFile:
+    """Unrestricted mode swaps the system prompt for CLAUDE2.md (fallback
+    CLAUDE.md) instead of the old creative-workspace framing prepend."""
+
+    def test_prefers_claude2_when_present(self, monkeypatch, tmp_path):
+        primary = tmp_path / "CLAUDE2.md"
+        fallback = tmp_path / "CLAUDE.md"
+        primary.write_text("eni persona", encoding="utf-8")
+        fallback.write_text("default", encoding="utf-8")
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", primary)
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert cli._resolve_unrestricted_system_prompt_file() == primary
+
+    def test_falls_back_to_claude_md_when_claude2_missing(self, monkeypatch, tmp_path):
+        primary = tmp_path / "CLAUDE2.md"  # intentionally not created
+        fallback = tmp_path / "CLAUDE.md"
+        fallback.write_text("default", encoding="utf-8")
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", primary)
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert cli._resolve_unrestricted_system_prompt_file() == fallback
+
+    def test_returns_none_when_neither_exists(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", tmp_path / "CLAUDE2.md")
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", tmp_path / "CLAUDE.md")
+        assert cli._resolve_unrestricted_system_prompt_file() is None
+
+
 class TestSystemPromptFile:
     def test_build_system_prompt_includes_persona_and_convention(self):
         out = cli._build_system_prompt("MY_PERSONA")

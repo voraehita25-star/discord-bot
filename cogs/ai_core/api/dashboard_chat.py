@@ -33,10 +33,9 @@ from .dashboard_common import (
 from .dashboard_config import (
     DASHBOARD_ROLE_PRESETS,
     DB_AVAILABLE,
-    ENI_ESCALATION_FRAMING,
     GEMINI_CONTEXT_WINDOW,
     GEMINI_MODEL,
-    GENERAL_UNRESTRICTED_FRAMING,
+    GEMINI_UNRESTRICTED_FRAMING,
 )
 
 logger = logging.getLogger(__name__)
@@ -376,7 +375,11 @@ async def handle_chat_message(
 
     # Build config with realtime datetime and context
 
-    # Build unrestricted mode injection if enabled
+    # Unrestricted mode overlays the Gemini-specific GEMINI_UNRESTRICTED_FRAMING
+    # ON TOP of the role-preset persona (not a replacement). Gemini deliberately
+    # does NOT use LO's Claude-targeted CLAUDE2.md — that override is Claude/CLI
+    # only (see resolve_unrestricted_system_text); CLAUDE2.md's Claude-specific
+    # mechanics don't map onto Gemini.
     unrestricted_injection = ""
     allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
         "1",
@@ -389,14 +392,7 @@ async def handle_chat_message(
             "🔒 Unrestricted mode requested but DASHBOARD_ALLOW_UNRESTRICTED is off — ignored"
         )
     if effective_unrestricted:
-        # Use the preset's own unrestricted framing; fall back to GENERAL if not defined
-        framing = (
-            preset.get("unrestricted_framing")
-            or GENERAL_UNRESTRICTED_FRAMING
-            or ENI_ESCALATION_FRAMING
-        )
-        if framing:
-            unrestricted_injection = f"\n\n[Session Mode]\n{framing}\n"
+        unrestricted_injection = f"\n{GEMINI_UNRESTRICTED_FRAMING}\n"
         logger.info("🔓 Unrestricted Mode: ENABLED")
 
     thinking_prompt_enhancement = ""

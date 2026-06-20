@@ -81,8 +81,8 @@ def is_silent_block(response: str) -> bool:
 
 
 # Unrestricted mode lives in its own module now (decoupled from the removed
-# guardrails). It controls per-channel persona injection
-# (UNRESTRICTED_MODE_INSTRUCTION), not content filtering.
+# guardrails). It controls per-channel persona injection (LO's CLAUDE2.md
+# override), not content filtering.
 try:
     from .processing.unrestricted import (
         is_unrestricted,

@@ -14,11 +14,9 @@ from typing import TYPE_CHECKING, Any
 from .data import (
     FAUST_INSTRUCTION,
     FAUST_ROLEPLAY,
-    FAUST_SANDBOX,
     GUILD_ID_RP,
     ROLEPLAY_ASSISTANT_INSTRUCTION,
     SERVER_LORE,
-    UNRESTRICTED_MODE_INSTRUCTION,
 )
 from .imports import is_unrestricted
 from .storage import (
@@ -30,14 +28,6 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The operator's persona file uses the legacy name FAUST_SANDBOX for the
-# unrestricted-mode text and doesn't define UNRESTRICTED_MODE_INSTRUCTION (which
-# then resolves to ""). Fall back to FAUST_SANDBOX so the Discord !unrestricted
-# toggle actually injects the operator's authored text. The dashboard's own
-# unrestricted framing is intentionally left untouched (it keeps its separate
-# GENERAL_UNRESTRICTED_FRAMING fallback) — this Discord-side value is local.
-_DISCORD_UNRESTRICTED_TEXT = UNRESTRICTED_MODE_INSTRUCTION or FAUST_SANDBOX
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -211,35 +201,40 @@ class SessionMixin:
                 logger.info("🧠 Force enabling thinking mode for RP channel %s", channel_id)
                 self.chats[channel_id]["thinking_enabled"] = True
 
-        # UNRESTRICTED MODE INJECTION — only for channels explicitly marked unrestricted
-        # Also REMOVES the instruction when unrestricted mode is disabled.
-        # We test for the actual injected text rather than a fixed marker so the
-        # check works regardless of what UNRESTRICTED_MODE_INSTRUCTION's content
-        # is (it's swapped between FAUST_SANDBOX and a fallback). A previous
-        # version checked for a literal "[Private Creative Session]" substring
-        # which never existed in the real instruction text — so the system
-        # prompt grew unbounded on every get_chat_session call and the disable
-        # path never ran.
+        # UNRESTRICTED MODE INJECTION (SDK path only). When a channel has
+        # !unrestricted ON, prepend LO's CLAUDE2.md override (fallback CLAUDE.md)
+        # to the system prompt, and REMOVE it again when the mode is disabled.
+        # The substring check is content-agnostic so the disable path runs
+        # whenever the same text was previously prepended; resolved per call so
+        # editing CLAUDE2.md takes effect without a restart.
+        #
+        # Skipped entirely under CLAUDE_BACKEND=cli: the CLI Discord path applies
+        # CLAUDE2.md via --append-system-prompt-file (gated by
+        # DISCORD_CLI_UNRESTRICTED_MODE), so injecting it into the body here too
+        # would duplicate the whole override every turn.
         # ``is_unrestricted`` is imported at module top and always resolves
-        # (real impl or a stub returning False — see imports.py), so no
-        # per-call import / ImportError guard is needed here.
+        # (real impl or a stub returning False — see imports.py).
         # Re-read AFTER any RP-fix branch above so we don't clobber its update.
-        current_instruction = self.chats[channel_id].get("system_instruction", "")
-        already_injected = bool(
-            _DISCORD_UNRESTRICTED_TEXT and _DISCORD_UNRESTRICTED_TEXT in current_instruction
-        )
-        if is_unrestricted(channel_id):
-            if not already_injected and _DISCORD_UNRESTRICTED_TEXT:
-                logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
-                self.chats[channel_id]["system_instruction"] = (
-                    _DISCORD_UNRESTRICTED_TEXT + current_instruction
+        if not getattr(self, "cli_mode", False):
+            # Function-level import of the shared resolver avoids any import-time
+            # cycle with the api package.
+            from .api.dashboard_config import resolve_unrestricted_system_text
+
+            unrestricted_text = resolve_unrestricted_system_text()
+            current_instruction = self.chats[channel_id].get("system_instruction", "")
+            already_injected = bool(unrestricted_text and unrestricted_text in current_instruction)
+            if is_unrestricted(channel_id):
+                if not already_injected and unrestricted_text:
+                    logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
+                    self.chats[channel_id]["system_instruction"] = (
+                        unrestricted_text + current_instruction
+                    )
+            # Remove unrestricted instruction if it was previously injected
+            elif already_injected:
+                logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
+                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
+                    unrestricted_text, ""
                 )
-        # Remove unrestricted instruction if it was previously injected
-        elif already_injected:
-            logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
-            self.chats[channel_id]["system_instruction"] = current_instruction.replace(
-                _DISCORD_UNRESTRICTED_TEXT, ""
-            )
 
         # Update Last Accessed Time
         self.last_accessed[channel_id] = time.time()

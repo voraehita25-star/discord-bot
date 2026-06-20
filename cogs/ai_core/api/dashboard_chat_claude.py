@@ -221,8 +221,7 @@ from .dashboard_config import (
     CLAUDE_MODEL,
     DASHBOARD_ROLE_PRESETS,
     DB_AVAILABLE,
-    ENI_ESCALATION_FRAMING,
-    GENERAL_UNRESTRICTED_FRAMING,
+    resolve_unrestricted_system_text,
 )
 
 # Models that use adaptive thinking (``thinking: {type: "adaptive"}``) rather than
@@ -694,8 +693,10 @@ async def handle_chat_message_claude(
         )
     )
 
-    # Build unrestricted mode injection if enabled
-    unrestricted_injection = ""
+    # Unrestricted mode swaps the persona for LO's CLAUDE2.md override (fallback
+    # CLAUDE.md) instead of the old per-preset framing injection — the same
+    # source every other backend now uses. Falls back to the preset persona when
+    # neither file exists.
     # Parse identically to the CLI backend (.strip() + "on") so the same env
     # value enables unrestricted mode regardless of which backend is active.
     allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower() in (
@@ -704,15 +705,12 @@ async def handle_chat_message_claude(
         "yes",
         "on",
     )
+    persona = str(preset["system_instruction"])
     if unrestricted_mode and allow_unrestricted:
-        framing = (
-            preset.get("unrestricted_framing")
-            or GENERAL_UNRESTRICTED_FRAMING
-            or ENI_ESCALATION_FRAMING
-        )
-        if framing:
-            unrestricted_injection = f"\n\n[Session Mode]\n{framing}\n"
-        logger.info("🔓 Unrestricted Mode: ENABLED")
+        _claude2 = resolve_unrestricted_system_text()
+        if _claude2:
+            persona = _claude2
+        logger.info("🔓 Unrestricted Mode: ENABLED (CLAUDE2.md)")
 
     thinking_prompt_enhancement = ""
     if thinking_enabled:
@@ -725,8 +723,7 @@ async def handle_chat_message_claude(
     # Only the per-turn ``Current Time: ...`` line goes in the volatile block,
     # which means a turn-to-turn time change no longer invalidates the cached
     # ~99% of the system prompt.
-    stable_system_prompt = f"""{preset["system_instruction"]}
-{unrestricted_injection}
+    stable_system_prompt = f"""{persona}
 {thinking_prompt_enhancement}
 [System Context]
 {user_context}

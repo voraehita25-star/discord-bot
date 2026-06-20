@@ -1,8 +1,8 @@
 """Unrestricted-channel registry for the Discord AI.
 
 Tracks which channels are in "unrestricted mode" — a per-channel toggle (set via
-the owner-only ``!unrestricted`` command) that injects the
-``UNRESTRICTED_MODE_INSTRUCTION`` persona into the system prompt.
+the owner-only ``!unrestricted`` command) that injects LO's ``CLAUDE2.md``
+persona override into the system prompt.
 
 This logic used to live inside ``processing/guardrails.py``; that module was
 removed, so the registry now stands on its own. It no longer bypasses any

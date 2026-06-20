@@ -449,7 +449,7 @@ class TestModuleImports:
 
 
 class TestRoleplayAndUnrestrictedWiring:
-    """FAUST_ROLEPLAY (Discord-guild-only) and FAUST_SANDBOX (Discord !unrestricted) wiring."""
+    """FAUST_ROLEPLAY (Discord-guild-only) and CLAUDE2.md (Discord !unrestricted) wiring."""
 
     def _make_instance(self):
         from cogs.ai_core.session_mixin import SessionMixin
@@ -478,7 +478,9 @@ class TestRoleplayAndUnrestrictedWiring:
         """A non-RP Discord guild channel gets FAUST_ROLEPLAY appended to the persona."""
         instance = self._make_instance()
         with (
-            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
             patch(
                 "cogs.ai_core.session_mixin.load_metadata",
                 new_callable=AsyncMock,
@@ -497,7 +499,9 @@ class TestRoleplayAndUnrestrictedWiring:
         """A DM (guild_id None) keeps plain FAUST_INSTRUCTION — no roleplay actions."""
         instance = self._make_instance()
         with (
-            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
             patch(
                 "cogs.ai_core.session_mixin.load_metadata",
                 new_callable=AsyncMock,
@@ -516,7 +520,9 @@ class TestRoleplayAndUnrestrictedWiring:
         """The RP server still uses ROLEPLAY_ASSISTANT_INSTRUCTION, not FAUST_ROLEPLAY."""
         instance = self._make_instance()
         with (
-            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
             patch(
                 "cogs.ai_core.session_mixin.load_metadata",
                 new_callable=AsyncMock,
@@ -532,19 +538,51 @@ class TestRoleplayAndUnrestrictedWiring:
 
     @pytest.mark.asyncio
     async def test_unrestricted_injects_discord_sandbox_text(self):
-        """When a channel is unrestricted, the Discord sandbox text is prepended."""
+        """When a channel is unrestricted, the CLAUDE2.md override is prepended."""
         instance = self._make_instance()
         with (
-            patch("cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
             patch(
                 "cogs.ai_core.session_mixin.load_metadata",
                 new_callable=AsyncMock,
                 return_value={"thinking_enabled": True},
             ),
             patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
-            patch("cogs.ai_core.session_mixin._DISCORD_UNRESTRICTED_TEXT", "SANDBOX_TEXT"),
+            patch(
+                "cogs.ai_core.api.dashboard_config.resolve_unrestricted_system_text",
+                return_value="SANDBOX_TEXT",
+            ),
             patch("cogs.ai_core.session_mixin.is_unrestricted", return_value=True),
         ):
             result = await instance.get_chat_session(103)
         assert result["system_instruction"].startswith("SANDBOX_TEXT")
+        assert "FAUST_BASE" in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_cli_mode_skips_unrestricted_body_injection(self):
+        """Under CLAUDE_BACKEND=cli the body injection is skipped — the CLI path
+        applies CLAUDE2.md via --append-system-prompt-file instead, so injecting
+        it into the body too would duplicate the whole override every turn."""
+        instance = self._make_instance()
+        instance.cli_mode = True
+        with (
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch(
+                "cogs.ai_core.api.dashboard_config.resolve_unrestricted_system_text",
+                return_value="SANDBOX_TEXT",
+            ),
+            patch("cogs.ai_core.session_mixin.is_unrestricted", return_value=True),
+        ):
+            result = await instance.get_chat_session(104)
+        assert "SANDBOX_TEXT" not in result["system_instruction"]
         assert "FAUST_BASE" in result["system_instruction"]
