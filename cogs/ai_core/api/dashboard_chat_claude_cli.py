@@ -1610,6 +1610,7 @@ def _build_claude_argv(
     system_prompt_file: Path | None = None,
     enable_web: bool = False,
     ai_tool_names: list[str] | None = None,
+    model: str | None = None,
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
@@ -1645,7 +1646,7 @@ def _build_claude_argv(
         "--verbose",
         "--include-partial-messages",
         "--model",
-        CLAUDE_MODEL,
+        model or CLAUDE_MODEL,
         "--mcp-config",
         str(mcp_config),
         "--strict-mcp-config",

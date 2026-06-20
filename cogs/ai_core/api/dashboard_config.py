@@ -84,7 +84,7 @@ GEMINI_CONTEXT_WINDOW = _int_env("GEMINI_CONTEXT_WINDOW", 1000000)
 # ============================================================================
 
 CLAUDE_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8[1m]")
 CLAUDE_MAX_TOKENS = _int_env("CLAUDE_MAX_TOKENS", 128000)
 CLAUDE_CONTEXT_WINDOW = _int_env("CLAUDE_CONTEXT_WINDOW", 1000000)
 

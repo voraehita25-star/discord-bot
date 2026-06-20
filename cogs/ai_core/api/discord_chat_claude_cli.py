@@ -38,6 +38,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -148,6 +149,34 @@ _DISCORD_STREAM_TIMEOUT = 1800.0
 # On the Discord path exceeding it does NOT truncate: the turn stops and the
 # user chooses via _OverlimitChoiceView (summarize the chat, or pause it).
 _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
+
+# Discord-side model + system-prompt overrides. The global ``CLAUDE_MODEL``
+# default tracks Opus 4.8's 1M-token variant (``claude-opus-4-8[1m]``), so the
+# explicit ``model=`` pin here is defensive: the Discord RP path stays on the
+# 1M variant even if an operator overrides ``CLAUDE_MODEL`` in env for the
+# dashboard. The system-prompt path is resolved per turn via
+# :func:`_resolve_discord_system_prompt_file` — prefers ``CLAUDE2.md`` (LO's
+# local gitignored persona override) and falls back to the committed
+# ``CLAUDE.md`` for fresh clones. Both are fed to ``_build_claude_argv`` —
+# dashboard callers that omit them keep their existing behaviour.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DISCORD_CLI_MODEL = "claude-opus-4-8[1m]"
+_DISCORD_CLI_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
+_DISCORD_CLI_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
+
+
+def _resolve_discord_system_prompt_file() -> Path:
+    """Pick the discord ``--append-system-prompt-file`` path at call time.
+
+    Prefers the gitignored ``CLAUDE2.md`` at the repo root (LO's local persona
+    override — held out of git for privacy); falls back to the committed
+    ``CLAUDE.md`` so a fresh clone still spawns a working ``claude -p``
+    instead of erroring on a missing path. Resolved per turn so adding or
+    removing ``CLAUDE2.md`` takes effect without restarting the bot.
+    """
+    if _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY.exists():
+        return _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY
+    return _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK
 
 
 def _get_channel_lock(channel_id: int) -> asyncio.Lock:
@@ -774,6 +803,11 @@ async def call_claude_cli_streaming(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
+                # Discord path pins Opus 4.8's 1M-context variant and the
+                # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
+                # module-level constants for the rationale.
+                model=_DISCORD_CLI_MODEL,
+                system_prompt_file=_resolve_discord_system_prompt_file(),
             )
             try:
                 runner = asyncio.create_task(
@@ -1078,6 +1112,11 @@ async def call_claude_cli(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
+                # Discord path pins Opus 4.8's 1M-context variant and the
+                # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
+                # module-level constants for the rationale.
+                model=_DISCORD_CLI_MODEL,
+                system_prompt_file=_resolve_discord_system_prompt_file(),
             )
             try:
                 runner = asyncio.create_task(

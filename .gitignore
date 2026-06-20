@@ -129,6 +129,10 @@ data/tmp/
 cogs/ai_core/data/faust_data.py
 cogs/ai_core/data/roleplay_data.py
 cogs/ai_core/data/unrestricted_channels.json
+# Discord-side Claude CLI persona override (per-user, never commit) —
+# fed to `claude -p --append-system-prompt-file` by discord_chat_claude_cli.py.
+# Anchored at root so a nested CLAUDE2.md anywhere else is unaffected.
+/CLAUDE2.md
 
 # RP character images (private)
 assets/RP/
