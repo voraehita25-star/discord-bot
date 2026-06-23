@@ -1409,6 +1409,171 @@ h1 .ic, h2 .ic, h3 .ic,
 }
 
 /* ============================================================================
+   ===== Claude Design parity — ORBITAL restyle =====
+   CSS-only override layer that lifts the live app to the "Sakura Midnight /
+   ORBITAL Tactical Command Deck" design-system look. APPEND-ONLY: every rule
+   here re-skins a surface that styles.css still paints in the retired
+   anime-purple/round/blurred idiom. No markup, class, id or data-* touched;
+   source order (orbital is linked AFTER styles.css) wins specificity ties.
+   Kept immediately BEFORE the authoritative FOCUS block so that block stays
+   last. Sub-sections mirror the plan phases P1–P6.
+   ============================================================================ */
+
+/* ---- P1 · tokens — shared hover-glow (added to BOTH themes) ---------------- */
+:root {
+    /* one shared "tick brighten" glow for the optional hover ticks in P2–P6 */
+    --glow-hover: 0 0 0 1px var(--border-strong), 0 0 22px var(--cyan-200);
+}
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --glow-hover: 0 0 0 1px var(--border-strong), 0 0 22px var(--cyan-200);
+}
+
+/* ---- P2 · shell + nav ----------------------------------------------------- */
+/* drop the leftover 2px blur (styles.css:302) so the carbon canvas is crisp */
+.app {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+/* let the carbon canvas + technical grid show through the content well
+   (styles.css:466 washed it with rgba(10,5,20,.4)) */
+.content {
+    background: transparent;
+}
+/* retire the anime purple→pink glass chip (styles.css:5234) for the tactical
+   glass + gradient hairline used by the rest of the deck. Dark-only at (0,1,0);
+   the light theme keeps its existing teal logo (html[data-theme=light] .logo,
+   styles.css:125, higher specificity). */
+.logo {
+    background: var(--glass);
+    border: 1px solid;
+    border-image: var(--hairline) 1;
+}
+
+/* ---- P3 · cards / stat / role --------------------------------------------- */
+/* kill the violet glow under stat numerals (styles.css:5192) */
+.stat-value {
+    text-shadow: none;
+}
+/* the salmon Faust leak (styles.css:3315, specificity 0,3,0): match it and let
+   source-order win, repainting onto the cyan focus + sakura emphasis bloom. */
+.role-card[data-role="faust"].selected {
+    border-color: var(--border-focus);
+    background: var(--card-bg);
+    box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura);
+}
+/* squared HUD avatar instead of the round purple gradient (styles.css:2170).
+   The user-avatar fill (styles.css:2189, 0,3,0) intentionally keeps its own
+   cyan→green gradient; only the radius + border + assistant fill change here. */
+.message-avatar {
+    border-radius: var(--radius-sm);
+    background: var(--brand-soft);
+    border: 1px solid var(--border-strong);
+}
+/* light (Blueprint): --brand-soft is a ~8% wash that dissolves the assistant
+   chip on the white canvas — give it an opaque surface so the chip reads. The
+   user avatar keeps its own gradient (styles.css:2189, higher specificity). */
+html[data-theme="light"] .message-avatar {
+    background: var(--surface-2);
+}
+
+/* ---- P4 · buttons / inputs ------------------------------------------------ */
+/* square the chat textarea + drop the raw white-alpha fill (styles.css:3087).
+   ID specificity (1,0,0); focus styling is owned by the FOCUS block below.
+   Light theme keeps its own #chat-input bg (styles.css:3392, 1,1,1). */
+#chat-input {
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+}
+/* flatten the hover shimmer sweeps (styles.css:5201) so the primary/warning/
+   danger buttons read flat like the cards. */
+.btn-primary::after,
+.btn-warning::after,
+.btn-danger::after {
+    content: none;
+}
+
+/* ---- P5 · chat ------------------------------------------------------------ */
+/* bubble corners onto the deck radius (styles.css:2498 was 16px) */
+.message-content {
+    border-radius: var(--radius);
+}
+/* square the send button to match .btn-primary (styles.css:3112 was round
+   purple); the brand gradient + cyan lift stay. */
+.btn-send {
+    border-radius: var(--radius-sm);
+    background: var(--brand-grad);
+    box-shadow: 0 6px 18px rgba(45, 200, 255, 0.30);
+}
+/* give the scroll-to-bottom FAB the deck elevation + a glass top edge + a
+   brand hairline (styles.css:2930 was a bare round FAB). Radius stays round. */
+.scroll-to-bottom-fab {
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-md), var(--glass-hi);
+}
+/* context-window chip: tactical chip surface instead of raw white-alpha
+   (styles.css:1929 / :1941). */
+.context-window-indicator {
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+}
+.context-bar-container {
+    background: var(--cyan-100);
+}
+/* the high-usage fill used a literal #f87171 (styles.css:1962, 0,2,0) — match
+   specificity and repaint with the token (theme-aware red). */
+.context-bar-fill.usage-high {
+    background: var(--accent-red);
+}
+/* HUD command strips: a thin cyan hairline on the chat header (top) + input
+   area (top), leaving their --card-bg backgrounds intact (styles.css:1867 /
+   :3075). */
+.chat-header {
+    border-top: 1px solid var(--border-color);
+}
+.chat-input-area {
+    border-top: 1px solid var(--border-color);
+}
+/* conversation rows onto the deck radius (styles.css:1742 was 12px) */
+.conversation-item {
+    border-radius: var(--radius-sm);
+}
+
+/* ---- P6 · feedback / history ---------------------------------------------- */
+/* toasts onto the deck radius (styles.css:204 was 12px) */
+.toast {
+    border-radius: var(--radius-sm);
+}
+/* history surfaces onto the deck radii (legacy 16/12/10px) */
+.history-sidebar {
+    border-radius: var(--radius-lg);
+}
+.history-msg {
+    border-radius: var(--radius-sm);
+}
+.history-channel-item {
+    border-radius: var(--radius-sm);
+}
+/* optional tick brighten on channel-row hover (motion-safe) */
+@media (prefers-reduced-motion: no-preference) {
+    .history-channel-item {
+        transition: background var(--dur-fast) var(--ease-smooth),
+                    border-color var(--dur-fast) var(--ease-smooth),
+                    box-shadow var(--dur-fast) var(--ease-smooth);
+    }
+    .history-channel-item:hover {
+        box-shadow: var(--glow-hover);
+    }
+}
+/* the live indicator carries a background, so square it to the deck radius
+   (styles.css:909 was a 20px pill). */
+.live-indicator {
+    border-radius: var(--radius-sm);
+}
+
+/* ============================================================================
    FOCUS / FORCED-COLORS / CONTRAST — ONE authoritative ruleset, kept LAST so
    it wins source-order over every base + orbital focus style. Satisfies
    interactions.spec.ts (accepts outline OR box-shadow).
