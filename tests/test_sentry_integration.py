@@ -95,6 +95,37 @@ class TestInitSentry:
         # Exception type must be untouched (used for Sentry issue grouping).
         assert out["exception"]["values"][0]["type"] == "RuntimeError"
 
+    def test_scrub_hooks_redact_secrets_nested_in_data_and_extra(self):
+        """The before_breadcrumb/before_send hooks must redact secrets nested
+        inside crumb['data'] / event['extra'] (audit 2026-06-28: the hooks
+        discard _deep_redact's return, so a non-mutating _deep_redact silently
+        stops redacting nested secrets — the always-on production path)."""
+        from utils.monitoring import sentry_integration
+
+        if not sentry_integration.SENTRY_AVAILABLE:
+            pytest.skip("Sentry SDK not available")
+
+        with (
+            patch("sentry_sdk.init") as mock_init,
+            patch(
+                "utils.monitoring.logger._redact_sensitive",
+                side_effect=lambda v: "[REDACTED]" if isinstance(v, str) else v,
+            ),
+        ):
+            sentry_integration.init_sentry(dsn="https://test@sentry.io/123", environment="test")
+
+        kwargs = mock_init.call_args.kwargs
+        before_breadcrumb = kwargs["before_breadcrumb"]
+        before_send = kwargs["before_send"]
+
+        crumb = {"data": {"request": {"headers": {"Authorization": "sk-ant-supersecret"}}}}
+        scrubbed = before_breadcrumb(crumb, {})
+        assert scrubbed["data"]["request"]["headers"]["Authorization"] == "[REDACTED]"
+
+        event = {"extra": {"ctx": {"api_key": "sk-ant-supersecret"}}}
+        scrubbed_event = before_send(event, {})
+        assert scrubbed_event["extra"]["ctx"]["api_key"] == "[REDACTED]"
+
 
 class TestCaptureException:
     """Tests for capture_exception function."""
@@ -231,6 +262,33 @@ class TestCaptureMessage:
 
         # The string value must have been redacted before reaching set_extra.
         mock_scope.set_extra.assert_called_once_with("api_key", "[REDACTED]")
+
+
+class TestDeepRedactNonMutation:
+    """_deep_redact must redact into a fresh structure without mutating the
+    caller-owned dict (audit 2026-06-28: capture_exception/capture_message
+    fed caller-owned context values through it)."""
+
+    def test_deep_redact_does_not_mutate_caller_dict(self):
+        from utils.monitoring import sentry_integration
+
+        original = {
+            "request": {"headers": {"Authorization": "secret-token"}},
+            "items": ["a", "b"],
+        }
+        redacted = sentry_integration._deep_redact(original, lambda _v: "[REDACTED]")
+
+        # Caller-owned input is left untouched (no in-place mutation).
+        assert original == {
+            "request": {"headers": {"Authorization": "secret-token"}},
+            "items": ["a", "b"],
+        }
+        # A fresh object is returned, fully redacted at every depth.
+        assert redacted is not original
+        assert redacted == {
+            "request": {"headers": {"Authorization": "[REDACTED]"}},
+            "items": ["[REDACTED]", "[REDACTED]"],
+        }
 
 
 class TestSetUserContext:

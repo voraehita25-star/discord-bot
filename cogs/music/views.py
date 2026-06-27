@@ -80,7 +80,15 @@ class MusicControlView(discord.ui.View):
                 button.emoji = previous_emoji
                 await interaction.response.send_message(f"❌ ไม่สามารถเล่นต่อได้: {e}", ephemeral=True)
                 return
-            await interaction.response.edit_message(view=self)
+            # Guard edit_message like loop_button/stop_button: the controls
+            # message may be deleted or the token stale. Audio state already
+            # toggled, so revert the cosmetic emoji and bail without surfacing
+            # an unhandled interaction error.
+            try:
+                await interaction.response.edit_message(view=self)
+            except discord.HTTPException:
+                button.emoji = previous_emoji
+                return
         elif voice_client.is_playing():
             previous_emoji = button.emoji
             button.emoji = "▶️"
@@ -95,7 +103,12 @@ class MusicControlView(discord.ui.View):
                     f"❌ ไม่สามารถหยุดชั่วคราวได้: {e}", ephemeral=True
                 )
                 return
-            await interaction.response.edit_message(view=self)
+            # Same guard as the resume branch above (parity with loop_button).
+            try:
+                await interaction.response.edit_message(view=self)
+            except discord.HTTPException:
+                button.emoji = previous_emoji
+                return
         else:
             await interaction.response.send_message("❌ ไม่มีเพลงให้หยุดชั่วคราว", ephemeral=True)
 
