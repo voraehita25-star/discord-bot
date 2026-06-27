@@ -38,16 +38,19 @@ def _deep_redact(value: Any, redact_fn: Callable[[str], str], _depth: int = 0) -
     values, so a secret nested under e.g. ``data={'request': {'headers':
     {'Authorization': '...'}}}`` would pass through. This walks dict values
     and list/tuple items up to ``_REDACT_MAX_DEPTH`` and redacts string
-    leaves in place; non-string, non-container leaves are returned unchanged.
+    leaves, returning fresh containers so the caller-owned input is never
+    mutated; non-string, non-container leaves are returned unchanged.
     """
     if _depth >= _REDACT_MAX_DEPTH:
         return value
     if isinstance(value, str):
         return redact_fn(value)
     if isinstance(value, dict):
-        for k, v in list(value.items()):
-            value[k] = _deep_redact(v, redact_fn, _depth + 1)
-        return value
+        # Build a fresh dict instead of mutating the caller-owned input —
+        # mirrors the list/tuple branches below, which already return new
+        # containers, so capture_exception/capture_message never alter a
+        # context dict the caller may reuse afterwards.
+        return {k: _deep_redact(v, redact_fn, _depth + 1) for k, v in value.items()}
     if isinstance(value, list):
         return [_deep_redact(item, redact_fn, _depth + 1) for item in value]
     if isinstance(value, tuple):
@@ -134,7 +137,10 @@ def init_sentry(
                     crumb["message"] = _redact_sensitive(msg)
                 data = crumb.get("data")
                 if isinstance(data, dict):
-                    _deep_redact(data, _redact_sensitive)
+                    # _deep_redact returns a fresh dict (it no longer mutates in
+                    # place), so reassign — otherwise nested secrets in the
+                    # breadcrumb would ship un-redacted.
+                    crumb["data"] = _deep_redact(data, _redact_sensitive)
             except Exception:
                 # Never let scrubbing crash the client — drop the crumb instead.
                 # Log first (debug, below the WARNING breadcrumb level so it
@@ -175,7 +181,10 @@ def init_sentry(
                             ]
                     extra = event.get("extra")
                     if isinstance(extra, dict):
-                        _deep_redact(extra, _redact_sensitive)
+                        # Reassign: _deep_redact returns a fresh dict and no
+                        # longer mutates in place, so the redacted copy must
+                        # replace the original or nested secrets leak.
+                        event["extra"] = _deep_redact(extra, _redact_sensitive)
 
                 def _scrub_stack(stack: dict[str, Any]) -> None:
                     frames = stack.get("frames") or []

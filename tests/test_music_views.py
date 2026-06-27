@@ -730,6 +730,62 @@ class TestPauseResumeErrorBranches:
             interaction.response.edit_message.assert_not_called()
 
 
+class TestPauseResumeEditMessageBranch:
+    """edit_message failure in pause_resume_button must be handled like the
+    sibling buttons (audit 2026-06-28: it was the lone unguarded edit_message)."""
+
+    @pytest.mark.asyncio
+    async def test_resume_edit_message_http_exception_handled(self):
+        """resume branch: edit_message raising HTTPException is caught, emoji reverted."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            voice_client = MagicMock()
+            voice_client.is_paused.return_value = True
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = voice_client
+            interaction.response.edit_message = AsyncMock(side_effect=_make_http_exception())
+
+            button = MagicMock()
+            button.emoji = "original"
+
+            # Must not raise even though edit_message fails.
+            await view.pause_resume_button(interaction, button)
+
+            voice_client.resume.assert_called_once()
+            interaction.response.edit_message.assert_awaited_once()
+            # Cosmetic emoji reverted, mirroring loop_button's rollback.
+            assert button.emoji == "original"
+
+    @pytest.mark.asyncio
+    async def test_pause_edit_message_http_exception_handled(self):
+        """pause branch: edit_message raising HTTPException is caught, emoji reverted."""
+        with patch("discord.ui.View.__init__", return_value=None):
+            from cogs.music.views import MusicControlView
+
+            view = MusicControlView(cog=MagicMock(), guild_id=12345)
+
+            voice_client = MagicMock()
+            voice_client.is_paused.return_value = False
+            voice_client.is_playing.return_value = True
+
+            interaction = MagicMock()
+            interaction.guild.voice_client = voice_client
+            interaction.response.edit_message = AsyncMock(side_effect=_make_http_exception())
+
+            button = MagicMock()
+            button.emoji = "original"
+
+            await view.pause_resume_button(interaction, button)
+
+            voice_client.pause.assert_called_once()
+            interaction.response.edit_message.assert_awaited_once()
+            assert button.emoji == "original"
+
+
 class TestStopButtonMessageBranches:
     """Cover the message-edit branches of stop_button (133-139)."""
 
