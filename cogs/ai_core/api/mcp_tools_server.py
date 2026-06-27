@@ -28,6 +28,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Any, cast
 
 _PROTOCOL_VERSION = "2024-11-05"
 _SERVER_NAME = "bottools"
@@ -68,7 +69,7 @@ def _ipc_request(path: str, payload: dict | None) -> dict:
         headers={"Content-Type": "application/json", "X-Token": token},
     )
     with _OPENER.open(req, timeout=_HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return cast(dict, json.loads(resp.read().decode("utf-8")))
 
 
 def _turn_context() -> dict:
@@ -132,8 +133,11 @@ def main() -> None:
     # PYTHONUTF8/PYTHONIOENCODING are NOT in the bot's subprocess env
     # allowlist, so reconfigure here rather than relying on the environment.
     try:
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-        sys.stdout.reconfigure(encoding="utf-8")
+        # .reconfigure exists on TextIOWrapper but not the narrower TextIO type
+        # the stubs give sys.stdin/stdout; the except below handles streams that
+        # genuinely lack it at runtime.
+        cast(Any, sys.stdin).reconfigure(encoding="utf-8", errors="replace")
+        cast(Any, sys.stdout).reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass  # already UTF-8, or a stream that doesn't support reconfigure
 

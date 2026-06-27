@@ -325,7 +325,13 @@ async def execute_tool_call(
             if not valid:
                 return result
             tee = _TeeChannel(origin_channel)
-            await cmd_create_text(guild, tee, result, [result, args.get("category", "")], user=user)
+            await cmd_create_text(
+                guild,
+                cast(discord.TextChannel, tee),
+                result,
+                [result, args.get("category", "")],
+                user=user,
+            )
             return _mutation_outcome(tee, f"Requested creation of text channel '{result}'")
 
         elif fname == "create_voice_channel":
@@ -334,7 +340,11 @@ async def execute_tool_call(
                 return result
             tee = _TeeChannel(origin_channel)
             await cmd_create_voice(
-                guild, tee, result, [result, args.get("category", "")], user=user
+                guild,
+                cast(discord.TextChannel, tee),
+                result,
+                [result, args.get("category", "")],
+                user=user,
             )
             return _mutation_outcome(tee, f"Requested creation of voice channel '{result}'")
 
@@ -343,7 +353,7 @@ async def execute_tool_call(
             if not valid:
                 return result
             tee = _TeeChannel(origin_channel)
-            await cmd_create_category(guild, tee, result, [], user=user)
+            await cmd_create_category(guild, cast(discord.TextChannel, tee), result, [], user=user)
             return _mutation_outcome(tee, f"Requested creation of category '{result}'")
 
         elif fname == "delete_channel":
@@ -351,7 +361,7 @@ async def execute_tool_call(
             if not valid:
                 return result
             tee = _TeeChannel(origin_channel)
-            await cmd_delete_channel(guild, tee, result, [], user=user)
+            await cmd_delete_channel(guild, cast(discord.TextChannel, tee), result, [], user=user)
             return _mutation_outcome(tee, f"Requested deletion of channel '{result}'")
 
         elif fname == "create_role":
@@ -368,7 +378,7 @@ async def execute_tool_call(
             if isinstance(ch, str) and ch.strip():
                 cmd_args.append(ch)
             tee = _TeeChannel(origin_channel)
-            await cmd_create_role(guild, tee, None, cmd_args, user=user)
+            await cmd_create_role(guild, cast(discord.TextChannel, tee), None, cmd_args, user=user)
             return _mutation_outcome(tee, f"Requested creation of role '{result}'")
 
         elif fname == "delete_role":
@@ -376,7 +386,7 @@ async def execute_tool_call(
             if not valid:
                 return result
             tee = _TeeChannel(origin_channel)
-            await cmd_delete_role(guild, tee, None, [result], user=user)
+            await cmd_delete_role(guild, cast(discord.TextChannel, tee), None, [result], user=user)
             return _mutation_outcome(tee, f"Requested deletion of role '{result}'")
 
         elif fname == "add_role":
@@ -393,7 +403,9 @@ async def execute_tool_call(
             ):
                 return "❌ add_role requires both user_name and role_name as non-empty strings"
             tee = _TeeChannel(origin_channel)
-            await cmd_add_role(guild, tee, None, [user_name, role_name], user=user)
+            await cmd_add_role(
+                guild, cast(discord.TextChannel, tee), None, [user_name, role_name], user=user
+            )
             return _mutation_outcome(tee, f"Requested adding role '{role_name}' to '{user_name}'")
 
         elif fname == "remove_role":
@@ -409,7 +421,9 @@ async def execute_tool_call(
             ):
                 return "❌ remove_role requires both user_name and role_name as non-empty strings"
             tee = _TeeChannel(origin_channel)
-            await cmd_remove_role(guild, tee, None, [user_name, role_name], user=user)
+            await cmd_remove_role(
+                guild, cast(discord.TextChannel, tee), None, [user_name, role_name], user=user
+            )
             return _mutation_outcome(
                 tee, f"Requested removing role '{role_name}' from '{user_name}'"
             )
@@ -440,7 +454,7 @@ async def execute_tool_call(
             tee = _TeeChannel(origin_channel)
             await cmd_set_channel_perm(
                 guild,
-                tee,
+                cast(discord.TextChannel, tee),
                 None,
                 [channel_name, target_name, permission, str(value)],
                 user=user,
@@ -469,7 +483,7 @@ async def execute_tool_call(
             tee = _TeeChannel(origin_channel)
             await cmd_set_role_perm(
                 guild,
-                tee,
+                cast(discord.TextChannel, tee),
                 None,
                 [role_name, permission, str(value)],
                 user=user,

@@ -22,7 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -382,7 +382,8 @@ class FAISSIndex:
                 # anyone who could write to ``data/faiss`` could ship
                 # arbitrary Python code that executed on the next save/load
                 # cycle. JSON is bounded to data and removes that surface.
-                faiss.write_index(self.index, str(temp_index))
+                # _initialized was checked above, so self.index is set here.
+                faiss.write_index(cast("faiss.IndexFlatIP", self.index), str(temp_index))
                 temp_id_map.write_text(
                     json.dumps(
                         {"save_uuid": save_uuid, "id_map": list(self.id_map)},
@@ -486,7 +487,7 @@ class FAISSIndex:
             return False
 
         try:
-            self.index = faiss.read_index(str(FAISS_INDEX_FILE))
+            self.index = cast("faiss.IndexFlatIP", faiss.read_index(str(FAISS_INDEX_FILE)))
             id_map_uuid: str | None = None
             if legacy_pickle_load:
                 # ``allow_pickle=True`` is the deserialization vector we are
@@ -1631,7 +1632,7 @@ class MemorySystem:
 
             # Apply time decay
             final_score = score
-            age_days = 0
+            age_days = 0.0
             if use_time_decay:
                 created_at = mem.get("created_at", "")
                 decay = self._calculate_time_decay(created_at)

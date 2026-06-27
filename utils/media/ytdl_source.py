@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import discord
 import yt_dlp
@@ -357,7 +357,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             # before handing the upstream URL to ffmpeg. An attacker-supplied
             # URL resolving to an arbitrarily large/endless stream would
             # otherwise be streamed without any cap.
-            stream_max_bytes = ytdl_opts_hq["max_filesize"]
+            stream_max_bytes = cast(int, ytdl_opts_hq["max_filesize"])
             advertised_size = data.get("filesize") or data.get("filesize_approx")
             if isinstance(advertised_size, (int, float)) and advertised_size > stream_max_bytes:
                 raise ValueError(

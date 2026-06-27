@@ -15,6 +15,7 @@ import re
 import warnings
 from collections import OrderedDict, namedtuple
 from pathlib import Path
+from types import ModuleType
 from typing import Any, TypedDict
 
 import discord
@@ -36,6 +37,7 @@ warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
 from .data import SERVER_CHARACTER_NAMES
 
 # Try to import imageio for GIF to video conversion
+iio: ModuleType | None
 try:
     import imageio.v3 as iio
 

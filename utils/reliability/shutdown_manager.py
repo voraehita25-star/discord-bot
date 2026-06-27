@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -266,15 +266,27 @@ class ShutdownManager:
             self.logger.info("🔄 Running cleanup: %s", handler.name)
 
             if handler.is_async:
+                # When wants_stop_event is True the callback accepts a stop_event
+                # (the CleanupHandler.callback union types it as zero-arg); cast at
+                # the call site to satisfy the type checker without changing runtime.
                 coro = (
-                    handler.callback(stop_event) if handler.wants_stop_event else handler.callback()
+                    cast(
+                        "Callable[[threading.Event], Coroutine[Any, Any, Any]]",
+                        handler.callback,
+                    )(stop_event)
+                    if handler.wants_stop_event
+                    else handler.callback()
                 )
                 await asyncio.wait_for(coro, timeout=effective_timeout)
             else:
                 # Run sync callback in executor.
                 loop = asyncio.get_running_loop()
                 if handler.wants_stop_event:
-                    fut = loop.run_in_executor(None, handler.callback, stop_event)
+                    fut = loop.run_in_executor(
+                        None,
+                        cast("Callable[[threading.Event], Any]", handler.callback),
+                        stop_event,
+                    )
                 else:
                     fut = loop.run_in_executor(None, handler.callback)
                 await asyncio.wait_for(fut, timeout=effective_timeout)

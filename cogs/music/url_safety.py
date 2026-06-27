@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
-from typing import Final
+from typing import Final, cast
 from urllib.parse import urlparse
 
 _ALLOWED_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
@@ -27,8 +27,8 @@ def _ip_is_private(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return False
-    if ip.version == 6 and getattr(ip, "ipv4_mapped", None) is not None:
-        ip = ip.ipv4_mapped  # type: ignore[assignment]
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     return (
         ip.is_private
         or ip.is_loopback
@@ -153,7 +153,9 @@ def _resolve_and_check_sync(host: str) -> tuple[bool, str]:
         sockaddr = entry[4]
         if not sockaddr:
             continue
-        addr = sockaddr[0]
+        # getaddrinfo's sockaddr[0] is typed ``str | int``; for the AF_INET/
+        # AF_INET6 families used here it is always the address string.
+        addr = cast(str, sockaddr[0])
         if _ip_is_private(addr):
             seen_private = True
             break

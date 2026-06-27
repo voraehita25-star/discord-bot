@@ -40,9 +40,10 @@ import re
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import discord
+from discord.ext import commands
 
 from .dashboard_chat_claude_cli import (
     _CLI_WEB_TOOLS_ENABLED,
@@ -491,7 +492,7 @@ class _OverlimitChoiceView(discord.ui.View):
         """
         is_owner = False
         with contextlib.suppress(Exception):
-            is_owner = await interaction.client.is_owner(interaction.user)
+            is_owner = await cast(commands.Bot, interaction.client).is_owner(interaction.user)
         if not is_owner:
             with contextlib.suppress(Exception):
                 await interaction.response.send_message(

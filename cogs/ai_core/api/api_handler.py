@@ -12,7 +12,7 @@ import copy
 import logging
 import re
 import time
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import anthropic
 import discord
@@ -93,7 +93,9 @@ def _claude_retry_delay_seconds(attempt: int, *, minimum_delay: float = 1.0) -> 
     # attempt=1 → base, attempt=2 → 2*base, attempt=3 → 4*base, … then plateau.
     exponent = max(0, attempt - 1)
     delay = min(_CLAUDE_RETRY_BASE_DELAY * (2**exponent), _CLAUDE_RETRY_MAX_DELAY)
-    return max(delay, minimum_delay)
+    # float(): int ** int is typed Any in typeshed (negative exponents yield float),
+    # which would otherwise make this an Any return.
+    return float(max(delay, minimum_delay))
 
 
 def build_api_config(
@@ -666,7 +668,9 @@ async def _failover_record_failure(error: BaseException) -> bool:
         from .api_failover import api_failover
 
         if api_failover._initialized and api_failover.active_config:
-            return bool(await api_failover.record_failure(error))
+            # record_failure is typed for Exception; in practice this path only
+            # ever receives Exception subclasses, so cast rather than narrow.
+            return bool(await api_failover.record_failure(cast(Exception, error)))
     except Exception:
         logger.debug("failover record_failure skipped", exc_info=True)
     return False

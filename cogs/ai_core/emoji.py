@@ -73,7 +73,7 @@ async def fetch_emoji_images(
     def _decode_image(data: bytes) -> Image.Image:
         # CPU-bound PIL work — run off the event loop via asyncio.to_thread so a
         # large/adversarial CDN payload can't decode-stall the discord.py loop.
-        img = Image.open(io.BytesIO(data))
+        img: Image.Image = Image.open(io.BytesIO(data))
         img.load()
         # Convert to RGB if needed (for GIFs, take first frame)
         if img.mode in ("RGBA", "P"):

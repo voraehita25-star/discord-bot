@@ -60,7 +60,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -1915,7 +1915,7 @@ def _take_warm(conversation_id: str | None, argv: list[str]) -> asyncio.subproce
     wp = _warm_procs.pop(conversation_id, None)
     if wp is None:
         return None
-    proc = wp.get("proc")
+    proc: asyncio.subprocess.Process | None = wp.get("proc")
     fresh = (time.monotonic() - wp.get("created", 0.0)) <= _PREWARM_TTL
     if proc is not None and proc.returncode is None and wp.get("argv") == argv and fresh:
         return proc
@@ -2027,14 +2027,14 @@ async def _run_claude_subprocess(
             "content": [{"type": "text", "text": stdin_payload}],
         },
     }
-    if proc.stdin is None:
+    if proc is None or proc.stdin is None:
         # Defensive: with stdin=PIPE, stdin should always exist; raise a
         # real error rather than relying on `assert` (stripped under -O).
         # Kill the just-spawned process first — this raise happens BEFORE
         # the kill-guaranteeing try/finally around the stream loop below,
         # so without it the claude child would be orphaned.
         with contextlib.suppress(Exception):
-            if proc.returncode is None:
+            if proc is not None and proc.returncode is None:
                 proc.kill()
         raise RuntimeError("Subprocess stdin pipe is unexpectedly None")
 
@@ -2055,7 +2055,7 @@ async def _run_claude_subprocess(
             # oversized stderr line can't raise ValueError out of the pump and
             # abort an otherwise-successful, already-streamed turn.
             if hasattr(p.stderr, "_limit"):
-                p.stderr._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
+                p.stderr._limit = MAX_STDOUT_LINE_BYTES
             async for chunk in p.stderr:
                 stderr_chunks.append(chunk)
 
@@ -2156,12 +2156,12 @@ async def _run_claude_subprocess(
                 if proc.returncode is None:
                     proc.kill()
             with contextlib.suppress(Exception):
-                proc.stdin.close()
+                cast("asyncio.StreamWriter", proc.stdin).close()
             await _stop_stderr_pump(stderr_task)
             raise
     # Close stdin on the success path so claude knows there's no more input.
     with contextlib.suppress(Exception):
-        proc.stdin.close()
+        cast("asyncio.StreamWriter", proc.stdin).close()
 
     final_session_id = ""
     final_usage: dict[str, Any] | None = None
@@ -2183,7 +2183,7 @@ async def _run_claude_subprocess(
     async def consume_stdout() -> None:
         nonlocal final_session_id, final_usage, final_error_text, final_error_status
         nonlocal first_text_ts
-        if proc.stdout is None:
+        if proc is None or proc.stdout is None:
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
         # Drop the per-line buffer cap so model JSON deltas with embedded
         # base64 / long text aren't truncated. We still bound below.
@@ -2194,7 +2194,7 @@ async def _run_claude_subprocess(
         # otherwise-invisible fallback is observable rather than only
         # manifesting as occasional early-ended streams.
         if hasattr(proc.stdout, "_limit"):
-            proc.stdout._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
+            proc.stdout._limit = MAX_STDOUT_LINE_BYTES
         else:
             logger.warning(
                 "asyncio StreamReader._limit attribute is missing; stdout falls "

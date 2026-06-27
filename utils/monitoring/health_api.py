@@ -218,7 +218,7 @@ class BotHealthData:
         """Thread-safe, non-blocking CPU% (delta since the last sample)."""
         proc = self._get_process()
         with self._process_lock:
-            return proc.cpu_percent(interval=None)
+            return float(proc.cpu_percent(interval=None))
 
     def update_from_bot(self, bot: Bot) -> None:
         """Update health data from bot instance (thread-safe)."""

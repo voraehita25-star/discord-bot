@@ -843,7 +843,7 @@ def create_bot() -> MusicBot:
     # failures go exclusively to CommandTree.on_error — so without this
     # assignment on_app_command_error is dead code and slash users get no
     # error feedback at all.
-    new_bot.tree.on_error = new_bot.on_app_command_error
+    new_bot.tree.on_error = new_bot.on_app_command_error  # type: ignore[method-assign]  # deliberate runtime patch: route CommandTree errors to the handler
     return new_bot
 
 

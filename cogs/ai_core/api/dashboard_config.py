@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -286,9 +287,11 @@ GEMINI_UNRESTRICTED_FRAMING = (
 # ``!= FAUST_INSTRUCTION`` guard avoids duplicating the persona on a setup where
 # the loader defaulted FAUST_ROLEPLAY back to FAUST_INSTRUCTION.
 if FAUST_AVAILABLE and FAUST_ROLEPLAY and FAUST_ROLEPLAY != FAUST_INSTRUCTION:
-    _FAUST_SYSTEM_INSTRUCTION = FAUST_INSTRUCTION + "\n" + FAUST_ROLEPLAY
+    # FAUST_INSTRUCTION/FAUST_ROLEPLAY come from ``..data`` typed as ``object``
+    # (per-symbol getattr resolution); they are runtime strings here.
+    _FAUST_SYSTEM_INSTRUCTION = cast(str, FAUST_INSTRUCTION) + "\n" + cast(str, FAUST_ROLEPLAY)
 elif FAUST_AVAILABLE:
-    _FAUST_SYSTEM_INSTRUCTION = FAUST_INSTRUCTION
+    _FAUST_SYSTEM_INSTRUCTION = cast(str, FAUST_INSTRUCTION)
 else:
     _FAUST_SYSTEM_INSTRUCTION = "You are Faust, a genius AI assistant who speaks in third person."
 

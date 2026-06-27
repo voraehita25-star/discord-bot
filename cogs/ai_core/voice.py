@@ -167,7 +167,7 @@ def _music_track_title(music_cog: Any, guild_id: int) -> str | None:
             return None
         gs = gs_fn(guild_id)
         track_info = getattr(gs, "current_track", None) or {}
-        return track_info.get("title", "Unknown")
+        return cast("str", track_info.get("title", "Unknown"))
     except Exception:
         logger.debug("Failed to read current track from Music cog", exc_info=True)
         return None

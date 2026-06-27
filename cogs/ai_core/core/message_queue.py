@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from ..data.constants import LOCK_TIMEOUT, MAX_CHANNELS, MAX_PENDING_PER_CHANNEL
 
@@ -318,7 +318,7 @@ class MessageQueue:
             # the single-message header path in logic.py process_chat
             # (user.display_name.replace("\n", " ").replace("\r", " ")).
             all_messages = [
-                f"[{(getattr(msg.user, 'display_name', None) or getattr(msg.user, 'name', 'Unknown')).replace(chr(10), ' ').replace(chr(13), ' ')}]: {msg.message}"
+                f"[{cast('str', getattr(msg.user, 'display_name', None) or getattr(msg.user, 'name', 'Unknown')).replace(chr(10), ' ').replace(chr(13), ' ')}]: {msg.message}"
                 for msg in pending
             ]
             combined_message = "\n".join(all_messages)

@@ -280,6 +280,7 @@ def capture_exception(
             # scrubber does not walk (it only covers message + stack locals),
             # so a caller passing a token/key in context would otherwise leak it.
             if context:
+                _redact: Callable[[str], str] | None
                 try:
                     from utils.monitoring.logger import _redact_sensitive as _redact
                 except Exception:
@@ -319,6 +320,7 @@ def capture_message(
             # `extra` dict, which the before_send scrubber does not walk, so
             # an unredacted token/key in context would otherwise leak.
             if context:
+                _redact: Callable[[str], str] | None
                 try:
                     from utils.monitoring.logger import _redact_sensitive as _redact
                 except Exception:

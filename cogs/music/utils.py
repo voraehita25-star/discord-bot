@@ -4,6 +4,7 @@ Contains constants and helper functions for the Music cog.
 """
 
 import math
+from typing import cast
 
 
 # 🎨 PREMIUM UI/UX COLOR SCHEME
@@ -108,7 +109,9 @@ def create_progress_bar(
     # "unknown duration" like format_duration does.
     if isinstance(total, float) and not math.isfinite(total):
         return "▱" * length
-    progress = max(0, min(length, int((current / total) * length)))
+    # ``current`` is only None for callers that never pass a position; the
+    # cast keeps the (unchanged) runtime behaviour while satisfying mypy.
+    progress = max(0, min(length, int((cast("int | float", current) / total) * length)))
     filled = "▰" * progress
     empty = "▱" * (length - progress)
     return filled + empty

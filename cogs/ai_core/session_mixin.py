@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .data import (
     FAUST_INSTRUCTION,
@@ -97,7 +97,9 @@ class SessionMixin:
             # is consistent across contexts. ``FAUST_DM_INSTRUCTION`` is
             # retained as an exported constant for backward compat with
             # downstream code/tests but no longer drives DM behaviour.
-            system_instruction = FAUST_INSTRUCTION  # Default to Faust (also DM)
+            # FAUST_INSTRUCTION/FAUST_ROLEPLAY come from ``.data`` typed as
+            # ``object`` (per-symbol getattr resolution); they are runtime strings.
+            system_instruction: str = cast(str, FAUST_INSTRUCTION)  # Default to Faust (also DM)
 
             if guild_id == GUILD_ID_RP:  # Roleplay Server
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
@@ -109,7 +111,7 @@ class SessionMixin:
                 # FAUST_DM_MODE's intent. The ``!= FAUST_INSTRUCTION`` guard
                 # avoids duplicating the persona on setups where the loader
                 # defaulted FAUST_ROLEPLAY back to FAUST_INSTRUCTION.
-                system_instruction = FAUST_INSTRUCTION + "\n" + FAUST_ROLEPLAY
+                system_instruction = cast(str, FAUST_INSTRUCTION) + "\n" + cast(str, FAUST_ROLEPLAY)
 
             # Append server-specific lore if available
             if guild_id and guild_id in SERVER_LORE:

@@ -820,14 +820,17 @@ class Music(commands.Cog):
                         # task (asyncio warns at "warning" level which is
                         # easy to miss). Log explicitly.
                         new_task.add_done_callback(
-                            lambda t, gid=guild_id: (
-                                logger.exception(
-                                    "Auto-disconnect task for guild %s failed",
-                                    gid,
-                                    exc_info=t.exception(),
-                                )
-                                if not t.cancelled() and t.exception()
-                                else None
+                            cast(
+                                "collections.abc.Callable[[asyncio.Task[Any]], object]",
+                                lambda t, gid=guild_id: (
+                                    logger.exception(
+                                        "Auto-disconnect task for guild %s failed",
+                                        gid,
+                                        exc_info=t.exception(),
+                                    )
+                                    if not t.cancelled() and t.exception()
+                                    else None
+                                ),
                             )
                         )
                         gs.auto_disconnect_task = new_task
@@ -933,9 +936,9 @@ class Music(commands.Cog):
             # Clear the task field WITHOUT _gs() — its setdefault would
             # recreate the state object cleanup_guild_data just deleted,
             # leaking one empty MusicGuildState per auto-disconnect.
-            gs = self._guild_states.get(guild_id)
-            if gs is not None:
-                gs.auto_disconnect_task = None
+            final_gs = self._guild_states.get(guild_id)
+            if final_gs is not None:
+                final_gs.auto_disconnect_task = None
 
     async def safe_delete(self, filename):
         """Safely delete a file with exponential backoff (Non-blocking)."""

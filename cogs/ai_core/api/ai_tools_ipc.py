@@ -31,11 +31,12 @@ import hmac
 import logging
 import os
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 
 if TYPE_CHECKING:
+    import discord
     from discord.ext.commands import Bot
 
 logger = logging.getLogger(__name__)
@@ -389,7 +390,9 @@ class _AiToolsIpc:
             # risky reimplementation) but collects the text instead of spamming
             # the chat with embeds, and returns it to the model.
             capture = _CaptureChannel(channel)
-            status = await execute_tool_call(self.bot, capture, member, tool_call)
+            status = await execute_tool_call(
+                self.bot, cast("discord.TextChannel", capture), member, tool_call
+            )
             data = capture.text().strip()
             if data:
                 return data, data.startswith(("⛔", "❌"))
@@ -397,7 +400,9 @@ class _AiToolsIpc:
             # status string; surface that (is_error if it looks like a refusal).
             text = str(status)
             return text, text.startswith(("⛔", "❌"))
-        result = await execute_tool_call(self.bot, channel, member, tool_call)
+        result = await execute_tool_call(
+            self.bot, cast("discord.TextChannel", channel), member, tool_call
+        )
         text = str(result)
         return text, text.startswith(("⛔", "❌"))
 

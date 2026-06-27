@@ -135,7 +135,7 @@ class ConversationSummarizer:
                     # or thinking blocks); the first-only path silently
                     # truncated the summary in those cases.
                     text_chunks = [
-                        block.text
+                        getattr(block, "text", "")
                         for block in response.content
                         if getattr(block, "type", None) == "text" and getattr(block, "text", None)
                     ]

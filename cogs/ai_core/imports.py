@@ -104,7 +104,9 @@ except ImportError:
     def unrestricted_all_enabled() -> bool:
         return False
 
-    unrestricted_channels: set[int] = set()
+    # Annotation lives on the imported symbol (set[int]); re-annotating here
+    # would be a no-redef. The empty set matches that declared type.
+    unrestricted_channels = set()
 
 
 try:
