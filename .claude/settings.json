@@ -8,8 +8,6 @@
     "typescript-lsp@claude-plugins-official": true,
     "sentry@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
-    "pr-review-toolkit@claude-plugins-official": false,
-    "feature-dev@claude-plugins-official": false,
     "commit-commands@claude-plugins-official": true
   }
 }
