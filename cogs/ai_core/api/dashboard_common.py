@@ -54,6 +54,61 @@ def normalize_timestamp_to_bangkok(raw: Any) -> str:
         return s
 
 
+# ---------------------------------------------------------------------------
+# AI-edit SEARCH/REPLACE patcher — shared by the SDK (dashboard_chat_claude)
+# and CLI (dashboard_chat_claude_cli) backends so the two cannot drift. The
+# duplicated copies previously drifted into the same bug (persisting raw markup
+# on a failed partial edit); a single source of truth prevents a recurrence.
+# ---------------------------------------------------------------------------
+_SEARCH_REPLACE_RE = _re.compile(
+    r"<<<SEARCH\s*\n(.*?)\n?>>>\s*\n<<<REPLACE\s*\n(.*?)\n?>>>",
+    _re.DOTALL,
+)
+
+
+def apply_search_replace(original: str, ai_response: str) -> str:
+    """Apply ``<<<SEARCH/<<<REPLACE`` patches from an AI reply to ``original``.
+
+    - No blocks at all: treat the whole reply as a full rewrite (return it).
+    - Blocks present but none apply (the model mis-quoted the SEARCH text):
+      preserve ``original`` unchanged — returning the reply would persist the
+      literal markup over the user's message.
+    """
+    matches = list(_SEARCH_REPLACE_RE.finditer(ai_response))
+    if not matches:
+        return ai_response
+
+    result = original
+    applied = 0
+    for m in matches:
+        search_text = m.group(1)
+        replace_text = m.group(2)
+        if search_text in result:
+            if result.count(search_text) > 1:
+                logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                continue
+            result = result.replace(search_text, replace_text, 1)
+            applied += 1
+        else:
+            # Fall back to a whitespace-stripped match (handles trailing/leading
+            # drift between the model's SEARCH text and the stored original).
+            stripped = search_text.strip()
+            if stripped and stripped in result:
+                if result.count(stripped) > 1:
+                    logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
+                    continue
+                result = result.replace(stripped, replace_text.strip(), 1)
+                applied += 1
+            else:
+                logger.warning("AI Edit: SEARCH block not found in original: %r", search_text[:100])
+
+    if applied > 0:
+        logger.info("📝 AI Edit applied %d/%d search/replace patches", applied, len(matches))
+        return result
+    logger.warning("📝 AI Edit: no patches matched; preserving original message")
+    return original
+
+
 def get_db():
     """Get a Database instance (lazy import to avoid circular deps)."""
     from .dashboard_config import Database

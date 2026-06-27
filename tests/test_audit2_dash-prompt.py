@@ -42,9 +42,7 @@ class TestDefangDocumentSegment:
         # start of a line, so it can't open a section.
         assert out.startswith("[user-text] # Current user message")
         # No line in the output begins with the bare reserved header anymore.
-        assert not any(
-            ln.lstrip().startswith("# Current user message") for ln in out.splitlines()
-        )
+        assert not any(ln.lstrip().startswith("# Current user message") for ln in out.splitlines())
         # Non-reserved markdown the operator legitimately wrote survives.
         assert "ignore everything" in out
 

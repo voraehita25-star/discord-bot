@@ -149,58 +149,6 @@ def _compress_image_for_claude(image_bytes: bytes, mime_type: str) -> tuple[byte
     )
 
 
-def _apply_search_replace(original: str, ai_response: str) -> str:
-    """Apply SEARCH/REPLACE blocks from AI response to original text.
-
-    If the response contains <<<SEARCH ... >>> <<<REPLACE ... >>> blocks,
-    apply them as patches. Otherwise return ai_response as-is (full rewrite).
-    """
-    pattern = re.compile(
-        r"<<<SEARCH\s*\n(.*?)\n?>>>\s*\n<<<REPLACE\s*\n(.*?)\n?>>>",
-        re.DOTALL,
-    )
-    matches = list(pattern.finditer(ai_response))
-
-    if not matches:
-        # No search/replace blocks — treat as full rewrite
-        return ai_response
-
-    result = original
-    applied = 0
-    for m in matches:
-        search_text = m.group(1)
-        replace_text = m.group(2)
-        if search_text in result:
-            if result.count(search_text) > 1:
-                logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
-                continue
-            result = result.replace(search_text, replace_text, 1)
-            applied += 1
-        else:
-            # Try with stripped whitespace as fallback
-            search_stripped = search_text.strip()
-            if search_stripped and search_stripped in result:
-                if result.count(search_stripped) > 1:
-                    logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
-                    continue
-                result = result.replace(search_stripped, replace_text.strip(), 1)
-                applied += 1
-            else:
-                logger.warning("AI Edit: SEARCH block not found in original: %r", search_text[:100])
-
-    if applied > 0:
-        logger.info("📝 AI Edit applied %d/%d search/replace patches", applied, len(matches))
-        return result
-    else:
-        # Blocks were present (matches != []) but none applied — the model
-        # mis-quoted the SEARCH text. Returning ai_response here would persist
-        # the literal <<<SEARCH/REPLACE>>> markup as the message and overwrite
-        # the user's original, so preserve the original message unchanged.
-        # (A genuine no-blocks full rewrite is handled by the early return above.)
-        logger.warning("📝 AI Edit: no patches matched; preserving original message")
-        return original
-
-
 def _retry_delay_seconds(attempt: int) -> int:
     delay = _RETRY_BASE_DELAY
     for _ in range(1, attempt):
@@ -212,6 +160,7 @@ def _retry_delay_seconds(attempt: int) -> int:
 
 from .dashboard_common import (
     LeadingTimestampStripper,
+    apply_search_replace as _apply_search_replace,
     bangkok_now_iso,
     build_user_context,
     get_db as _get_db,

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from aiohttp.web import WebSocketResponse
 
 from .dashboard_common import (
+    apply_search_replace as _apply_search_replace,
     bangkok_now_iso,
     build_user_context,
     get_db,
@@ -3288,54 +3289,6 @@ async def handle_chat_message_claude_cli(
 # ============================================================================
 # AI Edit (`/edit`) support — same SEARCH/REPLACE protocol as the SDK backend
 # ============================================================================
-
-_SEARCH_REPLACE_RE = re.compile(
-    r"<<<SEARCH\s*\n(.*?)\n?>>>\s*\n<<<REPLACE\s*\n(.*?)\n?>>>",
-    re.DOTALL,
-)
-
-
-def _apply_search_replace(original: str, ai_response: str) -> str:
-    """Apply <<<SEARCH/<<<REPLACE patches to `original`.
-
-    Identical algorithm to the SDK backend's _apply_search_replace so toggling
-    CLAUDE_BACKEND doesn't change the edit semantics. If no patches are
-    present we treat the whole AI reply as a full rewrite.
-    """
-    matches = list(_SEARCH_REPLACE_RE.finditer(ai_response))
-    if not matches:
-        return ai_response
-
-    result = original
-    applied = 0
-    for m in matches:
-        search_text = m.group(1)
-        replace_text = m.group(2)
-        if search_text in result:
-            if result.count(search_text) > 1:
-                logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
-                continue
-            result = result.replace(search_text, replace_text, 1)
-            applied += 1
-        else:
-            stripped = search_text.strip()
-            if stripped and stripped in result:
-                if result.count(stripped) > 1:
-                    logger.warning("Multiple SEARCH matches; ambiguous, skipping replace")
-                    continue
-                result = result.replace(stripped, replace_text.strip(), 1)
-                applied += 1
-            else:
-                logger.warning("AI Edit (CLI): SEARCH block not found: %r", search_text[:100])
-
-    if applied > 0:
-        return result
-    # Blocks were present but none applied — the model mis-quoted the SEARCH
-    # text. Returning ai_response would persist the literal <<<SEARCH/REPLACE>>>
-    # markup as the message and overwrite the user's original, so preserve the
-    # original instead. (A genuine no-blocks full rewrite returns early above.)
-    logger.warning("AI Edit (CLI): no patches matched; preserving original message")
-    return original
 
 
 async def handle_ai_edit_message_claude_cli(

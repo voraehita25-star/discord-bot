@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from cogs.ai_core.api import dashboard_chat_claude_cli as cli
+from cogs.ai_core.api.dashboard_common import apply_search_replace
 
 # ---------------------------------------------------------------------------
 # _save_inline_images
@@ -915,21 +916,27 @@ class TestDashboardCliWriteHelpers:
 
 
 class TestApplySearchReplace:
+    def test_cli_backend_uses_shared_patcher(self):
+        # Parity guard: the CLI backend must delegate to the single shared
+        # implementation in dashboard_common so the edit semantics can't drift
+        # between CLAUDE_BACKEND=cli and =api.
+        assert cli._apply_search_replace is apply_search_replace
+
     def test_no_patches_returns_original_response(self):
-        result = cli._apply_search_replace("original", "just a plain reply")
+        result = apply_search_replace("original", "just a plain reply")
         assert result == "just a plain reply"
 
     def test_applies_single_patch(self):
         original = "line a\nline b\nline c"
         patch_text = "<<<SEARCH\nline b\n>>>\n<<<REPLACE\nline B!\n>>>"
-        result = cli._apply_search_replace(original, patch_text)
+        result = apply_search_replace(original, patch_text)
         assert "line B!" in result
         assert "\nline b\n" not in result
 
     def test_skips_ambiguous_match(self):
         original = "x\ny\nx\n"
         patch_text = "<<<SEARCH\nx\n>>>\n<<<REPLACE\nz\n>>>"
-        result = cli._apply_search_replace(original, patch_text)
+        result = apply_search_replace(original, patch_text)
         # Ambiguous match — applied=0. Blocks were present but none applied, so
         # the original message is preserved unchanged rather than persisting the
         # raw SEARCH/REPLACE markup over it.
@@ -938,7 +945,7 @@ class TestApplySearchReplace:
     def test_preserves_original_when_no_match(self):
         original = "doesn't contain anything useful"
         patch_text = "<<<SEARCH\nMISSING\n>>>\n<<<REPLACE\nNEW\n>>>"
-        result = cli._apply_search_replace(original, patch_text)
+        result = apply_search_replace(original, patch_text)
         # Blocks present but SEARCH not found (applied=0): keep the original
         # message instead of overwriting it with the raw markup.
         assert result == original
@@ -946,7 +953,7 @@ class TestApplySearchReplace:
     def test_no_blocks_still_treated_as_full_rewrite(self):
         # The genuine no-blocks case (model returned a plain rewrite) must still
         # return the AI response verbatim — only the applied==0 path changed.
-        result = cli._apply_search_replace("old text", "a clean full rewrite")
+        result = apply_search_replace("old text", "a clean full rewrite")
         assert result == "a clean full rewrite"
 
 

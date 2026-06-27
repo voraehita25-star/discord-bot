@@ -674,7 +674,9 @@ class TestGifEncodePoolHeadroom:
 
         buf = _io.BytesIO()
         frames = [_Image.new("RGB", (8, 8), c) for c in ((255, 0, 0), (0, 255, 0))]
-        frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+        frames[0].save(
+            buf, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0
+        )
         gif_bytes = buf.getvalue()
 
         assert mp.convert_gif_to_video(gif_bytes) is None
