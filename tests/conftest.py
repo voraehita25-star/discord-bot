@@ -34,8 +34,39 @@ def event_loop_policy():
     The warning is suppressed via pyproject.toml filterwarnings.
     We keep using DefaultEventLoopPolicy (ProactorEventLoop on Windows)
     because SelectorEventLoop blocks aiosqlite I/O.
+
+    NOTE: pytest-asyncio also deprecated *overriding* this fixture (it wants the
+    ``pytest_asyncio_loop_factories`` hook). We keep the override deliberately —
+    the ProactorEventLoop requirement above is load-bearing on Windows — and
+    suppress that specific PytestDeprecationWarning via pyproject filterwarnings.
     """
     return asyncio.DefaultEventLoopPolicy()
+
+
+def closing_create_task_mock():
+    """A drop-in replacement for ``asyncio.create_task`` for unit tests.
+
+    Tests that exercise code which starts background loops (cog load/unload,
+    periodic savers, cleanup loops) but mock out the task machinery would
+    otherwise leak ``RuntimeWarning: coroutine '...' was never awaited`` because
+    the real coroutine is created and then discarded. This replacement *closes*
+    the coroutine it receives (silencing the warning without running it) and
+    returns a ``MagicMock`` standing in for the Task, so ``.cancel()`` etc.
+    still work and call assertions remain possible.
+
+    Usage::
+
+        with patch("asyncio.create_task", new=closing_create_task_mock()):
+            await cog.cog_load()
+    """
+    from unittest.mock import MagicMock
+
+    def _factory(coro: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    return MagicMock(side_effect=_factory)
 
 
 # ==================== Database Cleanup ====================

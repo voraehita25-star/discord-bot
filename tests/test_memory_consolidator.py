@@ -140,18 +140,24 @@ class TestSummaryArchiverInit:
 class TestSummaryArchiverBackgroundTask:
     """Tests for background task methods."""
 
-    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_start_background_task(self):
         """Test start_background_task creates task."""
         from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
         consolidator = SummaryArchiver()
 
-        # Mock asyncio.create_task
-        with patch("asyncio.create_task") as mock_create:
-            mock_task = MagicMock()
-            mock_create.return_value = mock_task
+        # Mock asyncio.create_task. The side_effect closes the real
+        # _consolidation_loop coroutine it is handed so it isn't leaked
+        # ("never awaited") — we only verify task wiring, not run the loop —
+        # while still returning the stand-in task for the identity assertion.
+        mock_task = MagicMock()
 
+        def _close_and_return(coro=None, *args, **kwargs):
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            return mock_task
+
+        with patch("asyncio.create_task", side_effect=_close_and_return) as mock_create:
             consolidator.start_background_task(interval_hours=1.0)
 
             mock_create.assert_called_once()

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.conftest import closing_create_task_mock
+
 
 class TestAiCogImports:
     """Tests for ai_cog module imports."""
@@ -662,10 +664,9 @@ class TestCogLoadRegion:
         with (
             patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
             patch("cogs.ai_core.ai_cog.rag_system"),
-            patch("cogs.ai_core.ai_cog.asyncio.create_task") as ct,
+            patch("asyncio.create_task", new=closing_create_task_mock()),
             patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": ""}, clear=False),
         ):
-            ct.return_value = MagicMock()
             await cog.cog_load()
         leftover.cancel.assert_called_once()
 
@@ -684,7 +685,7 @@ class TestCogLoadRegion:
         with (
             patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
             patch("cogs.ai_core.ai_cog.rag_system"),
-            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch("asyncio.create_task", new=closing_create_task_mock()),
             patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": "1"}, clear=False),
             patch.dict(
                 "sys.modules",
@@ -709,7 +710,7 @@ class TestCogLoadRegion:
         with (
             patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
             patch("cogs.ai_core.ai_cog.rag_system"),
-            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch("asyncio.create_task", new=closing_create_task_mock()),
             patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": "true"}, clear=False),
             patch.dict(
                 "sys.modules",
@@ -741,7 +742,7 @@ class TestCogLoadRegion:
         with (
             patch("cogs.ai_core.ai_cog.start_webhook_cache_cleanup"),
             patch("cogs.ai_core.ai_cog.rag_system"),
-            patch("cogs.ai_core.ai_cog.asyncio.create_task", return_value=MagicMock()),
+            patch("asyncio.create_task", new=closing_create_task_mock()),
             patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": ""}, clear=False),
             patch("builtins.__import__", side_effect=_blocking_import),
         ):

@@ -22,6 +22,11 @@ import yt_dlp
 
 from cogs.music.cog import Music
 
+# Reused as the _safe_run_coroutine stub: the after-callbacks pass safe_delete/
+# play_next coroutines into it, and this MagicMock closes the coroutine it
+# receives (no "never awaited" leak) while still recording calls for assertions.
+from tests.conftest import closing_create_task_mock
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -699,7 +704,7 @@ class TestSeek:
     async def test_seek_success(self):
         cog = make_cog()
         ctx = self._ctx_playing(cog, duration=300)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.play_next = AsyncMock()
         cog.safe_delete = AsyncMock()
 
@@ -730,7 +735,7 @@ class TestSeek:
     async def test_seek_after_callback_disconnected(self):
         cog = make_cog()
         ctx = self._ctx_playing(cog, duration=300)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
 
         with (
@@ -755,7 +760,7 @@ class TestSeek:
     async def test_seek_after_callback_already_playing_with_error(self):
         cog = make_cog()
         ctx = self._ctx_playing(cog, duration=300)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
         cog._gs(ctx.guild.id).loop = True  # skip deletion branch
 
@@ -1523,7 +1528,7 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 950
         ctx, vc = self._loop_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
         cog.play_next = AsyncMock()
 
@@ -1560,7 +1565,7 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 951
         ctx, vc = self._loop_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
 
         player = MagicMock()
         player.title = "L"
@@ -1583,7 +1588,7 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 952
         ctx, vc = self._loop_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
 
         player = MagicMock()
         player.title = "L"
@@ -1607,7 +1612,7 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 953
         ctx, vc = self._loop_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
 
         player = MagicMock()
@@ -1637,6 +1642,9 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 954
         ctx, vc = self._loop_ctx(cog, gid)
+        # The except handler fire-and-forgets safe_delete via _safe_run_coroutine;
+        # stub it with the closing mock so that cleanup coroutine doesn't leak.
+        cog._safe_run_coroutine = closing_create_task_mock()
         vc.play.side_effect = discord.DiscordException("play fail")
 
         player = MagicMock()
@@ -1658,6 +1666,8 @@ class TestLoopReplayAfterCallback:
         cog = make_cog()
         gid = 955
         ctx, vc = self._loop_ctx(cog, gid)
+        # Same cleanup-coroutine leak guard as the sibling test above.
+        cog._safe_run_coroutine = closing_create_task_mock()
         vc.play.side_effect = OSError("audio fail")
 
         player = MagicMock()
@@ -1696,6 +1706,8 @@ class TestPlayNextHandoffCleanup:
         gid = 960
         ctx, vc = _play_ctx(cog, gid)
         cog._gs(gid).queue = _c.deque([{"url": "http://song"}])
+        # OSError cleanup path fire-and-forgets safe_delete; close it via the stub.
+        cog._safe_run_coroutine = closing_create_task_mock()
         vc.play.side_effect = OSError("audio")
 
         player = MagicMock()
@@ -1745,7 +1757,7 @@ class TestFixResidual:
         cog = make_cog()
         gid = 1000
         ctx, vc, chan = self._fix_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
         cog.play_next = AsyncMock()
 
@@ -1781,7 +1793,7 @@ class TestFixResidual:
         cog = make_cog()
         gid = 1001
         ctx, vc, chan = self._fix_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
         fix_msg = MagicMock()
         fix_msg.edit = AsyncMock()
@@ -1806,7 +1818,7 @@ class TestFixResidual:
         cog = make_cog()
         gid = 1002
         ctx, vc, chan = self._fix_ctx(cog, gid)
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.safe_delete = AsyncMock()
         fix_msg = MagicMock()
         fix_msg.edit = AsyncMock()
@@ -1939,7 +1951,7 @@ class TestSeekHmsValid:
             "data": {"duration": 7200},  # 2 hours so 1:02:03 is within range
         }
         cog._gs(ctx.guild.id).volume = 0.5
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_create_task_mock()
         cog.play_next = AsyncMock()
         cog.safe_delete = AsyncMock()
 

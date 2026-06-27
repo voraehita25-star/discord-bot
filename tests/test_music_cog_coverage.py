@@ -22,6 +22,26 @@ import pytest
 # --------------------------------------------------------------------------- #
 
 
+def closing_safe_run_mock():
+    """MagicMock stand-in for ``cog._safe_run_coroutine`` that CLOSES the
+    coroutine it is handed.
+
+    The real method either schedules the coroutine on the bot loop or calls
+    ``coro.close()`` when the loop is unavailable. The test bot loop is a
+    MagicMock, so a plain ``MagicMock`` (or the real method against that mock
+    loop) drops the SUT-created ``safe_delete``/``play_next`` coroutine
+    unawaited, raising "coroutine ... was never awaited". Closing it here
+    silences that while still recording the call for assertions (side_effect
+    survives ``reset_mock()``).
+    """
+
+    def _close(coro):
+        with contextlib.suppress(Exception):
+            coro.close()
+
+    return MagicMock(side_effect=_close)
+
+
 def make_cog():
     """Create a Music cog with a mock bot (no background tasks started)."""
     from cogs.music.cog import Music
@@ -211,7 +231,7 @@ class TestPlayNextOnceDispatch:
         ctx = make_ctx(voice_client=vc)
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
 
         with patch("cogs.music.cog.YTDLSource.from_url", AsyncMock(return_value=player)):
@@ -233,7 +253,7 @@ class TestPlayNextOnceDispatch:
         ctx = make_ctx(voice_client=vc)
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
 
         with patch("cogs.music.cog.YTDLSource.from_url", AsyncMock(return_value=player)):
@@ -253,7 +273,7 @@ class TestPlayNextOnceDispatch:
         ctx = make_ctx(voice_client=vc)
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         player.cleanup = MagicMock(side_effect=RuntimeError("cleanup boom"))
 
@@ -346,6 +366,7 @@ class TestPlayNextOnceDispatch:
         ctx = make_ctx(voice_client=vc)
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         # The embed-building uses player.data.get; make .data.get raise after
         # play() succeeded? Instead: make play() raise a generic exception that
@@ -389,7 +410,7 @@ class TestAfterPlayingCallback:
         ctx.guild.voice_client = vc
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         captured = {}
 
@@ -414,7 +435,7 @@ class TestAfterPlayingCallback:
         ctx.guild.voice_client = vc
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         captured = {}
         vc.play = MagicMock(side_effect=lambda p, after=None: captured.update(after=after))
@@ -434,7 +455,7 @@ class TestAfterPlayingCallback:
         ctx = make_ctx(voice_client=vc)
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         captured = {}
         vc.play = MagicMock(side_effect=lambda p, after=None: captured.update(after=after))
@@ -458,7 +479,7 @@ class TestAfterPlayingCallback:
         ctx.guild.voice_client = vc
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         captured = {}
         vc.play = MagicMock(side_effect=lambda p, after=None: captured.update(after=after))
@@ -481,7 +502,7 @@ class TestAfterPlayingCallback:
         ctx.guild.voice_client = vc
         cog._gs(ctx.guild.id).queue = collections.deque([{"url": "http://yt/watch", "type": "url"}])
         cog._schedule_queue_save = MagicMock()
-        cog._safe_run_coroutine = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
         player = make_player()
         captured = {}
         vc.play = MagicMock(side_effect=lambda p, after=None: captured.update(after=after))

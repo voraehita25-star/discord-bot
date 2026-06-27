@@ -26,6 +26,10 @@ filterwarnings = [
     "ignore::DeprecationWarning:google.*",
     # Ignore asyncio EventLoopPolicy deprecation (Python 3.14+, removal in 3.16)
     "ignore:.*EventLoopPolicy.*is deprecated:DeprecationWarning",
+    # pytest-asyncio deprecated *overriding* the event_loop_policy fixture, but we
+    # keep that override deliberately (ProactorEventLoop is required for aiosqlite
+    # on Windows — see tests/conftest.py). Suppress that specific deprecation.
+    "ignore:Overriding the .event_loop_policy. fixture is deprecated",
     # Ignore SWIG/native extension deprecation warnings (from faiss, hnswlib, etc.)
     "ignore:builtin type Swig.*:DeprecationWarning",
     # Ignore pending deprecation from dependencies

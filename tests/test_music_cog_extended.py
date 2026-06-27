@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
+from tests.conftest import closing_create_task_mock
+
 
 class TestMusicCogImports:
     """Tests for music cog module imports."""
@@ -849,7 +851,17 @@ class TestCogLoad:
         with patch("asyncio.create_task") as mock_create:
             sentinel1 = MagicMock()
             sentinel2 = MagicMock()
-            mock_create.side_effect = [sentinel1, sentinel2]
+            returns = [sentinel1, sentinel2]
+
+            def _close_and_return(coro=None, *a, **k):
+                # Close the real loop coroutine so it doesn't leak a
+                # "never awaited" warning, but still hand back the sentinels
+                # the assertions below check for.
+                if asyncio.iscoroutine(coro):
+                    coro.close()
+                return returns.pop(0)
+
+            mock_create.side_effect = _close_and_return
             await cog.cog_load()
         assert cog._temp_cleanup_task is sentinel1
         assert cog._queue_autosave_task is sentinel2
@@ -1713,7 +1725,16 @@ class TestOnVoiceStateUpdate:
         after.channel = other_channel
 
         sentinel_task = MagicMock()
-        with patch("asyncio.create_task", return_value=sentinel_task) as mock_create:
+
+        def _close_and_return(coro=None, *a, **k):
+            # Close the _auto_disconnect coroutine so it doesn't leak a
+            # "never awaited" warning, while still returning the sentinel
+            # task the assertions below check for.
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            return sentinel_task
+
+        with patch("asyncio.create_task", side_effect=_close_and_return) as mock_create:
             await cog.on_voice_state_update(member, before, after)
         mock_create.assert_called_once()
         assert cog._gs(gid).auto_disconnect_task is sentinel_task
@@ -2294,12 +2315,18 @@ class TestPlayNextOnce:
         # play() raises DiscordException -> cleanup + re-raise -> outer handler
         vc.play.side_effect = discord.DiscordException("play fail")
 
-        with patch("asyncio.to_thread", new=AsyncMock(return_value=True)):
-            with patch("cogs.music.cog.get_ffmpeg_options", return_value={}):
-                with patch("cogs.music.cog.get_ffmpeg_executable", return_value="ffmpeg"):
-                    with patch("cogs.music.cog.discord.FFmpegPCMAudio", return_value=MagicMock()):
-                        with patch("cogs.music.cog.YTDLSource", return_value=player):
-                            await cog._play_next_once(ctx)
+        # The loop-replay error path schedules safe_delete via
+        # _safe_run_coroutine; with the mocked bot loop the coroutine would
+        # otherwise leak a "never awaited" warning. Close it on schedule.
+        with patch("asyncio.run_coroutine_threadsafe", new=closing_create_task_mock()):
+            with patch("asyncio.to_thread", new=AsyncMock(return_value=True)):
+                with patch("cogs.music.cog.get_ffmpeg_options", return_value={}):
+                    with patch("cogs.music.cog.get_ffmpeg_executable", return_value="ffmpeg"):
+                        with patch(
+                            "cogs.music.cog.discord.FFmpegPCMAudio", return_value=MagicMock()
+                        ):
+                            with patch("cogs.music.cog.YTDLSource", return_value=player):
+                                await cog._play_next_once(ctx)
         # loop disabled on error
         assert cog._gs(209).loop is False
 
@@ -2323,8 +2350,12 @@ class TestPlayNextOnce:
         }
         vc.play.side_effect = discord.DiscordException("nope")
 
-        with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
-            result = await cog._play_next_once(ctx)
+        # The play-error path schedules safe_delete via _safe_run_coroutine;
+        # close that coroutine on schedule so it doesn't leak a "never
+        # awaited" warning under the mocked bot loop.
+        with patch("asyncio.run_coroutine_threadsafe", new=closing_create_task_mock()):
+            with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
+                result = await cog._play_next_once(ctx)
         assert result is True
 
     @pytest.mark.asyncio
@@ -2347,8 +2378,12 @@ class TestPlayNextOnce:
         }
         vc.play.side_effect = OSError("audio")
 
-        with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
-            result = await cog._play_next_once(ctx)
+        # The play-error path schedules safe_delete via _safe_run_coroutine;
+        # close that coroutine on schedule so it doesn't leak a "never
+        # awaited" warning under the mocked bot loop.
+        with patch("asyncio.run_coroutine_threadsafe", new=closing_create_task_mock()):
+            with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
+                result = await cog._play_next_once(ctx)
         assert result is True
 
     @pytest.mark.asyncio
