@@ -192,9 +192,13 @@ def _apply_search_replace(original: str, ai_response: str) -> str:
         logger.info("📝 AI Edit applied %d/%d search/replace patches", applied, len(matches))
         return result
     else:
-        # None matched — fall back to treating full response as rewrite
-        logger.warning("📝 AI Edit: no patches matched, using full response as fallback")
-        return ai_response
+        # Blocks were present (matches != []) but none applied — the model
+        # mis-quoted the SEARCH text. Returning ai_response here would persist
+        # the literal <<<SEARCH/REPLACE>>> markup as the message and overwrite
+        # the user's original, so preserve the original message unchanged.
+        # (A genuine no-blocks full rewrite is handled by the early return above.)
+        logger.warning("📝 AI Edit: no patches matched; preserving original message")
+        return original
 
 
 def _retry_delay_seconds(attempt: int) -> int:

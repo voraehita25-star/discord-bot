@@ -225,3 +225,41 @@ class TestClaudeDashboardRetry:
             "no supported text or images" in message["message"].lower() for message in errors
         )
         assert client.attempts == 0
+
+
+class TestApplySearchReplace:
+    """SDK backend's _apply_search_replace must mirror the CLI backend.
+
+    Parity guard for the duplicated patcher: a failed partial edit (blocks
+    present but none applied) must preserve the original message rather than
+    persisting the raw <<<SEARCH/REPLACE>>> markup over it.
+    """
+
+    def test_no_blocks_returns_full_rewrite(self):
+        from cogs.ai_core.api.dashboard_chat_claude import _apply_search_replace
+
+        assert _apply_search_replace("old", "a clean rewrite") == "a clean rewrite"
+
+    def test_applies_single_patch(self):
+        from cogs.ai_core.api.dashboard_chat_claude import _apply_search_replace
+
+        original = "line a\nline b\nline c"
+        patch_text = "<<<SEARCH\nline b\n>>>\n<<<REPLACE\nline B!\n>>>"
+        result = _apply_search_replace(original, patch_text)
+        assert "line B!" in result and "\nline b\n" not in result
+
+    def test_preserves_original_when_no_match(self):
+        from cogs.ai_core.api.dashboard_chat_claude import _apply_search_replace
+
+        original = "nothing useful here"
+        patch_text = "<<<SEARCH\nMISSING\n>>>\n<<<REPLACE\nNEW\n>>>"
+        # Blocks present but SEARCH not found (applied=0): keep the original,
+        # never overwrite it with the literal markup.
+        assert _apply_search_replace(original, patch_text) == original
+
+    def test_preserves_original_on_ambiguous_match(self):
+        from cogs.ai_core.api.dashboard_chat_claude import _apply_search_replace
+
+        original = "x\ny\nx\n"
+        patch_text = "<<<SEARCH\nx\n>>>\n<<<REPLACE\nz\n>>>"
+        assert _apply_search_replace(original, patch_text) == original

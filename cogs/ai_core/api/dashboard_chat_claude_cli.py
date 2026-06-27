@@ -151,6 +151,17 @@ class _OverloadedError(RuntimeError):
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
 
+# Hard cap on a single NDJSON line from the `claude -p` child — it shouldn't
+# produce more than a few MB per event; anything larger is either a runaway
+# model or a malformed binary blob. Without this, asyncio's StreamReader
+# default of 64 KiB raises LimitOverrunError on the first oversized frame and
+# aborts the whole stream. Defined at module scope (not as a `_run_claude_subprocess`
+# local) so the early-started stderr-pump closure can read it before the stdout
+# phase assigns it — as a function local it is an unbound closure cell when the
+# pump runs during the stdin-drain suspension, dying with NameError on large
+# prompts (the exact large-history/fresh-session case the early pump protects).
+MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
+
 # Stream timeout used when ``thinking_enabled`` is set on the request. Opus
 # 4.8 with ``--effort xhigh`` legitimately spends
 # minutes reasoning on the Anthropic side before emitting any stdout, so the
@@ -2162,13 +2173,6 @@ async def _run_claude_subprocess(
     final_error_text = ""
     final_error_status: int | None = None
 
-    # Hard cap on a single NDJSON line — claude shouldn't produce more
-    # than a few MB per event; anything larger is either a runaway model
-    # or a malformed binary blob. Without this, asyncio's StreamReader
-    # default of 64 KiB raises LimitOverrunError on the first oversized
-    # frame and aborts the whole stream.
-    MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
-
     # Track which content-block indices are thinking blocks so the
     # `content_block_stop` handler only fires `on_thinking_block_stop` for
     # those (text/tool block stops would otherwise spuriously close the
@@ -3326,8 +3330,12 @@ def _apply_search_replace(original: str, ai_response: str) -> str:
 
     if applied > 0:
         return result
-    logger.warning("AI Edit (CLI): no patches matched, falling back to full response")
-    return ai_response
+    # Blocks were present but none applied — the model mis-quoted the SEARCH
+    # text. Returning ai_response would persist the literal <<<SEARCH/REPLACE>>>
+    # markup as the message and overwrite the user's original, so preserve the
+    # original instead. (A genuine no-blocks full rewrite returns early above.)
+    logger.warning("AI Edit (CLI): no patches matched; preserving original message")
+    return original
 
 
 async def handle_ai_edit_message_claude_cli(

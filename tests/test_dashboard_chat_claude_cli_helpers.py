@@ -930,15 +930,53 @@ class TestApplySearchReplace:
         original = "x\ny\nx\n"
         patch_text = "<<<SEARCH\nx\n>>>\n<<<REPLACE\nz\n>>>"
         result = cli._apply_search_replace(original, patch_text)
-        # Skipped because of ambiguity — applied=0 so the function falls back
-        # to returning the AI response unchanged (it's not a successful patch).
-        assert result == patch_text
+        # Ambiguous match — applied=0. Blocks were present but none applied, so
+        # the original message is preserved unchanged rather than persisting the
+        # raw SEARCH/REPLACE markup over it.
+        assert result == original
 
-    def test_falls_back_to_full_response_when_no_match(self):
+    def test_preserves_original_when_no_match(self):
         original = "doesn't contain anything useful"
         patch_text = "<<<SEARCH\nMISSING\n>>>\n<<<REPLACE\nNEW\n>>>"
         result = cli._apply_search_replace(original, patch_text)
-        assert result == patch_text
+        # Blocks present but SEARCH not found (applied=0): keep the original
+        # message instead of overwriting it with the raw markup.
+        assert result == original
+
+    def test_no_blocks_still_treated_as_full_rewrite(self):
+        # The genuine no-blocks case (model returned a plain rewrite) must still
+        # return the AI response verbatim — only the applied==0 path changed.
+        result = cli._apply_search_replace("old text", "a clean full rewrite")
+        assert result == "a clean full rewrite"
+
+
+# ---------------------------------------------------------------------------
+# MAX_STDOUT_LINE_BYTES — must stay module-scoped (stderr-pump closure)
+# ---------------------------------------------------------------------------
+
+
+class TestStderrPumpClosureConstant:
+    """Regression: ``MAX_STDOUT_LINE_BYTES`` must remain a module global.
+
+    The early-started stderr pump (``_start_stderr_pump``) reads
+    ``MAX_STDOUT_LINE_BYTES`` from inside its nested ``_pump`` coroutine. If the
+    constant is assigned as a *local* of ``_run_claude_subprocess`` (as it once
+    was), it becomes a closure CELL that is still unbound when the pump runs
+    during the ``stdin.drain()`` suspension on a large prompt — ``_pump`` then
+    dies with ``NameError``, silently defeating the write-write deadlock guard
+    and losing all stderr diagnostics on exactly the large-history / fresh-
+    session turns the early pump exists to protect. Keep it module-scoped.
+    """
+
+    def test_constant_is_module_level(self):
+        assert cli.MAX_STDOUT_LINE_BYTES == 16 * 1024 * 1024
+
+    def test_not_a_closure_cell_of_run_subprocess(self):
+        code = cli._run_claude_subprocess.__code__
+        # A local assignment that a nested function reads would surface the name
+        # in co_cellvars (closure cell); a pure module-global read does not.
+        assert "MAX_STDOUT_LINE_BYTES" not in code.co_cellvars
+        assert "MAX_STDOUT_LINE_BYTES" not in code.co_varnames
 
 
 # ---------------------------------------------------------------------------
