@@ -3310,7 +3310,12 @@ async def handle_ai_edit_message_claude_cli(
 
     conversation_id = data.get("conversation_id")
     target_message_id = data.get("target_message_id")
-    instruction = (data.get("instruction") or "").strip()
+    # Coerce before .strip() — a non-string instruction (e.g. {"instruction": 123})
+    # is truthy, so `or ""` would keep it and .strip() would raise AttributeError
+    # at this unguarded function head (the try/except starts later). Mirrors the
+    # SDK twin (dashboard_chat_claude.py) which already guards this exact case.
+    _raw_instruction = data.get("instruction", "")
+    instruction = str(_raw_instruction).strip() if _raw_instruction is not None else ""
     role_preset = data.get("role_preset", "general")
     # A non-string role_preset (e.g. a JSON null/number from a malformed client)
     # would later be used as a dict key into DASHBOARD_ROLE_PRESETS; coerce it to

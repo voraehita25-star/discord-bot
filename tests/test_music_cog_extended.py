@@ -2182,7 +2182,10 @@ class TestPlayNextOnce:
         ctx, vc = self._ctx(203)
         cog._gs(203).queue = collections.deque([{"title": "no url"}])
         result = await cog._play_next_once(ctx)
-        assert result is False
+        # Drop-and-continue: returns True so the play_next wrapper re-enters and
+        # tries the next track, instead of halting (which would strand every
+        # still-valid track queued behind a url-less entry).
+        assert result is True
         # Entry dropped.
         assert len(cog._gs(203).queue) == 0
 

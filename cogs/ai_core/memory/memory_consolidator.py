@@ -132,9 +132,17 @@ class SummaryArchiver:
         # forever (a slow leak on a long-running bot). When it grows large,
         # drop locks that aren't currently held — they're idle and a fresh one
         # is created on demand. A held lock is in active use, so it's kept.
+        # Also keep locks with queued waiters: Lock.release() clears _locked
+        # before the next waiter resumes, so during that handoff window
+        # locked() is False while a coroutine is still about to acquire it —
+        # evicting it there would orphan the lock and lose mutual exclusion.
         # Mirrors LongTermMemory._get_user_lock.
         if len(self._channel_locks) >= 10_000:
-            for cid in [c for c, lk in self._channel_locks.items() if not lk.locked()]:
+            for cid in [
+                c
+                for c, lk in self._channel_locks.items()
+                if not lk.locked() and not getattr(lk, "_waiters", None)
+            ]:
                 del self._channel_locks[cid]
         return self._channel_locks.setdefault(channel_id, asyncio.Lock())
 

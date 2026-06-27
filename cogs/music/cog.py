@@ -1238,7 +1238,13 @@ class Music(commands.Cog):
                         guild_id,
                         item,
                     )
-                    return False
+                    # Drop-and-continue: tell the play_next wrapper to re-enter
+                    # and try the next queued track. Returning False would halt
+                    # the loop, stranding every still-valid track behind this
+                    # one. Mirrors the search-resolution-failed branch below,
+                    # which also returns True to advance; play_next's 10-retry
+                    # cap bounds churn on a fully-malformed queue.
+                    return True
                 queue.popleft()
                 self._schedule_queue_save(guild_id)
 

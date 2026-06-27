@@ -2014,6 +2014,35 @@ describe('transcript find', () => {
             vi.useRealTimers();
         }
     });
+
+    it('find skips the meta/badge chrome (role badge, user id, timestamp)', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            hm.openChannel(CHANNEL_A);
+            hm.handleMessage({
+                type: 'ai_history_loaded',
+                channel_id: CHANNEL_A,
+                messages: [makeMessage({ id: 1, content: 'plain body', user_id: 'zzuseridzz' })],
+                total_count: 1,
+                has_more: false,
+            });
+            // Sanity: the user id IS rendered, but only inside the meta chrome.
+            expect(
+                document.querySelector('#ai-history-messages .history-msg-user-id')!.textContent,
+            ).toContain('zzuseridzz');
+            hm.openFind();
+            const input = document.getElementById('ai-history-search-input') as HTMLInputElement;
+            input.value = 'zzuseridzz';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            // The only match lives in the meta chrome, so nothing should highlight.
+            expect(document.querySelectorAll('#ai-history-messages mark.chat-search-hit').length).toBe(0);
+            expect(document.getElementById('ai-history-search-count')!.textContent).toBe('0 / 0');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
 
 // ============================================================================

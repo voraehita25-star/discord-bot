@@ -197,6 +197,27 @@ def _uses_adaptive_thinking(model: str) -> bool:
     return any(tag in model_lower for tag in _ADAPTIVE_THINKING_MODELS)
 
 
+def _format_model_display(model_id: str) -> str:
+    """Render a model id like ``claude-opus-4-8[1m]`` as ``Claude Opus 4.8``.
+
+    The naive ``replace("-", " ").title()`` produces ``Claude Opus 4 8`` (the two
+    version tokens read as separate words), so the numeric trailer is split out
+    and rejoined with a dot. A trailing context-window tag (e.g. ``[1m]``) is
+    stripped first: it is not part of the human-readable name and would otherwise
+    leave a non-digit token (``8[1m]``) that the numeric/word split mis-files,
+    garbling the badge to ``Claude Opus 8[1M] 4``.
+    """
+    base = model_id.split("[", 1)[0]
+    parts = base.replace("claude-", "").split("-")
+    numeric = [p for p in parts if p.isdigit()]
+    words = [p for p in parts if not p.isdigit()]
+    name_part = " ".join(w.title() for w in words)
+    version_part = ".".join(numeric)
+    if version_part:
+        return f"Claude {name_part} {version_part}".strip()
+    return f"Claude {name_part}".strip()
+
+
 async def handle_chat_message_claude(
     ws: WebSocketResponse,
     data: dict[str, Any],
@@ -688,25 +709,9 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Build mode info for display
     mode_info: list[str] = []
 
-    # Format model id like `claude-opus-4-7` → `Claude Opus 4.7`. The naive
-    # `replace("-", " ").title()` produces `Claude Opus 4 7` (two version
-    # tokens look like separate words). Split out the numeric trailer and
-    # rejoin it with a dot so the version reads correctly.
-    _model_parts = CLAUDE_MODEL.replace("claude-", "").split("-")
-    _model_numeric: list[str] = []
-    _model_words: list[str] = []
-    for _p in _model_parts:
-        if _p.isdigit():
-            _model_numeric.append(_p)
-        else:
-            _model_words.append(_p)
-    _name_part = " ".join(w.title() for w in _model_words)
-    _version_part = ".".join(_model_numeric) if _model_numeric else ""
-    _model_display = (
-        f"Claude {_name_part} {_version_part}".strip()
-        if _version_part
-        else f"Claude {_name_part}".strip()
-    )
+    # Format model id like `claude-opus-4-8[1m]` → `Claude Opus 4.8` (shared
+    # helper, also used by the AI-edit handler below).
+    _model_display = _format_model_display(CLAUDE_MODEL)
     mode_info.insert(0, f"🟣 {_model_display}")
 
     if thinking_enabled:
@@ -1467,19 +1472,8 @@ async def handle_ai_edit_message_claude(
 
     # Build mode info
     mode_info: list[str] = []
-    # Format model id like `claude-opus-4-8` → `Claude Opus 4.8`. Mirrors the
-    # main chat handler: the naive `replace("-", " ").title()` renders the
-    # version as two separate word tokens ("Claude Opus 4 8").
-    _model_parts = CLAUDE_MODEL.replace("claude-", "").split("-")
-    _model_numeric = [p for p in _model_parts if p.isdigit()]
-    _model_words = [p for p in _model_parts if not p.isdigit()]
-    _name_part = " ".join(w.title() for w in _model_words)
-    _version_part = ".".join(_model_numeric)
-    _model_display = (
-        f"Claude {_name_part} {_version_part}".strip()
-        if _version_part
-        else f"Claude {_name_part}".strip()
-    )
+    # Format model id → display badge via the shared helper (see the chat handler).
+    _model_display = _format_model_display(CLAUDE_MODEL)
     mode_info.append(f"🟣 {_model_display}")
     mode_info.append("✏️ AI Edit")
     if thinking_enabled:

@@ -1748,9 +1748,12 @@ function wrapHistoryMatches(root: HTMLElement, query: string): HTMLElement[] {
             const parent = node.parentElement;
             if (!parent) return NodeFilter.FILTER_REJECT;
             const tag = parent.tagName;
-            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
-            // Skip the inline editor's textarea + the meta/badge chrome so a
-            // find only highlights actual message content the user reads.
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK' || tag === 'TEXTAREA')
+                return NodeFilter.FILTER_REJECT;
+            // Skip the inline editor's textarea (above) + the meta/badge chrome
+            // (role badge, user id, timestamp, actions) so a find only highlights
+            // actual message content the user reads, not the header furniture.
+            if (parent.closest('.history-msg-meta')) return NodeFilter.FILTER_REJECT;
             if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle)) return NodeFilter.FILTER_SKIP;
             return NodeFilter.FILTER_ACCEPT;
         },

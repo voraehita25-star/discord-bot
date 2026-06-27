@@ -128,7 +128,12 @@ def make_player(title="A Song", filename="temp/song.mp3", duration=120):
 class TestPlayNextOnceDispatch:
     @pytest.mark.asyncio
     async def test_dropped_entry_without_url(self):
-        """Queue item lacking a URL is dropped + returns False (1000-1001 area)."""
+        """Queue item lacking a URL is dropped + returns True to advance.
+
+        Returning True signals the play_next wrapper to re-enter and try the
+        next track; returning False would halt the loop and strand every
+        still-valid track queued behind the url-less entry.
+        """
         cog = make_cog()
         vc = make_voice_client(playing=False, paused=False)
         ctx = make_ctx(voice_client=vc)
@@ -137,7 +142,7 @@ class TestPlayNextOnceDispatch:
 
         result = await cog._play_next_once(ctx)
 
-        assert result is False
+        assert result is True
         assert len(cog._gs(ctx.guild.id).queue) == 0
 
     @pytest.mark.asyncio

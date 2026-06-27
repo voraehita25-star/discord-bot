@@ -1239,3 +1239,41 @@ class TestInitSchemaWithDB:
         assert "CREATE TABLE IF NOT EXISTS conversation_summaries" in sql_blob
         assert "CREATE INDEX IF NOT EXISTS idx_summaries_channel" in sql_blob
         assert conn.committed == 1
+
+
+class TestChannelLockEviction:
+    """_get_channel_lock growth-bound eviction guard (memory_consolidator ~140)."""
+
+    def test_evicts_idle_locks_but_keeps_those_with_waiters(self):
+        """At the 10k threshold the sweep drops idle, waiter-less locks but keeps
+        a lock that has queued waiters.
+
+        ``Lock.release()`` clears ``_locked`` before the next waiter resumes, so
+        during that handoff ``locked()`` is False while a coroutine is still
+        about to acquire it — evicting there would orphan the lock and lose
+        mutual exclusion. Mirrors the guard in ``LongTermMemory._get_user_lock``.
+        """
+        import asyncio
+        from collections import deque
+
+        from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
+
+        archiver = SummaryArchiver()
+        # Fill to the eviction threshold with idle, waiter-less locks.
+        for cid in range(10_000):
+            archiver._channel_locks[cid] = asyncio.Lock()
+        # A lock that is NOT held but has a queued waiter (the release-handoff
+        # window): locked() is False, yet a coroutine is about to acquire it.
+        waiter_lock = asyncio.Lock()
+        waiter_lock._waiters = deque([object()])
+        assert not waiter_lock.locked()
+        archiver._channel_locks[10_000] = waiter_lock
+
+        # Requesting a brand-new channel lock crosses the threshold and runs the
+        # growth-bound eviction sweep.
+        new_lock = archiver._get_channel_lock(99_999)
+
+        # The waiter-holding lock survived; plain idle locks were pruned.
+        assert archiver._channel_locks[10_000] is waiter_lock
+        assert 0 not in archiver._channel_locks
+        assert archiver._channel_locks[99_999] is new_lock

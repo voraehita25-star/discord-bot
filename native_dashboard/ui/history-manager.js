@@ -467,16 +467,24 @@ export class HistoryManager {
         if (!this.editInFlight)
             return;
         this.editInFlight = false;
-        // The rejected mutation can no longer be ack-confirmed — drop its
-        // unconfirmed undo candidate. A rejected/orphaned UNDO clears the
-        // in-flight marker; whether its stack entry survives depends on the
-        // rejection: codeless/transient failures (rate limit, reconnect,
-        // INTERNAL_ERROR, DB_UNAVAILABLE…) KEEP the entry so the user can
-        // retry, while PERMANENT codes (ROW_CONFLICT — incl. "history was
-        // rewritten since this undo was recorded" — MSG_NOT_FOUND…) drop it:
-        // retrying the byte-identical frame can only fail the same way, and
-        // the doomed entry would shadow every older undo in its channel.
-        this.pendingUndoCandidate = null;
+        // A real history rejection (it carries a rejection code) can no longer
+        // be ack-confirmed — drop its unconfirmed undo candidate. onError() is
+        // ALSO fired for unrelated, codeless error frames on the shared socket
+        // (e.g. a failing chat stream): keep the candidate then, so the genuine
+        // edited/deleted ack still in flight can promote it via settleUndoOnAck
+        // (mirroring how pendingUndo is kept and recovered via
+        // recoverPendingUndo) instead of the just-saved edit/delete silently
+        // becoming non-undoable.
+        if (code !== undefined)
+            this.pendingUndoCandidate = null;
+        // A rejected/orphaned UNDO clears the in-flight marker; whether its
+        // stack entry survives depends on the rejection: codeless/transient
+        // failures (rate limit, reconnect, INTERNAL_ERROR, DB_UNAVAILABLE…)
+        // KEEP the entry so the user can retry, while PERMANENT codes
+        // (ROW_CONFLICT — incl. "history was rewritten since this undo was
+        // recorded" — MSG_NOT_FOUND…) drop it: retrying the byte-identical
+        // frame can only fail the same way, and the doomed entry would shadow
+        // every older undo in its channel.
         const failed = this.pendingUndo;
         this.pendingUndo = null;
         if (failed !== null && code !== undefined && PERMANENT_HISTORY_ERROR_CODES.has(code)) {
@@ -1668,10 +1676,13 @@ function wrapHistoryMatches(root, query) {
             if (!parent)
                 return NodeFilter.FILTER_REJECT;
             const tag = parent.tagName;
-            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK')
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK' || tag === 'TEXTAREA')
                 return NodeFilter.FILTER_REJECT;
-            // Skip the inline editor's textarea + the meta/badge chrome so a
-            // find only highlights actual message content the user reads.
+            // Skip the inline editor's textarea (above) + the meta/badge chrome
+            // (role badge, user id, timestamp, actions) so a find only highlights
+            // actual message content the user reads, not the header furniture.
+            if (parent.closest('.history-msg-meta'))
+                return NodeFilter.FILTER_REJECT;
             if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(needle))
                 return NodeFilter.FILTER_SKIP;
             return NodeFilter.FILTER_ACCEPT;

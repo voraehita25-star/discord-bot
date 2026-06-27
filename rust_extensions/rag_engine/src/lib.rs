@@ -468,6 +468,11 @@ impl RagEngine {
                         match std::fs::OpenOptions::new().write(true).open(path) {
                             Ok(f) => {
                                 if let Err(e) = f.sync_all() {
+                                    // Clean up the temp before bailing, matching
+                                    // every other save() exit path; the temp name
+                                    // is unique per call, so leaving it here piles
+                                    // up orphaned `.tmp.*` files on repeat failures.
+                                    let _ = std::fs::remove_file(&temp_path);
                                     return Err(PyValueError::new_err(format!(
                                         "fsync after copy failed: {}",
                                         e
@@ -475,6 +480,7 @@ impl RagEngine {
                                 }
                             }
                             Err(e) => {
+                                let _ = std::fs::remove_file(&temp_path);
                                 return Err(PyValueError::new_err(format!(
                                     "open dest for fsync failed: {}",
                                     e
